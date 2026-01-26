@@ -784,14 +784,15 @@
 
                 let html = '';
                 for (const check of result.checks || []) {
-                    const iconClass = check.status === 'pass' ? 'pass' : (check.status === 'fail' ? 'fail' : 'warn');
-                    const icon = check.status === 'pass' ? '✓' : (check.status === 'fail' ? '✗' : '⚠');
+                    // Doctor returns: ok, warning, error, info
+                    const iconClass = check.status === 'ok' ? 'pass' : (check.status === 'error' ? 'fail' : 'warn');
+                    const icon = check.status === 'ok' ? '✓' : (check.status === 'error' ? '✗' : '⚠');
                     html += `
                         <div class="doctor-item">
                             <span class="doctor-icon ${iconClass}">${icon}</span>
                             <div>
                                 <strong>${check.name}</strong>
-                                <p style="color: #8b949e; font-size: 13px; margin-top: 2px;">${check.message}</p>
+                                <p style="color: #8b949e; font-size: 13px; margin-top: 2px;">${check.detail}</p>
                             </div>
                         </div>
                     `;

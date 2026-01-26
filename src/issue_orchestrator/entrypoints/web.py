@@ -2443,25 +2443,34 @@ async def update_settings(request: Request) -> JSONResponse:  # noqa: C901, PLR0
         config.worktree_base = original_values["worktree_base"]
         config.worktree_branch_on_recreate = original_values["worktree_branch_on_recreate"]
 
+    def safe_int(value, default: int) -> int:
+        """Safely convert value to int, returning default if None/empty."""
+        if value is None or value == "":
+            return default
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+
     # Apply execution settings
     if "execution" in body:
         exec_cfg = body["execution"]
         if "concurrency" in exec_cfg:
             conc = exec_cfg["concurrency"]
             if "max_concurrent_sessions" in conc:
-                config.max_concurrent_sessions = int(conc["max_concurrent_sessions"])
+                config.max_concurrent_sessions = safe_int(conc["max_concurrent_sessions"], config.max_concurrent_sessions)
             if "session_timeout_minutes" in conc:
-                config.session_timeout_minutes = int(conc["session_timeout_minutes"])
+                config.session_timeout_minutes = safe_int(conc["session_timeout_minutes"], config.session_timeout_minutes)
 
     # Apply UI settings
     if "ui" in body:
         ui_cfg = body["ui"]
         if "queue_refresh_seconds" in ui_cfg:
-            config.queue_refresh_seconds = int(ui_cfg["queue_refresh_seconds"])
+            config.queue_refresh_seconds = safe_int(ui_cfg["queue_refresh_seconds"], config.queue_refresh_seconds)
         if "web_port" in ui_cfg:
-            config.web_port = int(ui_cfg["web_port"])
+            config.web_port = safe_int(ui_cfg["web_port"], config.web_port)
         if "control_api_port" in ui_cfg:
-            config.control_api_port = int(ui_cfg["control_api_port"])
+            config.control_api_port = safe_int(ui_cfg["control_api_port"], config.control_api_port)
 
     # Apply E2E settings
     if "e2e" in body:
@@ -2469,17 +2478,17 @@ async def update_settings(request: Request) -> JSONResponse:  # noqa: C901, PLR0
         if "enabled" in e2e_cfg:
             config.e2e.enabled = bool(e2e_cfg["enabled"])
         if "role" in e2e_cfg:
-            config.e2e.role = str(e2e_cfg["role"])
+            config.e2e.role = str(e2e_cfg["role"]) if e2e_cfg["role"] else config.e2e.role
         if "auto_run_interval_minutes" in e2e_cfg:
-            config.e2e.auto_run_interval_minutes = int(e2e_cfg["auto_run_interval_minutes"])
+            config.e2e.auto_run_interval_minutes = safe_int(e2e_cfg["auto_run_interval_minutes"], config.e2e.auto_run_interval_minutes)
         if "pytest_args" in e2e_cfg:
-            config.e2e.pytest_args = list(e2e_cfg["pytest_args"])
+            config.e2e.pytest_args = list(e2e_cfg["pytest_args"]) if e2e_cfg["pytest_args"] else config.e2e.pytest_args
         if "allow_retry_once" in e2e_cfg:
             config.e2e.allow_retry_once = bool(e2e_cfg["allow_retry_once"])
         if "stop_on_first_failure" in e2e_cfg:
             config.e2e.stop_on_first_failure = bool(e2e_cfg["stop_on_first_failure"])
         if "quarantine_file" in e2e_cfg:
-            config.e2e.quarantine_file = str(e2e_cfg["quarantine_file"])
+            config.e2e.quarantine_file = str(e2e_cfg["quarantine_file"]) if e2e_cfg["quarantine_file"] else config.e2e.quarantine_file
 
     # Apply filtering settings
     if "filtering" in body:
@@ -2487,13 +2496,13 @@ async def update_settings(request: Request) -> JSONResponse:  # noqa: C901, PLR0
         if "label" in filter_cfg:
             config.filtering.label = filter_cfg["label"] or None
         if "milestones" in filter_cfg:
-            config.filtering.milestones = list(filter_cfg["milestones"])
+            config.filtering.milestones = list(filter_cfg["milestones"]) if filter_cfg["milestones"] else []
         if "exclude_labels" in filter_cfg:
-            config.filtering.exclude_labels = list(filter_cfg["exclude_labels"])
+            config.filtering.exclude_labels = list(filter_cfg["exclude_labels"]) if filter_cfg["exclude_labels"] else []
         if "fetch_limit" in filter_cfg:
-            config.filtering.fetch_limit = int(filter_cfg["fetch_limit"])
+            config.filtering.fetch_limit = safe_int(filter_cfg["fetch_limit"], config.filtering.fetch_limit)
         if "max_to_start" in filter_cfg:
-            config.filtering.max_to_start = int(filter_cfg["max_to_start"])
+            config.filtering.max_to_start = safe_int(filter_cfg["max_to_start"], config.filtering.max_to_start)
 
     # Apply review settings
     if "review" in body:
@@ -2503,19 +2512,19 @@ async def update_settings(request: Request) -> JSONResponse:  # noqa: C901, PLR0
         if "default" in review_cfg:
             config.code_review_agent = review_cfg["default"] or None
         if "max_rework_cycles" in review_cfg:
-            config.max_rework_cycles = int(review_cfg["max_rework_cycles"])
+            config.max_rework_cycles = safe_int(review_cfg["max_rework_cycles"], config.max_rework_cycles)
         if "triage_review_agent" in review_cfg:
             config.triage_review_agent = review_cfg["triage_review_agent"] or None
         if "triage_review_threshold" in review_cfg:
-            config.triage_review_threshold = int(review_cfg["triage_review_threshold"])
+            config.triage_review_threshold = safe_int(review_cfg["triage_review_threshold"], config.triage_review_threshold)
 
     # Apply observability settings
     if "observability" in body:
         obs_cfg = body["observability"]
         if "session_no_output_seconds" in obs_cfg:
-            config.session_no_output_seconds = int(obs_cfg["session_no_output_seconds"])
+            config.session_no_output_seconds = safe_int(obs_cfg["session_no_output_seconds"], config.session_no_output_seconds)
         if "stale_escalation_ticks" in obs_cfg:
-            config.stale_escalation_ticks = int(obs_cfg["stale_escalation_ticks"])
+            config.stale_escalation_ticks = safe_int(obs_cfg["stale_escalation_ticks"], config.stale_escalation_ticks)
 
     # Apply worktree settings
     if "worktrees" in body:
@@ -2553,6 +2562,7 @@ async def update_settings(request: Request) -> JSONResponse:  # noqa: C901, PLR0
             logger.info("[settings] Config saved to %s", config.config_path)
     except Exception as e:
         logger.error("[settings] Failed to save config: %s", e)
+        restore_original_values()  # Rollback in-memory changes on save failure
         return JSONResponse({
             "error": f"Failed to save config: {e}",
         }, status_code=500)
@@ -2560,7 +2570,7 @@ async def update_settings(request: Request) -> JSONResponse:  # noqa: C901, PLR0
     return JSONResponse({
         "success": True,
         "restart_required": restart_required,
-        "warnings": [{"name": c.name, "detail": c.detail} for c in result.checks if c.status == "warn"],
+        "warnings": [{"name": c.name, "detail": c.detail} for c in result.checks if c.status == "warning"],
     })
 
 

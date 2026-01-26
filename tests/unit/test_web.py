@@ -2580,3 +2580,236 @@ class TestApiStatusPublishJobs:
             assert data["publish_jobs"][0]["status"] == "running"
         finally:
             web._orchestrator = None
+
+
+class TestSettingsEndpoints:
+    """Tests for the settings page and API endpoints."""
+
+    def test_get_settings_returns_current_config(self):
+        """GET /api/settings returns current config values."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.max_concurrent_sessions = 5
+        mock_orch.config.e2e.enabled = True
+        mock_orch.config.e2e.auto_run_interval_minutes = 45
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.get("/api/settings")
+
+            assert response.status_code == 200
+            data = response.json()
+
+            assert data["execution"]["concurrency"]["max_concurrent_sessions"] == 5
+            assert data["e2e"]["enabled"] is True
+            assert data["e2e"]["auto_run_interval_minutes"] == 45
+        finally:
+            web._orchestrator = None
+
+    def test_get_settings_returns_503_when_orchestrator_not_running(self):
+        """GET /api/settings returns 503 when orchestrator not running."""
+        from issue_orchestrator.entrypoints import web
+
+        web._orchestrator = None
+        client = TestClient(app)
+        response = client.get("/api/settings")
+
+        assert response.status_code == 503
+        assert "error" in response.json()
+
+    def test_post_settings_updates_config(self):
+        """POST /api/settings updates in-memory config."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.max_concurrent_sessions = 3
+
+        # Mock doctor to return ok - patch at the module where it's imported
+        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+            mock_result = MagicMock()
+            mock_result.checks = []
+            mock_doctor.return_value = mock_result
+
+            # Mock save to do nothing
+            mock_orch.config.save = MagicMock()
+
+            web._orchestrator = mock_orch
+            try:
+                client = TestClient(app)
+                response = client.post("/api/settings", json={
+                    "execution": {
+                        "concurrency": {
+                            "max_concurrent_sessions": 7
+                        }
+                    }
+                })
+
+                assert response.status_code == 200
+                data = response.json()
+                assert data["success"] is True
+
+                # Verify config was updated
+                assert mock_orch.config.max_concurrent_sessions == 7
+            finally:
+                web._orchestrator = None
+
+    def test_post_settings_reverts_on_validation_failure(self):
+        """POST /api/settings reverts in-memory changes if doctor fails."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        original_value = mock_orch.config.max_concurrent_sessions
+
+        # Mock doctor to return error
+        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+            mock_check = MagicMock()
+            mock_check.status = "error"
+            mock_check.name = "Test Check"
+            mock_check.detail = "Validation failed"
+            mock_result = MagicMock()
+            mock_result.checks = [mock_check]
+            mock_doctor.return_value = mock_result
+
+            web._orchestrator = mock_orch
+            try:
+                client = TestClient(app)
+                response = client.post("/api/settings", json={
+                    "execution": {
+                        "concurrency": {
+                            "max_concurrent_sessions": 99
+                        }
+                    }
+                })
+
+                assert response.status_code == 400
+                data = response.json()
+                assert "error" in data
+                assert "errors" in data
+
+                # Verify config was reverted
+                assert mock_orch.config.max_concurrent_sessions == original_value
+            finally:
+                web._orchestrator = None
+
+    def test_post_settings_returns_warnings(self):
+        """POST /api/settings includes warnings in response."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+
+        # Mock doctor to return warning
+        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+            mock_warning = MagicMock()
+            mock_warning.status = "warning"
+            mock_warning.name = "Token Scope"
+            mock_warning.detail = "Token has broad permissions"
+            mock_result = MagicMock()
+            mock_result.checks = [mock_warning]
+            mock_doctor.return_value = mock_result
+
+            mock_orch.config.save = MagicMock()
+
+            web._orchestrator = mock_orch
+            try:
+                client = TestClient(app)
+                response = client.post("/api/settings", json={
+                    "execution": {
+                        "concurrency": {
+                            "max_concurrent_sessions": 5
+                        }
+                    }
+                })
+
+                assert response.status_code == 200
+                data = response.json()
+                assert data["success"] is True
+                assert len(data["warnings"]) == 1
+                assert data["warnings"][0]["name"] == "Token Scope"
+                assert data["warnings"][0]["detail"] == "Token has broad permissions"
+            finally:
+                web._orchestrator = None
+
+    def test_post_settings_handles_null_numeric_values(self):
+        """POST /api/settings handles null/empty numeric values gracefully."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        original_value = mock_orch.config.max_concurrent_sessions
+
+        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+            mock_result = MagicMock()
+            mock_result.checks = []
+            mock_doctor.return_value = mock_result
+
+            mock_orch.config.save = MagicMock()
+
+            web._orchestrator = mock_orch
+            try:
+                client = TestClient(app)
+                # Send null value for numeric field
+                response = client.post("/api/settings", json={
+                    "execution": {
+                        "concurrency": {
+                            "max_concurrent_sessions": None
+                        }
+                    }
+                })
+
+                assert response.status_code == 200
+                # Value should remain unchanged (using default)
+                assert mock_orch.config.max_concurrent_sessions == original_value
+            finally:
+                web._orchestrator = None
+
+    def test_post_settings_reverts_on_save_failure(self):
+        """POST /api/settings reverts in-memory changes if save fails."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        original_value = mock_orch.config.max_concurrent_sessions
+
+        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+            mock_result = MagicMock()
+            mock_result.checks = []
+            mock_doctor.return_value = mock_result
+
+            # Make save raise an exception
+            mock_orch.config.save = MagicMock(side_effect=IOError("Disk full"))
+
+            web._orchestrator = mock_orch
+            try:
+                client = TestClient(app)
+                response = client.post("/api/settings", json={
+                    "execution": {
+                        "concurrency": {
+                            "max_concurrent_sessions": 99
+                        }
+                    }
+                })
+
+                assert response.status_code == 500
+                assert "Disk full" in response.json()["error"]
+
+                # Verify config was reverted
+                assert mock_orch.config.max_concurrent_sessions == original_value
+            finally:
+                web._orchestrator = None
+
+    def test_settings_page_renders(self):
+        """GET /settings renders the settings page."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.get("/settings")
+
+            assert response.status_code == 200
+            assert "Settings" in response.text
+            assert "Concurrency" in response.text
+        finally:
+            web._orchestrator = None
