@@ -3789,6 +3789,9 @@
                 }
             });
 
+            // NOTE: The following E2E SSE event listeners are placeholders for future
+            // real-time updates. Currently, E2E progress is polled via updateE2EProgress().
+            // These will be wired up when the E2E worker emits progress events.
             evtSource.addEventListener('e2e.progress', function(e) {
                 try {
                     const data = JSON.parse(e.data);
