@@ -5181,17 +5181,42 @@
         // Mutable state for E2E - updated by polling
         let e2eLastRun = {{ e2e_status.last_run|tojson if e2e_status.last_run else 'null' }};
 
-        // E2E Progress Polling with state tracking to minimize DOM updates
+        // E2E Progress Polling - only polls frequently when dropdown is open
         let e2ePollingInterval = null;
-        let e2eLastProgressState = null;  // Track last state to avoid redundant updates
+        let e2eSlowPollingInterval = null;  // Slow poll to detect completion
+        let e2eLastProgressState = null;
+        let e2eDropdownOpen = false;
 
         function startE2EPolling() {
-            if (e2ePollingInterval) return;
-            e2ePollingInterval = setInterval(updateE2EProgress, 2000);
-            updateE2EProgress(); // Immediate first update
+            // Fast polling (2s) only when dropdown is open
+            if (!e2ePollingInterval && e2eDropdownOpen) {
+                e2ePollingInterval = setInterval(updateE2EProgress, 2000);
+                updateE2EProgress();
+            }
+            // Slow polling (60s) to detect completion - runs while E2E is running
+            if (!e2eSlowPollingInterval) {
+                e2eSlowPollingInterval = setInterval(updateE2EProgress, 60000);
+            }
         }
 
         function stopE2EPolling() {
+            if (e2ePollingInterval) {
+                clearInterval(e2ePollingInterval);
+                e2ePollingInterval = null;
+            }
+            if (e2eSlowPollingInterval) {
+                clearInterval(e2eSlowPollingInterval);
+                e2eSlowPollingInterval = null;
+            }
+        }
+
+        function startFastPolling() {
+            if (e2ePollingInterval) return;
+            e2ePollingInterval = setInterval(updateE2EProgress, 2000);
+            updateE2EProgress();  // Immediate update when opening
+        }
+
+        function stopFastPolling() {
             if (e2ePollingInterval) {
                 clearInterval(e2ePollingInterval);
                 e2ePollingInterval = null;
@@ -5209,9 +5234,17 @@
             if (isOpen) {
                 dropdown.classList.remove('visible');
                 indicator.classList.remove('open');
+                e2eDropdownOpen = false;
+                stopFastPolling();  // Stop fast polling when closed
             } else {
                 dropdown.classList.add('visible');
                 indicator.classList.add('open');
+                e2eDropdownOpen = true;
+                // Start fast polling if E2E is running
+                if (indicator.classList.contains('running')) {
+                    startFastPolling();
+                }
+                updateE2EProgress();  // Always refresh when opening
             }
         }
 
@@ -5222,6 +5255,8 @@
             if (indicator && dropdown && !indicator.contains(e.target)) {
                 dropdown.classList.remove('visible');
                 indicator.classList.remove('open');
+                e2eDropdownOpen = false;
+                stopFastPolling();
             }
         });
 
