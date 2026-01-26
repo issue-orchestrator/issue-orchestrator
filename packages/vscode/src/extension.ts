@@ -958,7 +958,7 @@ function renderConsoleHtml(issueNumber: number, logData: ClaudeLogResponse | nul
       }
       return JSON.stringify(entry);
     })
-    .join("\\n");
+    .join("\n");
 
   return `<!DOCTYPE html>
   <html lang="en">

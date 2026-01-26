@@ -70,3 +70,6 @@ class OrchestratorApi(Protocol):
 
     def doctor(self) -> dict[str, Any]:
         ...
+
+    def close(self) -> None:
+        ...

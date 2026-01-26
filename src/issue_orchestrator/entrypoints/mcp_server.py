@@ -83,6 +83,7 @@ class McpApp:
 
     def close(self) -> None:
         self._client.close()
+        self._api.close()
 
     def _safe(self, tool_name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         try:
