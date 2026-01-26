@@ -2814,12 +2814,12 @@ class TestSettingsEndpoints:
         finally:
             web._orchestrator = None
 
-    def test_get_settings_returns_effective_milestones_from_legacy_field(self):
-        """GET /api/settings returns milestones from legacy single-milestone field."""
+    def test_get_settings_returns_effective_milestones_from_singular_field(self):
+        """GET /api/settings returns milestones from single-milestone field."""
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
-        # Set legacy single-milestone field (common via CLI)
+        # Set single-milestone field (common via CLI)
         mock_orch.config.filtering.milestone = "v1.0"
         mock_orch.config.filtering.milestones = []  # Empty list
 
@@ -2831,17 +2831,17 @@ class TestSettingsEndpoints:
             assert response.status_code == 200
             data = response.json()
 
-            # Should return the legacy milestone in the milestones list
+            # Should return the singular milestone in the milestones list
             assert data["filtering"]["milestones"] == ["v1.0"]
         finally:
             web._orchestrator = None
 
-    def test_post_settings_clears_legacy_milestone_when_setting_milestones(self):
-        """POST /api/settings clears legacy milestone when setting milestones."""
+    def test_post_settings_clears_singular_milestone_when_setting_milestones(self):
+        """POST /api/settings clears singular milestone when setting milestones list."""
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
-        # Set legacy single-milestone field
+        # Set single-milestone field
         mock_orch.config.filtering.milestone = "old-milestone"
         mock_orch.config.filtering.milestones = []
 
@@ -2865,17 +2865,17 @@ class TestSettingsEndpoints:
 
                 # New milestones should be set
                 assert mock_orch.config.filtering.milestones == ["new-milestone"]
-                # Legacy milestone should be cleared
+                # Singular milestone should be cleared
                 assert mock_orch.config.filtering.milestone is None
             finally:
                 web._orchestrator = None
 
-    def test_post_settings_clears_legacy_milestone_when_clearing_all(self):
-        """POST /api/settings clears legacy milestone when setting empty milestones."""
+    def test_post_settings_clears_singular_milestone_when_clearing_all(self):
+        """POST /api/settings clears singular milestone when setting empty milestones."""
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
-        # Set legacy single-milestone field
+        # Set single-milestone field
         mock_orch.config.filtering.milestone = "old-milestone"
         mock_orch.config.filtering.milestones = []
 
