@@ -3780,54 +3780,9 @@
                 }
             });
 
-            // E2E Test Runner events - update UI immediately without waiting for poll
-            evtSource.addEventListener('e2e.started', function(e) {
-                console.log('[SSE] E2E started');
-                // Start polling for progress
-                if (typeof startE2EPolling === 'function') {
-                    startE2EPolling();
-                }
-            });
-
-            // NOTE: The following E2E SSE event listeners are placeholders for future
-            // real-time updates. Currently, E2E progress is polled via updateE2EProgress().
-            // These will be wired up when the E2E worker emits progress events.
-            evtSource.addEventListener('e2e.progress', function(e) {
-                try {
-                    const data = JSON.parse(e.data);
-                    console.log('[SSE] E2E progress:', data.percent + '%');
-                    // Trigger immediate UI update
-                    if (typeof updateE2EProgress === 'function') {
-                        updateE2EProgress();
-                    }
-                } catch (err) {
-                    console.error('[SSE] Failed to parse e2e.progress:', err);
-                }
-            });
-
-            evtSource.addEventListener('e2e.completed', function(e) {
-                console.log('[SSE] E2E completed');
-                // Trigger immediate UI update (run completed successfully)
-                if (typeof updateE2EProgress === 'function') {
-                    updateE2EProgress();
-                }
-            });
-
-            evtSource.addEventListener('e2e.failed', function(e) {
-                console.log('[SSE] E2E failed');
-                // Trigger immediate UI update (run failed - may need attention)
-                if (typeof updateE2EProgress === 'function') {
-                    updateE2EProgress();
-                }
-            });
-
-            evtSource.addEventListener('e2e.stopped', function(e) {
-                console.log('[SSE] E2E stopped');
-                // Trigger immediate UI update
-                if (typeof updateE2EProgress === 'function') {
-                    updateE2EProgress();
-                }
-            });
+            // NOTE: E2E progress is currently polled via updateE2EProgress().
+            // When the backend emits E2E SSE events (e2e.started, e2e.progress, etc.),
+            // add listeners here to reduce polling frequency.
 
             evtSource.onerror = function(e) {
                 console.log('[SSE] Connection error, will reconnect automatically');
