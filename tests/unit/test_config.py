@@ -1863,3 +1863,237 @@ claims:
 
         assert config.claims.enabled is True
         assert config.claims.lease_seconds == 900
+
+
+class TestConfigSerialization:
+    """Tests for Config.to_dict() and Config.save() methods."""
+
+    def test_to_dict_basic(self, tmp_path):
+        """Test to_dict returns basic config structure."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("test prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+
+        config_content = f"""
+repo:
+  name: owner/repo
+
+worktrees:
+  base: {worktree_base}
+
+agents:
+  agent:test:
+    prompt: {prompt_file}
+    model: sonnet
+
+execution:
+  concurrency:
+    max_concurrent_sessions: 5
+    session_timeout_minutes: 30
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        result = config.to_dict()
+
+        assert result["repo"]["name"] == "owner/repo"
+        assert "agents" in result
+        assert "agent:test" in result["agents"]
+        assert result["execution"]["concurrency"]["max_concurrent_sessions"] == 5
+        assert result["execution"]["concurrency"]["session_timeout_minutes"] == 30
+
+    def test_to_dict_e2e_settings(self, tmp_path):
+        """Test to_dict includes E2E settings when non-default."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("test prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+
+        config_content = f"""
+repo:
+  name: owner/repo
+
+worktrees:
+  base: {worktree_base}
+
+agents:
+  agent:test:
+    prompt: {prompt_file}
+
+e2e:
+  enabled: true
+  auto_run_interval_minutes: 60
+  stop_on_first_failure: true
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        result = config.to_dict()
+
+        assert "e2e" in result
+        assert result["e2e"]["enabled"] is True
+        assert result["e2e"]["auto_run_interval_minutes"] == 60
+        assert result["e2e"]["stop_on_first_failure"] is True
+
+    def test_to_dict_omits_defaults(self, tmp_path):
+        """Test to_dict omits default values to keep output minimal."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("test prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+
+        config_content = f"""
+repo:
+  name: owner/repo
+
+worktrees:
+  base: {worktree_base}
+
+agents:
+  agent:test:
+    prompt: {prompt_file}
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        result = config.to_dict()
+
+        # E2E should not be present since all defaults
+        assert "e2e" not in result
+
+        # Labels should not be present since all defaults
+        assert "labels" not in result
+
+    def test_save_writes_yaml(self, tmp_path):
+        """Test save() writes valid YAML to file."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("test prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+
+        config_content = f"""
+repo:
+  name: owner/repo
+
+worktrees:
+  base: {worktree_base}
+
+agents:
+  agent:test:
+    prompt: {prompt_file}
+
+execution:
+  concurrency:
+    max_concurrent_sessions: 7
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        # Change a setting
+        config.max_concurrent_sessions = 10
+
+        # Save to new file
+        output_file = tmp_path / "output.yaml"
+        config.save(output_file)
+
+        # Verify file exists and contains expected content
+        assert output_file.exists()
+        content = output_file.read_text()
+        assert "max_concurrent_sessions: 10" in content
+        assert "owner/repo" in content
+
+    def test_save_uses_config_path_by_default(self, tmp_path):
+        """Test save() uses config_path when no path specified."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("test prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+
+        config_content = f"""
+repo:
+  name: owner/repo
+
+worktrees:
+  base: {worktree_base}
+
+agents:
+  agent:test:
+    prompt: {prompt_file}
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        config.max_concurrent_sessions = 15
+
+        # Save without specifying path
+        result_path = config.save()
+
+        assert result_path == config.config_path
+        content = config_file.read_text()
+        assert "max_concurrent_sessions: 15" in content
+
+    def test_save_raises_without_path(self):
+        """Test save() raises ValueError when no path is available."""
+        config = Config()
+
+        with pytest.raises(ValueError, match="No path specified"):
+            config.save()
+
+    def test_to_dict_roundtrip(self, tmp_path):
+        """Test that to_dict output can be loaded back."""
+        import yaml
+
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("test prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+
+        config_content = f"""
+repo:
+  name: owner/repo
+
+worktrees:
+  base: {worktree_base}
+
+agents:
+  agent:test:
+    prompt: {prompt_file}
+    model: haiku
+    timeout_minutes: 60
+
+execution:
+  concurrency:
+    max_concurrent_sessions: 8
+    session_timeout_minutes: 90
+
+e2e:
+  enabled: true
+  auto_run_interval_minutes: 45
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        result_dict = config.to_dict()
+
+        # Write dict back to YAML
+        output_file = tmp_path / "roundtrip.yaml"
+        with open(output_file, "w") as f:
+            yaml.dump(result_dict, f)
+
+        # Load from the new file
+        config2 = Config.load(output_file)
+
+        # Key settings should match
+        assert config2.repo == config.repo
+        assert config2.max_concurrent_sessions == config.max_concurrent_sessions
+        assert config2.session_timeout_minutes == config.session_timeout_minutes
+        assert config2.e2e.enabled == config.e2e.enabled
+        assert config2.e2e.auto_run_interval_minutes == config.e2e.auto_run_interval_minutes

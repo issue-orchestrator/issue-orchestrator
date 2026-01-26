@@ -1641,6 +1641,12 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
         prompter.print(f"     • {label}")
 
     prompter.print("\n  3. Run: issue-orchestrator start")
+
+    prompter.print("\n  Advanced features (enable in config later):")
+    prompter.print("     E2E Test Runner - Automatically runs your test suite when main")
+    prompter.print("     branch changes. Tracks flaky tests, retries failures, shows")
+    prompter.print("     progress in dashboard. Enable: e2e.enabled: true")
+    prompter.print("     See: docs/user/e2e.md")
     prompter.print("")
 
 
