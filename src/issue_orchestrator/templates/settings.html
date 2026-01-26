@@ -440,7 +440,7 @@
 
                 <div class="form-group">
                     <label for="filter_milestones">Milestones</label>
-                    <input type="text" id="filter_milestones" value="{{ config.filtering.milestones | join(', ') }}">
+                    <input type="text" id="filter_milestones" value="{{ config.filtering.get_milestones() | join(', ') }}">
                     <p class="hint">Comma-separated list of milestones to process</p>
                 </div>
 
