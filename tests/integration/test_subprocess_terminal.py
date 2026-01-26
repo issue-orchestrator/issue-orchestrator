@@ -20,6 +20,31 @@ def _wait_for_exit(plugin: SubprocessPlugin, session_name: str, timeout_s: float
     raise AssertionError(f"Session {session_name} did not exit within {timeout_s}s")
 
 
+def _wait_for_file(path: Path, timeout_s: float = 5.0) -> None:
+    """Wait for a file to exist (atomic check, no content parsing)."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if path.exists():
+            return
+        time.sleep(0.02)  # Can poll aggressively - just a stat() call
+    raise AssertionError(f"File {path} not created within {timeout_s}s")
+
+
+def _wait_for_content(path: Path, marker: str, timeout_s: float = 5.0) -> None:
+    """Wait for specific content to appear in a file."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if path.exists():
+            try:
+                content = path.read_text(errors="ignore")
+                if marker in content:
+                    return
+            except Exception:
+                pass
+        time.sleep(0.05)
+    raise AssertionError(f"Content '{marker}' not found in {path} within {timeout_s}s")
+
+
 def _ensure_worktree_venv(worktree: Path) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     venv_path = repo_root / ".venv"
@@ -76,7 +101,12 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
 
     monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
     monkeypatch.setenv(f"{ENV_PREFIX}SUBPROCESS_ALLOW_STDIN", "1")
-    command = "read -r line; echo \"INPUT:$line\" >> .issue-orchestrator/sessions/issue-7/session.log"
+
+    # Use file-based synchronization: touch completes synchronously before
+    # shell proceeds to read, so file existence guarantees shell is waiting.
+    # pexpect captures all PTY output to session.log automatically.
+    ready_file = worktree / ".ready"
+    command = f"touch {ready_file}; read -r line; echo \"INPUT:$line\""
 
     plugin = SubprocessPlugin()
     created = plugin.create_session(
@@ -88,12 +118,13 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
     )
     assert created is True
 
-    # Give the process a moment to start and wait for input.
-    time.sleep(0.1)
+    # Wait for ready file - guarantees shell has executed touch and is now in read
+    _wait_for_file(ready_file)
+
     assert plugin.send_to_session(7, "ping", "issue-7") is True
 
-    _wait_for_exit(plugin, "issue-7")
-
+    # Wait for the expected output instead of polling session_exists.
+    # This avoids a race condition in pexpect where the watcher thread and
+    # isalive() can both call waitpid() on the same process.
     log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-7" / "session.log"
-    assert log_path.exists()
-    assert "INPUT:ping" in log_path.read_text(errors="ignore")
+    _wait_for_content(log_path, "INPUT:ping")
