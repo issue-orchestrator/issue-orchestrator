@@ -2340,7 +2340,8 @@ async def get_settings() -> JSONResponse:
         },
         "filtering": {
             "label": config.filtering.label,
-            "milestones": list(config.filtering.milestones),
+            # Use get_milestones() to return effective milestones from both legacy and new fields
+            "milestones": config.filtering.get_milestones(),
             "exclude_labels": list(config.filtering.exclude_labels),
             "fetch_limit": config.filtering.fetch_limit,
             "max_to_start": config.filtering.max_to_start,
@@ -2399,6 +2400,7 @@ async def update_settings(request: Request) -> JSONResponse:  # noqa: C901, PLR0
         "e2e_stop_on_first_failure": config.e2e.stop_on_first_failure,
         "e2e_quarantine_file": config.e2e.quarantine_file,
         "filtering_label": config.filtering.label,
+        "filtering_milestone": config.filtering.milestone,  # Legacy single-milestone field
         "filtering_milestones": list(config.filtering.milestones),
         "filtering_exclude_labels": list(config.filtering.exclude_labels),
         "filtering_fetch_limit": config.filtering.fetch_limit,
@@ -2429,6 +2431,7 @@ async def update_settings(request: Request) -> JSONResponse:  # noqa: C901, PLR0
         config.e2e.stop_on_first_failure = original_values["e2e_stop_on_first_failure"]
         config.e2e.quarantine_file = original_values["e2e_quarantine_file"]
         config.filtering.label = original_values["filtering_label"]
+        config.filtering.milestone = original_values["filtering_milestone"]  # Legacy field
         config.filtering.milestones = original_values["filtering_milestones"]
         config.filtering.exclude_labels = original_values["filtering_exclude_labels"]
         config.filtering.fetch_limit = original_values["filtering_fetch_limit"]
@@ -2497,6 +2500,8 @@ async def update_settings(request: Request) -> JSONResponse:  # noqa: C901, PLR0
             config.filtering.label = filter_cfg["label"] or None
         if "milestones" in filter_cfg:
             config.filtering.milestones = list(filter_cfg["milestones"]) if filter_cfg["milestones"] else []
+            # Clear legacy single-milestone field to avoid confusion
+            config.filtering.milestone = None
         if "exclude_labels" in filter_cfg:
             config.filtering.exclude_labels = list(filter_cfg["exclude_labels"]) if filter_cfg["exclude_labels"] else []
         if "fetch_limit" in filter_cfg:

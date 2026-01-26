@@ -2813,3 +2813,92 @@ class TestSettingsEndpoints:
             assert "Concurrency" in response.text
         finally:
             web._orchestrator = None
+
+    def test_get_settings_returns_effective_milestones_from_legacy_field(self):
+        """GET /api/settings returns milestones from legacy single-milestone field."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        # Set legacy single-milestone field (common via CLI)
+        mock_orch.config.filtering.milestone = "v1.0"
+        mock_orch.config.filtering.milestones = []  # Empty list
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.get("/api/settings")
+
+            assert response.status_code == 200
+            data = response.json()
+
+            # Should return the legacy milestone in the milestones list
+            assert data["filtering"]["milestones"] == ["v1.0"]
+        finally:
+            web._orchestrator = None
+
+    def test_post_settings_clears_legacy_milestone_when_setting_milestones(self):
+        """POST /api/settings clears legacy milestone when setting milestones."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        # Set legacy single-milestone field
+        mock_orch.config.filtering.milestone = "old-milestone"
+        mock_orch.config.filtering.milestones = []
+
+        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+            mock_result = MagicMock()
+            mock_result.checks = []
+            mock_doctor.return_value = mock_result
+
+            mock_orch.config.save = MagicMock()
+
+            web._orchestrator = mock_orch
+            try:
+                client = TestClient(app)
+                response = client.post("/api/settings", json={
+                    "filtering": {
+                        "milestones": ["new-milestone"]
+                    }
+                })
+
+                assert response.status_code == 200
+
+                # New milestones should be set
+                assert mock_orch.config.filtering.milestones == ["new-milestone"]
+                # Legacy milestone should be cleared
+                assert mock_orch.config.filtering.milestone is None
+            finally:
+                web._orchestrator = None
+
+    def test_post_settings_clears_legacy_milestone_when_clearing_all(self):
+        """POST /api/settings clears legacy milestone when setting empty milestones."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        # Set legacy single-milestone field
+        mock_orch.config.filtering.milestone = "old-milestone"
+        mock_orch.config.filtering.milestones = []
+
+        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+            mock_result = MagicMock()
+            mock_result.checks = []
+            mock_doctor.return_value = mock_result
+
+            mock_orch.config.save = MagicMock()
+
+            web._orchestrator = mock_orch
+            try:
+                client = TestClient(app)
+                response = client.post("/api/settings", json={
+                    "filtering": {
+                        "milestones": []
+                    }
+                })
+
+                assert response.status_code == 200
+
+                # Both should be empty/None
+                assert mock_orch.config.filtering.milestones == []
+                assert mock_orch.config.filtering.milestone is None
+            finally:
+                web._orchestrator = None
