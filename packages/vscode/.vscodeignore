@@ -1,0 +1,6 @@
+.vscode/**
+**/*.ts
+**/*.map
+**/*.test.ts
+node_modules/**
+.vscode-test/**

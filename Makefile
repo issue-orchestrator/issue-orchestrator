@@ -29,6 +29,8 @@ help:
 	@echo "  test-real-gh-plus-e2e-subprocess   Same as above but using subprocess backend"
 	@echo "  test-web            Run Playwright web UI tests (headless)"
 	@echo "  test-web-headed     Run Playwright web UI tests (headed, for debugging)"
+	@echo "  test-vscode         Run VS Code extension tests (local only, skipped in CI)"
+	@echo "  install-vscode-extensions      Install VS Code extension dev dependencies"
 	@echo "  playwright-install  Install Playwright browser binaries"
 	@echo "  test                Run all tests"
 	@echo "  validate            Parallel validation (~40s): typecheck + lint-arch + unit + integration + web-ui"
@@ -230,6 +232,21 @@ test-web:
 test-web-headed:
 	$(PYTEST) tests/e2e_web -v --tb=short --headed
 
+# VS Code extension tests (local only). Skipped in GitHub Actions.
+test-vscode:
+ifneq ($(GITHUB_ACTIONS),)
+	@echo "Skipping test-vscode in GitHub Actions"
+else
+	@if [ ! -d "packages/vscode/node_modules" ]; then \
+		echo "Missing packages/vscode/node_modules. Run: make install-vscode-extensions"; \
+		exit 1; \
+	fi
+	cd packages/vscode && npm test
+endif
+
+install-vscode-extensions:
+	cd packages/vscode && npm install
+
 playwright-install:
 	playwright install chromium
 
@@ -249,7 +266,7 @@ validate-raw:
 	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-impl
 
 # Internal target for parallel execution
-_validate-impl: typecheck lint-arch lint-complexity test-unit test-integration test-web
+_validate-impl: typecheck lint-arch lint-complexity test-unit test-integration test-web test-vscode
 	@echo "✓ All validations passed!"
 
 # Full validation including e2e tests

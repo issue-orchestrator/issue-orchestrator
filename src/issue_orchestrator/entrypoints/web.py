@@ -1333,6 +1333,48 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
         return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
 
 
+@app.get("/api/session/worktree/{issue_number}")
+async def get_session_worktree(issue_number: int) -> JSONResponse:  # noqa: C901 - worktree resolution with multiple fallbacks
+    """Get the worktree path for a session (active or history)."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    session = None
+    worktree_path = None
+    for s in _orchestrator.state.active_sessions:
+        if s.issue.number == issue_number:
+            session = s
+            worktree_path = s.worktree_path
+            break
+
+    if not worktree_path:
+        for entry in _orchestrator.state.session_history:
+            if entry.issue_number == issue_number:
+                worktree_path = getattr(entry, "worktree_path", None)
+                break
+
+    if not worktree_path:
+        from ..execution.session_output_adapter import find_run_dir_for_issue
+
+        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
+        _, worktree_path = find_run_dir_for_issue(
+            _collect_worktree_bases(_orchestrator.config),
+            repo_name,
+            issue_number,
+        )
+
+    if not worktree_path:
+        return JSONResponse({
+            "error": f"No worktree path found for issue #{issue_number}",
+        }, status_code=404)
+
+    return JSONResponse({
+        "issue_number": issue_number,
+        "worktree_path": str(worktree_path),
+        "session_name": session.terminal_id if session else None,
+    })
+
+
 @app.get("/api/session/phases/{issue_number}")
 async def get_session_phases(issue_number: int) -> JSONResponse:  # noqa: C901 - phase data extraction with fallback sources
     """Get the linear phase history for an issue.
@@ -1881,6 +1923,28 @@ async def cleanup_test_issues() -> JSONResponse:
         return JSONResponse({"closed": count})
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.get("/api/history")
+async def get_history() -> JSONResponse:
+    """Get session history entries for completed sessions."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    entries = []
+    for entry in reversed(_orchestrator.state.session_history):
+        entries.append({
+            "issue_number": entry.issue_number,
+            "title": entry.title,
+            "agent_type": entry.agent_type,
+            "status": entry.status,
+            "runtime_minutes": entry.runtime_minutes,
+            "pr_url": entry.pr_url,
+            "status_reason": entry.status_reason,
+            "worktree_path": str(entry.worktree_path) if entry.worktree_path else None,
+        })
+
+    return JSONResponse({"history": entries, "count": len(entries)})
 
 
 @app.post("/api/history/clear")
