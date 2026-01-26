@@ -4411,17 +4411,6 @@
             return div.innerHTML;
         }
 
-        // Escape string for use in JS string literals (single-quoted)
-        function escapeJs(text) {
-            if (!text) return '';
-            return text
-                .replace(/\\/g, '\\\\')
-                .replace(/'/g, "\\'")
-                .replace(/"/g, '\\"')
-                .replace(/\n/g, '\\n')
-                .replace(/\r/g, '\\r');
-        }
-
         function toggleSelectAllBlocked() {
             const checkboxes = blockedList.querySelectorAll('input[type="checkbox"]');
             const isChecked = blockedSelectAll.checked;
@@ -5278,6 +5267,14 @@
             if (indicator && dropdown && !indicator.contains(e.target)) {
                 dropdown.classList.remove('visible');
                 indicator.classList.remove('open');
+            }
+        });
+
+        // Event delegation for triage modal test details
+        document.addEventListener('click', function(e) {
+            const target = e.target.closest('[data-action="open-test-detail"]');
+            if (target && target.dataset.nodeid) {
+                openTestFailureDetail(target.dataset.nodeid);
             }
         });
 
@@ -6221,7 +6218,7 @@
                                ${hasIssue ? 'disabled' : ''}
                                ${!hasIssue && !isFlaky ? 'checked' : ''}
                                onchange="updateTriageSelection()">
-                        <div class="triage-details clickable" onclick="openTestFailureDetail('${escapeJs(failure.nodeid)}');" title="Click to view full details">
+                        <div class="triage-details clickable" data-action="open-test-detail" data-nodeid="${escapeHtml(failure.nodeid)}" title="Click to view full details">
                             <div class="triage-nodeid" title="${escapeHtml(failure.nodeid)}">${escapeHtml(shortNodeid)}</div>
                             <div class="triage-badges">
                                 ${hasIssue ? `<span class="triage-badge existing">Issue #${failure.existing_issue.github_issue_number}</span>` : '<span class="triage-badge new">New</span>'}
