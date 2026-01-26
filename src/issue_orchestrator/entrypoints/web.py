@@ -2444,6 +2444,294 @@ async def get_doctor() -> JSONResponse:
     return JSONResponse(result.to_dict())
 
 
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page() -> HTMLResponse:
+    """Render the settings page."""
+    templates = get_templates()
+    template = templates.get_template("settings.html")
+
+    if not _orchestrator:
+        # Render with empty config if orchestrator not running
+        from ..infra.config import Config
+        config = Config()
+    else:
+        config = _orchestrator.config
+
+    html = template.render(config=config)
+    return HTMLResponse(content=html)
+
+
+@app.get("/api/settings")
+async def get_settings() -> JSONResponse:
+    """Get current settings as JSON for the settings UI."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    config = _orchestrator.config
+
+    # Return settings organized by category for the UI
+    return JSONResponse({
+        "execution": {
+            "concurrency": {
+                "max_concurrent_sessions": config.max_concurrent_sessions,
+                "session_timeout_minutes": config.session_timeout_minutes,
+            }
+        },
+        "ui": {
+            "queue_refresh_seconds": config.queue_refresh_seconds,
+            "web_port": config.web_port,
+            "control_api_port": config.control_api_port,
+        },
+        "e2e": {
+            "enabled": config.e2e.enabled,
+            "role": config.e2e.role,
+            "auto_run_interval_minutes": config.e2e.auto_run_interval_minutes,
+            "pytest_args": config.e2e.pytest_args,
+            "allow_retry_once": config.e2e.allow_retry_once,
+            "stop_on_first_failure": config.e2e.stop_on_first_failure,
+            "quarantine_file": config.e2e.quarantine_file,
+        },
+        "filtering": {
+            "label": config.filtering.label,
+            # Use get_milestones() to return effective milestones (handles both singular and list fields)
+            "milestones": config.filtering.get_milestones(),
+            "exclude_labels": list(config.filtering.exclude_labels),
+            "fetch_limit": config.filtering.fetch_limit,
+            "max_to_start": config.filtering.max_to_start,
+        },
+        "review": {
+            "enabled": config.review_enabled,
+            "default": config.code_review_agent,
+            "max_rework_cycles": config.max_rework_cycles,
+            "triage_review_agent": config.triage_review_agent,
+            "triage_review_threshold": config.triage_review_threshold,
+        },
+        "observability": {
+            "session_no_output_seconds": config.session_no_output_seconds,
+            "stale_escalation_ticks": config.stale_escalation_ticks,
+        },
+        "worktrees": {
+            "base": str(config.worktree_base),
+            "worktree_branch_on_recreate": config.worktree_branch_on_recreate,
+        },
+    })
+
+
+@app.post("/api/settings")
+async def update_settings(request: Request) -> JSONResponse:  # noqa: C901, PLR0912 - applies settings from many categories
+    """Update settings and optionally save to YAML.
+
+    Applies changes to in-memory config, runs doctor validation,
+    and saves to YAML file if validation passes. If validation fails,
+    all in-memory changes are reverted.
+
+    JSON body should contain the settings to update organized by section.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    config = _orchestrator.config
+    restart_required = False
+
+    # Capture ALL original values before making any changes (for rollback on validation failure)
+    original_values = {
+        "max_concurrent_sessions": config.max_concurrent_sessions,
+        "session_timeout_minutes": config.session_timeout_minutes,
+        "queue_refresh_seconds": config.queue_refresh_seconds,
+        "web_port": config.web_port,
+        "control_api_port": config.control_api_port,
+        "e2e_enabled": config.e2e.enabled,
+        "e2e_role": config.e2e.role,
+        "e2e_auto_run_interval_minutes": config.e2e.auto_run_interval_minutes,
+        "e2e_pytest_args": list(config.e2e.pytest_args),
+        "e2e_allow_retry_once": config.e2e.allow_retry_once,
+        "e2e_stop_on_first_failure": config.e2e.stop_on_first_failure,
+        "e2e_quarantine_file": config.e2e.quarantine_file,
+        "filtering_label": config.filtering.label,
+        "filtering_milestone": config.filtering.milestone,  # Single-milestone field
+        "filtering_milestones": list(config.filtering.milestones),
+        "filtering_exclude_labels": list(config.filtering.exclude_labels),
+        "filtering_fetch_limit": config.filtering.fetch_limit,
+        "filtering_max_to_start": config.filtering.max_to_start,
+        "review_enabled": config.review_enabled,
+        "code_review_agent": config.code_review_agent,
+        "max_rework_cycles": config.max_rework_cycles,
+        "triage_review_agent": config.triage_review_agent,
+        "triage_review_threshold": config.triage_review_threshold,
+        "session_no_output_seconds": config.session_no_output_seconds,
+        "stale_escalation_ticks": config.stale_escalation_ticks,
+        "worktree_base": config.worktree_base,
+        "worktree_branch_on_recreate": config.worktree_branch_on_recreate,
+    }
+
+    def restore_original_values():
+        """Restore all config values to their original state."""
+        config.max_concurrent_sessions = original_values["max_concurrent_sessions"]
+        config.session_timeout_minutes = original_values["session_timeout_minutes"]
+        config.queue_refresh_seconds = original_values["queue_refresh_seconds"]
+        config.web_port = original_values["web_port"]
+        config.control_api_port = original_values["control_api_port"]
+        config.e2e.enabled = original_values["e2e_enabled"]
+        config.e2e.role = original_values["e2e_role"]
+        config.e2e.auto_run_interval_minutes = original_values["e2e_auto_run_interval_minutes"]
+        config.e2e.pytest_args = original_values["e2e_pytest_args"]
+        config.e2e.allow_retry_once = original_values["e2e_allow_retry_once"]
+        config.e2e.stop_on_first_failure = original_values["e2e_stop_on_first_failure"]
+        config.e2e.quarantine_file = original_values["e2e_quarantine_file"]
+        config.filtering.label = original_values["filtering_label"]
+        config.filtering.milestone = original_values["filtering_milestone"]
+        config.filtering.milestones = original_values["filtering_milestones"]
+        config.filtering.exclude_labels = original_values["filtering_exclude_labels"]
+        config.filtering.fetch_limit = original_values["filtering_fetch_limit"]
+        config.filtering.max_to_start = original_values["filtering_max_to_start"]
+        config.review_enabled = original_values["review_enabled"]
+        config.code_review_agent = original_values["code_review_agent"]
+        config.max_rework_cycles = original_values["max_rework_cycles"]
+        config.triage_review_agent = original_values["triage_review_agent"]
+        config.triage_review_threshold = original_values["triage_review_threshold"]
+        config.session_no_output_seconds = original_values["session_no_output_seconds"]
+        config.stale_escalation_ticks = original_values["stale_escalation_ticks"]
+        config.worktree_base = original_values["worktree_base"]
+        config.worktree_branch_on_recreate = original_values["worktree_branch_on_recreate"]
+
+    def safe_int(value, default: int) -> int:
+        """Safely convert value to int, returning default if None/empty."""
+        if value is None or value == "":
+            return default
+        try:
+            return int(value)
+        except (ValueError, TypeError):
+            return default
+
+    # Apply execution settings
+    if "execution" in body:
+        exec_cfg = body["execution"]
+        if "concurrency" in exec_cfg:
+            conc = exec_cfg["concurrency"]
+            if "max_concurrent_sessions" in conc:
+                config.max_concurrent_sessions = safe_int(conc["max_concurrent_sessions"], config.max_concurrent_sessions)
+            if "session_timeout_minutes" in conc:
+                config.session_timeout_minutes = safe_int(conc["session_timeout_minutes"], config.session_timeout_minutes)
+
+    # Apply UI settings
+    if "ui" in body:
+        ui_cfg = body["ui"]
+        if "queue_refresh_seconds" in ui_cfg:
+            config.queue_refresh_seconds = safe_int(ui_cfg["queue_refresh_seconds"], config.queue_refresh_seconds)
+        if "web_port" in ui_cfg:
+            config.web_port = safe_int(ui_cfg["web_port"], config.web_port)
+        if "control_api_port" in ui_cfg:
+            config.control_api_port = safe_int(ui_cfg["control_api_port"], config.control_api_port)
+
+    # Apply E2E settings
+    if "e2e" in body:
+        e2e_cfg = body["e2e"]
+        if "enabled" in e2e_cfg:
+            config.e2e.enabled = bool(e2e_cfg["enabled"])
+        if "role" in e2e_cfg:
+            config.e2e.role = str(e2e_cfg["role"]) if e2e_cfg["role"] else config.e2e.role
+        if "auto_run_interval_minutes" in e2e_cfg:
+            config.e2e.auto_run_interval_minutes = safe_int(e2e_cfg["auto_run_interval_minutes"], config.e2e.auto_run_interval_minutes)
+        if "pytest_args" in e2e_cfg:
+            config.e2e.pytest_args = list(e2e_cfg["pytest_args"]) if e2e_cfg["pytest_args"] else config.e2e.pytest_args
+        if "allow_retry_once" in e2e_cfg:
+            config.e2e.allow_retry_once = bool(e2e_cfg["allow_retry_once"])
+        if "stop_on_first_failure" in e2e_cfg:
+            config.e2e.stop_on_first_failure = bool(e2e_cfg["stop_on_first_failure"])
+        if "quarantine_file" in e2e_cfg:
+            config.e2e.quarantine_file = str(e2e_cfg["quarantine_file"]) if e2e_cfg["quarantine_file"] else config.e2e.quarantine_file
+
+    # Apply filtering settings
+    if "filtering" in body:
+        filter_cfg = body["filtering"]
+        if "label" in filter_cfg:
+            config.filtering.label = filter_cfg["label"] or None
+        if "milestones" in filter_cfg:
+            config.filtering.milestones = list(filter_cfg["milestones"]) if filter_cfg["milestones"] else []
+            # Clear single-milestone field since we're now using the list
+            config.filtering.milestone = None
+        if "exclude_labels" in filter_cfg:
+            config.filtering.exclude_labels = list(filter_cfg["exclude_labels"]) if filter_cfg["exclude_labels"] else []
+        if "fetch_limit" in filter_cfg:
+            config.filtering.fetch_limit = safe_int(filter_cfg["fetch_limit"], config.filtering.fetch_limit)
+        if "max_to_start" in filter_cfg:
+            config.filtering.max_to_start = safe_int(filter_cfg["max_to_start"], config.filtering.max_to_start)
+
+    # Apply review settings
+    if "review" in body:
+        review_cfg = body["review"]
+        if "enabled" in review_cfg:
+            config.review_enabled = bool(review_cfg["enabled"])
+        if "default" in review_cfg:
+            config.code_review_agent = review_cfg["default"] or None
+        if "max_rework_cycles" in review_cfg:
+            config.max_rework_cycles = safe_int(review_cfg["max_rework_cycles"], config.max_rework_cycles)
+        if "triage_review_agent" in review_cfg:
+            config.triage_review_agent = review_cfg["triage_review_agent"] or None
+        if "triage_review_threshold" in review_cfg:
+            config.triage_review_threshold = safe_int(review_cfg["triage_review_threshold"], config.triage_review_threshold)
+
+    # Apply observability settings
+    if "observability" in body:
+        obs_cfg = body["observability"]
+        if "session_no_output_seconds" in obs_cfg:
+            config.session_no_output_seconds = safe_int(obs_cfg["session_no_output_seconds"], config.session_no_output_seconds)
+        if "stale_escalation_ticks" in obs_cfg:
+            config.stale_escalation_ticks = safe_int(obs_cfg["stale_escalation_ticks"], config.stale_escalation_ticks)
+
+    # Apply worktree settings
+    if "worktrees" in body:
+        wt_cfg = body["worktrees"]
+        if "base" in wt_cfg:
+            from pathlib import Path
+            config.worktree_base = Path(wt_cfg["base"])
+        if "worktree_branch_on_recreate" in wt_cfg:
+            config.worktree_branch_on_recreate = str(wt_cfg["worktree_branch_on_recreate"])
+
+    # Check if restart is required (compare against original values)
+    if (config.web_port != original_values["web_port"] or
+            config.control_api_port != original_values["control_api_port"] or
+            config.worktree_base != original_values["worktree_base"]):
+        restart_required = True
+
+    # Run doctor validation
+    from ..infra.doctor import run_doctor
+    from ..execution.command_runner import LocalCommandRunner
+    result = run_doctor(config=config, runner=LocalCommandRunner())
+
+    # Check for errors - revert in-memory changes if validation fails
+    errors = [c for c in result.checks if c.status == "error"]
+    if errors:
+        restore_original_values()
+        return JSONResponse({
+            "error": "Validation failed",
+            "errors": [{"name": c.name, "detail": c.detail} for c in errors],
+        }, status_code=400)
+
+    # Save config to YAML
+    try:
+        if config.config_path:
+            config.save()
+            logger.info("[settings] Config saved to %s", config.config_path)
+    except Exception as e:
+        logger.error("[settings] Failed to save config: %s", e)
+        restore_original_values()  # Rollback in-memory changes on save failure
+        return JSONResponse({
+            "error": f"Failed to save config: {e}",
+        }, status_code=500)
+
+    return JSONResponse({
+        "success": True,
+        "restart_required": restart_required,
+        "warnings": [{"name": c.name, "detail": c.detail} for c in result.checks if c.status == "warning"],
+    })
+
+
 @app.get("/api/milestones")
 async def get_milestones() -> JSONResponse:
     """Get available milestones, indicating which are included/excluded."""

@@ -1196,6 +1196,235 @@ class Config:
             },
         }
 
+    def to_dict(self) -> dict:  # noqa: C901, PLR0912 - serialization method handles many config fields
+        """Convert config to a dict suitable for YAML serialization.
+
+        Returns a dict that can be saved back to a YAML config file.
+        This preserves the original YAML structure as closely as possible.
+        """
+        # Build agents section
+        agents_dict = {}
+        for label, agent in self.agents.items():
+            agent_dict: dict = {
+                "prompt": agent.prompt_relative,
+            }
+            if agent.provider:
+                agent_dict["provider"] = agent.provider
+            if agent.model and agent.model != "sonnet":
+                agent_dict["model"] = agent.model
+            if agent.timeout_minutes != 45:
+                agent_dict["timeout_minutes"] = agent.timeout_minutes
+            if agent.provider_args:
+                agent_dict["provider_args"] = dict(agent.provider_args)
+            if agent.permission_mode != "default":
+                agent_dict["permission_mode"] = agent.permission_mode
+            if agent.skip_review:
+                agent_dict["skip_review"] = agent.skip_review
+            if agent.reviewer:
+                agent_dict["reviewer"] = agent.reviewer
+            if agent.meta_agent:
+                agent_dict["meta_agent"] = agent.meta_agent
+            if agent.ai_system:
+                agent_dict["ai_system"] = agent.ai_system
+            if agent.retry_prompt_template:
+                agent_dict["retry_prompt_template"] = agent.retry_prompt_template
+            agents_dict[label] = agent_dict
+
+        result: dict = {
+            "repo": {
+                "name": self.repo,
+            },
+            "agents": agents_dict,
+        }
+
+        # Add default_agent if set
+        if self.default_agent:
+            default_agent_dict: dict = {}
+            if self.default_agent.provider:
+                default_agent_dict["provider"] = self.default_agent.provider
+            if self.default_agent.model:
+                default_agent_dict["model"] = self.default_agent.model
+            if self.default_agent.provider_args:
+                default_agent_dict["provider_args"] = dict(self.default_agent.provider_args)
+            if default_agent_dict:
+                result["default_agent"] = default_agent_dict
+
+        # Labels section
+        labels_dict: dict = {}
+        if self.label_in_progress != "in-progress":
+            labels_dict["in_progress"] = self.label_in_progress
+        if self.label_blocked != "blocked":
+            labels_dict["blocked"] = self.label_blocked
+        if self.label_needs_human != "needs-human":
+            labels_dict["needs_human"] = self.label_needs_human
+        if self.label_needs_rework != "needs-rework":
+            labels_dict["needs_rework"] = self.label_needs_rework
+        if self.label_validation_failed != "validation-failed":
+            labels_dict["validation_failed"] = self.label_validation_failed
+        if self.label_prefix:
+            labels_dict["prefix"] = self.label_prefix
+        if labels_dict:
+            result["labels"] = labels_dict
+
+        # Execution section
+        execution_dict: dict = {
+            "concurrency": {
+                "max_concurrent_sessions": self.max_concurrent_sessions,
+                "session_timeout_minutes": self.session_timeout_minutes,
+            },
+        }
+        if self.terminal_adapter:
+            execution_dict["terminal_adapter"] = self.terminal_adapter
+        if self.isolation.mode != "standard":
+            execution_dict["isolation"] = {"mode": self.isolation.mode}
+        result["execution"] = execution_dict
+
+        # UI section
+        ui_dict: dict = {}
+        if self.ui_mode != "web":
+            ui_dict["mode"] = self.ui_mode
+        if self.web_port != 8080:
+            ui_dict["web_port"] = self.web_port
+        if self.control_api_port != 19080:
+            ui_dict["control_api_port"] = self.control_api_port
+        if self.queue_refresh_seconds != 600:
+            ui_dict["queue_refresh_seconds"] = self.queue_refresh_seconds
+        if self.instances != 1:
+            ui_dict["instances"] = self.instances
+        if ui_dict:
+            result["ui"] = ui_dict
+
+        # Observability section
+        observability_dict: dict = {}
+        if self.session_no_output_seconds != 120:
+            observability_dict["session_no_output_seconds"] = self.session_no_output_seconds
+        if self.stale_escalation_ticks != 0:
+            observability_dict["stale_escalation_ticks"] = self.stale_escalation_ticks
+        if self.session_output_retention_runs != 7:
+            observability_dict["session_output_retention_runs"] = self.session_output_retention_runs
+        if observability_dict:
+            result["observability"] = observability_dict
+
+        # Filtering section
+        filtering_dict: dict = {}
+        if self.filtering.label:
+            filtering_dict["label"] = self.filtering.label
+        if self.filtering.milestones:
+            filtering_dict["milestones"] = list(self.filtering.milestones)
+        elif self.filtering.milestone:
+            filtering_dict["milestone"] = self.filtering.milestone
+        if self.filtering.exclude_labels:
+            filtering_dict["exclude_labels"] = list(self.filtering.exclude_labels)
+        if self.filtering.fetch_limit != 100:
+            filtering_dict["fetch_limit"] = self.filtering.fetch_limit
+        if self.filtering.max_to_start != 0:
+            filtering_dict["max_to_start"] = self.filtering.max_to_start
+        if filtering_dict:
+            result["filtering"] = filtering_dict
+
+        # Review section
+        review_dict: dict = {}
+        if self.review_enabled:
+            review_dict["enabled"] = True
+        if self.code_review_agent:
+            review_dict["default"] = self.code_review_agent
+        if self.code_review_label:
+            review_dict["code_review_label"] = self.code_review_label
+        if self.code_reviewed_label:
+            review_dict["code_reviewed_label"] = self.code_reviewed_label
+        if self.triage_review_agent:
+            review_dict["triage_review_agent"] = self.triage_review_agent
+        if self.triage_review_label:
+            review_dict["triage_review_label"] = self.triage_review_label
+        if self.triage_reviewed_label and self.triage_reviewed_label != "triage-reviewed":
+            review_dict["triage_reviewed_label"] = self.triage_reviewed_label
+        if self.triage_review_threshold != 0:
+            review_dict["triage_review_threshold"] = self.triage_review_threshold
+        if self.max_rework_cycles != 2:
+            review_dict["max_rework_cycles"] = self.max_rework_cycles
+        if review_dict:
+            result["review"] = review_dict
+
+        # Worktrees section
+        worktrees_dict: dict = {}
+        # Only include worktree_base if it was explicitly set (not the default)
+        if self.worktree_base != self.repo_root.parent:
+            worktrees_dict["base"] = str(self.worktree_base)
+        if self.setup_worktree:
+            worktrees_dict["setup"] = list(self.setup_worktree)
+        if self.worktree_branch_on_recreate != "delete":
+            worktrees_dict["worktree_branch_on_recreate"] = self.worktree_branch_on_recreate
+        if worktrees_dict:
+            result["worktrees"] = worktrees_dict
+
+        # E2E section
+        e2e_dict: dict = {}
+        if self.e2e.enabled:
+            e2e_dict["enabled"] = True
+        if self.e2e.role != "auto":
+            e2e_dict["role"] = self.e2e.role
+        if self.e2e.auto_run_interval_minutes != 30:
+            e2e_dict["auto_run_interval_minutes"] = self.e2e.auto_run_interval_minutes
+        if self.e2e.pytest_args != ["tests/e2e", "-v"]:
+            e2e_dict["pytest_args"] = list(self.e2e.pytest_args)
+        if not self.e2e.allow_retry_once:
+            e2e_dict["allow_retry_once"] = False
+        if self.e2e.quarantine_file != "tests/e2e/quarantine.txt":
+            e2e_dict["quarantine_file"] = self.e2e.quarantine_file
+        if self.e2e.stop_on_first_failure:
+            e2e_dict["stop_on_first_failure"] = True
+        if e2e_dict:
+            result["e2e"] = e2e_dict
+
+        # Validation section
+        if self.validation.cmd:
+            validation_dict: dict = {"cmd": self.validation.cmd}
+            if self.validation.timeout_seconds != 300:
+                validation_dict["timeout_seconds"] = self.validation.timeout_seconds
+            result["validation"] = validation_dict
+
+        # Security section
+        security_dict: dict = {}
+        if not self.enforce_hooks:
+            security_dict["enforce_hooks"] = False
+        if self.dangerous.allow_unsupported_agents:
+            security_dict["dangerous"] = {"allow_unsupported_agents": True}
+        if security_dict:
+            result["security"] = security_dict
+
+        return result
+
+    def save(self, path: Optional[Path] = None) -> Path:
+        """Save configuration to a YAML file.
+
+        Args:
+            path: Path to save to. If None, uses self.config_path.
+
+        Returns:
+            The path the config was saved to.
+
+        Raises:
+            ValueError: If no path is specified and config_path is not set.
+        """
+        save_path = path or self.config_path
+        if save_path is None:
+            raise ValueError("No path specified and config_path is not set")
+
+        config_dict = self.to_dict()
+
+        # Add header comment
+        header = (
+            "# Issue Orchestrator Configuration\n"
+            "# Generated/modified by settings page\n"
+            "# See docs/user/configuration.md for full documentation\n\n"
+        )
+
+        with open(save_path, "w") as f:
+            f.write(header)
+            yaml.dump(config_dict, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+
+        return save_path
+
     @classmethod
     def load(cls, config_path: Path, overrides: Optional[list[str]] = None) -> "Config":
         """Load configuration from YAML file."""
