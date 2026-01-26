@@ -5270,11 +5270,31 @@
             }
         });
 
-        // Event delegation for triage modal test details
+        // Event delegation for triage modal and quarantine actions
         document.addEventListener('click', function(e) {
-            const target = e.target.closest('[data-action="open-test-detail"]');
-            if (target && target.dataset.nodeid) {
-                openTestFailureDetail(target.dataset.nodeid);
+            const target = e.target.closest('[data-action]');
+            if (!target || !target.dataset.nodeid) return;
+
+            const action = target.dataset.action;
+            const nodeid = target.dataset.nodeid;
+
+            if (action === 'open-test-detail') {
+                openTestFailureDetail(nodeid);
+            }
+        });
+
+        // Event delegation for quarantine checkbox changes
+        document.addEventListener('change', function(e) {
+            const target = e.target.closest('[data-action]');
+            if (!target || !target.dataset.nodeid) return;
+
+            const action = target.dataset.action;
+            const nodeid = target.dataset.nodeid;
+
+            if (action === 'quarantine-add') {
+                toggleQuarantineAdd(nodeid);
+            } else if (action === 'quarantine-remove') {
+                toggleQuarantineRemove(nodeid);
             }
         });
 
@@ -6214,11 +6234,11 @@
                     <div class="triage-item ${itemClass}">
                         <input type="checkbox"
                                class="triage-checkbox triage-item-checkbox"
-                               data-nodeid="${escapeHtml(failure.nodeid)}"
+                               data-nodeid="${escapeAttr(failure.nodeid)}"
                                ${hasIssue ? 'disabled' : ''}
                                ${!hasIssue && !isFlaky ? 'checked' : ''}
                                onchange="updateTriageSelection()">
-                        <div class="triage-details clickable" data-action="open-test-detail" data-nodeid="${escapeHtml(failure.nodeid)}" title="Click to view full details">
+                        <div class="triage-details clickable" data-action="open-test-detail" data-nodeid="${escapeAttr(failure.nodeid)}" title="Click to view full details">
                             <div class="triage-nodeid" title="${escapeHtml(failure.nodeid)}">${escapeHtml(shortNodeid)}</div>
                             <div class="triage-badges">
                                 ${hasIssue ? `<span class="triage-badge existing">Issue #${failure.existing_issue.github_issue_number}</span>` : '<span class="triage-badge new">New</span>'}
@@ -6330,6 +6350,17 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // Escape for use in HTML attributes (handles quotes unlike escapeHtml)
+        function escapeAttr(text) {
+            if (!text) return '';
+            return text
+                .replace(/&/g, '&amp;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
         }
 
         function toggleAllTriageItems(checked) {
@@ -6496,10 +6527,10 @@
                     <div class="triage-item">
                         <label class="triage-checkbox-label">
                             <input type="checkbox" class="quarantine-add-checkbox"
-                                   data-nodeid="${test.nodeid}"
-                                   ${quarantineData.toAdd.has(test.nodeid) ? 'checked' : ''}
-                                   onchange="toggleQuarantineAdd('${test.nodeid}')">
-                            <span class="test-nodeid">${test.nodeid}</span>
+                                   data-nodeid="${escapeAttr(test.nodeid)}"
+                                   data-action="quarantine-add"
+                                   ${quarantineData.toAdd.has(test.nodeid) ? 'checked' : ''}>
+                            <span class="test-nodeid">${escapeHtml(test.nodeid)}</span>
                             <span class="flake-badge">${test.flake_count} flakes</span>
                         </label>
                     </div>
@@ -6514,10 +6545,10 @@
                     <div class="triage-item ${quarantineData.toRemove.has(nodeid) ? 'to-remove' : ''}">
                         <label class="triage-checkbox-label">
                             <input type="checkbox" class="quarantine-remove-checkbox"
-                                   data-nodeid="${nodeid}"
-                                   ${quarantineData.toRemove.has(nodeid) ? 'checked' : ''}
-                                   onchange="toggleQuarantineRemove('${nodeid}')">
-                            <span class="test-nodeid">${nodeid}</span>
+                                   data-nodeid="${escapeAttr(nodeid)}"
+                                   data-action="quarantine-remove"
+                                   ${quarantineData.toRemove.has(nodeid) ? 'checked' : ''}>
+                            <span class="test-nodeid">${escapeHtml(nodeid)}</span>
                             ${quarantineData.toRemove.has(nodeid) ? '<span class="remove-badge">will remove</span>' : ''}
                         </label>
                     </div>
