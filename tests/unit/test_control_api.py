@@ -2541,6 +2541,116 @@ class TestE2EFlakyTestsEndpoint:
         assert "test::sometimes_flaky" not in nodeids
 
 
+# --- Test: E2E Test Detail Endpoint ---
+
+
+class TestE2ETestDetailEndpoint:
+    """Test the GET /control/e2e/test/{run_id} endpoint."""
+
+    @pytest.fixture
+    def e2e_client(self):
+        """Create a test client for E2E endpoints (no orchestrator needed)."""
+        return TestClient(control_app)
+
+    def test_returns_400_for_invalid_repo_root(self, e2e_client):
+        """Invalid repo_root should return 400."""
+        response = e2e_client.get(
+            "/control/e2e/test/1",
+            params={"repo_root": "../invalid/path", "nodeid": "test::foo"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid repo_root"
+
+    def test_returns_404_when_db_not_found(self, e2e_client, tmp_path):
+        """Missing E2E database should return 404."""
+        response = e2e_client.get(
+            "/control/e2e/test/1",
+            params={"repo_root": str(tmp_path), "nodeid": "test::foo"}
+        )
+        assert response.status_code == 404
+
+    def test_returns_404_when_test_not_found(self, e2e_client, tmp_path):
+        """Test not found should return 404."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db_path = db_dir / "e2e.db"
+        db = E2EDB(db_path)
+
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.finish_run(run_id, status="passed")
+
+        response = e2e_client.get(
+            f"/control/e2e/test/{run_id}",
+            params={"repo_root": str(tmp_path), "nodeid": "test::nonexistent"}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"] == "not_found"
+
+    def test_returns_test_detail_with_history(self, e2e_client, tmp_path):
+        """Should return test details including history."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db_path = db_dir / "e2e.db"
+        db = E2EDB(db_path)
+
+        # Create first run with a failure
+        run1_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.upsert_test_result(
+            run_id=run1_id,
+            nodeid="test_foo.py::test_bar",
+            outcome="failed",
+            longrepr="AssertionError: expected 1, got 2",
+            duration_seconds=1.5,
+        )
+        db.finish_run(run1_id, status="failed")
+
+        # Create second run with same test passing
+        run2_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.upsert_test_result(
+            run_id=run2_id,
+            nodeid="test_foo.py::test_bar",
+            outcome="passed",
+            duration_seconds=1.2,
+        )
+        db.finish_run(run2_id, status="passed")
+
+        # Query the first run's failure
+        response = e2e_client.get(
+            f"/control/e2e/test/{run1_id}",
+            params={"repo_root": str(tmp_path), "nodeid": "test_foo.py::test_bar"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Check test details
+        assert data["test"]["nodeid"] == "test_foo.py::test_bar"
+        assert data["test"]["outcome"] == "failed"
+        assert "AssertionError" in data["test"]["longrepr"]
+        assert data["test"]["duration_seconds"] == 1.5
+
+        # Check history includes both runs
+        assert len(data["history"]) == 2
+        assert data["history_summary"]["total"] == 2
+        assert data["history_summary"]["passed"] == 1
+        assert data["history_summary"]["failed"] == 1
+
+
 # --- Test: Retry Issue Endpoint ---
 
 

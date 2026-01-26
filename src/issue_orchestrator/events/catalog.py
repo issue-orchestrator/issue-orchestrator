@@ -260,6 +260,7 @@ class EventName(str, Enum):
     # =========================================================================
     E2E_AUTO_TRIGGERED = "e2e.auto_triggered"
     E2E_STARTED = "e2e.started"
+    E2E_PROGRESS = "e2e.progress"  # Periodic progress update during run
     E2E_COMPLETED = "e2e.completed"
     E2E_FAILED = "e2e.failed"
     E2E_STOPPED = "e2e.stopped"

@@ -74,6 +74,204 @@
             box-shadow: 0 0 12px rgba(31, 111, 235, 0.3);
             animation: pulse-blue 2s ease-in-out infinite;
         }
+
+        /* E2E Header Indicator */
+        .e2e-header-indicator {
+            position: relative;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 10px;
+            border-radius: 14px;
+            font-size: 11px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+        .e2e-header-indicator.passed {
+            background: rgba(35, 134, 54, 0.15);
+            color: #3fb950;
+            border: 1px solid rgba(35, 134, 54, 0.3);
+        }
+        .e2e-header-indicator.passed:hover {
+            background: rgba(35, 134, 54, 0.25);
+        }
+        .e2e-header-indicator.running {
+            background: rgba(56, 139, 253, 0.15);
+            color: #58a6ff;
+            border: 1px solid rgba(56, 139, 253, 0.3);
+            animation: pulse-blue 2s ease-in-out infinite;
+        }
+        .e2e-header-indicator.failed {
+            background: rgba(248, 81, 73, 0.15);
+            color: #f85149;
+            border: 1px solid rgba(248, 81, 73, 0.4);
+        }
+        .e2e-header-indicator.needs-attention {
+            animation: attention-pulse 2s ease-in-out 3;
+        }
+        .e2e-header-indicator:hover {
+            box-shadow: 0 0 12px rgba(139, 148, 158, 0.3);
+        }
+        .e2e-header-indicator .status-icon {
+            font-size: 12px;
+        }
+        .e2e-header-indicator .count {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            min-width: 16px;
+            height: 16px;
+            padding: 0 4px;
+            border-radius: 8px;
+            background: currentColor;
+            color: #0d1117;
+            font-size: 10px;
+            font-weight: 700;
+        }
+        .e2e-header-indicator .dropdown-arrow {
+            font-size: 8px;
+            margin-left: 2px;
+            transition: transform 0.2s ease;
+        }
+        .e2e-header-indicator.open .dropdown-arrow {
+            transform: rotate(180deg);
+        }
+        @keyframes attention-pulse {
+            0%, 100% { box-shadow: 0 0 0 rgba(248, 81, 73, 0); }
+            50% { box-shadow: 0 0 16px rgba(248, 81, 73, 0.5); }
+        }
+        /* E2E Dropdown Menu */
+        .e2e-dropdown {
+            position: absolute;
+            top: calc(100% + 8px);
+            right: 0;
+            min-width: 280px;
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+            z-index: 1000;
+            display: none;
+            padding: 8px 0;
+        }
+        .e2e-dropdown.visible {
+            display: block;
+            animation: fadeIn 0.15s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .e2e-dropdown-header {
+            padding: 8px 12px;
+            border-bottom: 1px solid #30363d;
+            margin-bottom: 4px;
+        }
+        .e2e-dropdown-status {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 12px;
+            color: #c9d1d9;
+        }
+        .e2e-dropdown-status .status {
+            font-weight: 600;
+        }
+        .e2e-dropdown-status .status.passed { color: #3fb950; }
+        .e2e-dropdown-status .status.failed { color: #f85149; }
+        .e2e-dropdown-status .status.running { color: #58a6ff; }
+        .e2e-dropdown-meta {
+            font-size: 11px;
+            color: #8b949e;
+            margin-top: 4px;
+        }
+        .e2e-dropdown-progress {
+            margin-top: 8px;
+            display: none;
+        }
+        .e2e-dropdown-progress.visible {
+            display: block;
+        }
+        .e2e-dropdown-progress-bar {
+            height: 4px;
+            background: #30363d;
+            border-radius: 2px;
+            overflow: hidden;
+        }
+        .e2e-dropdown-progress-fill {
+            height: 100%;
+            background: #58a6ff;
+            transition: width 0.3s ease;
+        }
+        .e2e-dropdown-progress-text {
+            font-size: 10px;
+            color: #8b949e;
+            margin-top: 4px;
+        }
+        .e2e-dropdown-actions {
+            padding: 4px 8px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+        }
+        .e2e-dropdown-btn {
+            padding: 6px 12px;
+            font-size: 11px;
+            font-weight: 500;
+            border-radius: 6px;
+            border: 1px solid #30363d;
+            background: #21262d;
+            color: #c9d1d9;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .e2e-dropdown-btn:hover {
+            background: #30363d;
+            border-color: #8b949e;
+        }
+        .e2e-dropdown-btn.primary {
+            background: #238636;
+            border-color: #238636;
+            color: #fff;
+        }
+        .e2e-dropdown-btn.primary:hover {
+            background: #2ea043;
+        }
+        .e2e-dropdown-btn.danger {
+            background: #da3633;
+            border-color: #da3633;
+            color: #fff;
+        }
+        .e2e-dropdown-btn.danger:hover {
+            background: #f85149;
+        }
+        .e2e-dropdown-btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        .e2e-dropdown-divider {
+            height: 1px;
+            background: #30363d;
+            margin: 4px 0;
+        }
+        .e2e-dropdown-item {
+            padding: 8px 12px;
+            font-size: 12px;
+            color: #c9d1d9;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .e2e-dropdown-item:hover {
+            background: #21262d;
+        }
+        .e2e-dropdown-item .icon {
+            width: 16px;
+            text-align: center;
+        }
+
         .controls { display: flex; gap: 8px; align-items: center; position: relative; }
         .create-issue-btn {
             padding: 6px 12px;
@@ -254,6 +452,10 @@
             transition: all 0.15s ease;
             position: relative;
         }
+        .issue-row > span {
+            min-width: 0;
+            overflow: hidden;
+        }
         .issue-row::before {
             content: '';
             position: absolute;
@@ -308,6 +510,12 @@
         .issue-num { font-weight: 600; color: #58a6ff; font-size: 13px; display: flex; align-items: center; gap: 4px; }
         .issue-num a { color: inherit; text-decoration: none; }
         .issue-num a:hover { text-decoration: underline; }
+        .issue-num .pseudo-issue {
+            color: #8b949e;
+            font-style: italic;
+            cursor: help;
+            border-bottom: 1px dotted #8b949e;
+        }
         .dep-icon {
             color: #8b949e;
             font-size: 11px;
@@ -350,8 +558,8 @@
             opacity: 0.8;
             pointer-events: none;
         }
-        .issue-detail { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #c9d1d9; }
-        .detail-label { font-weight: 600; }
+        .issue-detail { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #c9d1d9; overflow: hidden; min-width: 0; }
+        .detail-label { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
         .flow-stepper { display: flex; flex-wrap: wrap; gap: 4px; }
         .flow-step {
             border: 1px solid #30363d;
@@ -541,6 +749,108 @@
         }
         .issue-action-btn.dismiss-btn:hover {
             background: rgba(248, 81, 73, 0.15);
+        }
+        .issue-action-btn.triage-btn {
+            background: #f85149;
+            border-color: #f85149;
+            color: #fff;
+        }
+        .issue-action-btn.triage-btn:hover {
+            background: #da3633;
+        }
+
+        /* E2E Progress in Issue Row */
+        .e2e-issue-progress {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .e2e-issue-progress .mini-progress-bar {
+            width: 60px;
+            height: 6px;
+            background: #21262d;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .e2e-issue-progress .mini-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #3fb950 0%, #58a6ff 100%);
+            transition: width 0.3s ease;
+        }
+        .e2e-issue-progress .progress-text {
+            font-size: 11px;
+            color: #8b949e;
+        }
+
+        /* E2E Expandable Sub-Issues in Issue Row */
+        .e2e-expand-toggle {
+            cursor: pointer;
+            color: #58a6ff;
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            transition: all 0.2s ease;
+            user-select: none;
+        }
+        .e2e-expand-toggle:hover {
+            background: rgba(56, 139, 253, 0.15);
+        }
+        .e2e-expand-toggle .arrow {
+            display: inline-block;
+            transition: transform 0.2s ease;
+            margin-right: 4px;
+        }
+        .e2e-expand-toggle.expanded .arrow {
+            transform: rotate(90deg);
+        }
+        .e2e-sub-issues-row {
+            display: none;
+            background: #161b22;
+            border-top: 1px solid #21262d;
+            padding: 12px 20px 12px 70px;
+            margin: 0;
+        }
+        .e2e-sub-issues-row.expanded {
+            display: block;
+        }
+        .e2e-sub-issue-list {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+        .e2e-sub-issue-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 6px 10px;
+            background: #21262d;
+            border-radius: 6px;
+            font-size: 12px;
+            transition: background 0.2s ease;
+        }
+        .e2e-sub-issue-item:hover {
+            background: #30363d;
+        }
+        .e2e-sub-issue-item .status-icon {
+            font-size: 14px;
+        }
+        .e2e-sub-issue-item .status-icon.resolved { color: #3fb950; }
+        .e2e-sub-issue-item .status-icon.failed { color: #f85149; }
+        .e2e-sub-issue-item .test-name {
+            flex: 1;
+            color: #c9d1d9;
+            font-family: monospace;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .e2e-sub-issue-item .issue-link {
+            color: #58a6ff;
+            text-decoration: none;
+            font-size: 11px;
+        }
+        .e2e-sub-issue-item .issue-link:hover {
+            text-decoration: underline;
         }
 
         /* Empty State */
@@ -1315,6 +1625,109 @@
             gap: 8px;
         }
 
+        /* Test Failure Detail Modal */
+        .test-failure-header {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            margin-bottom: 16px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #21262d;
+        }
+        .test-failure-header .status-icon {
+            font-size: 24px;
+            flex-shrink: 0;
+        }
+        .test-failure-header .status-icon.failed { color: #f85149; }
+        .test-failure-header .status-icon.passed { color: #3fb950; }
+        .test-failure-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .test-failure-nodeid {
+            font-family: monospace;
+            font-size: 14px;
+            color: #f0883e;
+            word-break: break-all;
+            margin-bottom: 8px;
+        }
+        .test-failure-meta {
+            display: flex;
+            gap: 16px;
+            flex-wrap: wrap;
+            font-size: 13px;
+            color: #8b949e;
+        }
+        .test-failure-meta span {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+        .test-failure-section {
+            margin-bottom: 20px;
+        }
+        .test-failure-section h3 {
+            margin: 0 0 10px 0;
+            font-size: 14px;
+            font-weight: 600;
+            color: #c9d1d9;
+        }
+        .test-failure-error {
+            background: #0d1117;
+            border: 1px solid #f8514933;
+            border-radius: 6px;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 12px;
+            color: #f85149;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .test-failure-traceback {
+            background: #0d1117;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 12px;
+            font-family: monospace;
+            font-size: 11px;
+            color: #8b949e;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .test-failure-actions {
+            display: flex;
+            gap: 8px;
+        }
+        .test-retry-info {
+            background: #161b22;
+            border: 1px solid #21262d;
+            border-radius: 6px;
+            padding: 12px;
+        }
+        .test-retry-info h4 {
+            margin: 0 0 8px 0;
+            font-size: 13px;
+            color: #c9d1d9;
+        }
+        .test-retry-attempt {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: #8b949e;
+            margin-bottom: 4px;
+        }
+        .test-retry-attempt:last-child {
+            margin-bottom: 0;
+        }
+        .test-retry-attempt .status-icon {
+            font-size: 12px;
+        }
+
         /* Toast notifications */
         .toast {
             position: fixed;
@@ -1354,189 +1767,6 @@
             top: 0;
         }
 
-        /* E2E Panel - Calling Card Design */
-        .e2e-panel {
-            display: flex;
-            align-items: center;
-            gap: 16px;
-            padding: 12px 20px;
-            margin-bottom: 16px;
-            background: linear-gradient(135deg, #161b22 0%, #1c2128 100%);
-            border: 1px solid #30363d;
-            border-radius: 10px;
-            font-size: 13px;
-            position: relative;
-            overflow: hidden;
-            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.03);
-        }
-        .e2e-panel::before {
-            content: '';
-            position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 2px;
-            background: linear-gradient(90deg, #f778ba 0%, #a371f7 50%, #58a6ff 100%);
-        }
-        .e2e-panel.disabled {
-            opacity: 0.5;
-        }
-        .e2e-title {
-            font-weight: 700;
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: #6e7681;
-            margin-right: 8px;
-        }
-        .e2e-badge {
-            padding: 2px 8px;
-            border-radius: 10px;
-            font-size: 11px;
-            font-weight: 600;
-        }
-        .e2e-badge .running {
-            background: rgba(31, 111, 235, 0.2);
-            color: #58a6ff;
-            padding: 3px 10px;
-            border-radius: 12px;
-            border: 1px solid rgba(31, 111, 235, 0.4);
-            box-shadow: 0 0 12px rgba(31, 111, 235, 0.3);
-            animation: pulse-blue 2s ease-in-out infinite;
-        }
-        @keyframes pulse-blue {
-            0%, 100% { box-shadow: 0 0 12px rgba(31, 111, 235, 0.3); }
-            50% { box-shadow: 0 0 20px rgba(31, 111, 235, 0.5); }
-        }
-        .e2e-badge .passed {
-            background: rgba(35, 134, 54, 0.2);
-            color: #3fb950;
-            padding: 3px 10px;
-            border-radius: 12px;
-            border: 1px solid rgba(35, 134, 54, 0.4);
-            box-shadow: 0 0 12px rgba(35, 134, 54, 0.3);
-        }
-        .e2e-badge .failed {
-            background: rgba(248, 81, 73, 0.2);
-            color: #f85149;
-            padding: 3px 10px;
-            border-radius: 12px;
-            border: 1px solid rgba(248, 81, 73, 0.4);
-            box-shadow: 0 0 12px rgba(248, 81, 73, 0.3);
-            animation: pulse-red 1.5s ease-in-out infinite;
-        }
-        @keyframes pulse-red {
-            0%, 100% { box-shadow: 0 0 12px rgba(248, 81, 73, 0.3); }
-            50% { box-shadow: 0 0 20px rgba(248, 81, 73, 0.6); }
-        }
-        .e2e-badge .idle {
-            background: rgba(48, 54, 61, 0.5);
-            color: #8b949e;
-            padding: 3px 10px;
-            border-radius: 12px;
-            border: 1px solid #30363d;
-        }
-        .e2e-badge .interrupted {
-            background: rgba(210, 153, 34, 0.2);
-            color: #d29922;
-            padding: 3px 10px;
-            border-radius: 12px;
-            border: 1px solid rgba(210, 153, 34, 0.4);
-            box-shadow: 0 0 12px rgba(210, 153, 34, 0.3);
-        }
-        /* Progress bar */
-        .e2e-progress {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            flex: 1;
-            max-width: 280px;
-        }
-        .e2e-progress-bar {
-            flex: 1;
-            height: 8px;
-            background: rgba(48, 54, 61, 0.6);
-            border-radius: 4px;
-            overflow: hidden;
-            box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
-        }
-        .e2e-progress-fill {
-            height: 100%;
-            background: linear-gradient(90deg, #58a6ff 0%, #a371f7 100%);
-            transition: width 0.3s ease;
-            box-shadow: 0 0 10px rgba(88, 166, 255, 0.4);
-        }
-        .e2e-progress-fill.has-failures {
-            background: linear-gradient(90deg, #3fb950 0%, #f85149 100%);
-            box-shadow: 0 0 10px rgba(248, 81, 73, 0.4);
-        }
-        .e2e-progress-text {
-            font-size: 11px;
-            color: #8b949e;
-            white-space: nowrap;
-        }
-        /* Current test */
-        .e2e-current-test {
-            font-size: 11px;
-            color: #8b949e;
-            max-width: 300px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }
-        .e2e-current-test .label {
-            color: #6e7681;
-        }
-        .e2e-current-test .test-name {
-            font-family: monospace;
-            color: #c9d1d9;
-        }
-        .e2e-signal {
-            color: #8b949e;
-        }
-        .e2e-signal strong {
-            color: #c9d1d9;
-        }
-        .e2e-quarantine-link {
-            color: #d29922;
-            cursor: pointer;
-            text-decoration: underline;
-            text-decoration-style: dotted;
-        }
-        .e2e-quarantine-link:hover {
-            color: #e3b341;
-        }
-        .e2e-last-run {
-            color: #8b949e;
-        }
-        .e2e-last-run .status-passed { color: #3fb950; }
-        .e2e-last-run .status-failed { color: #f85149; }
-        .e2e-last-run .status-interrupted { color: #d29922; }
-        .e2e-actions {
-            margin-left: auto;
-            display: flex;
-            gap: 8px;
-        }
-        .e2e-btn {
-            padding: 4px 10px;
-            font-size: 12px;
-            border-radius: 6px;
-            cursor: pointer;
-            border: 1px solid #30363d;
-            background: #21262d;
-            color: #c9d1d9;
-        }
-        .e2e-btn:hover { background: #30363d; }
-        .e2e-btn.primary { background: #238636; border-color: #238636; color: #fff; }
-        .e2e-btn.primary:hover { background: #2ea043; }
-        .e2e-btn.danger { background: #da3633; border-color: #da3633; color: #fff; }
-        .e2e-btn.danger:hover { background: #f85149; }
-        .e2e-failures {
-            color: #f85149;
-            cursor: pointer;
-        }
-        .e2e-failures:hover { text-decoration: underline; }
-
         /* E2E Triage View */
         .triage-list {
             max-height: 400px;
@@ -1561,6 +1791,31 @@
         .triage-details {
             flex: 1;
             min-width: 0;
+            position: relative;
+        }
+        .triage-details.clickable {
+            cursor: pointer;
+            padding: 4px 24px 4px 4px;
+            margin: -4px;
+            border-radius: 4px;
+            transition: background 0.15s ease;
+        }
+        .triage-details.clickable:hover {
+            background: rgba(56, 139, 253, 0.1);
+        }
+        .triage-detail-hint {
+            position: absolute;
+            right: 4px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #8b949e;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            font-size: 14px;
+        }
+        .triage-details.clickable:hover .triage-detail-hint {
+            opacity: 1;
+            color: #58a6ff;
         }
         .triage-nodeid {
             font-family: ui-monospace, monospace;
@@ -1775,6 +2030,157 @@
         }
         .sub-issue-item:hover .sub-issue-nodeid {
             color: #c9d1d9;
+        }
+        /* Expand toggle button for E2E rows */
+        .expand-toggle {
+            background: none;
+            border: none;
+            color: #8b949e;
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 10px;
+            transition: all 0.2s ease;
+            margin-left: 8px;
+        }
+        .expand-toggle:hover {
+            color: #58a6ff;
+            background: rgba(56, 139, 253, 0.1);
+        }
+        .expand-toggle .arrow {
+            display: inline-block;
+            transition: transform 0.2s ease;
+        }
+        .expand-toggle[aria-expanded="true"] .arrow {
+            transform: rotate(90deg);
+        }
+        /* E2E sub-issues container */
+        .e2e-sub-issues-container {
+            background: rgba(22, 27, 34, 0.6);
+            border-left: 3px solid;
+            border-image: linear-gradient(180deg, #58a6ff 0%, #a371f7 100%) 1;
+            margin: 0 16px 8px 40px;
+            padding: 12px 16px;
+            border-radius: 0 6px 6px 0;
+            animation: slideDown 0.2s ease-out;
+        }
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-8px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        .e2e-sub-issues-container .sub-issues-list {
+            margin: 0;
+            padding: 0;
+            border: none;
+            max-height: none;
+            opacity: 1;
+        }
+        .e2e-sub-issues-container .sub-issue-item {
+            opacity: 1;
+            transform: none;
+            margin: 0;
+            padding: 6px 8px;
+        }
+        .e2e-sub-issues-container .status-icon {
+            font-size: 12px;
+            width: 18px;
+            text-align: center;
+        }
+        .e2e-sub-issues-container .status-icon.resolved { color: #3fb950; }
+        .e2e-sub-issues-container .status-icon.failed { color: #f85149; }
+        .e2e-sub-issues-container .sub-issue-link {
+            color: #58a6ff;
+            text-decoration: none;
+            font-size: 11px;
+        }
+        .e2e-sub-issues-container .sub-issue-link:hover {
+            text-decoration: underline;
+        }
+        .resolution-badge, .outcome-badge, .duration-badge {
+            font-size: 10px;
+            padding: 2px 6px;
+            border-radius: 10px;
+            margin-left: 8px;
+        }
+        .resolution-badge.fixed { background: rgba(35, 134, 54, 0.2); color: #3fb950; }
+        .resolution-badge.quarantined { background: rgba(210, 153, 34, 0.2); color: #d29922; }
+        .outcome-badge.failed { background: rgba(248, 81, 73, 0.2); color: #f85149; }
+        .outcome-badge.passed_on_retry { background: rgba(210, 153, 34, 0.2); color: #d29922; }
+        .duration-badge { background: rgba(139, 148, 158, 0.2); color: #8b949e; }
+        /* Sub-issue action buttons */
+        .sub-issue-actions {
+            margin-left: auto;
+            display: flex;
+            gap: 4px;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+        }
+        .sub-issue-item:hover .sub-issue-actions {
+            opacity: 1;
+        }
+        .sub-issue-action-btn {
+            padding: 2px 6px;
+            font-size: 10px;
+            border: 1px solid #30363d;
+            border-radius: 4px;
+            background: #21262d;
+            color: #8b949e;
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .sub-issue-action-btn:hover {
+            background: #30363d;
+            color: #c9d1d9;
+            border-color: #8b949e;
+        }
+        .sub-issue-action-btn.create-issue {
+            color: #3fb950;
+            border-color: rgba(35, 134, 54, 0.4);
+        }
+        .sub-issue-action-btn.create-issue:hover {
+            background: rgba(35, 134, 54, 0.2);
+        }
+        .sub-issue-action-btn.quarantine {
+            color: #d29922;
+            border-color: rgba(210, 153, 34, 0.4);
+        }
+        .sub-issue-action-btn.quarantine:hover {
+            background: rgba(210, 153, 34, 0.2);
+        }
+        /* Clickable sub-issue item */
+        .sub-issue-item.clickable {
+            cursor: pointer;
+            transition: all 0.15s ease;
+        }
+        .sub-issue-item.clickable:hover {
+            background: rgba(56, 139, 253, 0.1);
+            padding-left: 12px;
+        }
+        .sub-issue-item .click-hint {
+            margin-left: auto;
+            color: #8b949e;
+            opacity: 0;
+            transition: opacity 0.15s ease;
+            font-size: 12px;
+        }
+        .sub-issue-item.clickable:hover .click-hint {
+            opacity: 1;
+            color: #58a6ff;
+        }
+        /* E2E progress needs attention state */
+        .e2e-issue-progress.needs-attention .status-dot {
+            background: #f85149;
+            animation: pulse-red 2s ease-in-out infinite;
+        }
+        @keyframes pulse-red {
+            0%, 100% { box-shadow: 0 0 0 rgba(248, 81, 73, 0.4); }
+            50% { box-shadow: 0 0 8px rgba(248, 81, 73, 0.6); }
         }
         .triage-longrepr {
             margin-top: 8px;
@@ -2003,6 +2409,68 @@
                     Running
                 </span>
                 {% endif %}
+
+                {% if e2e_status.enabled %}
+                <div class="e2e-header-indicator {% if e2e_status.running %}running{% elif e2e_status.last_run and e2e_status.last_run.status == 'failed' %}failed{% elif e2e_status.last_run and e2e_status.last_run.status == 'passed' %}passed{% endif %}{% if e2e_status.needs_attention %} needs-attention{% endif %}"
+                     id="e2eHeaderIndicator"
+                     onclick="toggleE2EDropdown(event)">
+                    <span class="status-icon">
+                        {% if e2e_status.running %}⟳{% elif e2e_status.last_run and e2e_status.last_run.status == 'passed' %}✓{% elif e2e_status.last_run and e2e_status.last_run.status == 'failed' %}✗{% else %}○{% endif %}
+                    </span>
+                    <span>E2E</span>
+                    {% if e2e_status.needs_attention and e2e_status.untriaged_count > 0 %}
+                    <span class="count">{{ e2e_status.untriaged_count }}</span>
+                    {% endif %}
+                    <span class="dropdown-arrow">▼</span>
+
+                    <div class="e2e-dropdown" id="e2eDropdown">
+                        <div class="e2e-dropdown-header">
+                            <div class="e2e-dropdown-status">
+                                <span>E2E Tests</span>
+                                <span class="status" id="e2eDropdownStatus">
+                                    {% if e2e_status.running %}Running{% elif e2e_status.last_run %}{{ e2e_status.last_run.status|title }}{% else %}No runs{% endif %}
+                                </span>
+                            </div>
+                            <div class="e2e-dropdown-meta" id="e2eDropdownMeta">
+                                {% if e2e_status.last_run %}
+                                Last: {{ e2e_status.last_run.status }}
+                                {% if e2e_status.last_run.duration_seconds %}({{ e2e_status.last_run.duration_seconds|round(1) }}s){% endif %}
+                                {% if e2e_status.last_run.commit_sha %}@ {{ e2e_status.last_run.commit_sha[:7] }}{% endif %}
+                                {% endif %}
+                            </div>
+                            <div class="e2e-dropdown-progress" id="e2eDropdownProgress">
+                                <div class="e2e-dropdown-progress-bar">
+                                    <div class="e2e-dropdown-progress-fill" id="e2eDropdownProgressFill" style="width: 0%;"></div>
+                                </div>
+                                <div class="e2e-dropdown-progress-text" id="e2eDropdownProgressText">Collecting tests...</div>
+                            </div>
+                        </div>
+                        <div class="e2e-dropdown-actions">
+                            <button class="e2e-dropdown-btn primary" id="e2eDropdownStartBtn" onclick="startE2E(); event.stopPropagation();" {% if e2e_status.running %}style="display:none;"{% endif %}>Run E2E</button>
+                            <button class="e2e-dropdown-btn danger" id="e2eDropdownStopBtn" onclick="stopE2E(); event.stopPropagation();" {% if not e2e_status.running %}style="display:none;"{% endif %}>Stop</button>
+                            <button class="e2e-dropdown-btn" id="e2eDropdownDetailsBtn" onclick="showE2EFailures(); event.stopPropagation();" {% if not e2e_status.last_run %}disabled{% endif %}>Details</button>
+                            <button class="e2e-dropdown-btn" id="e2eDropdownLogsBtn" onclick="showE2ELogs(); event.stopPropagation();" {% if not (e2e_status.last_run and e2e_status.last_run.log_path) %}disabled{% endif %}>Logs</button>
+                        </div>
+                        <div class="e2e-dropdown-divider"></div>
+                        <div class="e2e-dropdown-item" onclick="showE2EDiagnosis(); event.stopPropagation();" id="e2eDropdownDiagnose" {% if not (e2e_status.last_run and e2e_status.last_run.status == 'failed') %}style="display:none;"{% endif %}>
+                            <span class="icon">🔍</span> Diagnose Failures
+                        </div>
+                        <div class="e2e-dropdown-item" onclick="showE2ETriage(); event.stopPropagation();" id="e2eDropdownTriage" {% if not (e2e_status.last_run and e2e_status.last_run.status == 'failed') %}style="display:none;"{% endif %}>
+                            <span class="icon">📋</span> Triage Failures
+                        </div>
+                        <div class="e2e-dropdown-item" onclick="showQuarantineViewer(); event.stopPropagation();">
+                            <span class="icon">🚧</span> Manage Quarantine
+                        </div>
+                        {% if e2e_status.signal_score and e2e_status.signal_score.pass_rate is not none %}
+                        <div class="e2e-dropdown-divider"></div>
+                        <div class="e2e-dropdown-item" style="cursor: default;">
+                            <span class="icon">📊</span>
+                            Stability: {{ (e2e_status.signal_score.pass_rate * 100)|round|int }}% ({{ e2e_status.signal_score.runs_analyzed }} runs)
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
             </div>
             <div class="controls">
                 <button class="create-issue-btn" onclick="openCreateIssueModal()">+ Create Issue</button>
@@ -2049,105 +2517,6 @@
                 </div>
             </div>
         </header>
-
-        <!-- E2E Test Panel -->
-        {% if e2e_status.enabled %}
-        <div class="e2e-panel" id="e2ePanel">
-            <span class="e2e-title">E2E Tests</span>
-
-            <span class="e2e-badge" id="e2eBadge">
-                {% if e2e_status.running %}
-                <span class="running">Running</span>
-                {% elif e2e_status.last_run %}
-                    {% if e2e_status.last_run.status == 'passed' %}
-                    <span class="passed">Passed</span>
-                    {% elif e2e_status.last_run.status == 'failed' %}
-                    <span class="failed">Failed</span>
-                    {% else %}
-                    <span class="idle">{{ e2e_status.last_run.status|title }}</span>
-                    {% endif %}
-                {% else %}
-                <span class="idle">No runs</span>
-                {% endif %}
-            </span>
-
-            <!-- Progress bar (shown when running) -->
-            <div class="e2e-progress" id="e2eProgress" style="{% if not e2e_status.running %}display: none;{% endif %}">
-                <div class="e2e-progress-bar">
-                    <div class="e2e-progress-fill" id="e2eProgressFill" style="width: 0%;"></div>
-                </div>
-                <span class="e2e-progress-text" id="e2eProgressText">Collecting tests...</span>
-            </div>
-
-            <!-- Current test (shown when running) -->
-            <div class="e2e-current-test" id="e2eCurrentTest" style="{% if not e2e_status.running %}display: none;{% endif %}">
-                <span class="label">Running:</span>
-                <span class="test-name" id="e2eCurrentTestName">...</span>
-            </div>
-
-            {% if e2e_status.signal_score and e2e_status.signal_score.pass_rate is not none %}
-            <span class="e2e-signal">
-                Stability: <strong>{{ (e2e_status.signal_score.pass_rate * 100)|round|int }}%</strong>
-                ({{ e2e_status.signal_score.runs_analyzed }} runs)
-                {% if e2e_status.signal_score.quarantined_count > 0 %}
-                · <span class="e2e-quarantine-link" onclick="showQuarantineList()" title="View quarantine list">{{ e2e_status.signal_score.quarantined_count }} quarantined</span>
-                {% endif %}
-            </span>
-            {% endif %}
-
-            <span class="e2e-last-run" id="e2eLastRun" style="{% if e2e_status.running %}display: none;{% endif %}">
-            {% if e2e_status.last_run %}
-                Last: <span class="status-{{ e2e_status.last_run.status }}">{{ e2e_status.last_run.status }}</span>
-                {% if e2e_status.last_run.duration_seconds %}
-                ({{ e2e_status.last_run.duration_seconds|round(1) }}s)
-                {% endif %}
-                {% if e2e_status.last_run.commit_sha %}
-                @ {{ e2e_status.last_run.commit_sha[:7] }}
-                {% endif %}
-            {% endif %}
-            </span>
-
-            <span class="e2e-next-run" id="e2eNextRun"
-                  style="{% if e2e_status.running %}display: none;{% endif %}"
-                  {% if e2e_status.next_run %}
-                  data-next-run-at="{{ e2e_status.next_run.next_run_at or '' }}"
-                  data-next-run-reason="{{ e2e_status.next_run.next_run_reason or '' }}"
-                  {% endif %}>
-            {% if e2e_status.next_run %}
-                {% if e2e_status.next_run.next_run_reason == 'interval' %}
-                Next: {{ e2e_status.next_run.next_run_at }}
-                {% elif e2e_status.next_run.next_run_reason == 'main_unchanged' %}
-                Next: waiting for main change
-                {% elif e2e_status.next_run.next_run_reason == 'ready' %}
-                Next: pending
-                {% elif e2e_status.next_run.next_run_reason == 'auto_disabled' %}
-                Auto: off
-                {% endif %}
-            {% endif %}
-            </span>
-
-            {% if e2e_status.failed_tests %}
-            <span class="e2e-failures" id="e2eFailures" onclick="showE2EFailures()" title="View test details">
-                <span id="e2eFailCount">{{ e2e_status.failed_tests|length }}</span> failing
-            </span>
-            {% endif %}
-
-            <div class="e2e-actions" id="e2eActions">
-                {% if e2e_status.running %}
-                <button class="e2e-btn danger" id="e2eStopBtn" onclick="stopE2E()">Stop</button>
-                <button class="e2e-btn primary" id="e2eStartBtn" onclick="startE2E()" style="display: none;">Run E2E</button>
-                {% else %}
-                <button class="e2e-btn danger" id="e2eStopBtn" onclick="stopE2E()" style="display: none;">Stop</button>
-                <button class="e2e-btn primary" id="e2eStartBtn" onclick="startE2E()">Run E2E</button>
-                {% endif %}
-                <button class="e2e-btn" id="e2eDetailsBtn" onclick="showE2EFailures()" style="{% if not e2e_status.last_run %}display: none;{% endif %}">Details</button>
-                <button class="e2e-btn" id="e2eLogsBtn" onclick="showE2ELogs()" style="{% if not (e2e_status.last_run and e2e_status.last_run.log_path) %}display: none;{% endif %}">Logs</button>
-                <button class="e2e-btn" id="e2eDiagnoseBtn" onclick="showE2EDiagnosis()" style="{% if not (e2e_status.last_run and e2e_status.last_run.status == 'failed') %}display: none;{% endif %}">Diagnose</button>
-                <button class="e2e-btn primary" id="e2eTriageBtn" onclick="showE2ETriage()" style="{% if not (e2e_status.last_run and e2e_status.last_run.status == 'failed') %}display: none;{% endif %}" title="Review failures and create issues">Triage</button>
-                <button class="e2e-btn" id="e2eQuarantineBtn" onclick="showQuarantineViewer()" title="View and manage quarantine list">Quarantine</button>
-            </div>
-        </div>
-        {% endif %}
 
         <div class="tab-bar" role="tablist" aria-label="Dashboard sections">
             <button class="tab {% if active_tab == 'active' %}active{% endif %}"
@@ -2238,6 +2607,8 @@
                 <span class="issue-num">
                     {% if issue.issue_url %}
                     <a href="{{ issue.issue_url }}" target="_blank" onclick="event.stopPropagation()" aria-label="Open issue #{{ issue.issue_number }} on GitHub" title="Open issue #{{ issue.issue_number }} on GitHub">#{{ issue.issue_number }}</a>
+                    {% elif issue.is_e2e and not issue.e2e_progress %}
+                    <span class="pseudo-issue" title="E2E run with failures - click Triage to review and possibly create GitHub issues to resolve">{{ issue.issue_number }}</span>
                     {% else %}
                     #{{ issue.issue_number }}
                     {% endif %}
@@ -2265,14 +2636,42 @@
                 </span>
                 <span class="issue-title" title="{{ issue.title }}">{{ issue.title }}</span>
                 <span class="issue-detail status-{{ issue.status }}" title="{{ issue.detail_reason if issue.detail_reason else '' }}">
+                    {% if issue.e2e_progress %}
+                    <div class="e2e-issue-progress">
+                        <div class="mini-progress-bar">
+                            <div class="mini-progress-fill" style="width: {{ issue.e2e_progress.percent }}%;"></div>
+                        </div>
+                        <span class="progress-text">{{ issue.e2e_progress.resolved }}/{{ issue.e2e_progress.total }}</span>
+                        {% if issue.e2e_sub_issues %}
+                        <button class="expand-toggle" onclick="toggleE2ESubIssues('{{ issue.issue_number }}', event)" aria-expanded="false" aria-label="Toggle sub-issues" title="Show/hide test failures">
+                            <span class="arrow">▶</span>
+                        </button>
+                        {% endif %}
+                    </div>
+                    {% elif issue.e2e_failed_tests %}
+                    <div class="e2e-issue-progress needs-attention">
+                        <span class="status-dot" aria-hidden="true"></span>
+                        <span class="detail-label">{{ issue.detail_label }}</span>
+                        <button class="expand-toggle" onclick="toggleE2ESubIssues('{{ issue.issue_number }}', event)" aria-expanded="false" aria-label="Toggle failed tests" title="Show/hide failed tests">
+                            <span class="arrow">▶</span>
+                        </button>
+                    </div>
+                    {% else %}
                     <span class="status-dot" aria-hidden="true"></span>
                     <span class="detail-label">{{ issue.detail_label }}</span>
                     <span class="detail-link-indicator" aria-hidden="true">↗</span>
+                    {% endif %}
                 </span>
                 <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
                 <span class="issue-actions">
                     {% if active_tab == 'blocked' %}
-                    {# Blocked tab actions: Debug, Retry, Dismiss #}
+                    {# Blocked tab actions: Debug, Retry, Dismiss (or Triage for E2E) #}
+                    {% if issue.is_e2e %}
+                    {# E2E item - show Triage button #}
+                    <button class="issue-action-btn triage-btn" onclick="showE2ETriage(); event.stopPropagation();" aria-label="Open E2E triage modal" title="Review and create issues for failed tests">
+                        <span aria-hidden="true">📋</span> Triage
+                    </button>
+                    {% else %}
                     {% if issue.worktree_path %}
                     <button class="issue-action-btn debug-btn" onclick="launchDebugSession({{ issue.issue_number }}, event)" aria-label="Launch debug session for issue #{{ issue.issue_number }}" title="Launch Debug">
                         <span aria-hidden="true">▶</span> Debug
@@ -2284,6 +2683,7 @@
                     <button class="issue-action-btn dismiss-btn" onclick="dismissIssue({{ issue.issue_number }}, event)" aria-label="Dismiss issue #{{ issue.issue_number }}" title="Remove from queue permanently (won't be retried)">
                         <span aria-hidden="true">✕</span>
                     </button>
+                    {% endif %}
                     {% else %}
                     {# Default actions for other tabs #}
                     <span class="issue-action" title="{{ issue.action_hint }}">
@@ -2294,9 +2694,11 @@
                         {% endif %}
                     </span>
                     {% endif %}
+                    {% if not (issue.e2e_sub_issues or issue.e2e_failed_tests) %}
                     <button class="issue-diagnose-btn" onclick="openSessionManifest({{ issue.issue_number }}); event.stopPropagation();" aria-label="Open diagnostics for issue #{{ issue.issue_number }}" title="Diagnostics">
                         🧾
                     </button>
+                    {% endif %}
                     {% if issue.has_terminal %}
                     <button class="issue-kill-btn" onclick="killSession({{ issue.issue_number }}, event)" aria-label="Force kill session for issue #{{ issue.issue_number }}" title="Force kill session">
                         ⏹
@@ -2304,6 +2706,44 @@
                     {% endif %}
                 </span>
             </div>
+            {# Expandable sub-issues for E2E items #}
+            {% if issue.e2e_sub_issues or issue.e2e_failed_tests %}
+            <div class="e2e-sub-issues-container" id="e2e-sub-{{ issue.issue_number }}" style="display: none;">
+                <div class="sub-issues-list expanded">
+                    {% if issue.e2e_sub_issues %}
+                    {% for sub in issue.e2e_sub_issues %}
+                    <div class="sub-issue-item">
+                        <span class="status-icon {% if sub.resolved %}resolved{% else %}failed{% endif %}">
+                            {% if sub.resolved %}✓{% else %}✗{% endif %}
+                        </span>
+                        <span class="sub-issue-nodeid" title="{{ sub.nodeid }}">{{ sub.short_name }}</span>
+                        {% if sub.issue_number %}
+                        <a href="https://github.com/{{ github_owner }}/{{ github_repo }}/issues/{{ sub.issue_number }}" target="_blank" class="sub-issue-link" onclick="event.stopPropagation()">#{{ sub.issue_number }}</a>
+                        {% endif %}
+                        {% if sub.resolution %}
+                        <span class="resolution-badge {{ sub.resolution }}">{{ sub.resolution }}</span>
+                        {% endif %}
+                        <span class="sub-issue-actions">
+                            <button class="sub-issue-action-btn" onclick="showTestDiagnosis({{ sub.nodeid|tojson }}); event.stopPropagation();" title="View diagnosis">🔍</button>
+                        </span>
+                    </div>
+                    {% endfor %}
+                    {% elif issue.e2e_failed_tests %}
+                    {% for test in issue.e2e_failed_tests %}
+                    <div class="sub-issue-item clickable" onclick="openTestFailureDetail({{ test.nodeid|tojson }}); event.stopPropagation();" title="Click to view details and take action">
+                        <span class="status-icon failed">✗</span>
+                        <span class="sub-issue-nodeid" title="{{ test.nodeid }}">{{ test.short_name }}</span>
+                        <span class="outcome-badge {{ test.outcome }}">{{ test.outcome }}</span>
+                        {% if test.duration %}
+                        <span class="duration-badge">{{ "%.1f"|format(test.duration) }}s</span>
+                        {% endif %}
+                        <span class="click-hint">→</span>
+                    </div>
+                    {% endfor %}
+                    {% endif %}
+                </div>
+            </div>
+            {% endif %}
             {% endfor %}
             {% else %}
             <div class="empty-state">
@@ -2478,6 +2918,33 @@
                         <button class="btn-primary" id="quarantineSaveBtn" onclick="saveQuarantineChanges()" disabled>Save Changes</button>
                         <button class="btn-secondary" onclick="closeQuarantineModal()">Close</button>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Test Failure Detail Modal -->
+        <div class="modal-overlay" id="testFailureModal">
+            <div class="modal modal-large">
+                <div class="modal-header">
+                    <h2>Test Failure Details</h2>
+                    <button class="modal-close" onclick="closeTestFailureModal()">&times;</button>
+                </div>
+                <div class="modal-body" id="testFailureContent">
+                    <div class="loading-spinner">Loading test details...</div>
+                </div>
+                <div class="modal-footer">
+                    <div class="test-failure-actions">
+                        <button class="btn-primary" id="testFailureCreateIssueBtn" onclick="createIssueForCurrentTest()">
+                            Create Issue
+                        </button>
+                        <button class="btn-secondary" id="testFailureQuarantineBtn" onclick="quarantineCurrentTest()">
+                            Quarantine
+                        </button>
+                        <button class="btn-secondary" onclick="copyTestError()">
+                            Copy Error
+                        </button>
+                    </div>
+                    <button class="btn-secondary" onclick="closeTestFailureModal()">Close</button>
                 </div>
             </div>
         </div>
@@ -3313,6 +3780,52 @@
                 }
             });
 
+            // E2E Test Runner events - update UI immediately without waiting for poll
+            evtSource.addEventListener('e2e.started', function(e) {
+                console.log('[SSE] E2E started');
+                // Start polling for progress
+                if (typeof startE2EPolling === 'function') {
+                    startE2EPolling();
+                }
+            });
+
+            evtSource.addEventListener('e2e.progress', function(e) {
+                try {
+                    const data = JSON.parse(e.data);
+                    console.log('[SSE] E2E progress:', data.percent + '%');
+                    // Trigger immediate UI update
+                    if (typeof updateE2EProgress === 'function') {
+                        updateE2EProgress();
+                    }
+                } catch (err) {
+                    console.error('[SSE] Failed to parse e2e.progress:', err);
+                }
+            });
+
+            evtSource.addEventListener('e2e.completed', function(e) {
+                console.log('[SSE] E2E completed');
+                // Trigger immediate UI update (run completed successfully)
+                if (typeof updateE2EProgress === 'function') {
+                    updateE2EProgress();
+                }
+            });
+
+            evtSource.addEventListener('e2e.failed', function(e) {
+                console.log('[SSE] E2E failed');
+                // Trigger immediate UI update (run failed - may need attention)
+                if (typeof updateE2EProgress === 'function') {
+                    updateE2EProgress();
+                }
+            });
+
+            evtSource.addEventListener('e2e.stopped', function(e) {
+                console.log('[SSE] E2E stopped');
+                // Trigger immediate UI update
+                if (typeof updateE2EProgress === 'function') {
+                    updateE2EProgress();
+                }
+            });
+
             evtSource.onerror = function(e) {
                 console.log('[SSE] Connection error, will reconnect automatically');
                 reconnectAttempts++;
@@ -3893,6 +4406,17 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        // Escape string for use in JS string literals (single-quoted)
+        function escapeJs(text) {
+            if (!text) return '';
+            return text
+                .replace(/\\/g, '\\\\')
+                .replace(/'/g, "\\'")
+                .replace(/"/g, '\\"')
+                .replace(/\n/g, '\\n')
+                .replace(/\r/g, '\\r');
         }
 
         function toggleSelectAllBlocked() {
@@ -4710,8 +5234,9 @@
         // Mutable state for E2E - updated by polling
         let e2eLastRun = {{ e2e_status.last_run|tojson if e2e_status.last_run else 'null' }};
 
-        // E2E Progress Polling
+        // E2E Progress Polling with state tracking to minimize DOM updates
         let e2ePollingInterval = null;
+        let e2eLastProgressState = null;  // Track last state to avoid redundant updates
 
         function startE2EPolling() {
             if (e2ePollingInterval) return;
@@ -4726,6 +5251,33 @@
             }
         }
 
+        // Toggle E2E dropdown in header
+        function toggleE2EDropdown(event) {
+            event.stopPropagation();
+            const indicator = document.getElementById('e2eHeaderIndicator');
+            const dropdown = document.getElementById('e2eDropdown');
+            if (!indicator || !dropdown) return;
+
+            const isOpen = dropdown.classList.contains('visible');
+            if (isOpen) {
+                dropdown.classList.remove('visible');
+                indicator.classList.remove('open');
+            } else {
+                dropdown.classList.add('visible');
+                indicator.classList.add('open');
+            }
+        }
+
+        // Close dropdown when clicking outside
+        document.addEventListener('click', function(e) {
+            const indicator = document.getElementById('e2eHeaderIndicator');
+            const dropdown = document.getElementById('e2eDropdown');
+            if (indicator && dropdown && !indicator.contains(e.target)) {
+                dropdown.classList.remove('visible');
+                indicator.classList.remove('open');
+            }
+        });
+
         async function updateE2EProgress() {
             try {
                 const res = await fetch(`/control/e2e/status?repo_root=${encodeURIComponent(REPO_ROOT)}`);
@@ -4736,92 +5288,132 @@
                     e2eLastRun = data.last_run;
                 }
 
-                const progress = document.getElementById('e2eProgress');
-                const progressFill = document.getElementById('e2eProgressFill');
-                const progressText = document.getElementById('e2eProgressText');
-                const currentTest = document.getElementById('e2eCurrentTest');
-                const currentTestName = document.getElementById('e2eCurrentTestName');
-                const badge = document.getElementById('e2eBadge');
-                const lastRunEl = document.getElementById('e2eLastRun');
-                const nextRun = document.getElementById('e2eNextRun');
-                const startBtn = document.getElementById('e2eStartBtn');
-                const stopBtn = document.getElementById('e2eStopBtn');
-                const failures = document.getElementById('e2eFailures');
-                const failCount = document.getElementById('e2eFailCount');
-                const detailsBtn = document.getElementById('e2eDetailsBtn');
-                const logsBtn = document.getElementById('e2eLogsBtn');
+                // Get header indicator elements
+                const indicator = document.getElementById('e2eHeaderIndicator');
+                const statusIcon = indicator?.querySelector('.status-icon');
+                const countBadge = indicator?.querySelector('.count');
+                const dropdownStatus = document.getElementById('e2eDropdownStatus');
+                const dropdownMeta = document.getElementById('e2eDropdownMeta');
+                const dropdownProgress = document.getElementById('e2eDropdownProgress');
+                const dropdownProgressFill = document.getElementById('e2eDropdownProgressFill');
+                const dropdownProgressText = document.getElementById('e2eDropdownProgressText');
+                const startBtn = document.getElementById('e2eDropdownStartBtn');
+                const stopBtn = document.getElementById('e2eDropdownStopBtn');
+                const diagnoseItem = document.getElementById('e2eDropdownDiagnose');
+                const triageItem = document.getElementById('e2eDropdownTriage');
 
+                // Create state key for comparison
+                const stateKey = JSON.stringify({
+                    running: data.running,
+                    progress: data.progress,
+                    lastRunStatus: data.last_run?.status,
+                    lastRunId: data.last_run?.id,
+                    needsAttention: data.needs_attention,
+                    untriagedCount: data.untriaged_count,
+                });
+
+                // Skip updates if state hasn't changed (reduces visual churn)
+                if (stateKey === e2eLastProgressState) {
+                    return;
+                }
+                e2eLastProgressState = stateKey;
+
+                // Update header indicator class
+                if (indicator) {
+                    indicator.classList.remove('running', 'passed', 'failed', 'needs-attention');
+                    if (data.running) {
+                        indicator.classList.add('running');
+                    } else if (data.last_run?.status === 'passed') {
+                        indicator.classList.add('passed');
+                    } else if (data.last_run?.status === 'failed') {
+                        indicator.classList.add('failed');
+                        if (data.needs_attention) {
+                            indicator.classList.add('needs-attention');
+                        }
+                    }
+                }
+
+                // Update status icon
+                if (statusIcon) {
+                    if (data.running) {
+                        statusIcon.textContent = '⟳';
+                    } else if (data.last_run?.status === 'passed') {
+                        statusIcon.textContent = '✓';
+                    } else if (data.last_run?.status === 'failed') {
+                        statusIcon.textContent = '✗';
+                    } else {
+                        statusIcon.textContent = '○';
+                    }
+                }
+
+                // Update attention count badge
+                if (data.needs_attention && data.untriaged_count > 0) {
+                    if (countBadge) {
+                        countBadge.textContent = data.untriaged_count;
+                        countBadge.style.display = '';
+                    } else if (indicator) {
+                        const arrow = indicator.querySelector('.dropdown-arrow');
+                        const badge = document.createElement('span');
+                        badge.className = 'count';
+                        badge.textContent = data.untriaged_count;
+                        if (arrow) arrow.before(badge);
+                    }
+                } else if (countBadge) {
+                    countBadge.style.display = 'none';
+                }
+
+                // Update dropdown status
+                if (dropdownStatus) {
+                    dropdownStatus.className = 'status';
+                    if (data.running) {
+                        dropdownStatus.textContent = 'Running';
+                        dropdownStatus.classList.add('running');
+                    } else if (data.last_run) {
+                        dropdownStatus.textContent = data.last_run.status.charAt(0).toUpperCase() + data.last_run.status.slice(1);
+                        dropdownStatus.classList.add(data.last_run.status);
+                    } else {
+                        dropdownStatus.textContent = 'No runs';
+                    }
+                }
+
+                // Update progress in dropdown
                 if (data.running && data.progress) {
-                    // Show progress UI
-                    progress.style.display = 'flex';
-                    currentTest.style.display = 'block';
-                    lastRunEl.style.display = 'none';
-                    nextRun.style.display = 'none';
-                    startBtn.style.display = 'none';
-                    stopBtn.style.display = 'inline-block';
-                    badge.innerHTML = '<span class="running">Running</span>';
+                    if (dropdownProgress) dropdownProgress.classList.add('visible');
+                    if (startBtn) startBtn.style.display = 'none';
+                    if (stopBtn) stopBtn.style.display = '';
 
                     const p = data.progress;
-                    if (p.total_tests) {
+                    if (p.total_tests && dropdownProgressFill) {
                         const pct = p.percent || 0;
-                        progressFill.style.width = pct + '%';
-                        if (p.failed > 0) {
-                            progressFill.classList.add('has-failures');
+                        dropdownProgressFill.style.width = pct + '%';
+                        if (dropdownProgressText) {
+                            dropdownProgressText.textContent = `${p.completed}/${p.total_tests} (${pct}%) - ${p.passed}✓ ${p.failed}✗`;
                         }
-                        progressText.textContent = `${p.completed}/${p.total_tests} (${pct}%) - ${p.passed}✓ ${p.failed}✗`;
-                    } else {
-                        progressText.textContent = 'Collecting tests...';
+                    } else if (dropdownProgressText) {
+                        dropdownProgressText.textContent = 'Collecting tests...';
                     }
+                } else {
+                    if (dropdownProgress) dropdownProgress.classList.remove('visible');
+                    if (startBtn) startBtn.style.display = '';
+                    if (stopBtn) stopBtn.style.display = 'none';
 
-                    if (p.current_test) {
-                        // Show just the test name part (after ::)
-                        const parts = p.current_test.split('::');
-                        currentTestName.textContent = parts[parts.length - 1] || p.current_test;
-                        currentTestName.title = p.current_test;
-                    } else {
-                        currentTestName.textContent = '...';
-                    }
-
-                    // Show failures count during run
-                    if (p.failed > 0) {
-                        failures.style.display = 'inline';
-                        failCount.textContent = p.failed;
-                    }
-                } else if (!data.running) {
-                    // E2E finished - stop polling and update UI
-                    stopE2EPolling();
-                    progress.style.display = 'none';
-                    currentTest.style.display = 'none';
-                    lastRunEl.style.display = 'inline';
-                    nextRun.style.display = 'inline';
-                    startBtn.style.display = 'inline-block';
-                    stopBtn.style.display = 'none';
-
-                    // Update badge based on last run status
-                    if (data.last_run) {
+                    // Update meta info
+                    if (dropdownMeta && data.last_run) {
                         const status = data.last_run.status;
-                        badge.innerHTML = `<span class="${status}">${status.charAt(0).toUpperCase() + status.slice(1)}</span>`;
-
-                        // Show Details button when we have run data
-                        if (detailsBtn) {
-                            detailsBtn.style.display = 'inline-block';
-                        }
-                        // Show Logs button when we have a log_path
-                        if (logsBtn && data.last_run.log_path) {
-                            logsBtn.style.display = 'inline-block';
-                        }
-                        // Show Diagnose button when run failed
-                        const diagnoseBtn = document.getElementById('e2eDiagnoseBtn');
-                        if (diagnoseBtn) {
-                            diagnoseBtn.style.display = status === 'failed' ? 'inline-block' : 'none';
-                        }
-                    }
-                    if (nextRun) {
-                        nextRun.textContent = formatNextRun(data.next_run);
+                        const duration = data.last_run.duration_seconds ? `(${data.last_run.duration_seconds.toFixed(1)}s)` : '';
+                        const sha = data.last_run.commit_sha ? `@ ${data.last_run.commit_sha.substring(0, 7)}` : '';
+                        dropdownMeta.textContent = `Last: ${status} ${duration} ${sha}`.trim();
                     }
 
-                    // Refresh page to get full updated state
-                    setTimeout(() => location.reload(), 500);
+                    // Show/hide diagnose and triage items
+                    const isFailed = data.last_run?.status === 'failed';
+                    if (diagnoseItem) diagnoseItem.style.display = isFailed ? '' : 'none';
+                    if (triageItem) triageItem.style.display = isFailed ? '' : 'none';
+
+                    // Stop polling when not running
+                    if (!data.running) {
+                        stopE2EPolling();
+                    }
                 }
             } catch (err) {
                 console.error('E2E progress update failed:', err);
@@ -4853,13 +5445,27 @@
                 const data = await res.json();
                 if (res.ok) {
                     showToast('E2E tests started');
-                    // Start polling instead of reloading
-                    document.getElementById('e2eProgress').style.display = 'flex';
-                    document.getElementById('e2eCurrentTest').style.display = 'block';
-                    document.getElementById('e2eLastRun').style.display = 'none';
-                    document.getElementById('e2eStartBtn').style.display = 'none';
-                    document.getElementById('e2eStopBtn').style.display = 'inline-block';
-                    document.getElementById('e2eBadge').innerHTML = '<span class="running">Running</span>';
+                    // Update header indicator to running state
+                    const indicator = document.getElementById('e2eHeaderIndicator');
+                    const statusIcon = indicator?.querySelector('.status-icon');
+                    const dropdownStatus = document.getElementById('e2eDropdownStatus');
+                    const dropdownProgress = document.getElementById('e2eDropdownProgress');
+                    const startBtn = document.getElementById('e2eDropdownStartBtn');
+                    const stopBtn = document.getElementById('e2eDropdownStopBtn');
+
+                    if (indicator) {
+                        indicator.classList.remove('passed', 'failed', 'needs-attention');
+                        indicator.classList.add('running');
+                    }
+                    if (statusIcon) statusIcon.textContent = '⟳';
+                    if (dropdownStatus) {
+                        dropdownStatus.textContent = 'Running';
+                        dropdownStatus.className = 'status running';
+                    }
+                    if (dropdownProgress) dropdownProgress.classList.add('visible');
+                    if (startBtn) startBtn.style.display = 'none';
+                    if (stopBtn) stopBtn.style.display = '';
+
                     startE2EPolling();
                 } else if (data.error === 'already_running') {
                     // Ask user if they want to cancel and restart
@@ -4885,7 +5491,25 @@
                 if (res.ok) {
                     showToast('E2E tests stopped');
                     stopE2EPolling();
-                    setTimeout(() => location.reload(), 500);
+                    // Update UI to stopped state
+                    const indicator = document.getElementById('e2eHeaderIndicator');
+                    const statusIcon = indicator?.querySelector('.status-icon');
+                    const dropdownStatus = document.getElementById('e2eDropdownStatus');
+                    const dropdownProgress = document.getElementById('e2eDropdownProgress');
+                    const startBtn = document.getElementById('e2eDropdownStartBtn');
+                    const stopBtn = document.getElementById('e2eDropdownStopBtn');
+
+                    if (indicator) {
+                        indicator.classList.remove('running');
+                    }
+                    if (statusIcon) statusIcon.textContent = '○';
+                    if (dropdownStatus) {
+                        dropdownStatus.textContent = 'Stopped';
+                        dropdownStatus.className = 'status';
+                    }
+                    if (dropdownProgress) dropdownProgress.classList.remove('visible');
+                    if (startBtn) startBtn.style.display = '';
+                    if (stopBtn) stopBtn.style.display = 'none';
                 } else {
                     showToast(data.detail || 'Failed to stop E2E', true);
                 }
@@ -5156,6 +5780,312 @@
             document.getElementById('e2eDiagnosisModal').classList.remove('visible');
         }
 
+        // Current test failure being viewed in the modal
+        let currentTestFailure = null;
+
+        // Open the test failure detail modal
+        async function openTestFailureDetail(nodeid) {
+            if (!e2eLastRun) {
+                showToast('No E2E run data available', true);
+                return;
+            }
+
+            const modal = document.getElementById('testFailureModal');
+            const content = document.getElementById('testFailureContent');
+
+            // Show modal with loading state
+            content.innerHTML = '<div class="loading-spinner">Loading test details...</div>';
+            modal.classList.add('visible');
+
+            try {
+                // Use the dedicated test detail endpoint
+                const res = await fetch(`/control/e2e/test/${e2eLastRun.id}?nodeid=${encodeURIComponent(nodeid)}&repo_root=${encodeURIComponent(REPO_ROOT)}`);
+                const data = await res.json();
+
+                if (!res.ok) {
+                    content.innerHTML = `<div style="color: #f85149;">Error: ${escapeHtml(data.error || data.detail || 'Failed to load test details')}</div>`;
+                    return;
+                }
+
+                // Store for action buttons
+                currentTestFailure = {
+                    nodeid,
+                    test: data.test,
+                    run: data.run,
+                    history: data.history,
+                    history_summary: data.history_summary,
+                    flake_count: data.flake_count,
+                    is_likely_flaky: data.is_likely_flaky,
+                    existing_issue: data.existing_issue,
+                    log_excerpt: data.log_excerpt,
+                };
+
+                // Render the test failure details
+                renderTestFailureDetail(currentTestFailure);
+            } catch (err) {
+                content.innerHTML = `<div style="color: #f85149;">Failed to load test details: ${escapeHtml(err.message)}</div>`;
+            }
+        }
+
+        function renderTestFailureDetail(data) {
+            const content = document.getElementById('testFailureContent');
+            const test = data.test;
+            const run = data.run;
+            const shortName = test.nodeid.split('::').pop();
+
+            // Build status line
+            let statusParts = [`<strong>FAILED</strong>`];
+            if (test.duration_seconds) {
+                statusParts.push(`${test.duration_seconds.toFixed(1)}s`);
+            }
+            if (test.retry_outcome) {
+                statusParts.push(`retry: ${test.retry_outcome}`);
+            }
+
+            // Build history visualization (last N runs as icons)
+            let historyHtml = '';
+            if (data.history && data.history.length > 0) {
+                const icons = data.history.map(h => {
+                    if (h.outcome === 'passed') return '<span style="color: #3fb950;">✓</span>';
+                    if (h.outcome === 'failed' || h.outcome === 'error') return '<span style="color: #f85149;">✗</span>';
+                    return '<span style="color: #8b949e;">○</span>';
+                }).reverse().join(' ');
+
+                const summary = data.history_summary;
+                let passRateText = '';
+                if (summary.pass_rate !== null) {
+                    passRateText = ` (${Math.round(summary.pass_rate * 100)}% pass rate)`;
+                }
+
+                let flakyWarning = '';
+                if (data.is_likely_flaky) {
+                    flakyWarning = `<span style="color: #d29922; margin-left: 8px;">⚠ Likely flaky (${data.flake_count} recent flakes)</span>`;
+                }
+
+                historyHtml = `
+                    <div class="test-failure-section" style="background: #161b22; padding: 12px; border-radius: 6px; margin-bottom: 16px;">
+                        <div style="font-size: 13px; color: #8b949e; margin-bottom: 4px;">History (last ${data.history.length} runs):</div>
+                        <div style="font-size: 16px; letter-spacing: 2px;">${icons}${passRateText}</div>
+                        ${flakyWarning}
+                    </div>
+                `;
+            }
+
+            // Existing issue link
+            let existingIssueHtml = '';
+            if (data.existing_issue) {
+                existingIssueHtml = `
+                    <div class="test-failure-section" style="background: #1f3d1f; padding: 12px; border-radius: 6px; margin-bottom: 16px; border: 1px solid #238636;">
+                        <span style="color: #3fb950;">✓</span>
+                        <span>Issue already exists: </span>
+                        <a href="https://github.com/{{ github_owner }}/{{ github_repo }}/issues/${data.existing_issue.github_issue_number}"
+                           target="_blank" style="color: #58a6ff;">#${data.existing_issue.github_issue_number}</a>
+                        ${data.existing_issue.resolution ? `<span style="color: #8b949e;"> (${data.existing_issue.resolution})</span>` : ''}
+                    </div>
+                `;
+            }
+
+            let html = `
+                <div class="test-failure-header">
+                    <span class="status-icon failed">✗</span>
+                    <div class="test-failure-info">
+                        <div class="test-failure-nodeid">${escapeHtml(test.nodeid)}</div>
+                        <div class="test-failure-meta">
+                            <span>${statusParts.join(' · ')}</span>
+                            ${run.started_at ? `<span><strong>Run:</strong> ${new Date(run.started_at).toLocaleString()}</span>` : ''}
+                            ${run.commit_sha ? `<span><strong>Commit:</strong> ${run.commit_sha.substring(0, 7)}</span>` : ''}
+                        </div>
+                    </div>
+                </div>
+
+                ${historyHtml}
+                ${existingIssueHtml}
+            `;
+
+            // Error section
+            html += `
+                <div class="test-failure-section">
+                    <h3>Error</h3>
+                    <div class="test-failure-error">${test.longrepr ? escapeHtml(test.longrepr) : '<span style="color: #8b949e;">No error details available</span>'}</div>
+                </div>
+            `;
+
+            // Log excerpt (expandable)
+            if (data.log_excerpt) {
+                const lineCount = data.log_excerpt.split('\\n').length;
+                html += `
+                    <details class="test-failure-section">
+                        <summary style="cursor: pointer; color: #58a6ff; font-size: 14px; font-weight: 600;">
+                            Test Logs (${lineCount} lines)
+                        </summary>
+                        <pre class="test-failure-traceback" style="margin-top: 8px;">${escapeHtml(data.log_excerpt)}</pre>
+                    </details>
+                `;
+            }
+
+            // "What to do" section with Diagnose button
+            html += `
+                <div class="test-failure-section" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid #21262d;">
+                    <h3>What To Do</h3>
+                    <p style="color: #8b949e; font-size: 13px; margin-bottom: 12px;">
+                        Get AI-powered analysis to help understand this failure and suggest fixes.
+                    </p>
+                    <button class="btn-primary" onclick="diagnoseCurrentTest()" style="display: flex; align-items: center; gap: 6px;">
+                        <span>🔍</span> Diagnose This Failure
+                    </button>
+                </div>
+            `;
+
+            content.innerHTML = html;
+        }
+
+        async function diagnoseCurrentTest() {
+            if (!currentTestFailure) {
+                showToast('No test selected', true);
+                return;
+            }
+
+            // For now, show the full run diagnosis with this test highlighted
+            // In the future, this could trigger AI analysis
+            showToast('Opening full diagnosis...', false);
+            closeTestFailureModal();
+            showE2EDiagnosis();
+        }
+
+        function closeTestFailureModal() {
+            document.getElementById('testFailureModal').classList.remove('visible');
+            currentTestFailure = null;
+        }
+
+        async function createIssueForCurrentTest() {
+            if (!currentTestFailure) {
+                showToast('No test selected', true);
+                return;
+            }
+            closeTestFailureModal();
+            await createSingleIssue(currentTestFailure.nodeid);
+        }
+
+        async function quarantineCurrentTest() {
+            if (!currentTestFailure) {
+                showToast('No test selected', true);
+                return;
+            }
+            closeTestFailureModal();
+            await quarantineSingleTest(currentTestFailure.nodeid);
+        }
+
+        function copyTestError() {
+            if (!currentTestFailure || !currentTestFailure.test) {
+                showToast('No test selected', true);
+                return;
+            }
+
+            const test = currentTestFailure.test;
+            const text = `Test: ${test.nodeid}\\n\\n` +
+                `Outcome: ${test.outcome}\\n` +
+                `Duration: ${test.duration_seconds ? test.duration_seconds.toFixed(2) + 's' : 'unknown'}\\n\\n` +
+                `Error:\\n${test.longrepr || 'No error details available'}`;
+
+            navigator.clipboard.writeText(text).then(() => {
+                showToast('Error details copied to clipboard');
+            }).catch(err => {
+                showToast('Failed to copy: ' + err.message, true);
+            });
+        }
+
+        // Legacy function - redirect to new modal
+        async function showTestDiagnosis(nodeid) {
+            await openTestFailureDetail(nodeid);
+        }
+
+        // Create issue for a single test
+        async function createSingleIssue(nodeid) {
+            if (!e2eLastRun) {
+                showToast('No E2E run data available', true);
+                return;
+            }
+
+            // Get available agents (just the names)
+            const agentList = {{ (agents.keys()|list)|tojson if agents else '[]' }};
+            if (agentList.length === 0) {
+                showToast('No agents configured', true);
+                return;
+            }
+
+            // Use first agent or prompt if multiple
+            let agent = agentList[0];
+            if (agentList.length > 1) {
+                const choice = prompt(`Select agent for this issue:\n\nAvailable: ${agentList.join(', ')}\n\nEnter agent name:`, agentList[0]);
+                if (!choice) return;
+                if (!agentList.includes(choice)) {
+                    showToast(`Invalid agent: ${choice}`, true);
+                    return;
+                }
+                agent = choice;
+            }
+
+            try {
+                const res = await fetch(`/control/e2e/create-issues/${e2eLastRun.id}?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        nodeids: [nodeid],
+                        agent: agent,
+                    }),
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    showToast(data.error || data.detail || 'Failed to create issue', true);
+                    return;
+                }
+
+                const testName = nodeid.split('::').pop();
+                if (data.parent_issue) {
+                    showToast(`Created issue #${data.parent_issue.number} for ${testName}`);
+                    // Open issue in new tab
+                    if (data.parent_issue.url) {
+                        window.open(data.parent_issue.url, '_blank');
+                    }
+                } else {
+                    showToast('Issue created successfully');
+                }
+
+                // Refresh to show the new issue
+                setTimeout(() => location.reload(), 500);
+            } catch (err) {
+                showToast('Failed to create issue: ' + err.message, true);
+            }
+        }
+
+        // Quarantine a single test
+        async function quarantineSingleTest(nodeid) {
+            if (!confirm(`Add "${nodeid.split('::').pop()}" to quarantine?\n\nQuarantined tests are excluded from E2E failure counts.`)) {
+                return;
+            }
+
+            try {
+                const res = await fetch(`/control/e2e/quarantine?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ action: 'add', nodeids: [nodeid] }),
+                });
+                const data = await res.json();
+
+                if (!res.ok) {
+                    showToast(data.error || 'Failed to quarantine test', true);
+                    return;
+                }
+
+                showToast(`Added ${nodeid.split('::').pop()} to quarantine`);
+                // Refresh to update the UI
+                setTimeout(() => location.reload(), 500);
+            } catch (err) {
+                showToast('Failed to quarantine test: ' + err.message, true);
+            }
+        }
+
         async function createE2EDiagnosticIssue() {
             if (!e2eCurrentDiagnosis) {
                 showToast('No diagnosis data available', true);
@@ -5288,7 +6218,7 @@
                                ${hasIssue ? 'disabled' : ''}
                                ${!hasIssue && !isFlaky ? 'checked' : ''}
                                onchange="updateTriageSelection()">
-                        <div class="triage-details">
+                        <div class="triage-details clickable" onclick="openTestFailureDetail('${escapeJs(failure.nodeid)}');" title="Click to view full details">
                             <div class="triage-nodeid" title="${escapeHtml(failure.nodeid)}">${escapeHtml(shortNodeid)}</div>
                             <div class="triage-badges">
                                 ${hasIssue ? `<span class="triage-badge existing">Issue #${failure.existing_issue.github_issue_number}</span>` : '<span class="triage-badge new">New</span>'}
@@ -5296,6 +6226,7 @@
                                 ${failure.duration_seconds ? `<span class="triage-badge">${failure.duration_seconds.toFixed(1)}s</span>` : ''}
                             </div>
                             ${failure.longrepr ? `<div class="triage-longrepr">${escapeHtml(failure.longrepr.substring(0, 500))}${failure.longrepr.length > 500 ? '...' : ''}</div>` : ''}
+                            <span class="triage-detail-hint">→</span>
                         </div>
                     </div>
                 `;
@@ -5380,6 +6311,19 @@
                 toggle.classList.add('expanded');
                 toggle.querySelector('.toggle-text').textContent = 'Hide sub-issues';
             }
+        }
+
+        // Toggle E2E sub-issues expansion in issue list
+        function toggleE2ESubIssues(issueId, event) {
+            event.stopPropagation();
+            const container = document.getElementById(`e2e-sub-${issueId}`);
+            const button = event.currentTarget;
+
+            if (!container) return;
+
+            const isExpanded = container.style.display !== 'none';
+            container.style.display = isExpanded ? 'none' : 'block';
+            button.setAttribute('aria-expanded', !isExpanded);
         }
 
         function escapeHtml(text) {
