@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import time
 from pathlib import Path
 
@@ -106,7 +107,7 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
     # shell proceeds to read, so file existence guarantees shell is waiting.
     # pexpect captures all PTY output to session.log automatically.
     ready_file = worktree / ".ready"
-    command = f"touch {ready_file}; read -r line; echo \"INPUT:$line\""
+    command = f"touch {shlex.quote(str(ready_file))}; read -r line; echo \"INPUT:$line\""
 
     plugin = SubprocessPlugin()
     created = plugin.create_session(
