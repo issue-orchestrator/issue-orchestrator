@@ -888,6 +888,48 @@ class E2EDB:
             )
             return [E2ETestResult.from_row(row) for row in cursor.fetchall()]
 
+    def get_test_result(self, run_id: int, nodeid: str) -> E2ETestResult | None:
+        """Get a specific test result by run ID and nodeid."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM e2e_test_results WHERE run_id = ? AND nodeid = ?",
+                (run_id, nodeid),
+            )
+            row = cursor.fetchone()
+            return E2ETestResult.from_row(row) if row else None
+
+    def get_test_history(self, nodeid: str, limit: int = 10) -> list[dict]:
+        """Get historical results for a specific test across recent runs.
+
+        Returns list of dicts with run_id, outcome, started_at for display.
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                SELECT
+                    r.id AS run_id,
+                    t.outcome,
+                    t.retry_outcome,
+                    r.started_at
+                FROM e2e_test_results t
+                JOIN e2e_runs r ON t.run_id = r.id
+                WHERE t.nodeid = ?
+                ORDER BY r.started_at DESC
+                LIMIT ?
+                """,
+                (nodeid, limit),
+            )
+            results = []
+            for row in cursor.fetchall():
+                # Determine effective outcome (retry_outcome takes precedence)
+                outcome = row["retry_outcome"] or row["outcome"]
+                results.append({
+                    "run_id": row["run_id"],
+                    "outcome": outcome,
+                    "started_at": row["started_at"],
+                })
+            return results
+
     def get_test_summary(self, run_id: int) -> dict:
         """Get comprehensive test summary for a run.
 
@@ -1059,6 +1101,18 @@ class E2EDB:
                 (self._now_iso(), run_id),
             )
             return cursor.rowcount > 0
+
+    def get_open_run_issues(self) -> list[E2ERunIssue]:
+        """Get all open (not closed) E2E run issues.
+
+        Returns:
+            List of E2ERunIssue records where closed_at IS NULL
+        """
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM e2e_run_issues WHERE closed_at IS NULL ORDER BY created_at DESC",
+            )
+            return [E2ERunIssue.from_row(row) for row in cursor.fetchall()]
 
     def record_failure_issue(
         self,

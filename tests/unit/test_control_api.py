@@ -2541,6 +2541,280 @@ class TestE2EFlakyTestsEndpoint:
         assert "test::sometimes_flaky" not in nodeids
 
 
+# --- Test: E2E Test Detail Endpoint ---
+
+
+class TestE2ETestDetailEndpoint:
+    """Test the GET /control/e2e/test/{run_id} endpoint."""
+
+    @pytest.fixture
+    def e2e_client(self):
+        """Create a test client for E2E endpoints (no orchestrator needed)."""
+        return TestClient(control_app)
+
+    def test_returns_400_for_invalid_repo_root(self, e2e_client):
+        """Invalid repo_root should return 400."""
+        response = e2e_client.get(
+            "/control/e2e/test/1",
+            params={"repo_root": "../invalid/path", "nodeid": "test::foo"}
+        )
+        assert response.status_code == 400
+        assert response.json()["error"] == "Invalid repo_root"
+
+    def test_returns_404_when_db_not_found(self, e2e_client, tmp_path):
+        """Missing E2E database should return 404."""
+        response = e2e_client.get(
+            "/control/e2e/test/1",
+            params={"repo_root": str(tmp_path), "nodeid": "test::foo"}
+        )
+        assert response.status_code == 404
+
+    def test_returns_404_when_test_not_found(self, e2e_client, tmp_path):
+        """Test not found should return 404."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db_path = db_dir / "e2e.db"
+        db = E2EDB(db_path)
+
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.finish_run(run_id, status="passed")
+
+        response = e2e_client.get(
+            f"/control/e2e/test/{run_id}",
+            params={"repo_root": str(tmp_path), "nodeid": "test::nonexistent"}
+        )
+        assert response.status_code == 404
+        assert response.json()["error"] == "not_found"
+
+    def test_returns_test_detail_with_history(self, e2e_client, tmp_path):
+        """Should return test details including history."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_dir.mkdir()
+        db_path = db_dir / "e2e.db"
+        db = E2EDB(db_path)
+
+        # Create first run with a failure
+        run1_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.upsert_test_result(
+            run_id=run1_id,
+            nodeid="test_foo.py::test_bar",
+            outcome="failed",
+            longrepr="AssertionError: expected 1, got 2",
+            duration_seconds=1.5,
+        )
+        db.finish_run(run1_id, status="failed")
+
+        # Create second run with same test passing
+        run2_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.upsert_test_result(
+            run_id=run2_id,
+            nodeid="test_foo.py::test_bar",
+            outcome="passed",
+            duration_seconds=1.2,
+        )
+        db.finish_run(run2_id, status="passed")
+
+        # Query the first run's failure
+        response = e2e_client.get(
+            f"/control/e2e/test/{run1_id}",
+            params={"repo_root": str(tmp_path), "nodeid": "test_foo.py::test_bar"}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Check test details
+        assert data["test"]["nodeid"] == "test_foo.py::test_bar"
+        assert data["test"]["outcome"] == "failed"
+        assert "AssertionError" in data["test"]["longrepr"]
+        assert data["test"]["duration_seconds"] == 1.5
+
+        # Check history includes both runs
+        assert len(data["history"]) == 2
+        assert data["history_summary"]["total"] == 2
+        assert data["history_summary"]["passed"] == 1
+        assert data["history_summary"]["failed"] == 1
+
+
+# --- Test: E2E Status Attention Fields ---
+
+
+class TestE2EStatusAttentionFields:
+    """Test needs_attention and untriaged_count in /control/e2e/status."""
+
+    @pytest.fixture
+    def e2e_client(self):
+        """Create a test client for E2E endpoints."""
+        return TestClient(control_app)
+
+    def test_needs_attention_true_when_failed_run_with_no_issues(self, e2e_client, tmp_path):
+        """Failed run with untriaged failures should set needs_attention=True."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        # Create config with correct name (default.yaml)
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "default.yaml"
+        config_file.write_text("""
+repo:
+  name: test/repo
+e2e:
+  enabled: true
+  pytest_paths: ["tests/e2e"]
+""")
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_path = db_dir / "e2e.db"
+        db = E2EDB(db_path)
+
+        # Use directory name as orchestrator_id (matches config.orchestrator_id)
+        orchestrator_id = tmp_path.name
+
+        # Create a failed run with a failing test
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id=orchestrator_id,
+            pytest_args=["tests/e2e"],
+        )
+        db.upsert_test_result(
+            run_id=run_id,
+            nodeid="test_foo.py::test_bar",
+            outcome="failed",
+            longrepr="AssertionError",
+        )
+        db.finish_run(run_id, status="failed")
+
+        response = e2e_client.get(
+            "/control/e2e/status",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Failed run with no issues created should need attention
+        assert data["needs_attention"] is True
+        assert data["untriaged_count"] == 1
+
+    def test_needs_attention_false_when_issues_created(self, e2e_client, tmp_path):
+        """Failed run with existing issues should set needs_attention=False."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        # Create config
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "default.yaml"
+        config_file.write_text("""
+repo:
+  name: test/repo
+e2e:
+  enabled: true
+  pytest_paths: ["tests/e2e"]
+""")
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_path = db_dir / "e2e.db"
+        db = E2EDB(db_path)
+
+        # Use directory name as orchestrator_id (matches config.orchestrator_id)
+        orchestrator_id = tmp_path.name
+
+        # Create a failed run
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id=orchestrator_id,
+            pytest_args=["tests/e2e"],
+        )
+        db.upsert_test_result(
+            run_id=run_id,
+            nodeid="test_foo.py::test_bar",
+            outcome="failed",
+            longrepr="AssertionError",
+        )
+        db.finish_run(run_id, status="failed")
+
+        # Record that an issue exists for this failure
+        db.record_failure_issue(
+            nodeid="test_foo.py::test_bar",
+            github_issue_number=123,
+            parent_issue_number=100,
+            first_failing_run_id=run_id,
+            first_failing_sha="abc123",
+        )
+
+        response = e2e_client.get(
+            "/control/e2e/status",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # All failures have issues, so no attention needed
+        assert data["needs_attention"] is False
+        assert data["untriaged_count"] == 0
+
+    def test_needs_attention_false_for_passing_run(self, e2e_client, tmp_path):
+        """Passing run should not need attention."""
+        from issue_orchestrator.infra.e2e_db import E2EDB
+
+        # Create config
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_file = config_dir / "default.yaml"
+        config_file.write_text("""
+repo:
+  name: test/repo
+e2e:
+  enabled: true
+  pytest_paths: ["tests/e2e"]
+""")
+
+        db_dir = tmp_path / ".issue-orchestrator"
+        db_path = db_dir / "e2e.db"
+        db = E2EDB(db_path)
+
+        # Use directory name as orchestrator_id (matches config.orchestrator_id)
+        orchestrator_id = tmp_path.name
+
+        # Create a passing run
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id=orchestrator_id,
+            pytest_args=["tests/e2e"],
+        )
+        db.upsert_test_result(
+            run_id=run_id,
+            nodeid="test_foo.py::test_bar",
+            outcome="passed",
+        )
+        db.finish_run(run_id, status="passed")
+
+        response = e2e_client.get(
+            "/control/e2e/status",
+            params={"repo_root": str(tmp_path)}
+        )
+        assert response.status_code == 200
+        data = response.json()
+
+        # Passing run doesn't need attention
+        assert data["needs_attention"] is False
+        assert data["untriaged_count"] == 0
+
+
 # --- Test: Retry Issue Endpoint ---
 
 

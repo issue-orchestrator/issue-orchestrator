@@ -355,6 +355,8 @@ def _get_e2e_status(config) -> dict:
         last_run: dict | None
         failed_tests: list
         signal_score: dict | None
+        needs_attention: bool - True if E2E has failures needing triage
+        untriaged_count: int - Number of failures without issues
     """
     if not config:
         return {"enabled": False, "running": False}
@@ -379,6 +381,8 @@ def _get_e2e_status(config) -> dict:
     run_obj = None
     failed_tests = []
     signal_score = None
+    needs_attention = False
+    untriaged_count = 0
 
     if db_path.exists():
         try:
@@ -387,6 +391,16 @@ def _get_e2e_status(config) -> dict:
             if run_obj:
                 last_run = run_obj.to_dict()
                 failed_tests = [t.to_dict() for t in db.get_failed_tests(run_obj.id)]
+
+                # Determine if attention is needed: failed run with untriaged failures
+                if run_obj.status == "failed" and failed_tests:
+                    # Count failures that don't have existing issues
+                    for result in db.get_failed_tests(run_obj.id):
+                        existing = db.find_open_failure_issue(result.nodeid)
+                        if not existing:
+                            untriaged_count += 1
+                    needs_attention = untriaged_count > 0
+
             signal_score = db.compute_signal_score(orchestrator_id)
         except Exception as e:
             logger.warning("Failed to read E2E DB: %s", e)
@@ -402,6 +416,8 @@ def _get_e2e_status(config) -> dict:
         "failed_tests": failed_tests,
         "signal_score": signal_score,
         "next_run": next_run,
+        "needs_attention": needs_attention,
+        "untriaged_count": untriaged_count,
     }
 
 
@@ -674,6 +690,78 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
             else:
                 history_items.append(item)
 
+    # Add E2E failures to blocked list if attention is needed
+    e2e_status = _get_e2e_status(config)
+    if e2e_status.get("needs_attention") and e2e_status.get("untriaged_count", 0) > 0:
+        untriaged = e2e_status["untriaged_count"]
+        last_run = e2e_status.get("last_run", {})
+        run_id = last_run.get("id", "?")
+        # Get failed test details for expandable view
+        failed_tests_data = []
+        failed_tests = e2e_status.get("failed_tests", [])
+        for ft in failed_tests:
+            nodeid = ft.get("nodeid", "")
+            short_name = nodeid.split("::")[-1] if "::" in nodeid else nodeid
+            failed_tests_data.append({
+                "nodeid": nodeid,
+                "short_name": short_name,
+                "outcome": ft.get("outcome", "failed"),
+                "duration": ft.get("duration_seconds"),
+            })
+        blocked_items.insert(0, {  # Insert at top for visibility
+            "issue_number": f"E2E-{run_id}",
+            "title": f"E2E Run #{run_id}: {untriaged} failure{'s' if untriaged != 1 else ''} need triage",
+            "status": "needs_attention",
+            "detail_label": f"{untriaged} test{'s' if untriaged != 1 else ''} failed without issues",
+            "action": "triage",
+            "action_hint": "Click to open triage modal",
+            "is_e2e": True,  # Flag for special handling in template
+            "e2e_failed_tests": failed_tests_data,  # For expandable view
+        })
+
+    # Add E2E composite issues (triaged runs with sub-issues) to queue
+    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db" if config else None
+    if db_path and db_path.exists():
+        try:
+            from ..infra.e2e_db import E2EDB
+            db = E2EDB(db_path)
+            for run_issue in db.get_open_run_issues():
+                sub_issues = db.get_failure_issues_for_parent(run_issue.github_issue_number)
+                if sub_issues:  # Only show if has sub-issues
+                    resolved = sum(1 for s in sub_issues if s.resolved_at)
+                    total = len(sub_issues)
+                    pct = int((resolved / total * 100)) if total > 0 else 0
+                    # Build sub-issues list for display
+                    sub_issues_data = []
+                    for si in sub_issues:
+                        short_name = si.nodeid.split("::")[-1] if "::" in si.nodeid else si.nodeid
+                        sub_issues_data.append({
+                            "issue_number": si.github_issue_number,
+                            "nodeid": si.nodeid,
+                            "short_name": short_name,
+                            "resolved": si.resolved_at is not None,
+                            "resolution": si.resolution,
+                        })
+                    queue_items.insert(0, {  # Insert at top
+                        "issue_number": run_issue.github_issue_number,
+                        "title": f"E2E Run: {total} test failure{'s' if total != 1 else ''}",
+                        "status": "in_progress" if resolved < total else "completed",
+                        "detail_label": f"{resolved}/{total} resolved ({pct}%)",
+                        "action": "link",
+                        "action_hint": f"View issue #{run_issue.github_issue_number} on GitHub",
+                        "is_e2e": True,
+                        "e2e_progress": {"resolved": resolved, "total": total, "percent": pct},
+                        "e2e_sub_issues": sub_issues_data,  # For expandable view
+                        "flow_steps": [
+                            {"key": "triage", "label": "Triage"},
+                            {"key": "fixing", "label": "Fixing"},
+                            {"key": "done", "label": "Done"},
+                        ],
+                        "flow_stage": "fixing" if resolved < total else "done",
+                    })
+        except Exception as e:
+            logger.debug("Could not fetch E2E composite issues: %s", e)
+
     # Select issues list based on active tab
     if active_tab == "active":
         issues = active_items
@@ -699,8 +787,7 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
     # Get agents for the create issue form
     agents = config.agents if config else {}
 
-    # Get E2E status
-    e2e_status = _get_e2e_status(config)
+    # e2e_status already computed above for blocked items
 
     html = template.render(
         issues=issues,
@@ -720,6 +807,8 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
         startup_message=state.startup_message if state else "",
         repo=config.repo if config else "",
         repo_root=str(config.repo_root) if config and config.repo_root else "",
+        github_owner=config.repo.split("/")[0] if config and config.repo and "/" in config.repo else "",
+        github_repo=config.repo.split("/")[1] if config and config.repo and "/" in config.repo else "",
         queue_page=queue_page,
         queue_total_pages=queue_total_pages,
         queue_total=queue_total,

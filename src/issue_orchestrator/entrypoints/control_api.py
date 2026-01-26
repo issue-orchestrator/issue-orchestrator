@@ -2735,6 +2735,17 @@ async def e2e_start(request: Request) -> JSONResponse:
             allow_retry_once=allow_retry,
             quarantine_file=config.e2e.quarantine_file,
         )
+
+        # Broadcast E2E started event for SSE subscribers
+        try:
+            from .web import broadcast_event
+            await broadcast_event("e2e.started", {
+                "pid": result["pid"],
+                "orchestrator_id": orchestrator_id,
+            })
+        except Exception as e:
+            logger.debug("Could not broadcast e2e.started event: %s", e)
+
         return JSONResponse({
             "status": "started",
             "pid": result["pid"],
@@ -2787,6 +2798,16 @@ async def e2e_stop(request: Request) -> JSONResponse:
     runner = get_e2e_runner_manager()
     stopped = runner.stop(config.orchestrator_id, repo_root)
 
+    # Broadcast E2E stopped event for SSE subscribers
+    if stopped:
+        try:
+            from .web import broadcast_event
+            await broadcast_event("e2e.stopped", {
+                "orchestrator_id": config.orchestrator_id,
+            })
+        except Exception as e:
+            logger.debug("Could not broadcast e2e.stopped event: %s", e)
+
     return JSONResponse({
         "status": "stopped" if stopped else "not_running",
     })
@@ -2833,6 +2854,8 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
     run_obj = None
     signal_score = None
     progress = None
+    needs_attention = False
+    untriaged_count = 0
 
     if db_path.exists():
         try:
@@ -2843,6 +2866,10 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
                 # Get progress for running tests
                 if run_obj.status == "running":
                     progress = db.get_progress(run_obj.id)
+                # Determine if attention is needed: failed run with untriaged failures
+                elif run_obj.status == "failed":
+                    untriaged_count = _count_untriaged_failures(db, run_obj.id)
+                    needs_attention = untriaged_count > 0
             signal_score = db.compute_signal_score(config.orchestrator_id)
         except Exception as e:
             logger.warning("Failed to read E2E DB: %s", e)
@@ -2859,6 +2886,8 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
         "signal_score": signal_score,
         "progress": progress,
         "next_run": next_run,
+        "needs_attention": needs_attention,
+        "untriaged_count": untriaged_count,
     })
 
 
@@ -3603,6 +3632,142 @@ async def e2e_triage_data(
         logger.exception("Failed to get triage data: %s", e)
         return JSONResponse(
             {"error": "triage_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
+def _extract_test_log_excerpt(log_path: str | None, nodeid: str) -> str | None:
+    """Extract log lines relevant to a specific test."""
+    if not log_path:
+        return None
+
+    from ..infra.e2e_run_diagnosis import _read_log_content
+
+    log_exists, log_content = _read_log_content(log_path)
+    if not log_exists or not log_content:
+        return None
+
+    short_name = nodeid.split("::")[-1]
+    lines = log_content.split("\n")
+    relevant_lines = []
+    in_test = False
+
+    for line in lines:
+        if short_name in line or nodeid in line:
+            in_test = True
+        if in_test:
+            relevant_lines.append(line)
+            if len(relevant_lines) > 100:
+                break
+
+    return "\n".join(relevant_lines) if relevant_lines else None
+
+
+def _calculate_history_summary(history: list[dict]) -> dict:
+    """Calculate pass/fail summary from test history."""
+    if not history:
+        return {"total": 0, "passed": 0, "failed": 0, "pass_rate": None}
+
+    passed = sum(1 for h in history if h["outcome"] == "passed")
+    failed = sum(1 for h in history if h["outcome"] in ("failed", "error"))
+    total = len(history)
+    pass_rate = passed / total if total > 0 else None
+
+    return {"total": total, "passed": passed, "failed": failed, "pass_rate": pass_rate}
+
+
+def _count_untriaged_failures(db: object, run_id: int) -> int:
+    """Count failures without corresponding open issues.
+
+    Args:
+        db: E2EDB instance (typed as object to avoid circular import)
+        run_id: The run ID to check
+    """
+    failed_tests = db.get_failed_tests(run_id)  # type: ignore[attr-defined]
+    count = 0
+    for result in failed_tests:
+        existing = db.find_open_failure_issue(result.nodeid)  # type: ignore[attr-defined]
+        if not existing:
+            count += 1
+    return count
+
+
+@control_app.get("/control/e2e/test/{run_id}")
+async def e2e_test_detail(
+    run_id: int,
+    nodeid: str = Query(...),
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Get detailed information for a single test failure."""
+    from ..infra.e2e_db import E2EDB
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        db = E2EDB(db_path)
+        run = db.get_run(run_id)
+        if run is None:
+            return JSONResponse(
+                {"error": "not_found", "detail": f"Run {run_id} not found"},
+                status_code=404,
+            )
+
+        test_result = db.get_test_result(run_id, nodeid)
+        if test_result is None:
+            return JSONResponse(
+                {"error": "not_found", "detail": f"Test {nodeid} not found in run {run_id}"},
+                status_code=404,
+            )
+
+        # Get flake info
+        e2e_config = _orchestrator.config.e2e if _orchestrator else _DEFAULT_E2E_CONFIG
+        flake_count = db.get_flake_count(nodeid, window_runs=e2e_config.flake_window_runs)
+        is_likely_flaky = flake_count >= e2e_config.flake_threshold
+
+        # Get history and existing issue
+        existing_issue = db.find_open_failure_issue(nodeid)
+        history = db.get_test_history(nodeid, limit=10)
+        history_data = [
+            {"run_id": h["run_id"], "outcome": h["outcome"], "timestamp": h["started_at"]}
+            for h in history
+        ]
+
+        return JSONResponse({
+            "test": {
+                "nodeid": test_result.nodeid,
+                "outcome": test_result.outcome,
+                "longrepr": test_result.longrepr,
+                "duration_seconds": test_result.duration_seconds,
+                "retry_outcome": test_result.retry_outcome,
+            },
+            "run": {
+                "id": run.id,
+                "status": run.status,
+                "started_at": run.started_at,
+                "commit_sha": run.commit_sha,
+                "branch": run.branch,
+            },
+            "history": history_data,
+            "history_summary": _calculate_history_summary(history),
+            "flake_count": flake_count,
+            "is_likely_flaky": is_likely_flaky,
+            "existing_issue": existing_issue.to_dict() if existing_issue else None,
+            "log_excerpt": _extract_test_log_excerpt(run.log_path, nodeid),
+        })
+
+    except Exception as e:
+        logger.exception("Failed to get test detail: %s", e)
+        return JSONResponse(
+            {"error": "test_detail_error", "detail": str(e)},
             status_code=500,
         )
 

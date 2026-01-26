@@ -257,11 +257,14 @@ class EventName(str, Enum):
 
     # =========================================================================
     # E2E Test Runner
+    # Currently emitted: E2E_STARTED, E2E_STOPPED (from control_api.py)
+    # Not yet emitted (reserved for future worker integration): E2E_PROGRESS, E2E_COMPLETED, E2E_FAILED
     # =========================================================================
     E2E_AUTO_TRIGGERED = "e2e.auto_triggered"
     E2E_STARTED = "e2e.started"
-    E2E_COMPLETED = "e2e.completed"
-    E2E_FAILED = "e2e.failed"
+    E2E_PROGRESS = "e2e.progress"  # Periodic progress update during run (not yet emitted)
+    E2E_COMPLETED = "e2e.completed"  # Run completed successfully (not yet emitted)
+    E2E_FAILED = "e2e.failed"  # Run failed (not yet emitted)
     E2E_STOPPED = "e2e.stopped"
 
     # =========================================================================
