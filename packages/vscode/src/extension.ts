@@ -465,6 +465,7 @@ async function connectEventStream(
     eventSource = new EventSource(urls.events_url);
     reconnectAttempts = 0;
     if (pollingFallback) {
+      provider.stopPolling();
       pollingFallback = false;
     }
 
