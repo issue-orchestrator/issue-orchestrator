@@ -759,7 +759,7 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
             })
         e2e_items.append({
             "issue_number": f"E2E-{run_id}",
-            "title": f"E2E Run #{run_id}: {untriaged} failure{'s' if untriaged != 1 else ''} need triage",
+            "title": f"{untriaged} failure{'s' if untriaged != 1 else ''} need{'s' if untriaged == 1 else ''} triage",
             "status": "needs_attention",
             "detail_label": f"{untriaged} test{'s' if untriaged != 1 else ''} failed without issues",
             "action": "triage",
@@ -830,9 +830,9 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
                 relative_time = _relative_time(run.started_at) if run.started_at else ""
                 e2e_items.append({
                     "issue_number": f"E2E-{run.id}",
-                    "title": f"E2E Run #{run.id}",
+                    "title": run.commit_sha[:7] if run.commit_sha else "no commit",
                     "status": run.status,
-                    "detail_label": f"{run.status.title()} • {relative_time}",
+                    "detail_label": "",
                     "action": "details",
                     "action_hint": "View run details",
                     "is_e2e": True,

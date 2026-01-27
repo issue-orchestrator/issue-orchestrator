@@ -165,7 +165,7 @@
             {% endif %}
         </div>
 
-        <div class="issue-list {% if active_tab == 'blocked' %}blocked-list{% endif %}" id="issueList" role="tabpanel" aria-label="Issue list">
+        <div class="issue-list {% if active_tab == 'blocked' %}blocked-list{% endif %}{% if active_tab == 'e2e' %} e2e-list{% endif %}" id="issueList" role="tabpanel" aria-label="Issue list">
             {% if active_tab == 'e2e' %}
             <div class="e2e-controls" id="e2eControls">
                 {% if e2e_status.running %}
@@ -201,10 +201,10 @@
                 {% if active_tab == 'e2e' %}
                 <span>Run</span>
                 <span>Status</span>
-                <span>Description</span>
-                <span>Detail</span>
+                <span>Info</span>
+                <span></span>
                 <span class="header-runtime">Time</span>
-                <span>Action</span>
+                <span>Actions</span>
                 {% else %}
                 <span>Issue</span>
                 <span>Phase</span>
@@ -329,11 +329,7 @@
                         <span aria-hidden="true">↗</span> View
                     </a>
                     {% else %}
-                    {# Recent completed runs - show status badge and details button #}
-                    <span class="e2e-status-badge {{ issue.status }}" title="{{ issue.action_hint }}">
-                        {% if issue.status == 'passed' %}✓{% elif issue.status == 'failed' %}✗{% else %}–{% endif %}
-                        {{ issue.status }}
-                    </span>
+                    {# Recent completed runs - details button only (status shown in status column) #}
                     {% if issue.e2e_run_id %}
                     <button class="issue-action-btn details-btn" onclick="showE2ERunDetails({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="View run details" title="View run details">
                         <span aria-hidden="true">🔍</span>
@@ -625,6 +621,12 @@
                         </button>
                         <button class="btn-secondary" onclick="copyTestError()">
                             Copy Error
+                        </button>
+                        <button class="btn-secondary" onclick="rerunCurrentTest()">
+                            Rerun Test
+                        </button>
+                        <button class="btn-secondary" onclick="copyCurrentTestCommand()">
+                            Copy Command
                         </button>
                     </div>
                     <button class="btn-secondary" onclick="closeTestFailureModal()">Close</button>
