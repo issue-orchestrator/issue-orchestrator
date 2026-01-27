@@ -346,6 +346,36 @@ async def favicon():
     return Response(status_code=204)
 
 
+def _relative_time(dt_str: str) -> str:
+    """Convert ISO timestamp to relative time like '2h ago'."""
+    from datetime import datetime, timezone
+
+    try:
+        # Handle both 'Z' suffix and '+00:00' formats
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        delta = now - dt
+
+        if delta.days > 0:
+            return f"{delta.days}d ago"
+        hours = delta.seconds // 3600
+        if hours > 0:
+            return f"{hours}h ago"
+        minutes = delta.seconds // 60
+        return f"{minutes}m ago" if minutes > 0 else "just now"
+    except (ValueError, TypeError):
+        return ""
+
+
+def _count_untriaged_failures(db, run_obj) -> int:
+    """Count test failures without existing issues."""
+    count = 0
+    for result in db.get_failed_tests(run_obj.id):
+        if not db.find_open_failure_issue(result.nodeid):
+            count += 1
+    return count
+
+
 def _get_e2e_status(config) -> dict:
     """Get E2E runner status for dashboard display.
 
@@ -357,32 +387,26 @@ def _get_e2e_status(config) -> dict:
         signal_score: dict | None
         needs_attention: bool - True if E2E has failures needing triage
         untriaged_count: int - Number of failures without issues
+        low_stability: bool - True if pass_rate < 50%
     """
-    if not config:
+    if not config or not config.e2e.enabled:
         return {"enabled": False, "running": False}
 
     from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
     from ..infra.e2e_db import E2EDB
 
     orchestrator_id = config.orchestrator_id
-
-    # Check if E2E is enabled
-    if not config.e2e.enabled:
-        return {"enabled": False, "running": False}
-
-    # Get process status
     runner = get_e2e_runner_manager()
     proc_status = runner.status(orchestrator_id)
 
     # Get DB data
     db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
     last_run = None
-    next_run = None
     run_obj = None
     failed_tests = []
     signal_score = None
-    needs_attention = False
     untriaged_count = 0
+    low_stability = False
 
     if db_path.exists():
         try:
@@ -391,22 +415,17 @@ def _get_e2e_status(config) -> dict:
             if run_obj:
                 last_run = run_obj.to_dict()
                 failed_tests = [t.to_dict() for t in db.get_failed_tests(run_obj.id)]
-
-                # Determine if attention is needed: failed run with untriaged failures
+                if last_run.get("started_at"):
+                    last_run["relative_time"] = _relative_time(last_run["started_at"])
                 if run_obj.status == "failed" and failed_tests:
-                    # Count failures that don't have existing issues
-                    for result in db.get_failed_tests(run_obj.id):
-                        existing = db.find_open_failure_issue(result.nodeid)
-                        if not existing:
-                            untriaged_count += 1
-                    needs_attention = untriaged_count > 0
-
+                    untriaged_count = _count_untriaged_failures(db, run_obj)
             signal_score = db.compute_signal_score(orchestrator_id)
+            if signal_score and signal_score.get("pass_rate") is not None:
+                low_stability = signal_score["pass_rate"] < 0.5
         except Exception as e:
             logger.warning("Failed to read E2E DB: %s", e)
 
-    if config:
-        next_run = get_next_run_info(config, config.repo_root, run_obj)
+    next_run = get_next_run_info(config, config.repo_root, run_obj)
 
     return {
         "enabled": True,
@@ -416,8 +435,9 @@ def _get_e2e_status(config) -> dict:
         "failed_tests": failed_tests,
         "signal_score": signal_score,
         "next_run": next_run,
-        "needs_attention": needs_attention,
+        "needs_attention": untriaged_count > 0,
         "untriaged_count": untriaged_count,
+        "low_stability": low_stability,
     }
 
 
@@ -452,6 +472,7 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
     queue_items = []      # Waiting to start (not blocked)
     blocked_items = []    # Issues needing human attention (from queue or history)
     history_items = []    # Completed sessions (success or fail, but not blocked)
+    e2e_items = []        # E2E runs (running, passed, failed)
     seen_issues = set()   # Track issue numbers to avoid duplicates
 
     def make_issue_url(issue_number: int) -> str:
@@ -690,8 +711,23 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
             else:
                 history_items.append(item)
 
-    # Add E2E failures to blocked list if attention is needed
+    # Build E2E items for the E2E tab
     e2e_status = _get_e2e_status(config)
+
+    # Add currently running E2E if any
+    if e2e_status.get("running"):
+        e2e_items.append({
+            "issue_number": "E2E-running",
+            "title": "E2E Run in Progress",
+            "status": "running",
+            "detail_label": "Tests are executing...",
+            "action": "stop",
+            "action_hint": "Click to stop E2E run",
+            "is_e2e": True,
+            "e2e_running": True,
+        })
+
+    # Add failed E2E run needing triage
     if e2e_status.get("needs_attention") and e2e_status.get("untriaged_count", 0) > 0:
         untriaged = e2e_status["untriaged_count"]
         last_run = e2e_status.get("last_run", {})
@@ -708,20 +744,22 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
                 "outcome": ft.get("outcome", "failed"),
                 "duration": ft.get("duration_seconds"),
             })
-        blocked_items.insert(0, {  # Insert at top for visibility
+        e2e_items.append({
             "issue_number": f"E2E-{run_id}",
             "title": f"E2E Run #{run_id}: {untriaged} failure{'s' if untriaged != 1 else ''} need triage",
             "status": "needs_attention",
             "detail_label": f"{untriaged} test{'s' if untriaged != 1 else ''} failed without issues",
             "action": "triage",
             "action_hint": "Click to open triage modal",
-            "is_e2e": True,  # Flag for special handling in template
-            "e2e_failed_tests": failed_tests_data,  # For expandable view
+            "is_e2e": True,
+            "e2e_failed_tests": failed_tests_data,
+            "e2e_run_id": run_id,
+            "relative_time": last_run.get("relative_time", ""),
         })
 
-    # Add E2E composite issues (triaged runs with sub-issues) to queue
+    # Add E2E composite issues (triaged runs with sub-issues)
     db_path = config.repo_root / ".issue-orchestrator" / "e2e.db" if config else None
-    if db_path and db_path.exists():
+    if db_path and db_path.exists() and config:
         try:
             from ..infra.e2e_db import E2EDB
             db = E2EDB(db_path)
@@ -742,8 +780,9 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
                             "resolved": si.resolved_at is not None,
                             "resolution": si.resolution,
                         })
-                    queue_items.insert(0, {  # Insert at top
+                    e2e_items.append({
                         "issue_number": run_issue.github_issue_number,
+                        "issue_url": make_issue_url(run_issue.github_issue_number),
                         "title": f"E2E Run: {total} test failure{'s' if total != 1 else ''}",
                         "status": "in_progress" if resolved < total else "completed",
                         "detail_label": f"{resolved}/{total} resolved ({pct}%)",
@@ -751,7 +790,7 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
                         "action_hint": f"View issue #{run_issue.github_issue_number} on GitHub",
                         "is_e2e": True,
                         "e2e_progress": {"resolved": resolved, "total": total, "percent": pct},
-                        "e2e_sub_issues": sub_issues_data,  # For expandable view
+                        "e2e_sub_issues": sub_issues_data,
                         "flow_steps": [
                             {"key": "triage", "label": "Triage"},
                             {"key": "fixing", "label": "Fixing"},
@@ -759,8 +798,35 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
                         ],
                         "flow_stage": "fixing" if resolved < total else "done",
                     })
+
+            # Add recent completed runs (passed or failed without open issues)
+            recent_runs = db.list_runs(orchestrator_id=config.orchestrator_id, limit=10)
+            for run in recent_runs:
+                # Skip if already added (running or needs attention)
+                if e2e_status.get("running") and run.status == "running":
+                    continue
+                if e2e_status.get("last_run", {}).get("id") == run.id and e2e_status.get("needs_attention"):
+                    continue
+                # Skip if has open run issue (already shown above)
+                run_issue = db.get_run_issue(run.id)
+                if run_issue and not run_issue.closed_at:
+                    continue
+
+                relative_time = _relative_time(run.started_at) if run.started_at else ""
+                e2e_items.append({
+                    "issue_number": f"E2E-{run.id}",
+                    "title": f"E2E Run #{run.id}",
+                    "status": run.status,
+                    "detail_label": f"{run.status.title()} • {relative_time}",
+                    "action": "details",
+                    "action_hint": "View run details",
+                    "is_e2e": True,
+                    "e2e_run_id": run.id,
+                    "relative_time": relative_time,
+                    "commit_sha": run.commit_sha[:7] if run.commit_sha else "",
+                })
         except Exception as e:
-            logger.debug("Could not fetch E2E composite issues: %s", e)
+            logger.debug("Could not fetch E2E data: %s", e)
 
     # Select issues list based on active tab
     if active_tab == "active":
@@ -769,6 +835,8 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
         issues = queue_items
     elif active_tab == "blocked":
         issues = blocked_items
+    elif active_tab == "e2e":
+        issues = e2e_items
     elif active_tab == "history":
         issues = history_items
     else:
@@ -795,10 +863,12 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
         queue_items=queue_items,
         blocked_items=blocked_items,
         history_items=history_items,
+        e2e_items=e2e_items,
         active_count=len(active_items),
         queue_count=len(queue_items),
         blocked_count=len(blocked_items),
         history_count=len(history_items),
+        e2e_count=len(e2e_items),
         active_tab=active_tab,
         paused=state.paused if state else False,
         shutdown_requested=shutdown_requested,

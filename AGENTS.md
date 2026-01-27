@@ -9,7 +9,7 @@
 ```bash
 git worktree add ../issue-orchestrator-wt-my-branch-name -b my-branch-name
 cd ../issue-orchestrator-wt-my-branch-name
-make venv  # Set up the worktree environment
+make worktree-setup  # Set up venv, vscode extensions, and playwright
 ```
 
 This is not optional. Do not edit files in the base repo. If the user explicitly says "edit directly" or "no worktree", then and only then may you skip this. Otherwise: **worktree first, then work.**
