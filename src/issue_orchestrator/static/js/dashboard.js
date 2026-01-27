@@ -405,6 +405,13 @@ function goToPage(page) {
     window.location.href = url.toString();
 }
 
+// E2E pagination (preserves current tab)
+function goToE2EPage(page) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('e2e_page', page);
+    window.location.href = url.toString();
+}
+
 // Auto-refresh (preserves page param) - uses queue_refresh_seconds from config
 const queueRefreshSeconds = window.dashboardData.queueRefreshSeconds;
 if (queueRefreshSeconds > 0) {

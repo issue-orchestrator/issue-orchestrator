@@ -188,6 +188,13 @@
                 </span>
                 {% endif %}
                 {% endif %}
+                {% if e2e_status.signal_score and e2e_status.signal_score.pass_rate is not none %}
+                <span class="e2e-pass-rate {% if e2e_status.signal_score.pass_rate >= 0.9 %}pass-rate-good{% elif e2e_status.signal_score.pass_rate >= 0.5 %}pass-rate-warn{% else %}pass-rate-bad{% endif %}"
+                      title="Pass rate over last {{ e2e_status.signal_score.runs_analyzed }} runs">
+                    {{ "%.0f"|format(e2e_status.signal_score.pass_rate * 100) }}% passed
+                    <span class="pass-rate-detail">({{ e2e_status.signal_score.runs_analyzed }} runs)</span>
+                </span>
+                {% endif %}
             </div>
             {% endif %}
             <div class="issue-header" role="row" aria-hidden="true">
@@ -312,6 +319,11 @@
                     <button class="issue-action-btn triage-btn" onclick="showE2ETriage(); event.stopPropagation();" aria-label="Open E2E triage modal" title="Review and create issues for failed tests">
                         <span aria-hidden="true">📋</span> Triage
                     </button>
+                    {% if issue.e2e_run_id %}
+                    <button class="issue-action-btn details-btn" onclick="showE2ERunDetails({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="View run details" title="View full run details">
+                        <span aria-hidden="true">🔍</span>
+                    </button>
+                    {% endif %}
                     {% elif issue.e2e_sub_issues %}
                     <a href="{{ issue.issue_url }}" target="_blank" class="issue-action-btn link-btn" onclick="event.stopPropagation();" aria-label="View issue on GitHub" title="View issue on GitHub">
                         <span aria-hidden="true">↗</span> View
@@ -620,11 +632,19 @@
             </div>
         </div>
 
-        {% if queue_total_pages > 1 %}
+        {% if queue_total_pages > 1 and active_tab != 'e2e' %}
         <div class="pagination">
             <button onclick="goToPage({{ queue_page - 1 }})" {% if queue_page <= 1 %}disabled{% endif %}>← Prev</button>
             <span>Page {{ queue_page }} of {{ queue_total_pages }} ({{ queue_total }} queued)</span>
             <button onclick="goToPage({{ queue_page + 1 }})" {% if queue_page >= queue_total_pages %}disabled{% endif %}>Next →</button>
+        </div>
+        {% endif %}
+
+        {% if e2e_total_pages > 1 and active_tab == 'e2e' %}
+        <div class="pagination">
+            <button onclick="goToE2EPage({{ e2e_page - 1 }})" {% if e2e_page <= 1 %}disabled{% endif %}>← Prev</button>
+            <span>Page {{ e2e_page }} of {{ e2e_total_pages }} ({{ e2e_total }} runs)</span>
+            <button onclick="goToE2EPage({{ e2e_page + 1 }})" {% if e2e_page >= e2e_total_pages %}disabled{% endif %}>Next →</button>
         </div>
         {% endif %}
 

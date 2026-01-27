@@ -551,10 +551,11 @@ def _check_e2e_runner(result: DoctorResult, config: Config) -> None:
     if not has_error:
         auto = f"auto={config.e2e.auto_run_interval_minutes}m" if config.e2e.auto_run_interval_minutes > 0 else "manual"
         retry = "retry=on" if config.e2e.allow_retry_once else "retry=off"
+        flake = f"flake={config.e2e.flake_threshold}/{config.e2e.flake_window_runs}runs"
         result.checks.append(Check(
             name="E2E Runner",
             status="ok",
-            detail=f"Enabled ({auto}, {retry}, {', '.join(e2e_checks)})",
+            detail=f"Enabled ({auto}, {retry}, {flake}, {', '.join(e2e_checks)})",
         ))
 
 
