@@ -90,8 +90,8 @@ Add these to make the wizard automatically prompt for the field:
     "enabled": True,           # wizard should ask this
     "section": "concurrency",  # wizard section grouping
     "order": 10,               # sort order within section
-    "prompt": "Max sessions",  # override title if needed
-    "condition": {             # only ask when condition met
+    "prompt": "Max sessions",  # override title if needed (defaults to field title)
+    "condition": {             # only ask when condition met (optional)
         "field": "ui_mode",
         "value": "web",
     },
@@ -99,6 +99,24 @@ Add these to make the wizard automatically prompt for the field:
 ```
 
 **Current setup sections:** `concurrency`, `ui`, `worktrees`
+
+**How the wizard consumes setup fields:**
+
+`get_setup_fields(section)` returns a sorted list of dicts, each with:
+`name`, `title`, `description`, `default`, `type`, `order`, `prompt`, `condition`, `tab_key`, `yaml_path`
+
+The wizard iterates and prompts:
+```python
+for field in get_setup_fields("concurrency"):
+    raw = prompter.input(field["prompt"], str(field["default"]))
+    config_values[field["name"]] = int(raw)  # coerce to field type
+```
+
+**To add a field to an existing section** — just add `"setup": {"enabled": True, "section": "concurrency", "order": 20}` to the field's `json_schema_extra`. The wizard picks it up automatically.
+
+**To add a new section** — add the `setup` annotation with a new section name, then add a `get_setup_fields("new_section")` loop in `setup_wizard.py` where the section should appear. Existing sections (`concurrency`, `ui`, `worktrees`) already have loops.
+
+**Condition evaluation** — `condition: {"field": "ui_mode", "value": "web"}` means the wizard skips the prompt unless the local variable `ui_mode` equals `"web"`. This is evaluated in the wizard loop, not by the schema.
 
 ### Summary Annotations
 
