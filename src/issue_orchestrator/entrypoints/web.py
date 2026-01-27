@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from sse_starlette.sse import EventSourceResponse
 from jinja2 import Environment, FileSystemLoader
@@ -169,6 +170,13 @@ def dedupe_consecutive_lines(lines: list[str]) -> list[str]:
 
 # Create FastAPI app
 app = FastAPI(title="Issue Orchestrator")
+
+# Static directory (sibling to templates directory)
+STATIC_DIR = Path(__file__).parent.parent / "static"
+
+# Mount static files with proper security (prevents path traversal, uses async streaming)
+if STATIC_DIR.exists():
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Global reference to orchestrator (set at startup)
 _orchestrator: "Orchestrator | None" = None
@@ -344,38 +352,6 @@ async def favicon():
             media_type="image/svg+xml",
         )
     return Response(status_code=204)
-
-
-# Static directory (sibling to templates directory)
-STATIC_DIR = Path(__file__).parent.parent / "static"
-
-
-@app.get("/static/css/{filename}")
-async def serve_css(filename: str):
-    """Serve CSS static files."""
-    from fastapi.responses import Response
-
-    css_path = STATIC_DIR / "css" / filename
-    if css_path.exists() and css_path.is_file():
-        return Response(
-            content=css_path.read_text(),
-            media_type="text/css",
-        )
-    return Response(status_code=404)
-
-
-@app.get("/static/js/{filename}")
-async def serve_js(filename: str):
-    """Serve JavaScript static files."""
-    from fastapi.responses import Response
-
-    js_path = STATIC_DIR / "js" / filename
-    if js_path.exists() and js_path.is_file():
-        return Response(
-            content=js_path.read_text(),
-            media_type="application/javascript",
-        )
-    return Response(status_code=404)
 
 
 def _relative_time(dt_str: str) -> str:
