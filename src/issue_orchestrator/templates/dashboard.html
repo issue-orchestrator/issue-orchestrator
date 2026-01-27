@@ -317,6 +317,13 @@
             border-bottom: 2px solid #30363d;
             position: relative;
         }
+        .tab-divider {
+            width: 1px;
+            height: 20px;
+            background: #30363d;
+            margin: 0 12px;
+            align-self: center;
+        }
         .tab {
             padding: 12px 24px;
             font-size: 14px;
@@ -2575,10 +2582,21 @@
                 Blocked
                 <span class="tab-badge blocked-badge {% if blocked_count == 0 %}empty{% endif %}" aria-label="{{ blocked_count }} blocked issues needing attention">{{ blocked_count }}</span>
             </button>
+            <button class="tab {% if active_tab == 'history' %}active{% endif %}"
+                    id="tab-history"
+                    onclick="switchTab('history')"
+                    role="tab"
+                    aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}"
+                    aria-controls="issueList"
+                    tabindex="{% if active_tab == 'history' %}0{% else %}-1{% endif %}">
+                History
+                <span class="tab-badge {% if history_count == 0 %}empty{% endif %}" aria-label="{{ history_count }} completed sessions">{{ history_count }}</span>
+            </button>
             <button class="excluded-toggle" id="excludedToggle" onclick="toggleExcluded()" title="Show issues excluded from scheduling" aria-label="Toggle excluded issues panel">
                 Excluded
             </button>
             {% if e2e_status.enabled %}
+            <span class="tab-divider" aria-hidden="true"></span>
             <button class="tab {% if active_tab == 'e2e' %}active{% endif %} {% if e2e_status.last_run and e2e_status.last_run.status == 'failed' %}e2e-failed-tab{% endif %}"
                     id="tab-e2e"
                     onclick="switchTab('e2e')"
@@ -2598,16 +2616,6 @@
                 {% endif %}
             </button>
             {% endif %}
-            <button class="tab {% if active_tab == 'history' %}active{% endif %}"
-                    id="tab-history"
-                    onclick="switchTab('history')"
-                    role="tab"
-                    aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}"
-                    aria-controls="issueList"
-                    tabindex="{% if active_tab == 'history' %}0{% else %}-1{% endif %}">
-                History
-                <span class="tab-badge {% if history_count == 0 %}empty{% endif %}" aria-label="{{ history_count }} completed sessions">{{ history_count }}</span>
-            </button>
         </div>
 
         <div class="issue-list {% if active_tab == 'blocked' %}blocked-list{% endif %}" id="issueList" role="tabpanel" aria-label="Issue list">
@@ -3549,7 +3557,7 @@
         }
 
         // Keyboard navigation for tabs (accessibility)
-        const tabOrder = ['active', 'queue', 'blocked', 'e2e', 'history'];
+        const tabOrder = ['active', 'queue', 'blocked', 'history', 'e2e'];
         document.querySelectorAll('.tab-bar .tab').forEach(tabBtn => {
             tabBtn.addEventListener('keydown', (e) => {
                 const currentTab = tabBtn.id.replace('tab-', '');
