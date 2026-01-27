@@ -312,6 +312,11 @@
                     <button class="issue-action-btn triage-btn" onclick="showE2ETriage(); event.stopPropagation();" aria-label="Open E2E triage modal" title="Review and create issues for failed tests">
                         <span aria-hidden="true">📋</span> Triage
                     </button>
+                    {% if issue.e2e_run_id %}
+                    <button class="issue-action-btn details-btn" onclick="showE2ERunDetails({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="View run details" title="View full run details">
+                        <span aria-hidden="true">🔍</span>
+                    </button>
+                    {% endif %}
                     {% elif issue.e2e_sub_issues %}
                     <a href="{{ issue.issue_url }}" target="_blank" class="issue-action-btn link-btn" onclick="event.stopPropagation();" aria-label="View issue on GitHub" title="View issue on GitHub">
                         <span aria-hidden="true">↗</span> View
