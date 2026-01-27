@@ -317,6 +317,13 @@
             border-bottom: 2px solid #30363d;
             position: relative;
         }
+        .tab-divider {
+            width: 1px;
+            height: 20px;
+            background: #30363d;
+            margin: 0 12px;
+            align-self: center;
+        }
         .tab {
             padding: 12px 24px;
             font-size: 14px;
@@ -449,6 +456,179 @@
             color: #8b949e;
             font-size: 13px;
         }
+        .e2e-next-run {
+            color: #8b949e;
+            font-size: 13px;
+        }
+        .e2e-run-label {
+            font-size: 12px;
+            color: #8b949e;
+            white-space: nowrap;
+        }
+        .e2e-status-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 12px;
+            text-transform: capitalize;
+        }
+        .e2e-status-badge.passed {
+            background: rgba(35, 134, 54, 0.15);
+            color: #3fb950;
+        }
+        .e2e-status-badge.failed {
+            background: rgba(248, 81, 73, 0.15);
+            color: #f85149;
+        }
+        /* Run details modal styles */
+        .run-details { padding: 0 4px; }
+        .run-details .run-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        .run-details .run-header h3 { margin: 0; font-size: 18px; }
+        .run-details .run-info { margin-bottom: 20px; }
+        .run-details .info-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+        .run-details .info-row .label {
+            color: #8b949e;
+            min-width: 80px;
+        }
+        .run-details .test-summary {
+            display: flex;
+            gap: 12px;
+        }
+        .run-details .passed-count { color: #3fb950; }
+        .run-details .failed-count { color: #f85149; }
+        .run-details .quarantined-count { color: #d29922; }
+        .run-details .skipped-count { color: #8b949e; }
+        .test-results-section {
+            margin-top: 16px;
+            border-top: 1px solid #30363d;
+            padding-top: 12px;
+        }
+        .test-results-section h4 {
+            margin: 0 0 12px 0;
+            font-size: 14px;
+            color: #c9d1d9;
+        }
+        .test-results-list {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .test-result-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px 12px;
+            background: #161b22;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        .test-result-item.clickable {
+            cursor: pointer;
+        }
+        .test-result-item.clickable:hover {
+            background: #21262d;
+        }
+        .test-result-item .test-name {
+            flex: 1;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .test-result-item .duration {
+            color: #8b949e;
+            font-size: 12px;
+        }
+        .test-result-item .click-hint {
+            color: #8b949e;
+            font-size: 14px;
+        }
+        .test-result-item .status-icon.quarantined { color: #d29922; }
+        /* Test detail view */
+        .test-detail-view { padding: 0 4px; }
+        .test-detail-view .back-btn {
+            background: none;
+            border: none;
+            color: #58a6ff;
+            cursor: pointer;
+            font-size: 13px;
+            padding: 0;
+            margin-bottom: 12px;
+        }
+        .test-detail-view .back-btn:hover { text-decoration: underline; }
+        .test-detail-header {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+        .test-detail-header h3 {
+            margin: 0;
+            font-size: 16px;
+            word-break: break-all;
+        }
+        .quarantine-badge {
+            padding: 2px 8px;
+            background: rgba(210, 153, 34, 0.2);
+            color: #d29922;
+            border-radius: 4px;
+            font-size: 11px;
+        }
+        .test-detail-info { margin-bottom: 16px; }
+        .test-detail-info .info-row {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 6px;
+            font-size: 13px;
+        }
+        .test-detail-info .label {
+            color: #8b949e;
+            min-width: 80px;
+        }
+        .test-detail-info code {
+            background: #161b22;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 12px;
+            word-break: break-all;
+        }
+        .test-error-section, .test-output-section {
+            margin-top: 16px;
+            border-top: 1px solid #30363d;
+            padding-top: 12px;
+        }
+        .test-error-section h4, .test-output-section h4 {
+            margin: 0 0 8px 0;
+            font-size: 14px;
+            color: #c9d1d9;
+        }
+        .error-output, .test-output {
+            background: #161b22;
+            padding: 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            line-height: 1.5;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-break: break-word;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        .error-output { color: #f85149; }
         .e2e-empty-state {
             display: flex;
             flex-direction: column;
@@ -2575,10 +2755,21 @@
                 Blocked
                 <span class="tab-badge blocked-badge {% if blocked_count == 0 %}empty{% endif %}" aria-label="{{ blocked_count }} blocked issues needing attention">{{ blocked_count }}</span>
             </button>
+            <button class="tab {% if active_tab == 'history' %}active{% endif %}"
+                    id="tab-history"
+                    onclick="switchTab('history')"
+                    role="tab"
+                    aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}"
+                    aria-controls="issueList"
+                    tabindex="{% if active_tab == 'history' %}0{% else %}-1{% endif %}">
+                History
+                <span class="tab-badge {% if history_count == 0 %}empty{% endif %}" aria-label="{{ history_count }} completed sessions">{{ history_count }}</span>
+            </button>
             <button class="excluded-toggle" id="excludedToggle" onclick="toggleExcluded()" title="Show issues excluded from scheduling" aria-label="Toggle excluded issues panel">
                 Excluded
             </button>
             {% if e2e_status.enabled %}
+            <span class="tab-divider" aria-hidden="true"></span>
             <button class="tab {% if active_tab == 'e2e' %}active{% endif %} {% if e2e_status.last_run and e2e_status.last_run.status == 'failed' %}e2e-failed-tab{% endif %}"
                     id="tab-e2e"
                     onclick="switchTab('e2e')"
@@ -2598,16 +2789,6 @@
                 {% endif %}
             </button>
             {% endif %}
-            <button class="tab {% if active_tab == 'history' %}active{% endif %}"
-                    id="tab-history"
-                    onclick="switchTab('history')"
-                    role="tab"
-                    aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}"
-                    aria-controls="issueList"
-                    tabindex="{% if active_tab == 'history' %}0{% else %}-1{% endif %}">
-                History
-                <span class="tab-badge {% if history_count == 0 %}empty{% endif %}" aria-label="{{ history_count }} completed sessions">{{ history_count }}</span>
-            </button>
         </div>
 
         <div class="issue-list {% if active_tab == 'blocked' %}blocked-list{% endif %}" id="issueList" role="tabpanel" aria-label="Issue list">
@@ -2622,21 +2803,35 @@
                 <button class="issue-action-btn start-btn" onclick="startE2E()" id="e2eStartBtn">
                     <span aria-hidden="true">▶</span> Start E2E Tests
                 </button>
-                {% if e2e_status.last_run %}
+                {% if e2e_status.next_run %}
+                <span class="e2e-next-run">
+                    Next: {{ e2e_status.next_run.scheduled_time if e2e_status.next_run.scheduled_time else 'on commit' }}
+                    {% if e2e_status.next_run.reason %}({{ e2e_status.next_run.reason }}){% endif %}
+                </span>
+                {% elif e2e_status.last_run %}
                 <span class="e2e-last-run">
-                    Last run: {{ e2e_status.last_run.status }} {{ e2e_status.last_run.relative_time }}
+                    Last: {{ e2e_status.last_run.status }} {{ e2e_status.last_run.relative_time }}
                 </span>
                 {% endif %}
                 {% endif %}
             </div>
             {% endif %}
             <div class="issue-header" role="row" aria-hidden="true">
+                {% if active_tab == 'e2e' %}
+                <span>Run</span>
+                <span>Status</span>
+                <span>Description</span>
+                <span>Detail</span>
+                <span class="header-runtime">Time</span>
+                <span>Action</span>
+                {% else %}
                 <span>Issue</span>
                 <span>Phase</span>
                 <span>Title</span>
                 <span>Detail</span>
                 <span class="header-runtime">Runtime</span>
                 <span>Action</span>
+                {% endif %}
             </div>
             {% if startup_status != 'complete' %}
             <div class="issue-row" style="justify-content: center; padding: 20px; color: #8b949e;">
@@ -2696,6 +2891,11 @@
                         <span class="blocked-badge" title="{{ issue.blocked_summary }}">Blocked</span>
                         {% endif %}
                     </span>
+                    {% elif issue.is_e2e %}
+                    {# E2E items without flow steps show their status #}
+                    <span class="e2e-run-label" title="E2E test run">
+                        {% if issue.e2e_running %}⟳ Running{% elif issue.status == 'passed' %}✓ Passed{% elif issue.status == 'failed' %}✗ Failed{% elif issue.status == 'needs_attention' %}⚠ Needs Triage{% else %}E2E{% endif %}
+                    </span>
                     {% endif %}
                 </span>
                 <span class="issue-title" title="{{ issue.title }}">{{ issue.title }}</span>
@@ -2743,9 +2943,16 @@
                         <span aria-hidden="true">↗</span> View
                     </a>
                     {% else %}
-                    <span class="issue-action" title="{{ issue.action_hint }}">
-                        <span>{{ issue.status }}</span>
+                    {# Recent completed runs - show status badge and details button #}
+                    <span class="e2e-status-badge {{ issue.status }}" title="{{ issue.action_hint }}">
+                        {% if issue.status == 'passed' %}✓{% elif issue.status == 'failed' %}✗{% else %}–{% endif %}
+                        {{ issue.status }}
                     </span>
+                    {% if issue.e2e_run_id %}
+                    <button class="issue-action-btn details-btn" onclick="showE2ERunDetails({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="View run details" title="View run details">
+                        <span aria-hidden="true">🔍</span>
+                    </button>
+                    {% endif %}
                     {% endif %}
                     {% elif active_tab == 'blocked' %}
                     {# Blocked tab actions: Debug, Retry, Dismiss (or Triage for E2E) #}
@@ -2777,7 +2984,7 @@
                         {% endif %}
                     </span>
                     {% endif %}
-                    {% if not (issue.e2e_sub_issues or issue.e2e_failed_tests) %}
+                    {% if not (issue.is_e2e or issue.e2e_sub_issues or issue.e2e_failed_tests) %}
                     <button class="issue-diagnose-btn" onclick="openSessionManifest({{ issue.issue_number }}); event.stopPropagation();" aria-label="Open diagnostics for issue #{{ issue.issue_number }}" title="Diagnostics">
                         🧾
                     </button>
@@ -3549,7 +3756,7 @@
         }
 
         // Keyboard navigation for tabs (accessibility)
-        const tabOrder = ['active', 'queue', 'blocked', 'e2e', 'history'];
+        const tabOrder = ['active', 'queue', 'blocked', 'history', 'e2e'];
         document.querySelectorAll('.tab-bar .tab').forEach(tabBtn => {
             tabBtn.addEventListener('keydown', (e) => {
                 const currentTab = tabBtn.id.replace('tab-', '');
@@ -6091,6 +6298,180 @@
 
         // E2E Triage Functions
         let e2eTriageData = null;
+
+        // Store current run details for test failure drill-down
+        let currentRunDetails = null;
+
+        async function showE2ERunDetails(runId) {
+            // Show run details in the diagnosis modal
+            document.getElementById('e2eDiagnosisContent').innerHTML = '<div class="loading-spinner">Loading run details...</div>';
+            document.getElementById('e2eDiagnosisModal').classList.add('visible');
+
+            try {
+                const res = await fetch(`/control/e2e/run/${runId}?repo_root=${encodeURIComponent(REPO_ROOT)}`);
+                const data = await res.json();
+
+                if (!res.ok) {
+                    closeE2EDiagnosisModal();
+                    showToast(data.error || data.detail || 'Failed to load run details', true);
+                    return;
+                }
+
+                currentRunDetails = data;
+
+                // Render run details with test results
+                const content = document.getElementById('e2eDiagnosisContent');
+                const run = data.run;
+                const results = data.results || [];
+                const statusClass = run.status === 'passed' ? 'passed' : run.status === 'failed' ? 'failed' : '';
+
+                // Categorize test results
+                const passed = results.filter(r => r.outcome === 'passed');
+                const failed = results.filter(r => r.outcome === 'failed' && !r.is_quarantined);
+                const quarantined = results.filter(r => r.is_quarantined);
+                const skipped = results.filter(r => r.outcome === 'skipped');
+
+                let html = `
+                    <div class="run-details">
+                        <div class="run-header">
+                            <h3>E2E Run #${run.id}</h3>
+                            <span class="e2e-status-badge ${statusClass}">${run.status}</span>
+                        </div>
+                        <div class="run-info">
+                            <div class="info-row"><span class="label">Started:</span> <span>${run.started_at || 'N/A'}</span></div>
+                            <div class="info-row"><span class="label">Finished:</span> <span>${run.finished_at || 'N/A'}</span></div>
+                            <div class="info-row"><span class="label">Commit:</span> <span>${run.commit_sha || 'N/A'}</span></div>
+                            <div class="info-row"><span class="label">Summary:</span> <span class="test-summary">
+                                <span class="passed-count">${passed.length} passed</span>
+                                ${failed.length > 0 ? `<span class="failed-count">${failed.length} failed</span>` : ''}
+                                ${quarantined.length > 0 ? `<span class="quarantined-count">${quarantined.length} quarantined</span>` : ''}
+                                ${skipped.length > 0 ? `<span class="skipped-count">${skipped.length} skipped</span>` : ''}
+                            </span></div>
+                        </div>
+                `;
+
+                // Show failed tests if any
+                if (failed.length > 0) {
+                    html += `
+                        <div class="test-results-section">
+                            <h4>Failed Tests (${failed.length})</h4>
+                            <div class="test-results-list">
+                    `;
+                    for (const test of failed) {
+                        const shortName = test.nodeid.split('::').pop();
+                        html += `
+                            <div class="test-result-item failed clickable" onclick="showRunTestDetail('${escapeHtml(test.nodeid)}')" title="Click to view details">
+                                <span class="status-icon failed">✗</span>
+                                <span class="test-name" title="${escapeHtml(test.nodeid)}">${escapeHtml(shortName)}</span>
+                                ${test.duration_seconds ? `<span class="duration">${test.duration_seconds.toFixed(1)}s</span>` : ''}
+                                <span class="click-hint">→</span>
+                            </div>
+                        `;
+                    }
+                    html += `</div></div>`;
+                }
+
+                // Show quarantined tests if any
+                if (quarantined.length > 0) {
+                    html += `
+                        <div class="test-results-section">
+                            <h4>Quarantined (${quarantined.length})</h4>
+                            <div class="test-results-list">
+                    `;
+                    for (const test of quarantined) {
+                        const shortName = test.nodeid.split('::').pop();
+                        const outcome = test.outcome === 'failed' ? 'failed' : 'passed';
+                        html += `
+                            <div class="test-result-item quarantined clickable" onclick="showRunTestDetail('${escapeHtml(test.nodeid)}')" title="Click to view details">
+                                <span class="status-icon quarantined">⚠</span>
+                                <span class="test-name" title="${escapeHtml(test.nodeid)}">${escapeHtml(shortName)}</span>
+                                <span class="outcome-badge ${outcome}">${outcome}</span>
+                                <span class="click-hint">→</span>
+                            </div>
+                        `;
+                    }
+                    html += `</div></div>`;
+                }
+
+                html += `</div>`;
+                content.innerHTML = html;
+            } catch (err) {
+                closeE2EDiagnosisModal();
+                showToast('Failed to load run details: ' + err.message, true);
+            }
+        }
+
+        // Show details for a specific test from run details
+        function showRunTestDetail(nodeid) {
+            if (!currentRunDetails || !currentRunDetails.results) {
+                showToast('No test data available', true);
+                return;
+            }
+
+            const test = currentRunDetails.results.find(r => r.nodeid === nodeid);
+            if (!test) {
+                showToast('Test not found', true);
+                return;
+            }
+
+            // Render test detail in the same modal
+            const content = document.getElementById('e2eDiagnosisContent');
+            const shortName = test.nodeid.split('::').pop();
+            const statusClass = test.outcome === 'passed' ? 'passed' : 'failed';
+
+            let html = `
+                <div class="test-detail-view">
+                    <button class="back-btn" onclick="showE2ERunDetails(${currentRunDetails.run.id})">← Back to Run</button>
+                    <div class="test-detail-header">
+                        <h3>${escapeHtml(shortName)}</h3>
+                        <span class="e2e-status-badge ${statusClass}">${test.outcome}</span>
+                        ${test.is_quarantined ? '<span class="quarantine-badge">Quarantined</span>' : ''}
+                    </div>
+                    <div class="test-detail-info">
+                        <div class="info-row"><span class="label">Full path:</span> <code>${escapeHtml(test.nodeid)}</code></div>
+                        ${test.duration_seconds ? `<div class="info-row"><span class="label">Duration:</span> <span>${test.duration_seconds.toFixed(2)}s</span></div>` : ''}
+                        ${test.retry_outcome ? `<div class="info-row"><span class="label">Retry:</span> <span>${test.retry_outcome}</span></div>` : ''}
+                    </div>
+            `;
+
+            if (test.error_message) {
+                html += `
+                    <div class="test-error-section">
+                        <h4>Error</h4>
+                        <pre class="error-output">${escapeHtml(test.error_message)}</pre>
+                    </div>
+                `;
+            }
+
+            if (test.stdout) {
+                html += `
+                    <div class="test-output-section">
+                        <h4>Stdout</h4>
+                        <pre class="test-output">${escapeHtml(test.stdout)}</pre>
+                    </div>
+                `;
+            }
+
+            if (test.stderr) {
+                html += `
+                    <div class="test-output-section">
+                        <h4>Stderr</h4>
+                        <pre class="test-output">${escapeHtml(test.stderr)}</pre>
+                    </div>
+                `;
+            }
+
+            html += `</div>`;
+            content.innerHTML = html;
+        }
+
+        // Helper to escape HTML
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
 
         async function showE2ETriage() {
             if (!e2eLastRun) {
