@@ -188,6 +188,13 @@
                 </span>
                 {% endif %}
                 {% endif %}
+                {% if e2e_status.signal_score and e2e_status.signal_score.pass_rate is not none %}
+                <span class="e2e-pass-rate {% if e2e_status.signal_score.pass_rate >= 0.9 %}pass-rate-good{% elif e2e_status.signal_score.pass_rate >= 0.5 %}pass-rate-warn{% else %}pass-rate-bad{% endif %}"
+                      title="Pass rate over last {{ e2e_status.signal_score.runs_analyzed }} runs">
+                    {{ "%.0f"|format(e2e_status.signal_score.pass_rate * 100) }}% passed
+                    <span class="pass-rate-detail">({{ e2e_status.signal_score.runs_analyzed }} runs)</span>
+                </span>
+                {% endif %}
             </div>
             {% endif %}
             <div class="issue-header" role="row" aria-hidden="true">
