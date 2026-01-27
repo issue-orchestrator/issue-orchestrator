@@ -725,6 +725,7 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
             "action_hint": "Click to stop E2E run",
             "is_e2e": True,
             "e2e_running": True,
+            "time": "now",
         })
 
     # Add failed E2E run needing triage
@@ -755,6 +756,7 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
             "e2e_failed_tests": failed_tests_data,
             "e2e_run_id": run_id,
             "relative_time": last_run.get("relative_time", ""),
+            "time": last_run.get("relative_time", ""),
         })
 
     # Add E2E composite issues (triaged runs with sub-issues)
@@ -823,6 +825,7 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
                     "is_e2e": True,
                     "e2e_run_id": run.id,
                     "relative_time": relative_time,
+                    "time": relative_time,
                     "commit_sha": run.commit_sha[:7] if run.commit_sha else "",
                 })
         except Exception as e:
