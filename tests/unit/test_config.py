@@ -1506,10 +1506,10 @@ e2e:
 class TestE2EFlakeConfig:
     """Tests for e2e flake detection configuration."""
 
-    def test_flake_threshold_defaults_to_3(self):
-        """flake_threshold should default to 3."""
+    def test_flake_threshold_defaults_to_20(self):
+        """flake_threshold should default to 20 (flip rate percentage)."""
         config = Config()
-        assert config.e2e.flake_threshold == 3
+        assert config.e2e.flake_threshold == 20
 
     def test_flake_window_runs_defaults_to_10(self):
         """flake_window_runs should default to 10."""

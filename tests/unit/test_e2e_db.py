@@ -9,6 +9,9 @@ from issue_orchestrator.infra.e2e_db import (
     E2EDB,
     AlreadyRunning,
     E2ERun,
+    TestStability,
+    _categorize_test,
+    _compute_stability,
     load_quarantine_list,
     save_quarantine_list,
 )
@@ -577,6 +580,231 @@ class TestE2EDB:
         # Resolve the other
         db.resolve_failure_issue("test::failure2", "passed")
         assert db.get_unresolved_failure_count(100) == 0
+
+
+class TestFlipRateStability:
+    """Test flip-rate stability detection via _compute_stability and DB methods."""
+
+    # --- Pure function tests for _compute_stability ---
+
+    def test_empty_outcomes(self):
+        """Empty outcomes -> healthy, zero flip rate."""
+        result = _compute_stability("test::foo", [], threshold_percent=20.0)
+        assert result.category == "healthy"
+        assert result.flip_rate == 0.0
+        assert result.flip_count == 0
+        assert result.run_count == 0
+        assert result.is_likely_flaky is False
+
+    def test_all_pass(self):
+        """All passes -> healthy, zero flip rate."""
+        outcomes = ["passed"] * 5
+        result = _compute_stability("test::foo", outcomes, threshold_percent=20.0)
+        assert result.category == "healthy"
+        assert result.flip_rate == 0.0
+        assert result.flip_count == 0
+        assert result.is_likely_flaky is False
+
+    def test_all_fail(self):
+        """All failures -> consistently_failing, zero flip rate."""
+        outcomes = ["failed"] * 5
+        result = _compute_stability("test::foo", outcomes, threshold_percent=20.0)
+        assert result.category == "consistently_failing"
+        assert result.flip_rate == 0.0
+        assert result.flip_count == 0
+        assert result.is_likely_flaky is False
+
+    def test_alternating_is_flaky(self):
+        """Alternating pass/fail -> flaky with 100% flip rate."""
+        outcomes = ["passed", "failed", "passed", "failed", "passed"]
+        result = _compute_stability("test::foo", outcomes, threshold_percent=20.0)
+        assert result.category == "flaky"
+        assert result.flip_rate == 1.0
+        assert result.flip_count == 4
+        assert result.is_likely_flaky is True
+        assert result.flip_rate_percent == 100.0
+
+    def test_boundary_threshold(self):
+        """Exactly at threshold boundary should be flaky."""
+        # 2 flips out of 9 transitions = 22.2% > 20% threshold
+        outcomes = ["passed", "failed", "failed", "failed", "passed", "passed", "passed", "passed", "passed", "passed"]
+        result = _compute_stability("test::foo", outcomes, threshold_percent=20.0)
+        assert result.is_likely_flaky is True
+        assert result.flip_count == 2
+
+    def test_below_threshold_not_flaky(self):
+        """Below threshold should not be flaky."""
+        # 1 flip out of 9 transitions = 11.1% < 20% threshold
+        outcomes = ["passed", "failed", "failed", "failed", "failed", "failed", "failed", "failed", "failed", "failed"]
+        result = _compute_stability("test::foo", outcomes, threshold_percent=20.0)
+        assert result.is_likely_flaky is False
+        assert result.flip_count == 1
+
+    def test_recovered(self):
+        """Recent pass after failures -> recovered."""
+        # 2 flips / 4 transitions = 50% flip rate; threshold 60% -> not flaky
+        outcomes = ["passed", "failed", "failed", "passed", "passed"]
+        result = _compute_stability("test::foo", outcomes, threshold_percent=60.0)
+        assert result.category == "recovered"
+
+    def test_new_failure_short_history(self):
+        """< 3 runs with recent failure -> new_failure."""
+        # 2 runs, 0 flips (both failed), not flaky
+        outcomes = ["failed", "failed"]
+        result = _compute_stability("test::foo", outcomes, threshold_percent=20.0)
+        assert result.category == "new_failure"
+
+    def test_single_failure(self):
+        """Single failure run -> new_failure."""
+        outcomes = ["failed"]
+        result = _compute_stability("test::foo", outcomes, threshold_percent=20.0)
+        assert result.category == "new_failure"
+
+    def test_single_pass(self):
+        """Single pass run -> healthy."""
+        outcomes = ["passed"]
+        result = _compute_stability("test::foo", outcomes, threshold_percent=20.0)
+        assert result.category == "healthy"
+
+    # --- Pure function tests for _categorize_test ---
+
+    def test_categorize_empty(self):
+        assert _categorize_test([], False) == "healthy"
+
+    def test_categorize_flaky(self):
+        assert _categorize_test(["passed", "failed"], True) == "flaky"
+
+    def test_categorize_consistently_failing(self):
+        assert _categorize_test(["failed", "failed", "failed"], False) == "consistently_failing"
+
+    def test_categorize_new_failure(self):
+        assert _categorize_test(["failed", "passed"], False) == "new_failure"
+
+    def test_categorize_recovered(self):
+        assert _categorize_test(["passed", "failed", "passed"], False) == "recovered"
+
+    def test_categorize_healthy(self):
+        assert _categorize_test(["passed", "passed", "passed"], False) == "healthy"
+
+    # --- TestStability.to_dict ---
+
+    def test_to_dict(self):
+        s = TestStability(
+            nodeid="test::foo",
+            flip_rate=0.5,
+            flip_count=3,
+            run_count=7,
+            category="flaky",
+            is_likely_flaky=True,
+            recent_outcomes=["passed", "failed", "passed"],
+        )
+        d = s.to_dict()
+        assert d["nodeid"] == "test::foo"
+        assert d["flip_rate"] == 0.5
+        assert d["flip_rate_percent"] == 50.0
+        assert d["flip_count"] == 3
+        assert d["category"] == "flaky"
+        assert d["is_likely_flaky"] is True
+
+    # --- DB integration tests ---
+
+    @pytest.fixture
+    def db(self, tmp_path: Path) -> E2EDB:
+        return E2EDB(tmp_path / "test_e2e.db")
+
+    def _create_run_with_result(
+        self, db: E2EDB, nodeid: str, outcome: str, run_num: int
+    ) -> int:
+        """Helper to create a completed run with a single test result."""
+        run_id = db.start_run(
+            repo_root=f"/repo{run_num}",
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        db.upsert_test_result(run_id, nodeid, outcome)
+        db.finish_run(run_id, "passed" if outcome == "passed" else "failed")
+        return run_id
+
+    def test_get_test_stability_from_db(self, db: E2EDB):
+        """Integration test: get_test_stability with actual DB data."""
+        # Create alternating pass/fail runs
+        for i, outcome in enumerate(["passed", "failed", "passed", "failed"]):
+            self._create_run_with_result(db, "test::flaky", outcome, i)
+
+        stability = db.get_test_stability("test::flaky", window_runs=10, flake_threshold_percent=20.0)
+        assert stability.nodeid == "test::flaky"
+        assert stability.flip_count == 3
+        assert stability.run_count == 4
+        assert stability.is_likely_flaky is True
+        assert stability.category == "flaky"
+
+    def test_get_test_stability_no_history(self, db: E2EDB):
+        """Test with no history returns healthy."""
+        stability = db.get_test_stability("test::unknown", window_runs=10, flake_threshold_percent=20.0)
+        assert stability.category == "healthy"
+        assert stability.run_count == 0
+
+    def test_get_all_test_stability(self, db: E2EDB):
+        """Bulk query: get_all_test_stability returns all tests."""
+        # Create data for two tests
+        for i in range(4):
+            run_id = db.start_run(f"/repo{i}", "test-orch", ["tests/e2e"])
+            # Test A: alternating (flaky)
+            db.upsert_test_result(run_id, "test::flaky_a", "passed" if i % 2 == 0 else "failed")
+            # Test B: always passing (healthy)
+            db.upsert_test_result(run_id, "test::stable_b", "passed")
+            db.finish_run(run_id, "passed" if i % 2 == 0 else "failed")
+
+        results = db.get_all_test_stability(window_runs=10, flake_threshold_percent=20.0)
+        assert len(results) == 2
+
+        by_nodeid = {r.nodeid: r for r in results}
+        assert by_nodeid["test::flaky_a"].is_likely_flaky is True
+        assert by_nodeid["test::flaky_a"].category == "flaky"
+        assert by_nodeid["test::stable_b"].is_likely_flaky is False
+        assert by_nodeid["test::stable_b"].category == "healthy"
+
+    def test_get_all_test_stability_sorted_by_flip_rate(self, db: E2EDB):
+        """Results should be sorted by flip_rate descending."""
+        # Create alternating test and stable test
+        for i in range(6):
+            run_id = db.start_run(f"/repo{i}", "test-orch", ["tests/e2e"])
+            db.upsert_test_result(run_id, "test::wild", "passed" if i % 2 == 0 else "failed")
+            db.upsert_test_result(run_id, "test::calm", "passed")
+            db.finish_run(run_id, "passed")
+
+        results = db.get_all_test_stability(window_runs=10, flake_threshold_percent=20.0)
+        assert results[0].nodeid == "test::wild"
+        assert results[0].flip_rate > results[1].flip_rate
+
+    def test_stability_uses_retry_outcome(self, db: E2EDB):
+        """Retry outcome should take precedence over initial outcome."""
+        # Create a run where test initially failed but passed on retry
+        run_id = db.start_run("/repo0", "test-orch", ["tests/e2e"])
+        db.upsert_test_result(run_id, "test::retried", "failed")
+        db.update_retry_outcome(run_id, "test::retried", "passed")
+        db.finish_run(run_id, "passed")
+
+        # Second run where it passes outright
+        run_id2 = db.start_run("/repo1", "test-orch", ["tests/e2e"])
+        db.upsert_test_result(run_id2, "test::retried", "passed")
+        db.finish_run(run_id2, "passed")
+
+        stability = db.get_test_stability("test::retried", window_runs=10, flake_threshold_percent=20.0)
+        # Both effective outcomes are "passed", so no flips
+        assert stability.flip_count == 0
+        assert stability.category == "healthy"
+
+    def test_stability_window_limits_runs(self, db: E2EDB):
+        """Window parameter should limit the number of runs considered."""
+        # Create 10 runs: first 8 pass, last 2 fail
+        for i in range(10):
+            outcome = "failed" if i >= 8 else "passed"
+            self._create_run_with_result(db, "test::window", outcome, i)
+
+        # Window of 3 should only see the most recent 3 runs
+        stability = db.get_test_stability("test::window", window_runs=3, flake_threshold_percent=20.0)
+        assert stability.run_count == 3
 
 
 class TestQuarantineListFunctions:

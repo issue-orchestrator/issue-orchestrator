@@ -2593,6 +2593,10 @@ async function openTestFailureDetail(nodeid) {
             history: data.history,
             history_summary: data.history_summary,
             flake_count: data.flake_count,
+            flip_count: data.flip_count,
+            flip_rate: data.flip_rate,
+            flip_rate_percent: data.flip_rate_percent,
+            category: data.category,
             is_likely_flaky: data.is_likely_flaky,
             existing_issue: data.existing_issue,
             log_excerpt: data.log_excerpt,
@@ -2636,8 +2640,14 @@ function renderTestFailureDetail(data) {
         }
 
         let flakyWarning = '';
-        if (data.is_likely_flaky) {
-            flakyWarning = `<span style="color: #d29922; margin-left: 8px;">⚠ Likely flaky (${data.flake_count} recent flakes)</span>`;
+        if (data.category === 'flaky') {
+            flakyWarning = `<span style="color: #d29922; margin-left: 8px;">⚠ Flaky (${data.flip_rate_percent}% flip rate)</span>`;
+        } else if (data.category === 'consistently_failing') {
+            flakyWarning = `<span style="color: #f85149; margin-left: 8px;">⚠ Consistently failing</span>`;
+        } else if (data.category === 'new_failure') {
+            flakyWarning = `<span style="color: #58a6ff; margin-left: 8px;">● New failure</span>`;
+        } else if (data.category === 'recovered') {
+            flakyWarning = `<span style="color: #3fb950; margin-left: 8px;">↑ Recovered</span>`;
         }
 
         historyHtml = `
@@ -3125,7 +3135,8 @@ function renderE2ETriage(data) {
 
     // Count categories
     const newFailures = failures.filter(f => !f.existing_issue && !f.is_likely_flaky);
-    const flakyFailures = failures.filter(f => f.is_likely_flaky);
+    const flakyFailures = failures.filter(f => f.category === 'flaky');
+    const consistentFailures = failures.filter(f => f.category === 'consistently_failing');
     const existingIssues = failures.filter(f => f.existing_issue);
 
     let html = `
@@ -3140,7 +3151,11 @@ function renderE2ETriage(data) {
             </div>
             <div class="triage-summary-stat flaky">
                 <div class="count">${flakyFailures.length}</div>
-                <div class="label">Likely Flaky</div>
+                <div class="label">Flaky</div>
+            </div>
+            <div class="triage-summary-stat" style="${consistentFailures.length > 0 ? 'color: #f85149;' : ''}">
+                <div class="count">${consistentFailures.length}</div>
+                <div class="label">Consistent</div>
             </div>
             <div class="triage-summary-stat existing">
                 <div class="count">${existingIssues.length}</div>
@@ -3174,7 +3189,9 @@ function renderE2ETriage(data) {
                     <div class="triage-nodeid" title="${escapeHtml(failure.nodeid)}">${escapeHtml(shortNodeid)}</div>
                     <div class="triage-badges">
                         ${hasIssue ? `<span class="triage-badge existing">Issue #${failure.existing_issue.github_issue_number}</span>` : '<span class="triage-badge new">New</span>'}
-                        ${isFlaky ? `<span class="triage-badge flaky">Flaky (${failure.flake_count}x)</span>` : ''}
+                        ${failure.category === 'flaky' ? `<span class="triage-badge flaky">Flaky (${failure.flip_rate_percent}%)</span>` : ''}
+                        ${failure.category === 'consistently_failing' ? '<span class="triage-badge" style="background: #f85149; color: #fff;">Consistent</span>' : ''}
+                        ${failure.category === 'new_failure' ? '<span class="triage-badge" style="background: #58a6ff; color: #fff;">New failure</span>' : ''}
                         ${failure.duration_seconds ? `<span class="triage-badge">${failure.duration_seconds.toFixed(1)}s</span>` : ''}
                     </div>
                     ${failure.longrepr ? `<div class="triage-longrepr">${escapeHtml(failure.longrepr.substring(0, 500))}${failure.longrepr.length > 500 ? '...' : ''}</div>` : ''}
@@ -3463,7 +3480,7 @@ function renderQuarantineViewer() {
                            data-action="quarantine-add"
                            ${quarantineData.toAdd.has(test.nodeid) ? 'checked' : ''}>
                     <span class="test-nodeid">${escapeHtml(test.nodeid)}</span>
-                    <span class="flake-badge">${test.flake_count} flakes</span>
+                    <span class="flake-badge">${test.flip_rate_percent}% flip rate</span>
                 </label>
             </div>
         `).join('');

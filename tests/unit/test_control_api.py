@@ -2518,37 +2518,49 @@ class TestE2EFlakyTestsEndpoint:
         data = response.json()
 
         assert data["flaky_tests"] == []
-        assert data["threshold"] == 3
+        assert data["threshold"] == 20
         assert data["window"] == 10
 
     def test_flaky_returns_tests_above_threshold(self, flaky_client, tmp_path):
-        """Should return tests that exceed flakiness threshold."""
+        """Should return tests that exceed flip-rate threshold."""
         from issue_orchestrator.infra.e2e_db import E2EDB
 
         db_dir = tmp_path / ".issue-orchestrator"
         db_dir.mkdir()
         db = E2EDB(db_dir / "e2e.db")
 
-        # Record flaky occurrences
-        for i in range(5):
-            run_id = db.start_run(str(tmp_path), "test-orch", ["tests/e2e"])
-            db.record_flake("test::flaky_one", run_id, was_flaky=True)
-            if i < 2:
-                db.record_flake("test::sometimes_flaky", run_id, was_flaky=True)
-            db.finish_run(run_id, "passed")
+        # Create alternating pass/fail runs for flaky_one (100% flip rate)
+        # and stable runs for stable_test (0% flip rate)
+        for i in range(6):
+            run_id = db.start_run(f"{tmp_path}/repo{i}", "test-orch", ["tests/e2e"])
+            # Alternating: flaky
+            db.upsert_test_result(run_id, "test::flaky_one", "passed" if i % 2 == 0 else "failed")
+            # Always passing: stable
+            db.upsert_test_result(run_id, "test::stable_test", "passed")
+            db.finish_run(run_id, "passed" if i % 2 == 0 else "failed")
 
         response = flaky_client.get(
             "/control/e2e/flaky-tests",
-            params={"repo_root": str(tmp_path), "threshold": 3}
+            params={"repo_root": str(tmp_path), "threshold": 20}
         )
         assert response.status_code == 200
         data = response.json()
 
-        # test::flaky_one has 5 flakes, exceeds threshold
-        # test::sometimes_flaky has 2 flakes, below threshold
+        # test::flaky_one has 100% flip rate, exceeds threshold
+        # test::stable_test has 0% flip rate, below threshold
         nodeids = [t["nodeid"] for t in data["flaky_tests"]]
         assert "test::flaky_one" in nodeids
-        assert "test::sometimes_flaky" not in nodeids
+        assert "test::stable_test" not in nodeids
+
+        # Check new response fields
+        flaky_entry = next(t for t in data["flaky_tests"] if t["nodeid"] == "test::flaky_one")
+        assert "flip_rate" in flaky_entry
+        assert "flip_rate_percent" in flaky_entry
+        assert "category" in flaky_entry
+        assert flaky_entry["category"] == "flaky"
+        assert flaky_entry["flip_rate_percent"] == 100.0
+        # Backward compat alias
+        assert "flake_count" in flaky_entry
 
 
 # --- Test: E2E Test Detail Endpoint ---

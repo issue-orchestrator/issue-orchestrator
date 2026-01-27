@@ -169,8 +169,8 @@ e2e:
   quarantine_file: "tests/e2e/quarantine.txt"
   survive_restart: true
   stop_on_first_failure: false        # If true, stop on first test failure (-x flag)
-  flake_threshold: 3                  # Failures needed to flag test as "likely flaky" in triage
-  flake_window_runs: 10               # Number of recent runs to check for flakiness
+  flake_threshold: 20                  # Flip rate percentage (0-100) to flag test as flaky
+  flake_window_runs: 10               # Number of recent runs to check for flip rate
   pr_labels: ["io-e2e-test-data"]
 
 state:
