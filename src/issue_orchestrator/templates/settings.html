@@ -320,7 +320,7 @@
     <div class="container">
         <header>
             <div class="header-left">
-                <a href="/" class="back-link"><span aria-hidden="true">←</span> Dashboard</a>
+                <a href="/" class="back-link"><span aria-hidden="true">&#8592;</span> Dashboard</a>
                 <h1>Settings</h1>
                 <span class="unsaved-indicator" id="unsavedIndicator">Unsaved changes</span>
             </div>
@@ -332,237 +332,90 @@
 
         <div id="statusMessage" class="status-message"></div>
 
+        {# --- Tab bar (generated from schema) --- #}
         <div class="tab-bar" role="tablist">
-            <button class="tab active" onclick="switchTab('concurrency')" role="tab" aria-selected="true">Concurrency</button>
-            <button class="tab" onclick="switchTab('e2e')" role="tab" aria-selected="false">E2E Runner</button>
-            <button class="tab" onclick="switchTab('filtering')" role="tab" aria-selected="false">Filtering</button>
-            <button class="tab" onclick="switchTab('review')" role="tab" aria-selected="false">Review</button>
-            <button class="tab" onclick="switchTab('advanced')" role="tab" aria-selected="false">Advanced</button>
+            {% for tab in tabs %}
+            <button class="tab {% if loop.first %}active{% endif %}"
+                    onclick="switchTab('{{ tab.key }}')" role="tab"
+                    aria-selected="{{ 'true' if loop.first else 'false' }}">{{ tab.label }}</button>
+            {% endfor %}
         </div>
 
-        <!-- Concurrency Tab -->
-        <div id="tab-concurrency" class="tab-content active" role="tabpanel">
-            <div class="settings-section">
-                <h3>Session Limits</h3>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="max_concurrent_sessions">Max Concurrent Sessions</label>
-                        <input type="number" id="max_concurrent_sessions" min="1" max="20" value="{{ config.max_concurrent_sessions }}">
-                        <p class="hint">Maximum parallel agent sessions</p>
-                    </div>
-                    <div class="form-group">
-                        <label for="session_timeout_minutes">Session Timeout (minutes)</label>
-                        <input type="number" id="session_timeout_minutes" min="5" max="180" value="{{ config.session_timeout_minutes }}">
-                        <p class="hint">Kill sessions after this duration</p>
-                    </div>
+        {# --- Tab content (generated from schema) --- #}
+        {% for tab in tabs %}
+        <div id="tab-{{ tab.key }}" class="tab-content {% if loop.first %}active{% endif %}" role="tabpanel">
+            {% set schema = schemas[tab.key] %}
+            {% set tab_values = values[tab.key] %}
+            {% set ns = namespace(current_section='__none__') %}
+
+            {% for field_name in schema.properties %}
+            {% set prop = schema.properties[field_name] %}
+            {% set extra = prop.get('x_extra', {}) %}
+            {% set section = extra.get('section', tab.label) %}
+            {% set field_id = tab.key ~ '__' ~ field_name %}
+
+            {# Start a new section when the section name changes #}
+            {% if section != ns.current_section %}
+                {% if ns.current_section != '__none__' %}
+                </div>{# close previous settings-section #}
+                {% endif %}
+                <div class="settings-section">
+                    <h3>{{ section }}{% if extra.get('restart_required') %} <span class="restart-badge">Restart Required</span>{% endif %}</h3>
+                {% set ns.current_section = section %}
+            {% endif %}
+
+            {# Render the form field based on type #}
+            <div class="form-group">
+                {% if prop.get('type') == 'boolean' %}
+                <div class="checkbox-group">
+                    <input type="checkbox" id="{{ field_id }}"
+                           data-tab="{{ tab.key }}" data-field="{{ field_name }}" data-type="boolean"
+                           {{ 'checked' if tab_values[field_name] else '' }}>
+                    <label for="{{ field_id }}">{{ prop.title }}</label>
                 </div>
+                {% elif prop.get('enum') is not none %}
+                <label for="{{ field_id }}">{{ prop.title }}</label>
+                <select id="{{ field_id }}"
+                        data-tab="{{ tab.key }}" data-field="{{ field_name }}" data-type="enum">
+                    {% for opt in prop.enum %}
+                    <option value="{{ opt }}" {{ 'selected' if tab_values[field_name] == opt else '' }}>{{ opt | replace('_', ' ') | title }}</option>
+                    {% endfor %}
+                </select>
+                {% elif prop.get('type') == 'integer' %}
+                <label for="{{ field_id }}">{{ prop.title }}</label>
+                <input type="number" id="{{ field_id }}"
+                       data-tab="{{ tab.key }}" data-field="{{ field_name }}" data-type="integer"
+                       min="{{ prop.get('minimum', '') }}" max="{{ prop.get('maximum', '') }}"
+                       value="{{ tab_values[field_name] }}">
+                {% else %}
+                {# string or anyOf (Optional[str]) #}
+                <label for="{{ field_id }}">{{ prop.title }}</label>
+                <input type="text" id="{{ field_id }}"
+                       data-tab="{{ tab.key }}" data-field="{{ field_name }}" data-type="string"
+                       value="{{ tab_values[field_name] if tab_values[field_name] is not none else '' }}">
+                {% endif %}
+                {% if prop.get('description') %}
+                <p class="hint">{{ prop.description }}</p>
+                {% endif %}
             </div>
+            {% endfor %}
 
-            <div class="settings-section">
-                <h3>Queue</h3>
-                <div class="form-group">
-                    <label for="queue_refresh_seconds">Queue Refresh Interval (seconds)</label>
-                    <input type="number" id="queue_refresh_seconds" min="0" max="3600" value="{{ config.queue_refresh_seconds }}">
-                    <p class="hint">How often to refresh the issue queue from GitHub (0 = manual only)</p>
-                </div>
+            {# Close last section #}
+            {% if ns.current_section != '__none__' %}
             </div>
-        </div>
+            {% endif %}
 
-        <!-- E2E Runner Tab -->
-        <div id="tab-e2e" class="tab-content" role="tabpanel">
-            <div class="settings-section">
-                <h3>E2E Test Runner</h3>
-                <div class="form-group">
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="e2e_enabled" {{ 'checked' if config.e2e.enabled else '' }}>
-                        <label for="e2e_enabled">Enable E2E Test Runner</label>
-                    </div>
-                    <p class="hint">Automatically run E2E tests when main branch changes</p>
-                </div>
-
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="e2e_auto_run_interval">Auto-run Interval (minutes)</label>
-                        <input type="number" id="e2e_auto_run_interval" min="0" max="1440" value="{{ config.e2e.auto_run_interval_minutes }}">
-                        <p class="hint">Min interval between auto runs (0 = disable)</p>
-                    </div>
-                    <div class="form-group">
-                        <label for="e2e_role">Role</label>
-                        <select id="e2e_role">
-                            <option value="auto" {{ 'selected' if config.e2e.role == 'auto' else '' }}>Auto</option>
-                            <option value="executor" {{ 'selected' if config.e2e.role == 'executor' else '' }}>Executor</option>
-                            <option value="reader" {{ 'selected' if config.e2e.role == 'reader' else '' }}>Reader</option>
-                            <option value="disabled" {{ 'selected' if config.e2e.role == 'disabled' else '' }}>Disabled</option>
-                        </select>
-                        <p class="hint">Role in multi-orchestrator setup</p>
-                    </div>
-                </div>
-
-                <div class="form-group">
-                    <label for="e2e_pytest_args">Pytest Arguments</label>
-                    <input type="text" id="e2e_pytest_args" value="{{ config.e2e.pytest_args | join(' ') }}">
-                    <p class="hint">Space-separated pytest arguments (e.g., tests/e2e -v)</p>
-                </div>
-
-                <div class="form-group">
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="e2e_allow_retry" {{ 'checked' if config.e2e.allow_retry_once else '' }}>
-                        <label for="e2e_allow_retry">Retry failed tests once</label>
-                    </div>
-                    <p class="hint">Retry failing tests to reduce flakiness</p>
-                </div>
-
-                <div class="form-group">
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="e2e_stop_on_first" {{ 'checked' if config.e2e.stop_on_first_failure else '' }}>
-                        <label for="e2e_stop_on_first">Stop on first failure</label>
-                    </div>
-                    <p class="hint">Add -x flag to stop test run on first failure</p>
-                </div>
-
-                <div class="form-group">
-                    <label for="e2e_quarantine_file">Quarantine File</label>
-                    <input type="text" id="e2e_quarantine_file" value="{{ config.e2e.quarantine_file }}">
-                    <p class="hint">Path to quarantine file for skipping known-flaky tests</p>
-                </div>
-            </div>
-        </div>
-
-        <!-- Filtering Tab -->
-        <div id="tab-filtering" class="tab-content" role="tabpanel">
-            <div class="settings-section">
-                <h3>Issue Filtering</h3>
-                <div class="form-group">
-                    <label for="filter_label">Label Filter</label>
-                    <input type="text" id="filter_label" value="{{ config.filtering.label or '' }}">
-                    <p class="hint">Only process issues with this label (optional)</p>
-                </div>
-
-                <div class="form-group">
-                    <label for="filter_milestones">Milestones</label>
-                    <input type="text" id="filter_milestones" value="{{ config.filtering.get_milestones() | join(', ') }}">
-                    <p class="hint">Comma-separated list of milestones to process</p>
-                </div>
-
-                <div class="form-group">
-                    <label for="filter_exclude_labels">Exclude Labels</label>
-                    <input type="text" id="filter_exclude_labels" value="{{ config.filtering.exclude_labels | join(', ') }}">
-                    <p class="hint">Comma-separated labels to exclude</p>
-                </div>
-
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="filter_fetch_limit">Fetch Limit</label>
-                        <input type="number" id="filter_fetch_limit" min="1" max="500" value="{{ config.filtering.fetch_limit }}">
-                        <p class="hint">Max issues to fetch per API call</p>
-                    </div>
-                    <div class="form-group">
-                        <label for="filter_max_to_start">Max to Start</label>
-                        <input type="number" id="filter_max_to_start" min="0" max="100" value="{{ config.filtering.max_to_start }}">
-                        <p class="hint">Stop after starting N issues (0 = unlimited)</p>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- Review Tab -->
-        <div id="tab-review" class="tab-content" role="tabpanel">
-            <div class="settings-section">
-                <h3>Code Review Workflow</h3>
-                <div class="form-group">
-                    <div class="checkbox-group">
-                        <input type="checkbox" id="review_enabled" {{ 'checked' if config.review_enabled else '' }}>
-                        <label for="review_enabled">Enable Code Review</label>
-                    </div>
-                    <p class="hint">Enable automated code review workflow</p>
-                </div>
-
-                <div class="form-group">
-                    <label for="review_default">Default Reviewer Agent</label>
-                    <input type="text" id="review_default" value="{{ config.code_review_agent or '' }}">
-                    <p class="hint">Agent label for code reviews (e.g., agent:reviewer)</p>
-                </div>
-
-                <div class="form-group">
-                    <label for="review_max_rework">Max Rework Cycles</label>
-                    <input type="number" id="review_max_rework" min="0" max="10" value="{{ config.max_rework_cycles }}">
-                    <p class="hint">Max times to re-queue work agent before escalating</p>
-                </div>
-            </div>
-
-            <div class="settings-section">
-                <h3>Triage Review</h3>
-                <div class="form-group">
-                    <label for="triage_agent">Triage Review Agent</label>
-                    <input type="text" id="triage_agent" value="{{ config.triage_review_agent or '' }}">
-                    <p class="hint">Agent for batch reviews (optional)</p>
-                </div>
-
-                <div class="form-group">
-                    <label for="triage_threshold">Triage Threshold</label>
-                    <input type="number" id="triage_threshold" min="0" max="50" value="{{ config.triage_review_threshold }}">
-                    <p class="hint">Trigger triage after N PRs (0 = manual only)</p>
-                </div>
-            </div>
-        </div>
-
-        <!-- Advanced Tab -->
-        <div id="tab-advanced" class="tab-content" role="tabpanel">
-            <div class="settings-section">
-                <h3>Observability</h3>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="session_no_output_seconds">No-Output Threshold (seconds)</label>
-                        <input type="number" id="session_no_output_seconds" min="30" max="600" value="{{ config.session_no_output_seconds }}">
-                        <p class="hint">Emit event after this much idle time</p>
-                    </div>
-                    <div class="form-group">
-                        <label for="stale_escalation_ticks">Stale Escalation Ticks</label>
-                        <input type="number" id="stale_escalation_ticks" min="0" max="20" value="{{ config.stale_escalation_ticks }}">
-                        <p class="hint">Escalate after K consecutive stale ticks (0 = disabled)</p>
-                    </div>
-                </div>
-            </div>
-
-            <div class="settings-section">
-                <h3>Ports <span class="restart-badge">Restart Required</span></h3>
-                <div class="form-row">
-                    <div class="form-group">
-                        <label for="web_port">Web Dashboard Port</label>
-                        <input type="number" id="web_port" min="1024" max="65535" value="{{ config.web_port }}">
-                    </div>
-                    <div class="form-group">
-                        <label for="control_api_port">Control API Port</label>
-                        <input type="number" id="control_api_port" min="0" max="65535" value="{{ config.control_api_port }}">
-                        <p class="hint">0 = disabled</p>
-                    </div>
-                </div>
-            </div>
-
-            <div class="settings-section">
-                <h3>Worktrees <span class="restart-badge">Restart Required</span></h3>
-                <div class="form-group">
-                    <label for="worktree_base">Worktree Base Directory</label>
-                    <input type="text" id="worktree_base" value="{{ config.worktree_base }}">
-                    <p class="hint">Directory where git worktrees are created</p>
-                </div>
-                <div class="form-group">
-                    <label for="worktree_branch_on_recreate">Branch on Recreate</label>
-                    <select id="worktree_branch_on_recreate">
-                        <option value="delete" {{ 'selected' if config.worktree_branch_on_recreate == 'delete' else '' }}>Delete existing branch</option>
-                        <option value="create_new_branch" {{ 'selected' if config.worktree_branch_on_recreate == 'create_new_branch' else '' }}>Create new branch with suffix</option>
-                    </select>
-                    <p class="hint">What to do when recreating a worktree with existing branch</p>
-                </div>
-            </div>
-
+            {# Advanced tab: add Doctor validation section #}
+            {% if tab.key == 'advanced' %}
             <div class="settings-section">
                 <h3>Validation</h3>
                 <button class="btn btn-secondary" onclick="runDoctor()">Run Doctor</button>
                 <p class="hint" style="margin-top: 8px;">Validate configuration and check system health</p>
                 <div id="doctorResults" class="doctor-results" style="display: none;"></div>
             </div>
+            {% endif %}
         </div>
+        {% endfor %}
 
         <footer>
             <div class="footer-hint">
@@ -576,6 +429,10 @@
     </div>
 
     <script>
+        // Schema metadata embedded from server (tab keys and field types)
+        const SCHEMA_TABS = {{ tabs_json }};
+        const SCHEMA_FIELDS = {{ schemas_json }};
+
         let originalSettings = {};
         let currentSettings = {};
         let hasChanges = false;
@@ -592,34 +449,22 @@
         }
 
         function getFormValues() {
-            return {
-                max_concurrent_sessions: parseInt(document.getElementById('max_concurrent_sessions').value),
-                session_timeout_minutes: parseInt(document.getElementById('session_timeout_minutes').value),
-                queue_refresh_seconds: parseInt(document.getElementById('queue_refresh_seconds').value),
-                e2e_enabled: document.getElementById('e2e_enabled').checked,
-                e2e_auto_run_interval: parseInt(document.getElementById('e2e_auto_run_interval').value),
-                e2e_role: document.getElementById('e2e_role').value,
-                e2e_pytest_args: document.getElementById('e2e_pytest_args').value,
-                e2e_allow_retry: document.getElementById('e2e_allow_retry').checked,
-                e2e_stop_on_first: document.getElementById('e2e_stop_on_first').checked,
-                e2e_quarantine_file: document.getElementById('e2e_quarantine_file').value,
-                filter_label: document.getElementById('filter_label').value,
-                filter_milestones: document.getElementById('filter_milestones').value,
-                filter_exclude_labels: document.getElementById('filter_exclude_labels').value,
-                filter_fetch_limit: parseInt(document.getElementById('filter_fetch_limit').value),
-                filter_max_to_start: parseInt(document.getElementById('filter_max_to_start').value),
-                review_enabled: document.getElementById('review_enabled').checked,
-                review_default: document.getElementById('review_default').value,
-                review_max_rework: parseInt(document.getElementById('review_max_rework').value),
-                triage_agent: document.getElementById('triage_agent').value,
-                triage_threshold: parseInt(document.getElementById('triage_threshold').value),
-                session_no_output_seconds: parseInt(document.getElementById('session_no_output_seconds').value),
-                stale_escalation_ticks: parseInt(document.getElementById('stale_escalation_ticks').value),
-                web_port: parseInt(document.getElementById('web_port').value),
-                control_api_port: parseInt(document.getElementById('control_api_port').value),
-                worktree_base: document.getElementById('worktree_base').value,
-                worktree_branch_on_recreate: document.getElementById('worktree_branch_on_recreate').value,
-            };
+            const result = {};
+            document.querySelectorAll('[data-tab][data-field]').forEach(el => {
+                const tab = el.dataset.tab;
+                const field = el.dataset.field;
+                const type = el.dataset.type;
+                if (!result[tab]) result[tab] = {};
+
+                if (type === 'boolean') {
+                    result[tab][field] = el.checked;
+                } else if (type === 'integer') {
+                    result[tab][field] = parseInt(el.value) || 0;
+                } else {
+                    result[tab][field] = el.value;
+                }
+            });
+            return result;
         }
 
         function setupChangeListeners() {
@@ -669,84 +514,39 @@
 
         function resetSettings() {
             // Reset all inputs to original values
-            document.getElementById('max_concurrent_sessions').value = originalSettings.max_concurrent_sessions;
-            document.getElementById('session_timeout_minutes').value = originalSettings.session_timeout_minutes;
-            document.getElementById('queue_refresh_seconds').value = originalSettings.queue_refresh_seconds;
-            document.getElementById('e2e_enabled').checked = originalSettings.e2e_enabled;
-            document.getElementById('e2e_auto_run_interval').value = originalSettings.e2e_auto_run_interval;
-            document.getElementById('e2e_role').value = originalSettings.e2e_role;
-            document.getElementById('e2e_pytest_args').value = originalSettings.e2e_pytest_args;
-            document.getElementById('e2e_allow_retry').checked = originalSettings.e2e_allow_retry;
-            document.getElementById('e2e_stop_on_first').checked = originalSettings.e2e_stop_on_first;
-            document.getElementById('e2e_quarantine_file').value = originalSettings.e2e_quarantine_file;
-            document.getElementById('filter_label').value = originalSettings.filter_label;
-            document.getElementById('filter_milestones').value = originalSettings.filter_milestones;
-            document.getElementById('filter_exclude_labels').value = originalSettings.filter_exclude_labels;
-            document.getElementById('filter_fetch_limit').value = originalSettings.filter_fetch_limit;
-            document.getElementById('filter_max_to_start').value = originalSettings.filter_max_to_start;
-            document.getElementById('review_enabled').checked = originalSettings.review_enabled;
-            document.getElementById('review_default').value = originalSettings.review_default;
-            document.getElementById('review_max_rework').value = originalSettings.review_max_rework;
-            document.getElementById('triage_agent').value = originalSettings.triage_agent;
-            document.getElementById('triage_threshold').value = originalSettings.triage_threshold;
-            document.getElementById('session_no_output_seconds').value = originalSettings.session_no_output_seconds;
-            document.getElementById('stale_escalation_ticks').value = originalSettings.stale_escalation_ticks;
-            document.getElementById('web_port').value = originalSettings.web_port;
-            document.getElementById('control_api_port').value = originalSettings.control_api_port;
-            document.getElementById('worktree_base').value = originalSettings.worktree_base;
-            document.getElementById('worktree_branch_on_recreate').value = originalSettings.worktree_branch_on_recreate;
+            document.querySelectorAll('[data-tab][data-field]').forEach(el => {
+                const tab = el.dataset.tab;
+                const field = el.dataset.field;
+                const type = el.dataset.type;
+                const orig = originalSettings[tab] && originalSettings[tab][field];
 
+                if (type === 'boolean') {
+                    el.checked = !!orig;
+                } else {
+                    el.value = orig !== undefined ? orig : '';
+                }
+            });
             checkForChanges();
         }
 
         async function saveSettings() {
-            const settings = getFormValues();
+            // Collect form values grouped by tab key (matches API schema)
+            const payload = getFormValues();
 
-            // Convert to API format
-            const payload = {
-                execution: {
-                    concurrency: {
-                        max_concurrent_sessions: settings.max_concurrent_sessions,
-                        session_timeout_minutes: settings.session_timeout_minutes,
+            // Convert Optional[str] empty strings to null for the API
+            for (const tabKey of Object.keys(payload)) {
+                const tabSchema = SCHEMA_FIELDS[tabKey];
+                if (!tabSchema || !tabSchema.properties) continue;
+                for (const [fieldName, fieldValue] of Object.entries(payload[tabKey])) {
+                    const prop = tabSchema.properties[fieldName];
+                    if (!prop) continue;
+                    // Optional string fields: empty string -> null
+                    const isOptionalString = prop.anyOf && prop.anyOf.some(t => t.type === 'null');
+                    if (isOptionalString && fieldValue === '') {
+                        payload[tabKey][fieldName] = null;
                     }
-                },
-                ui: {
-                    queue_refresh_seconds: settings.queue_refresh_seconds,
-                    web_port: settings.web_port,
-                    control_api_port: settings.control_api_port,
-                },
-                e2e: {
-                    enabled: settings.e2e_enabled,
-                    auto_run_interval_minutes: settings.e2e_auto_run_interval,
-                    role: settings.e2e_role,
-                    pytest_args: settings.e2e_pytest_args.split(/\s+/).filter(s => s),
-                    allow_retry_once: settings.e2e_allow_retry,
-                    stop_on_first_failure: settings.e2e_stop_on_first,
-                    quarantine_file: settings.e2e_quarantine_file,
-                },
-                filtering: {
-                    label: settings.filter_label || null,
-                    milestones: settings.filter_milestones.split(',').map(s => s.trim()).filter(s => s),
-                    exclude_labels: settings.filter_exclude_labels.split(',').map(s => s.trim()).filter(s => s),
-                    fetch_limit: settings.filter_fetch_limit,
-                    max_to_start: settings.filter_max_to_start,
-                },
-                review: {
-                    enabled: settings.review_enabled,
-                    default: settings.review_default || null,
-                    max_rework_cycles: settings.review_max_rework,
-                    triage_review_agent: settings.triage_agent || null,
-                    triage_review_threshold: settings.triage_threshold,
-                },
-                observability: {
-                    session_no_output_seconds: settings.session_no_output_seconds,
-                    stale_escalation_ticks: settings.stale_escalation_ticks,
-                },
-                worktrees: {
-                    base: settings.worktree_base,
-                    worktree_branch_on_recreate: settings.worktree_branch_on_recreate,
-                },
-            };
+                }
+            }
 
             try {
                 const response = await fetch('/api/settings', {
@@ -784,9 +584,8 @@
 
                 let html = '';
                 for (const check of result.checks || []) {
-                    // Doctor returns: ok, warning, error, info
                     const iconClass = check.status === 'ok' ? 'pass' : (check.status === 'error' ? 'fail' : 'warn');
-                    const icon = check.status === 'ok' ? '✓' : (check.status === 'error' ? '✗' : '⚠');
+                    const icon = check.status === 'ok' ? '\u2713' : (check.status === 'error' ? '\u2717' : '\u26A0');
                     html += `
                         <div class="doctor-item">
                             <span class="doctor-icon ${iconClass}">${icon}</span>

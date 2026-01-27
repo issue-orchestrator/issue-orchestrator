@@ -10,6 +10,9 @@ import yaml
 # Import provider registry for agent type selection
 from agent_runner import list_providers, get_provider
 
+# Schema metadata for defaults/labels/hints
+from ...infra.settings_schema import get_field_meta
+
 
 class Prompter(Protocol):
     """Protocol for user interaction - enables testing via dependency injection."""
@@ -445,7 +448,8 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
 
     # Concurrency
     prompter.print("\n--- Concurrency Settings ---")
-    max_sessions = prompter.input("Max concurrent agent sessions", "3")
+    _conc_meta = get_field_meta("concurrency", "max_concurrent_sessions")
+    max_sessions = prompter.input(_conc_meta["title"], str(_conc_meta["default"]))
     config["execution"] = {
         "concurrency": {
             "max_concurrent_sessions": int(max_sessions),
@@ -495,7 +499,8 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     prompter.print("Examples:")
     prompter.print("  '../'           → sibling dirs (~/dev/myrepo-123)")
     prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
-    worktree_base = prompter.input("Worktree base directory", "../")
+    _wt_meta = get_field_meta("advanced", "worktree_base")
+    worktree_base = prompter.input(_wt_meta["title"], str(_wt_meta["default"]))
 
     # Set at top-level (not per-agent)
     config["worktrees"] = {"base": worktree_base}
@@ -532,7 +537,8 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     ui_config: dict[str, Any] = {"mode": ui_mode}
     config["ui"] = ui_config
     if ui_mode == "web":
-        port = prompter.input("Web dashboard port", "8080")
+        _port_meta = get_field_meta("advanced", "web_port")
+        port = prompter.input(_port_meta["title"], str(_port_meta["default"]))
         ui_config["web_port"] = int(port)
         prompter.print("\n--- Terminal Backend (web mode) ---")
         prompter.print("Choose how agent sessions are executed:\n")
@@ -816,7 +822,8 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
         prompter.print("Examples:")
         prompter.print("  '../'           → sibling dirs (~/dev/myrepo-123)")
         prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
-        worktree_base = prompter.input("Worktree base directory", "../")
+        _wt_meta = get_field_meta("advanced", "worktree_base")
+        worktree_base = prompter.input(_wt_meta["title"], str(_wt_meta["default"]))
         worktrees_config = cast(dict[str, Any], config.setdefault("worktrees", {}))
         worktrees_config["base"] = worktree_base
 

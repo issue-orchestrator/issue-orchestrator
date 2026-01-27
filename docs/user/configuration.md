@@ -388,3 +388,20 @@ agents:
 - `skip_review`: Skip code review for this agent's PRs (default: false)
 - `reviewer`: Override default reviewer agent for this agent's PRs
 - `retry_prompt_template`: Path to custom retry prompt template for validation failures (relative to repo root). If not set, uses `retry.retry_prompt_template` or built-in default.
+
+---
+
+## Settings Dialog Reference
+
+The web dashboard settings dialog is driven by a Pydantic schema in `src/issue_orchestrator/infra/settings_schema.py`. To regenerate this reference table:
+
+```python
+from issue_orchestrator.infra.settings_schema import generate_config_reference
+print(generate_config_reference())
+```
+
+The schema is the single source of truth for:
+- Settings HTML form fields (rendered via Jinja2)
+- GET/POST `/api/settings` serialization and validation
+- Setup wizard defaults and labels
+- This documentation reference

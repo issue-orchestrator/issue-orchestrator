@@ -2583,10 +2583,15 @@ class TestApiStatusPublishJobs:
 
 
 class TestSettingsEndpoints:
-    """Tests for the settings page and API endpoints."""
+    """Tests for the settings page and API endpoints.
+
+    The settings API uses a Pydantic schema-driven approach. Each tab
+    (concurrency, e2e, filtering, review, advanced) is a separate key
+    in the request/response JSON.
+    """
 
     def test_get_settings_returns_current_config(self):
-        """GET /api/settings returns current config values."""
+        """GET /api/settings returns current config values grouped by tab."""
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
@@ -2602,9 +2607,26 @@ class TestSettingsEndpoints:
             assert response.status_code == 200
             data = response.json()
 
-            assert data["execution"]["concurrency"]["max_concurrent_sessions"] == 5
+            # Tab-based structure (not nested category structure)
+            assert data["concurrency"]["max_concurrent_sessions"] == 5
             assert data["e2e"]["enabled"] is True
             assert data["e2e"]["auto_run_interval_minutes"] == 45
+        finally:
+            web._orchestrator = None
+
+    def test_get_settings_returns_all_tabs(self):
+        """GET /api/settings returns all five tabs."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.get("/api/settings")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert set(data.keys()) == {"concurrency", "e2e", "filtering", "review", "advanced"}
         finally:
             web._orchestrator = None
 
@@ -2620,29 +2642,27 @@ class TestSettingsEndpoints:
         assert "error" in response.json()
 
     def test_post_settings_updates_config(self):
-        """POST /api/settings updates in-memory config."""
+        """POST /api/settings updates in-memory config via Pydantic schema."""
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
         mock_orch.config.max_concurrent_sessions = 3
 
-        # Mock doctor to return ok - patch at the module where it's imported
         with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
             mock_result = MagicMock()
             mock_result.checks = []
             mock_doctor.return_value = mock_result
 
-            # Mock save to do nothing
             mock_orch.config.save = MagicMock()
 
             web._orchestrator = mock_orch
             try:
                 client = TestClient(app)
                 response = client.post("/api/settings", json={
-                    "execution": {
-                        "concurrency": {
-                            "max_concurrent_sessions": 7
-                        }
+                    "concurrency": {
+                        "max_concurrent_sessions": 7,
+                        "session_timeout_minutes": 45,
+                        "queue_refresh_seconds": 600,
                     }
                 })
 
@@ -2655,6 +2675,46 @@ class TestSettingsEndpoints:
             finally:
                 web._orchestrator = None
 
+    def test_post_settings_updates_multiple_tabs(self):
+        """POST /api/settings can update multiple tabs at once."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+
+        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+            mock_result = MagicMock()
+            mock_result.checks = []
+            mock_doctor.return_value = mock_result
+
+            mock_orch.config.save = MagicMock()
+
+            web._orchestrator = mock_orch
+            try:
+                client = TestClient(app)
+                response = client.post("/api/settings", json={
+                    "concurrency": {
+                        "max_concurrent_sessions": 10,
+                        "session_timeout_minutes": 90,
+                        "queue_refresh_seconds": 300,
+                    },
+                    "e2e": {
+                        "enabled": True,
+                        "auto_run_interval_minutes": 15,
+                        "role": "executor",
+                        "pytest_args": "tests/e2e -v",
+                        "allow_retry_once": False,
+                        "stop_on_first_failure": True,
+                        "quarantine_file": "quarantine.txt",
+                    },
+                })
+
+                assert response.status_code == 200
+                assert mock_orch.config.max_concurrent_sessions == 10
+                assert mock_orch.config.e2e.enabled is True
+                assert mock_orch.config.e2e.role == "executor"
+            finally:
+                web._orchestrator = None
+
     def test_post_settings_reverts_on_validation_failure(self):
         """POST /api/settings reverts in-memory changes if doctor fails."""
         from issue_orchestrator.entrypoints import web
@@ -2662,7 +2722,6 @@ class TestSettingsEndpoints:
         mock_orch = create_mock_orchestrator()
         original_value = mock_orch.config.max_concurrent_sessions
 
-        # Mock doctor to return error
         with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
             mock_check = MagicMock()
             mock_check.status = "error"
@@ -2676,10 +2735,10 @@ class TestSettingsEndpoints:
             try:
                 client = TestClient(app)
                 response = client.post("/api/settings", json={
-                    "execution": {
-                        "concurrency": {
-                            "max_concurrent_sessions": 99
-                        }
+                    "concurrency": {
+                        "max_concurrent_sessions": 15,
+                        "session_timeout_minutes": 45,
+                        "queue_refresh_seconds": 600,
                     }
                 })
 
@@ -2699,7 +2758,6 @@ class TestSettingsEndpoints:
 
         mock_orch = create_mock_orchestrator()
 
-        # Mock doctor to return warning
         with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
             mock_warning = MagicMock()
             mock_warning.status = "warning"
@@ -2715,10 +2773,10 @@ class TestSettingsEndpoints:
             try:
                 client = TestClient(app)
                 response = client.post("/api/settings", json={
-                    "execution": {
-                        "concurrency": {
-                            "max_concurrent_sessions": 5
-                        }
+                    "concurrency": {
+                        "max_concurrent_sessions": 5,
+                        "session_timeout_minutes": 45,
+                        "queue_refresh_seconds": 600,
                     }
                 })
 
@@ -2731,37 +2789,54 @@ class TestSettingsEndpoints:
             finally:
                 web._orchestrator = None
 
-    def test_post_settings_handles_null_numeric_values(self):
-        """POST /api/settings handles null/empty numeric values gracefully."""
+    def test_post_settings_rejects_invalid_values_via_pydantic(self):
+        """POST /api/settings rejects out-of-range values via Pydantic validation."""
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
-        original_value = mock_orch.config.max_concurrent_sessions
 
-        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
-            mock_result = MagicMock()
-            mock_result.checks = []
-            mock_doctor.return_value = mock_result
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            # max_concurrent_sessions has ge=1 constraint
+            response = client.post("/api/settings", json={
+                "concurrency": {
+                    "max_concurrent_sessions": 0,
+                    "session_timeout_minutes": 45,
+                    "queue_refresh_seconds": 600,
+                }
+            })
 
-            mock_orch.config.save = MagicMock()
+            assert response.status_code == 400
+            data = response.json()
+            assert "error" in data
+        finally:
+            web._orchestrator = None
 
-            web._orchestrator = mock_orch
-            try:
-                client = TestClient(app)
-                # Send null value for numeric field
-                response = client.post("/api/settings", json={
-                    "execution": {
-                        "concurrency": {
-                            "max_concurrent_sessions": None
-                        }
-                    }
-                })
+    def test_post_settings_rejects_invalid_enum(self):
+        """POST /api/settings rejects invalid enum values."""
+        from issue_orchestrator.entrypoints import web
 
-                assert response.status_code == 200
-                # Value should remain unchanged (using default)
-                assert mock_orch.config.max_concurrent_sessions == original_value
-            finally:
-                web._orchestrator = None
+        mock_orch = create_mock_orchestrator()
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.post("/api/settings", json={
+                "e2e": {
+                    "enabled": False,
+                    "auto_run_interval_minutes": 30,
+                    "role": "invalid_role",
+                    "pytest_args": "tests/e2e -v",
+                    "allow_retry_once": True,
+                    "stop_on_first_failure": False,
+                    "quarantine_file": "tests/e2e/quarantine.txt",
+                }
+            })
+
+            assert response.status_code == 400
+        finally:
+            web._orchestrator = None
 
     def test_post_settings_reverts_on_save_failure(self):
         """POST /api/settings reverts in-memory changes if save fails."""
@@ -2775,17 +2850,16 @@ class TestSettingsEndpoints:
             mock_result.checks = []
             mock_doctor.return_value = mock_result
 
-            # Make save raise an exception
             mock_orch.config.save = MagicMock(side_effect=IOError("Disk full"))
 
             web._orchestrator = mock_orch
             try:
                 client = TestClient(app)
                 response = client.post("/api/settings", json={
-                    "execution": {
-                        "concurrency": {
-                            "max_concurrent_sessions": 99
-                        }
+                    "concurrency": {
+                        "max_concurrent_sessions": 15,
+                        "session_timeout_minutes": 45,
+                        "queue_refresh_seconds": 600,
                     }
                 })
 
@@ -2798,7 +2872,7 @@ class TestSettingsEndpoints:
                 web._orchestrator = None
 
     def test_settings_page_renders(self):
-        """GET /settings renders the settings page."""
+        """GET /settings renders the settings page with schema-driven fields."""
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
@@ -2809,19 +2883,72 @@ class TestSettingsEndpoints:
             response = client.get("/settings")
 
             assert response.status_code == 200
-            assert "Settings" in response.text
-            assert "Concurrency" in response.text
+            html = response.text
+            assert "Settings" in html
+            assert "Concurrency" in html
+            assert "E2E Runner" in html
+            assert "Filtering" in html
+            assert "Review" in html
+            assert "Advanced" in html
         finally:
             web._orchestrator = None
 
-    def test_get_settings_returns_effective_milestones_from_singular_field(self):
-        """GET /api/settings returns milestones from single-milestone field."""
+    def test_settings_page_renders_schema_fields(self):
+        """GET /settings renders form fields with data-tab/data-field attributes."""
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
-        # Set single-milestone field (common via CLI)
-        mock_orch.config.filtering.milestone = "v1.0"
-        mock_orch.config.filtering.milestones = []  # Empty list
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.get("/settings")
+
+            html = response.text
+            # Check schema-driven data attributes are present
+            assert 'data-tab="concurrency"' in html
+            assert 'data-field="max_concurrent_sessions"' in html
+            assert 'data-type="integer"' in html
+            assert 'data-type="boolean"' in html
+            # Check that current values are rendered
+            assert f'value="{mock_orch.config.max_concurrent_sessions}"' in html
+        finally:
+            web._orchestrator = None
+
+    def test_settings_page_embeds_schema_json(self):
+        """GET /settings embeds schema JSON for client-side validation."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.get("/settings")
+
+            html = response.text
+            assert "SCHEMA_TABS" in html
+            assert "SCHEMA_FIELDS" in html
+        finally:
+            web._orchestrator = None
+
+    def test_settings_page_renders_without_orchestrator(self):
+        """GET /settings renders with default config when no orchestrator."""
+        from issue_orchestrator.entrypoints import web
+
+        web._orchestrator = None
+        client = TestClient(app)
+        response = client.get("/settings")
+
+        assert response.status_code == 200
+        assert "Settings" in response.text
+
+    def test_get_settings_filtering_with_milestones(self):
+        """GET /api/settings returns milestones as comma-separated string."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.filtering.milestones = ["M1", "M2"]
 
         web._orchestrator = mock_orch
         try:
@@ -2831,19 +2958,38 @@ class TestSettingsEndpoints:
             assert response.status_code == 200
             data = response.json()
 
-            # Should return the singular milestone in the milestones list
-            assert data["filtering"]["milestones"] == ["v1.0"]
+            # Schema returns milestones as comma-separated string
+            assert data["filtering"]["milestones"] == "M1, M2"
         finally:
             web._orchestrator = None
 
-    def test_post_settings_clears_singular_milestone_when_setting_milestones(self):
-        """POST /api/settings clears singular milestone when setting milestones list."""
+    def test_get_settings_filtering_with_singular_milestone(self):
+        """GET /api/settings handles singular milestone field via get_milestones()."""
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
-        # Set single-milestone field
-        mock_orch.config.filtering.milestone = "old-milestone"
+        mock_orch.config.filtering.milestone = "v1.0"
         mock_orch.config.filtering.milestones = []
+
+        web._orchestrator = mock_orch
+        try:
+            client = TestClient(app)
+            response = client.get("/api/settings")
+
+            assert response.status_code == 200
+            data = response.json()
+
+            # get_milestones() returns ["v1.0"], schema joins with comma
+            assert data["filtering"]["milestones"] == "v1.0"
+        finally:
+            web._orchestrator = None
+
+    def test_post_settings_milestones_comma_separated(self):
+        """POST /api/settings handles comma-separated milestones string."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.filtering.milestone = "old-milestone"
 
         with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
             mock_result = MagicMock()
@@ -2857,27 +3003,26 @@ class TestSettingsEndpoints:
                 client = TestClient(app)
                 response = client.post("/api/settings", json={
                     "filtering": {
-                        "milestones": ["new-milestone"]
+                        "label": None,
+                        "milestones": "M1, M2",
+                        "exclude_labels": "",
+                        "fetch_limit": 100,
+                        "max_to_start": 0,
                     }
                 })
 
                 assert response.status_code == 200
 
-                # New milestones should be set
-                assert mock_orch.config.filtering.milestones == ["new-milestone"]
-                # Singular milestone should be cleared
-                assert mock_orch.config.filtering.milestone is None
+                # Comma-separated string should be split into list
+                assert mock_orch.config.filtering.milestones == ["M1", "M2"]
             finally:
                 web._orchestrator = None
 
-    def test_post_settings_clears_singular_milestone_when_clearing_all(self):
-        """POST /api/settings clears singular milestone when setting empty milestones."""
+    def test_post_settings_empty_milestones(self):
+        """POST /api/settings handles empty milestones string."""
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
-        # Set single-milestone field
-        mock_orch.config.filtering.milestone = "old-milestone"
-        mock_orch.config.filtering.milestones = []
 
         with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
             mock_result = MagicMock()
@@ -2891,14 +3036,82 @@ class TestSettingsEndpoints:
                 client = TestClient(app)
                 response = client.post("/api/settings", json={
                     "filtering": {
-                        "milestones": []
+                        "label": None,
+                        "milestones": "",
+                        "exclude_labels": "",
+                        "fetch_limit": 100,
+                        "max_to_start": 0,
                     }
                 })
 
                 assert response.status_code == 200
-
-                # Both should be empty/None
                 assert mock_orch.config.filtering.milestones == []
-                assert mock_orch.config.filtering.milestone is None
+            finally:
+                web._orchestrator = None
+
+    def test_post_settings_restart_required(self):
+        """POST /api/settings signals restart_required when port changes."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+
+        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+            mock_result = MagicMock()
+            mock_result.checks = []
+            mock_doctor.return_value = mock_result
+
+            mock_orch.config.save = MagicMock()
+
+            web._orchestrator = mock_orch
+            try:
+                client = TestClient(app)
+                response = client.post("/api/settings", json={
+                    "advanced": {
+                        "session_no_output_seconds": 120,
+                        "stale_escalation_ticks": 0,
+                        "web_port": 9090,
+                        "control_api_port": 19080,
+                        "worktree_base": str(mock_orch.config.worktree_base),
+                        "worktree_branch_on_recreate": "delete",
+                    }
+                })
+
+                assert response.status_code == 200
+                data = response.json()
+                assert data["restart_required"] is True
+                assert mock_orch.config.web_port == 9090
+            finally:
+                web._orchestrator = None
+
+    def test_post_settings_partial_tabs_preserve_others(self):
+        """POST /api/settings with partial tabs preserves unchanged tabs."""
+        from issue_orchestrator.entrypoints import web
+
+        mock_orch = create_mock_orchestrator()
+        original_e2e_enabled = mock_orch.config.e2e.enabled
+
+        with patch("issue_orchestrator.infra.doctor.run_doctor") as mock_doctor:
+            mock_result = MagicMock()
+            mock_result.checks = []
+            mock_doctor.return_value = mock_result
+
+            mock_orch.config.save = MagicMock()
+
+            web._orchestrator = mock_orch
+            try:
+                client = TestClient(app)
+                # Only send concurrency tab
+                response = client.post("/api/settings", json={
+                    "concurrency": {
+                        "max_concurrent_sessions": 10,
+                        "session_timeout_minutes": 45,
+                        "queue_refresh_seconds": 600,
+                    }
+                })
+
+                assert response.status_code == 200
+                assert mock_orch.config.max_concurrent_sessions == 10
+                # E2E settings should be unchanged
+                assert mock_orch.config.e2e.enabled == original_e2e_enabled
             finally:
                 web._orchestrator = None
