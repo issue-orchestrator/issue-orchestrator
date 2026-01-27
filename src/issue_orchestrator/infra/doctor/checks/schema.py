@@ -163,6 +163,33 @@ def run_schema_checks(config: Config) -> list[Check]:
     return checks
 
 
+def _format_interval(field: dict[str, Any], label: str, value: Any) -> str:
+    if value and value > 0:
+        unit = field.get("unit", "")
+        return f"{label}={value}{unit}"
+    return field.get("zero_label", "disabled")
+
+
+def _format_key_value(field: dict[str, Any], label: str, value: Any) -> str | None:
+    idx = field.get("value_index")
+    if idx is not None and isinstance(value, (list, tuple)):
+        value = value[idx] if len(value) > idx else None
+    return f"{label}: {value}" if value is not None else None
+
+
+def _format_boolean_flag(field: dict[str, Any], label: str, value: Any) -> str:
+    true_val = field.get("true_value", "on")
+    false_val = field.get("false_value", "off")
+    return f"{label}={true_val if value else false_val}"
+
+
+_SUMMARY_FORMATTERS = {
+    SUMMARY_INTERVAL: _format_interval,
+    SUMMARY_KEY_VALUE: _format_key_value,
+    SUMMARY_BOOLEAN_FLAG: _format_boolean_flag,
+}
+
+
 def format_summary(section: str, config: Config) -> str | None:
     """Build a human-readable status summary from schema summary annotations.
 
@@ -176,33 +203,18 @@ def format_summary(section: str, config: Config) -> str | None:
     parts: list[str] = []
     for field in fields:
         value = _get_nested_attr(config, field["config_attr"])
-        # Handle list values stored in config
         if isinstance(value, list):
             value = value[0] if value else None
 
-        fmt = field.get("format")
-        label = field.get("label", field["name"])
-
-        if fmt == SUMMARY_ENABLED_FLAG:
-            # This is handled by the caller (enabled/disabled toggle)
+        fmt: str | None = field.get("format")
+        if fmt is None or fmt == SUMMARY_ENABLED_FLAG:
             continue
-        elif fmt == SUMMARY_INTERVAL:
-            if value and value > 0:
-                unit = field.get("unit", "")
-                parts.append(f"{label}={value}{unit}")
-            else:
-                zero_label = field.get("zero_label", "disabled")
-                parts.append(zero_label)
-        elif fmt == SUMMARY_KEY_VALUE:
-            # Value might be at a specific index of a list
-            idx = field.get("value_index")
-            if idx is not None and isinstance(value, (list, tuple)):
-                value = value[idx] if len(value) > idx else None
-            if value is not None:
-                parts.append(f"{label}: {value}")
-        elif fmt == SUMMARY_BOOLEAN_FLAG:
-            true_val = field.get("true_value", "on")
-            false_val = field.get("false_value", "off")
-            parts.append(f"{label}={true_val if value else false_val}")
+
+        label = field.get("label", field["name"])
+        formatter = _SUMMARY_FORMATTERS.get(fmt)
+        if formatter:
+            result = formatter(field, label, value)
+            if result is not None:
+                parts.append(result)
 
     return ", ".join(parts) if parts else None
