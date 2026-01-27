@@ -3112,7 +3112,6 @@ async def e2e_quarantine_list(repo_root: str = Query(...)) -> JSONResponse:
         {quarantine_file: str, tests: [str], count: int}
     """
     from ..infra.e2e_db import load_quarantine_list
-    from ..infra.config import Config
 
     validated_root = _validate_repo_root(repo_root)
     if validated_root is None:
@@ -3121,13 +3120,11 @@ async def e2e_quarantine_list(repo_root: str = Query(...)) -> JSONResponse:
             status_code=400,
         )
 
-    # Get quarantine file path from config
-    try:
-        config = Config.find_and_load(validated_root)
-        quarantine_file = config.e2e.quarantine_file
-    except FileNotFoundError:
-        quarantine_file = "tests/e2e/quarantine.txt"
+    # Require orchestrator to be running for config access
+    if _orchestrator is None:
+        return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
 
+    quarantine_file = _orchestrator.config.e2e.quarantine_file
     quarantine_path = validated_root / quarantine_file
     tests = load_quarantine_list(quarantine_path)
 
@@ -3173,7 +3170,6 @@ async def e2e_quarantine_modify(
         {quarantine_file: str, tests: [str], count: int, added: [str], removed: [str]}
     """
     from ..infra.e2e_db import load_quarantine_list, save_quarantine_list
-    from ..infra.config import Config
 
     validated_root = _validate_repo_root(repo_root)
     if validated_root is None:
@@ -3192,12 +3188,11 @@ async def e2e_quarantine_modify(
     if not nodeids:
         return JSONResponse({"error": "nodeids is required"}, status_code=400)
 
-    try:
-        config = Config.find_and_load(validated_root)
-        quarantine_file = config.e2e.quarantine_file
-    except FileNotFoundError:
-        quarantine_file = "tests/e2e/quarantine.txt"
+    # Require orchestrator to be running for config access
+    if _orchestrator is None:
+        return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
 
+    quarantine_file = _orchestrator.config.e2e.quarantine_file
     quarantine_path = validated_root / quarantine_file
     current_tests = load_quarantine_list(quarantine_path)
 
@@ -3234,7 +3229,6 @@ async def e2e_flaky_tests(
         {flaky_tests: [{nodeid, flake_count}, ...], threshold, window}
     """
     from ..infra.e2e_db import E2EDB, load_quarantine_list
-    from ..infra.config import Config
 
     validated_root = _validate_repo_root(repo_root)
     if validated_root is None:
@@ -3244,12 +3238,11 @@ async def e2e_flaky_tests(
     if not db_path.exists():
         return JSONResponse({"error": "not_found", "detail": "E2E database not found"}, status_code=404)
 
-    try:
-        config = Config.find_and_load(validated_root)
-        quarantine_file = config.e2e.quarantine_file
-    except FileNotFoundError:
-        quarantine_file = "tests/e2e/quarantine.txt"
+    # Require orchestrator to be running for config access
+    if _orchestrator is None:
+        return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
 
+    quarantine_file = _orchestrator.config.e2e.quarantine_file
     quarantine_path = validated_root / quarantine_file
     quarantined = load_quarantine_list(quarantine_path)
 

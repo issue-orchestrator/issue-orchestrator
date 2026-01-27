@@ -2384,8 +2384,13 @@ class TestE2EQuarantineModifyEndpoint:
 
     @pytest.fixture
     def quarantine_client(self):
-        """Create a test client for quarantine endpoint."""
-        return TestClient(control_app)
+        """Create a test client with mock orchestrator for quarantine endpoint."""
+        mock = create_mock_orchestrator()
+        # Set up e2e config with default quarantine file path
+        mock.config.e2e.quarantine_file = "tests/e2e/quarantine.txt"
+        set_orchestrator(mock)
+        yield TestClient(control_app)
+        set_orchestrator(None)
 
     def test_quarantine_modify_returns_400_for_invalid_repo_root(self, quarantine_client):
         """Invalid repo_root should return 400."""
@@ -2471,8 +2476,13 @@ class TestE2EFlakyTestsEndpoint:
 
     @pytest.fixture
     def flaky_client(self):
-        """Create a test client for flaky tests endpoint."""
-        return TestClient(control_app)
+        """Create a test client with mock orchestrator for flaky tests endpoint."""
+        mock = create_mock_orchestrator()
+        # Set up e2e config with default quarantine file path
+        mock.config.e2e.quarantine_file = "tests/e2e/quarantine.txt"
+        set_orchestrator(mock)
+        yield TestClient(control_app)
+        set_orchestrator(None)
 
     def test_flaky_returns_400_for_invalid_repo_root(self, flaky_client):
         """Invalid repo_root should return 400."""

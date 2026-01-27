@@ -1,4 +1,4 @@
-.PHONY: help venv install typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv worktree-setup install typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -10,6 +10,7 @@ GMAKE_VERSION := $(shell $(GMAKE) --version 2>/dev/null | head -1)
 help:
 	@echo "Available targets:"
 	@echo "  venv                Create/recreate .venv with Python 3.14+ and install all deps"
+	@echo "  worktree-setup      Full worktree setup: venv + vscode extensions + playwright"
 	@echo "  install             Install dev dependencies (assumes venv exists)"
 	@echo "  typecheck           Run pyright type checking"
 	@echo "  lint-arch           Run import-linter + AST guardrails"
@@ -62,6 +63,16 @@ venv:
 	@touch .venv/.deps-synced
 	@echo ""
 	@echo "Done! Activate with: source .venv/bin/activate"
+
+# Full worktree setup - use this when setting up a new git worktree
+worktree-setup: venv
+	@echo ""
+	@echo "Installing VS Code extension dependencies..."
+	@cd packages/vscode && npm install --silent
+	@echo "Installing Playwright browsers..."
+	@.venv/bin/playwright install chromium --with-deps 2>/dev/null || .venv/bin/playwright install chromium
+	@echo ""
+	@echo "Worktree setup complete! Activate with: source .venv/bin/activate"
 
 install:
 	pip install -e ".[dev]"
