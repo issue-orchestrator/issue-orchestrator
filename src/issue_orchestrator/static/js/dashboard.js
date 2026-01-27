@@ -2538,7 +2538,9 @@ function renderE2EDiagnosis(diagnosis) {
         html += `
             <div class="diagnosis-section">
                 <h3>Log File</h3>
-                <p style="color: #8b949e;">Log file: <code>${escapeHtml(diagnosis.log_path)}</code></p>
+                <p style="color: #8b949e;">Log file: <code>${escapeHtml(diagnosis.log_path)}</code>
+                    <button class="btn-secondary btn-sm" onclick="openPath('${escapeHtml(diagnosis.log_path)}')">Open</button>
+                </p>
                 <p style="color: #d29922;">${diagnosis.log_exists ? 'Log content not loaded' : 'Log file not found'}</p>
             </div>
         `;
@@ -2875,8 +2877,11 @@ async function quarantineSingleTest(nodeid) {
 }
 
 async function createE2EDiagnosticIssue() {
-    if (!e2eCurrentDiagnosis) {
-        showToast('No diagnosis data available', true);
+    const runId = e2eCurrentDiagnosis?.run_id
+        || currentRunDetails?.run?.id
+        || e2eLastRun?.id;
+    if (!runId) {
+        showToast('No run data available', true);
         return;
     }
 
@@ -2893,7 +2898,7 @@ async function createE2EDiagnosticIssue() {
     btn.textContent = 'Creating...';
 
     try {
-        const res = await fetch(`/control/e2e/diagnosis/${e2eCurrentDiagnosis.run_id}/issue?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+        const res = await fetch(`/control/e2e/diagnosis/${runId}/issue?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ agent: agent }),
@@ -2948,9 +2953,10 @@ async function showE2ERunDetails(runId) {
         const results = data.results || [];
         const statusClass = run.status === 'passed' ? 'passed' : run.status === 'failed' ? 'failed' : '';
 
-        // Categorize test results
+        // Categorize test results (respect retry_outcome for flaky tests)
         const passed = results.filter(r => r.outcome === 'passed');
-        const failed = results.filter(r => r.outcome === 'failed' && !r.is_quarantined);
+        const passedOnRetry = results.filter(r => r.outcome === 'failed' && r.retry_outcome === 'passed' && !r.is_quarantined);
+        const failed = results.filter(r => r.outcome === 'failed' && r.retry_outcome !== 'passed' && !r.is_quarantined);
         const quarantined = results.filter(r => r.is_quarantined);
         const skipped = results.filter(r => r.outcome === 'skipped');
 
@@ -2965,11 +2971,13 @@ async function showE2ERunDetails(runId) {
                     <div class="info-row"><span class="label">Finished:</span> <span>${run.finished_at || 'N/A'}</span></div>
                     <div class="info-row"><span class="label">Commit:</span> <span>${run.commit_sha || 'N/A'}</span></div>
                     <div class="info-row"><span class="label">Summary:</span> <span class="test-summary">
-                        <span class="passed-count">${passed.length} passed</span>
+                        <span class="passed-count">${passed.length + passedOnRetry.length} passed</span>
+                        ${passedOnRetry.length > 0 ? `<span class="flaky-count">${passedOnRetry.length} flaky</span>` : ''}
                         ${failed.length > 0 ? `<span class="failed-count">${failed.length} failed</span>` : ''}
                         ${quarantined.length > 0 ? `<span class="quarantined-count">${quarantined.length} quarantined</span>` : ''}
                         ${skipped.length > 0 ? `<span class="skipped-count">${skipped.length} skipped</span>` : ''}
                     </span></div>
+                    ${run.log_path ? `<div class="info-row"><span class="label">Log:</span> <span><code>${escapeHtml(run.log_path)}</code> <button class="btn-secondary btn-sm" onclick="openPath('${escapeHtml(run.log_path)}')">Open</button></span></div>` : ''}
                 </div>
         `;
 
@@ -2985,6 +2993,27 @@ async function showE2ERunDetails(runId) {
                 html += `
                     <div class="test-result-item failed clickable" onclick="showRunTestDetail('${escapeHtml(test.nodeid)}')" title="Click to view details">
                         <span class="status-icon failed">✗</span>
+                        <span class="test-name" title="${escapeHtml(test.nodeid)}">${escapeHtml(shortName)}</span>
+                        ${test.duration_seconds ? `<span class="duration">${test.duration_seconds.toFixed(1)}s</span>` : ''}
+                        <span class="click-hint">→</span>
+                    </div>
+                `;
+            }
+            html += `</div></div>`;
+        }
+
+        // Show flaky tests (passed on retry)
+        if (passedOnRetry.length > 0) {
+            html += `
+                <div class="test-results-section">
+                    <h4>Passed on Retry – Flaky (${passedOnRetry.length})</h4>
+                    <div class="test-results-list">
+            `;
+            for (const test of passedOnRetry) {
+                const shortName = test.nodeid.split('::').pop();
+                html += `
+                    <div class="test-result-item flaky clickable" onclick="showRunTestDetail('${escapeHtml(test.nodeid)}')" title="Click to view details">
+                        <span class="status-icon flaky">⟳</span>
                         <span class="test-name" title="${escapeHtml(test.nodeid)}">${escapeHtml(shortName)}</span>
                         ${test.duration_seconds ? `<span class="duration">${test.duration_seconds.toFixed(1)}s</span>` : ''}
                         <span class="click-hint">→</span>
@@ -3084,6 +3113,16 @@ function showRunTestDetail(nodeid) {
         `;
     }
 
+    // Add rerun/copy buttons for failed tests
+    if (test.outcome === 'failed') {
+        html += `
+            <div class="test-detail-actions">
+                <button class="btn-secondary btn-sm" onclick="rerunTest('${escapeHtml(test.nodeid)}')">Rerun Test</button>
+                <button class="btn-secondary btn-sm" onclick="copyTestCommand('${escapeHtml(test.nodeid)}')">Copy Command</button>
+            </div>
+        `;
+    }
+
     html += `</div>`;
     content.innerHTML = html;
 }
@@ -3094,6 +3133,50 @@ function escapeHtml(text) {
     const div = document.createElement('div');
     div.textContent = text;
     return div.innerHTML;
+}
+
+async function rerunTest(nodeid) {
+    try {
+        const res = await fetch('/control/e2e/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                repo_root: REPO_ROOT,
+                pytest_args: [nodeid, '-v'],
+            })
+        });
+        const data = await res.json();
+        if (res.ok) {
+            showToast('Rerunning test...');
+            startE2EPolling();
+        } else if (data.error === 'already_running') {
+            showToast('E2E tests already running', true);
+        } else {
+            showToast(data.detail || data.error || 'Failed to start rerun', true);
+        }
+    } catch (err) {
+        showToast('Failed to rerun test: ' + err.message, true);
+    }
+}
+
+function copyTestCommand(nodeid) {
+    const cmd = `cd ${REPO_ROOT} && pytest ${nodeid} -v`;
+    navigator.clipboard.writeText(cmd).then(
+        () => showToast('Command copied to clipboard'),
+        () => showToast('Failed to copy command', true)
+    );
+}
+
+function rerunCurrentTest() {
+    if (currentTestFailure?.nodeid) {
+        rerunTest(currentTestFailure.nodeid);
+    }
+}
+
+function copyCurrentTestCommand() {
+    if (currentTestFailure?.nodeid) {
+        copyTestCommand(currentTestFailure.nodeid);
+    }
 }
 
 async function showE2ETriage() {

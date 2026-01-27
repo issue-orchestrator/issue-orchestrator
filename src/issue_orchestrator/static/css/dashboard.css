@@ -521,6 +521,7 @@ button:focus-visible,
 }
 .run-details .passed-count { color: #3fb950; }
 .run-details .failed-count { color: #f85149; }
+.run-details .flaky-count { color: #d29922; }
 .run-details .quarantined-count { color: #d29922; }
 .run-details .skipped-count { color: #8b949e; }
 .test-results-section {
@@ -570,6 +571,14 @@ button:focus-visible,
     font-size: 14px;
 }
 .test-result-item .status-icon.quarantined { color: #d29922; }
+.test-result-item .status-icon.flaky { color: #d29922; }
+.test-detail-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 16px;
+    padding-top: 12px;
+    border-top: 1px solid #30363d;
+}
 /* Test detail view */
 .test-detail-view { padding: 0 4px; }
 .test-detail-view .back-btn {
@@ -747,6 +756,18 @@ button:focus-visible,
 }
 /* Hide redundant link indicator in blocked tab */
 .issue-list.blocked-list .detail-link-indicator {
+    display: none;
+}
+/* E2E tab layout - hide detail column to remove redundancy */
+.issue-list.e2e-list .issue-header,
+.issue-list.e2e-list .issue-row {
+    grid-template-columns: 80px 140px 1fr 0px 80px 120px;
+}
+.issue-list.e2e-list .issue-detail {
+    overflow: hidden;
+    padding: 0;
+}
+.issue-list.e2e-list .detail-link-indicator {
     display: none;
 }
 .issue-row:last-child { border-bottom: none; }
