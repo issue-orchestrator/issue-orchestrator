@@ -3215,18 +3215,18 @@ async def e2e_quarantine_modify(
 @control_app.get("/control/e2e/flaky-tests")
 async def e2e_flaky_tests(
     repo_root: str = Query(...),
-    threshold: int = Query(default=3),
+    threshold: int = Query(default=20),
     window: int = Query(default=10),
 ) -> JSONResponse:
-    """Get tests that exhibit flaky behavior above the threshold.
+    """Get tests that exhibit flaky behavior via flip-rate analysis.
 
     Query params:
         repo_root: str - Repository root path
-        threshold: int - Number of flakes to consider problematic (default: 3)
+        threshold: int - Flip rate percentage (0-100) to flag as flaky (default: 20)
         window: int - Number of recent runs to check (default: 10)
 
     Returns:
-        {flaky_tests: [{nodeid, flake_count}, ...], threshold, window}
+        {flaky_tests: [{nodeid, flip_rate, flip_rate_percent, flip_count, ...}], threshold, window}
     """
     from ..infra.e2e_db import E2EDB, load_quarantine_list
 
@@ -3247,11 +3247,20 @@ async def e2e_flaky_tests(
     quarantined = load_quarantine_list(quarantine_path)
 
     db = E2EDB(db_path)
-    flaky_tests = db.get_flaky_tests(threshold=threshold, window_runs=window)
+    all_stability = db.get_all_test_stability(
+        window_runs=window,
+        flake_threshold_percent=float(threshold),
+    )
 
-    # Mark which ones are already quarantined
-    for test in flaky_tests:
-        test["is_quarantined"] = test["nodeid"] in quarantined
+    # Filter to only flaky tests
+    flaky_tests = []
+    for stability in all_stability:
+        if stability.is_likely_flaky:
+            entry = stability.to_dict()
+            entry["is_quarantined"] = stability.nodeid in quarantined
+            # Backward-compat alias
+            entry["flake_count"] = stability.flip_count
+            flaky_tests.append(entry)
 
     return JSONResponse({
         "flaky_tests": flaky_tests,
@@ -3590,23 +3599,30 @@ async def e2e_triage_data(
         flake_threshold = e2e_config.flake_threshold
         flake_window = e2e_config.flake_window_runs
 
-        # Build triage data for each failure
+        # Build triage data for each failure using flip-rate stability
         failures = []
         for result in failed_results:
             # Check for existing open issue
             existing = db.find_open_failure_issue(result.nodeid)
 
-            # Get flake history
-            flake_count = db.get_flake_count(result.nodeid, window_runs=flake_window)
-            is_likely_flaky = flake_count >= flake_threshold
+            # Get flip-rate stability
+            stability = db.get_test_stability(
+                result.nodeid,
+                window_runs=flake_window,
+                flake_threshold_percent=float(flake_threshold),
+            )
 
             failures.append({
                 "nodeid": result.nodeid,
                 "longrepr": result.longrepr,
                 "duration_seconds": result.duration_seconds,
                 "existing_issue": existing.to_dict() if existing else None,
-                "flake_count": flake_count,
-                "is_likely_flaky": is_likely_flaky,
+                "flake_count": stability.flip_count,
+                "flip_count": stability.flip_count,
+                "flip_rate": stability.flip_rate,
+                "flip_rate_percent": stability.flip_rate_percent,
+                "category": stability.category,
+                "is_likely_flaky": stability.is_likely_flaky,
             })
 
         # Build issue status info if parent issue exists
@@ -3721,10 +3737,13 @@ async def e2e_test_detail(
                 status_code=404,
             )
 
-        # Get flake info
+        # Get flip-rate stability info
         e2e_config = _orchestrator.config.e2e if _orchestrator else _DEFAULT_E2E_CONFIG
-        flake_count = db.get_flake_count(nodeid, window_runs=e2e_config.flake_window_runs)
-        is_likely_flaky = flake_count >= e2e_config.flake_threshold
+        stability = db.get_test_stability(
+            nodeid,
+            window_runs=e2e_config.flake_window_runs,
+            flake_threshold_percent=float(e2e_config.flake_threshold),
+        )
 
         # Get history and existing issue
         existing_issue = db.find_open_failure_issue(nodeid)
@@ -3751,8 +3770,12 @@ async def e2e_test_detail(
             },
             "history": history_data,
             "history_summary": _calculate_history_summary(history),
-            "flake_count": flake_count,
-            "is_likely_flaky": is_likely_flaky,
+            "flake_count": stability.flip_count,
+            "flip_count": stability.flip_count,
+            "flip_rate": stability.flip_rate,
+            "flip_rate_percent": stability.flip_rate_percent,
+            "category": stability.category,
+            "is_likely_flaky": stability.is_likely_flaky,
             "existing_issue": existing_issue.to_dict() if existing_issue else None,
             "log_excerpt": _extract_test_log_excerpt(run.log_path, nodeid),
         })

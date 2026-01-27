@@ -108,6 +108,9 @@ CREATE TABLE IF NOT EXISTS e2e_flake_history (
 
 CREATE INDEX IF NOT EXISTS idx_e2e_flake_history_nodeid
     ON e2e_flake_history(nodeid, recorded_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_e2e_test_results_nodeid
+    ON e2e_test_results(nodeid);
 """
 
 
@@ -301,33 +304,122 @@ class E2ERunIssue:
 
 
 @dataclass
-class E2EFlakeRecord:
-    """Records a flaky test occurrence."""
+class TestStability:
+    """Flip-rate stability analysis for a single test.
 
-    id: int
+    A "flip" is when a test's outcome changes between consecutive runs
+    (pass->fail or fail->pass). High flip rate = flaky.
+    """
+
+    __test__ = False  # Not a pytest test class
+
     nodeid: str
-    run_id: int
-    was_flaky: bool
-    recorded_at: str
+    flip_rate: float  # 0.0 to 1.0
+    flip_count: int  # Number of flips in the window
+    run_count: int  # Number of runs in the window
+    category: str  # flaky, consistently_failing, new_failure, recovered, healthy
+    is_likely_flaky: bool  # flip_rate >= threshold
+    recent_outcomes: list[str]  # Most recent first: ["passed", "failed", ...]
 
-    @classmethod
-    def from_row(cls, row: sqlite3.Row) -> "E2EFlakeRecord":
-        return cls(
-            id=row["id"],
-            nodeid=row["nodeid"],
-            run_id=row["run_id"],
-            was_flaky=bool(row["was_flaky"]),
-            recorded_at=row["recorded_at"],
-        )
+    @property
+    def flip_rate_percent(self) -> float:
+        """Flip rate as a percentage (0-100)."""
+        return round(self.flip_rate * 100, 1)
 
     def to_dict(self) -> dict:
         return {
-            "id": self.id,
             "nodeid": self.nodeid,
-            "run_id": self.run_id,
-            "was_flaky": self.was_flaky,
-            "recorded_at": self.recorded_at,
+            "flip_rate": self.flip_rate,
+            "flip_rate_percent": self.flip_rate_percent,
+            "flip_count": self.flip_count,
+            "run_count": self.run_count,
+            "category": self.category,
+            "is_likely_flaky": self.is_likely_flaky,
+            "recent_outcomes": self.recent_outcomes,
         }
+
+
+def _compute_stability(
+    nodeid: str,
+    outcomes: list[str],
+    threshold_percent: float,
+) -> TestStability:
+    """Compute flip-rate stability for a test from its recent outcomes.
+
+    Pure function — no DB access. Easy to test.
+
+    Args:
+        nodeid: Test node ID
+        outcomes: Recent outcomes, most recent first (e.g., ["passed", "failed", ...])
+        threshold_percent: Flip rate percentage (0-100) above which test is flaky
+    """
+    if not outcomes:
+        return TestStability(
+            nodeid=nodeid,
+            flip_rate=0.0,
+            flip_count=0,
+            run_count=0,
+            category="healthy",
+            is_likely_flaky=False,
+            recent_outcomes=[],
+        )
+
+    # Count flips: consecutive outcome changes
+    flip_count = 0
+    for i in range(1, len(outcomes)):
+        if outcomes[i] != outcomes[i - 1]:
+            flip_count += 1
+
+    # Flip rate: flips / (n-1) possible transitions
+    max_transitions = len(outcomes) - 1
+    flip_rate = flip_count / max_transitions if max_transitions > 0 else 0.0
+
+    is_likely_flaky = (flip_rate * 100) >= threshold_percent
+
+    category = _categorize_test(outcomes, is_likely_flaky)
+
+    return TestStability(
+        nodeid=nodeid,
+        flip_rate=flip_rate,
+        flip_count=flip_count,
+        run_count=len(outcomes),
+        category=category,
+        is_likely_flaky=is_likely_flaky,
+        recent_outcomes=outcomes,
+    )
+
+
+def _categorize_test(outcomes: list[str], is_likely_flaky: bool) -> str:
+    """Categorize a test based on its recent outcomes.
+
+    Pure function — no DB access.
+
+    Categories:
+        flaky: flip_rate >= threshold
+        consistently_failing: low flip rate, most recent is failure, not flaky
+        new_failure: < 3 runs of history, recent failure
+        recovered: most recent is pass, but had failures in window
+        healthy: all passes or no history
+    """
+    if not outcomes:
+        return "healthy"
+
+    if is_likely_flaky:
+        return "flaky"
+
+    most_recent = outcomes[0]
+    has_failures = any(o == "failed" for o in outcomes)
+
+    if most_recent == "failed":
+        if len(outcomes) < 3:
+            return "new_failure"
+        return "consistently_failing"
+
+    # Most recent is pass
+    if has_failures:
+        return "recovered"
+
+    return "healthy"
 
 
 class AlreadyRunning(Exception):
@@ -1268,93 +1360,100 @@ class E2EDB:
             return [E2EFailureIssue.from_row(row) for row in cursor.fetchall()]
 
     # -------------------------------------------------------------------------
-    # Flakiness Tracking Methods
+    # Flip-Rate Stability Methods
     # -------------------------------------------------------------------------
 
-    def record_flake(
-        self,
-        nodeid: str,
-        run_id: int,
-        was_flaky: bool,
-    ) -> int:
-        """Record a flaky test occurrence.
-
-        Args:
-            nodeid: Test node ID
-            run_id: E2E run ID
-            was_flaky: Whether the test was flaky (failed then passed on retry)
-
-        Returns:
-            ID of the created record
-        """
-        with self._connect() as conn:
-            cursor = conn.execute(
-                """
-                INSERT INTO e2e_flake_history (nodeid, run_id, was_flaky, recorded_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (nodeid, run_id, int(was_flaky), self._now_iso()),
-            )
-            return cursor.lastrowid or 0
-
-    def get_flake_count(
+    def _get_recent_outcomes(
         self,
         nodeid: str,
         window_runs: int = 10,
-    ) -> int:
-        """Count consecutive flaky occurrences for a test.
+    ) -> list[str]:
+        """Get recent effective outcomes for a test across completed runs.
+
+        Returns outcomes most-recent-first. Uses COALESCE(retry_outcome, outcome)
+        to get the effective outcome (retry takes precedence). Only includes
+        completed runs with pass/fail outcomes.
 
         Args:
             nodeid: Test node ID
-            window_runs: Number of recent runs to check
-
-        Returns:
-            Count of flaky occurrences in the window
+            window_runs: Number of recent runs to include
         """
         with self._connect() as conn:
             cursor = conn.execute(
                 """
-                SELECT COUNT(*) as cnt FROM (
-                    SELECT was_flaky FROM e2e_flake_history
-                    WHERE nodeid = ?
-                    ORDER BY recorded_at DESC
-                    LIMIT ?
-                )
-                WHERE was_flaky = 1
+                SELECT COALESCE(t.retry_outcome, t.outcome) AS effective_outcome
+                FROM e2e_test_results t
+                JOIN e2e_runs r ON t.run_id = r.id
+                WHERE t.nodeid = ?
+                    AND r.status IN ('passed', 'failed')
+                    AND COALESCE(t.retry_outcome, t.outcome) IN ('passed', 'failed')
+                ORDER BY r.started_at DESC
+                LIMIT ?
                 """,
                 (nodeid, window_runs),
             )
-            return cursor.fetchone()["cnt"]
+            return [row["effective_outcome"] for row in cursor.fetchall()]
 
-    def get_flaky_tests(
+    def get_test_stability(
         self,
-        threshold: int = 3,
+        nodeid: str,
         window_runs: int = 10,
-    ) -> list[dict]:
-        """Get tests that exceed the flakiness threshold.
+        flake_threshold_percent: float = 20.0,
+    ) -> TestStability:
+        """Get flip-rate stability analysis for a single test.
 
         Args:
-            threshold: Number of flakes to consider a test as problematic
-            window_runs: Number of recent runs to check
+            nodeid: Test node ID
+            window_runs: Number of recent runs to analyze
+            flake_threshold_percent: Flip rate percentage (0-100) to flag as flaky
+        """
+        outcomes = self._get_recent_outcomes(nodeid, window_runs)
+        return _compute_stability(nodeid, outcomes, flake_threshold_percent)
 
-        Returns:
-            List of dicts with nodeid and flake_count
+    def get_all_test_stability(
+        self,
+        window_runs: int = 10,
+        flake_threshold_percent: float = 20.0,
+    ) -> list[TestStability]:
+        """Get flip-rate stability for all tests with recent history.
+
+        Single SQL call to fetch all outcomes, then compute stability per test.
+
+        Args:
+            window_runs: Number of recent runs to analyze per test
+            flake_threshold_percent: Flip rate percentage (0-100) to flag as flaky
         """
         with self._connect() as conn:
-            # Get unique nodeids that have flake history
+            # Bulk query: get recent outcomes for all tests, ordered by test then recency
             cursor = conn.execute(
-                "SELECT DISTINCT nodeid FROM e2e_flake_history"
+                """
+                SELECT t.nodeid,
+                       COALESCE(t.retry_outcome, t.outcome) AS effective_outcome,
+                       r.started_at
+                FROM e2e_test_results t
+                JOIN e2e_runs r ON t.run_id = r.id
+                WHERE r.status IN ('passed', 'failed')
+                    AND COALESCE(t.retry_outcome, t.outcome) IN ('passed', 'failed')
+                ORDER BY t.nodeid, r.started_at DESC
+                """,
             )
-            nodeids = [row["nodeid"] for row in cursor.fetchall()]
 
-        # Check each one (could be optimized with window functions if needed)
-        result = []
-        for nodeid in nodeids:
-            count = self.get_flake_count(nodeid, window_runs)
-            if count >= threshold:
-                result.append({"nodeid": nodeid, "flake_count": count})
+            # Group outcomes by nodeid, limiting to window_runs per test
+            from collections import defaultdict
+            outcomes_by_nodeid: dict[str, list[str]] = defaultdict(list)
+            for row in cursor.fetchall():
+                nodeid_key = row["nodeid"]
+                if len(outcomes_by_nodeid[nodeid_key]) < window_runs:
+                    outcomes_by_nodeid[nodeid_key].append(row["effective_outcome"])
 
-        return sorted(result, key=lambda x: x["flake_count"], reverse=True)
+        results = []
+        for nodeid_key, outcomes in outcomes_by_nodeid.items():
+            stability = _compute_stability(nodeid_key, outcomes, flake_threshold_percent)
+            results.append(stability)
+
+        # Sort by flip_rate descending for most-flaky-first ordering
+        results.sort(key=lambda s: s.flip_rate, reverse=True)
+        return results
 
 
 # -------------------------------------------------------------------------

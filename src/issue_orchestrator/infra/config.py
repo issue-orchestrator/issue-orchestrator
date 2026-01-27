@@ -359,7 +359,7 @@ class E2EConfig:
     quarantine_file: str = "tests/e2e/quarantine.txt"  # Path to quarantine list
     survive_restart: bool = True  # Let worker finish if orchestrator restarts
     stop_on_first_failure: bool = False  # If True, stop on first test failure (-x flag)
-    flake_threshold: int = 3  # Failures needed to flag test as "likely flaky"
+    flake_threshold: int = 20  # Flip rate percentage (0-100) to flag test as flaky
     flake_window_runs: int = 10  # Number of recent runs to check for flakiness
 
 
@@ -408,7 +408,7 @@ def _parse_e2e_config(data: dict) -> E2EConfig:
         quarantine_file=data.get("quarantine_file", "tests/e2e/quarantine.txt"),
         survive_restart=data.get("survive_restart", True),
         stop_on_first_failure=data.get("stop_on_first_failure", False),
-        flake_threshold=data.get("flake_threshold", 3),
+        flake_threshold=data.get("flake_threshold", 20),
         flake_window_runs=data.get("flake_window_runs", 10),
     )
 
