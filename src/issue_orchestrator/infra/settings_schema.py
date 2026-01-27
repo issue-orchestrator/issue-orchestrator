@@ -6,6 +6,7 @@ via Field() + json_schema_extra. This single source of truth drives:
 - GET/POST /api/settings (serialize/validate via Pydantic)
 - setup_wizard.py (defaults, labels, hints)
 - docs/user/configuration.md (auto-generated reference)
+- doctor checks (path validation, agent references, status summaries)
 """
 
 from __future__ import annotations
@@ -18,6 +19,25 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from .config import Config
+
+
+# ---------------------------------------------------------------------------
+# Doctor check type constants — used in json_schema_extra["doctor_check"]
+# ---------------------------------------------------------------------------
+
+DOCTOR_CHECK_PATH_EXISTS = "path_exists"
+DOCTOR_CHECK_FIRST_ARG_PATH_EXISTS = "first_arg_path_exists"
+DOCTOR_CHECK_REFERENCES_AGENT = "references_agent"
+
+# Doctor severity levels
+DOCTOR_SEVERITY_ERROR = "error"
+DOCTOR_SEVERITY_WARNING = "warning"
+
+# Summary format constants — used in json_schema_extra["summary"]
+SUMMARY_ENABLED_FLAG = "enabled_flag"
+SUMMARY_KEY_VALUE = "key_value"
+SUMMARY_INTERVAL = "interval"
+SUMMARY_BOOLEAN_FLAG = "boolean_flag"
 
 
 # ---------------------------------------------------------------------------
@@ -37,6 +57,11 @@ class ConcurrencySettings(BaseModel):
             "section": "Session Limits",
             "config_attr": "max_concurrent_sessions",
             "yaml_path": "execution.concurrency.max_concurrent_sessions",
+            "setup": {
+                "enabled": True,
+                "section": "concurrency",
+                "order": 10,
+            },
         },
     )
     session_timeout_minutes: int = Field(
@@ -75,6 +100,11 @@ class E2ESettings(BaseModel):
         json_schema_extra={
             "config_attr": "e2e.enabled",
             "yaml_path": "e2e.enabled",
+            "summary": {
+                "section": "e2e",
+                "format": SUMMARY_ENABLED_FLAG,
+                "label": "E2E Runner",
+            },
         },
     )
     auto_run_interval_minutes: int = Field(
@@ -86,6 +116,13 @@ class E2ESettings(BaseModel):
         json_schema_extra={
             "config_attr": "e2e.auto_run_interval_minutes",
             "yaml_path": "e2e.auto_run_interval_minutes",
+            "summary": {
+                "section": "e2e",
+                "format": SUMMARY_INTERVAL,
+                "label": "auto",
+                "zero_label": "manual",
+                "unit": "m",
+            },
         },
     )
     role: Literal["auto", "executor", "reader", "disabled"] = Field(
@@ -105,6 +142,15 @@ class E2ESettings(BaseModel):
             "config_attr": "e2e.pytest_args",
             "yaml_path": "e2e.pytest_args",
             "ui_transform": "space_separated_list",
+            "doctor_check": DOCTOR_CHECK_FIRST_ARG_PATH_EXISTS,
+            "doctor_check_condition": "e2e.enabled",
+            "doctor_severity": DOCTOR_SEVERITY_WARNING,
+            "summary": {
+                "section": "e2e",
+                "format": SUMMARY_KEY_VALUE,
+                "label": "tests",
+                "value_index": 0,
+            },
         },
     )
     allow_retry_once: bool = Field(
@@ -114,6 +160,13 @@ class E2ESettings(BaseModel):
         json_schema_extra={
             "config_attr": "e2e.allow_retry_once",
             "yaml_path": "e2e.allow_retry_once",
+            "summary": {
+                "section": "e2e",
+                "format": SUMMARY_BOOLEAN_FLAG,
+                "label": "retry",
+                "true_value": "on",
+                "false_value": "off",
+            },
         },
     )
     stop_on_first_failure: bool = Field(
@@ -132,6 +185,9 @@ class E2ESettings(BaseModel):
         json_schema_extra={
             "config_attr": "e2e.quarantine_file",
             "yaml_path": "e2e.quarantine_file",
+            "doctor_check": DOCTOR_CHECK_PATH_EXISTS,
+            "doctor_check_condition": "e2e.enabled",
+            "doctor_severity": DOCTOR_SEVERITY_WARNING,
         },
     )
 
@@ -204,6 +260,11 @@ class ReviewSettings(BaseModel):
             "section": "Code Review Workflow",
             "config_attr": "review_enabled",
             "yaml_path": "review.enabled",
+            "summary": {
+                "section": "review",
+                "format": SUMMARY_ENABLED_FLAG,
+                "label": "Code Review",
+            },
         },
     )
     default_reviewer: Optional[str] = Field(
@@ -214,6 +275,14 @@ class ReviewSettings(BaseModel):
             "section": "Code Review Workflow",
             "config_attr": "code_review_agent",
             "yaml_path": "review.default",
+            "doctor_check": DOCTOR_CHECK_REFERENCES_AGENT,
+            "doctor_check_condition": "review_enabled",
+            "doctor_severity": DOCTOR_SEVERITY_ERROR,
+            "summary": {
+                "section": "review",
+                "format": SUMMARY_KEY_VALUE,
+                "label": "default",
+            },
         },
     )
     max_rework_cycles: int = Field(
@@ -236,6 +305,9 @@ class ReviewSettings(BaseModel):
             "section": "Triage Review",
             "config_attr": "triage_review_agent",
             "yaml_path": "review.triage_review_agent",
+            "doctor_check": DOCTOR_CHECK_REFERENCES_AGENT,
+            "doctor_check_condition": "review_enabled",
+            "doctor_severity": DOCTOR_SEVERITY_ERROR,
         },
     )
     triage_threshold: int = Field(
@@ -289,6 +361,12 @@ class AdvancedSettings(BaseModel):
             "restart_required": True,
             "config_attr": "web_port",
             "yaml_path": "ui.web_port",
+            "setup": {
+                "enabled": True,
+                "section": "ui",
+                "order": 10,
+                "condition": {"field": "ui_mode", "value": "web"},
+            },
         },
     )
     control_api_port: int = Field(
@@ -313,6 +391,11 @@ class AdvancedSettings(BaseModel):
             "restart_required": True,
             "config_attr": "worktree_base",
             "yaml_path": "worktrees.base",
+            "setup": {
+                "enabled": True,
+                "section": "worktrees",
+                "order": 10,
+            },
         },
     )
     worktree_branch_on_recreate: Literal["delete", "create_new_branch"] = Field(
@@ -490,6 +573,93 @@ def get_field_meta(tab_key: str, field_name: str) -> dict[str, Any]:
                 **extra,
             }
     raise KeyError(f"Unknown tab '{tab_key}' or field '{field_name}'")
+
+
+# ---------------------------------------------------------------------------
+# Setup wizard field extraction (data-driven)
+# ---------------------------------------------------------------------------
+
+def get_setup_fields(section: str) -> list[dict[str, Any]]:
+    """Get schema fields for a wizard section, sorted by order.
+
+    Returns a list of field metadata dicts with keys:
+        name, title, description, default, type, order, prompt, condition, tab_key
+    """
+    fields: list[dict[str, Any]] = []
+    for tab in TAB_DEFINITIONS:
+        for field_name, field_info in tab["model"].model_fields.items():
+            extra = field_info.json_schema_extra or {}
+            setup = extra.get("setup")
+            if not setup or not setup.get("enabled"):
+                continue
+            if setup.get("section") != section:
+                continue
+            fields.append({
+                "name": field_name,
+                "title": field_info.title,
+                "description": field_info.description,
+                "default": field_info.default,
+                "type": field_info.annotation,
+                "order": setup.get("order", 0),
+                "prompt": setup.get("prompt", field_info.title),
+                "condition": setup.get("condition"),
+                "tab_key": tab["key"],
+                "yaml_path": extra.get("yaml_path", field_name),
+            })
+    fields.sort(key=lambda f: f["order"])
+    return fields
+
+
+# ---------------------------------------------------------------------------
+# Doctor check field extraction (data-driven)
+# ---------------------------------------------------------------------------
+
+def get_doctor_check_fields() -> list[dict[str, Any]]:
+    """Get all schema fields that have doctor_check annotations.
+
+    Returns a list of field metadata dicts with keys:
+        name, doctor_check, doctor_check_condition, doctor_severity, config_attr,
+        title, tab_key, ui_transform
+    """
+    fields: list[dict[str, Any]] = []
+    for tab in TAB_DEFINITIONS:
+        for field_name, field_info in tab["model"].model_fields.items():
+            extra = field_info.json_schema_extra or {}
+            doctor_check = extra.get("doctor_check")
+            if not doctor_check:
+                continue
+            fields.append({
+                "name": field_name,
+                "doctor_check": doctor_check,
+                "doctor_check_condition": extra.get("doctor_check_condition"),
+                "doctor_severity": extra.get("doctor_severity", DOCTOR_SEVERITY_ERROR),
+                "config_attr": extra["config_attr"],
+                "title": field_info.title,
+                "tab_key": tab["key"],
+                "ui_transform": extra.get("ui_transform"),
+            })
+    return fields
+
+
+def get_summary_fields(section: str) -> list[dict[str, Any]]:
+    """Get schema fields that contribute to a doctor status summary.
+
+    Returns a list of field metadata dicts with summary format info.
+    """
+    fields: list[dict[str, Any]] = []
+    for tab in TAB_DEFINITIONS:
+        for field_name, field_info in tab["model"].model_fields.items():
+            extra = field_info.json_schema_extra or {}
+            summary = extra.get("summary")
+            if not summary or summary.get("section") != section:
+                continue
+            fields.append({
+                "name": field_name,
+                "config_attr": extra["config_attr"],
+                "ui_transform": extra.get("ui_transform"),
+                **summary,
+            })
+    return fields
 
 
 # ---------------------------------------------------------------------------

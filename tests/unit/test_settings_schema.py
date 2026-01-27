@@ -7,6 +7,9 @@ from pydantic import BaseModel, ValidationError
 
 from issue_orchestrator.infra.config import Config, E2EConfig, FilteringConfig
 from issue_orchestrator.infra.settings_schema import (
+    DOCTOR_CHECK_FIRST_ARG_PATH_EXISTS,
+    DOCTOR_CHECK_PATH_EXISTS,
+    DOCTOR_CHECK_REFERENCES_AGENT,
     TAB_DEFINITIONS,
     AdvancedSettings,
     ConcurrencySettings,
@@ -16,9 +19,12 @@ from issue_orchestrator.infra.settings_schema import (
     apply_to,
     from_config,
     generate_config_reference,
+    get_doctor_check_fields,
     get_field_meta,
     get_restart_fields,
     get_settings_json_schema,
+    get_setup_fields,
+    get_summary_fields,
 )
 
 
@@ -471,3 +477,296 @@ class TestTabDefinitions:
                 assert "yaml_path" in extra, (
                     f"{tab['key']}.{field_name} missing yaml_path"
                 )
+
+    def test_doctor_check_types_are_valid(self):
+        """doctor_check values must be known check type constants."""
+        valid_types = {
+            DOCTOR_CHECK_PATH_EXISTS,
+            DOCTOR_CHECK_FIRST_ARG_PATH_EXISTS,
+            DOCTOR_CHECK_REFERENCES_AGENT,
+        }
+        for tab in TAB_DEFINITIONS:
+            model_cls = tab["model"]
+            for field_name, field_info in model_cls.model_fields.items():
+                extra = field_info.json_schema_extra or {}
+                check = extra.get("doctor_check")
+                if check is not None:
+                    assert check in valid_types, (
+                        f"{tab['key']}.{field_name} has unknown doctor_check: {check}"
+                    )
+
+    def test_doctor_check_fields_have_config_attr(self):
+        """Fields with doctor_check must also have config_attr."""
+        for tab in TAB_DEFINITIONS:
+            model_cls = tab["model"]
+            for field_name, field_info in model_cls.model_fields.items():
+                extra = field_info.json_schema_extra or {}
+                if extra.get("doctor_check"):
+                    assert "config_attr" in extra, (
+                        f"{tab['key']}.{field_name} has doctor_check but no config_attr"
+                    )
+
+    def test_doctor_check_severity_is_valid(self):
+        """doctor_severity must be 'error' or 'warning'."""
+        for tab in TAB_DEFINITIONS:
+            model_cls = tab["model"]
+            for field_name, field_info in model_cls.model_fields.items():
+                extra = field_info.json_schema_extra or {}
+                sev = extra.get("doctor_severity")
+                if sev is not None:
+                    assert sev in ("error", "warning"), (
+                        f"{tab['key']}.{field_name} has invalid doctor_severity: {sev}"
+                    )
+
+    def test_setup_fields_have_required_keys(self):
+        """Fields with setup.enabled must have section and order."""
+        for tab in TAB_DEFINITIONS:
+            model_cls = tab["model"]
+            for field_name, field_info in model_cls.model_fields.items():
+                extra = field_info.json_schema_extra or {}
+                setup = extra.get("setup")
+                if setup and setup.get("enabled"):
+                    assert "section" in setup, (
+                        f"{tab['key']}.{field_name} setup missing section"
+                    )
+                    assert "order" in setup, (
+                        f"{tab['key']}.{field_name} setup missing order"
+                    )
+
+    def test_summary_fields_have_format(self):
+        """Fields with summary annotation must have section and format."""
+        for tab in TAB_DEFINITIONS:
+            model_cls = tab["model"]
+            for field_name, field_info in model_cls.model_fields.items():
+                extra = field_info.json_schema_extra or {}
+                summary = extra.get("summary")
+                if summary:
+                    assert "section" in summary, (
+                        f"{tab['key']}.{field_name} summary missing section"
+                    )
+                    assert "format" in summary, (
+                        f"{tab['key']}.{field_name} summary missing format"
+                    )
+
+
+# ---------------------------------------------------------------------------
+# Doctor check field extraction
+# ---------------------------------------------------------------------------
+
+class TestDoctorCheckFields:
+
+    def test_returns_annotated_fields(self):
+        fields = get_doctor_check_fields()
+        names = {f["name"] for f in fields}
+        assert "quarantine_file" in names
+        assert "pytest_args" in names
+        assert "default_reviewer" in names
+        assert "triage_agent" in names
+
+    def test_field_has_required_keys(self):
+        for field in get_doctor_check_fields():
+            assert "name" in field
+            assert "doctor_check" in field
+            assert "config_attr" in field
+            assert "doctor_severity" in field
+            assert "title" in field
+
+    def test_path_check_fields(self):
+        path_fields = [f for f in get_doctor_check_fields()
+                       if f["doctor_check"] == DOCTOR_CHECK_PATH_EXISTS]
+        assert any(f["name"] == "quarantine_file" for f in path_fields)
+
+    def test_agent_ref_fields(self):
+        ref_fields = [f for f in get_doctor_check_fields()
+                      if f["doctor_check"] == DOCTOR_CHECK_REFERENCES_AGENT]
+        assert any(f["name"] == "default_reviewer" for f in ref_fields)
+        assert any(f["name"] == "triage_agent" for f in ref_fields)
+
+
+# ---------------------------------------------------------------------------
+# Setup field extraction
+# ---------------------------------------------------------------------------
+
+class TestSetupFields:
+
+    def test_concurrency_section(self):
+        fields = get_setup_fields("concurrency")
+        assert len(fields) >= 1
+        names = [f["name"] for f in fields]
+        assert "max_concurrent_sessions" in names
+
+    def test_ui_section(self):
+        fields = get_setup_fields("ui")
+        assert len(fields) >= 1
+        names = [f["name"] for f in fields]
+        assert "web_port" in names
+
+    def test_worktrees_section(self):
+        fields = get_setup_fields("worktrees")
+        assert len(fields) >= 1
+        names = [f["name"] for f in fields]
+        assert "worktree_base" in names
+
+    def test_fields_sorted_by_order(self):
+        for section in ("concurrency", "ui", "worktrees"):
+            fields = get_setup_fields(section)
+            if len(fields) > 1:
+                orders = [f["order"] for f in fields]
+                assert orders == sorted(orders), f"{section} fields not sorted by order"
+
+    def test_field_has_required_keys(self):
+        all_fields = (
+            get_setup_fields("concurrency") +
+            get_setup_fields("ui") +
+            get_setup_fields("worktrees")
+        )
+        for field in all_fields:
+            assert "name" in field
+            assert "title" in field
+            assert "default" in field
+            assert "prompt" in field
+            assert "tab_key" in field
+
+    def test_empty_section_returns_empty(self):
+        assert get_setup_fields("nonexistent") == []
+
+
+# ---------------------------------------------------------------------------
+# Summary field extraction
+# ---------------------------------------------------------------------------
+
+class TestSummaryFields:
+
+    def test_e2e_summary_fields(self):
+        fields = get_summary_fields("e2e")
+        names = {f["name"] for f in fields}
+        assert "enabled" in names
+        assert "auto_run_interval_minutes" in names
+        assert "allow_retry_once" in names
+        assert "pytest_args" in names
+
+    def test_review_summary_fields(self):
+        fields = get_summary_fields("review")
+        names = {f["name"] for f in fields}
+        assert "enabled" in names
+        assert "default_reviewer" in names
+
+    def test_empty_section_returns_empty(self):
+        assert get_summary_fields("nonexistent") == []
+
+
+# ---------------------------------------------------------------------------
+# Drift detection — CI guardrails
+# ---------------------------------------------------------------------------
+
+class TestDriftDetection:
+    """Automated guardrails that fail CI if schema-driven code drifts.
+
+    These tests ensure the schema remains the single source of truth.
+    If someone hardcodes checks or defaults that should come from schema,
+    these tests catch it.
+    """
+
+    def test_allowed_top_level_fields_is_derived(self):
+        """ALLOWED_TOP_LEVEL_FIELDS must be derived from _TOP_LEVEL_SECTION_KEYS.
+
+        If someone replaces the derivation with a hardcoded set, this fails.
+        """
+        from issue_orchestrator.infra.config import (
+            ALLOWED_TOP_LEVEL_FIELDS,
+            _TOP_LEVEL_SECTION_KEYS,
+        )
+        expected = frozenset(_TOP_LEVEL_SECTION_KEYS) | {"repo", "default_agent"}
+        assert ALLOWED_TOP_LEVEL_FIELDS == expected, (
+            "ALLOWED_TOP_LEVEL_FIELDS has drifted from _TOP_LEVEL_SECTION_KEYS. "
+            "It must be derived, not hardcoded."
+        )
+
+    def test_doctor_e2e_no_hardcoded_path_checks(self):
+        """doctor/checks/e2e.py must not emit Check() with 'not found' detail.
+
+        Path validation is schema-driven via doctor_check annotations.
+        e2e.py may call path.exists() for runtime inspection (line counting),
+        but must not emit Check() for missing-path conditions — that's the schema's job.
+        """
+        import ast
+        import inspect
+        from issue_orchestrator.infra.doctor.checks import e2e
+
+        source = inspect.getsource(e2e)
+        tree = ast.parse(source)
+        # Look for Check(..., detail="...not found...") in e2e.py
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                if isinstance(func, ast.Name) and func.id == "Check":
+                    for kw in node.keywords:
+                        if kw.arg == "detail" and isinstance(kw.value, ast.Constant):
+                            if "not found" in str(kw.value.value):
+                                raise AssertionError(
+                                    "e2e.py emits Check() with 'not found' detail. "
+                                    "Path checks are schema-driven — add doctor_check "
+                                    "annotation in settings_schema.py instead."
+                                )
+
+    def test_doctor_review_no_hardcoded_agent_ref_checks(self):
+        """doctor/checks/review.py must not hardcode basic agent-reference checks.
+
+        Basic 'is this agent in config.agents?' validation is schema-driven.
+        Per-agent cross-validation (iterating config.agents) stays as code.
+        """
+        import ast
+        import inspect
+        from issue_orchestrator.infra.doctor.checks import review
+
+        source = inspect.getsource(review)
+        tree = ast.parse(source)
+        # Look for code patterns like: config.code_review_agent not in config.agents
+        # This would mean someone hardcoded a basic agent-reference check.
+        # We check by looking for `Compare` nodes with `NotIn` op on `config.agents`.
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Compare):
+                for op in node.ops:
+                    if isinstance(op, ast.NotIn):
+                        # Check if comparator is config.agents
+                        for comp in node.comparators:
+                            if (isinstance(comp, ast.Attribute)
+                                    and comp.attr == "agents"
+                                    and isinstance(comp.value, ast.Name)
+                                    and comp.value.id == "config"):
+                                # Check if the left side is config.code_review_agent
+                                # or config.triage_review_agent
+                                if (isinstance(node.left, ast.Attribute)
+                                        and node.left.attr in ("code_review_agent", "triage_review_agent")):
+                                    raise AssertionError(
+                                        f"review.py hardcodes '{node.left.attr} not in config.agents'. "
+                                        "Use doctor_check='references_agent' in settings_schema.py."
+                                    )
+
+    def test_wizard_uses_schema_for_setup_fields(self):
+        """setup_wizard.py must use get_setup_fields() for schema-driven sections.
+
+        It should not call get_field_meta() anymore (superseded by get_setup_fields).
+        """
+        import inspect
+        from issue_orchestrator.entrypoints.cli_tools import setup_wizard
+
+        source = inspect.getsource(setup_wizard)
+        assert "get_field_meta" not in source, (
+            "setup_wizard.py still uses get_field_meta(). "
+            "Use get_setup_fields(section) for schema-driven wizard prompts."
+        )
+
+    def test_all_doctor_check_types_have_handlers(self):
+        """Every doctor_check type used in schema must have a handler in schema.py."""
+        from issue_orchestrator.infra.doctor.checks.schema import _CHECK_HANDLERS
+
+        check_types_in_schema = {
+            f["doctor_check"] for f in get_doctor_check_fields()
+        }
+        handler_types = set(_CHECK_HANDLERS.keys())
+        missing = check_types_in_schema - handler_types
+        assert not missing, (
+            f"Schema uses doctor_check types without handlers: {missing}. "
+            f"Add handlers to _CHECK_HANDLERS in doctor/checks/schema.py."
+        )

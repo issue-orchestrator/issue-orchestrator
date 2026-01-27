@@ -1,6 +1,7 @@
 """Unknown fields validator."""
 
 import logging
+from collections.abc import Set as AbstractSet
 from typing import TYPE_CHECKING
 
 from .base import ConfigValidator
@@ -49,8 +50,8 @@ class UnknownFieldsValidator(ConfigValidator):
     def _find_unknown_fields(
         self,
         config: "Config",
-        allowed_top_level: set[str],
-        allowed_agent: set[str],
+        allowed_top_level: AbstractSet[str],
+        allowed_agent: AbstractSet[str],
     ) -> list[tuple[str, str]]:
         """Find unknown fields in config.
 
