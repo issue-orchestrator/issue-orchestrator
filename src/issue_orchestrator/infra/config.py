@@ -17,28 +17,10 @@ from ..domain.models import AgentConfig, CommentHeadings
 CONFIG_DIR = ".issue-orchestrator/config"
 DEFAULT_CONFIG_NAME = "default.yaml"
 
-# Valid top-level config fields (for unknown field validation)
-ALLOWED_TOP_LEVEL_FIELDS = {
-    "repo",
-    "agents",
-    "default_agent",
-    "labels",
-    "review",
-    "cleanup",
-    "worktrees",
-    "execution",
-    "validation",
-    "ui",
-    "observability",
-    "security",
-    "filtering",
-    "triage",
-    "e2e",
-    "milestones",
-    "state",
-    "config",
-    "claims",
-}
+# Valid top-level config fields — derived from _TOP_LEVEL_SECTION_KEYS (further down)
+# plus "repo" and "default_agent" which are parsed separately.
+# Assigned after _TOP_LEVEL_SECTION_KEYS is defined to avoid maintaining two lists.
+ALLOWED_TOP_LEVEL_FIELDS: frozenset[str]  # set below _TOP_LEVEL_SECTION_KEYS
 
 # Valid per-agent config fields (worktree_base and repo_root removed - now top-level only)
 ALLOWED_AGENT_FIELDS = {
@@ -758,6 +740,10 @@ _TOP_LEVEL_SECTION_KEYS = (
     "validation", "ui", "observability", "security", "filtering",
     "triage", "e2e", "milestones", "state", "config", "claims",
 )
+
+# Derive ALLOWED_TOP_LEVEL_FIELDS from _TOP_LEVEL_SECTION_KEYS — single source of truth.
+# "repo" and "default_agent" are parsed separately but are valid top-level keys.
+ALLOWED_TOP_LEVEL_FIELDS = frozenset(_TOP_LEVEL_SECTION_KEYS) | {"repo", "default_agent"}
 
 
 def _extract_config_sections(data: dict, config_path: Path) -> dict:  # noqa: C901 - extracts 17+ config sections via _get_section calls

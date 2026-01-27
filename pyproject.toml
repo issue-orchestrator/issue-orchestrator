@@ -31,6 +31,7 @@ dependencies = [
     "transitions>=0.9",  # Lightweight state machine library
     "httpx>=0.27",     # GitHub HTTP client
     "keyring>=25.0",   # OS keychain for secure token storage
+    "pydantic>=2.0",   # Data-driven settings schema with validation
     "tenacity>=8.0",   # Retry with exponential backoff
     "pexpect>=4.8",    # Robust PTY handling for subprocess output capture
     "mcp>=1.0.0",      # MCP server support

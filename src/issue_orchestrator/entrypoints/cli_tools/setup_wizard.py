@@ -10,6 +10,9 @@ import yaml
 # Import provider registry for agent type selection
 from agent_runner import list_providers, get_provider
 
+# Schema metadata for defaults/labels/hints
+from ...infra.settings_schema import get_setup_fields
+
 
 class Prompter(Protocol):
     """Protocol for user interaction - enables testing via dependency injection."""
@@ -443,13 +446,14 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
 
         prompter.print(f"✓ Added {agent_name}\n")
 
-    # Concurrency
+    # Concurrency — schema-driven
     prompter.print("\n--- Concurrency Settings ---")
-    max_sessions = prompter.input("Max concurrent agent sessions", "3")
+    concurrency_values: dict[str, Any] = {}
+    for field in get_setup_fields("concurrency"):
+        raw = prompter.input(field["prompt"], str(field["default"]))
+        concurrency_values[field["name"]] = int(raw)
     config["execution"] = {
-        "concurrency": {
-            "max_concurrent_sessions": int(max_sessions),
-        },
+        "concurrency": concurrency_values,
     }
 
     # Issue scheduling explanation and milestone sorting
@@ -489,13 +493,15 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
     milestones_config["foundation"] = foundation_milestone
 
-    # Worktree location
+    # Worktree location — schema-driven
     prompter.print("\n--- Worktree Location ---")
     prompter.print("Each issue gets its own git worktree for isolated work.")
     prompter.print("Examples:")
     prompter.print("  '../'           → sibling dirs (~/dev/myrepo-123)")
     prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
-    worktree_base = prompter.input("Worktree base directory", "../")
+    _wt_fields = get_setup_fields("worktrees")
+    _wt_field = _wt_fields[0] if _wt_fields else {"prompt": "Worktree Base Directory", "default": "../"}
+    worktree_base = prompter.input(_wt_field["prompt"], str(_wt_field["default"]))
 
     # Set at top-level (not per-agent)
     config["worktrees"] = {"base": worktree_base}
@@ -532,8 +538,13 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     ui_config: dict[str, Any] = {"mode": ui_mode}
     config["ui"] = ui_config
     if ui_mode == "web":
-        port = prompter.input("Web dashboard port", "8080")
-        ui_config["web_port"] = int(port)
+        # Schema-driven UI fields (web_port)
+        for field in get_setup_fields("ui"):
+            cond = field.get("condition")
+            if cond and cond.get("field") == "ui_mode" and cond.get("value") != ui_mode:
+                continue
+            raw = prompter.input(field["prompt"], str(field["default"]))
+            ui_config[field["name"]] = int(raw)
         prompter.print("\n--- Terminal Backend (web mode) ---")
         prompter.print("Choose how agent sessions are executed:\n")
         prompter.print("  tmux       - Default (stable, interactive)")
@@ -809,14 +820,16 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
         milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
         milestones_config["foundation"] = foundation_milestone
 
-    # Check if config needs worktrees.base
+    # Check if config needs worktrees.base — schema-driven
     if "worktrees" not in config or "base" not in config.get("worktrees", {}):
         prompter.print("\n--- Worktree Location ---")
         prompter.print("Each issue gets its own git worktree for isolated work.")
         prompter.print("Examples:")
         prompter.print("  '../'           → sibling dirs (~/dev/myrepo-123)")
         prompter.print("  './worktrees'   → subdirectory (~/dev/myrepo/worktrees/myrepo-123)")
-        worktree_base = prompter.input("Worktree base directory", "../")
+        _wt_fields = get_setup_fields("worktrees")
+        _wt_field = _wt_fields[0] if _wt_fields else {"prompt": "Worktree Base Directory", "default": "../"}
+        worktree_base = prompter.input(_wt_field["prompt"], str(_wt_field["default"]))
         worktrees_config = cast(dict[str, Any], config.setdefault("worktrees", {}))
         worktrees_config["base"] = worktree_base
 
@@ -853,7 +866,12 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
         ui_config = cast(dict[str, Any], config.setdefault("ui", {}))
         ui_config["mode"] = ui_mode
         if ui_mode == "web":
-            ui_config["web_port"] = int(prompter.input("Web port", "8080"))
+            for field in get_setup_fields("ui"):
+                cond = field.get("condition")
+                if cond and cond.get("field") == "ui_mode" and cond.get("value") != ui_mode:
+                    continue
+                raw = prompter.input(field["prompt"], str(field["default"]))
+                ui_config[field["name"]] = int(raw)
             prompter.print("\n--- Terminal Backend (web mode) ---")
             prompter.print("Choose how agent sessions are executed:\n")
             prompter.print("  tmux       - Default (stable, interactive)")

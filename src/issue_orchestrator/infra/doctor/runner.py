@@ -9,7 +9,7 @@ from typing import Optional
 from ..config import Config
 from ...ports.command_runner import CommandRunner
 from .types import DoctorResult
-from .checks import ai, config as config_checks, e2e, github, guardrails, hooks, review, workspace
+from .checks import ai, config as config_checks, e2e, github, guardrails, hooks, review, schema as schema_checks, workspace
 
 
 def run_doctor(
@@ -50,6 +50,7 @@ def run_doctor(
     result.checks.extend(hooks.check_hook_verification(config))
     result.checks.extend(workspace.check_agents(config))
 
+    result.checks.extend(schema_checks.run_schema_checks(config))
     result.checks.extend(review.check_code_review(config))
     result.checks.extend(e2e.check_e2e_runner(config))
     result.checks.extend(guardrails.check_guardrails(config, runner))
