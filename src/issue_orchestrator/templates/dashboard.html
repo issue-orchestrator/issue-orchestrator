@@ -625,11 +625,19 @@
             </div>
         </div>
 
-        {% if queue_total_pages > 1 %}
+        {% if queue_total_pages > 1 and active_tab != 'e2e' %}
         <div class="pagination">
             <button onclick="goToPage({{ queue_page - 1 }})" {% if queue_page <= 1 %}disabled{% endif %}>← Prev</button>
             <span>Page {{ queue_page }} of {{ queue_total_pages }} ({{ queue_total }} queued)</span>
             <button onclick="goToPage({{ queue_page + 1 }})" {% if queue_page >= queue_total_pages %}disabled{% endif %}>Next →</button>
+        </div>
+        {% endif %}
+
+        {% if e2e_total_pages > 1 and active_tab == 'e2e' %}
+        <div class="pagination">
+            <button onclick="goToE2EPage({{ e2e_page - 1 }})" {% if e2e_page <= 1 %}disabled{% endif %}>← Prev</button>
+            <span>Page {{ e2e_page }} of {{ e2e_total_pages }} ({{ e2e_total }} runs)</span>
+            <button onclick="goToE2EPage({{ e2e_page + 1 }})" {% if e2e_page >= e2e_total_pages %}disabled{% endif %}>Next →</button>
         </div>
         {% endif %}
 

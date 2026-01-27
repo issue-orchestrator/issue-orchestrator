@@ -274,6 +274,7 @@ def get_templates() -> Environment:
 
 
 QUEUE_PAGE_SIZE = 20
+E2E_PAGE_SIZE = 15
 
 
 def _flow_steps_for(stage: str) -> list[dict[str, str]]:
@@ -462,6 +463,9 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
     queue_page = int(request.query_params.get("page", 1))
     if queue_page < 1:
         queue_page = 1
+    e2e_page = int(request.query_params.get("e2e_page", 1))
+    if e2e_page < 1:
+        e2e_page = 1
     active_tab = request.query_params.get("tab", "active")  # "active", "queue", "blocked", "history"
     # Support legacy tab names for backwards compatibility
     if active_tab == "work":
@@ -810,7 +814,8 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
                     })
 
             # Add recent completed runs (passed or failed without open issues)
-            recent_runs = db.list_runs(orchestrator_id=config.orchestrator_id, limit=10)
+            # Fetch more runs to support pagination
+            recent_runs = db.list_runs(orchestrator_id=config.orchestrator_id, limit=100)
             for run in recent_runs:
                 # Skip if already added (running or needs attention)
                 if e2e_status.get("running") and run.status == "running":
@@ -839,6 +844,17 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
         except Exception as e:
             logger.debug("Could not fetch E2E data: %s", e)
 
+    # E2E pagination - calculate totals before slicing
+    e2e_total = len(e2e_items)
+    e2e_total_pages = (e2e_total + E2E_PAGE_SIZE - 1) // E2E_PAGE_SIZE if e2e_total > 0 else 1
+    if e2e_page > e2e_total_pages:
+        e2e_page = e2e_total_pages
+
+    # Slice e2e_items for current page
+    e2e_start_idx = (e2e_page - 1) * E2E_PAGE_SIZE
+    e2e_end_idx = e2e_start_idx + E2E_PAGE_SIZE
+    e2e_items_paginated = e2e_items[e2e_start_idx:e2e_end_idx]
+
     # Select issues list based on active tab
     if active_tab == "active":
         issues = active_items
@@ -847,7 +863,7 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
     elif active_tab == "blocked":
         issues = blocked_items
     elif active_tab == "e2e":
-        issues = e2e_items
+        issues = e2e_items_paginated
     elif active_tab == "history":
         issues = history_items
     else:
@@ -874,12 +890,12 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
         queue_items=queue_items,
         blocked_items=blocked_items,
         history_items=history_items,
-        e2e_items=e2e_items,
+        e2e_items=e2e_items_paginated,
         active_count=len(active_items),
         queue_count=len(queue_items),
         blocked_count=len(blocked_items),
         history_count=len(history_items),
-        e2e_count=len(e2e_items),
+        e2e_count=e2e_total,
         active_tab=active_tab,
         paused=state.paused if state else False,
         shutdown_requested=shutdown_requested,
@@ -896,6 +912,9 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
         queue_refresh_seconds=config.queue_refresh_seconds if config else 600,
         agents=agents,
         e2e_status=e2e_status,
+        e2e_page=e2e_page,
+        e2e_total_pages=e2e_total_pages,
+        e2e_total=e2e_total,
     )
     total_elapsed = time.time() - request_start
     logger.info("[dashboard] Total request time: %.2fs", total_elapsed)
