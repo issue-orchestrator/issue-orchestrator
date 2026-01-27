@@ -108,10 +108,12 @@ class TestClientEventHandlers:
 
     @pytest.fixture
     def dashboard_html(self):
-        """Get the dashboard template content."""
+        """Get the dashboard template and JS content."""
         from pathlib import Path
-        template_path = Path(__file__).parent.parent.parent / "src/issue_orchestrator/templates/dashboard.html"
-        return template_path.read_text()
+        base_path = Path(__file__).parent.parent.parent / "src/issue_orchestrator"
+        template_content = (base_path / "templates/dashboard.html").read_text()
+        js_content = (base_path / "static/js/dashboard.js").read_text()
+        return template_content + js_content
 
     def test_has_dependency_blocked_handler(self, dashboard_html):
         """Dashboard has handler for dependency.blocked events."""

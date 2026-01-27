@@ -447,9 +447,10 @@ class TestDashboardRendering:
 
         assert response.status_code == 200
         # Check all tabs are present
-        assert "switchTab('work')" in response.text or "Work" in response.text
-        assert "switchTab('system')" in response.text or "System" in response.text
-        assert "switchTab('create')" in response.text or "Create Issue" in response.text
+        assert "switchTab('active')" in response.text or "Active" in response.text
+        assert "switchTab('queue')" in response.text or "Queue" in response.text
+        assert "switchTab('blocked')" in response.text or "Blocked" in response.text
+        assert "switchTab('history')" in response.text or "History" in response.text
 
     def test_dashboard_create_issue_form_present(self) -> None:
         """Dashboard should have the create issue form with all fields."""
