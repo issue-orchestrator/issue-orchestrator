@@ -2902,3 +2902,35 @@ class TestSettingsEndpoints:
                 assert mock_orch.config.filtering.milestone is None
             finally:
                 web._orchestrator = None
+
+
+class TestStaticFilesSecurity:
+    """Tests for static file serving security."""
+
+    def test_path_traversal_blocked_css(self):
+        """Path traversal attempts in CSS route should return 404."""
+        client = TestClient(app)
+        # Attempt to traverse out of static directory
+        response = client.get("/static/css/../../../templates/dashboard.html")
+        assert response.status_code == 404
+
+    def test_path_traversal_blocked_js(self):
+        """Path traversal attempts in JS route should return 404."""
+        client = TestClient(app)
+        # Attempt to traverse out of static directory
+        response = client.get("/static/js/../../../entrypoints/web.py")
+        assert response.status_code == 404
+
+    def test_valid_css_file_served(self):
+        """Valid CSS files should be served correctly."""
+        client = TestClient(app)
+        response = client.get("/static/css/dashboard.css")
+        assert response.status_code == 200
+        assert "text/css" in response.headers.get("content-type", "")
+
+    def test_valid_js_file_served(self):
+        """Valid JS files should be served correctly."""
+        client = TestClient(app)
+        response = client.get("/static/js/dashboard.js")
+        assert response.status_code == 200
+        assert "javascript" in response.headers.get("content-type", "")
