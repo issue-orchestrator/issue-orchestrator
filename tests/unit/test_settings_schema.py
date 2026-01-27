@@ -770,3 +770,38 @@ class TestDriftDetection:
             f"Schema uses doctor_check types without handlers: {missing}. "
             f"Add handlers to _CHECK_HANDLERS in doctor/checks/schema.py."
         )
+
+    def test_config_reference_not_stale(self):
+        """configuration.md auto-generated section must match generate_config_reference().
+
+        If this fails, someone edited the generated section directly instead of
+        updating settings_schema.py. Regenerate by running:
+            python -c "from issue_orchestrator.infra.settings_schema import generate_config_reference; print(generate_config_reference())"
+        and paste the output between the AUTO-GENERATED markers in configuration.md.
+        """
+        import re
+
+        docs_path = Path(__file__).parent.parent.parent / "docs" / "user" / "configuration.md"
+        content = docs_path.read_text()
+
+        begin = "<!-- BEGIN AUTO-GENERATED CONFIG REFERENCE"
+        end = "<!-- END AUTO-GENERATED CONFIG REFERENCE -->"
+        match = re.search(
+            rf"{re.escape(begin)}.*?-->\n(.*?)\n{re.escape(end)}",
+            content,
+            re.DOTALL,
+        )
+        assert match, (
+            f"configuration.md missing AUTO-GENERATED markers. "
+            f"Expected '{begin}' and '{end}' markers."
+        )
+
+        on_disk = match.group(1).strip()
+        generated = generate_config_reference().strip()
+
+        assert on_disk == generated, (
+            "configuration.md config reference has drifted from settings_schema.py.\n"
+            "Do NOT edit the auto-generated section directly.\n"
+            "Update settings_schema.py, then regenerate the reference and paste it "
+            "between the AUTO-GENERATED markers in docs/user/configuration.md."
+        )
