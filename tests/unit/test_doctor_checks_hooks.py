@@ -58,14 +58,14 @@ class TestSafetyCheck:
         config = Config(repo_root=tmp_path)
         config.hooks.safety_check.interval_days = 7
 
-        # Mock load_safety_state to return recent check
+        # Mock load_safety_state to return recent check (3 days ago)
         recent_state = SafetyState(
-            last_check=datetime.now(timezone.utc) - timedelta(days=1),
+            last_check=datetime.now(timezone.utc) - timedelta(days=3),
             last_results={
                 "claude-code": SafetyCheckResult(
                     success=True,
                     message="Blocked git push",
-                    timestamp=datetime.now(timezone.utc) - timedelta(days=1),
+                    timestamp=datetime.now(timezone.utc) - timedelta(days=3),
                 ),
             },
         )
@@ -85,6 +85,8 @@ class TestSafetyCheck:
         assert result is not None
         assert result.status == "ok"
         assert "Passed" in result.detail
+        # Verify days_ago calculation is correct (should be 3, not 0)
+        assert "3d ago" in result.detail
         assert result.expandable is not None
         assert result.expandable["ran"] is False
 

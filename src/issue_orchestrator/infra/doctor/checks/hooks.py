@@ -190,7 +190,8 @@ def _check_safety_report(
     if not state.is_stale(interval_days):
         for agent_type, result in state.last_results.items():
             expandable["results"][agent_type] = {"success": result.success, "message": result.message}
-        days_ago = (state.last_check.date() - state.last_check.date()).days if state.last_check else 0
+        from datetime import datetime, timezone
+        days_ago = (datetime.now(timezone.utc).date() - state.last_check.date()).days if state.last_check else 0
         return Check(name="Safety Check", status="ok", detail=f"Passed (last check {days_ago}d ago)", expandable=expandable)
 
     # Run live verification

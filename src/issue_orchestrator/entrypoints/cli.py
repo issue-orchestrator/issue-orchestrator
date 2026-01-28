@@ -1229,6 +1229,7 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
     errors = []
     installed = []
     supported_adapters = []
+    verification_failures = []
 
     for agent_type in unique_types:
         try:
@@ -1250,6 +1251,7 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
                 console.print(f"  [yellow]![/yellow] Verification had issues:")
                 for failure in result.checks_failed:
                     console.print(f"    [red]✗[/red] {failure}")
+                verification_failures.append(agent_type.value)
 
         except UnsupportedAiAgentError as e:
             console.print(f"  [red]✗[/red] {agent_type.value}: {e.reason}")
@@ -1263,7 +1265,10 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
         return 1
 
     console.print(f"[green]✓[/green] Files installed")
-    console.print(f"[green]✓[/green] Static verification passed")
+    if verification_failures:
+        console.print(f"[yellow]![/yellow] Static verification failed for: {', '.join(verification_failures)}")
+    else:
+        console.print(f"[green]✓[/green] Static verification passed")
 
     # Run safety check (live verification)
     if supported_adapters:
@@ -1307,6 +1312,9 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
                 return 1
 
     console.print()
+    if verification_failures:
+        console.print(f"[bold yellow]Hooks installed (verification failed for {len(verification_failures)} agent(s)).[/bold yellow]")
+        return 1
     console.print(f"[bold green]Hooks installed and verified.[/bold green]")
     return 0
 
