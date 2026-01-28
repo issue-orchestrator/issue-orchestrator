@@ -184,6 +184,32 @@ class TestDetectAiAgent:
     def test_detect_full_path(self):
         assert detect_ai_agent("/usr/local/bin/claude --args") == AiAgentType.CLAUDE_CODE
 
+    def test_detect_gh_copilot(self):
+        """Test that 'gh copilot' invocation is detected as COPILOT."""
+        assert detect_ai_agent("gh copilot") == AiAgentType.COPILOT
+        assert detect_ai_agent("gh copilot --help") == AiAgentType.COPILOT
+        assert detect_ai_agent("gh copilot suggest") == AiAgentType.COPILOT
+
+    def test_detect_standalone_copilot(self):
+        """Test that standalone 'copilot' binary is detected."""
+        assert detect_ai_agent("copilot") == AiAgentType.COPILOT
+        assert detect_ai_agent("copilot --args") == AiAgentType.COPILOT
+
+    def test_detect_codex(self):
+        """Test that 'codex' is detected."""
+        assert detect_ai_agent("codex") == AiAgentType.CODEX
+        assert detect_ai_agent("codex --args") == AiAgentType.CODEX
+
+    def test_detect_gemini(self):
+        """Test that 'gemini' is detected."""
+        assert detect_ai_agent("gemini") == AiAgentType.GEMINI
+        assert detect_ai_agent("gemini --model pro") == AiAgentType.GEMINI
+
+    def test_gh_without_copilot_is_unknown(self):
+        """Test that plain 'gh' without copilot subcommand is UNKNOWN."""
+        assert detect_ai_agent("gh") == AiAgentType.UNKNOWN
+        assert detect_ai_agent("gh pr list") == AiAgentType.UNKNOWN
+
 
 class TestGetAdapter:
     """Tests for get_adapter function."""

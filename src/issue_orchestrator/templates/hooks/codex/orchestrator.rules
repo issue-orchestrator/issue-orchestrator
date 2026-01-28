@@ -49,9 +49,13 @@ prefix_rule(
     not_match = ["gh pr create", "gh pr view 123"],
 )
 
-# Block gh api merge endpoint
-prefix_rule(
-    pattern = ["gh", "api"],
-    decision = "prompt",
-    justification = "API calls require review. Merge endpoints are forbidden.",
+# Block gh api merge endpoint - must be forbidden, not prompt
+# Codex prefix_rule matches against command prefix tokens
+# We use a regex pattern to catch /repos/*/pulls/*/merge endpoints
+regex_rule(
+    pattern = r"gh\s+api\s+.*pulls/\d+/merge",
+    decision = "forbidden",
+    justification = "Agents cannot merge PRs via API. Only humans can merge.",
+    match = ["gh api repos/owner/repo/pulls/123/merge", "gh api /repos/o/r/pulls/1/merge -X PUT"],
+    not_match = ["gh api repos/owner/repo/pulls/123", "gh api /repos/o/r/pulls"],
 )

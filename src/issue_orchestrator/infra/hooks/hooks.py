@@ -1111,16 +1111,28 @@ def detect_ai_agent(command: str) -> AiAgentType:
     Returns:
         The detected AiAgentType
     """
-    # Normalize: get first word (the executable)
-    executable = command.strip().split()[0] if command else ""
-    executable = Path(executable).name  # Handle full paths
+    if not command:
+        return AiAgentType.UNKNOWN
 
-    # Match patterns
+    # Normalize the command
+    normalized = command.strip().lower()
+    tokens = normalized.split()
+    if not tokens:
+        return AiAgentType.UNKNOWN
+
+    # Get the first executable (handle full paths)
+    executable = Path(tokens[0]).name
+
+    # Check for multi-word commands first (e.g., "gh copilot")
+    if executable == "gh" and len(tokens) > 1 and tokens[1] == "copilot":
+        return AiAgentType.COPILOT
+
+    # Match single-word patterns
     if re.match(r"^claude", executable, re.IGNORECASE):
         return AiAgentType.CLAUDE_CODE
     elif re.match(r"^cursor", executable, re.IGNORECASE):
         return AiAgentType.CURSOR
-    elif re.match(r"^(gh\s+)?copilot", executable, re.IGNORECASE):
+    elif re.match(r"^copilot", executable, re.IGNORECASE):
         return AiAgentType.COPILOT
     elif re.match(r"^codex", executable, re.IGNORECASE):
         return AiAgentType.CODEX

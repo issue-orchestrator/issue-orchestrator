@@ -38,7 +38,9 @@ if [[ ! -f "$parse_script" ]]; then
     exit 0
 fi
 command=$("$python_bin" "$parse_script" <<< "$input" 2>&1) || {
-    echo "{\"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"BLOCKED: failed to parse hook input. Error: $command\"}"
+    # Escape the error message for JSON (replace \ " and newlines)
+    escaped_error=$(printf '%s' "$command" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+    echo "{\"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"BLOCKED: failed to parse hook input. Error: $escaped_error\"}"
     exit 0
 }
 
