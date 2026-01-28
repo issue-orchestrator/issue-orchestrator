@@ -1,7 +1,7 @@
 """Tests for the unified launcher module."""
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from issue_orchestrator.infra.launcher import (
     LaunchResult,
@@ -17,6 +17,29 @@ def mock_config():
     config = MagicMock()
     config.instances = 1
     return config
+
+
+def _ok_doctor(**_kw: object) -> DoctorResult:
+    return DoctorResult(checks=[Check(name="Test", status="ok", detail="good")])
+
+
+def _warning_doctor(**_kw: object) -> DoctorResult:
+    return DoctorResult(checks=[Check(name="Repo", status="warning", detail="not configured")])
+
+
+def _error_doctor(**_kw: object) -> DoctorResult:
+    return DoctorResult(checks=[Check(name="Hooks", status="error", detail="not installed")])
+
+
+def _mock_supervisor():
+    """Create a mock supervisor with start/start_instances/stop."""
+    sv = MagicMock()
+    lock = MagicMock()
+    lock.pid = 42
+    lock.http_port = 8080
+    lock.instance_id = None
+    sv.start.return_value = lock
+    return sv
 
 
 class TestLaunchResult:
@@ -53,124 +76,77 @@ class TestLaunchResult:
 
 
 class TestPreflight:
-    @patch("issue_orchestrator.infra.launcher.run_doctor")
-    def test_preflight_ok(self, mock_doctor, mock_config):
-        mock_doctor.return_value = DoctorResult(
-            checks=[Check(name="Test", status="ok", detail="good")]
-        )
-        result = preflight(mock_config)
+    def test_preflight_ok(self, mock_config):
+        result = preflight(mock_config, doctor_fn=_ok_doctor)
         assert result.status == "ok"
         assert result.launched is False
 
-    @patch("issue_orchestrator.infra.launcher.run_doctor")
-    def test_preflight_warning(self, mock_doctor, mock_config):
-        mock_doctor.return_value = DoctorResult(
-            checks=[Check(name="Repo", status="warning", detail="not configured")]
-        )
-        result = preflight(mock_config)
+    def test_preflight_warning(self, mock_config):
+        result = preflight(mock_config, doctor_fn=_warning_doctor)
         assert result.status == "doctor_warning"
         assert result.launched is False
 
-    @patch("issue_orchestrator.infra.launcher.run_doctor")
-    def test_preflight_error(self, mock_doctor, mock_config):
-        mock_doctor.return_value = DoctorResult(
-            checks=[Check(name="Hooks", status="error", detail="not installed")]
-        )
-        result = preflight(mock_config)
+    def test_preflight_error(self, mock_config):
+        result = preflight(mock_config, doctor_fn=_error_doctor)
         assert result.status == "doctor_error"
         assert result.launched is False
 
 
 class TestLaunchPreflightOnly:
-    @patch("issue_orchestrator.infra.launcher.run_doctor")
-    def test_is_alias_for_preflight(self, mock_doctor, mock_config):
-        mock_doctor.return_value = DoctorResult(
-            checks=[Check(name="Test", status="ok", detail="good")]
-        )
-        result = launch_preflight_only(mock_config)
+    def test_is_alias_for_preflight(self, mock_config):
+        result = launch_preflight_only(mock_config, doctor_fn=_ok_doctor)
         assert result.status == "ok"
         assert result.launched is False
 
 
 class TestLaunchSubprocess:
-    @patch("issue_orchestrator.infra.launcher.supervisor")
-    @patch("issue_orchestrator.infra.launcher.run_doctor")
-    def test_launch_ok(self, mock_doctor, mock_supervisor, mock_config, tmp_path):
-        mock_doctor.return_value = DoctorResult(
-            checks=[Check(name="Test", status="ok", detail="good")]
+    def test_launch_ok(self, mock_config, tmp_path):
+        sv = _mock_supervisor()
+        result = launch_subprocess(
+            tmp_path, mock_config, doctor_fn=_ok_doctor, supervisor_ops=sv
         )
-        mock_lock = MagicMock()
-        mock_lock.pid = 42
-        mock_lock.http_port = 8080
-        mock_lock.instance_id = None
-        mock_supervisor.start.return_value = mock_lock
-
-        result = launch_subprocess(tmp_path, mock_config)
         assert result.launched is True
         assert result.status == "ok"
         assert result.supervisor["pid"] == 42
         assert result.supervisor["port"] == 8080
 
-    @patch("issue_orchestrator.infra.launcher.supervisor")
-    @patch("issue_orchestrator.infra.launcher.run_doctor")
-    def test_launch_blocked_by_doctor_error(
-        self, mock_doctor, mock_supervisor, mock_config, tmp_path
-    ):
-        mock_doctor.return_value = DoctorResult(
-            checks=[Check(name="Hooks", status="error", detail="not installed")]
+    def test_launch_blocked_by_doctor_error(self, mock_config, tmp_path):
+        sv = _mock_supervisor()
+        result = launch_subprocess(
+            tmp_path, mock_config, doctor_fn=_error_doctor, supervisor_ops=sv
         )
-        result = launch_subprocess(tmp_path, mock_config)
         assert result.launched is False
         assert result.status == "doctor_error"
-        mock_supervisor.start.assert_not_called()
+        sv.start.assert_not_called()
 
-    @patch("issue_orchestrator.infra.launcher.supervisor")
-    @patch("issue_orchestrator.infra.launcher.run_doctor")
-    def test_launch_with_doctor_warning_still_launches(
-        self, mock_doctor, mock_supervisor, mock_config, tmp_path
-    ):
-        mock_doctor.return_value = DoctorResult(
-            checks=[Check(name="Repo", status="warning", detail="not set")]
+    def test_launch_with_doctor_warning_still_launches(self, mock_config, tmp_path):
+        sv = _mock_supervisor()
+        result = launch_subprocess(
+            tmp_path, mock_config, doctor_fn=_warning_doctor, supervisor_ops=sv
         )
-        mock_lock = MagicMock()
-        mock_lock.pid = 42
-        mock_lock.http_port = 8080
-        mock_lock.instance_id = None
-        mock_supervisor.start.return_value = mock_lock
-
-        result = launch_subprocess(tmp_path, mock_config)
         assert result.launched is True
         assert result.status == "doctor_warning"
 
-    @patch("issue_orchestrator.infra.launcher.supervisor")
-    @patch("issue_orchestrator.infra.launcher.run_doctor")
-    def test_launch_supervisor_error(
-        self, mock_doctor, mock_supervisor, mock_config, tmp_path
-    ):
-        mock_doctor.return_value = DoctorResult(
-            checks=[Check(name="Test", status="ok", detail="good")]
+    def test_launch_supervisor_error(self, mock_config, tmp_path):
+        sv = _mock_supervisor()
+        sv.start.side_effect = RuntimeError("port in use")
+        result = launch_subprocess(
+            tmp_path, mock_config, doctor_fn=_ok_doctor, supervisor_ops=sv
         )
-        mock_supervisor.start.side_effect = RuntimeError("port in use")
-
-        result = launch_subprocess(tmp_path, mock_config)
         assert result.launched is False
         assert result.status == "launch_error"
         assert "port in use" in result.error
 
-    @patch("issue_orchestrator.infra.launcher.supervisor")
-    @patch("issue_orchestrator.infra.launcher.run_doctor")
-    def test_launch_multi_instance(
-        self, mock_doctor, mock_supervisor, mock_config, tmp_path
-    ):
+    def test_launch_multi_instance(self, mock_config, tmp_path):
         mock_config.instances = 3
-        mock_doctor.return_value = DoctorResult(
-            checks=[Check(name="Test", status="ok", detail="good")]
-        )
+        sv = _mock_supervisor()
         mock_info1 = MagicMock(pid=1, http_port=8081, instance_id="i1")
         mock_info2 = MagicMock(pid=2, http_port=8082, instance_id="i2")
-        mock_supervisor.start_instances.return_value = [mock_info1, mock_info2]
+        sv.start_instances.return_value = [mock_info1, mock_info2]
 
-        result = launch_subprocess(tmp_path, mock_config)
+        result = launch_subprocess(
+            tmp_path, mock_config, doctor_fn=_ok_doctor, supervisor_ops=sv
+        )
         assert result.launched is True
         assert "instances" in result.supervisor
         assert len(result.supervisor["instances"]) == 2

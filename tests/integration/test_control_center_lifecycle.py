@@ -86,6 +86,8 @@ def isolated_registry(tmp_path: Path) -> Generator[Path, None, None]:
     Sets ISSUE_ORCHESTRATOR_CONFIG_DIR to a temp directory so tests
     don't pollute the user's real registry at ~/.config/issue-orchestrator/.
     Also skips doctor checks since test repos have no hooks installed.
+    The env var is necessary here because the control center runs as a
+    subprocess — monkeypatch cannot reach across process boundaries.
     """
     config_dir = tmp_path / "test-config"
     config_dir.mkdir()
