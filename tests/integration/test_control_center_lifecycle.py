@@ -340,7 +340,7 @@ class TestControlCenterLifecycle:
         logger.info("Starting orchestrator")
         resp = cc_client.post(
             "/control/orchestrator/start",
-            json={"repo_root": str(test_repo), "config_name": "test.yaml"},
+            json={"repo_root": str(test_repo), "config_name": "test.yaml", "skip_doctor": True},
         )
         assert resp.status_code == 200, f"Start failed: {resp.text}"
         data = resp.json()
@@ -421,7 +421,7 @@ class TestControlCenterLifecycle:
         # Start
         resp = cc_client.post(
             "/control/orchestrator/start",
-            json={"repo_root": str(test_repo), "config_name": "test.yaml"},
+            json={"repo_root": str(test_repo), "config_name": "test.yaml", "skip_doctor": True},
         )
         assert resp.status_code == 200
         first_pid = resp.json()["pid"]
@@ -440,7 +440,7 @@ class TestControlCenterLifecycle:
         logger.info("Restarting orchestrator")
         resp = cc_client.post(
             "/control/orchestrator/start",
-            json={"repo_root": str(test_repo), "config_name": "test.yaml"},
+            json={"repo_root": str(test_repo), "config_name": "test.yaml", "skip_doctor": True},
         )
         assert resp.status_code == 200, f"Restart failed: {resp.text}"
         data = resp.json()
@@ -477,7 +477,7 @@ class TestControlCenterLifecycle:
         cc_client.post("/control/repos", json={"repo_root": str(test_repo)})
         resp = cc_client.post(
             "/control/orchestrator/start",
-            json={"repo_root": str(test_repo), "config_name": "test.yaml"},
+            json={"repo_root": str(test_repo), "config_name": "test.yaml", "skip_doctor": True},
         )
         assert resp.status_code == 200
         first_pid = resp.json()["pid"]
@@ -486,7 +486,7 @@ class TestControlCenterLifecycle:
         # Try to start again
         resp = cc_client.post(
             "/control/orchestrator/start",
-            json={"repo_root": str(test_repo), "config_name": "test.yaml"},
+            json={"repo_root": str(test_repo), "config_name": "test.yaml", "skip_doctor": True},
         )
         # Should return error or existing info
         assert resp.status_code in (200, 409), f"Unexpected: {resp.text}"
@@ -522,7 +522,7 @@ class TestControlCenterLifecycle:
         cc_client.post("/control/repos", json={"repo_root": str(test_repo)})
         resp = cc_client.post(
             "/control/orchestrator/start",
-            json={"repo_root": str(test_repo), "config_name": "test.yaml"},
+            json={"repo_root": str(test_repo), "config_name": "test.yaml", "skip_doctor": True},
         )
         assert resp.status_code == 200
         pid = resp.json()["pid"]
@@ -565,7 +565,7 @@ class TestControlCenterLifecycle:
         cc_client.post("/control/repos", json={"repo_root": str(test_repo)})
         resp = cc_client.post(
             "/control/orchestrator/start",
-            json={"repo_root": str(test_repo), "config_name": "test.yaml"},
+            json={"repo_root": str(test_repo), "config_name": "test.yaml", "skip_doctor": True},
         )
         assert resp.status_code == 200
         pid = resp.json()["pid"]
@@ -604,7 +604,7 @@ class TestControlCenterStatusConsistency:
         cc_client.post("/control/repos", json={"repo_root": str(test_repo)})
         cc_client.post(
             "/control/orchestrator/start",
-            json={"repo_root": str(test_repo), "config_name": "test.yaml"},
+            json={"repo_root": str(test_repo), "config_name": "test.yaml", "skip_doctor": True},
         )
         _wait_for_port(orchestrator_port, timeout=10)
 

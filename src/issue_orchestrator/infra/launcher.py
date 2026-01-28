@@ -103,6 +103,7 @@ def launch_subprocess(
     runner: Optional[CommandRunner] = None,
     instance_id: Optional[str] = None,
     port: Optional[int] = None,
+    skip_doctor: bool = False,
 ) -> LaunchResult:
     """Run doctor checks, then supervisor.start() if checks pass.
 
@@ -115,11 +116,17 @@ def launch_subprocess(
         runner: Optional command runner for guardrails checks.
         instance_id: Optional instance ID for multi-instance mode.
         port: Optional port override.
+        skip_doctor: If True, skip doctor checks and launch directly.
 
     Returns:
         LaunchResult with doctor results and supervisor info.
     """
-    doctor_result, status = _run_preflight(config, runner)
+    if skip_doctor:
+        from .doctor.types import DoctorResult
+        doctor_result = DoctorResult(checks=[])
+        status = "ok"
+    else:
+        doctor_result, status = _run_preflight(config, runner)
 
     if status == "doctor_error":
         return LaunchResult(

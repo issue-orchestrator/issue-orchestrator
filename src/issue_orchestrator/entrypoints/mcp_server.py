@@ -71,6 +71,10 @@ class OrchestratorHttpClient:
             return f"http://{self._settings.host}:{status.port}/api/doctor"
         return None
 
+    def update_port(self, port: int) -> None:
+        """Update the cached port after an external launch."""
+        self._cached_port = port
+
     def close(self) -> None:
         return None
 
@@ -211,7 +215,7 @@ class McpApp:
             result: dict[str, Any] = {"launch": launch_result.to_dict()}
             # Update cached port from supervisor data
             if launch_result.supervisor and "port" in launch_result.supervisor:
-                self._client._cached_port = launch_result.supervisor["port"]
+                self._client.update_port(launch_result.supervisor["port"])
             return result
         return {"supervisor": status.to_dict()}
 

@@ -969,6 +969,7 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
         repo_root: str - Repository root path
         config_name: str (optional) - Config file name (default: default.yaml)
         force_restart: bool (optional) - Force restart if an untracked orchestrator is detected
+        skip_doctor: bool (optional) - Skip pre-flight doctor checks (default: false)
 
     If the orchestrator is in shutdown-complete state (shutdown requested,
     no active sessions), it will be automatically restarted.
@@ -999,6 +1000,7 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
     if not config_name.endswith(".yaml"):
         config_name += ".yaml"
     force_restart = bool(body.get("force_restart", False))
+    skip_doctor = bool(body.get("skip_doctor", False))
 
     try:
         detected = _detect_orchestrator_by_port(repo_root, config_name)
@@ -1033,6 +1035,7 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
             repo_root=repo_root,
             config=config,
             config_name=config_name,
+            skip_doctor=skip_doctor,
         )
 
         if launch_result.status == "doctor_error":
