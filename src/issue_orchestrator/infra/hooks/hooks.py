@@ -170,6 +170,7 @@ class ClaudeCodeAdapter(AiAgentAdapter):
         # Copy hook scripts
         self._copy_hook_file(TEMPLATES_DIR / "claude" / "block-no-verify.sh", hooks_dir / "block-no-verify.sh", files_created)
         self._copy_hook_file(TEMPLATES_DIR / "claude" / "allow_git_push.py", hooks_dir / "allow_git_push.py", files_created)
+        self._copy_hook_file(TEMPLATES_DIR / "claude" / "parse_hook_input.py", hooks_dir / "parse_hook_input.py", files_created)
 
         # Update settings.json
         self._update_settings_json(project_root / ".claude" / "settings.json", files_created)

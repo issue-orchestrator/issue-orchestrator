@@ -57,7 +57,6 @@ Before you begin, make sure you have:
 |------|---------|--------------|
 | **tmux** | Terminal multiplexer UI mode | `brew install tmux` |
 | **iTerm2** | macOS terminal with tabs | Download from iterm2.com |
-| **jq** | JSON processing (for hooks) | `brew install jq` |
 
 ### Verify Your Setup
 
@@ -448,7 +447,10 @@ This creates:
 # Exit 2 = BLOCK, Exit 0 = ALLOW
 
 input=$(cat)
-command=$(echo "$input" | jq -r '.tool_input.command // ""')
+
+python_bin="$(command -v python3 || true)"
+hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+command=$("$python_bin" "$hook_dir/parse_hook_input.py" <<< "$input" 2>/dev/null || echo "")
 
 if echo "$command" | grep -qE "git\s+(commit|push).*--no-verify"; then
   echo "BLOCKED: --no-verify is forbidden." >&2

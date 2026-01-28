@@ -19,9 +19,17 @@ set -euo pipefail
 # Read input from stdin (JSON with command)
 input=$(cat)
 
+# Resolve python3 (required for JSON parsing)
+python_bin="$(command -v python3 || true)"
+if [[ -z "$python_bin" ]]; then
+    echo '{"permission": "deny", "userMessage": "BLOCKED: python3 is required for orchestrator hooks."}'
+    exit 0
+fi
+
 # Extract the command being executed
 # Cursor may send: {"command": "git push ..."} or {"tool_input": {"command": "..."}}
-command=$(echo "$input" | jq -r '.tool_input.command // .command // ""' 2>/dev/null || echo "")
+hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+command=$("$python_bin" "$hook_dir/parse_hook_input.py" <<< "$input" 2>/dev/null || echo "")
 
 # Allow a dry-run no-verify push for reuse preflight when enabled.
 allow_flag=""

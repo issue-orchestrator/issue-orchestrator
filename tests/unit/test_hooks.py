@@ -177,9 +177,10 @@ class TestClaudeCodeAdapter:
     def test_install_hooks_creates_files(self, adapter, temp_project):
         files = adapter.install_hooks(temp_project)
 
-        assert len(files) == 3
+        assert len(files) == 4
         assert (temp_project / ".claude" / "hooks" / "block-no-verify.sh").exists()
         assert (temp_project / ".claude" / "hooks" / "allow_git_push.py").exists()
+        assert (temp_project / ".claude" / "hooks" / "parse_hook_input.py").exists()
         assert (temp_project / ".claude" / "settings.json").exists()
 
     def test_install_hooks_script_is_executable(self, adapter, temp_project):
@@ -284,19 +285,16 @@ class TestClaudeCodeAdapter:
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
 
-        jq_path = shutil.which("jq")
         grep_path = shutil.which("grep")
         dirname_path = shutil.which("dirname")
         cat_path = shutil.which("cat")
-        if not jq_path or not grep_path or not dirname_path or not cat_path:
-            pytest.skip("Required binaries (jq/grep/dirname/cat) not available to run hook test")
-        jq_bin = Path(jq_path)
+        if not grep_path or not dirname_path or not cat_path:
+            pytest.skip("Required binaries (grep/dirname/cat) not available to run hook test")
         grep_bin = Path(grep_path)
         dirname_bin = Path(dirname_path)
         cat_bin = Path(cat_path)
         bin_dir = temp_project / "bin"
         bin_dir.mkdir()
-        (bin_dir / "jq").symlink_to(jq_bin)
         (bin_dir / "grep").symlink_to(grep_bin)
         (bin_dir / "dirname").symlink_to(dirname_bin)
         (bin_dir / "cat").symlink_to(cat_bin)
@@ -476,6 +474,58 @@ class TestDetectAgentsFromConfig:
         assert result["agent:test"] == AiAgentType.UNKNOWN
 
 
+class TestParseHookInput:
+    """Tests for parse_hook_input.py (extract_command function)."""
+
+    @pytest.fixture(autouse=True)
+    def _load_module(self):
+        """Load extract_command from the template script."""
+        import importlib.util
+
+        script_path = TEMPLATES_DIR / "claude" / "parse_hook_input.py"
+        spec = importlib.util.spec_from_file_location("parse_hook_input", script_path)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.extract_command = mod.extract_command
+
+    def test_claude_format(self):
+        raw = json.dumps({"tool_input": {"command": "git push --no-verify"}})
+        assert self.extract_command(raw) == "git push --no-verify"
+
+    def test_cursor_format(self):
+        raw = json.dumps({"command": "git push --no-verify"})
+        assert self.extract_command(raw) == "git push --no-verify"
+
+    def test_claude_format_takes_priority(self):
+        raw = json.dumps({
+            "tool_input": {"command": "git push"},
+            "command": "something else",
+        })
+        assert self.extract_command(raw) == "git push"
+
+    def test_empty_tool_input_falls_back_to_command(self):
+        raw = json.dumps({"tool_input": {}, "command": "git status"})
+        assert self.extract_command(raw) == "git status"
+
+    def test_missing_command_returns_empty(self):
+        raw = json.dumps({"tool_input": {"other": "data"}})
+        assert self.extract_command(raw) == ""
+
+    def test_empty_json_returns_empty(self):
+        assert self.extract_command("{}") == ""
+
+    def test_invalid_json_returns_empty(self):
+        assert self.extract_command("not json") == ""
+
+    def test_empty_string_returns_empty(self):
+        assert self.extract_command("") == ""
+
+    def test_non_string_command_returns_empty(self):
+        raw = json.dumps({"tool_input": {"command": 42}})
+        assert self.extract_command(raw) == ""
+
+
 class TestTemplatesExist:
     """Tests that template files exist."""
 
@@ -485,4 +535,8 @@ class TestTemplatesExist:
 
     def test_claude_settings_template_exists(self):
         template = TEMPLATES_DIR / "claude" / "settings.json"
+        assert template.exists(), f"Template not found: {template}"
+
+    def test_claude_parse_hook_input_exists(self):
+        template = TEMPLATES_DIR / "claude" / "parse_hook_input.py"
         assert template.exists(), f"Template not found: {template}"

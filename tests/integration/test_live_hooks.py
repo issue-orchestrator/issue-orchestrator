@@ -380,3 +380,196 @@ class TestVerificationResult:
 
         adapter = ClaudeCodeAdapter()
         assert not adapter.is_installed(test_repo_without_hooks)
+
+
+class TestHooksInWorktree:
+    """Tests that verify hooks work correctly in git worktree context.
+
+    This is critical: the orchestrator creates worktrees for each issue,
+    and hooks must work in those worktrees, not just the base repo.
+    """
+
+    @pytest.fixture
+    def base_repo_with_tracked_hooks(self, tmp_path: Path, fixtures_path: Path) -> Path:
+        """Create a base git repo with hooks tracked in git (not just installed).
+
+        This simulates a project where .claude/hooks/ is committed to the repo,
+        so worktrees will inherit the hooks via git checkout.
+        """
+        clean_env = _clean_git_env()
+
+        # Create bare "remote" repo
+        remote = tmp_path / "remote.git"
+        remote.mkdir()
+        subprocess.run(
+            ["git", "init", "--bare"],
+            cwd=remote,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Create working repo (base repo)
+        base = tmp_path / "base"
+        base.mkdir()
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Configure git user
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test User"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Add remote
+        subprocess.run(
+            ["git", "remote", "add", "origin", str(remote)],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Copy hooks from fixture and TRACK them in git
+        src_claude = fixtures_path / "hooks-installed" / ".claude"
+        dst_claude = base / ".claude"
+        shutil.copytree(src_claude, dst_claude)
+
+        # Ensure hook is executable
+        hook_script = dst_claude / "hooks" / "block-no-verify.sh"
+        hook_script.chmod(0o755)
+
+        # Create initial commit WITH hooks tracked
+        readme = base / "README.md"
+        readme.write_text("# Test Repo\n")
+        subprocess.run(
+            ["git", "add", "."],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Initial commit with hooks"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+        subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        return base
+
+    def test_hooks_work_in_worktree(self, base_repo_with_tracked_hooks: Path, tmp_path: Path):
+        """Test that hooks inherited from git work correctly in a worktree.
+
+        This is the critical test: when the orchestrator creates a worktree,
+        the agent runs there. The hooks must work in that context.
+        """
+        import json
+
+        clean_env = _clean_git_env()
+        base = base_repo_with_tracked_hooks
+
+        # Create a worktree (simulating what the orchestrator does)
+        worktree_path = tmp_path / "worktree-42"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), "-b", "42-test-issue"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Verify the hooks exist in the worktree (inherited from git)
+        hook_script = worktree_path / ".claude" / "hooks" / "block-no-verify.sh"
+        assert hook_script.exists(), "Hook script should exist in worktree (from git)"
+
+        parse_script = worktree_path / ".claude" / "hooks" / "parse_hook_input.py"
+        assert parse_script.exists(), "parse_hook_input.py should exist in worktree"
+
+        allow_script = worktree_path / ".claude" / "hooks" / "allow_git_push.py"
+        assert allow_script.exists(), "allow_git_push.py should exist in worktree"
+
+        # Test that the hook BLOCKS --no-verify in the worktree context
+        test_input = json.dumps({
+            "tool_input": {
+                "command": "git push --no-verify"
+            }
+        })
+
+        result = subprocess.run(
+            [str(hook_script)],
+            input=test_input,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_path),  # Run from worktree directory
+        )
+
+        assert result.returncode == 2, (
+            f"Hook should block --no-verify in worktree. "
+            f"Exit code: {result.returncode}, stderr: {result.stderr}"
+        )
+        assert "BLOCKED" in result.stderr
+
+    def test_hooks_allow_normal_push_in_worktree(
+        self, base_repo_with_tracked_hooks: Path, tmp_path: Path
+    ):
+        """Test that hooks allow normal commands in worktree context."""
+        import json
+
+        clean_env = _clean_git_env()
+        base = base_repo_with_tracked_hooks
+
+        # Create a worktree
+        worktree_path = tmp_path / "worktree-43"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), "-b", "43-another-issue"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        hook_script = worktree_path / ".claude" / "hooks" / "block-no-verify.sh"
+
+        # Test that normal push is ALLOWED
+        test_input = json.dumps({
+            "tool_input": {
+                "command": "git push origin main"
+            }
+        })
+
+        result = subprocess.run(
+            [str(hook_script)],
+            input=test_input,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_path),
+        )
+
+        assert result.returncode == 0, (
+            f"Hook should allow normal push in worktree. "
+            f"Exit code: {result.returncode}, stderr: {result.stderr}"
+        )
