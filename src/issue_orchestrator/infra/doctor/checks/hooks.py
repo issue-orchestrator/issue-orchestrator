@@ -112,13 +112,11 @@ def check_hook_verification(config: Config) -> list[Check]:
     agent_types = detect_agents_from_config(config)
     unique_types = set(agent_types.values())
 
+    # Only AIDER (no hook mechanism) and UNKNOWN are unsupported.
+    # All others have adapters: Claude, Cursor, Gemini, Copilot, Codex
     unsupported_types = {
         AiAgentType.UNKNOWN,
-        AiAgentType.CURSOR,
-        AiAgentType.COPILOT,
-        AiAgentType.CODEX,
         AiAgentType.AIDER,
-        AiAgentType.GEMINI,
     }
 
     # Check hook installation
