@@ -122,67 +122,16 @@ def _get_unsupported_types(unique_types: set) -> set:
     return unsupported
 
 
-def _check_safety_report(
-    config: Config,
+def _run_live_safety_checks(
     unique_types: set,
     unsupported_types: set,
-    hooks_ok: bool,
-) -> Check | None:
-    """Check if safety check is stale and run live verification if needed.
+    repo_root,
+    expandable: dict,
+) -> tuple[dict[str, tuple[bool, str]], list[str]]:
+    """Run live verification for each supported agent type.
 
-    Returns a Check with expandable details showing what was tested and results,
-    or None if safety check is disabled.
+    Returns (results dict, failures list).
     """
-    # Check if safety check is disabled
-    interval_days = config.hooks.safety_check.interval_days
-    if interval_days <= 0:
-        return None  # Disabled, don't show in doctor
-
-    # Load current state
-    state = load_safety_state(config.repo_root)
-
-    # Determine if check is stale
-    is_stale = state.is_stale(interval_days)
-
-    # Prepare expandable details
-    expandable: dict = {
-        "ran": False,
-        "triggered_by": None,
-        "agents_tested": [],
-        "results": {},
-        "last_check": state.last_check.isoformat() if state.last_check else None,
-    }
-
-    if not hooks_ok:
-        return Check(
-            name="Safety Check",
-            status="info",
-            detail="Skipped - hooks not installed",
-            expandable=expandable,
-        )
-
-    if not is_stale:
-        # Show previous results
-        for agent_type, result in state.last_results.items():
-            expandable["results"][agent_type] = {
-                "success": result.success,
-                "message": result.message,
-            }
-        days_ago = (
-            (state.last_check.date() - state.last_check.date()).days
-            if state.last_check else 0
-        )
-        return Check(
-            name="Safety Check",
-            status="ok",
-            detail=f"Passed (last check {days_ago}d ago)",
-            expandable=expandable,
-        )
-
-    # Need to run live verification
-    expandable["ran"] = True
-    expandable["triggered_by"] = "first run" if state.last_check is None else "interval exceeded"
-
     results: dict[str, tuple[bool, str]] = {}
     failures: list[str] = []
 
@@ -195,7 +144,7 @@ def _check_safety_report(
 
         adapter = get_adapter(agent_type)
         try:
-            success, message = adapter.live_verify(config.repo_root)
+            success, message = adapter.live_verify(repo_root)
             results[agent_name] = (success, message)
             expandable["results"][agent_name] = {"success": success, "message": message}
 
@@ -208,33 +157,58 @@ def _check_safety_report(
             failures.append(f"{agent_name}: {error_msg[:50]}")
             logger.warning("Live verification failed for %s: %s", agent_name, e)
 
-    # Save state
+    return results, failures
+
+
+def _check_safety_report(
+    config: Config,
+    unique_types: set,
+    unsupported_types: set,
+    hooks_ok: bool,
+) -> Check | None:
+    """Check if safety check is stale and run live verification if needed.
+
+    Returns a Check with expandable details showing what was tested and results,
+    or None if safety check is disabled.
+    """
+    interval_days = config.hooks.safety_check.interval_days
+    if interval_days <= 0:
+        return None  # Disabled
+
+    state = load_safety_state(config.repo_root)
+    expandable: dict = {
+        "ran": False,
+        "triggered_by": None,
+        "agents_tested": [],
+        "results": {},
+        "last_check": state.last_check.isoformat() if state.last_check else None,
+    }
+
+    if not hooks_ok:
+        return Check(name="Safety Check", status="info", detail="Skipped - hooks not installed", expandable=expandable)
+
+    if not state.is_stale(interval_days):
+        for agent_type, result in state.last_results.items():
+            expandable["results"][agent_type] = {"success": result.success, "message": result.message}
+        days_ago = (state.last_check.date() - state.last_check.date()).days if state.last_check else 0
+        return Check(name="Safety Check", status="ok", detail=f"Passed (last check {days_ago}d ago)", expandable=expandable)
+
+    # Run live verification
+    expandable["ran"] = True
+    expandable["triggered_by"] = "first run" if state.last_check is None else "interval exceeded"
+
+    results, failures = _run_live_safety_checks(unique_types, unsupported_types, config.repo_root, expandable)
+
     state.mark_checked(results)
     save_safety_state(config.repo_root, state)
 
-    # Determine status based on results and dangerous_allow_failure
-    if failures:
-        if config.hooks.safety_check.dangerous_allow_failure:
-            return Check(
-                name="Safety Check",
-                status="warning",
-                detail=f"Failed ({len(failures)} agent(s)) - allowed by config",
-                expandable=expandable,
-            )
-        else:
-            return Check(
-                name="Safety Check",
-                status="error",
-                detail=f"Failed: {'; '.join(failures)}",
-                expandable=expandable,
-            )
+    if not failures:
+        return Check(name="Safety Check", status="ok", detail=f"Passed ({len(results)} agent(s) verified)", expandable=expandable)
 
-    return Check(
-        name="Safety Check",
-        status="ok",
-        detail=f"Passed ({len(results)} agent(s) verified)",
-        expandable=expandable,
-    )
+    if config.hooks.safety_check.dangerous_allow_failure:
+        return Check(name="Safety Check", status="warning", detail=f"Failed ({len(failures)} agent(s)) - allowed by config", expandable=expandable)
+
+    return Check(name="Safety Check", status="error", detail=f"Failed: {'; '.join(failures)}", expandable=expandable)
 
 
 def check_hook_verification(config: Config) -> list[Check]:
