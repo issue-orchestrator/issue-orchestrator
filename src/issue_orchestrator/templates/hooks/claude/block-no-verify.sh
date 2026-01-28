@@ -31,7 +31,15 @@ fi
 # Extract the command being executed
 # Claude Code sends: {"tool_input": {"command": "git push ..."}}
 hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-command=$("$python_bin" "$hook_dir/parse_hook_input.py" <<< "$input" 2>/dev/null || echo "")
+parse_script="$hook_dir/parse_hook_input.py"
+if [[ ! -f "$parse_script" ]]; then
+    echo "BLOCKED: missing $parse_script. Reinstall or update the repo hooks." >&2
+    exit 2
+fi
+command=$("$python_bin" "$parse_script" <<< "$input" 2>&1) || {
+    echo "BLOCKED: failed to parse hook input. Error: $command" >&2
+    exit 2
+}
 
 # Allow a dry-run no-verify push for reuse preflight when enabled.
 allow_script="$hook_dir/allow_git_push.py"

@@ -29,7 +29,15 @@ fi
 # Extract the command being executed
 # Cursor may send: {"command": "git push ..."} or {"tool_input": {"command": "..."}}
 hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-command=$("$python_bin" "$hook_dir/parse_hook_input.py" <<< "$input" 2>/dev/null || echo "")
+parse_script="$hook_dir/parse_hook_input.py"
+if [[ ! -f "$parse_script" ]]; then
+    echo '{"permission": "deny", "userMessage": "BLOCKED: missing parse_hook_input.py. Reinstall hooks."}'
+    exit 0
+fi
+command=$("$python_bin" "$parse_script" <<< "$input" 2>&1) || {
+    echo "{\"permission\": \"deny\", \"userMessage\": \"BLOCKED: failed to parse hook input. Error: $command\"}"
+    exit 0
+}
 
 # Allow a dry-run no-verify push for reuse preflight when enabled.
 allow_flag=""

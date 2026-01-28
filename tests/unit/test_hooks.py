@@ -323,6 +323,22 @@ class TestClaudeCodeAdapter:
         assert blocked
         assert "missing" in stderr.lower()
 
+    def test_hook_blocks_when_parse_script_missing(self, adapter, temp_project):
+        """Hook must fail closed when parse_hook_input.py is missing."""
+        adapter.install_hooks(temp_project)
+        hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
+        parse_script = temp_project / ".claude" / "hooks" / "parse_hook_input.py"
+
+        parse_script.unlink()
+
+        blocked, stderr = run_hook_test(
+            hook_script,
+            "git push origin main",  # Normal command that would otherwise be allowed
+            return_stderr=True,
+        )
+        assert blocked, "Hook should block when parse_hook_input.py is missing (fail closed)"
+        assert "missing" in stderr.lower()
+
     def test_hook_blocks_commit_no_verify(self, adapter, temp_project):
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
