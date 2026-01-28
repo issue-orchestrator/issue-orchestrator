@@ -14,14 +14,14 @@ from issue_orchestrator.entrypoints.cli import (
 
 
 @pytest.fixture(autouse=True)
-def mock_run_doctor():
+def mock_run_doctor(monkeypatch):
     """Auto-patch run_doctor for all tests to return OK result."""
-    mock_doctor_result = Mock()
-    mock_doctor_result.overall = "ok"
-    mock_doctor_result.checks = []
-    with patch('issue_orchestrator.infra.doctor.run_doctor', return_value=mock_doctor_result):
-        with patch('issue_orchestrator.infra.launcher.run_doctor', return_value=mock_doctor_result):
-            yield
+    from issue_orchestrator.infra import doctor, launcher
+    from issue_orchestrator.infra.doctor.types import DoctorResult
+
+    mock_doctor = lambda **_kw: DoctorResult(checks=[])
+    monkeypatch.setattr(doctor, "run_doctor", mock_doctor)
+    monkeypatch.setattr(launcher, "run_doctor", mock_doctor)
 
 
 def _run_and_close(coro):
