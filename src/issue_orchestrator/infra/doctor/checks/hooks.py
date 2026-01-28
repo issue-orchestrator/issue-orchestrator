@@ -18,6 +18,8 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
         if not adapter.is_installed(config.repo_root):
             missing_hooks.append(agent_type.value)
 
+    supported_count = len(unique_types) - len(unsupported)
+
     if not unique_types:
         return Check(
             name="AI Agent Hooks (Installation)",
@@ -25,11 +27,11 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
             detail="No agents configured",
         ), False
 
-    if unsupported:
-        status = "warning" if config.dangerous.allow_unsupported_agents else "error"
+    # Unsupported agents block launch unless dangerous mode allows them
+    if unsupported and not config.dangerous.allow_unsupported_agents:
         return Check(
             name="AI Agent Hooks (Installation)",
-            status=status,
+            status="error",
             detail=(
                 "Unsupported AI agents: "
                 f"{', '.join(sorted(unsupported))}. "
@@ -47,6 +49,17 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
                 "Run 'issue-orchestrator setup-hooks'"
             ),
         ), False
+
+    # Unsupported agents allowed — warn but let supported agents proceed to verification
+    if unsupported:
+        return Check(
+            name="AI Agent Hooks (Installation)",
+            status="warning",
+            detail=(
+                f"{supported_count} supported agent(s) installed; "
+                f"unsupported (allowed): {', '.join(sorted(unsupported))}"
+            ),
+        ), True  # hooks_ok=True so supported agents still get verified
 
     return Check(
         name="AI Agent Hooks (Installation)",
