@@ -153,7 +153,7 @@ def launch_subprocess(
     # Doctor passed (ok or warning) — start the orchestrator subprocess
     sv = supervisor_ops or supervisor
     try:
-        if config.instances > 1:
+        if config.instances > 1 and instance_id is None:
             infos = sv.start_instances(repo_root, config_name=config_name)
             supervisor_data = {
                 "instances": [

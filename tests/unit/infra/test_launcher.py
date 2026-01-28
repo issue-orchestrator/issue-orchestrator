@@ -150,3 +150,22 @@ class TestLaunchSubprocess:
         assert result.launched is True
         assert "instances" in result.supervisor
         assert len(result.supervisor["instances"]) == 2
+
+    def test_launch_multi_instance_with_instance_id_starts_single(
+        self, mock_config, tmp_path
+    ):
+        """When instance_id is provided, start only that instance even if
+        config.instances > 1 (MCP auto-start targets one instance)."""
+        mock_config.instances = 3
+        sv = _mock_supervisor()
+
+        result = launch_subprocess(
+            tmp_path, mock_config,
+            instance_id="i1",
+            doctor_fn=_ok_doctor,
+            supervisor_ops=sv,
+        )
+        assert result.launched is True
+        sv.start.assert_called_once()
+        sv.start_instances.assert_not_called()
+        assert result.supervisor["pid"] == 42
