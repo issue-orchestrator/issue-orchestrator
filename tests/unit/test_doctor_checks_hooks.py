@@ -90,6 +90,75 @@ class TestSafetyCheck:
         assert result.expandable is not None
         assert result.expandable["ran"] is False
 
+    def test_safety_check_cached_failure_shows_error(self, tmp_path, monkeypatch):
+        """Test that cached results with failures show error status, not ok."""
+        config = Config(repo_root=tmp_path)
+        config.hooks.safety_check.interval_days = 7
+        config.hooks.safety_check.dangerous_allow_failure = False
+
+        # Mock load_safety_state to return recent check with failure
+        recent_state = SafetyState(
+            last_check=datetime.now(timezone.utc) - timedelta(days=2),
+            last_results={
+                "claude-code": SafetyCheckResult(
+                    success=False,
+                    message="Did not block dangerous command",
+                    timestamp=datetime.now(timezone.utc) - timedelta(days=2),
+                ),
+            },
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.load_safety_state",
+            lambda _: recent_state,
+        )
+
+        result = hook_checks._check_safety_report(
+            config=config,
+            unique_types=set(),
+            unsupported_types=set(),
+            hooks_ok=True,
+        )
+
+        assert result is not None
+        assert result.status == "error"
+        assert "Failed" in result.detail
+        assert "2d ago" in result.detail
+        assert result.expandable["ran"] is False
+
+    def test_safety_check_cached_failure_warns_when_allowed(self, tmp_path, monkeypatch):
+        """Test that cached failures show warning when dangerous_allow_failure=True."""
+        config = Config(repo_root=tmp_path)
+        config.hooks.safety_check.interval_days = 7
+        config.hooks.safety_check.dangerous_allow_failure = True
+
+        # Mock load_safety_state to return recent check with failure
+        recent_state = SafetyState(
+            last_check=datetime.now(timezone.utc) - timedelta(days=2),
+            last_results={
+                "claude-code": SafetyCheckResult(
+                    success=False,
+                    message="Did not block",
+                    timestamp=datetime.now(timezone.utc) - timedelta(days=2),
+                ),
+            },
+        )
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.checks.hooks.load_safety_state",
+            lambda _: recent_state,
+        )
+
+        result = hook_checks._check_safety_report(
+            config=config,
+            unique_types=set(),
+            unsupported_types=set(),
+            hooks_ok=True,
+        )
+
+        assert result is not None
+        assert result.status == "warning"
+        assert "allowed by config" in result.detail
+        assert result.expandable["ran"] is False
+
     def test_safety_check_stale_runs_live_verify(self, tmp_path, monkeypatch):
         """Test that stale safety check runs live verification."""
         from issue_orchestrator.infra.hooks.hooks import AiAgentType

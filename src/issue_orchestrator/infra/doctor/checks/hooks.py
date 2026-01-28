@@ -188,10 +188,19 @@ def _check_safety_report(
         return Check(name="Safety Check", status="info", detail="Skipped - hooks not installed", expandable=expandable)
 
     if not state.is_stale(interval_days):
+        # Use cached results - derive status from whether there were failures
+        cached_failures = []
         for agent_type, result in state.last_results.items():
             expandable["results"][agent_type] = {"success": result.success, "message": result.message}
+            if not result.success:
+                cached_failures.append(agent_type)
         from datetime import datetime, timezone
         days_ago = (datetime.now(timezone.utc).date() - state.last_check.date()).days if state.last_check else 0
+
+        if cached_failures:
+            if config.hooks.safety_check.dangerous_allow_failure:
+                return Check(name="Safety Check", status="warning", detail=f"Failed ({len(cached_failures)} agent(s), {days_ago}d ago) - allowed by config", expandable=expandable)
+            return Check(name="Safety Check", status="error", detail=f"Failed ({len(cached_failures)} agent(s), {days_ago}d ago)", expandable=expandable)
         return Check(name="Safety Check", status="ok", detail=f"Passed (last check {days_ago}d ago)", expandable=expandable)
 
     # Run live verification
