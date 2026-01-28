@@ -411,25 +411,192 @@ class ClaudeCodeAdapter(AiAgentAdapter):
 
 
 class CursorAdapter(AiAgentAdapter):
-    """Adapter for Cursor IDE."""
+    """Adapter for Cursor IDE.
+
+    Cursor uses beforeShellExecution hooks configured in .cursor/hooks.json.
+    Hook scripts output JSON: {"permission": "allow"} or {"permission": "deny", ...}
+    """
 
     @property
     def agent_type(self) -> AiAgentType:
         return AiAgentType.CURSOR
 
+    def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
+        """Copy a hook file and make it executable."""
+        if not src.exists():
+            raise FileNotFoundError(f"Template not found: {src}")
+        shutil.copy(src, target)
+        target.chmod(0o755)
+        files_created.append(target)
+        logger.info(f"Installed {target}")
+
+    def _update_hooks_json(self, hooks_json_path: Path, files_created: list[Path]) -> None:
+        """Update hooks.json with hook configuration."""
+        hooks_config: dict = {}
+        if hooks_json_path.exists():
+            try:
+                hooks_config = json.loads(hooks_json_path.read_text())
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON in {hooks_json_path}, will overwrite")
+
+        hooks_config.setdefault("beforeShellExecution", [])
+        our_cmd = ".cursor/hooks/block-no-verify.sh"
+
+        # Check if our hook is already configured
+        existing = hooks_config["beforeShellExecution"]
+        if not any(h.get("command") == our_cmd for h in existing):
+            existing.append({"command": our_cmd, "output": "json"})
+
+        hooks_json_path.write_text(json.dumps(hooks_config, indent=2) + "\n")
+        files_created.append(hooks_json_path)
+        logger.info(f"Updated {hooks_json_path}")
+
     def install_hooks(self, project_root: Path) -> list[Path]:
-        raise UnsupportedAiAgentError(
-            self.agent_type,
-            "Cursor support not yet implemented. Use Claude Code for now."
-        )
+        """Install Cursor beforeShellExecution hooks."""
+        files_created: list[Path] = []
+        hooks_dir = project_root / ".cursor" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy hook scripts
+        self._copy_hook_file(TEMPLATES_DIR / "cursor" / "block-no-verify.sh", hooks_dir / "block-no-verify.sh", files_created)
+        self._copy_hook_file(TEMPLATES_DIR / "cursor" / "parse_hook_input.py", hooks_dir / "parse_hook_input.py", files_created)
+
+        # Update hooks.json
+        self._update_hooks_json(project_root / ".cursor" / "hooks.json", files_created)
+
+        return files_created
+
+    def _verify_hooks_json(self, hooks_json_path: Path, checks_passed: list, checks_failed: list) -> None:
+        """Verify hooks.json configuration."""
+        if not hooks_json_path.exists():
+            checks_failed.append("hooks_json_configured: hooks.json not found")
+            return
+
+        try:
+            hooks_config = json.loads(hooks_json_path.read_text())
+            before_shell = hooks_config.get("beforeShellExecution", [])
+            found_hook = any(
+                h.get("command") == ".cursor/hooks/block-no-verify.sh"
+                for h in before_shell
+            )
+            if found_hook:
+                checks_passed.append("hooks_json_configured")
+            else:
+                checks_failed.append("hooks_json_configured: hook not in beforeShellExecution")
+        except json.JSONDecodeError as e:
+            checks_failed.append(f"hooks_json_configured: invalid JSON - {e}")
+
+    def _test_hook_blocks(
+        self,
+        hook_script: Path,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        return_stderr: bool = False,
+    ) -> bool | tuple[bool, str]:
+        """Test if the hook script blocks a command.
+
+        Simulates what Cursor sends to beforeShellExecution hooks.
+        Returns True if blocked (JSON permission=deny), False if allowed.
+        """
+        # Cursor sends JSON with command directly
+        test_input = json.dumps({"command": command})
+
+        project_root = hook_script.parents[2] if len(hook_script.parents) >= 2 else None
+        try:
+            result = subprocess.run(
+                [str(hook_script)],
+                input=test_input,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=str(project_root) if project_root else None,
+                env=env,
+            )
+            # Cursor hooks output JSON - parse for permission field
+            try:
+                output = json.loads(result.stdout.strip()) if result.stdout.strip() else {}
+                blocked = output.get("permission") == "deny"
+            except json.JSONDecodeError:
+                # If we can't parse JSON, treat as not blocked (hook is broken)
+                blocked = False
+
+            if return_stderr:
+                return blocked, result.stderr
+            return blocked
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Hook script timed out testing: {command}")
+            return (False, "") if return_stderr else False
+        except Exception as e:
+            logger.warning(f"Hook script error testing '{command}': {e}")
+            return (False, "") if return_stderr else False
+
+    def _run_hook_test_cases(self, hook_script: Path, checks_passed: list, checks_failed: list) -> None:
+        """Run hook test cases and record results."""
+        test_cases = [
+            ("git push --no-verify", True), ("git commit --no-verify -m 'test'", True),
+            ("git push origin main --no-verify", True), ("git --no-verify push", True),
+            ("git commit -n -m 'test'", True), ("git -c core.hooksPath=/dev/null push", True),
+            ("gh pr merge 123", True), ("gh pr merge 123 --squash", True),
+            ("gh api repos/owner/repo/pulls/123/merge -X PUT", True),
+            ("git push origin main", False), ("git commit -m 'test'", False),
+            ("gh pr create --title 'test'", False), ("gh pr view 123", False), ("ls -la", False),
+        ]
+
+        for cmd, should_block in test_cases:
+            blocked = self._test_hook_blocks(hook_script, cmd)
+            label = cmd[:30]
+            if should_block == blocked:
+                checks_passed.append(f"{'blocks' if should_block else 'allows'}:{label}")
+            else:
+                checks_failed.append(f"{'should_block' if should_block else 'wrongly_blocks'}:{label}")
 
     def verify_hooks(self, project_root: Path) -> VerificationResult:
-        raise UnsupportedAiAgentError(
-            self.agent_type,
-            "Cursor verification not yet implemented."
+        """Verify Cursor hooks are working."""
+        checks_passed: list[str] = []
+        checks_failed: list[str] = []
+
+        hook_script = project_root / ".cursor" / "hooks" / "block-no-verify.sh"
+        hooks_json_path = project_root / ".cursor" / "hooks.json"
+
+        if not hook_script.exists():
+            checks_failed.append("hook_script_exists: not found")
+            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+        checks_passed.append("hook_script_exists")
+
+        if os.access(hook_script, os.X_OK):
+            checks_passed.append("hook_script_executable")
+        else:
+            checks_failed.append("hook_script_executable: not executable")
+
+        self._verify_hooks_json(hooks_json_path, checks_passed, checks_failed)
+        self._run_hook_test_cases(hook_script, checks_passed, checks_failed)
+
+        return VerificationResult(
+            success=len(checks_failed) == 0,
+            meta_agent=self.agent_type,
+            checks_passed=checks_passed,
+            checks_failed=checks_failed,
         )
 
     def is_installed(self, project_root: Path) -> bool:
+        """Check if Cursor hooks are installed."""
+        hook_script = project_root / ".cursor" / "hooks" / "block-no-verify.sh"
+        hooks_json_path = project_root / ".cursor" / "hooks.json"
+
+        if not hook_script.exists() or not hooks_json_path.exists():
+            return False
+
+        try:
+            hooks_config = json.loads(hooks_json_path.read_text())
+            before_shell = hooks_config.get("beforeShellExecution", [])
+
+            for hook in before_shell:
+                if hook.get("command") == ".cursor/hooks/block-no-verify.sh":
+                    return True
+        except (json.JSONDecodeError, KeyError):
+            pass
+
         return False
 
 
