@@ -17,7 +17,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from . import supervisor
 from .config import Config
@@ -26,6 +26,9 @@ from .doctor.types import DoctorResult
 from .repo_lock import AlreadyRunning
 from .supervisor import SupervisorOps
 from ..ports.command_runner import CommandRunner
+
+# Type alias for the doctor function, enabling DI in tests.
+DoctorFn = Callable[..., DoctorResult]
 
 logger = logging.getLogger(__name__)
 
@@ -56,14 +59,23 @@ class LaunchResult:
 def _run_preflight(
     config: Config,
     runner: Optional[CommandRunner] = None,
+    doctor_fn: Optional[DoctorFn] = None,
 ) -> tuple[DoctorResult, str]:
     """Run doctor checks and return (result, status_string).
+
+    Args:
+        doctor_fn: Callable to use instead of ``run_doctor``.
+            Also skipped when ``ISSUE_ORCHESTRATOR_SKIP_DOCTOR=1`` is set
+            (needed by integration tests that spawn subprocesses).
 
     Returns:
         (doctor_result, status) where status is "ok", "doctor_warning",
         or "doctor_error".
     """
-    doctor_result = run_doctor(config=config, runner=runner)
+    if os.environ.get("ISSUE_ORCHESTRATOR_SKIP_DOCTOR") == "1":
+        return DoctorResult(checks=[]), "ok"
+    fn = doctor_fn or run_doctor
+    doctor_result = fn(config=config, runner=runner)
     if doctor_result.overall == "error":
         return doctor_result, "doctor_error"
     if doctor_result.overall == "warning":
@@ -74,12 +86,13 @@ def _run_preflight(
 def preflight(
     config: Config,
     runner: Optional[CommandRunner] = None,
+    doctor_fn: Optional[DoctorFn] = None,
 ) -> LaunchResult:
     """Run doctor checks only. Returns LaunchResult with launched=False.
 
     Use for "show readiness" — runs doctor without starting anything.
     """
-    doctor_result, status = _run_preflight(config, runner)
+    doctor_result, status = _run_preflight(config, runner, doctor_fn=doctor_fn)
     return LaunchResult(
         doctor=doctor_result,
         launched=False,
@@ -90,13 +103,14 @@ def preflight(
 def launch_preflight_only(
     config: Config,
     runner: Optional[CommandRunner] = None,
+    doctor_fn: Optional[DoctorFn] = None,
 ) -> LaunchResult:
     """Run doctor checks only, for CLI which builds in-process.
 
     CLI calls this, then proceeds to ``build_orchestrator()`` itself.
     Alias for ``preflight()`` — named differently for clarity at call sites.
     """
-    return preflight(config, runner)
+    return preflight(config, runner, doctor_fn=doctor_fn)
 
 
 def launch_subprocess(
@@ -107,14 +121,11 @@ def launch_subprocess(
     instance_id: Optional[str] = None,
     port: Optional[int] = None,
     supervisor_ops: Optional[SupervisorOps] = None,
+    doctor_fn: Optional[DoctorFn] = None,
 ) -> LaunchResult:
     """Run doctor checks, then supervisor.start() if checks pass.
 
     Used by CC and MCP entry points.
-
-    Doctor checks can be skipped by setting the environment variable
-    ``ISSUE_ORCHESTRATOR_SKIP_DOCTOR=1``.  This is intended only for
-    integration tests where the test repo has no hooks installed.
 
     Args:
         repo_root: Repository root path.
@@ -123,15 +134,14 @@ def launch_subprocess(
         runner: Optional command runner for guardrails checks.
         instance_id: Optional instance ID for multi-instance mode.
         port: Optional port override.
+        supervisor_ops: Optional supervisor operations (DI for tests).
+        doctor_fn: Callable that runs doctor checks. Defaults to
+            ``run_doctor``.  Tests can inject a no-op to skip checks.
 
     Returns:
         LaunchResult with doctor results and supervisor info.
     """
-    if os.environ.get("ISSUE_ORCHESTRATOR_SKIP_DOCTOR") == "1":
-        doctor_result = DoctorResult(checks=[])
-        status = "ok"
-    else:
-        doctor_result, status = _run_preflight(config, runner)
+    doctor_result, status = _run_preflight(config, runner, doctor_fn=doctor_fn)
 
     if status == "doctor_error":
         return LaunchResult(

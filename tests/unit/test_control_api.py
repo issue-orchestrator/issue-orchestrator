@@ -1000,6 +1000,39 @@ class TestSupervisorStart:
         assert response.status_code == 200
         assert response.json()["status"] == "started"
 
+    def test_start_returns_422_when_doctor_fails(
+        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        mock_supervisor: MagicMock,
+    ) -> None:
+        """Return 422 with doctor_failed when preflight checks fail."""
+        from issue_orchestrator.infra import launcher
+        from issue_orchestrator.infra.doctor.types import Check, DoctorResult
+
+        # Create config file
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
+        # Doctor returns an error
+        monkeypatch.setattr(
+            launcher,
+            "run_doctor",
+            lambda **_kw: DoctorResult(
+                checks=[Check(name="Hooks", status="error", detail="not installed")]
+            ),
+        )
+
+        response = supervisor_client.post(
+            "/control/orchestrator/start",
+            json={"repo_root": str(tmp_path), "config_name": "default.yaml"},
+        )
+
+        assert response.status_code == 422
+        data = response.json()
+        assert data["error"] == "doctor_failed"
+        assert data["doctor"]["overall"] == "error"
+        mock_supervisor.start.assert_not_called()
+
 
 class TestSupervisorLastFailure:
     """Tests for GET /control/orchestrator/last_failure endpoint."""
