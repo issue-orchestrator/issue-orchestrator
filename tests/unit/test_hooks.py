@@ -1113,6 +1113,93 @@ class TestParseHookInput:
         assert self.extract_command(raw) == ""
 
 
+class TestCopilotParseHookInput:
+    """Tests for Copilot's parse_hook_input.py (nested toolArgs JSON format).
+
+    This tests the Copilot-specific script which handles the nested JSON format:
+    {"toolName": "bash", "toolArgs": "{\"command\": \"git push ...\"}"}
+
+    This ensures a regression in the Copilot parser doesn't silently allow commands.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _load_module(self):
+        """Load extract_command from the Copilot template script."""
+        import importlib.util
+
+        script_path = TEMPLATES_DIR / "copilot" / "parse_hook_input.py"
+        spec = importlib.util.spec_from_file_location("copilot_parse_hook_input", script_path)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.extract_command = mod.extract_command
+
+    def test_copilot_format(self):
+        """Test Copilot CLI format with nested toolArgs JSON string."""
+        raw = json.dumps({
+            "toolName": "bash",
+            "toolArgs": json.dumps({"command": "git push --no-verify"})
+        })
+        assert self.extract_command(raw) == "git push --no-verify"
+
+    def test_copilot_format_with_extra_args(self):
+        """Test Copilot format extracts command from nested JSON with other fields."""
+        raw = json.dumps({
+            "toolName": "bash",
+            "toolArgs": json.dumps({
+                "command": "git commit -m 'test'",
+                "workingDir": "/some/path"
+            })
+        })
+        assert self.extract_command(raw) == "git commit -m 'test'"
+
+    def test_copilot_format_takes_priority(self):
+        """Test Copilot toolArgs format takes priority over other formats."""
+        raw = json.dumps({
+            "toolName": "bash",
+            "toolArgs": json.dumps({"command": "git push"}),
+            "command": "something else",  # Cursor format - should be ignored
+        })
+        assert self.extract_command(raw) == "git push"
+
+    def test_copilot_format_invalid_nested_json(self):
+        """Test Copilot format with invalid nested JSON falls back to other formats."""
+        raw = json.dumps({
+            "toolName": "bash",
+            "toolArgs": "not valid json",
+            "command": "git status",  # Cursor fallback
+        })
+        assert self.extract_command(raw) == "git status"
+
+    def test_copilot_format_non_dict_nested(self):
+        """Test Copilot format with non-dict nested JSON falls back."""
+        raw = json.dumps({
+            "toolName": "bash",
+            "toolArgs": json.dumps(["array", "not", "dict"]),
+            "command": "git log",  # Cursor fallback
+        })
+        assert self.extract_command(raw) == "git log"
+
+    def test_copilot_format_missing_command_in_args(self):
+        """Test Copilot format with missing command key falls back."""
+        raw = json.dumps({
+            "toolName": "bash",
+            "toolArgs": json.dumps({"workingDir": "/path"}),
+            "tool_input": {"command": "git diff"},  # Claude fallback
+        })
+        assert self.extract_command(raw) == "git diff"
+
+    def test_copilot_also_supports_claude_format(self):
+        """Test Copilot script also handles Claude format for compatibility."""
+        raw = json.dumps({"tool_input": {"command": "git status"}})
+        assert self.extract_command(raw) == "git status"
+
+    def test_copilot_also_supports_cursor_format(self):
+        """Test Copilot script also handles Cursor format for compatibility."""
+        raw = json.dumps({"command": "git log"})
+        assert self.extract_command(raw) == "git log"
+
+
 class TestTemplatesExist:
     """Tests that template files exist."""
 
