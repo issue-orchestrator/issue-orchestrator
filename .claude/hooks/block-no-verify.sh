@@ -41,6 +41,12 @@ command=$("$python_bin" "$parse_script" <<< "$input" 2>&1) || {
     exit 2
 }
 
+# Fail closed: if input was non-empty but command is empty, parsing failed silently
+if [[ -z "$command" && -n "$input" ]]; then
+    echo "BLOCKED: unable to extract command from hook input. Input may be malformed." >&2
+    exit 2
+fi
+
 # Allow a dry-run no-verify push for reuse preflight when enabled.
 allow_script="$hook_dir/allow_git_push.py"
 if [[ ! -f "$allow_script" ]]; then

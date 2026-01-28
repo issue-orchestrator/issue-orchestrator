@@ -339,6 +339,21 @@ class TestClaudeCodeAdapter:
         assert blocked, "Hook should block when parse_hook_input.py is missing (fail closed)"
         assert "missing" in stderr.lower()
 
+    def test_hook_blocks_when_input_malformed(self, adapter, temp_project):
+        """Hook must fail closed when input is non-empty but command extraction returns empty."""
+        adapter.install_hooks(temp_project)
+        hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
+
+        # Malformed input: valid JSON but no command field
+        result = subprocess.run(
+            ["bash", str(hook_script)],
+            input='{"unexpected_key": "value"}',
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 2, "Hook should block when input is malformed (fail closed)"
+        assert "malformed" in result.stderr.lower()
+
     def test_hook_blocks_commit_no_verify(self, adapter, temp_project):
         adapter.install_hooks(temp_project)
         hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
