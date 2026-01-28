@@ -263,6 +263,17 @@ security:
     allow_unsupported_agents: false
 ```
 
+### hooks
+
+```yaml
+hooks:
+  safety_check:
+    interval_days: 7                    # Run live verification every N days (0 = disabled)
+    dangerous_allow_failure: false      # If true, warn only; if false, block on failure
+```
+
+The safety check spawns actual AI agents to verify that hooks correctly block dangerous commands like `git push --no-verify`. This runs on first setup and periodically to ensure hooks remain effective.
+
 ### filtering
 
 ```yaml
@@ -445,6 +456,13 @@ _Auto-generated from settings schema._
 | `review.max_rework_cycles` | integer | `2` | Max times to re-queue work agent before escalating |
 | `review.triage_review_agent` | string (optional) | `None` | Agent for batch reviews (optional) |
 | `review.triage_review_threshold` | integer | `0` | Trigger triage after N PRs (0 = manual only) |
+
+## Hooks
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `hooks.safety_check.interval_days` | integer | `7` | Run live hook verification every N days (0 = disabled) |
+| `hooks.safety_check.dangerous_allow_failure` | boolean | `False` | If true, warn only on safety check failure; if false, block orchestrator start |
 
 ## Advanced
 

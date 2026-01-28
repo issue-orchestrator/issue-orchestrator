@@ -6,10 +6,21 @@ from typing import Any
 
 @dataclass
 class Check:
-    """A single diagnostic check result."""
+    """A single diagnostic check result.
+
+    The optional expandable dict supports UI expansion with detailed results.
+    Example for safety check:
+        expandable = {
+            "ran": True,
+            "triggered_by": "interval exceeded",
+            "agents_tested": ["claude-code"],
+            "results": {"claude-code": {"success": True, "message": "..."}},
+        }
+    """
     name: str
     status: str  # "ok", "warning", "error", "info"
     detail: str
+    expandable: dict[str, Any] | None = None  # Optional expandable details for UI
 
 
 @dataclass
@@ -31,7 +42,12 @@ class DoctorResult:
         return {
             "overall": self.overall,
             "checks": [
-                {"name": c.name, "status": c.status, "detail": c.detail}
+                {
+                    "name": c.name,
+                    "status": c.status,
+                    "detail": c.detail,
+                    **({"expandable": c.expandable} if c.expandable else {}),
+                }
                 for c in self.checks
             ],
         }

@@ -411,6 +411,47 @@ class AdvancedSettings(BaseModel):
     )
 
 
+class HooksSettings(BaseModel):
+    """Settings for the Hooks tab."""
+
+    safety_check_interval_days: int = Field(
+        7,
+        title="Safety Check Interval (days)",
+        description="Run live hook verification every N days (0 = disabled)",
+        ge=0,
+        le=365,
+        json_schema_extra={
+            "section": "Safety Check",
+            "config_attr": "hooks.safety_check.interval_days",
+            "yaml_path": "hooks.safety_check.interval_days",
+            "summary": {
+                "section": "hooks",
+                "format": SUMMARY_INTERVAL,
+                "label": "safety check",
+                "zero_label": "disabled",
+                "unit": "d",
+            },
+        },
+    )
+    safety_check_dangerous_allow_failure: bool = Field(
+        False,
+        title="Allow Safety Check Failure",
+        description="If true, warn only on safety check failure; if false, block orchestrator start",
+        json_schema_extra={
+            "section": "Safety Check",
+            "config_attr": "hooks.safety_check.dangerous_allow_failure",
+            "yaml_path": "hooks.safety_check.dangerous_allow_failure",
+            "summary": {
+                "section": "hooks",
+                "format": SUMMARY_BOOLEAN_FLAG,
+                "label": "on failure",
+                "true_value": "warn",
+                "false_value": "block",
+            },
+        },
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tab definitions (ordered as they appear in the UI)
 # ---------------------------------------------------------------------------
@@ -420,6 +461,7 @@ TAB_DEFINITIONS: list[dict[str, Any]] = [
     {"key": "e2e", "label": "E2E Runner", "model": E2ESettings},
     {"key": "filtering", "label": "Filtering", "model": FilteringSettings},
     {"key": "review", "label": "Review", "model": ReviewSettings},
+    {"key": "hooks", "label": "Hooks", "model": HooksSettings},
     {"key": "advanced", "label": "Advanced", "model": AdvancedSettings},
 ]
 

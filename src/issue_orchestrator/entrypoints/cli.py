@@ -1192,13 +1192,14 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
         return 0
 
 
-def cmd_setup_hooks(args: argparse.Namespace) -> int:
+def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-step setup with per-agent install, verify, and safety check
     """Install AI agent hooks for the target project."""
     from ..infra.hooks.hooks import (
         detect_agents_from_config,
         get_adapter,
         UnsupportedAiAgentError,
     )
+    from ..infra.safety_state import load_safety_state, save_safety_state
 
     console.print("[bold cyan]Installing AI Agent Hooks[/bold cyan]\n")
 
@@ -1227,6 +1228,7 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:
 
     errors = []
     installed = []
+    supported_adapters = []
 
     for agent_type in unique_types:
         try:
@@ -1242,7 +1244,8 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:
             # Verify installation
             result = adapter.verify_hooks(target_root)
             if result.success:
-                console.print(f"  [green]✓[/green] Verification passed ({len(result.checks_passed)} checks)")
+                console.print(f"  [green]✓[/green] Static verification passed ({len(result.checks_passed)} checks)")
+                supported_adapters.append((agent_type, adapter))
             else:
                 console.print(f"  [yellow]![/yellow] Verification had issues:")
                 for failure in result.checks_failed:
@@ -1259,8 +1262,52 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:
         console.print("\n[yellow]Some AI agents are not supported. Consider using Claude Code.[/yellow]")
         return 1
 
-    console.print(f"[bold green]✓ Hooks installed successfully ({len(installed)} files)[/bold green]")
-    console.print("\n[dim]Run 'issue-orchestrator verify' to confirm everything is working.[/dim]")
+    console.print(f"[green]✓[/green] Files installed")
+    console.print(f"[green]✓[/green] Static verification passed")
+
+    # Run safety check (live verification)
+    if supported_adapters:
+        console.print("\n[cyan]Running safety check (spawns agent briefly)...[/cyan]")
+        safety_results: dict[str, tuple[bool, str]] = {}
+        safety_failures = []
+
+        for agent_type, adapter in supported_adapters:
+            agent_name = agent_type.value
+            try:
+                success, message = adapter.live_verify(target_root)
+                safety_results[agent_name] = (success, message)
+
+                if success:
+                    # Extract the blocked command from the message if available
+                    detail = message.split("\n")[0] if message else "blocked"
+                    console.print(f"[green]✓[/green] {agent_name}: correctly {detail[:60]}")
+                else:
+                    console.print(f"[red]✗[/red] {agent_name}: {message[:60]}")
+                    safety_failures.append(agent_name)
+            except Exception as e:
+                error_msg = str(e)
+                safety_results[agent_name] = (False, error_msg)
+                console.print(f"[red]✗[/red] {agent_name}: Error - {error_msg[:50]}")
+                safety_failures.append(agent_name)
+
+        # Save safety state
+        state = load_safety_state(target_root)
+        state.mark_checked(safety_results)
+        save_safety_state(target_root, state)
+
+        if safety_failures:
+            console.print()
+            if config.hooks.safety_check.dangerous_allow_failure:
+                console.print(f"[bold yellow]⚠ Safety check failed for: {', '.join(safety_failures)}[/bold yellow]")
+                console.print("[dim]Continuing because dangerous_allow_failure is enabled[/dim]")
+            else:
+                console.print(f"[bold red]Safety check failed for: {', '.join(safety_failures)}[/bold red]")
+                console.print("\n[yellow]Hooks installed but safety check failed.[/yellow]")
+                console.print("[dim]Set hooks.safety_check.dangerous_allow_failure: true to bypass[/dim]")
+                return 1
+
+    console.print()
+    console.print(f"[bold green]Hooks installed and verified.[/bold green]")
     return 0
 
 
