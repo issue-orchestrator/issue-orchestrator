@@ -24,6 +24,7 @@ from .config import Config
 from .doctor import run_doctor
 from .doctor.types import DoctorResult
 from .repo_lock import AlreadyRunning
+from .supervisor import SupervisorOps
 from ..ports.command_runner import CommandRunner
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,7 @@ def launch_subprocess(
     runner: Optional[CommandRunner] = None,
     instance_id: Optional[str] = None,
     port: Optional[int] = None,
+    supervisor_ops: Optional[SupervisorOps] = None,
 ) -> LaunchResult:
     """Run doctor checks, then supervisor.start() if checks pass.
 
@@ -139,9 +141,10 @@ def launch_subprocess(
         )
 
     # Doctor passed (ok or warning) — start the orchestrator subprocess
+    sv = supervisor_ops or supervisor
     try:
         if config.instances > 1:
-            infos = supervisor.start_instances(repo_root, config_name=config_name)
+            infos = sv.start_instances(repo_root, config_name=config_name)
             supervisor_data = {
                 "instances": [
                     {"pid": info.pid, "port": info.http_port, "instance_id": info.instance_id}
@@ -149,7 +152,7 @@ def launch_subprocess(
                 ],
             }
         else:
-            info = supervisor.start(
+            info = sv.start(
                 repo_root,
                 config_name=config_name,
                 instance_id=instance_id,
