@@ -3,7 +3,7 @@
 import json
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -169,15 +169,13 @@ class TestSupervisorStartErrorSurfacing:
         config_dir.mkdir(parents=True)
         (config_dir / "default.yaml").write_text("agents: {}\n")
 
-        # Mock subprocess to simulate immediate exit
+        # Fake process that exits immediately
         mock_process = MagicMock()
         mock_process.pid = 99999
         mock_process.poll.return_value = 1  # Exited with code 1
 
-        with patch("issue_orchestrator.infra.supervisor.subprocess.Popen", return_value=mock_process):
-            with patch("issue_orchestrator.infra.supervisor.read_lock", return_value=None):
-                with pytest.raises(RuntimeError) as exc_info:
-                    start(tmp_path)
+        with pytest.raises(RuntimeError) as exc_info:
+            start(tmp_path, spawn_process=lambda *a, **kw: mock_process)
 
         error_msg = str(exc_info.value)
         assert "exited immediately with code 1" in error_msg
@@ -204,10 +202,8 @@ class TestSupervisorStartErrorSurfacing:
         mock_process.pid = 99999
         mock_process.poll.return_value = 1
 
-        with patch("issue_orchestrator.infra.supervisor.subprocess.Popen", return_value=mock_process):
-            with patch("issue_orchestrator.infra.supervisor.read_lock", return_value=None):
-                with pytest.raises(RuntimeError) as exc_info:
-                    start(tmp_path)
+        with pytest.raises(RuntimeError) as exc_info:
+            start(tmp_path, spawn_process=lambda *a, **kw: mock_process)
 
         error_msg = str(exc_info.value)
         assert "Some final message" in error_msg
@@ -226,10 +222,8 @@ class TestSupervisorStartErrorSurfacing:
         mock_process.pid = 99999
         mock_process.poll.return_value = 1
 
-        with patch("issue_orchestrator.infra.supervisor.subprocess.Popen", return_value=mock_process):
-            with patch("issue_orchestrator.infra.supervisor.read_lock", return_value=None):
-                with pytest.raises(RuntimeError) as exc_info:
-                    start(tmp_path)
+        with pytest.raises(RuntimeError) as exc_info:
+            start(tmp_path, spawn_process=lambda *a, **kw: mock_process)
 
         error_msg = str(exc_info.value)
         assert "exited immediately with code 1" in error_msg

@@ -36,12 +36,22 @@ class OrchestratorHttpClient:
         return supervisor.status(self._settings.repo_root, instance_id=self._settings.instance_id)
 
     def start(self) -> supervisor.SupervisorStatus:
-        lock = supervisor.start(
-            self._settings.repo_root,
+        from ..infra.launcher import launch_subprocess
+
+        config = Config.load(self._settings.config_path)
+        result = launch_subprocess(
+            repo_root=self._settings.repo_root,
+            config=config,
             config_name=self._settings.config_path.name,
             instance_id=self._settings.instance_id,
         )
-        self._cached_port = lock.http_port
+        if not result.launched:
+            raise RuntimeError(
+                f"Failed to start orchestrator: {result.status}"
+                + (f" — {result.error}" if result.error else "")
+            )
+        if result.supervisor and "port" in result.supervisor:
+            self._cached_port = result.supervisor["port"]
         return supervisor.status(self._settings.repo_root, instance_id=self._settings.instance_id)
 
     def _ensure_running(self) -> supervisor.SupervisorStatus:
@@ -70,6 +80,10 @@ class OrchestratorHttpClient:
         if status.state == "running" and status.port:
             return f"http://{self._settings.host}:{status.port}/api/doctor"
         return None
+
+    def update_port(self, port: int) -> None:
+        """Update the cached port after an external launch."""
+        self._cached_port = port
 
     def close(self) -> None:
         return None
@@ -199,7 +213,20 @@ class McpApp:
     def start(self) -> dict[str, Any]:
         status = self._client.status()
         if status.state != "running":
-            status = self._client.start()
+            from ..infra.launcher import launch_subprocess
+
+            config = Config.load(self._settings.config_path)
+            launch_result = launch_subprocess(
+                repo_root=self._settings.repo_root,
+                config=config,
+                config_name=self._settings.config_path.name,
+                instance_id=self._settings.instance_id,
+            )
+            result: dict[str, Any] = {"launch": launch_result.to_dict()}
+            # Update cached port from supervisor data
+            if launch_result.supervisor and "port" in launch_result.supervisor:
+                self._client.update_port(launch_result.supervisor["port"])
+            return result
         return {"supervisor": status.to_dict()}
 
     def stop(self, force: bool = False) -> dict[str, Any]:

@@ -20,7 +20,6 @@ if TYPE_CHECKING:
         SessionRunner,
         RepositoryHost,
         CommandRunner,
-        HookVerifier,
         SessionOutput,
         ManifestDownloader,
     )
@@ -70,7 +69,6 @@ class OrchestratorDeps:
         session_restorer: Restores sessions after restart
         worktree_manager: Manages git worktrees
         working_copy: Git working copy operations
-        hook_verifier: Verifies agent hooks on startup
         command_runner: Executes shell commands
         manifest_downloader: Downloads PR data for triage sessions
         state_machine_manager: Manages issue/session/review state machines
@@ -112,7 +110,6 @@ class OrchestratorDeps:
     # IO adapters
     worktree_manager: "WorktreeManager"
     working_copy: "WorkingCopy"
-    hook_verifier: "HookVerifier"
     command_runner: "CommandRunner"
     session_output: "SessionOutput"
     manifest_downloader: "ManifestDownloader"

@@ -53,6 +53,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from sse_starlette.sse import EventSourceResponse
 
 from ..infra import gh_audit
+from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
 
 # Path to templates
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
@@ -73,6 +74,9 @@ control_app = FastAPI(title="Issue Orchestrator Control API")
 # Global reference to orchestrator (set at startup)
 _orchestrator: "Orchestrator | None" = None
 
+# Supervisor operations (injectable for testing)
+_supervisor: SupervisorOps = DefaultSupervisorOps()
+
 
 def set_orchestrator(orchestrator: "Orchestrator") -> None:
     """Set the orchestrator instance for the control API."""
@@ -83,6 +87,17 @@ def set_orchestrator(orchestrator: "Orchestrator") -> None:
 def get_orchestrator() -> "Orchestrator | None":
     """Get the orchestrator instance."""
     return _orchestrator
+
+
+def set_supervisor(supervisor: SupervisorOps) -> None:
+    """Set the supervisor operations instance (for testing)."""
+    global _supervisor
+    _supervisor = supervisor
+
+
+def get_supervisor() -> SupervisorOps:
+    """Get the supervisor operations instance."""
+    return _supervisor
 
 
 @control_app.post("/api/refresh")
@@ -757,8 +772,9 @@ async def shutdown_control_center(request: Request) -> JSONResponse:
     import signal
     import threading
 
-    from ..infra import supervisor
     from ..infra.repo_registry import list_repos
+
+    sv = get_supervisor()
 
     # Parse optional body
     stop_orchestrators = False
@@ -775,10 +791,10 @@ async def shutdown_control_center(request: Request) -> JSONResponse:
         for repo in repos:
             path = Path(repo.path)
             if path.exists():
-                status_info = supervisor.status(path)
+                status_info = sv.status(path)
                 if status_info.state == "running":
                     logger.info("Stopping orchestrator for %s before shutdown", repo.path)
-                    if supervisor.stop(path):
+                    if sv.stop(path):
                         stopped_repos.append(repo.path)
 
     def delayed_shutdown():
@@ -973,9 +989,10 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
     If the orchestrator is in shutdown-complete state (shutdown requested,
     no active sessions), it will be automatically restarted.
     """
-    from ..infra import supervisor
     from ..infra.repo_lock import AlreadyRunning
     from ..infra.repo_registry import set_selected_config
+
+    sv = get_supervisor()
 
     try:
         body = await request.json()
@@ -1012,7 +1029,7 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
                 "tick_age_seconds": detected.get("tick_age_seconds"),
             }, status_code=409)
         if detected and force_restart:
-            stopped = supervisor.stop_by_port(detected["port"], force=True)
+            stopped = sv.stop_by_port(detected["port"], force=True)
             if not stopped:
                 return JSONResponse({
                     "error": "stop_failed",
@@ -1022,37 +1039,43 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
         # Update selected config in registry
         set_selected_config(repo_root, config_name)
 
-        # Load config to check if multi-instance mode
+        # Load config and run unified launcher (doctor + supervisor.start)
         from ..infra.config import Config, get_config_path
+        from ..infra.launcher import launch_subprocess
+
         config_path = get_config_path(repo_root, config_name)
         config = Config.load(config_path)
 
-        if config.instances > 1:
-            # Multi-instance mode: start all instances
-            infos = supervisor.start_instances(repo_root, config_name=config_name)
+        launch_result = launch_subprocess(
+            repo_root=repo_root,
+            config=config,
+            config_name=config_name,
+            supervisor_ops=sv,
+        )
+
+        if launch_result.status == "doctor_error":
             return JSONResponse({
-                "status": "started",
-                "instances": [
-                    {
-                        "pid": info.pid,
-                        "port": info.http_port,
-                        "instance_id": info.instance_id,
-                    }
-                    for info in infos
-                ],
-                "repo_root": str(repo_root),
-                "config_name": config_name,
-            })
-        else:
-            # Single instance mode
-            info = supervisor.start(repo_root, config_name=config_name)
+                "error": "doctor_failed",
+                "detail": "Pre-flight checks failed",
+                "doctor": launch_result.doctor.to_dict(),
+            }, status_code=422)
+
+        if not launch_result.launched:
             return JSONResponse({
-                "status": "started",
-                "pid": info.pid,
-                "port": info.http_port,
-                "repo_root": str(repo_root),
-                "config_name": config_name,
-            })
+                "error": "launch_failed",
+                "detail": launch_result.error or "Unknown launch error",
+                "doctor": launch_result.doctor.to_dict(),
+            }, status_code=500)
+
+        response_data: dict = {
+            "status": "started",
+            "repo_root": str(repo_root),
+            "config_name": config_name,
+            "doctor": launch_result.doctor.to_dict(),
+        }
+        if launch_result.supervisor:
+            response_data.update(launch_result.supervisor)
+        return JSONResponse(response_data)
     except FileNotFoundError as e:
         return JSONResponse({
             "error": "config_not_found",
@@ -1064,12 +1087,12 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
             # Stop the old instance and restart
             logger.info("Orchestrator in shutdown-complete state, restarting: %s", repo_root)
             try:
-                supervisor.stop(repo_root)
+                sv.stop(repo_root)
                 # Brief pause to allow cleanup
                 import time
                 time.sleep(0.5)
                 # Try starting again
-                info = supervisor.start(repo_root, config_name=config_name)
+                info = sv.start(repo_root, config_name=config_name)
                 return JSONResponse({
                     "status": "restarted",
                     "pid": info.pid,
@@ -1107,7 +1130,7 @@ async def control_stop(request: Request) -> JSONResponse:
         force: bool (optional) - Force kill (SIGKILL) instead of graceful (SIGTERM)
         port: int (optional) - Port to stop when no lock exists (untracked process)
     """
-    from ..infra import supervisor
+    sv = get_supervisor()
 
     logger.info("[control_stop] Received stop request")
 
@@ -1133,18 +1156,18 @@ async def control_stop(request: Request) -> JSONResponse:
 
     logger.info("[control_stop] Calling supervisor.stop(%s, force=%s)", repo_root, force)
 
-    status_info = supervisor.status(repo_root)
+    status_info = sv.status(repo_root)
     if status_info.state != "running" and port_override:
         if not _confirm_orchestrator_at_port(repo_root, port_override):
             return JSONResponse({
                 "error": "port_mismatch",
                 "detail": "No matching orchestrator found on the provided port.",
             }, status_code=409)
-        stopped = supervisor.stop_by_port(port_override, force=force)
+        stopped = sv.stop_by_port(port_override, force=force)
         stopped_count = 1 if stopped else 0
     else:
         # Stop all instances (single and multi-instance)
-        stopped_count = supervisor.stop_all_instances(repo_root, force=force)
+        stopped_count = sv.stop_all_instances(repo_root, force=force)
         stopped = stopped_count > 0
     logger.info("[control_stop] supervisor.stop_all_instances returned: %d", stopped_count)
 
@@ -1175,7 +1198,7 @@ async def control_status(
     Returns either a single status dict (legacy) or multi-instance status when
     instances > 1 in config.
     """
-    from ..infra import supervisor
+    sv = get_supervisor()
 
     path = _validate_repo_root(repo_root)
     if path is None:
@@ -1186,7 +1209,7 @@ async def control_status(
 
     # Get status of all instances
     selected = config_name or _get_selected_config(path) or "default.yaml"
-    multi_status = supervisor.status_all_instances(path, config_name=selected)
+    multi_status = sv.status_all_instances(path, config_name=selected)
 
     # If multiple instances expected or running, return multi-instance format
     if multi_status.expected_count > 1 or len(multi_status.instances) > 1:
@@ -1204,7 +1227,7 @@ async def control_status(
         return JSONResponse(multi_status.instances[0].to_dict())
 
     # No running instances - check for orphaned process
-    status_info = supervisor.status(path)
+    status_info = sv.status(path)
     if status_info.state != "running":
         detected = _detect_orchestrator_by_port(path, selected)
         if detected:
@@ -1233,8 +1256,9 @@ async def control_pause(request: Request) -> JSONResponse:
     JSON body:
         repo_root: str - Repository root path
     """
-    from ..infra import supervisor
     import httpx
+
+    sv = get_supervisor()
 
     try:
         body = await request.json()
@@ -1248,7 +1272,7 @@ async def control_pause(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    status_info = supervisor.status(repo_root)
+    status_info = sv.status(repo_root)
     if status_info.state != "running" or status_info.port is None:
         return JSONResponse({
             "error": "not_running",
@@ -1277,8 +1301,9 @@ async def control_resume(request: Request) -> JSONResponse:
     JSON body:
         repo_root: str - Repository root path
     """
-    from ..infra import supervisor
     import httpx
+
+    sv = get_supervisor()
 
     try:
         body = await request.json()
@@ -1292,7 +1317,7 @@ async def control_resume(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    status_info = supervisor.status(repo_root)
+    status_info = sv.status(repo_root)
     if status_info.state != "running" or status_info.port is None:
         return JSONResponse({
             "error": "not_running",
@@ -1322,8 +1347,9 @@ async def control_refresh(request: Request) -> JSONResponse:
         repo_root: str - Repository root path
         inflight_stable_ids: list[str] (optional) - Expected issue IDs
     """
-    from ..infra import supervisor
     import httpx
+
+    sv = get_supervisor()
 
     try:
         body = await request.json()
@@ -1337,7 +1363,7 @@ async def control_refresh(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    status_info = supervisor.status(repo_root)
+    status_info = sv.status(repo_root)
     if status_info.state != "running" or status_info.port is None:
         return JSONResponse({
             "error": "not_running",
@@ -1542,10 +1568,10 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
     """
     import httpx
 
-    from ..infra import supervisor
     from ..infra.repo_registry import list_repos
     from ..infra.config import list_configs, get_config_path, Config
 
+    sv = get_supervisor()
     repos = list_repos()
     result = []
 
@@ -1580,7 +1606,7 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
 
         if expected_instances > 1 and path.exists():
             # Multi-instance mode: get status for all instances
-            multi_status = supervisor.status_all_instances(path)
+            multi_status = sv.status_all_instances(path)
             repo_data["instances"] = []
 
             for inst_status in multi_status.instances:
@@ -1616,7 +1642,7 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
 
         else:
             # Single instance mode (existing behavior)
-            status_info = supervisor.status(path) if path.exists() else None
+            status_info = sv.status(path) if path.exists() else None
             repo_data["status"] = status_info.to_dict() if status_info else None
 
             if status_info and status_info.state != "running" and path.exists():
@@ -1785,8 +1811,9 @@ async def remove_repo_endpoint(request: Request) -> JSONResponse:
         repo_root: str - Repository root path
         stop_orchestrator: bool (optional) - Stop running orchestrator first (default: true)
     """
-    from ..infra import supervisor
     from ..infra.repo_registry import remove_repo
+
+    sv = get_supervisor()
 
     try:
         body = await request.json()
@@ -1814,7 +1841,7 @@ async def remove_repo_endpoint(request: Request) -> JSONResponse:
     if stop_orchestrator:
         path = Path(normalized)
         if path.exists():
-            supervisor.stop(path)
+            sv.stop(path)
 
     removed = remove_repo(normalized)
     if removed:

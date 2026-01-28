@@ -143,10 +143,22 @@ def check_repository_config(config: Config) -> list[Check]:
             detail=config.repo,
         )]
 
+    # Try auto-detecting from git remote
+    try:
+        from ....adapters.github.repo import get_repo_from_git
+        repo = get_repo_from_git()
+        return [Check(
+            name="Repository",
+            status="ok",
+            detail=f"Auto-detected: {repo}",
+        )]
+    except Exception:
+        pass
+
     return [Check(
         name="Repository",
         status="warning",
-        detail="Not configured",
+        detail="Not configured and could not auto-detect from git remote",
     )]
 
 

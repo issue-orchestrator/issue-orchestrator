@@ -461,7 +461,6 @@ class TestBuildOrchestratorForTesting:
             assert orch.deps.worktree_manager is not None
             assert orch.deps.working_copy is not None
             assert orch.deps.command_runner is not None
-            assert orch.deps.hook_verifier is not None
             assert orch.deps.health_gate is not None
 
     def test_build_orchestrator_for_testing_installs_gh_guard(

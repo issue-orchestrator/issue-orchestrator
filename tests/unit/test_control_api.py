@@ -24,9 +24,15 @@ from issue_orchestrator.entrypoints.control_api import (
     control_app,
     set_orchestrator,
     get_orchestrator,
+    set_supervisor,
 )
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.supervisor import (
+    DefaultSupervisorOps,
+    SupervisorOps,
+    SupervisorStatus,
+)
 
 
 # --- Fixtures ---
@@ -712,6 +718,18 @@ def supervisor_client():
     return TestClient(control_app)
 
 
+@pytest.fixture
+def mock_supervisor():
+    """Inject a mock SupervisorOps into the control API."""
+    mock = MagicMock(spec=SupervisorOps)
+    mock.status.return_value = SupervisorStatus(state="stopped")
+    mock.stop.return_value = True
+    mock.stop_by_port.return_value = True
+    set_supervisor(mock)
+    yield mock
+    set_supervisor(DefaultSupervisorOps())
+
+
 class TestSupervisorStatus:
     """Tests for GET /control/orchestrator/status endpoint."""
 
@@ -856,13 +874,13 @@ class TestSupervisorStop:
         assert "Invalid port" in response.json()["error"]
 
     def test_stop_returns_port_mismatch(
-        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        mock_supervisor: MagicMock,
     ) -> None:
         """Return 409 when port does not match orchestrator."""
-        from issue_orchestrator.infra import supervisor
         from issue_orchestrator.entrypoints import control_api
 
-        monkeypatch.setattr(supervisor, "status", lambda *_: supervisor.SupervisorStatus(state="stopped"))
+        mock_supervisor.status.return_value = SupervisorStatus(state="stopped")
         monkeypatch.setattr(control_api, "_confirm_orchestrator_at_port", lambda *_: False)
 
         response = supervisor_client.post(
@@ -934,12 +952,14 @@ class TestSupervisorStart:
         assert response.json()["error"] == "orphaned_running"
 
     def test_start_force_restart_stops_orphaned(
-        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        mock_supervisor: MagicMock,
     ) -> None:
         """Force restart should stop the orphaned process before starting."""
         from issue_orchestrator.entrypoints import control_api
-        from issue_orchestrator.infra import supervisor
+        from issue_orchestrator.infra import launcher
         from issue_orchestrator.infra.repo_lock import LockInfo
+        from issue_orchestrator.infra.doctor.types import DoctorResult
 
         # Create config file (required since start endpoint loads config to check instances)
         config_dir = tmp_path / ".issue-orchestrator" / "config"
@@ -947,23 +967,25 @@ class TestSupervisorStart:
         (config_dir / "default.yaml").write_text("agents: {}\n")
 
         monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_DIR", str(tmp_path / "config"))
+        # Mock doctor checks to pass (launcher runs doctor before supervisor.start)
+        monkeypatch.setattr(
+            launcher,
+            "run_doctor",
+            lambda **_kwargs: DoctorResult(checks=[]),
+        )
         monkeypatch.setattr(
             control_api,
             "_detect_orchestrator_by_port",
             lambda *_: {"port": 19080, "health": "ok"},
         )
-        monkeypatch.setattr(supervisor, "stop_by_port", lambda *_args, **_kwargs: True)
-        monkeypatch.setattr(
-            supervisor,
-            "start",
-            lambda *_args, **_kwargs: LockInfo(
-                repo_root=str(tmp_path),
-                pid=123,
-                started_at="",
-                http_port=19080,
-                state_dir=str(tmp_path / ".issue-orchestrator" / "state"),
-                recovered=False,
-            ),
+        mock_supervisor.stop_by_port.return_value = True
+        mock_supervisor.start.return_value = LockInfo(
+            repo_root=str(tmp_path),
+            pid=123,
+            started_at="",
+            http_port=19080,
+            state_dir=str(tmp_path / ".issue-orchestrator" / "state"),
+            recovered=False,
         )
 
         response = supervisor_client.post(
@@ -977,6 +999,39 @@ class TestSupervisorStart:
 
         assert response.status_code == 200
         assert response.json()["status"] == "started"
+
+    def test_start_returns_422_when_doctor_fails(
+        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        mock_supervisor: MagicMock,
+    ) -> None:
+        """Return 422 with doctor_failed when preflight checks fail."""
+        from issue_orchestrator.infra import launcher
+        from issue_orchestrator.infra.doctor.types import Check, DoctorResult
+
+        # Create config file
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
+        # Doctor returns an error
+        monkeypatch.setattr(
+            launcher,
+            "run_doctor",
+            lambda **_kw: DoctorResult(
+                checks=[Check(name="Hooks", status="error", detail="not installed")]
+            ),
+        )
+
+        response = supervisor_client.post(
+            "/control/orchestrator/start",
+            json={"repo_root": str(tmp_path), "config_name": "default.yaml"},
+        )
+
+        assert response.status_code == 422
+        data = response.json()
+        assert data["error"] == "doctor_failed"
+        assert data["doctor"]["overall"] == "error"
+        mock_supervisor.start.assert_not_called()
 
 
 class TestSupervisorLastFailure:

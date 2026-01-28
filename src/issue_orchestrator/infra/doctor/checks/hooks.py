@@ -18,6 +18,8 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
         if not adapter.is_installed(config.repo_root):
             missing_hooks.append(agent_type.value)
 
+    supported_count = len(unique_types) - len(unsupported)
+
     if not unique_types:
         return Check(
             name="AI Agent Hooks (Installation)",
@@ -25,11 +27,11 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
             detail="No agents configured",
         ), False
 
-    if unsupported:
-        status = "warning" if config.dangerous.allow_unsupported_agents else "error"
+    # Unsupported agents block launch unless dangerous mode allows them
+    if unsupported and not config.dangerous.allow_unsupported_agents:
         return Check(
             name="AI Agent Hooks (Installation)",
-            status=status,
+            status="error",
             detail=(
                 "Unsupported AI agents: "
                 f"{', '.join(sorted(unsupported))}. "
@@ -48,6 +50,17 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
             ),
         ), False
 
+    # Unsupported agents allowed — warn but let supported agents proceed to verification
+    if unsupported:
+        return Check(
+            name="AI Agent Hooks (Installation)",
+            status="warning",
+            detail=(
+                f"{supported_count} supported agent(s) installed; "
+                f"unsupported (allowed): {', '.join(sorted(unsupported))}"
+            ),
+        ), True  # hooks_ok=True so supported agents still get verified
+
     return Check(
         name="AI Agent Hooks (Installation)",
         status="ok",
@@ -55,45 +68,15 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
     ), True
 
 
-def _check_cached_verification(config: Config, hooks_ok: bool) -> tuple[Check, bool]:
-    """Check cached verification status. Returns (check, cached_ok)."""
-    from ...hooks.hooks import check_verification_status
-
-    if not hooks_ok:
-        return Check(
-            name="AI Agent Hooks (Cached)",
-            status="info",
-            detail="Skipped because hooks are not installed or unsupported",
-        ), False
-
-    is_valid, status_msg = check_verification_status(config.repo_root, config)
-    if is_valid:
-        return Check(
-            name="AI Agent Hooks (Cached)",
-            status="ok",
-            detail=status_msg,
-        ), True
-
-    return Check(
-        name="AI Agent Hooks (Cached)",
-        status="warning",
-        detail=(
-            f"{status_msg} "
-            "Run 'issue-orchestrator verify' to refresh or "
-            "'issue-orchestrator setup-hooks' to reinstall."
-        ),
-    ), False
-
-
-def _check_full_verification(config: Config, unique_types: set, unsupported_types: set, cached_ok: bool) -> Check:
+def _check_full_verification(config: Config, unique_types: set, unsupported_types: set, hooks_ok: bool) -> Check:
     """Run full hook verification."""
     from ...hooks.hooks import get_adapter
 
-    if not cached_ok:
+    if not hooks_ok:
         return Check(
-            name="AI Agent Hooks (Full)",
+            name="AI Agent Hooks (Verification)",
             status="info",
-            detail="Skipped because cached verification is not valid",
+            detail="Skipped because hooks are not installed or unsupported",
         )
 
     full_failures = []
@@ -109,13 +92,13 @@ def _check_full_verification(config: Config, unique_types: set, unsupported_type
 
     if full_failures:
         return Check(
-            name="AI Agent Hooks (Full)",
+            name="AI Agent Hooks (Verification)",
             status="error",
             detail="; ".join(full_failures),
         )
 
     return Check(
-        name="AI Agent Hooks (Full)",
+        name="AI Agent Hooks (Verification)",
         status="ok",
         detail="All checks passed",
     )
@@ -142,12 +125,8 @@ def check_hook_verification(config: Config) -> list[Check]:
     install_check, hooks_ok = _check_hook_installation(config, unique_types, unsupported_types)
     checks.append(install_check)
 
-    # Check cached verification
-    cached_check, cached_ok = _check_cached_verification(config, hooks_ok)
-    checks.append(cached_check)
-
-    # Run full verification
-    full_check = _check_full_verification(config, unique_types, unsupported_types, cached_ok)
+    # Run full verification (gated on installation success)
+    full_check = _check_full_verification(config, unique_types, unsupported_types, hooks_ok)
     checks.append(full_check)
 
     return checks

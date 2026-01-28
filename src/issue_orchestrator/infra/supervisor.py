@@ -19,7 +19,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 from .repo_identity import normalize_repo_root, state_dir
 from .repo_lock import (
@@ -150,6 +150,8 @@ def start(
     config_name: str = "default.yaml",
     instance_id: str | None = None,
     port: int | None = None,
+    *,
+    spawn_process: Callable[..., Any] | None = None,
 ) -> LockInfo:
     """Start an orchestrator for the given repository."""
     from .config import Config, get_config_path
@@ -193,11 +195,13 @@ def start(
     logger.info("Starting orchestrator for %s%s on port %d", repo_root, instance_str, port)
     logger.debug("Command: %s", " ".join(cmd))
 
+    _spawn = spawn_process or subprocess.Popen
+
     # Open log file for subprocess output
     with open(log_file, "a") as log_f:
         # Start the orchestrator process
         # Use start_new_session=True to detach from parent's process group
-        process = subprocess.Popen(
+        process = _spawn(
             cmd,
             stdout=log_f,
             stderr=subprocess.STDOUT,
@@ -214,6 +218,8 @@ def start(
         info = read_lock(repo_root, instance_id)
         if info is not None and info.pid == process.pid:
             return info
+        if process.poll() is not None:
+            break
         time.sleep(0.1)
 
     poll = process.poll()
@@ -605,3 +611,100 @@ def status_all_instances(
         instances=instances,
         expected_count=expected_count,
     )
+
+
+# =============================================================================
+# SupervisorOps protocol for dependency injection
+# =============================================================================
+
+
+@runtime_checkable
+class SupervisorOps(Protocol):
+    """Protocol for supervisor operations, enabling DI in tests."""
+
+    def start(
+        self,
+        repo_root: Path | str,
+        config_name: str = "default.yaml",
+        instance_id: str | None = None,
+        port: int | None = None,
+    ) -> LockInfo: ...
+
+    def stop(
+        self,
+        repo_root: Path | str,
+        force: bool = False,
+        instance_id: str | None = None,
+    ) -> bool: ...
+
+    def stop_by_port(self, port: int, force: bool = False) -> bool: ...
+
+    def status(
+        self, repo_root: Path | str, instance_id: str | None = None
+    ) -> SupervisorStatus: ...
+
+    def start_instances(
+        self,
+        repo_root: Path | str,
+        config_name: str = "default.yaml",
+        count: int | None = None,
+    ) -> list[LockInfo]: ...
+
+    def stop_all_instances(
+        self, repo_root: Path | str, force: bool = False
+    ) -> int: ...
+
+    def status_all_instances(
+        self,
+        repo_root: Path | str,
+        config_name: str = "default.yaml",
+    ) -> MultiInstanceStatus: ...
+
+
+class DefaultSupervisorOps:
+    """Delegates to module-level functions."""
+
+    def start(
+        self,
+        repo_root: Path | str,
+        config_name: str = "default.yaml",
+        instance_id: str | None = None,
+        port: int | None = None,
+    ) -> LockInfo:
+        return start(repo_root, config_name, instance_id, port)
+
+    def stop(
+        self,
+        repo_root: Path | str,
+        force: bool = False,
+        instance_id: str | None = None,
+    ) -> bool:
+        return stop(repo_root, force, instance_id)
+
+    def stop_by_port(self, port: int, force: bool = False) -> bool:
+        return stop_by_port(port, force)
+
+    def status(
+        self, repo_root: Path | str, instance_id: str | None = None
+    ) -> SupervisorStatus:
+        return status(repo_root, instance_id)
+
+    def start_instances(
+        self,
+        repo_root: Path | str,
+        config_name: str = "default.yaml",
+        count: int | None = None,
+    ) -> list[LockInfo]:
+        return start_instances(repo_root, config_name, count)
+
+    def stop_all_instances(
+        self, repo_root: Path | str, force: bool = False
+    ) -> int:
+        return stop_all_instances(repo_root, force)
+
+    def status_all_instances(
+        self,
+        repo_root: Path | str,
+        config_name: str = "default.yaml",
+    ) -> MultiInstanceStatus:
+        return status_all_instances(repo_root, config_name)

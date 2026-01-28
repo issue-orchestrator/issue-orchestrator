@@ -1,0 +1,171 @@
+"""Tests for the unified launcher module."""
+
+import pytest
+from unittest.mock import MagicMock
+
+from issue_orchestrator.infra.launcher import (
+    LaunchResult,
+    launch_preflight_only,
+    launch_subprocess,
+    preflight,
+)
+from issue_orchestrator.infra.doctor.types import Check, DoctorResult
+
+
+@pytest.fixture
+def mock_config():
+    config = MagicMock()
+    config.instances = 1
+    return config
+
+
+def _ok_doctor(**_kw: object) -> DoctorResult:
+    return DoctorResult(checks=[Check(name="Test", status="ok", detail="good")])
+
+
+def _warning_doctor(**_kw: object) -> DoctorResult:
+    return DoctorResult(checks=[Check(name="Repo", status="warning", detail="not configured")])
+
+
+def _error_doctor(**_kw: object) -> DoctorResult:
+    return DoctorResult(checks=[Check(name="Hooks", status="error", detail="not installed")])
+
+
+def _mock_supervisor():
+    """Create a mock supervisor with start/start_instances/stop."""
+    sv = MagicMock()
+    lock = MagicMock()
+    lock.pid = 42
+    lock.http_port = 8080
+    lock.instance_id = None
+    sv.start.return_value = lock
+    return sv
+
+
+class TestLaunchResult:
+    def test_to_dict_minimal(self):
+        doctor = DoctorResult(checks=[Check(name="Test", status="ok", detail="good")])
+        result = LaunchResult(doctor=doctor, launched=False, status="ok")
+        d = result.to_dict()
+        assert d["launched"] is False
+        assert d["status"] == "ok"
+        assert d["doctor"]["overall"] == "ok"
+        assert "error" not in d
+        assert "supervisor" not in d
+
+    def test_to_dict_with_error(self):
+        doctor = DoctorResult(checks=[Check(name="Test", status="error", detail="bad")])
+        result = LaunchResult(
+            doctor=doctor, launched=False, status="doctor_error", error="check failed"
+        )
+        d = result.to_dict()
+        assert d["error"] == "check failed"
+        assert d["status"] == "doctor_error"
+
+    def test_to_dict_with_supervisor(self):
+        doctor = DoctorResult(checks=[])
+        result = LaunchResult(
+            doctor=doctor,
+            launched=True,
+            status="ok",
+            supervisor={"pid": 123, "port": 8080},
+        )
+        d = result.to_dict()
+        assert d["supervisor"]["pid"] == 123
+        assert d["launched"] is True
+
+
+class TestPreflight:
+    def test_preflight_ok(self, mock_config):
+        result = preflight(mock_config, doctor_fn=_ok_doctor)
+        assert result.status == "ok"
+        assert result.launched is False
+
+    def test_preflight_warning(self, mock_config):
+        result = preflight(mock_config, doctor_fn=_warning_doctor)
+        assert result.status == "doctor_warning"
+        assert result.launched is False
+
+    def test_preflight_error(self, mock_config):
+        result = preflight(mock_config, doctor_fn=_error_doctor)
+        assert result.status == "doctor_error"
+        assert result.launched is False
+
+
+class TestLaunchPreflightOnly:
+    def test_is_alias_for_preflight(self, mock_config):
+        result = launch_preflight_only(mock_config, doctor_fn=_ok_doctor)
+        assert result.status == "ok"
+        assert result.launched is False
+
+
+class TestLaunchSubprocess:
+    def test_launch_ok(self, mock_config, tmp_path):
+        sv = _mock_supervisor()
+        result = launch_subprocess(
+            tmp_path, mock_config, doctor_fn=_ok_doctor, supervisor_ops=sv
+        )
+        assert result.launched is True
+        assert result.status == "ok"
+        assert result.supervisor["pid"] == 42
+        assert result.supervisor["port"] == 8080
+
+    def test_launch_blocked_by_doctor_error(self, mock_config, tmp_path):
+        sv = _mock_supervisor()
+        result = launch_subprocess(
+            tmp_path, mock_config, doctor_fn=_error_doctor, supervisor_ops=sv
+        )
+        assert result.launched is False
+        assert result.status == "doctor_error"
+        sv.start.assert_not_called()
+
+    def test_launch_with_doctor_warning_still_launches(self, mock_config, tmp_path):
+        sv = _mock_supervisor()
+        result = launch_subprocess(
+            tmp_path, mock_config, doctor_fn=_warning_doctor, supervisor_ops=sv
+        )
+        assert result.launched is True
+        assert result.status == "doctor_warning"
+
+    def test_launch_supervisor_error(self, mock_config, tmp_path):
+        sv = _mock_supervisor()
+        sv.start.side_effect = RuntimeError("port in use")
+        result = launch_subprocess(
+            tmp_path, mock_config, doctor_fn=_ok_doctor, supervisor_ops=sv
+        )
+        assert result.launched is False
+        assert result.status == "launch_error"
+        assert "port in use" in result.error
+
+    def test_launch_multi_instance(self, mock_config, tmp_path):
+        mock_config.instances = 3
+        sv = _mock_supervisor()
+        mock_info1 = MagicMock(pid=1, http_port=8081, instance_id="i1")
+        mock_info2 = MagicMock(pid=2, http_port=8082, instance_id="i2")
+        sv.start_instances.return_value = [mock_info1, mock_info2]
+
+        result = launch_subprocess(
+            tmp_path, mock_config, doctor_fn=_ok_doctor, supervisor_ops=sv
+        )
+        assert result.launched is True
+        assert "instances" in result.supervisor
+        assert len(result.supervisor["instances"]) == 2
+
+    def test_launch_multi_instance_with_instance_id_starts_single(
+        self, mock_config, tmp_path
+    ):
+        """When instance_id is provided, start only that instance even if
+        config.instances > 1 (MCP auto-start targets one instance)."""
+        mock_config.instances = 3
+        sv = _mock_supervisor()
+
+        result = launch_subprocess(
+            tmp_path, mock_config,
+            instance_id="i1",
+            doctor_fn=_ok_doctor,
+            supervisor_ops=sv,
+        )
+        assert result.launched is True
+        sv.start.assert_called_once()
+        sv.start_instances.assert_not_called()
+        assert result.supervisor["pid"] == 42
