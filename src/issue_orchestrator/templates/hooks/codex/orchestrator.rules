@@ -1,0 +1,57 @@
+# Orchestrator safety rules for Codex CLI
+# These rules prevent agents from bypassing pre-push hooks
+# Install to: ~/.codex/rules/orchestrator.rules
+
+# Block git push --no-verify (and variants)
+prefix_rule(
+    pattern = ["git", "push", "--no-verify"],
+    decision = "forbidden",
+    justification = "Pre-push hooks must run. Use 'git push' without --no-verify.",
+    match = ["git push --no-verify origin main"],
+    not_match = ["git push origin main"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", ["origin", "upstream"], "--no-verify"],
+    decision = "forbidden",
+    justification = "Pre-push hooks must run. Use 'git push' without --no-verify.",
+)
+
+# Block git commit --no-verify
+prefix_rule(
+    pattern = ["git", "commit", "--no-verify"],
+    decision = "forbidden",
+    justification = "Pre-commit hooks must run. Use 'git commit' without --no-verify.",
+    match = ["git commit --no-verify -m 'test'"],
+    not_match = ["git commit -m 'test'"],
+)
+
+# Block git commit -n (shorthand for --no-verify)
+prefix_rule(
+    pattern = ["git", "commit", "-n"],
+    decision = "forbidden",
+    justification = "-n is shorthand for --no-verify. Use 'git commit' without -n.",
+)
+
+# Block disabling hooks via core.hooksPath
+prefix_rule(
+    pattern = ["git", "-c", "core.hooksPath=/dev/null"],
+    decision = "forbidden",
+    justification = "Disabling hooks via core.hooksPath is forbidden.",
+)
+
+# Block gh pr merge - agents cannot merge PRs
+prefix_rule(
+    pattern = ["gh", "pr", "merge"],
+    decision = "forbidden",
+    justification = "Agents cannot merge PRs. Only humans can merge.",
+    match = ["gh pr merge 123", "gh pr merge 123 --squash"],
+    not_match = ["gh pr create", "gh pr view 123"],
+)
+
+# Block gh api merge endpoint
+prefix_rule(
+    pattern = ["gh", "api"],
+    decision = "prompt",
+    justification = "API calls require review. Merge endpoints are forbidden.",
+)
