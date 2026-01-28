@@ -14,6 +14,7 @@ when the caller only wants to display readiness (e.g. CC page load).
 """
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -22,6 +23,7 @@ from . import supervisor
 from .config import Config
 from .doctor import run_doctor
 from .doctor.types import DoctorResult
+from .repo_lock import AlreadyRunning
 from ..ports.command_runner import CommandRunner
 
 logger = logging.getLogger(__name__)
@@ -103,11 +105,14 @@ def launch_subprocess(
     runner: Optional[CommandRunner] = None,
     instance_id: Optional[str] = None,
     port: Optional[int] = None,
-    skip_doctor: bool = False,
 ) -> LaunchResult:
     """Run doctor checks, then supervisor.start() if checks pass.
 
     Used by CC and MCP entry points.
+
+    Doctor checks can be skipped by setting the environment variable
+    ``ISSUE_ORCHESTRATOR_SKIP_DOCTOR=1``.  This is intended only for
+    integration tests where the test repo has no hooks installed.
 
     Args:
         repo_root: Repository root path.
@@ -116,13 +121,11 @@ def launch_subprocess(
         runner: Optional command runner for guardrails checks.
         instance_id: Optional instance ID for multi-instance mode.
         port: Optional port override.
-        skip_doctor: If True, skip doctor checks and launch directly.
 
     Returns:
         LaunchResult with doctor results and supervisor info.
     """
-    if skip_doctor:
-        from .doctor.types import DoctorResult
+    if os.environ.get("ISSUE_ORCHESTRATOR_SKIP_DOCTOR") == "1":
         doctor_result = DoctorResult(checks=[])
         status = "ok"
     else:
@@ -165,6 +168,8 @@ def launch_subprocess(
             status=status,  # "ok" or "doctor_warning"
             supervisor=supervisor_data,
         )
+    except AlreadyRunning:
+        raise  # Let callers handle shutdown-complete recovery
     except Exception as exc:
         logger.exception("Failed to launch orchestrator subprocess")
         return LaunchResult(
