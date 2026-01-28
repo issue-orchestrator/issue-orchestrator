@@ -525,10 +525,10 @@
         <header>
             <div>
                 <h1>Issue Orchestrator</h1>
-                <div class="subtitle">Primary orchestrator view with optional advanced controls</div>
+                <div class="subtitle">Primary orchestrator view with multi-repo management</div>
             </div>
             <div class="header-actions">
-                <button onclick="toggleAdvanced()" class="btn btn-toggle" id="advancedToggle" title="Show multi-repo and discovery tools">Advanced</button>
+                <button onclick="toggleAllRepos()" class="btn btn-toggle" id="allReposToggle" title="Show registered repositories table">All Repositories</button>
                 <button onclick="openSetupWizard()" class="btn btn-primary">+ New Setup</button>
                 <button onclick="showBuildInfo()" class="btn">Build Info</button>
                 <button onclick="shutdownControlCenter()" class="btn btn-danger">Shutdown</button>
@@ -554,23 +554,23 @@
                 <div class="card-body" id="primaryBody"></div>
             </div>
 
-            <div class="advanced-section" id="advancedSection">
-                <!-- Discovered Repos Card -->
-                <div class="card" id="discoverCard">
-                    <div class="card-header">
-                        <span>Discovered Repositories</span>
-                        <button onclick="discoverRepos()" class="btn btn-sm">Scan</button>
+            <!-- Discovered Repos Card -->
+            <div class="card" id="discoverCard">
+                <div class="card-header">
+                    <span>Discovered Repositories</span>
+                    <button onclick="discoverRepos()" class="btn btn-sm">Scan</button>
+                </div>
+                <div class="card-body">
+                    <div style="font-size:12px;color:#8b949e;margin-bottom:12px;">
+                        Repos with <code>.issue-orchestrator/config/</code> not yet registered:
                     </div>
-                    <div class="card-body">
-                        <div style="font-size:12px;color:#8b949e;margin-bottom:12px;">
-                            Repos with <code>.issue-orchestrator/config/</code> not yet registered:
-                        </div>
-                        <div id="discoveredRepos" class="discovered-list">
-                            <div class="empty-state" style="padding:24px;">Click "Scan" to find repositories</div>
-                        </div>
+                    <div id="discoveredRepos" class="discovered-list">
+                        <div class="empty-state" style="padding:24px;">Click "Scan" to find repositories</div>
                     </div>
                 </div>
+            </div>
 
+            <div class="advanced-section" id="advancedSection">
                 <div class="card">
                     <div class="card-header">
                         <span>Registered Repositories</span>
@@ -655,27 +655,27 @@
             setTimeout(() => toast.classList.remove('visible'), 3000);
         }
 
-        let advancedVisible = localStorage.getItem('ioAdvanced') === '1';
+        let allReposVisible = localStorage.getItem('ioAllRepos') === '1';
         let lastRepos = [];
         let primaryRepoPath = null;
         let primaryDoctorRequestId = 0;
         let lastPrimaryDoctor = null;
 
-        function toggleAdvanced() {
-            setAdvancedVisible(!advancedVisible);
+        function toggleAllRepos() {
+            setAllReposVisible(!allReposVisible);
         }
 
-        function setAdvancedVisible(visible) {
-            advancedVisible = visible;
-            localStorage.setItem('ioAdvanced', visible ? '1' : '0');
+        function setAllReposVisible(visible) {
+            allReposVisible = visible;
+            localStorage.setItem('ioAllRepos', visible ? '1' : '0');
             const section = document.getElementById('advancedSection');
-            const toggle = document.getElementById('advancedToggle');
+            const toggle = document.getElementById('allReposToggle');
             if (section) {
                 section.classList.toggle('visible', visible);
             }
             if (toggle) {
                 toggle.classList.toggle('active', visible);
-                toggle.textContent = visible ? 'Advanced (On)' : 'Advanced';
+                toggle.textContent = visible ? 'All Repos (On)' : 'All Repositories';
             }
         }
 
@@ -2492,7 +2492,7 @@
         }
 
         // Initial load
-        setAdvancedVisible(advancedVisible);
+        setAllReposVisible(allReposVisible);
         loadRepos();
         discoverRepos();
 
