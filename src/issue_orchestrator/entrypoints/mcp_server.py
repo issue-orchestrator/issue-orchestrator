@@ -36,12 +36,22 @@ class OrchestratorHttpClient:
         return supervisor.status(self._settings.repo_root, instance_id=self._settings.instance_id)
 
     def start(self) -> supervisor.SupervisorStatus:
-        lock = supervisor.start(
-            self._settings.repo_root,
+        from ..infra.launcher import launch_subprocess
+
+        config = Config.load(self._settings.config_path)
+        result = launch_subprocess(
+            repo_root=self._settings.repo_root,
+            config=config,
             config_name=self._settings.config_path.name,
             instance_id=self._settings.instance_id,
         )
-        self._cached_port = lock.http_port
+        if not result.launched:
+            raise RuntimeError(
+                f"Failed to start orchestrator: {result.status}"
+                + (f" — {result.error}" if result.error else "")
+            )
+        if result.supervisor and "port" in result.supervisor:
+            self._cached_port = result.supervisor["port"]
         return supervisor.status(self._settings.repo_root, instance_id=self._settings.instance_id)
 
     def _ensure_running(self) -> supervisor.SupervisorStatus:
