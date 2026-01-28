@@ -1,7 +1,7 @@
 """Unit tests for StartupManager."""
 
 import pytest
-from unittest.mock import MagicMock, Mock, AsyncMock, patch
+from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.control.startup_manager import StartupManager
 from issue_orchestrator.control.actions import AddLabelAction, RemoveLabelAction
@@ -67,15 +67,6 @@ def mock_action_applier():
 
 
 @pytest.fixture
-def mock_hook_verifier():
-    """Create a mock HookVerifier."""
-    verifier = MagicMock()
-    verifier.verify = AsyncMock(return_value=MagicMock(success=True, message="ok"))
-    verifier.raise_on_failure = MagicMock()
-    return verifier
-
-
-@pytest.fixture
 def mock_issue_branches_fn():
     """Create a mock issue branches provider."""
     return MagicMock(return_value={})
@@ -94,7 +85,6 @@ def startup_manager(
     mock_runner,
     mock_repository_host,
     mock_action_applier,
-    mock_hook_verifier,
     mock_issue_branches_fn,
 ):
     """Create a StartupManager with mocks."""
@@ -104,7 +94,6 @@ def startup_manager(
         runner=mock_runner,
         repository_host=mock_repository_host,
         action_applier=mock_action_applier,
-        hook_verifier=mock_hook_verifier,
         issue_branches_fn=mock_issue_branches_fn,
         session_exists_fn=lambda name: False,
         restore_sessions_fn=MagicMock(),

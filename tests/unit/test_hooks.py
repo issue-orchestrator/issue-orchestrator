@@ -5,7 +5,6 @@ import shutil
 import os
 import subprocess
 import tempfile
-from datetime import datetime
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -49,14 +48,12 @@ from issue_orchestrator.infra.hooks.hooks import (
     AiAgentType,
     UnsupportedAiAgentError,
     VerificationResult,
-    VerificationMarker,
     ClaudeCodeAdapter,
     CursorAdapter,
     UnsupportedAdapter,
     detect_ai_agent,
     get_adapter,
     detect_agents_from_config,
-    check_verification_status,
     TEMPLATES_DIR,
 )
 
@@ -436,64 +433,6 @@ class TestUnsupportedAdapter:
         assert not adapter.is_installed(temp_project)
 
 
-class TestVerificationMarker:
-    """Tests for VerificationMarker."""
-
-    @pytest.fixture
-    def temp_project(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yield Path(tmpdir)
-
-    def test_save_and_load(self, temp_project):
-        marker = VerificationMarker(
-            verified_at=datetime(2024, 12, 19, 10, 30, 0),
-            meta_agent=AiAgentType.CLAUDE_CODE,
-            hooks_hash="abc123",
-            signature="sig456",
-        )
-        marker.save(temp_project)
-
-        loaded = VerificationMarker.load(temp_project)
-        assert loaded is not None
-        assert loaded.meta_agent == AiAgentType.CLAUDE_CODE
-        assert loaded.hooks_hash == "abc123"
-
-    def test_load_returns_none_when_missing(self, temp_project):
-        assert VerificationMarker.load(temp_project) is None
-
-    def test_load_returns_none_for_invalid_json(self, temp_project):
-        marker_path = temp_project / VerificationMarker.MARKER_FILE
-        marker_path.write_text("not valid json")
-
-        assert VerificationMarker.load(temp_project) is None
-
-    def test_compute_signature(self):
-        marker = VerificationMarker(
-            verified_at=datetime(2024, 12, 19, 10, 30, 0),
-            meta_agent=AiAgentType.CLAUDE_CODE,
-            hooks_hash="abc123",
-            signature="",
-        )
-        sig = marker.compute_signature()
-        assert len(sig) == 16  # 16 hex chars
-
-    def test_is_valid_checks_signature(self, temp_project):
-        marker = VerificationMarker(
-            verified_at=datetime.now(),
-            meta_agent=AiAgentType.CLAUDE_CODE,
-            hooks_hash="abc123",
-            signature="wrong_signature",
-        )
-        assert not marker.is_valid(temp_project)
-
-    def test_compute_hooks_hash_empty_when_no_files(self, temp_project):
-        hash_val = VerificationMarker.compute_hooks_hash(
-            temp_project, AiAgentType.CLAUDE_CODE
-        )
-        # Should return something even when files don't exist
-        assert len(hash_val) > 0
-
-
 class TestDetectAgentsFromConfig:
     """Tests for detect_agents_from_config function."""
 
@@ -535,44 +474,6 @@ class TestDetectAgentsFromConfig:
         result = detect_agents_from_config(mock_config)
 
         assert result["agent:test"] == AiAgentType.UNKNOWN
-
-
-class TestCheckVerificationStatus:
-    """Tests for check_verification_status function."""
-
-    @pytest.fixture
-    def temp_project(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            yield Path(tmpdir)
-
-    @pytest.fixture
-    def mock_config(self):
-        mock_config = Mock()
-        mock_agent = Mock()
-        mock_agent.command = "claude"
-        mock_config.agents = {"agent:test": mock_agent}
-        return mock_config
-
-    def test_returns_false_when_no_marker(self, temp_project, mock_config):
-        is_valid, message = check_verification_status(temp_project, mock_config)
-
-        assert not is_valid
-        assert "not verified" in message.lower()
-
-    def test_returns_false_when_invalid_signature(self, temp_project, mock_config):
-        # Create marker with bad signature
-        marker = VerificationMarker(
-            verified_at=datetime.now(),
-            meta_agent=AiAgentType.CLAUDE_CODE,
-            hooks_hash="abc123",
-            signature="bad_sig",
-        )
-        marker.save(temp_project)
-
-        is_valid, message = check_verification_status(temp_project, mock_config)
-
-        assert not is_valid
-        assert "changed" in message.lower()
 
 
 class TestTemplatesExist:

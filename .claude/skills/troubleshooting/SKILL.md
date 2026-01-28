@@ -16,6 +16,7 @@ General diagnostics for orchestrator infrastructure issues.
 - General "something's wrong" scenarios
 
 **For investigating failed issues/sessions, use the `session-debugging` skill instead.**
+**For startup/launch issues (doctor checks, hooks, launcher), use the `startup` skill instead.**
 
 ---
 

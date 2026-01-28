@@ -543,10 +543,6 @@ def build_test_orchestrator_deps(
         repository=repo_host,
         events=events,
     )
-    hook_verifier = MagicMock()
-    hook_verifier.verify = AsyncMock(return_value=MagicMock(success=True, message="ok"))
-    hook_verifier.raise_on_failure = MagicMock()
-
     fresh_reader = MagicMock()
     fresh_reader.read_issue_labels.return_value = []
 
@@ -624,7 +620,6 @@ def build_test_orchestrator_deps(
         session_restorer=session_restorer,
         worktree_manager=worktree_manager,
         working_copy=working_copy,
-        hook_verifier=hook_verifier,
         command_runner=command_runner,
         manifest_downloader=manifest_downloader,
         state_machine_manager=state_machine_manager,

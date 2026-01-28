@@ -938,8 +938,9 @@ class TestSupervisorStart:
     ) -> None:
         """Force restart should stop the orphaned process before starting."""
         from issue_orchestrator.entrypoints import control_api
-        from issue_orchestrator.infra import supervisor
+        from issue_orchestrator.infra import supervisor, launcher
         from issue_orchestrator.infra.repo_lock import LockInfo
+        from issue_orchestrator.infra.doctor.types import DoctorResult
 
         # Create config file (required since start endpoint loads config to check instances)
         config_dir = tmp_path / ".issue-orchestrator" / "config"
@@ -947,6 +948,12 @@ class TestSupervisorStart:
         (config_dir / "default.yaml").write_text("agents: {}\n")
 
         monkeypatch.setenv("ISSUE_ORCHESTRATOR_CONFIG_DIR", str(tmp_path / "config"))
+        # Mock doctor checks to pass (launcher runs doctor before supervisor.start)
+        monkeypatch.setattr(
+            launcher,
+            "run_doctor",
+            lambda **_kwargs: DoctorResult(checks=[]),
+        )
         monkeypatch.setattr(
             control_api,
             "_detect_orchestrator_by_port",

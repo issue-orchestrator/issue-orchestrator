@@ -214,7 +214,6 @@ class Orchestrator:
         return StartupManager(
             self.config, self.deps.events, self.deps.runner, self.deps.repository_host,
             self.deps.action_applier,
-            self.deps.hook_verifier,
             lambda: extract_issue_branches(self.deps.working_copy, self.config.repo_root),
             lambda name: self._session_exists(name),
             lambda r: self._restore_running_sessions(r),

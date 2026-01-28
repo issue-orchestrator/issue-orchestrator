@@ -1022,37 +1022,42 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
         # Update selected config in registry
         set_selected_config(repo_root, config_name)
 
-        # Load config to check if multi-instance mode
+        # Load config and run unified launcher (doctor + supervisor.start)
         from ..infra.config import Config, get_config_path
+        from ..infra.launcher import launch_subprocess
+
         config_path = get_config_path(repo_root, config_name)
         config = Config.load(config_path)
 
-        if config.instances > 1:
-            # Multi-instance mode: start all instances
-            infos = supervisor.start_instances(repo_root, config_name=config_name)
+        launch_result = launch_subprocess(
+            repo_root=repo_root,
+            config=config,
+            config_name=config_name,
+        )
+
+        if launch_result.status == "doctor_error":
             return JSONResponse({
-                "status": "started",
-                "instances": [
-                    {
-                        "pid": info.pid,
-                        "port": info.http_port,
-                        "instance_id": info.instance_id,
-                    }
-                    for info in infos
-                ],
-                "repo_root": str(repo_root),
-                "config_name": config_name,
-            })
-        else:
-            # Single instance mode
-            info = supervisor.start(repo_root, config_name=config_name)
+                "error": "doctor_failed",
+                "detail": "Pre-flight checks failed",
+                "doctor": launch_result.doctor.to_dict(),
+            }, status_code=422)
+
+        if not launch_result.launched:
             return JSONResponse({
-                "status": "started",
-                "pid": info.pid,
-                "port": info.http_port,
-                "repo_root": str(repo_root),
-                "config_name": config_name,
-            })
+                "error": "launch_failed",
+                "detail": launch_result.error or "Unknown launch error",
+                "doctor": launch_result.doctor.to_dict(),
+            }, status_code=500)
+
+        response_data: dict = {
+            "status": "started",
+            "repo_root": str(repo_root),
+            "config_name": config_name,
+            "doctor": launch_result.doctor.to_dict(),
+        }
+        if launch_result.supervisor:
+            response_data.update(launch_result.supervisor)
+        return JSONResponse(response_data)
     except FileNotFoundError as e:
         return JSONResponse({
             "error": "config_not_found",

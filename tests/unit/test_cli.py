@@ -20,7 +20,8 @@ def mock_run_doctor():
     mock_doctor_result.overall = "ok"
     mock_doctor_result.checks = []
     with patch('issue_orchestrator.infra.doctor.run_doctor', return_value=mock_doctor_result):
-        yield
+        with patch('issue_orchestrator.infra.launcher.run_doctor', return_value=mock_doctor_result):
+            yield
 
 
 def _run_and_close(coro):

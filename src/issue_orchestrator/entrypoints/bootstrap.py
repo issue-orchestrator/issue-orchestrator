@@ -426,7 +426,6 @@ def build_orchestrator(
     from ..control.session_restorer import SessionRestorer
     from ..control.state_machine_manager import StateMachineManager
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
-    from ..execution.hook_verifier import ExecutionHookVerifier
     from ..execution.triage_downloader import TriageDownloader
 
     install_gh_guard()
@@ -520,8 +519,7 @@ def build_orchestrator(
         completion_processor, events, session_output, command_runner, config
     ) if completion_processor else (None, None)
 
-    # Create hook verifier and health gate
-    hook_verifier = ExecutionHookVerifier(config)
+    # Create health gate
     health_gate = HealthGate(
         max_concurrent_sessions=config.max_concurrent_sessions,
         rate_limit_threshold=getattr(config, "rate_limit_warn_remaining", 100),
@@ -571,7 +569,6 @@ def build_orchestrator(
         session_restorer=session_restorer,
         worktree_manager=worktree_manager,
         working_copy=working_copy,
-        hook_verifier=hook_verifier,
         command_runner=command_runner,
         session_output=session_output,
         manifest_downloader=manifest_downloader,
@@ -706,9 +703,6 @@ def build_orchestrator_for_testing(
             events=events,
         )
 
-    from ..execution.hook_verifier import ExecutionHookVerifier
-    hook_verifier = ExecutionHookVerifier(config)
-
     # Create HealthGate for testing
     health_gate = HealthGate(
         max_concurrent_sessions=config.max_concurrent_sessions,
@@ -810,7 +804,6 @@ def build_orchestrator_for_testing(
         session_restorer=session_restorer,
         worktree_manager=worktree_manager,
         working_copy=working_copy,
-        hook_verifier=hook_verifier,
         command_runner=command_runner,
         session_output=session_output,
         manifest_downloader=manifest_downloader,

@@ -3,14 +3,16 @@
 This module extracts the startup logic from orchestrator.py to keep
 the orchestrator as a thin mediator.
 
-The startup sequence:
-1. Verify AI agent hooks
-2. Clean up stale claims (in-progress labels without sessions)
-3. Clean up idle terminal sessions
-4. Discover and restore running sessions
-5. Recover pending reviews/reworks/triage
-6. Resume issues with partial work
-7. Audit and cache the queue
+Hook verification is handled by the launcher (pre-flight doctor checks)
+before the orchestrator process starts. The startup sequence here covers
+runtime initialization only:
+
+1. Clean up stale claims (in-progress labels without sessions)
+2. Clean up idle terminal sessions
+3. Discover and restore running sessions
+4. Recover pending reviews/reworks/triage
+5. Resume issues with partial work
+6. Audit and cache the queue
 """
 
 import logging
@@ -32,7 +34,7 @@ from ..domain.models import (
 from .actions import AddLabelAction, RemoveLabelAction
 from .action_applier import ActionApplier
 from ..events import EventName
-from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost, HookVerifier
+from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
 from ..infra import labels
 from ..infra import gh_audit
@@ -59,7 +61,6 @@ class StartupManager:
         runner: SessionRunner,
         repository_host: RepositoryHost,
         action_applier: ActionApplier,
-        hook_verifier: HookVerifier,
         issue_branches_fn: Callable[[], dict[int, str]],
         session_exists_fn: Callable[[str], bool],
         restore_sessions_fn: Callable[[list[DiscoveredSession]], None],
@@ -73,6 +74,7 @@ class StartupManager:
             events: Event sink for trace events
             runner: Session runner for terminal operations
             repository_host: Repository host for GitHub operations
+            action_applier: Action applier for label operations
             session_exists_fn: Callback to check if a session exists
             restore_sessions_fn: Callback to restore running sessions
             launch_session_fn: Callback to launch a new session
@@ -82,7 +84,6 @@ class StartupManager:
         self.events = events
         self.runner = runner
         self.repository_host = repository_host
-        self.hook_verifier = hook_verifier
         self._action_applier = action_applier
         self._issue_branches = issue_branches_fn
         self._session_exists = session_exists_fn
@@ -115,10 +116,6 @@ class StartupManager:
 
         # Emit merged configuration for debugging
         self.events.publish(TraceEvent(EventName.CONFIG_MERGED, self.config.to_event_dict()))
-
-        # Step 1: Verify AI agent hooks
-        state.startup_message = "Verifying hook enforcement..."
-        await self._verify_hooks()
 
         # Log git commit SHA for version tracking
         commit_sha = get_repo_head_sha(self.config.repo_root)
@@ -195,11 +192,6 @@ class StartupManager:
             "max_concurrent": self.config.max_concurrent_sessions,
             "startup_seconds": round(elapsed, 1),
         }))
-
-    async def _verify_hooks(self) -> None:
-        """Verify AI agent hooks are installed and effective."""
-        result = await self.hook_verifier.verify()
-        self.hook_verifier.raise_on_failure(result)
 
     async def _check_in_progress_issues(
         self,

@@ -8,7 +8,6 @@ Uses an adapter pattern to support different AI agents:
 - Others: Raise UnsupportedAiAgentError (not yet implemented)
 """
 
-import hashlib
 import json
 import logging
 import os
@@ -18,7 +17,6 @@ import subprocess
 import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Optional
@@ -74,93 +72,6 @@ class VerificationResult:
             return f"✓ {self.meta_agent.value}: {len(self.checks_passed)} checks passed"
         else:
             return f"✗ {self.meta_agent.value}: {len(self.checks_failed)} checks failed"
-
-
-@dataclass
-class VerificationMarker:
-    """Tamper-proof marker proving verification passed."""
-    verified_at: datetime
-    meta_agent: AiAgentType
-    hooks_hash: str
-    signature: str
-
-    # Marker lives in .issue-orchestrator/ directory
-    MARKER_DIR = ".issue-orchestrator"
-    MARKER_FILE = "verified"
-
-    @classmethod
-    def compute_hooks_hash(cls, project_root: Path, ai_agent: AiAgentType) -> str:
-        """Compute hash of all hook files for an AI agent."""
-        hasher = hashlib.sha256()
-
-        if ai_agent == AiAgentType.CLAUDE_CODE:
-            files = [
-                project_root / ".claude" / "hooks" / "block-no-verify.sh",
-                project_root / ".claude" / "settings.json",
-            ]
-        else:
-            files = []
-
-        for f in sorted(files):
-            if f.exists():
-                hasher.update(f.read_bytes())
-                hasher.update(f.name.encode())
-
-        return hasher.hexdigest()[:16]
-
-    def compute_signature(self, secret: str = "orchestrator-v1") -> str:
-        """Compute tamper-proof signature."""
-        data = f"{self.verified_at.isoformat()}:{self.meta_agent.value}:{self.hooks_hash}:{secret}"
-        return hashlib.sha256(data.encode()).hexdigest()[:16]
-
-    def save(self, project_root: Path) -> None:
-        """Save marker to .issue-orchestrator/ directory."""
-        marker_dir = project_root / self.MARKER_DIR
-        marker_dir.mkdir(parents=True, exist_ok=True)
-        marker_path = marker_dir / self.MARKER_FILE
-        data = {
-            "verified_at": self.verified_at.isoformat(),
-            "meta_agent": self.meta_agent.value,
-            "hooks_hash": self.hooks_hash,
-            "signature": self.signature,
-        }
-        marker_path.write_text(json.dumps(data, indent=2) + "\n")
-
-    @classmethod
-    def load(cls, project_root: Path) -> Optional["VerificationMarker"]:
-        """Load marker from .issue-orchestrator/ directory."""
-        marker_path = project_root / cls.MARKER_DIR / cls.MARKER_FILE
-        if not marker_path.exists():
-            return None
-
-        try:
-            data = json.loads(marker_path.read_text())
-            marker = cls(
-                verified_at=datetime.fromisoformat(data["verified_at"]),
-                meta_agent=AiAgentType(data["meta_agent"]),
-                hooks_hash=data["hooks_hash"],
-                signature=data["signature"],
-            )
-            return marker
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            logger.warning(f"Invalid verification marker: {e}")
-            return None
-
-    def is_valid(self, project_root: Path) -> bool:
-        """Check if marker is valid and hooks haven't changed."""
-        # Check signature
-        expected_sig = self.compute_signature()
-        if self.signature != expected_sig:
-            logger.warning("Verification marker signature mismatch")
-            return False
-
-        # Check hooks haven't changed
-        current_hash = self.compute_hooks_hash(project_root, self.meta_agent)
-        if self.hooks_hash != current_hash:
-            logger.warning(f"Hooks have changed since verification (was {self.hooks_hash}, now {current_hash})")
-            return False
-
-        return True
 
 
 class AiAgentAdapter(ABC):
@@ -649,41 +560,4 @@ def verify_hooks_for_config(config, project_root: Path) -> dict[AiAgentType, Ver
         result = adapter.verify_hooks(project_root)
         results[agent_type] = result
 
-        # Save verification marker if passed
-        if result.success:
-            marker = VerificationMarker(
-                verified_at=datetime.now(),
-                meta_agent=agent_type,
-                hooks_hash=VerificationMarker.compute_hooks_hash(project_root, agent_type),
-                signature="",  # Will be computed
-            )
-            marker.signature = marker.compute_signature()
-            marker.save(project_root)
-
     return results
-
-
-def check_verification_status(project_root: Path, config) -> tuple[bool, str]:
-    """Check if hooks have been verified and verification is still valid.
-
-    Returns:
-        (is_valid, message) tuple
-    """
-    marker = VerificationMarker.load(project_root)
-
-    if marker is None:
-        return False, "Hooks not verified. Run 'issue-orchestrator verify-hooks' first."
-
-    if not marker.is_valid(project_root):
-        return False, "Hooks have changed since verification. Re-run 'issue-orchestrator verify-hooks'."
-
-    # Check that marker covers all agents in config
-    agent_types = detect_agents_from_config(config)
-    unique_types = set(agent_types.values())
-
-    # For now we only support single AI agent type per verification
-    # TODO: Support multiple markers for multiple AI agent types
-    if marker.meta_agent not in unique_types:
-        return False, f"Verification is for {marker.meta_agent.value} but config uses {[t.value for t in unique_types]}"
-
-    return True, f"Hooks verified at {marker.verified_at.isoformat()} for {marker.meta_agent.value}"

@@ -1,0 +1,168 @@
+"""Unified launcher for the issue orchestrator.
+
+All entry points (CLI, Control Center, MCP) converge through this module
+to ensure consistent pre-flight (doctor) checks before starting.
+
+Two launch modes:
+- ``launch_preflight_only``: runs doctor checks, returns result. CLI uses
+  this because it builds the orchestrator in-process afterwards.
+- ``launch_subprocess``: runs doctor checks then calls ``supervisor.start()``
+  to launch the orchestrator as a subprocess. CC and MCP use this.
+
+``preflight`` is an alias for ``launch_preflight_only`` kept for readability
+when the caller only wants to display readiness (e.g. CC page load).
+"""
+
+import logging
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Optional
+
+from . import supervisor
+from .config import Config
+from .doctor import run_doctor
+from .doctor.types import DoctorResult
+from ..ports.command_runner import CommandRunner
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class LaunchResult:
+    """Result of a launcher operation."""
+
+    doctor: DoctorResult
+    launched: bool
+    status: str  # "ok" | "doctor_error" | "doctor_warning" | "launch_error"
+    error: Optional[str] = None
+    supervisor: Optional[dict[str, Any]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "doctor": self.doctor.to_dict(),
+            "launched": self.launched,
+            "status": self.status,
+        }
+        if self.error is not None:
+            result["error"] = self.error
+        if self.supervisor is not None:
+            result["supervisor"] = self.supervisor
+        return result
+
+
+def _run_preflight(
+    config: Config,
+    runner: Optional[CommandRunner] = None,
+) -> tuple[DoctorResult, str]:
+    """Run doctor checks and return (result, status_string).
+
+    Returns:
+        (doctor_result, status) where status is "ok", "doctor_warning",
+        or "doctor_error".
+    """
+    doctor_result = run_doctor(config=config, runner=runner)
+    if doctor_result.overall == "error":
+        return doctor_result, "doctor_error"
+    if doctor_result.overall == "warning":
+        return doctor_result, "doctor_warning"
+    return doctor_result, "ok"
+
+
+def preflight(
+    config: Config,
+    runner: Optional[CommandRunner] = None,
+) -> LaunchResult:
+    """Run doctor checks only. Returns LaunchResult with launched=False.
+
+    Use for "show readiness" — runs doctor without starting anything.
+    """
+    doctor_result, status = _run_preflight(config, runner)
+    return LaunchResult(
+        doctor=doctor_result,
+        launched=False,
+        status=status,
+    )
+
+
+def launch_preflight_only(
+    config: Config,
+    runner: Optional[CommandRunner] = None,
+) -> LaunchResult:
+    """Run doctor checks only, for CLI which builds in-process.
+
+    CLI calls this, then proceeds to ``build_orchestrator()`` itself.
+    Alias for ``preflight()`` — named differently for clarity at call sites.
+    """
+    return preflight(config, runner)
+
+
+def launch_subprocess(
+    repo_root: Path,
+    config: Config,
+    config_name: str = "default.yaml",
+    runner: Optional[CommandRunner] = None,
+    instance_id: Optional[str] = None,
+    port: Optional[int] = None,
+) -> LaunchResult:
+    """Run doctor checks, then supervisor.start() if checks pass.
+
+    Used by CC and MCP entry points.
+
+    Args:
+        repo_root: Repository root path.
+        config: Loaded configuration.
+        config_name: Config file name for the supervisor.
+        runner: Optional command runner for guardrails checks.
+        instance_id: Optional instance ID for multi-instance mode.
+        port: Optional port override.
+
+    Returns:
+        LaunchResult with doctor results and supervisor info.
+    """
+    doctor_result, status = _run_preflight(config, runner)
+
+    if status == "doctor_error":
+        return LaunchResult(
+            doctor=doctor_result,
+            launched=False,
+            status="doctor_error",
+        )
+
+    # Doctor passed (ok or warning) — start the orchestrator subprocess
+    try:
+        if config.instances > 1:
+            infos = supervisor.start_instances(repo_root, config_name=config_name)
+            supervisor_data = {
+                "instances": [
+                    {"pid": info.pid, "port": info.http_port, "instance_id": info.instance_id}
+                    for info in infos
+                ],
+            }
+        else:
+            info = supervisor.start(
+                repo_root,
+                config_name=config_name,
+                instance_id=instance_id,
+                port=port,
+            )
+            supervisor_data = {
+                "pid": info.pid,
+                "port": info.http_port,
+            }
+            if info.instance_id:
+                supervisor_data["instance_id"] = info.instance_id
+
+        return LaunchResult(
+            doctor=doctor_result,
+            launched=True,
+            status=status,  # "ok" or "doctor_warning"
+            supervisor=supervisor_data,
+        )
+    except Exception as exc:
+        logger.exception("Failed to launch orchestrator subprocess")
+        return LaunchResult(
+            doctor=doctor_result,
+            launched=False,
+            status="launch_error",
+            error=str(exc),
+        )
