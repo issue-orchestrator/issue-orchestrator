@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import argparse
 import logging
-import signal
+import os
 import sys
 import threading
 import time
@@ -25,6 +25,44 @@ from .control_api import control_app
 
 logger = logging.getLogger(__name__)
 
+# Flag to signal reaper thread to stop
+_reaper_stop = threading.Event()
+
+
+def _zombie_reaper(interval: float = 1.0) -> None:
+    """Background thread to reap zombie orchestrator child processes.
+
+    Only reaps PIDs that were registered via control_api.track_child_pid().
+    This avoids racing with subprocess.run() for unrelated children (e.g.,
+    hook verification).
+
+    This is needed because:
+    - Control center starts orchestrators as child processes
+    - When orchestrators exit, they become zombies until reaped
+    - We can't use SIGCHLD=SIG_IGN because it breaks subprocess.run() on macOS
+    - This thread periodically reaps tracked zombie PIDs without affecting
+      subprocess exit codes for unrelated children
+    """
+    from .control_api import get_tracked_pids, untrack_child_pid
+
+    while not _reaper_stop.is_set():
+        pids_to_check = get_tracked_pids()
+
+        for pid in pids_to_check:
+            try:
+                # Try to reap this specific PID (non-blocking)
+                reaped_pid, _ = os.waitpid(pid, os.WNOHANG)
+                if reaped_pid != 0:
+                    logger.debug("Reaped zombie orchestrator process %d", reaped_pid)
+                    untrack_child_pid(reaped_pid)
+            except ChildProcessError:
+                # Process doesn't exist or isn't our child - remove from tracking
+                untrack_child_pid(pid)
+            except Exception as e:
+                logger.debug("Error reaping PID %d: %s", pid, e)
+
+        _reaper_stop.wait(interval)
+
 
 def _open_browser(url: str, delay: float = 1.0) -> None:
     """Open browser after a short delay to let server start."""
@@ -34,12 +72,11 @@ def _open_browser(url: str, delay: float = 1.0) -> None:
 
 def main() -> int:
     """Run the standalone control center server."""
-    # Auto-reap zombie child processes.
-    # When orchestrators are started via supervisor.start(), they become children
-    # of this process. When they exit (e.g., via /api/shutdown), they become zombies
-    # until we call wait(). Setting SIGCHLD to SIG_IGN auto-reaps them.
-    if hasattr(signal, "SIGCHLD"):  # Unix only
-        signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+    # NOTE: Cannot use signal.signal(signal.SIGCHLD, signal.SIG_IGN) to auto-reap
+    # zombie child processes because on macOS it breaks subprocess.run() by causing
+    # waitpid() to return exit code 0 instead of the actual exit code. Instead, we
+    # use a background thread (_zombie_reaper) that periodically calls waitpid()
+    # with WNOHANG to reap zombies without affecting subprocess exit codes.
 
     parser = argparse.ArgumentParser(
         description="Issue Orchestrator Control Center - manage orchestrators",
@@ -87,6 +124,13 @@ def main() -> int:
         thread = threading.Thread(target=_open_browser, args=(url,), daemon=True)
         thread.start()
 
+    # Start zombie reaper thread to clean up exited orchestrator processes
+    # Only on Unix-like systems where waitpid is available
+    if hasattr(os, "waitpid") and os.name != "nt":
+        _reaper_stop.clear()
+        reaper_thread = threading.Thread(target=_zombie_reaper, daemon=True)
+        reaper_thread.start()
+
     try:
         uvicorn.run(
             control_app,
@@ -101,6 +145,9 @@ def main() -> int:
     except Exception as e:
         logger.exception("Control center failed: %s", e)
         return 1
+    finally:
+        # Stop the reaper thread
+        _reaper_stop.set()
 
 
 if __name__ == "__main__":
