@@ -161,6 +161,157 @@ def _track_launched_pids(supervisor_data: dict) -> None:
         track_child_pid(supervisor_data["pid"])
 
 
+# =============================================================================
+# Unified Dashboard API Endpoints
+# =============================================================================
+# These endpoints support the unified dashboard entry point.
+
+
+@control_app.get("/api/state")
+async def get_system_state() -> JSONResponse:
+    """Get complete system state for the unified dashboard.
+
+    Returns dashboard status, all repos with orchestrator status, and context info.
+    This is the primary endpoint for the unified dashboard to understand current state.
+    """
+    from ..control.instance_detector import detect_system_state
+
+    state = detect_system_state()
+    return JSONResponse(state.to_dict())
+
+
+@control_app.get("/api/repos")
+async def get_repos() -> JSONResponse:
+    """List all known repos with status.
+
+    Returns registered repos plus current directory (if it's a repo).
+    Each repo includes config status and orchestrator state.
+    """
+    from ..control.instance_detector import detect_system_state
+
+    state = detect_system_state()
+    return JSONResponse({"repos": [r.to_dict() for r in state.repos]})
+
+
+@control_app.post("/api/repos/{repo_id}/start")
+async def start_repo_orchestrator(repo_id: str, request: Request) -> JSONResponse:
+    """Start orchestrator for a specific repo.
+
+    The repo_id is the URL-encoded absolute path to the repo.
+
+    JSON body (optional):
+        config_name: str - Config file to use (default: default.yaml)
+    """
+    from urllib.parse import unquote
+
+    repo_path = unquote(repo_id)
+    path = Path(repo_path)
+
+    if not path.exists():
+        return JSONResponse({"error": f"Repository not found: {repo_path}"}, status_code=404)
+
+    # Parse optional config_name from body
+    config_name = "default.yaml"
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and "config_name" in body:
+            config_name = body["config_name"]
+    except Exception:
+        pass
+
+    # Use supervisor to start
+    try:
+        info = _supervisor.start(path, config_name)
+        _track_launched_pids({"pid": info.pid})
+        return JSONResponse({
+            "status": "started",
+            "pid": info.pid,
+            "port": info.http_port,
+        })
+    except Exception as e:
+        logger.exception("Failed to start orchestrator for %s", repo_path)
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@control_app.post("/api/repos/{repo_id}/stop")
+async def stop_repo_orchestrator(repo_id: str, request: Request) -> JSONResponse:
+    """Stop orchestrator for a specific repo.
+
+    The repo_id is the URL-encoded absolute path to the repo.
+
+    JSON body (optional):
+        force: bool - Force kill if graceful shutdown fails (default: false)
+    """
+    from urllib.parse import unquote
+
+    repo_path = unquote(repo_id)
+    path = Path(repo_path)
+
+    # Parse optional force from body
+    force = False
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and "force" in body:
+            force = bool(body["force"])
+    except Exception:
+        pass
+
+    # Use supervisor to stop
+    stopped = _supervisor.stop(path, force=force)
+    return JSONResponse({"status": "stopped" if stopped else "failed"})
+
+
+@control_app.get("/api/repos/{repo_id}/status")
+async def get_repo_status(repo_id: str) -> JSONResponse:
+    """Get detailed status for a specific repo.
+
+    The repo_id is the URL-encoded absolute path to the repo.
+    """
+    from urllib.parse import unquote
+    from ..control.instance_detector import _get_config_status, _get_orchestrator_state
+
+    repo_path = unquote(repo_id)
+    path = Path(repo_path)
+
+    if not path.exists():
+        return JSONResponse({"error": f"Repository not found: {repo_path}"}, status_code=404)
+
+    config_status, configs = _get_config_status(path)
+    orch_state, orch_pid, orch_port = _get_orchestrator_state(path)
+
+    return JSONResponse({
+        "path": repo_path,
+        "name": path.name,
+        "config_status": config_status,
+        "configs": configs,
+        "orchestrator_state": orch_state,
+        "orchestrator_pid": orch_pid,
+        "orchestrator_port": orch_port,
+    })
+
+
+@control_app.get("/api/discover")
+async def discover_repos_api(
+    search_paths: str = Query(
+        default="",
+        description="Comma-separated paths to search",
+    ),
+    max_depth: int = Query(default=2, description="Max directory depth"),
+) -> JSONResponse:
+    """Discover git repositories that could be configured.
+
+    Scans common development directories for git repos.
+    """
+    from ..control.instance_detector import discover_repos
+
+    paths = None
+    if search_paths:
+        paths = [Path(p.strip()).expanduser() for p in search_paths.split(",")]
+
+    discovered = discover_repos(search_paths=paths, max_depth=max_depth)
+    return JSONResponse({"discovered": discovered})
+
+
 @control_app.post("/api/refresh")
 async def refresh(request: Request) -> JSONResponse:
     """Request an immediate refresh of issues from GitHub.

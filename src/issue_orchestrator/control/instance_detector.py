@@ -1,0 +1,379 @@
+"""Instance detection for the unified dashboard.
+
+Detects running orchestrators, configured repos, and dashboard server status.
+Provides a unified view of the system state for the dashboard UI.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Literal
+
+from ..infra import supervisor
+from ..infra.repo_registry import load_registry
+from ..infra.config import list_configs
+
+logger = logging.getLogger(__name__)
+
+# Global dashboard PID file location
+DASHBOARD_PID_FILE = Path.home() / ".config" / "issue-orchestrator" / "dashboard.pid"
+
+
+@dataclass
+class DashboardStatus:
+    """Status of the unified dashboard server."""
+
+    running: bool
+    pid: int | None = None
+    port: int | None = None
+    started_at: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        return {
+            "running": self.running,
+            "pid": self.pid,
+            "port": self.port,
+            "started_at": self.started_at,
+        }
+
+
+@dataclass
+class RepoStatus:
+    """Status of a repository and its orchestrator."""
+
+    path: str
+    name: str
+    config_status: Literal["ready", "needs_setup", "legacy"]
+    orchestrator_state: Literal["running", "stopped", "failed", "paused"]
+    orchestrator_pid: int | None = None
+    orchestrator_port: int | None = None
+    configs: list[str] = field(default_factory=list)
+    selected_config: str = "default.yaml"
+    is_current_dir: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        return {
+            "path": self.path,
+            "name": self.name,
+            "config_status": self.config_status,
+            "orchestrator_state": self.orchestrator_state,
+            "orchestrator_pid": self.orchestrator_pid,
+            "orchestrator_port": self.orchestrator_port,
+            "configs": self.configs,
+            "selected_config": self.selected_config,
+            "is_current_dir": self.is_current_dir,
+        }
+
+
+@dataclass
+class SystemState:
+    """Complete system state for the unified dashboard."""
+
+    dashboard: DashboardStatus
+    repos: list[RepoStatus]
+    current_directory: str
+    is_orchestrator_codebase: bool = False
+    cwd_is_git_repo: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for JSON serialization."""
+        return {
+            "dashboard": self.dashboard.to_dict(),
+            "repos": [r.to_dict() for r in self.repos],
+            "current_directory": self.current_directory,
+            "is_orchestrator_codebase": self.is_orchestrator_codebase,
+            "cwd_is_git_repo": self.cwd_is_git_repo,
+        }
+
+
+def _is_process_alive(pid: int) -> bool:
+    """Check if a process with the given PID is alive."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def _read_dashboard_pid() -> DashboardStatus:
+    """Read the dashboard PID file and check if it's running."""
+    if not DASHBOARD_PID_FILE.exists():
+        return DashboardStatus(running=False)
+
+    import json
+
+    try:
+        with open(DASHBOARD_PID_FILE) as f:
+            data = json.load(f)
+        pid = data.get("pid")
+        port = data.get("port")
+        started_at = data.get("started_at")
+
+        if pid and _is_process_alive(pid):
+            return DashboardStatus(
+                running=True,
+                pid=pid,
+                port=port,
+                started_at=started_at,
+            )
+        # Stale PID file
+        return DashboardStatus(running=False)
+    except (json.JSONDecodeError, OSError):
+        return DashboardStatus(running=False)
+
+
+def write_dashboard_pid(port: int) -> None:
+    """Write the dashboard PID file.
+
+    Called by the dashboard server on startup.
+    """
+    import json
+
+    DASHBOARD_PID_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = {
+        "pid": os.getpid(),
+        "port": port,
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+    with open(DASHBOARD_PID_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def clear_dashboard_pid() -> None:
+    """Remove the dashboard PID file.
+
+    Called by the dashboard server on shutdown.
+    """
+    try:
+        DASHBOARD_PID_FILE.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _is_orchestrator_codebase(path: Path) -> bool:
+    """Check if a path is the issue-orchestrator codebase itself."""
+    pyproject = path / "pyproject.toml"
+    if not pyproject.exists():
+        return False
+    try:
+        content = pyproject.read_text()
+        return 'name = "issue-orchestrator"' in content
+    except OSError:
+        return False
+
+
+def _get_orchestrator_state(repo_path: Path) -> tuple[Literal["running", "stopped", "failed", "paused"], int | None, int | None]:
+    """Get orchestrator state for a repo.
+
+    Returns (state, pid, port).
+    """
+    status = supervisor.status(repo_path)
+    if status.state == "running":
+        # Check if paused via HTTP API (optional enhancement)
+        return "running", status.pid, status.port
+    elif status.state == "failed":
+        return "failed", status.pid, status.port
+    return "stopped", None, None
+
+
+def _get_config_status(repo_path: Path) -> tuple[Literal["ready", "needs_setup", "legacy"], list[str]]:
+    """Get config status for a repo.
+
+    Returns (status, list_of_configs).
+    """
+    configs = list_configs(repo_path)
+    if configs:
+        return "ready", configs
+
+    legacy_config = (repo_path / ".issue-orchestrator.yaml").exists()
+    if legacy_config:
+        return "legacy", []
+
+    return "needs_setup", []
+
+
+def detect_system_state(cwd: Path | None = None) -> SystemState:
+    """Detect the complete system state.
+
+    Args:
+        cwd: Current working directory (defaults to actual cwd)
+
+    Returns:
+        SystemState with dashboard status, repos, and context info
+    """
+    if cwd is None:
+        cwd = Path.cwd()
+    cwd = cwd.resolve()
+
+    # Dashboard status
+    dashboard = _read_dashboard_pid()
+
+    # Check if cwd is a git repo
+    cwd_is_git = (cwd / ".git").exists()
+
+    # Check if cwd is the orchestrator codebase
+    is_orch_codebase = _is_orchestrator_codebase(cwd)
+
+    # Load registered repos
+    registry = load_registry()
+    repos: list[RepoStatus] = []
+
+    # Process registered repos
+    for reg_repo in registry.repos:
+        repo_path = Path(reg_repo.path)
+        if not repo_path.exists():
+            continue
+
+        config_status, configs = _get_config_status(repo_path)
+        orch_state, orch_pid, orch_port = _get_orchestrator_state(repo_path)
+
+        repos.append(RepoStatus(
+            path=reg_repo.path,
+            name=reg_repo.name,
+            config_status=config_status,
+            orchestrator_state=orch_state,
+            orchestrator_pid=orch_pid,
+            orchestrator_port=orch_port,
+            configs=configs,
+            selected_config=reg_repo.selected_config,
+            is_current_dir=(repo_path == cwd),
+        ))
+
+    # If cwd is a git repo but not registered, add it
+    if cwd_is_git and not is_orch_codebase:
+        cwd_str = str(cwd)
+        if not any(r.path == cwd_str for r in repos):
+            config_status, configs = _get_config_status(cwd)
+            orch_state, orch_pid, orch_port = _get_orchestrator_state(cwd)
+            repos.insert(0, RepoStatus(
+                path=cwd_str,
+                name=cwd.name,
+                config_status=config_status,
+                orchestrator_state=orch_state,
+                orchestrator_pid=orch_pid,
+                orchestrator_port=orch_port,
+                configs=configs,
+                selected_config="default.yaml",
+                is_current_dir=True,
+            ))
+
+    return SystemState(
+        dashboard=dashboard,
+        repos=repos,
+        current_directory=str(cwd),
+        is_orchestrator_codebase=is_orch_codebase,
+        cwd_is_git_repo=cwd_is_git,
+    )
+
+
+def discover_repos(
+    search_paths: list[Path] | None = None,
+    max_depth: int = 2,
+) -> list[dict[str, Any]]:
+    """Discover git repositories that could be configured.
+
+    Args:
+        search_paths: Paths to search (defaults to common dev directories)
+        max_depth: Maximum directory depth to search
+
+    Returns:
+        List of discovered repos with path, name, status, configs
+    """
+    if search_paths is None:
+        home = Path.home()
+        search_paths = [
+            home / "dev",
+            home / "projects",
+            home / "code",
+            home / "repos",
+            home / "src",
+            home / "work",
+            home / "github",
+        ]
+
+    registry = load_registry()
+    registered_paths = {r.path for r in registry.repos}
+    discovered: list[dict[str, Any]] = []
+
+    def scan_directory(base: Path, depth: int) -> None:
+        if depth > max_depth:
+            return
+        if not base.exists() or not base.is_dir():
+            return
+
+        try:
+            for entry in os.scandir(base):
+                if entry.is_dir() and not entry.name.startswith("."):
+                    entry_path = Path(entry.path)
+                    git_path = entry_path / ".git"
+
+                    if git_path.exists():
+                        # Skip worktrees (.git is a file)
+                        if git_path.is_file():
+                            continue
+
+                        resolved = str(entry_path.resolve())
+                        if resolved in registered_paths:
+                            continue
+
+                        # Skip orchestrator codebase
+                        if _is_orchestrator_codebase(entry_path):
+                            continue
+
+                        config_status, configs = _get_config_status(entry_path)
+
+                        discovered.append({
+                            "path": resolved,
+                            "name": entry_path.name,
+                            "configs": configs,
+                            "status": config_status,
+                        })
+                    else:
+                        # Recurse
+                        scan_directory(entry_path, depth + 1)
+        except PermissionError:
+            pass
+
+    for search_path in search_paths:
+        scan_directory(search_path, 0)
+
+    discovered.sort(key=lambda x: x["name"].lower())
+    return discovered
+
+
+def get_best_entry_point(state: SystemState) -> dict[str, Any]:
+    """Determine the best entry point based on current state.
+
+    Returns a dict with:
+    - action: "open_dashboard" | "start_dashboard" | "open_orchestrator"
+    - url: URL to open (if applicable)
+    - port: Port to use
+    """
+    # If dashboard is running, open it
+    if state.dashboard.running and state.dashboard.port:
+        return {
+            "action": "open_dashboard",
+            "url": f"http://localhost:{state.dashboard.port}",
+            "port": state.dashboard.port,
+        }
+
+    # Check if any orchestrator is running for cwd
+    for repo in state.repos:
+        if repo.is_current_dir and repo.orchestrator_state == "running" and repo.orchestrator_port:
+            return {
+                "action": "open_orchestrator",
+                "url": f"http://localhost:{repo.orchestrator_port}",
+                "port": repo.orchestrator_port,
+            }
+
+    # Need to start dashboard
+    return {
+        "action": "start_dashboard",
+        "port": 19080,  # Default dashboard port
+    }
