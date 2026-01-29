@@ -422,6 +422,97 @@ def _categorize_test(outcomes: list[str], is_likely_flaky: bool) -> str:
     return "healthy"
 
 
+def _categorize_test_results(
+    results: list["E2ETestResult"],
+    history_by_nodeid: dict[str, list[dict]],
+    issues_by_nodeid: dict[str, dict],
+    flake_threshold_percent: float,
+) -> dict[str, list[dict]]:
+    """Categorize test results into groups for the unified run view.
+
+    Categories:
+        untriaged: consistently failing, no issue
+        has_issue: consistently failing, issue exists
+        flaky: unstable history (any outcome this run)
+        fixed: passed, has open issue to close
+        passed: stable passing
+        quarantined: quarantined tests
+        skipped: skipped tests
+    """
+    tests_by_category: dict[str, list[dict]] = {
+        "untriaged": [],
+        "has_issue": [],
+        "flaky": [],
+        "fixed": [],
+        "passed": [],
+        "quarantined": [],
+        "skipped": [],
+    }
+
+    for result in results:
+        test_dict = _build_enhanced_test_dict(
+            result, history_by_nodeid, issues_by_nodeid, flake_threshold_percent
+        )
+        category = _determine_test_category(result, test_dict)
+        tests_by_category[category].append(test_dict)
+
+    return tests_by_category
+
+
+def _build_enhanced_test_dict(
+    result: "E2ETestResult",
+    history_by_nodeid: dict[str, list[dict]],
+    issues_by_nodeid: dict[str, dict],
+    flake_threshold_percent: float,
+) -> dict:
+    """Build enhanced test dict with history, issue info, and stability data."""
+    nodeid = result.nodeid
+    test_dict = result.to_dict()
+
+    # Add history
+    history = history_by_nodeid.get(nodeid, [])
+    test_dict["history"] = history
+
+    # Add existing issue info
+    existing_issue = issues_by_nodeid.get(nodeid)
+    test_dict["existing_issue"] = existing_issue
+
+    # Determine effective outcome for this run
+    effective_outcome = result.retry_outcome or result.outcome
+
+    # Build outcomes list for stability calculation (this run + history)
+    all_outcomes = [effective_outcome] + [h["outcome"] for h in history]
+    stability = _compute_stability(nodeid, all_outcomes, flake_threshold_percent)
+    test_dict["category"] = stability.category
+    test_dict["flip_rate"] = stability.flip_rate
+    test_dict["flip_rate_percent"] = stability.flip_rate_percent
+    test_dict["is_likely_flaky"] = stability.is_likely_flaky
+
+    return test_dict
+
+
+def _determine_test_category(
+    result: "E2ETestResult",
+    test_dict: dict,
+) -> str:
+    """Determine which category a test belongs to for grouping."""
+    if result.is_quarantined:
+        return "quarantined"
+    if result.outcome == "skipped":
+        return "skipped"
+    if test_dict["is_likely_flaky"]:
+        return "flaky"
+
+    effective_outcome = result.retry_outcome or result.outcome
+    existing_issue = test_dict.get("existing_issue")
+    has_open_issue = existing_issue and existing_issue["status"] == "open"
+
+    if effective_outcome == "passed":
+        return "fixed" if has_open_issue else "passed"
+    # Failed this run
+    return "has_issue" if has_open_issue else "untriaged"
+
+
 class AlreadyRunning(Exception):
     """Raised when attempting to start a run while one is already running."""
 
@@ -962,6 +1053,132 @@ class E2EDB:
             return {
                 "run": run.to_dict(),
                 "results": [r.to_dict() for r in results],
+            }
+
+    def _fetch_test_history(
+        self,
+        conn: sqlite3.Connection,
+        nodeids: list[str],
+        run_id: int,
+        history_limit: int,
+    ) -> dict[str, list[dict]]:
+        """Batch fetch test outcome history for all nodeids."""
+        if not nodeids:
+            return {}
+
+        from collections import defaultdict
+
+        placeholders = ",".join("?" * len(nodeids))
+        cursor = conn.execute(
+            f"""
+            SELECT
+                t.nodeid,
+                COALESCE(t.retry_outcome, t.outcome) AS effective_outcome,
+                r.id AS run_id,
+                r.started_at
+            FROM e2e_test_results t
+            JOIN e2e_runs r ON t.run_id = r.id
+            WHERE t.nodeid IN ({placeholders})
+                AND r.id != ?
+                AND r.status IN ('passed', 'failed')
+            ORDER BY t.nodeid, r.started_at DESC
+            """,
+            (*nodeids, run_id),
+        )
+        temp_history: dict[str, list[dict]] = defaultdict(list)
+        for hist_row in cursor.fetchall():
+            nodeid = hist_row["nodeid"]
+            if len(temp_history[nodeid]) < history_limit:
+                temp_history[nodeid].append({
+                    "outcome": hist_row["effective_outcome"],
+                    "run_id": hist_row["run_id"],
+                })
+        return dict(temp_history)
+
+    def _fetch_issue_info(
+        self,
+        conn: sqlite3.Connection,
+        nodeids: list[str],
+    ) -> dict[str, dict]:
+        """Batch fetch failure issue info for all nodeids."""
+        if not nodeids:
+            return {}
+
+        issues_by_nodeid: dict[str, dict] = {}
+        placeholders = ",".join("?" * len(nodeids))
+        cursor = conn.execute(
+            f"""
+            SELECT nodeid, github_issue_number, resolution, resolved_at
+            FROM e2e_failure_issues
+            WHERE nodeid IN ({placeholders})
+            ORDER BY nodeid, created_at DESC
+            """,
+            tuple(nodeids),
+        )
+        # Take the most recent issue per nodeid
+        for issue_row in cursor.fetchall():
+            nodeid = issue_row["nodeid"]
+            if nodeid not in issues_by_nodeid:
+                issues_by_nodeid[nodeid] = {
+                    "number": issue_row["github_issue_number"],
+                    "status": "closed" if issue_row["resolved_at"] else "open",
+                    "resolution": issue_row["resolution"],
+                }
+        return issues_by_nodeid
+
+    def run_details_enhanced(
+        self,
+        run_id: int,
+        history_limit: int = 5,
+        flake_threshold_percent: float = 20.0,
+    ) -> Optional[dict]:
+        """Get enhanced run details with test history, issue info, and categories.
+
+        This is used by the unified run view to display all information needed
+        for triaging E2E failures without additional API calls.
+
+        Returns:
+            Dict with:
+                - run: Run metadata
+                - tests_by_category: Tests grouped by state (untriaged, has_issue, flaky, fixed, passed)
+                - summary: Counts for each category
+        """
+        with self._connect() as conn:
+            # Get run
+            cursor = conn.execute(
+                "SELECT * FROM e2e_runs WHERE id = ?", (run_id,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+
+            run = E2ERun.from_row(row)
+
+            # Get all test results for this run
+            cursor = conn.execute(
+                "SELECT * FROM e2e_test_results WHERE run_id = ? ORDER BY nodeid",
+                (run_id,),
+            )
+            results = [E2ETestResult.from_row(r) for r in cursor.fetchall()]
+
+            # Batch fetch history and issues
+            nodeids = [r.nodeid for r in results]
+            history_by_nodeid = self._fetch_test_history(conn, nodeids, run_id, history_limit)
+            issues_by_nodeid = self._fetch_issue_info(conn, nodeids)
+
+            # Build enhanced test data and categorize
+            tests_by_category = _categorize_test_results(
+                results, history_by_nodeid, issues_by_nodeid, flake_threshold_percent
+            )
+
+            # Build summary counts
+            summary = {cat: len(tests) for cat, tests in tests_by_category.items()}
+            summary["total"] = len(results)
+
+            return {
+                "run": run.to_dict(),
+                "tests_by_category": tests_by_category,
+                "summary": summary,
             }
 
     def get_failed_tests(self, run_id: int) -> list[E2ETestResult]:
