@@ -234,6 +234,14 @@ async function handleClick(row) {
     const action = row.dataset.action;
     const issueNumber = row.dataset.issue;
     const url = row.dataset.url;
+    const e2eRunId = row.dataset.e2eRunId;
+    const isE2e = row.dataset.isE2e === 'true';
+
+    // E2E runs open the unified run view
+    if (isE2e && e2eRunId) {
+        showUnifiedRunView(parseInt(e2eRunId, 10));
+        return;
+    }
 
     if (action === 'focus') {
         if (terminalBackend === 'subprocess') {
@@ -2560,6 +2568,109 @@ function closeE2EDiagnosisModal() {
     document.getElementById('e2eDiagnosisModal').classList.remove('visible');
 }
 
+// E2E Stats Modal
+async function showE2EStats() {
+    const modal = document.getElementById('e2eStatsModal');
+    const content = document.getElementById('e2eStatsContent');
+
+    content.innerHTML = '<div class="loading-spinner">Loading stats...</div>';
+    modal.classList.add('visible');
+
+    try {
+        const res = await fetch(`/control/e2e/stats?repo_root=${encodeURIComponent(REPO_ROOT)}`);
+        const data = await res.json();
+
+        if (!res.ok) {
+            content.innerHTML = `<div style="color: #f85149;">Error: ${escapeHtml(data.error || data.detail || 'Failed to load stats')}</div>`;
+            return;
+        }
+
+        // Render stats
+        const passRatePercent = data.pass_rate_percent !== null ? data.pass_rate_percent : '—';
+        const passRateClass = data.pass_rate_percent >= 90 ? 'pass-rate-good' : data.pass_rate_percent >= 50 ? 'pass-rate-warn' : 'pass-rate-bad';
+        const passRateFill = data.pass_rate_percent !== null ? Math.min(100, Math.max(0, data.pass_rate_percent)) : 0;
+
+        let html = `
+            <div class="stats-section">
+                <div class="stats-header">Pass rate (last ${data.runs_analyzed || data.flake_window_runs} runs)</div>
+                <div class="stats-pass-rate">
+                    <span class="stats-pass-rate-value ${passRateClass}">${passRatePercent}%</span>
+                </div>
+                <div class="stats-pass-rate-bar">
+                    <div class="stats-pass-rate-fill ${passRateClass}" style="width: ${passRateFill}%;"></div>
+                </div>
+            </div>
+
+            <div class="stats-row">
+                <div class="stats-item">
+                    <span class="stats-label">Flaky tests:</span>
+                    <span class="stats-value">${data.flaky_count}</span>
+                    ${data.flaky_count > 0 ? `<button class="btn-link" onclick="showFlakyTestsList()">View List</button>` : ''}
+                </div>
+            </div>
+
+            <div class="stats-row">
+                <div class="stats-item">
+                    <span class="stats-label">Quarantined:</span>
+                    <span class="stats-value">${data.quarantine_count}</span>
+                    <button class="btn-link" onclick="closeE2EStatsModal(); openQuarantineManager();">Manage</button>
+                </div>
+            </div>
+        `;
+
+        if (data.next_check) {
+            html += `
+                <div class="stats-section stats-next-check">
+                    <div class="stats-label">Next check:</div>
+                    <div class="stats-value">${escapeHtml(data.next_check)}</div>
+                    ${data.next_check_reason ? `<div class="stats-hint" title="Triggers when interval passed and main branch has new commits">(${escapeHtml(data.next_check_reason)})</div>` : ''}
+                </div>
+            `;
+        }
+
+        content.innerHTML = html;
+    } catch (err) {
+        content.innerHTML = `<div style="color: #f85149;">Error: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+function closeE2EStatsModal() {
+    document.getElementById('e2eStatsModal').classList.remove('visible');
+}
+
+async function showFlakyTestsList() {
+    // Close stats modal and show flaky tests in a simple alert for now
+    closeE2EStatsModal();
+
+    try {
+        const res = await fetch(`/control/e2e/flaky-tests?repo_root=${encodeURIComponent(REPO_ROOT)}`);
+        const data = await res.json();
+
+        if (!res.ok) {
+            showToast(data.error || 'Failed to load flaky tests', true);
+            return;
+        }
+
+        if (data.flaky_tests.length === 0) {
+            showToast('No flaky tests detected');
+            return;
+        }
+
+        let message = `Flaky Tests (flip rate > ${data.threshold}%)\n`;
+        message += `${'='.repeat(50)}\n\n`;
+
+        for (const test of data.flaky_tests) {
+            const quarantineBadge = test.is_quarantined ? ' [QUARANTINED]' : '';
+            message += `• ${test.nodeid}${quarantineBadge}\n`;
+            message += `  Flip rate: ${test.flip_rate_percent}% (${test.flip_count} flips in ${data.window} runs)\n\n`;
+        }
+
+        alert(message);
+    } catch (err) {
+        showToast('Failed to load flaky tests: ' + err.message, true);
+    }
+}
+
 // Current test failure being viewed in the modal
 let currentTestFailure = null;
 
@@ -2931,12 +3042,18 @@ let e2eTriageData = null;
 let currentRunDetails = null;
 
 async function showE2ERunDetails(runId) {
+    // Redirect to the unified run view
+    return showUnifiedRunView(runId);
+}
+
+// Legacy run details view - kept for reference but replaced by showUnifiedRunView
+async function showE2ERunDetailsLegacy(runId) {
     // Show run details in the diagnosis modal
     document.getElementById('e2eDiagnosisContent').innerHTML = '<div class="loading-spinner">Loading run details...</div>';
     document.getElementById('e2eDiagnosisModal').classList.add('visible');
 
     try {
-        const res = await fetch(`/control/e2e/run/${runId}?repo_root=${encodeURIComponent(REPO_ROOT)}`);
+        const res = await fetch(`/control/e2e/run/${runId}?repo_root=${encodeURIComponent(REPO_ROOT)}&enhanced=false`);
         const data = await res.json();
 
         if (!res.ok) {
@@ -3659,4 +3776,454 @@ async function saveQuarantineChanges() {
 
 function closeQuarantineModal() {
     document.getElementById('e2eQuarantineModal').classList.remove('visible');
+}
+
+// ============================================================================
+// Unified Run View - Replaces separate Triage and Details modals
+// ============================================================================
+
+let unifiedRunData = null;  // Stores data for the current unified run view
+
+/**
+ * Show the unified run view for any E2E run.
+ * This is the main entry point - called when clicking any run row.
+ *
+ * @param {number} runId - The E2E run ID to display
+ */
+async function showUnifiedRunView(runId) {
+    // Use the diagnosis modal as the container
+    const modal = document.getElementById('e2eDiagnosisModal');
+    const content = document.getElementById('e2eDiagnosisContent');
+    const modalTitle = modal.querySelector('.modal-header h2');
+
+    // Show modal with loading state
+    modalTitle.textContent = `E2E Run #${runId}`;
+    content.innerHTML = '<div class="loading-spinner">Loading run details...</div>';
+    modal.classList.add('visible');
+
+    try {
+        // Fetch enhanced run details with categories and history
+        const res = await fetch(`/control/e2e/run/${runId}?repo_root=${encodeURIComponent(REPO_ROOT)}&enhanced=true`);
+        const data = await res.json();
+
+        if (!res.ok) {
+            content.innerHTML = `<div style="color: #f85149; padding: 20px;">Error: ${escapeHtml(data.error || data.detail || 'Failed to load run details')}</div>`;
+            return;
+        }
+
+        unifiedRunData = data;
+        renderUnifiedRunView(data, runId);
+    } catch (err) {
+        content.innerHTML = `<div style="color: #f85149; padding: 20px;">Failed to load run details: ${escapeHtml(err.message)}</div>`;
+    }
+}
+
+/**
+ * Render the unified run view with tests grouped by category.
+ */
+function renderUnifiedRunView(data, runId) {
+    const content = document.getElementById('e2eDiagnosisContent');
+    const modalTitle = document.getElementById('e2eDiagnosisModal').querySelector('.modal-header h2');
+    const run = data.run;
+    const summary = data.summary;
+    const tests = data.tests_by_category;
+
+    // Update modal title with run info
+    const runDate = run.started_at ? new Date(run.started_at).toLocaleString() : 'Unknown';
+    modalTitle.textContent = `Run #${run.id} - ${runDate}`;
+
+    // Build header with run info and summary
+    let html = `
+        <div class="unified-run-header">
+            <div class="run-meta">
+                ${run.commit_sha ? `<span>Commit: <code>${run.commit_sha.substring(0, 7)}</code></span>` : ''}
+                <span>${summary.total} tests</span>
+                ${summary.passed > 0 ? `<span class="summary-passed">${summary.passed} passed</span>` : ''}
+                ${summary.untriaged + summary.has_issue > 0 ? `<span class="summary-failed">${summary.untriaged + summary.has_issue} failed</span>` : ''}
+            </div>
+        </div>
+    `;
+
+    // Render each category section
+    html += renderCategorySection('untriaged', 'UNTRIAGED', tests.untriaged,
+        'Consistently failing tests with no GitHub issue',
+        'warning');
+
+    html += renderCategorySection('has_issue', 'HAS ISSUE', tests.has_issue,
+        'Failing tests already tracked by a GitHub issue',
+        'info');
+
+    html += renderCategorySection('flaky', 'FLAKY', tests.flaky,
+        'Unstable tests (flip rate > threshold) - passed OR failed this run',
+        'flaky');
+
+    html += renderCategorySection('fixed', 'FIXED', tests.fixed,
+        'Passed this run but has an open issue that should be closed',
+        'success');
+
+    html += renderCategorySection('passed', 'PASSED', tests.passed,
+        'Stable passing tests',
+        'passed', true);  // collapsed by default
+
+    if (tests.quarantined && tests.quarantined.length > 0) {
+        html += renderCategorySection('quarantined', 'QUARANTINED', tests.quarantined,
+            'Tests excluded from E2E failure counts',
+            'quarantined', true);
+    }
+
+    if (tests.skipped && tests.skipped.length > 0) {
+        html += renderCategorySection('skipped', 'SKIPPED', tests.skipped,
+            'Tests that were skipped during this run',
+            'skipped', true);
+    }
+
+    // Add bulk action bar for untriaged tests
+    if (tests.untriaged && tests.untriaged.length > 0) {
+        html += `
+            <div class="unified-run-footer">
+                <button class="btn-primary" onclick="createIssuesForUntriaged()">
+                    Create Issues for ${tests.untriaged.length} Untriaged
+                </button>
+                <div class="agent-selector">
+                    <label>Agent:</label>
+                    <select id="unifiedRunAgent" class="form-select-inline">
+                        <option value="">Select...</option>
+                        ${window.dashboardData.agents.map(a => `<option value="${a}">${a}</option>`).join('')}
+                    </select>
+                </div>
+            </div>
+        `;
+    }
+
+    content.innerHTML = html;
+}
+
+/**
+ * Render a category section with its tests.
+ */
+function renderCategorySection(categoryKey, title, tests, description, styleClass, collapsed = false) {
+    if (!tests || tests.length === 0) return '';
+
+    const isCollapsible = collapsed || tests.length > 5;
+
+    let html = `
+        <div class="category-section category-${styleClass}" data-category="${categoryKey}">
+            <div class="category-header" ${isCollapsible ? `onclick="toggleCategorySection('${categoryKey}')"` : ''}>
+                <div class="category-title-row">
+                    <span class="category-title">${title} (${tests.length})</span>
+                    ${isCollapsible ? `<span class="category-toggle" id="toggle-${categoryKey}">${collapsed ? '▶' : '▼'}</span>` : ''}
+                </div>
+                <div class="category-description">${description}</div>
+            </div>
+            <div class="category-tests" id="tests-${categoryKey}" style="${collapsed ? 'display: none;' : ''}">
+    `;
+
+    for (const test of tests) {
+        html += renderTestRow(test, categoryKey);
+    }
+
+    html += '</div></div>';
+    return html;
+}
+
+/**
+ * Render a single test row with inline history and actions.
+ */
+function renderTestRow(test, category) {
+    const shortName = test.nodeid.split('::').pop();
+    const effectiveOutcome = test.retry_outcome || test.outcome;
+    const outcomeIcon = effectiveOutcome === 'passed' ? '✓' : effectiveOutcome === 'skipped' ? '○' : '✗';
+    const outcomeClass = effectiveOutcome === 'passed' ? 'passed' : effectiveOutcome === 'skipped' ? 'skipped' : 'failed';
+
+    // Build history icons from recent runs
+    let historyHtml = '';
+    if (test.history && test.history.length > 0) {
+        const icons = test.history.map(h => {
+            if (h.outcome === 'passed') return '<span class="hist-icon pass">✓</span>';
+            if (h.outcome === 'failed') return '<span class="hist-icon fail">✗</span>';
+            return '<span class="hist-icon skip">○</span>';
+        }).reverse().join('');
+        historyHtml = `<span class="test-history">${icons}</span>`;
+    }
+
+    // Build flip rate indicator for flaky tests
+    let flipRateHtml = '';
+    if (test.flip_rate_percent && test.flip_rate_percent > 0) {
+        flipRateHtml = `<span class="flip-rate">${test.flip_rate_percent}%</span>`;
+    }
+
+    // Build duration
+    const durationHtml = test.duration_seconds ? `<span class="test-duration">${test.duration_seconds.toFixed(1)}s</span>` : '';
+
+    // Build issue link or action buttons based on category
+    let actionsHtml = '';
+    if (test.existing_issue) {
+        const issueNum = test.existing_issue.number;
+        const issueStatus = test.existing_issue.status;
+        if (category === 'fixed' && issueStatus === 'open') {
+            actionsHtml = `
+                <span class="issue-ref">→ #${issueNum} ${issueStatus}</span>
+                <button class="test-action-btn close-issue-btn" onclick="closeE2EIssue(${issueNum}, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                    Close #${issueNum}
+                </button>
+            `;
+        } else {
+            actionsHtml = `
+                <a href="https://github.com/${window.dashboardData.githubOwner}/${window.dashboardData.githubRepo}/issues/${issueNum}"
+                   target="_blank" class="issue-ref" onclick="event.stopPropagation();">
+                    → #${issueNum} ${issueStatus}
+                </a>
+            `;
+        }
+    } else if (category === 'untriaged' || category === 'flaky') {
+        actionsHtml = `
+            <div class="test-actions">
+                <button class="test-action-btn create-issue-dropdown" onclick="showCreateIssueDropdown(this, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                    Create Issue ▼
+                </button>
+                <button class="test-action-btn" onclick="quarantineSingleTest('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                    Quarantine
+                </button>
+                <button class="test-action-btn" onclick="copyTestError('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                    Copy Error
+                </button>
+            </div>
+        `;
+    }
+
+    // Build the error preview (first 2 lines)
+    let errorPreviewHtml = '';
+    if (test.longrepr && (category === 'untriaged' || category === 'has_issue' || category === 'flaky')) {
+        const lines = test.longrepr.split('\n');
+        const preview = lines.slice(0, 2).join('\n');
+        const hasMore = lines.length > 2;
+        errorPreviewHtml = `
+            <div class="test-error-preview">
+                <pre>${escapeHtml(preview)}</pre>
+                ${hasMore ? `<button class="expand-error-btn" onclick="toggleTestError(this); event.stopPropagation();">Expand ▼</button>` : ''}
+            </div>
+            <div class="test-error-full" style="display: none;">
+                <pre>${escapeHtml(test.longrepr)}</pre>
+                <button class="collapse-error-btn" onclick="toggleTestError(this); event.stopPropagation();">Collapse ▲</button>
+            </div>
+        `;
+    }
+
+    return `
+        <div class="test-row" data-nodeid="${escapeAttr(test.nodeid)}">
+            <div class="test-row-main">
+                <span class="test-outcome-icon ${outcomeClass}">${outcomeIcon}</span>
+                <span class="test-name" title="${escapeHtml(test.nodeid)}">${escapeHtml(shortName)}</span>
+                ${historyHtml}
+                ${flipRateHtml}
+                ${durationHtml}
+                ${actionsHtml}
+            </div>
+            ${errorPreviewHtml}
+        </div>
+    `;
+}
+
+/**
+ * Toggle a category section's visibility.
+ */
+function toggleCategorySection(categoryKey) {
+    const testsDiv = document.getElementById(`tests-${categoryKey}`);
+    const toggleSpan = document.getElementById(`toggle-${categoryKey}`);
+    if (!testsDiv || !toggleSpan) return;
+
+    const isHidden = testsDiv.style.display === 'none';
+    testsDiv.style.display = isHidden ? 'block' : 'none';
+    toggleSpan.textContent = isHidden ? '▼' : '▶';
+}
+
+/**
+ * Toggle error preview/full view.
+ */
+function toggleTestError(button) {
+    const row = button.closest('.test-row');
+    const preview = row.querySelector('.test-error-preview');
+    const full = row.querySelector('.test-error-full');
+
+    if (preview.style.display !== 'none') {
+        preview.style.display = 'none';
+        full.style.display = 'block';
+    } else {
+        preview.style.display = 'block';
+        full.style.display = 'none';
+    }
+}
+
+/**
+ * Copy error text for a specific test.
+ */
+function copyTestErrorFromRun(nodeid) {
+    if (!unifiedRunData) return;
+
+    // Find the test in any category
+    for (const category of Object.values(unifiedRunData.tests_by_category)) {
+        const test = category.find(t => t.nodeid === nodeid);
+        if (test) {
+            const text = `Test: ${test.nodeid}\n\nError:\n${test.longrepr || 'No error details'}`;
+            navigator.clipboard.writeText(text).then(
+                () => showToast('Error copied to clipboard'),
+                () => showToast('Failed to copy', true)
+            );
+            return;
+        }
+    }
+}
+
+/**
+ * Create issues for all untriaged tests.
+ */
+async function createIssuesForUntriaged() {
+    if (!unifiedRunData) return;
+
+    const agent = document.getElementById('unifiedRunAgent')?.value;
+    if (!agent) {
+        showToast('Please select an agent', true);
+        return;
+    }
+
+    const untriaged = unifiedRunData.tests_by_category.untriaged || [];
+    if (untriaged.length === 0) {
+        showToast('No untriaged tests', true);
+        return;
+    }
+
+    const nodeids = untriaged.map(t => t.nodeid);
+
+    try {
+        const res = await fetch(`/control/e2e/create-issues/${unifiedRunData.run.id}?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nodeids, agent }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            showToast(data.error || data.detail || 'Failed to create issues', true);
+            return;
+        }
+
+        showToast(`Created parent issue #${data.parent_issue.number} with ${data.sub_issues.length} sub-issue(s)`);
+
+        // Refresh the view
+        showUnifiedRunView(unifiedRunData.run.id);
+
+        // Open parent issue in new tab
+        if (data.parent_issue.url) {
+            window.open(data.parent_issue.url, '_blank');
+        }
+    } catch (err) {
+        showToast('Failed to create issues: ' + err.message, true);
+    }
+}
+
+/**
+ * Close an E2E failure issue that has been fixed.
+ */
+async function closeE2EIssue(issueNumber, nodeid) {
+    if (!confirm(`Close issue #${issueNumber}? The test "${nodeid.split('::').pop()}" is now passing.`)) {
+        return;
+    }
+
+    try {
+        const res = await fetch(`/control/e2e/close-issue/${issueNumber}?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nodeid }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            showToast(data.error || 'Failed to close issue', true);
+            return;
+        }
+
+        showToast(`Closed issue #${issueNumber}`);
+
+        // Refresh the view
+        if (unifiedRunData) {
+            showUnifiedRunView(unifiedRunData.run.id);
+        }
+    } catch (err) {
+        showToast('Failed to close issue: ' + err.message, true);
+    }
+}
+
+/**
+ * Show dropdown for creating a single issue with agent selection.
+ */
+function showCreateIssueDropdown(button, nodeid) {
+    // If dropdown already exists, toggle it
+    let dropdown = button.nextElementSibling;
+    if (dropdown && dropdown.classList.contains('create-issue-dropdown-menu')) {
+        dropdown.remove();
+        return;
+    }
+
+    // Remove any other open dropdowns
+    document.querySelectorAll('.create-issue-dropdown-menu').forEach(d => d.remove());
+
+    // Create dropdown
+    dropdown = document.createElement('div');
+    dropdown.className = 'create-issue-dropdown-menu';
+    dropdown.innerHTML = `
+        <div class="dropdown-content">
+            ${window.dashboardData.agents.map(a => `
+                <button class="dropdown-item" onclick="createSingleIssueWithAgent('${escapeAttr(nodeid)}', '${a}'); event.stopPropagation();">
+                    ${a}
+                </button>
+            `).join('')}
+        </div>
+    `;
+    button.parentNode.insertBefore(dropdown, button.nextSibling);
+
+    // Close dropdown when clicking elsewhere
+    const closeHandler = (e) => {
+        if (!dropdown.contains(e.target) && e.target !== button) {
+            dropdown.remove();
+            document.removeEventListener('click', closeHandler);
+        }
+    };
+    setTimeout(() => document.addEventListener('click', closeHandler), 0);
+}
+
+/**
+ * Create a single issue with specified agent.
+ */
+async function createSingleIssueWithAgent(nodeid, agent) {
+    if (!unifiedRunData) return;
+
+    try {
+        const res = await fetch(`/control/e2e/create-issues/${unifiedRunData.run.id}?repo_root=${encodeURIComponent(REPO_ROOT)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ nodeids: [nodeid], agent }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+            showToast(data.error || data.detail || 'Failed to create issue', true);
+            return;
+        }
+
+        const testName = nodeid.split('::').pop();
+        showToast(`Created issue #${data.parent_issue.number} for ${testName}`);
+
+        // Close dropdown
+        document.querySelectorAll('.create-issue-dropdown-menu').forEach(d => d.remove());
+
+        // Refresh the view
+        showUnifiedRunView(unifiedRunData.run.id);
+
+        // Open issue in new tab
+        if (data.parent_issue.url) {
+            window.open(data.parent_issue.url, '_blank');
+        }
+    } catch (err) {
+        showToast('Failed to create issue: ' + err.message, true);
+    }
 }

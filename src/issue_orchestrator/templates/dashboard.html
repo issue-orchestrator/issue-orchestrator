@@ -188,13 +188,9 @@
                 </span>
                 {% endif %}
                 {% endif %}
-                {% if e2e_status.signal_score and e2e_status.signal_score.pass_rate is not none %}
-                <span class="e2e-pass-rate {% if e2e_status.signal_score.pass_rate >= 0.9 %}pass-rate-good{% elif e2e_status.signal_score.pass_rate >= 0.5 %}pass-rate-warn{% else %}pass-rate-bad{% endif %}"
-                      title="Pass rate over last {{ e2e_status.signal_score.runs_analyzed }} runs">
-                    {{ "%.0f"|format(e2e_status.signal_score.pass_rate * 100) }}% passed
-                    <span class="pass-rate-detail">({{ e2e_status.signal_score.runs_analyzed }} runs)</span>
-                </span>
-                {% endif %}
+                <button class="issue-action-btn stats-btn" onclick="showE2EStats()" id="e2eStatsBtn" title="View E2E test statistics">
+                    <span aria-hidden="true">📊</span> Stats
+                </button>
             </div>
             {% endif %}
             <div class="issue-header" role="row" aria-hidden="true">
@@ -241,6 +237,8 @@
                  data-has-dependencies="{{ 'true' if issue.has_dependencies else 'false' }}"
                  data-dependencies="{{ issue.dependencies if issue.dependencies else '[]' }}"
                  data-dependency-summary="{{ issue.dependency_summary if issue.dependency_summary else '' }}"
+                 data-e2e-run-id="{{ issue.e2e_run_id if issue.e2e_run_id else '' }}"
+                 data-is-e2e="{{ 'true' if issue.is_e2e else 'false' }}"
                  onclick="handleClick(this)"
                  onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();handleClick(this);}"
                  oncontextmenu="showContextMenu(event, this)">
@@ -315,35 +313,24 @@
                     <button class="issue-action-btn stop-btn" onclick="stopE2E(); event.stopPropagation();" aria-label="Stop E2E run" title="Stop the running E2E tests">
                         <span aria-hidden="true">⏹</span> Stop
                     </button>
-                    {% elif issue.e2e_failed_tests %}
-                    <button class="issue-action-btn triage-btn" onclick="showE2ETriage(); event.stopPropagation();" aria-label="Open E2E triage modal" title="Review and create issues for failed tests">
-                        <span aria-hidden="true">📋</span> Triage
+                    {% elif issue.e2e_run_id %}
+                    {# Unified view button - clicking row also opens this #}
+                    <button class="issue-action-btn view-btn" onclick="showUnifiedRunView({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="View run details" title="View run details and triage">
+                        <span aria-hidden="true">👁</span> View
                     </button>
-                    {% if issue.e2e_run_id %}
-                    <button class="issue-action-btn details-btn" onclick="showE2ERunDetails({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="View run details" title="View full run details">
-                        <span aria-hidden="true">🔍</span>
-                    </button>
-                    {% endif %}
                     {% elif issue.e2e_sub_issues %}
                     <a href="{{ issue.issue_url }}" target="_blank" class="issue-action-btn link-btn" onclick="event.stopPropagation();" aria-label="View issue on GitHub" title="View issue on GitHub">
                         <span aria-hidden="true">↗</span> View
                     </a>
-                    {% else %}
-                    {# Recent completed runs - details button only (status shown in status column) #}
-                    {% if issue.e2e_run_id %}
-                    <button class="issue-action-btn details-btn" onclick="showE2ERunDetails({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="View run details" title="View run details">
-                        <span aria-hidden="true">🔍</span>
-                    </button>
-                    {% endif %}
                     {% endif %}
                     {% elif active_tab == 'blocked' %}
-                    {# Blocked tab actions: Debug, Retry, Dismiss (or Triage for E2E) #}
-                    {% if issue.is_e2e %}
-                    {# E2E item - show Triage button #}
-                    <button class="issue-action-btn triage-btn" onclick="showE2ETriage(); event.stopPropagation();" aria-label="Open E2E triage modal" title="Review and create issues for failed tests">
-                        <span aria-hidden="true">📋</span> Triage
+                    {# Blocked tab actions: Debug, Retry, Dismiss (or View for E2E) #}
+                    {% if issue.is_e2e and issue.e2e_run_id %}
+                    {# E2E item - show View button to open unified run view #}
+                    <button class="issue-action-btn view-btn" onclick="showUnifiedRunView({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="View run details" title="View run details and triage">
+                        <span aria-hidden="true">👁</span> View
                     </button>
-                    {% else %}
+                    {% elif not issue.is_e2e %}
                     {% if issue.worktree_path %}
                     <button class="issue-action-btn debug-btn" onclick="launchDebugSession({{ issue.issue_number }}, event)" aria-label="Launch debug session for issue #{{ issue.issue_number }}" title="Launch Debug">
                         <span aria-hidden="true">▶</span> Debug
@@ -395,23 +382,22 @@
                         {% if sub.resolution %}
                         <span class="resolution-badge {{ sub.resolution }}">{{ sub.resolution }}</span>
                         {% endif %}
-                        <span class="sub-issue-actions">
-                            <button class="sub-issue-action-btn" onclick="showTestDiagnosis({{ sub.nodeid|tojson }}); event.stopPropagation();" title="View diagnosis">🔍</button>
-                        </span>
                     </div>
                     {% endfor %}
                     {% elif issue.e2e_failed_tests %}
                     {% for test in issue.e2e_failed_tests %}
-                    <div class="sub-issue-item clickable" onclick="openTestFailureDetail({{ test.nodeid|tojson }}); event.stopPropagation();" title="Click to view details and take action">
+                    <div class="sub-issue-item">
                         <span class="status-icon failed">✗</span>
                         <span class="sub-issue-nodeid" title="{{ test.nodeid }}">{{ test.short_name }}</span>
                         <span class="outcome-badge {{ test.outcome }}">{{ test.outcome }}</span>
                         {% if test.duration %}
                         <span class="duration-badge">{{ "%.1f"|format(test.duration) }}s</span>
                         {% endif %}
-                        <span class="click-hint">→</span>
                     </div>
                     {% endfor %}
+                    <div class="sub-issue-item" style="justify-content: center;">
+                        <span style="color: #8b949e; font-size: 12px;">Click the row to view full details and take actions</span>
+                    </div>
                     {% endif %}
                 </div>
             </div>
@@ -553,7 +539,6 @@
                     </div>
                     <div class="modal-footer-buttons">
                         <button class="btn-primary" id="e2eCreateIssuesBtn" onclick="createE2EIssues()" disabled>Create Issues</button>
-                        <button class="btn-secondary" id="e2eSyncBtn" onclick="syncE2EIssues()">Sync Issues</button>
                         <button class="btn-secondary" onclick="closeE2ETriageModal()">Close</button>
                     </div>
                 </div>
@@ -597,6 +582,22 @@
                         <button class="btn-primary" id="quarantineSaveBtn" onclick="saveQuarantineChanges()" disabled>Save Changes</button>
                         <button class="btn-secondary" onclick="closeQuarantineModal()">Close</button>
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- E2E Stats Modal -->
+        <div class="modal-overlay" id="e2eStatsModal">
+            <div class="modal" style="max-width: 500px;">
+                <div class="modal-header">
+                    <h2>E2E Stats</h2>
+                    <button class="modal-close" onclick="closeE2EStatsModal()">&times;</button>
+                </div>
+                <div class="modal-body" id="e2eStatsContent">
+                    <div class="loading-spinner">Loading stats...</div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-secondary" onclick="closeE2EStatsModal()">Close</button>
                 </div>
             </div>
         </div>
