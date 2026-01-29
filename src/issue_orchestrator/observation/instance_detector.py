@@ -381,30 +381,42 @@ def discover_repos(
 def get_best_entry_point(state: SystemState) -> dict[str, Any]:
     """Determine the best entry point based on current state.
 
+    Always opens the unified dashboard. If an orchestrator is running for
+    the current directory, deep-links to that repo's activity view.
+
     Returns a dict with:
-    - action: "open_dashboard" | "start_dashboard" | "open_orchestrator"
+    - action: "open_dashboard" | "start_dashboard"
     - url: URL to open (if applicable)
     - port: Port to use
+    - repo_path: Path to deep-link to (if applicable)
     """
+    # Find if current directory has a running orchestrator (for deep-linking)
+    active_repo_path: str | None = None
+    for repo in state.repos:
+        if repo.is_current_dir and repo.orchestrator_state == "running":
+            active_repo_path = repo.path
+            break
+
+    # Build URL with optional deep-link
+    def build_url(port: int) -> str:
+        from urllib.parse import quote
+        base = f"http://localhost:{port}"
+        if active_repo_path:
+            return f"{base}?repo={quote(active_repo_path)}"
+        return base
+
     # If dashboard is running, open it
     if state.dashboard.running and state.dashboard.port:
         return {
             "action": "open_dashboard",
-            "url": f"http://localhost:{state.dashboard.port}",
+            "url": build_url(state.dashboard.port),
             "port": state.dashboard.port,
+            "repo_path": active_repo_path,
         }
-
-    # Check if any orchestrator is running for cwd
-    for repo in state.repos:
-        if repo.is_current_dir and repo.orchestrator_state == "running" and repo.orchestrator_port:
-            return {
-                "action": "open_orchestrator",
-                "url": f"http://localhost:{repo.orchestrator_port}",
-                "port": repo.orchestrator_port,
-            }
 
     # Need to start dashboard
     return {
         "action": "start_dashboard",
         "port": 19080,  # Default dashboard port
+        "repo_path": active_repo_path,
     }

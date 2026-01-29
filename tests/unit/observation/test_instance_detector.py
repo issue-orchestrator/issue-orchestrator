@@ -158,7 +158,8 @@ class TestGetBestEntryPoint:
         assert entry["url"] == "http://localhost:19080"
         assert entry["port"] == 19080
 
-    def test_returns_open_orchestrator_for_current_repo(self):
+    def test_returns_start_dashboard_with_deep_link_for_running_repo(self):
+        """When orchestrator running but no dashboard, start dashboard with deep-link."""
         state = SystemState(
             dashboard=DashboardStatus(running=False),
             repos=[
@@ -174,8 +175,31 @@ class TestGetBestEntryPoint:
             current_directory="/home/user/repo",
         )
         entry = get_best_entry_point(state)
-        assert entry["action"] == "open_orchestrator"
-        assert entry["url"] == "http://localhost:8080"
+        # Always goes through unified dashboard, with deep-link to active repo
+        assert entry["action"] == "start_dashboard"
+        assert entry["port"] == 19080
+        assert entry["repo_path"] == "/home/user/repo"
+
+    def test_open_dashboard_with_deep_link_when_orchestrator_running(self):
+        """When dashboard running and orchestrator running, deep-link to repo."""
+        state = SystemState(
+            dashboard=DashboardStatus(running=True, port=19080),
+            repos=[
+                RepoStatus(
+                    path="/home/user/repo",
+                    name="repo",
+                    config_status="ready",
+                    orchestrator_state="running",
+                    orchestrator_port=8080,
+                    is_current_dir=True,
+                ),
+            ],
+            current_directory="/home/user/repo",
+        )
+        entry = get_best_entry_point(state)
+        assert entry["action"] == "open_dashboard"
+        assert entry["url"] == "http://localhost:19080?repo=/home/user/repo"
+        assert entry["repo_path"] == "/home/user/repo"
 
     def test_returns_start_dashboard_when_nothing_running(self):
         state = SystemState(
