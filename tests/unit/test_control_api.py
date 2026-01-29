@@ -271,7 +271,9 @@ class TestShutdownEndpoint:
         response = client.post("/api/shutdown")
 
         assert response.status_code == 200
-        assert response.json() == {"status": "shutdown_requested"}
+        data = response.json()
+        assert data["status"] == "shutdown_requested"
+        assert "active_sessions" in data
         mock_orch.request_shutdown.assert_called_once()
 
 

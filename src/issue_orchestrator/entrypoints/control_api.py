@@ -387,13 +387,22 @@ async def health() -> JSONResponse:
 
 
 @control_app.post("/api/shutdown")
-async def shutdown() -> JSONResponse:
-    """Request graceful shutdown of the orchestrator."""
+async def shutdown(request: Request) -> JSONResponse:
+    """Request graceful shutdown of the orchestrator (stops new work, waits for agents)."""
     if _orchestrator is None:
         return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
 
+    # Log shutdown request with context
+    active_sessions = _orchestrator.state.active_sessions if _orchestrator.state else []
+    client_host = request.client.host if request.client else "unknown"
+    logger.info(
+        "Shutdown requested (graceful): source=web_ui, client=%s, active_sessions=%d",
+        client_host,
+        len(active_sessions),
+    )
+
     _orchestrator.request_shutdown()
-    return JSONResponse({"status": "shutdown_requested"})
+    return JSONResponse({"status": "shutdown_requested", "active_sessions": len(active_sessions)})
 
 
 @control_app.post("/api/preflight-push")
@@ -837,6 +846,9 @@ async def shutdown_control_center(request: Request) -> JSONResponse:
 
     sv = get_supervisor()
 
+    # Log force shutdown request
+    client_host = request.client.host if request.client else "unknown"
+
     # Parse optional body
     stop_orchestrators = False
     try:
@@ -844,6 +856,13 @@ async def shutdown_control_center(request: Request) -> JSONResponse:
         stop_orchestrators = body.get("stop_orchestrators", False)
     except json.JSONDecodeError:
         pass  # No body is fine, default to not stopping orchestrators
+
+    logger.info(
+        "Shutdown requested (force): source=web_ui, client=%s, stop_orchestrators=%s, pid=%d",
+        client_host,
+        stop_orchestrators,
+        os.getpid(),
+    )
 
     # Stop orchestrators if requested
     stopped_repos = []

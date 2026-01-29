@@ -339,6 +339,9 @@ async function refreshFromGitHub() {
     }
 }
 
+// Shutdown state - used to cancel polling when "Shutdown now" is clicked
+let shutdownInProgress = false;
+
 async function shutdown() {
     // First, check if there are active sessions
     const statusRes = await fetch('/api/status');
@@ -346,19 +349,129 @@ async function shutdown() {
     const activeSessions = status.active_sessions || [];
 
     if (activeSessions.length > 0) {
-        const sessionList = activeSessions.map(s => `#${s.issue_number}: ${s.title}`).join('\n');
-        const choice = confirm(
-            `There are ${activeSessions.length} active session(s):\n\n${sessionList}\n\n` +
-            `Click OK to wait for them to finish, or Cancel to go back.\n\n` +
-            `(To force kill sessions, use Ctrl+C twice in the terminal)`
-        );
-        if (!choice) return;
+        // Show modal with options
+        showShutdownModal(activeSessions);
     } else {
         if (!confirm('Shutdown the orchestrator?')) return;
+        await executeShutdown();
     }
+}
 
+function showShutdownModal(activeSessions) {
+    const sessionList = activeSessions.map(s => `<li>#${s.issue_number}: ${escapeHtml(s.title || 'Untitled')}</li>`).join('');
+
+    const modal = document.createElement('div');
+    modal.id = 'shutdownModal';
+    modal.className = 'modal-overlay visible';
+    modal.innerHTML = `
+        <div class="modal-content" style="max-width: 500px;">
+            <div class="modal-header">
+                <h2>Shutdown Orchestrator</h2>
+                <button class="modal-close" onclick="closeShutdownModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="shutdownModalBody">
+                <p><strong>${activeSessions.length} agent(s) currently working:</strong></p>
+                <ul style="margin: 12px 0; padding-left: 20px; color: #c9d1d9;">${sessionList}</ul>
+                <p style="color: #8b949e; font-size: 0.9em;">
+                    "Wait" will stop new work and shutdown when agents finish.<br>
+                    "Shutdown now" will interrupt agents immediately.
+                </p>
+            </div>
+            <div class="modal-footer" id="shutdownModalFooter">
+                <button class="btn-secondary" onclick="closeShutdownModal()">Cancel</button>
+                <button class="btn-secondary" onclick="shutdownWait()">Wait for completion</button>
+                <button class="btn-primary" onclick="shutdownNow()">Shutdown now</button>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(modal);
+}
+
+function closeShutdownModal() {
+    const modal = document.getElementById('shutdownModal');
+    if (modal) modal.remove();
+}
+
+async function shutdownWait() {
+    // Set shutdown flag (stops new work)
     await fetch('/api/shutdown', { method: 'POST' });
-    document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;color:#8b949e;">Shutdown requested. Close this tab.</div>';
+
+    // Update modal to show waiting state
+    const body = document.getElementById('shutdownModalBody');
+    const footer = document.getElementById('shutdownModalFooter');
+
+    body.innerHTML = `
+        <div style="text-align: center; padding: 20px;">
+            <div class="loading-spinner" style="margin: 0 auto 16px;"></div>
+            <p id="shutdownWaitStatus">Waiting for sessions to complete...</p>
+            <p style="color: #8b949e; font-size: 0.9em; margin-top: 12px;">
+                No new work will be started. Shutdown will happen automatically when all agents finish.
+            </p>
+        </div>
+    `;
+    footer.innerHTML = `
+        <button class="btn-primary" onclick="shutdownNow()">Shutdown now</button>
+    `;
+
+    // Poll for session completion
+    pollForShutdown();
+}
+
+async function pollForShutdown() {
+    const statusEl = document.getElementById('shutdownWaitStatus');
+
+    const poll = async () => {
+        // Check if shutdown was triggered manually
+        if (shutdownInProgress) {
+            return;
+        }
+
+        try {
+            const res = await fetch('/api/status');
+            const status = await res.json();
+            const activeSessions = status.active_sessions || [];
+
+            if (activeSessions.length === 0) {
+                if (statusEl) statusEl.textContent = 'All sessions complete. Shutting down...';
+                shutdownInProgress = true;
+                await executeShutdown();
+                return;
+            }
+
+            if (statusEl) {
+                statusEl.textContent = `Waiting for ${activeSessions.length} session(s) to complete...`;
+            }
+
+            // Poll again in 3 seconds (only if not shutting down)
+            if (!shutdownInProgress) {
+                setTimeout(poll, 3000);
+            }
+        } catch (err) {
+            // Server might already be down
+            if (statusEl) statusEl.textContent = 'Server connection lost.';
+        }
+    };
+
+    poll();
+}
+
+async function shutdownNow() {
+    shutdownInProgress = true;  // Cancel any polling
+    closeShutdownModal();
+    await executeShutdown();
+}
+
+async function executeShutdown() {
+    try {
+        await fetch('/control/shutdown', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ stop_orchestrators: true })
+        });
+    } catch (err) {
+        // Expected - server dies before responding
+    }
+    document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;color:#8b949e;flex-direction:column;gap:12px;"><span>Orchestrator stopped.</span><span style="font-size:0.9em;">You can close this tab.</span></div>';
 }
 
 // Tab switching
