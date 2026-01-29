@@ -168,6 +168,21 @@ def _is_orchestrator_codebase(path: Path) -> bool:
         return False
 
 
+def _check_if_paused(port: int) -> bool:
+    """Check if an orchestrator is paused by querying its HTTP API."""
+    import json
+    import urllib.request
+
+    try:
+        url = f"http://localhost:{port}/api/status"
+        with urllib.request.urlopen(url, timeout=2) as response:
+            data = json.loads(response.read().decode())
+            return data.get("paused", False)
+    except Exception:
+        # If we can't reach the API, assume not paused
+        return False
+
+
 def _get_orchestrator_state(repo_path: Path) -> tuple[Literal["running", "stopped", "failed", "paused"], int | None, int | None]:
     """Get orchestrator state for a repo.
 
@@ -175,7 +190,8 @@ def _get_orchestrator_state(repo_path: Path) -> tuple[Literal["running", "stoppe
     """
     status = supervisor.status(repo_path)
     if status.state == "running":
-        # Check if paused via HTTP API (optional enhancement)
+        if status.port and _check_if_paused(status.port):
+            return "paused", status.pid, status.port
         return "running", status.pid, status.port
     elif status.state == "failed":
         return "failed", status.pid, status.port
