@@ -100,4 +100,5 @@ ensure_deps
 ensure_port_free
 show_startup_info
 
-exec "${VENV_PATH}/bin/python" -m issue_orchestrator.entrypoints.control_center --port "${PORT}" "$@"
+# Use unified entry point - it handles dashboard lifecycle
+exec "${VENV_PATH}/bin/issue-orchestrator" "$@"
