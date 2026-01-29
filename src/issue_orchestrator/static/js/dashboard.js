@@ -3963,7 +3963,7 @@ function renderTestRow(test, category) {
         if (category === 'fixed' && issueStatus === 'open') {
             actionsHtml = `
                 <span class="issue-ref">→ #${issueNum} ${issueStatus}</span>
-                <button class="test-action-btn close-issue-btn" onclick="closeE2EIssue(${issueNum}, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                <button class="action-btn close-issue-btn" onclick="closeE2EIssue(${issueNum}, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
                     Close #${issueNum}
                 </button>
             `;
@@ -3978,13 +3978,13 @@ function renderTestRow(test, category) {
     } else if (category === 'untriaged' || category === 'flaky') {
         actionsHtml = `
             <div class="test-actions">
-                <button class="test-action-btn create-issue-dropdown" onclick="showCreateIssueDropdown(this, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                <button class="action-btn create-issue-dropdown" onclick="showCreateIssueDropdown(this, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
                     Create Issue ▼
                 </button>
-                <button class="test-action-btn" onclick="quarantineSingleTest('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                <button class="action-btn" onclick="quarantineSingleTest('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
                     Quarantine
                 </button>
-                <button class="test-action-btn" onclick="copyTestError('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                <button class="action-btn" onclick="copyTestError('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
                     Copy Error
                 </button>
             </div>
@@ -4012,7 +4012,7 @@ function renderTestRow(test, category) {
     return `
         <div class="test-row" data-nodeid="${escapeAttr(test.nodeid)}">
             <div class="test-row-main">
-                <span class="test-outcome-icon ${outcomeClass}">${outcomeIcon}</span>
+                <span class="status-icon ${outcomeClass}">${outcomeIcon}</span>
                 <span class="test-name" title="${escapeHtml(test.nodeid)}">${escapeHtml(shortName)}</span>
                 ${historyHtml}
                 ${flipRateHtml}
@@ -4159,17 +4159,17 @@ async function closeE2EIssue(issueNumber, nodeid) {
 function showCreateIssueDropdown(button, nodeid) {
     // If dropdown already exists, toggle it
     let dropdown = button.nextElementSibling;
-    if (dropdown && dropdown.classList.contains('create-issue-dropdown-menu')) {
+    if (dropdown && dropdown.classList.contains('create-issue-dropdown')) {
         dropdown.remove();
         return;
     }
 
     // Remove any other open dropdowns
-    document.querySelectorAll('.create-issue-dropdown-menu').forEach(d => d.remove());
+    document.querySelectorAll('.create-issue-dropdown').forEach(d => d.remove());
 
     // Create dropdown
     dropdown = document.createElement('div');
-    dropdown.className = 'create-issue-dropdown-menu';
+    dropdown.className = 'create-issue-dropdown';
     dropdown.innerHTML = `
         <div class="dropdown-content">
             ${window.dashboardData.agents.map(a => `
@@ -4214,7 +4214,7 @@ async function createSingleIssueWithAgent(nodeid, agent) {
         showToast(`Created issue #${data.parent_issue.number} for ${testName}`);
 
         // Close dropdown
-        document.querySelectorAll('.create-issue-dropdown-menu').forEach(d => d.remove());
+        document.querySelectorAll('.create-issue-dropdown').forEach(d => d.remove());
 
         // Refresh the view
         showUnifiedRunView(unifiedRunData.run.id);
