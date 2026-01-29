@@ -324,23 +324,24 @@
                     </a>
                     {% endif %}
                     {% elif active_tab == 'blocked' %}
-                    {# Blocked tab actions: Debug, Retry, Dismiss (or View for E2E) #}
-                    {% if issue.is_e2e and issue.e2e_run_id %}
-                    {# E2E item - show View button to open unified run view #}
+                    {# Blocked tab actions #}
+                    {% if issue.is_e2e %}
+                    {# E2E item - show View button if we have a run_id #}
+                    {% if issue.e2e_run_id %}
                     <button class="issue-action-btn view-btn" onclick="showUnifiedRunView({{ issue.e2e_run_id }}); event.stopPropagation();" aria-label="View run details" title="View run details and triage">
                         <span aria-hidden="true">👁</span> View
-                    </button>
-                    {% elif not issue.is_e2e %}
-                    {% if issue.worktree_path %}
-                    <button class="issue-action-btn debug-btn" onclick="launchDebugSession({{ issue.issue_number }}, event)" aria-label="Launch debug session for issue #{{ issue.issue_number }}" title="Launch Debug">
-                        <span aria-hidden="true">▶</span> Debug
                     </button>
                     {% endif %}
                     <button class="issue-action-btn retry-btn" onclick="retryIssue({{ issue.issue_number }}, event)" aria-label="Retry issue #{{ issue.issue_number }}" title="Remove blocked status and re-queue for processing">
                         <span aria-hidden="true">🔄</span> Retry
                     </button>
-                    <button class="issue-action-btn dismiss-btn" onclick="dismissIssue({{ issue.issue_number }}, event)" aria-label="Dismiss issue #{{ issue.issue_number }}" title="Remove from queue permanently (won't be retried)">
-                        <span aria-hidden="true">✕</span>
+                    {% else %}
+                    {# Non-E2E item - show Open agent + Retry #}
+                    <button class="issue-action-btn debug-btn" onclick="launchDebugSession({{ issue.issue_number }}, event)" aria-label="Open {{ issue.agent_type }} session for issue #{{ issue.issue_number }}" title="Open {{ issue.agent_type }} session">
+                        <span aria-hidden="true">▶</span> Open {{ issue.agent_type }}
+                    </button>
+                    <button class="issue-action-btn retry-btn" onclick="retryIssue({{ issue.issue_number }}, event)" aria-label="Retry issue #{{ issue.issue_number }}" title="Remove blocked status and re-queue for processing">
+                        <span aria-hidden="true">🔄</span> Retry
                     </button>
                     {% endif %}
                     {% else %}

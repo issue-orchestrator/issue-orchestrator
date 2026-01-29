@@ -3911,21 +3911,17 @@ function renderCategorySection(categoryKey, title, tests, description, styleClas
     if (!tests || tests.length === 0) return '';
 
     const isCollapsible = collapsed || tests.length > 5;
-    const ariaExpanded = collapsed ? 'false' : 'true';
+    const expanded = !collapsed;
 
     let html = `
         <div class="category-section ${categoryKey}" data-category="${categoryKey}">
-            <div class="category-header"
-                 aria-expanded="${ariaExpanded}"
-                 ${isCollapsible ? `onclick="toggleCategorySection('${categoryKey}')"` : ''}>
-                <span class="title">
-                    ${title}
-                    <span class="count">${tests.length}</span>
-                </span>
-                ${isCollapsible ? `<span class="toggle-icon" id="toggle-${categoryKey}">${collapsed ? '▶' : '▼'}</span>` : ''}
+            <div class="category-header" ${isCollapsible ? `onclick="toggleCategorySection('${categoryKey}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCategorySection('${categoryKey}');}" role="button" tabindex="0" aria-expanded="${expanded}"` : ''}>
+                <span class="title">${title}</span>
+                <span class="count">${tests.length}</span>
+                ${isCollapsible ? `<span class="toggle-icon" id="toggle-${categoryKey}"></span>` : ''}
             </div>
             <div class="category-description">${description}</div>
-            <div class="category-tests${collapsed ? ' collapsed' : ''}" id="tests-${categoryKey}">
+            <div class="category-tests" id="tests-${categoryKey}" style="${collapsed ? 'display: none;' : ''}">
     `;
 
     for (const test of tests) {
@@ -4202,17 +4198,17 @@ async function closeE2EIssue(issueNumber, nodeid) {
 function showCreateIssueDropdown(button, nodeid) {
     // If dropdown already exists, toggle it
     let dropdown = button.nextElementSibling;
-    if (dropdown && dropdown.classList.contains('create-issue-dropdown-menu')) {
+    if (dropdown && dropdown.classList.contains('create-issue-dropdown')) {
         dropdown.remove();
         return;
     }
 
     // Remove any other open dropdowns
-    document.querySelectorAll('.create-issue-dropdown-menu').forEach(d => d.remove());
+    document.querySelectorAll('.create-issue-dropdown').forEach(d => d.remove());
 
     // Create dropdown
     dropdown = document.createElement('div');
-    dropdown.className = 'create-issue-dropdown-menu';
+    dropdown.className = 'create-issue-dropdown';
     dropdown.innerHTML = `
         <div class="dropdown-content">
             ${window.dashboardData.agents.map(a => `
@@ -4257,7 +4253,7 @@ async function createSingleIssueWithAgent(nodeid, agent) {
         showToast(`Created issue #${data.parent_issue.number} for ${testName}`);
 
         // Close dropdown
-        document.querySelectorAll('.create-issue-dropdown-menu').forEach(d => d.remove());
+        document.querySelectorAll('.create-issue-dropdown').forEach(d => d.remove());
 
         // Refresh the view
         showUnifiedRunView(unifiedRunData.run.id);

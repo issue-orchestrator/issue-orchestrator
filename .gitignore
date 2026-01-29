@@ -31,6 +31,10 @@ ENV/
 *.swp
 *.swo
 
+# Node
+node_modules/
+.vscode-test/
+
 # Testing
 .pytest_cache/
 .coverage
@@ -55,6 +59,7 @@ Thumbs.db
 .issue-orchestrator/*.db
 .issue-orchestrator/sessions/
 .issue-orchestrator/diagnostics/
+.issue-orchestrator/safety-state.json
 .agent-done-marker
 
 # Keep .issue-orchestrator/config/ tracked - it's project configuration
