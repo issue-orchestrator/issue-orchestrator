@@ -3836,12 +3836,13 @@ function renderUnifiedRunView(data, runId) {
 
     // Build header with run info and summary
     let html = `
+        <div class="unified-run-view">
         <div class="unified-run-header">
             <div class="run-meta">
-                ${run.commit_sha ? `<span>Commit: <code>${run.commit_sha.substring(0, 7)}</code></span>` : ''}
-                <span>${summary.total} tests</span>
-                ${summary.passed > 0 ? `<span class="summary-passed">${summary.passed} passed</span>` : ''}
-                ${summary.untriaged + summary.has_issue > 0 ? `<span class="summary-failed">${summary.untriaged + summary.has_issue} failed</span>` : ''}
+                ${run.commit_sha ? `<span class="commit">Commit: <code>${run.commit_sha.substring(0, 7)}</code></span>` : ''}
+                <span class="stat">${summary.total} tests</span>
+                ${summary.passed > 0 ? `<span class="stat passed">${summary.passed} passed</span>` : ''}
+                ${summary.untriaged + summary.has_issue > 0 ? `<span class="stat failed">${summary.untriaged + summary.has_issue} failed</span>` : ''}
             </div>
         </div>
     `;
@@ -3882,20 +3883,23 @@ function renderUnifiedRunView(data, runId) {
     // Add bulk action bar for untriaged tests
     if (tests.untriaged && tests.untriaged.length > 0) {
         html += `
-            <div class="unified-run-footer">
-                <button class="btn-primary" onclick="createIssuesForUntriaged()">
-                    Create Issues for ${tests.untriaged.length} Untriaged
-                </button>
-                <div class="agent-selector">
-                    <label>Agent:</label>
-                    <select id="unifiedRunAgent" class="form-select-inline">
-                        <option value="">Select...</option>
+            <div class="bulk-action-bar">
+                <span class="bulk-info">${tests.untriaged.length} untriaged test(s)</span>
+                <div class="bulk-actions">
+                    <select id="unifiedRunAgent" class="agent-select">
+                        <option value="">Select agent...</option>
                         ${window.dashboardData.agents.map(a => `<option value="${a}">${a}</option>`).join('')}
                     </select>
+                    <button class="btn-primary" onclick="createIssuesForUntriaged()">
+                        Create Issues
+                    </button>
                 </div>
             </div>
         `;
     }
+
+    // Close the unified-run-view wrapper
+    html += '</div>';
 
     content.innerHTML = html;
 }
@@ -3907,17 +3911,21 @@ function renderCategorySection(categoryKey, title, tests, description, styleClas
     if (!tests || tests.length === 0) return '';
 
     const isCollapsible = collapsed || tests.length > 5;
+    const ariaExpanded = collapsed ? 'false' : 'true';
 
     let html = `
-        <div class="category-section category-${styleClass}" data-category="${categoryKey}">
-            <div class="category-header" ${isCollapsible ? `onclick="toggleCategorySection('${categoryKey}')"` : ''}>
-                <div class="category-title-row">
-                    <span class="category-title">${title} (${tests.length})</span>
-                    ${isCollapsible ? `<span class="category-toggle" id="toggle-${categoryKey}">${collapsed ? '▶' : '▼'}</span>` : ''}
-                </div>
-                <div class="category-description">${description}</div>
+        <div class="category-section ${categoryKey}" data-category="${categoryKey}">
+            <div class="category-header"
+                 aria-expanded="${ariaExpanded}"
+                 ${isCollapsible ? `onclick="toggleCategorySection('${categoryKey}')"` : ''}>
+                <span class="title">
+                    ${title}
+                    <span class="count">${tests.length}</span>
+                </span>
+                ${isCollapsible ? `<span class="toggle-icon" id="toggle-${categoryKey}">${collapsed ? '▶' : '▼'}</span>` : ''}
             </div>
-            <div class="category-tests" id="tests-${categoryKey}" style="${collapsed ? 'display: none;' : ''}">
+            <div class="category-description">${description}</div>
+            <div class="category-tests${collapsed ? ' collapsed' : ''}" id="tests-${categoryKey}">
     `;
 
     for (const test of tests) {
@@ -3955,7 +3963,7 @@ function renderTestRow(test, category) {
     }
 
     // Build duration
-    const durationHtml = test.duration_seconds ? `<span class="test-duration">${test.duration_seconds.toFixed(1)}s</span>` : '';
+    const durationHtml = test.duration_seconds ? `<span class="duration">${test.duration_seconds.toFixed(1)}s</span>` : '';
 
     // Build issue link or action buttons based on category
     let actionsHtml = '';
@@ -3964,29 +3972,34 @@ function renderTestRow(test, category) {
         const issueStatus = test.existing_issue.status;
         if (category === 'fixed' && issueStatus === 'open') {
             actionsHtml = `
-                <span class="issue-ref">→ #${issueNum} ${issueStatus}</span>
-                <button class="test-action-btn close-issue-btn" onclick="closeE2EIssue(${issueNum}, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
-                    Close #${issueNum}
-                </button>
+                <a href="https://github.com/${window.dashboardData.githubOwner}/${window.dashboardData.githubRepo}/issues/${issueNum}"
+                   target="_blank" class="issue-link-inline" onclick="event.stopPropagation();">
+                    → #${issueNum} <span class="issue-status ${issueStatus}">${issueStatus}</span>
+                </a>
+                <div class="test-actions">
+                    <button class="action-btn success" onclick="closeE2EIssue(${issueNum}, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                        Close #${issueNum}
+                    </button>
+                </div>
             `;
         } else {
             actionsHtml = `
                 <a href="https://github.com/${window.dashboardData.githubOwner}/${window.dashboardData.githubRepo}/issues/${issueNum}"
-                   target="_blank" class="issue-ref" onclick="event.stopPropagation();">
-                    → #${issueNum} ${issueStatus}
+                   target="_blank" class="issue-link-inline" onclick="event.stopPropagation();">
+                    → #${issueNum} <span class="issue-status ${issueStatus}">${issueStatus}</span>
                 </a>
             `;
         }
     } else if (category === 'untriaged' || category === 'flaky') {
         actionsHtml = `
             <div class="test-actions">
-                <button class="test-action-btn create-issue-dropdown" onclick="showCreateIssueDropdown(this, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                <button class="action-btn primary" onclick="showCreateIssueDropdown(this, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
                     Create Issue ▼
                 </button>
-                <button class="test-action-btn" onclick="quarantineSingleTest('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                <button class="action-btn warning" onclick="quarantineSingleTest('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
                     Quarantine
                 </button>
-                <button class="test-action-btn" onclick="copyTestErrorFromRun('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                <button class="action-btn" onclick="copyTestErrorFromRun('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
                     Copy Error
                 </button>
             </div>
@@ -4000,13 +4013,9 @@ function renderTestRow(test, category) {
         const preview = lines.slice(0, 2).join('\n');
         const hasMore = lines.length > 2;
         errorPreviewHtml = `
-            <div class="test-error-preview">
-                <pre>${escapeHtml(preview)}</pre>
-                ${hasMore ? `<button class="expand-error-btn" onclick="toggleTestError(this); event.stopPropagation();">Expand ▼</button>` : ''}
-            </div>
-            <div class="test-error-full" style="display: none;">
-                <pre>${escapeHtml(test.longrepr)}</pre>
-                <button class="collapse-error-btn" onclick="toggleTestError(this); event.stopPropagation();">Collapse ▲</button>
+            <div class="test-error-preview" data-nodeid="${escapeAttr(test.nodeid)}">
+                <pre class="error-text">${escapeHtml(preview)}</pre>
+                ${hasMore ? `<button class="expand-btn" onclick="toggleTestError(this); event.stopPropagation();">Expand ▼</button>` : ''}
             </div>
         `;
     }
@@ -4014,7 +4023,7 @@ function renderTestRow(test, category) {
     return `
         <div class="test-row" data-nodeid="${escapeAttr(test.nodeid)}">
             <div class="test-row-main">
-                <span class="test-outcome-icon ${outcomeClass}">${outcomeIcon}</span>
+                <span class="status-icon ${outcomeClass}">${outcomeIcon}</span>
                 <span class="test-name" title="${escapeHtml(test.nodeid)}">${escapeHtml(shortName)}</span>
                 ${historyHtml}
                 ${flipRateHtml}
@@ -4032,27 +4041,59 @@ function renderTestRow(test, category) {
 function toggleCategorySection(categoryKey) {
     const testsDiv = document.getElementById(`tests-${categoryKey}`);
     const toggleSpan = document.getElementById(`toggle-${categoryKey}`);
+    const section = document.querySelector(`.category-section[data-category="${categoryKey}"]`);
+    const header = section?.querySelector('.category-header');
     if (!testsDiv || !toggleSpan) return;
 
-    const isHidden = testsDiv.style.display === 'none';
-    testsDiv.style.display = isHidden ? 'block' : 'none';
-    toggleSpan.textContent = isHidden ? '▼' : '▶';
+    const isCollapsed = testsDiv.classList.contains('collapsed');
+    testsDiv.classList.toggle('collapsed');
+    toggleSpan.textContent = isCollapsed ? '▼' : '▶';
+    if (header) {
+        header.setAttribute('aria-expanded', isCollapsed ? 'true' : 'false');
+    }
 }
 
 /**
  * Toggle error preview/full view.
  */
 function toggleTestError(button) {
-    const row = button.closest('.test-row');
-    const preview = row.querySelector('.test-error-preview');
-    const full = row.querySelector('.test-error-full');
+    const preview = button.closest('.test-error-preview');
+    if (!preview) return;
 
-    if (preview.style.display !== 'none') {
-        preview.style.display = 'none';
-        full.style.display = 'block';
+    const isExpanded = preview.classList.contains('expanded');
+    const nodeid = preview.dataset.nodeid;
+
+    if (isExpanded) {
+        // Collapse: show first 2 lines
+        preview.classList.remove('expanded');
+        button.textContent = 'Expand ▼';
+        const errorText = preview.querySelector('.error-text');
+        if (errorText && unifiedRunData) {
+            // Find the test and show preview
+            for (const category of Object.values(unifiedRunData.tests_by_category)) {
+                const test = category.find(t => t.nodeid === nodeid);
+                if (test && test.longrepr) {
+                    const lines = test.longrepr.split('\n');
+                    errorText.textContent = lines.slice(0, 2).join('\n');
+                    break;
+                }
+            }
+        }
     } else {
-        preview.style.display = 'block';
-        full.style.display = 'none';
+        // Expand: show full error
+        preview.classList.add('expanded');
+        button.textContent = 'Collapse ▲';
+        const errorText = preview.querySelector('.error-text');
+        if (errorText && unifiedRunData) {
+            // Find the test and show full error
+            for (const category of Object.values(unifiedRunData.tests_by_category)) {
+                const test = category.find(t => t.nodeid === nodeid);
+                if (test && test.longrepr) {
+                    errorText.textContent = test.longrepr;
+                    break;
+                }
+            }
+        }
     }
 }
 
