@@ -2587,7 +2587,9 @@ async function showE2EStats() {
 
         // Render stats
         const passRatePercent = data.pass_rate_percent !== null ? data.pass_rate_percent : '—';
-        const passRateClass = data.pass_rate_percent >= 90 ? 'pass-rate-good' : data.pass_rate_percent >= 50 ? 'pass-rate-warn' : 'pass-rate-bad';
+        const passRateClass = data.pass_rate_percent === null ? 'pass-rate-unknown' :
+            data.pass_rate_percent >= 90 ? 'pass-rate-good' :
+            data.pass_rate_percent >= 50 ? 'pass-rate-warn' : 'pass-rate-bad';
         const passRateFill = data.pass_rate_percent !== null ? Math.min(100, Math.max(0, data.pass_rate_percent)) : 0;
 
         let html = `
@@ -3984,7 +3986,7 @@ function renderTestRow(test, category) {
                 <button class="test-action-btn" onclick="quarantineSingleTest('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
                     Quarantine
                 </button>
-                <button class="test-action-btn" onclick="copyTestError('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                <button class="test-action-btn" onclick="copyTestErrorFromRun('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
                     Copy Error
                 </button>
             </div>
