@@ -1734,7 +1734,7 @@ def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused 
     """Default command when no subcommand is given - open unified dashboard."""
     import webbrowser
 
-    from ..control.instance_detector import detect_system_state, get_best_entry_point
+    from ..observation.instance_detector import detect_system_state, get_best_entry_point
 
     console.print("[cyan]Issue Orchestrator[/cyan]")
 

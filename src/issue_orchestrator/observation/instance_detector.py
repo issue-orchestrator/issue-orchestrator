@@ -272,6 +272,55 @@ def detect_system_state(cwd: Path | None = None) -> SystemState:
     )
 
 
+def _default_search_paths() -> list[Path]:
+    """Return default directories to search for repos."""
+    home = Path.home()
+    return [
+        home / "dev",
+        home / "projects",
+        home / "code",
+        home / "repos",
+        home / "src",
+        home / "work",
+        home / "github",
+    ]
+
+
+def _try_add_discovered_repo(
+    entry_path: Path,
+    registered_paths: set[str],
+    discovered: list[dict[str, Any]],
+) -> bool:
+    """Try to add a git repo to the discovered list.
+
+    Returns True if the repo was added or should be skipped (not recursed into).
+    Returns False if the directory should be recursed into.
+    """
+    git_path = entry_path / ".git"
+    if not git_path.exists():
+        return False  # Not a git repo, recurse
+
+    # Skip worktrees (.git is a file, not a directory)
+    if git_path.is_file():
+        return True
+
+    resolved = str(entry_path.resolve())
+    if resolved in registered_paths:
+        return True
+
+    if _is_orchestrator_codebase(entry_path):
+        return True
+
+    config_status, configs = _get_config_status(entry_path)
+    discovered.append({
+        "path": resolved,
+        "name": entry_path.name,
+        "configs": configs,
+        "status": config_status,
+    })
+    return True
+
+
 def discover_repos(
     search_paths: list[Path] | None = None,
     max_depth: int = 2,
@@ -286,57 +335,23 @@ def discover_repos(
         List of discovered repos with path, name, status, configs
     """
     if search_paths is None:
-        home = Path.home()
-        search_paths = [
-            home / "dev",
-            home / "projects",
-            home / "code",
-            home / "repos",
-            home / "src",
-            home / "work",
-            home / "github",
-        ]
+        search_paths = _default_search_paths()
 
     registry = load_registry()
     registered_paths = {r.path for r in registry.repos}
     discovered: list[dict[str, Any]] = []
 
     def scan_directory(base: Path, depth: int) -> None:
-        if depth > max_depth:
-            return
-        if not base.exists() or not base.is_dir():
+        if depth > max_depth or not base.exists() or not base.is_dir():
             return
 
         try:
             for entry in os.scandir(base):
-                if entry.is_dir() and not entry.name.startswith("."):
-                    entry_path = Path(entry.path)
-                    git_path = entry_path / ".git"
-
-                    if git_path.exists():
-                        # Skip worktrees (.git is a file)
-                        if git_path.is_file():
-                            continue
-
-                        resolved = str(entry_path.resolve())
-                        if resolved in registered_paths:
-                            continue
-
-                        # Skip orchestrator codebase
-                        if _is_orchestrator_codebase(entry_path):
-                            continue
-
-                        config_status, configs = _get_config_status(entry_path)
-
-                        discovered.append({
-                            "path": resolved,
-                            "name": entry_path.name,
-                            "configs": configs,
-                            "status": config_status,
-                        })
-                    else:
-                        # Recurse
-                        scan_directory(entry_path, depth + 1)
+                if not entry.is_dir() or entry.name.startswith("."):
+                    continue
+                entry_path = Path(entry.path)
+                if not _try_add_discovered_repo(entry_path, registered_paths, discovered):
+                    scan_directory(entry_path, depth + 1)
         except PermissionError:
             pass
 

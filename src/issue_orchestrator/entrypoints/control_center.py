@@ -23,7 +23,7 @@ import webbrowser
 import uvicorn
 
 from .control_api import control_app
-from ..control.instance_detector import write_dashboard_pid, clear_dashboard_pid
+from ..observation.instance_detector import write_dashboard_pid, clear_dashboard_pid
 
 logger = logging.getLogger(__name__)
 

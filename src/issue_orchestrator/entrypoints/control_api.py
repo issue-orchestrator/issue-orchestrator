@@ -174,7 +174,7 @@ async def get_system_state() -> JSONResponse:
     Returns dashboard status, all repos with orchestrator status, and context info.
     This is the primary endpoint for the unified dashboard to understand current state.
     """
-    from ..control.instance_detector import detect_system_state
+    from ..observation.instance_detector import detect_system_state
 
     state = detect_system_state()
     return JSONResponse(state.to_dict())
@@ -187,7 +187,7 @@ async def get_repos() -> JSONResponse:
     Returns registered repos plus current directory (if it's a repo).
     Each repo includes config status and orchestrator state.
     """
-    from ..control.instance_detector import detect_system_state
+    from ..observation.instance_detector import detect_system_state
 
     state = detect_system_state()
     return JSONResponse({"repos": [r.to_dict() for r in state.repos]})
@@ -268,7 +268,7 @@ async def get_repo_status(repo_id: str) -> JSONResponse:
     The repo_id is the URL-encoded absolute path to the repo.
     """
     from urllib.parse import unquote
-    from ..control.instance_detector import _get_config_status, _get_orchestrator_state
+    from ..observation.instance_detector import _get_config_status, _get_orchestrator_state
 
     repo_path = unquote(repo_id)
     path = Path(repo_path)
@@ -302,7 +302,7 @@ async def discover_repos_api(
 
     Scans common development directories for git repos.
     """
-    from ..control.instance_detector import discover_repos
+    from ..observation.instance_detector import discover_repos
 
     paths = None
     if search_paths:

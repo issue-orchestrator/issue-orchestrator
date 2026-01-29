@@ -3,7 +3,7 @@
 import json
 from unittest.mock import patch, MagicMock
 
-from issue_orchestrator.control.instance_detector import (
+from issue_orchestrator.observation.instance_detector import (
     DashboardStatus,
     RepoStatus,
     SystemState,
@@ -124,7 +124,7 @@ class TestGetConfigStatus:
         config_dir.mkdir(parents=True)
         (config_dir / "default.yaml").write_text("repo: test")
 
-        with patch("issue_orchestrator.control.instance_detector.list_configs", return_value=["default.yaml"]):
+        with patch("issue_orchestrator.observation.instance_detector.list_configs", return_value=["default.yaml"]):
             status, configs = _get_config_status(tmp_path)
         assert status == "ready"
         assert configs == ["default.yaml"]
@@ -132,13 +132,13 @@ class TestGetConfigStatus:
     def test_legacy_config(self, tmp_path):
         (tmp_path / ".issue-orchestrator.yaml").write_text("repo: test")
 
-        with patch("issue_orchestrator.control.instance_detector.list_configs", return_value=[]):
+        with patch("issue_orchestrator.observation.instance_detector.list_configs", return_value=[]):
             status, configs = _get_config_status(tmp_path)
         assert status == "legacy"
         assert configs == []
 
     def test_needs_setup(self, tmp_path):
-        with patch("issue_orchestrator.control.instance_detector.list_configs", return_value=[]):
+        with patch("issue_orchestrator.observation.instance_detector.list_configs", return_value=[]):
             status, configs = _get_config_status(tmp_path)
         assert status == "needs_setup"
         assert configs == []
@@ -194,7 +194,7 @@ class TestDashboardPidFile:
     def test_write_and_clear_dashboard_pid(self, tmp_path, monkeypatch):
         pid_file = tmp_path / "dashboard.pid"
         monkeypatch.setattr(
-            "issue_orchestrator.control.instance_detector.DASHBOARD_PID_FILE",
+            "issue_orchestrator.observation.instance_detector.DASHBOARD_PID_FILE",
             pid_file,
         )
 
@@ -214,7 +214,7 @@ class TestDashboardPidFile:
     def test_clear_nonexistent_pid_file(self, tmp_path, monkeypatch):
         pid_file = tmp_path / "dashboard.pid"
         monkeypatch.setattr(
-            "issue_orchestrator.control.instance_detector.DASHBOARD_PID_FILE",
+            "issue_orchestrator.observation.instance_detector.DASHBOARD_PID_FILE",
             pid_file,
         )
         # Should not raise
@@ -227,12 +227,12 @@ class TestDetectSystemState:
     def test_detects_current_directory(self, tmp_path):
         (tmp_path / ".git").mkdir()
 
-        with patch("issue_orchestrator.control.instance_detector.load_registry") as mock_registry:
+        with patch("issue_orchestrator.observation.instance_detector.load_registry") as mock_registry:
             mock_registry.return_value.repos = []
-            with patch("issue_orchestrator.control.instance_detector._read_dashboard_pid") as mock_dash:
+            with patch("issue_orchestrator.observation.instance_detector._read_dashboard_pid") as mock_dash:
                 mock_dash.return_value = DashboardStatus(running=False)
-                with patch("issue_orchestrator.control.instance_detector.list_configs", return_value=[]):
-                    with patch("issue_orchestrator.control.instance_detector.supervisor") as mock_sup:
+                with patch("issue_orchestrator.observation.instance_detector.list_configs", return_value=[]):
+                    with patch("issue_orchestrator.observation.instance_detector.supervisor") as mock_sup:
                         mock_sup.status.return_value = MagicMock(state="stopped")
                         state = detect_system_state(tmp_path)
 
@@ -243,9 +243,9 @@ class TestDetectSystemState:
         (tmp_path / ".git").mkdir()
         (tmp_path / "pyproject.toml").write_text('[project]\nname = "issue-orchestrator"\n')
 
-        with patch("issue_orchestrator.control.instance_detector.load_registry") as mock_registry:
+        with patch("issue_orchestrator.observation.instance_detector.load_registry") as mock_registry:
             mock_registry.return_value.repos = []
-            with patch("issue_orchestrator.control.instance_detector._read_dashboard_pid") as mock_dash:
+            with patch("issue_orchestrator.observation.instance_detector._read_dashboard_pid") as mock_dash:
                 mock_dash.return_value = DashboardStatus(running=False)
                 state = detect_system_state(tmp_path)
 

@@ -225,14 +225,14 @@ class McpApp:
 
     def get_system_state(self) -> dict[str, Any]:
         """Get complete system state."""
-        from ..control.instance_detector import detect_system_state
+        from ..observation.instance_detector import detect_system_state
 
         state = detect_system_state()
         return state.to_dict()
 
     def list_repos(self) -> dict[str, Any]:
         """List all repos with status."""
-        from ..control.instance_detector import detect_system_state
+        from ..observation.instance_detector import detect_system_state
 
         state = detect_system_state()
         return {"repos": [r.to_dict() for r in state.repos]}
