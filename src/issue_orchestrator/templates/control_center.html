@@ -1288,28 +1288,51 @@
         // ============================================
         // Repository Loading
         // ============================================
+        let deepLinkHandled = false;
+
         async function loadRepos() {
             try {
-                const response = await fetch('/api/state');
+                const response = await fetch('/control/repos');
                 const data = await response.json();
                 state.repos = data.repos || [];
                 renderRepos();
                 updateSidebarRepos();
                 updateRunningCount();
 
-                // Check for deep-link in URL
-                const params = new URLSearchParams(window.location.search);
-                const repoPath = params.get('repo');
-                if (repoPath) {
-                    const repo = state.repos.find(r => r.path === repoPath);
-                    if (repo && (repo.orchestrator_state === 'running' || repo.orchestrator_state === 'paused')) {
-                        switchView('activity', repoPath);
+                // Check for deep-link in URL (only on first load)
+                if (!deepLinkHandled) {
+                    deepLinkHandled = true;
+                    const params = new URLSearchParams(window.location.search);
+                    const repoPath = params.get('repo');
+                    if (repoPath) {
+                        const repo = state.repos.find(r => r.path === repoPath);
+                        const repoState = repo?.status?.state;
+                        if (repo && (repoState === 'running' || repo?.status?.paused)) {
+                            switchView('activity', repoPath);
+                        }
                     }
                 }
             } catch (error) {
                 console.error('Failed to load repos:', error);
                 showToast('Failed to load repositories', 'error');
             }
+        }
+
+        // Helper to extract orchestrator state from backend format
+        function getRepoState(repo) {
+            const status = repo.status || {};
+            if (status.paused) return 'paused';
+            if (status.state === 'running') return 'running';
+            if (status.state === 'partial') return 'running';
+            return 'stopped';
+        }
+
+        function getRepoPort(repo) {
+            return repo.status?.port || null;
+        }
+
+        function needsSetup(repo) {
+            return !repo.configs || repo.configs.length === 0;
         }
 
         function renderRepos() {
@@ -1338,28 +1361,30 @@
         }
 
         function renderRepoCard(repo) {
-            const isRunning = repo.orchestrator_state === 'running';
-            const isPaused = repo.orchestrator_state === 'paused';
-            const isStopped = repo.orchestrator_state === 'stopped';
-            const needsSetup = repo.config_status === 'needs_setup';
+            const repoState = getRepoState(repo);
+            const isRunning = repoState === 'running';
+            const isPaused = repoState === 'paused';
+            const isStopped = repoState === 'stopped';
+            const isNeedsSetup = needsSetup(repo);
 
             let badgeClass = 'stopped';
             let badgeText = 'Stopped';
             if (isRunning) { badgeClass = 'running'; badgeText = 'Running'; }
             if (isPaused) { badgeClass = 'paused'; badgeText = 'Paused'; }
-            if (needsSetup) { badgeClass = 'needs-setup'; badgeText = 'Needs Setup'; }
+            if (isNeedsSetup) { badgeClass = 'needs-setup'; badgeText = 'Needs Setup'; }
 
+            const port = getRepoPort(repo);
             const stats = isRunning || isPaused ? `
                 <div class="repo-card-stats">
                     <span class="repo-card-stat">
                         <svg viewBox="0 0 16 16"><path fill-rule="evenodd" d="M7.775 3.275a.75.75 0 001.06 1.06l1.25-1.25a2 2 0 112.83 2.83l-2.5 2.5a2 2 0 01-2.83 0 .75.75 0 00-1.06 1.06 3.5 3.5 0 004.95 0l2.5-2.5a3.5 3.5 0 00-4.95-4.95l-1.25 1.25zm-4.69 9.64a2 2 0 010-2.83l2.5-2.5a2 2 0 012.83 0 .75.75 0 001.06-1.06 3.5 3.5 0 00-4.95 0l-2.5 2.5a3.5 3.5 0 004.95 4.95l1.25-1.25a.75.75 0 00-1.06-1.06l-1.25 1.25a2 2 0 01-2.83 0z"/></svg>
-                        Port ${repo.orchestrator_port || 'N/A'}
+                        Port ${port || 'N/A'}
                     </span>
                 </div>
             ` : '';
 
             let actions = '';
-            if (needsSetup) {
+            if (isNeedsSetup) {
                 actions = `<button class="btn btn-primary" data-action="setup" data-path="${escapeHtml(repo.path)}">Setup</button>`;
             } else if (isStopped) {
                 actions = `<button class="btn btn-primary" data-action="start" data-path="${escapeHtml(repo.path)}">Start</button>`;
@@ -1389,9 +1414,10 @@
 
         function updateSidebarRepos() {
             const container = document.getElementById('sidebarRepoList');
-            const runningRepos = state.repos.filter(r =>
-                r.orchestrator_state === 'running' || r.orchestrator_state === 'paused'
-            );
+            const runningRepos = state.repos.filter(r => {
+                const repoState = getRepoState(r);
+                return repoState === 'running' || repoState === 'paused';
+            });
 
             if (runningRepos.length === 0) {
                 container.innerHTML = '';
@@ -1400,7 +1426,7 @@
 
             container.innerHTML = runningRepos.map(repo => `
                 <button class="nav-repo-item" data-repo-path="${escapeHtml(repo.path)}">
-                    <span class="nav-repo-dot ${repo.orchestrator_state === 'paused' ? 'paused' : ''}"></span>
+                    <span class="nav-repo-dot ${getRepoState(repo) === 'paused' ? 'paused' : ''}"></span>
                     ${escapeHtml(repo.name)}
                 </button>
             `).join('');
@@ -1414,9 +1440,10 @@
         }
 
         function updateRunningCount() {
-            const count = state.repos.filter(r =>
-                r.orchestrator_state === 'running' || r.orchestrator_state === 'paused'
-            ).length;
+            const count = state.repos.filter(r => {
+                const repoState = getRepoState(r);
+                return repoState === 'running' || repoState === 'paused';
+            }).length;
             document.getElementById('runningCount').textContent = count;
         }
 
@@ -1432,16 +1459,18 @@
             }
 
             state.activeRepo = repo;
+            const repoState = getRepoState(repo);
+            const isPaused = repoState === 'paused';
 
             // Update header info
             document.getElementById('activityRepoName').textContent = repo.name;
             const badge = document.getElementById('activityRepoBadge');
-            badge.textContent = repo.orchestrator_state === 'paused' ? 'Paused' : 'Running';
-            badge.className = `repo-card-badge ${repo.orchestrator_state === 'paused' ? 'paused' : 'running'}`;
+            badge.textContent = isPaused ? 'Paused' : 'Running';
+            badge.className = `repo-card-badge ${isPaused ? 'paused' : 'running'}`;
 
             // Update pause/resume button
             const pauseBtn = document.getElementById('pauseResumeBtn');
-            pauseBtn.textContent = repo.orchestrator_state === 'paused' ? 'Resume' : 'Pause';
+            pauseBtn.textContent = isPaused ? 'Resume' : 'Pause';
 
             // Load iframe
             const iframe = document.getElementById('activityIframe');
@@ -1450,7 +1479,7 @@
             iframe.style.display = 'none';
 
             // Set iframe source to orchestrator dashboard
-            const port = repo.orchestrator_port;
+            const port = getRepoPort(repo);
             if (port) {
                 iframe.src = `http://localhost:${port}/`;
                 iframe.onload = () => {
@@ -1492,10 +1521,10 @@
 
         async function startRepo(path) {
             try {
-                const response = await fetch('/api/repos/start', {
+                const response = await fetch('/control/orchestrator/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path })
+                    body: JSON.stringify({ repo_root: path, config_name: 'default.yaml' })
                 });
 
                 if (!response.ok) {
@@ -1512,10 +1541,10 @@
 
         async function stopRepo(path) {
             try {
-                const response = await fetch('/api/repos/stop', {
+                const response = await fetch('/control/orchestrator/stop', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ path })
+                    body: JSON.stringify({ repo_root: path })
                 });
 
                 if (!response.ok) {
@@ -1538,7 +1567,7 @@
         // ============================================
         // Doctor
         // ============================================
-        async function runDoctor() {
+        async function runDoctor(repoPath = null) {
             const modal = document.getElementById('doctorModal');
             const results = document.getElementById('doctorResults');
 
@@ -1546,14 +1575,28 @@
             results.innerHTML = 'Running diagnostics...';
 
             try {
-                const response = await fetch('/api/doctor');
+                // Use the active repo or first available repo for doctor check
+                const targetPath = repoPath || state.activeRepo?.path || state.repos[0]?.path;
+                const url = targetPath
+                    ? `/control/orchestrator/doctor?repo_root=${encodeURIComponent(targetPath)}`
+                    : '/control/setup/prereqs';
+                const response = await fetch(url);
                 const data = await response.json();
 
                 let html = '';
-                for (const check of data.checks || []) {
-                    const status = check.passed ? 'pass' : 'fail';
-                    const icon = check.passed ? '✓' : '✗';
-                    html += `<div class="doctor-check ${status}">${icon} ${escapeHtml(check.name)}: ${escapeHtml(check.message)}</div>`;
+                // Handle doctor endpoint format
+                if (data.checks) {
+                    for (const [name, check] of Object.entries(data.checks)) {
+                        const passed = check.ok || check.passed;
+                        const status = passed ? 'pass' : 'fail';
+                        const icon = passed ? '✓' : '✗';
+                        const message = check.message || check.detail || (passed ? 'OK' : 'Failed');
+                        html += `<div class="doctor-check ${status}">${icon} ${escapeHtml(name)}: ${escapeHtml(message)}</div>`;
+                    }
+                }
+                // Handle prereqs endpoint format
+                if (data.all_ok !== undefined) {
+                    html += `<div class="doctor-check ${data.all_ok ? 'pass' : 'fail'}">Overall: ${data.all_ok ? 'All checks passed' : 'Some checks failed'}</div>`;
                 }
 
                 results.innerHTML = html || 'All checks passed!';
@@ -1571,7 +1614,7 @@
 
         async function confirmShutdown() {
             try {
-                await fetch('/api/shutdown', { method: 'POST' });
+                await fetch('/control/shutdown', { method: 'POST' });
                 showToast('Dashboard shutting down...', 'success');
                 setTimeout(() => window.close(), 1000);
             } catch (error) {
@@ -1675,14 +1718,14 @@
             // Pause/Resume in activity view
             document.getElementById('pauseResumeBtn').addEventListener('click', async () => {
                 if (!state.activeRepo) return;
-                const isPaused = state.activeRepo.orchestrator_state === 'paused';
-                const endpoint = isPaused ? '/api/repos/resume' : '/api/repos/pause';
+                const isPaused = getRepoState(state.activeRepo) === 'paused';
+                const endpoint = isPaused ? '/control/orchestrator/resume' : '/control/orchestrator/pause';
 
                 try {
                     const response = await fetch(endpoint, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ path: state.activeRepo.path })
+                        body: JSON.stringify({ repo_root: state.activeRepo.path })
                     });
 
                     if (!response.ok) {
