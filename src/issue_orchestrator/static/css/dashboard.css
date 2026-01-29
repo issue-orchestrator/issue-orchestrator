@@ -2761,6 +2761,11 @@ button:focus-visible,
 .category-header .toggle-icon {
     color: #8b949e;
     transition: transform 0.2s ease;
+    display: inline-block;
+}
+
+.category-header .toggle-icon::before {
+    content: '▼';
 }
 
 .category-header[aria-expanded="false"] .toggle-icon {

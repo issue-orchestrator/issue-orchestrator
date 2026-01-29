@@ -3905,16 +3905,16 @@ function renderCategorySection(categoryKey, title, tests, description, styleClas
     if (!tests || tests.length === 0) return '';
 
     const isCollapsible = collapsed || tests.length > 5;
+    const expanded = !collapsed;
 
     let html = `
-        <div class="category-section category-${styleClass}" data-category="${categoryKey}">
-            <div class="category-header" ${isCollapsible ? `onclick="toggleCategorySection('${categoryKey}')"` : ''}>
-                <div class="category-title-row">
-                    <span class="category-title">${title} (${tests.length})</span>
-                    ${isCollapsible ? `<span class="category-toggle" id="toggle-${categoryKey}">${collapsed ? '▶' : '▼'}</span>` : ''}
-                </div>
-                <div class="category-description">${description}</div>
+        <div class="category-section ${categoryKey}" data-category="${categoryKey}">
+            <div class="category-header" ${isCollapsible ? `onclick="toggleCategorySection('${categoryKey}')" role="button" tabindex="0" aria-expanded="${expanded}"` : ''}>
+                <span class="title">${title}</span>
+                <span class="count">${tests.length}</span>
+                ${isCollapsible ? `<span class="toggle-icon" id="toggle-${categoryKey}"></span>` : ''}
             </div>
+            <div class="category-description">${description}</div>
             <div class="category-tests" id="tests-${categoryKey}" style="${collapsed ? 'display: none;' : ''}">
     `;
 
@@ -3953,7 +3953,7 @@ function renderTestRow(test, category) {
     }
 
     // Build duration
-    const durationHtml = test.duration_seconds ? `<span class="test-duration">${test.duration_seconds.toFixed(1)}s</span>` : '';
+    const durationHtml = test.duration_seconds ? `<span class="duration">${test.duration_seconds.toFixed(1)}s</span>` : '';
 
     // Build issue link or action buttons based on category
     let actionsHtml = '';
@@ -3962,7 +3962,7 @@ function renderTestRow(test, category) {
         const issueStatus = test.existing_issue.status;
         if (category === 'fixed' && issueStatus === 'open') {
             actionsHtml = `
-                <span class="issue-ref">→ #${issueNum} ${issueStatus}</span>
+                <span class="issue-link-inline">→ #${issueNum} ${issueStatus}</span>
                 <button class="action-btn close-issue-btn" onclick="closeE2EIssue(${issueNum}, '${escapeAttr(test.nodeid)}'); event.stopPropagation();">
                     Close #${issueNum}
                 </button>
@@ -3970,7 +3970,7 @@ function renderTestRow(test, category) {
         } else {
             actionsHtml = `
                 <a href="https://github.com/${window.dashboardData.githubOwner}/${window.dashboardData.githubRepo}/issues/${issueNum}"
-                   target="_blank" class="issue-ref" onclick="event.stopPropagation();">
+                   target="_blank" class="issue-link-inline" onclick="event.stopPropagation();">
                     → #${issueNum} ${issueStatus}
                 </a>
             `;
@@ -4000,7 +4000,7 @@ function renderTestRow(test, category) {
         errorPreviewHtml = `
             <div class="test-error-preview">
                 <pre>${escapeHtml(preview)}</pre>
-                ${hasMore ? `<button class="expand-error-btn" onclick="toggleTestError(this); event.stopPropagation();">Expand ▼</button>` : ''}
+                ${hasMore ? `<button class="expand-btn" onclick="toggleTestError(this); event.stopPropagation();">Expand ▼</button>` : ''}
             </div>
             <div class="test-error-full" style="display: none;">
                 <pre>${escapeHtml(test.longrepr)}</pre>
@@ -4029,12 +4029,13 @@ function renderTestRow(test, category) {
  */
 function toggleCategorySection(categoryKey) {
     const testsDiv = document.getElementById(`tests-${categoryKey}`);
-    const toggleSpan = document.getElementById(`toggle-${categoryKey}`);
-    if (!testsDiv || !toggleSpan) return;
+    const section = testsDiv?.closest('.category-section');
+    const header = section?.querySelector('.category-header');
+    if (!testsDiv || !header) return;
 
     const isHidden = testsDiv.style.display === 'none';
     testsDiv.style.display = isHidden ? 'block' : 'none';
-    toggleSpan.textContent = isHidden ? '▼' : '▶';
+    header.setAttribute('aria-expanded', isHidden ? 'true' : 'false');
 }
 
 /**
