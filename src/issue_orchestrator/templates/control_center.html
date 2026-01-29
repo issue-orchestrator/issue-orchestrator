@@ -3,634 +3,1601 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Issue Orchestrator Dashboard</title>
+    <title>Issue Orchestrator</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.ico">
     <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        /* ============================================
+           CSS Variables & Theme Support
+           ============================================ */
+        :root {
+            /* Dark theme (default) */
+            --sidebar-width: 220px;
+            --bg-sidebar: #161b22;
+            --bg-main: #0d1117;
+            --bg-card: #161b22;
+            --bg-card-hover: #1c2128;
+            --bg-input: #0d1117;
+            --border-color: #30363d;
+            --border-subtle: #21262d;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #6e7681;
+            --accent-blue: #58a6ff;
+            --accent-green: #3fb950;
+            --accent-yellow: #d29922;
+            --accent-red: #f85149;
+            --accent-purple: #a371f7;
+            --focus-ring: rgba(88, 166, 255, 0.4);
+            --shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+        }
+
+        [data-theme="light"] {
+            --bg-sidebar: #f6f8fa;
+            --bg-main: #ffffff;
+            --bg-card: #f6f8fa;
+            --bg-card-hover: #eaeef2;
+            --bg-input: #ffffff;
+            --border-color: #d0d7de;
+            --border-subtle: #d8dee4;
+            --text-primary: #1f2328;
+            --text-secondary: #656d76;
+            --text-muted: #8c959f;
+            --accent-blue: #0969da;
+            --accent-green: #1a7f37;
+            --accent-yellow: #9a6700;
+            --accent-red: #cf222e;
+            --accent-purple: #8250df;
+            --focus-ring: rgba(9, 105, 218, 0.3);
+            --shadow: 0 8px 24px rgba(140, 149, 159, 0.2);
+        }
+
+        /* ============================================
+           Base Styles & Reset
+           ============================================ */
+        *, *::before, *::after {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        html, body {
+            height: 100%;
+        }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            background: #0d1117;
-            color: #c9d1d9;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+            background: var(--bg-main);
+            color: var(--text-primary);
+            line-height: 1.5;
+        }
+
+        /* Respect reduced motion preference */
+        @media (prefers-reduced-motion: reduce) {
+            *, *::before, *::after {
+                animation-duration: 0.01ms !important;
+                animation-iteration-count: 1 !important;
+                transition-duration: 0.01ms !important;
+            }
+        }
+
+        /* Focus styles for accessibility */
+        :focus-visible {
+            outline: 2px solid var(--accent-blue);
+            outline-offset: 2px;
+        }
+
+        /* ============================================
+           App Layout (Sidebar + Main)
+           ============================================ */
+        .app-layout {
+            display: flex;
             min-height: 100vh;
         }
-        .container { max-width: 1000px; margin: 0 auto; padding: 24px; }
 
-        header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 24px;
-            padding-bottom: 16px;
-            border-bottom: 1px solid #21262d;
-        }
-        h1 { font-size: 20px; font-weight: 600; color: #fff; }
-        .subtitle { font-size: 12px; color: #8b949e; margin-top: 4px; }
-        .header-actions { display: flex; gap: 8px; }
-        .header-actions .btn-toggle { border-color: #58a6ff; color: #58a6ff; }
-        .header-actions .btn-toggle.active { background: #1f6feb; border-color: #1f6feb; color: #fff; }
-
-        .card {
-            border: 1px solid #21262d;
-            border-radius: 8px;
-            margin-bottom: 16px;
-            overflow: hidden;
-        }
-        .card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 12px 16px;
-            background: #161b22;
-            border-bottom: 1px solid #21262d;
-            font-weight: 600;
-            font-size: 14px;
-        }
-        .card-body { padding: 16px; }
-
-        .btn {
-            padding: 8px 16px;
-            border-radius: 6px;
-            font-size: 13px;
-            font-weight: 500;
-            cursor: pointer;
-            border: 1px solid #30363d;
-            background: #21262d;
-            color: #c9d1d9;
-        }
-        .btn:hover:not(:disabled) { background: #30363d; }
-        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-        .btn-primary { background: #238636; border-color: #238636; color: #fff; }
-        .btn-primary:hover:not(:disabled) { background: #2ea043; }
-        .btn-danger { border-color: #f85149; color: #f85149; background: transparent; }
-        .btn-danger:hover:not(:disabled) { background: #f85149; color: #fff; }
-        .btn-sm { padding: 4px 8px; font-size: 11px; }
-
-        .repo-list { border: 1px solid #21262d; border-radius: 8px; overflow: hidden; }
-        .repo-header {
-            display: grid;
-            grid-template-columns: 1fr 120px 80px 200px;
-            align-items: center;
-            padding: 10px 16px;
-            background: #161b22;
-            border-bottom: 1px solid #21262d;
-            font-size: 11px;
-            font-weight: 600;
-            color: #8b949e;
-            text-transform: uppercase;
-        }
-        .repo-row {
-            display: grid;
-            grid-template-columns: 1fr 120px 80px 200px;
-            align-items: center;
-            padding: 14px 16px;
-            border-bottom: 1px solid #21262d;
-        }
-        .repo-row:last-child { border-bottom: none; }
-        .repo-row:hover { background: #161b22; }
-        .repo-name { font-weight: 600; color: #58a6ff; font-size: 14px; }
-        .repo-path {
-            font-size: 11px;
-            color: #8b949e;
-            font-family: monospace;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-            margin-top: 2px;
-        }
-        .repo-status { font-size: 13px; display: flex; align-items: center; gap: 6px; }
-        .status-dot { width: 8px; height: 8px; border-radius: 50%; }
-        .status-running .status-dot { background: #3fb950; }
-        .status-stopped .status-dot { background: #8b949e; }
-        .status-failed .status-dot { background: #f85149; }
-        .status-paused .status-dot { background: #d29922; }
-        .repo-port { font-size: 13px; color: #8b949e; font-family: monospace; }
-        .repo-actions { display: flex; gap: 6px; justify-content: flex-end; flex-wrap: wrap; }
-        .repo-actions button { padding: 5px 10px; font-size: 11px; }
-        .primary-status {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 12px 0;
-            border-bottom: 1px solid #21262d;
-        }
-        .primary-status:last-child { border-bottom: none; }
-        .primary-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-        .primary-select { margin-top: 8px; }
-        .primary-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
-        .primary-meta { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 10px; }
-        .primary-pill {
-            padding: 2px 8px;
-            border-radius: 999px;
-            border: 1px solid #30363d;
-            font-size: 11px;
-            color: #8b949e;
-        }
-        .primary-pill strong { color: #c9d1d9; font-weight: 600; }
-        .primary-doctor {
-            margin-top: 16px;
-            padding-top: 12px;
-            border-top: 1px dashed #21262d;
-        }
-        .primary-doctor-header { display: flex; align-items: center; gap: 10px; }
-        .primary-doctor-summary { font-size: 12px; color: #8b949e; }
-        .primary-doctor-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-        .primary-doctor-list { margin-top: 10px; font-size: 12px; }
-        .primary-doctor-item { display: flex; gap: 8px; align-items: flex-start; margin-bottom: 6px; }
-        .advanced-section { display: none; }
-        .advanced-section.visible { display: block; }
-
-        /* Multi-instance styling */
-        .instance-row {
-            display: grid;
-            grid-template-columns: 1fr 120px 80px 200px;
-            align-items: center;
-            padding: 10px 16px 10px 40px;
-            border-bottom: 1px solid #21262d;
-            background: #0d1117;
-            font-size: 12px;
-        }
-        .instance-row:last-child { border-bottom: none; }
-        .instance-row:hover { background: #161b22; }
-        .instance-id { color: #8b949e; font-family: monospace; }
-        .instance-status { font-size: 12px; display: flex; align-items: center; gap: 6px; }
-        .instance-port { font-size: 12px; color: #8b949e; font-family: monospace; }
-        .e2e-badge {
-            display: inline-block;
-            padding: 1px 5px;
-            font-size: 9px;
-            border-radius: 3px;
-            margin-left: 6px;
-            font-weight: 500;
-            text-transform: uppercase;
-        }
-        .e2e-badge.executor { background: #238636; color: #fff; }
-        .e2e-badge.observer { background: #6e7681; color: #fff; }
-        .instance-actions { display: flex; gap: 6px; justify-content: flex-end; }
-        .instance-actions button { padding: 4px 8px; font-size: 10px; }
-        .expand-toggle {
-            cursor: pointer;
-            user-select: none;
-            margin-right: 8px;
-            color: #8b949e;
-            font-size: 10px;
-        }
-        .expand-toggle:hover { color: #58a6ff; }
-        .instances-container { display: none; }
-        .instances-container.expanded { display: block; }
-        .status-partial .status-dot { background: #d29922; }
-
-        .empty-state {
-            padding: 48px;
-            text-align: center;
-            color: #8b949e;
-        }
-
-        .error-badge {
-            display: inline-block;
-            padding: 2px 6px;
-            font-size: 10px;
-            background: #f8514920;
-            color: #f85149;
-            border-radius: 4px;
-            margin-left: 8px;
-        }
-
-        .status-badge {
-            display: inline-block;
-            padding: 2px 8px;
-            font-size: 10px;
-            border-radius: 4px;
-            margin-left: 8px;
-            font-weight: 500;
-        }
-
-        .discovered-list {
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            overflow: hidden;
-        }
-        .discovered-item {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            padding: 10px 14px;
-            background: #0d1117;
-            border-bottom: 1px solid #21262d;
-            font-size: 13px;
-        }
-        .discovered-item:last-child { border-bottom: none; }
-        .discovered-item:hover { background: #161b22; }
-        .discovered-name { font-weight: 500; color: #58a6ff; min-width: 150px; }
-        .discovered-path { flex: 1; font-size: 12px; color: #8b949e; font-family: monospace; overflow: hidden; text-overflow: ellipsis; }
-        .discovered-item button { white-space: nowrap; }
-
-        /* Welcome screen */
-        .welcome-screen {
-            text-align: center;
-            padding: 60px 20px;
-        }
-        .welcome-screen h2 {
-            font-size: 24px;
-            margin-bottom: 12px;
-            color: #fff;
-        }
-        .welcome-screen p {
-            color: #8b949e;
-            margin-bottom: 24px;
-            max-width: 500px;
-            margin-left: auto;
-            margin-right: auto;
-        }
-
-        /* Setup Wizard Modal */
-        .wizard-overlay {
-            display: none;
-            position: fixed;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background: rgba(0,0,0,0.8);
-            z-index: 1000;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-        }
-        .wizard-overlay.visible { display: flex; }
-        .wizard {
-            background: #161b22;
-            border: 1px solid #30363d;
-            border-radius: 12px;
-            max-width: 700px;
-            width: 100%;
-            max-height: 90vh;
+        /* ============================================
+           Sidebar Navigation
+           ============================================ */
+        .sidebar {
+            width: var(--sidebar-width);
+            background: var(--bg-sidebar);
+            border-right: 1px solid var(--border-subtle);
             display: flex;
             flex-direction: column;
-        }
-        .wizard-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 16px 20px;
-            border-bottom: 1px solid #30363d;
-        }
-        .wizard-header h2 { font-size: 16px; font-weight: 600; }
-        .wizard-close {
-            background: none;
-            border: none;
-            color: #8b949e;
-            font-size: 24px;
-            cursor: pointer;
-            line-height: 1;
-        }
-        .wizard-close:hover { color: #c9d1d9; }
-        .wizard-progress {
-            display: flex;
-            padding: 16px 20px;
-            gap: 8px;
-            border-bottom: 1px solid #21262d;
-        }
-        .wizard-step {
-            flex: 1;
-            height: 4px;
-            background: #21262d;
-            border-radius: 2px;
-        }
-        .wizard-step.active { background: #238636; }
-        .wizard-step.completed { background: #3fb950; }
-        .wizard-body {
-            flex: 1;
-            overflow-y: auto;
-            padding: 20px;
-        }
-        .wizard-footer {
-            display: flex;
-            justify-content: space-between;
-            padding: 16px 20px;
-            border-top: 1px solid #30363d;
-        }
-
-        /* Wizard form elements */
-        .form-group { margin-bottom: 20px; }
-        .form-label {
-            display: block;
-            font-size: 13px;
-            font-weight: 500;
-            margin-bottom: 6px;
-            color: #c9d1d9;
-        }
-        .form-hint {
-            font-size: 11px;
-            color: #8b949e;
-            margin-top: 4px;
-        }
-        .form-input {
-            width: 100%;
-            padding: 10px 12px;
-            border-radius: 6px;
-            border: 1px solid #30363d;
-            background: #0d1117;
-            color: #c9d1d9;
-            font-size: 14px;
-        }
-        .form-input:focus {
-            outline: none;
-            border-color: #58a6ff;
-        }
-        .form-input::placeholder { color: #484f58; }
-        .form-select {
-            width: 100%;
-            padding: 10px 12px;
-            border-radius: 6px;
-            border: 1px solid #30363d;
-            background: #0d1117;
-            color: #c9d1d9;
-            font-size: 14px;
-        }
-        .form-checkbox {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            cursor: pointer;
-        }
-        .form-checkbox input { width: 16px; height: 16px; }
-
-        .prereq-list { margin-top: 12px; }
-        .prereq-item {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            padding: 10px 12px;
-            background: #0d1117;
-            border-radius: 6px;
-            margin-bottom: 8px;
-        }
-        .prereq-icon { font-size: 16px; }
-        .prereq-ok .prereq-icon { color: #3fb950; }
-        .prereq-fail .prereq-icon { color: #f85149; }
-        .prereq-name { font-weight: 500; }
-        .prereq-detail { font-size: 12px; color: #8b949e; margin-left: auto; }
-
-        .agent-card {
-            border: 1px solid #30363d;
-            border-radius: 8px;
-            margin-bottom: 12px;
-            overflow: hidden;
-        }
-        .agent-card-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 10px 14px;
-            background: #0d1117;
-            cursor: pointer;
-        }
-        .agent-card-header:hover { background: #161b22; }
-        .agent-card-body {
-            padding: 14px;
-            border-top: 1px solid #30363d;
-            display: none;
-        }
-        .agent-card.expanded .agent-card-body { display: block; }
-        .agent-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 12px; }
-
-        .yaml-preview {
-            background: #0d1117;
-            border: 1px solid #30363d;
-            border-radius: 6px;
-            padding: 12px;
-            font-family: monospace;
-            font-size: 12px;
-            white-space: pre-wrap;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-
-        .toast {
-            position: fixed;
-            bottom: 24px;
-            left: 50%;
-            transform: translateX(-50%) translateY(100px);
-            background: #238636;
-            color: #fff;
-            padding: 12px 24px;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 500;
-            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
-            opacity: 0;
-            transition: transform 0.3s ease, opacity 0.3s ease;
-            z-index: 10000;
-        }
-        .toast.visible { transform: translateX(-50%) translateY(0); opacity: 1; }
-        .toast.error { background: #f85149; }
-
-        /* Details panel */
-        .info-row {
-            display: flex;
-            justify-content: space-between;
-            padding: 8px 0;
-            border-bottom: 1px solid #21262d;
-        }
-        .info-row:last-child { border-bottom: none; }
-        .info-label { color: #8b949e; }
-        .info-value { font-family: monospace; }
-
-        .log-viewer {
-            background: #0d1117;
-            border-radius: 6px;
-            font-family: monospace;
-            font-size: 11px;
-            max-height: 300px;
-            overflow-y: auto;
-            padding: 12px;
-        }
-        .log-line { padding: 2px 0; white-space: pre-wrap; word-break: break-all; }
-
-        .error-panel {
-            background: #2d1b1b;
-            border: 1px solid #f85149;
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 16px;
-        }
-        .error-panel-title {
-            color: #f85149;
-            font-weight: 600;
-            margin-bottom: 8px;
-        }
-        .error-panel-body { font-size: 13px; }
-
-        .doctor-check { padding: 8px 0; }
-        .doctor-check-status { display: inline-block; width: 20px; }
-
-        /* Modal styles */
-        .modal-overlay {
+            flex-shrink: 0;
             position: fixed;
             top: 0;
             left: 0;
-            right: 0;
-            bottom: 0;
-            background: rgba(0, 0, 0, 0.7);
+            height: 100vh;
+            z-index: 100;
+        }
+
+        .sidebar-header {
+            padding: 20px 16px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .sidebar-logo {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-decoration: none;
+            color: var(--text-primary);
+        }
+
+        .sidebar-logo svg {
+            width: 28px;
+            height: 28px;
+            fill: var(--accent-blue);
+        }
+
+        .sidebar-logo-text {
+            font-size: 15px;
+            font-weight: 600;
+            line-height: 1.2;
+        }
+
+        .sidebar-logo-text span {
+            display: block;
+        }
+
+        .sidebar-nav {
+            flex: 1;
+            padding: 12px 8px;
+            overflow-y: auto;
+        }
+
+        .nav-section {
+            margin-bottom: 4px;
+        }
+
+        .nav-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            padding: 8px 12px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 14px;
+            font-weight: 500;
+            text-align: left;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+        }
+
+        .nav-item:hover {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
+        }
+
+        .nav-item.active {
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent-blue);
+        }
+
+        .nav-item svg {
+            width: 16px;
+            height: 16px;
+            flex-shrink: 0;
+            fill: currentColor;
+        }
+
+        /* Running repos sub-list in sidebar */
+        .nav-repo-list {
+            padding-left: 20px;
+            margin-top: 4px;
+        }
+
+        .nav-repo-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 13px;
+            text-align: left;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+        }
+
+        .nav-repo-item:hover {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
+        }
+
+        .nav-repo-item.active {
+            background: rgba(88, 166, 255, 0.1);
+            color: var(--accent-blue);
+        }
+
+        .nav-repo-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--accent-green);
+            flex-shrink: 0;
+        }
+
+        .nav-repo-dot.paused {
+            background: var(--accent-yellow);
+        }
+
+        .sidebar-footer {
+            padding: 12px 8px;
+            border-top: 1px solid var(--border-subtle);
+        }
+
+        /* ============================================
+           Main Content Area
+           ============================================ */
+        .main-content {
+            flex: 1;
+            margin-left: var(--sidebar-width);
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+
+        /* ============================================
+           Header
+           ============================================ */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 24px;
+            border-bottom: 1px solid var(--border-subtle);
+            background: var(--bg-main);
+            position: sticky;
+            top: 0;
+            z-index: 50;
+        }
+
+        .header-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* ============================================
+           Buttons
+           ============================================ */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            padding: 8px 14px;
+            border-radius: 6px;
+            font-size: 13px;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid var(--border-color);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            transition: background 0.15s, border-color 0.15s;
+            text-decoration: none;
+        }
+
+        .btn:hover:not(:disabled) {
+            background: var(--bg-card-hover);
+        }
+
+        .btn:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+        }
+
+        .btn-primary {
+            background: var(--accent-green);
+            border-color: var(--accent-green);
+            color: #fff;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: #2ea043;
+        }
+
+        .btn-danger {
+            border-color: var(--accent-red);
+            color: var(--accent-red);
+            background: transparent;
+        }
+
+        .btn-danger:hover:not(:disabled) {
+            background: var(--accent-red);
+            color: #fff;
+        }
+
+        .btn-sm {
+            padding: 5px 10px;
+            font-size: 12px;
+        }
+
+        .btn-icon {
+            padding: 8px;
+            border: none;
+            background: transparent;
+        }
+
+        .btn-icon:hover {
+            background: var(--bg-card-hover);
+        }
+
+        /* ============================================
+           View Containers
+           ============================================ */
+        .view-container {
+            display: none;
+            flex: 1;
+            padding: 24px;
+            overflow-y: auto;
+        }
+
+        .view-container.active {
+            display: block;
+        }
+
+        /* Activity view needs special handling for iframe */
+        #activityView.active {
+            display: flex;
+            flex-direction: column;
+            padding: 0;
+        }
+
+        /* ============================================
+           Repositories View
+           ============================================ */
+        .repos-grid {
+            display: grid;
+            gap: 16px;
+            grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+        }
+
+        .repo-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            transition: border-color 0.15s, box-shadow 0.15s;
+        }
+
+        .repo-card:hover {
+            border-color: var(--accent-blue);
+            box-shadow: var(--shadow);
+        }
+
+        .repo-card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 12px;
+        }
+
+        .repo-card-title {
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--accent-blue);
+            margin-bottom: 4px;
+        }
+
+        .repo-card-path {
+            font-size: 12px;
+            font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+            color: var(--text-muted);
+            word-break: break-all;
+        }
+
+        .repo-card-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.3px;
+            flex-shrink: 0;
+        }
+
+        .repo-card-badge.running {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--accent-green);
+        }
+
+        .repo-card-badge.paused {
+            background: rgba(210, 153, 34, 0.15);
+            color: var(--accent-yellow);
+        }
+
+        .repo-card-badge.stopped {
+            background: rgba(139, 148, 158, 0.15);
+            color: var(--text-secondary);
+        }
+
+        .repo-card-badge.needs-setup {
+            background: rgba(163, 113, 247, 0.15);
+            color: var(--accent-purple);
+        }
+
+        .repo-card-stats {
+            display: flex;
+            gap: 16px;
+            margin-bottom: 12px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .repo-card-stat {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }
+
+        .repo-card-stat svg {
+            width: 14px;
+            height: 14px;
+            fill: currentColor;
+        }
+
+        .repo-card-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .repo-card-actions .btn {
+            flex: 1;
+            min-width: 80px;
+        }
+
+        /* Current directory indicator */
+        .repo-card.current-dir {
+            border-color: var(--accent-blue);
+            border-width: 2px;
+        }
+
+        .repo-card.current-dir::before {
+            content: "Current Directory";
+            display: block;
+            font-size: 10px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--accent-blue);
+            margin-bottom: 8px;
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 60px 24px;
+            color: var(--text-secondary);
+        }
+
+        .empty-state svg {
+            width: 64px;
+            height: 64px;
+            fill: var(--text-muted);
+            margin-bottom: 16px;
+        }
+
+        .empty-state h3 {
+            font-size: 18px;
+            color: var(--text-primary);
+            margin-bottom: 8px;
+        }
+
+        .empty-state p {
+            margin-bottom: 16px;
+        }
+
+        /* ============================================
+           Activity View (Embedded Dashboard)
+           ============================================ */
+        .activity-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 24px;
+            border-bottom: 1px solid var(--border-subtle);
+            background: var(--bg-card);
+        }
+
+        .activity-repo-info {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .activity-repo-name {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .activity-iframe-container {
+            flex: 1;
+            position: relative;
+            background: var(--bg-main);
+        }
+
+        .activity-iframe-container iframe {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            border: none;
+        }
+
+        .activity-loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            text-align: center;
+            color: var(--text-secondary);
+        }
+
+        .activity-loading .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid var(--border-color);
+            border-top-color: var(--accent-blue);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 12px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* ============================================
+           Tools View
+           ============================================ */
+        .tools-section {
+            margin-bottom: 32px;
+        }
+
+        .tools-section-title {
+            font-size: 14px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .tools-grid {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+        }
+
+        .tool-card {
+            display: flex;
+            align-items: flex-start;
+            gap: 12px;
+            padding: 16px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: border-color 0.15s, background 0.15s;
+            text-decoration: none;
+            color: inherit;
+        }
+
+        .tool-card:hover {
+            border-color: var(--accent-blue);
+            background: var(--bg-card-hover);
+        }
+
+        .tool-card-icon {
+            width: 40px;
+            height: 40px;
+            border-radius: 8px;
+            background: rgba(88, 166, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+
+        .tool-card-icon svg {
+            width: 20px;
+            height: 20px;
+            fill: var(--accent-blue);
+        }
+
+        .tool-card-icon.green { background: rgba(63, 185, 80, 0.1); }
+        .tool-card-icon.green svg { fill: var(--accent-green); }
+
+        .tool-card-icon.yellow { background: rgba(210, 153, 34, 0.1); }
+        .tool-card-icon.yellow svg { fill: var(--accent-yellow); }
+
+        .tool-card-icon.red { background: rgba(248, 81, 73, 0.1); }
+        .tool-card-icon.red svg { fill: var(--accent-red); }
+
+        .tool-card-icon.purple { background: rgba(163, 113, 247, 0.1); }
+        .tool-card-icon.purple svg { fill: var(--accent-purple); }
+
+        .tool-card-content {
+            flex: 1;
+        }
+
+        .tool-card-title {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 4px;
+        }
+
+        .tool-card-desc {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        /* ============================================
+           Settings View
+           ============================================ */
+        .settings-section {
+            max-width: 600px;
+            margin-bottom: 32px;
+        }
+
+        .settings-section-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 16px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .settings-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 12px 0;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .settings-item:last-child {
+            border-bottom: none;
+        }
+
+        .settings-item-label {
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        .settings-item-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        .settings-item-control {
+            flex-shrink: 0;
+        }
+
+        /* Theme selector */
+        .theme-selector {
+            display: flex;
+            gap: 4px;
+            padding: 4px;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+        }
+
+        .theme-btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-secondary);
+            font-size: 13px;
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+        }
+
+        .theme-btn:hover {
+            color: var(--text-primary);
+        }
+
+        .theme-btn.active {
+            background: var(--accent-blue);
+            color: #fff;
+        }
+
+        /* Status indicator */
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .status-dot.ok { background: var(--accent-green); }
+        .status-dot.warning { background: var(--accent-yellow); }
+        .status-dot.error { background: var(--accent-red); }
+
+        /* ============================================
+           Toast Notifications
+           ============================================ */
+        .toast-container {
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 1000;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .toast {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 12px 16px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            font-size: 14px;
+            animation: slideIn 0.3s ease;
+        }
+
+        .toast.success { border-color: var(--accent-green); }
+        .toast.error { border-color: var(--accent-red); }
+        .toast.warning { border-color: var(--accent-yellow); }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(100%);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        /* ============================================
+           Modal / Dialog
+           ============================================ */
+        .modal-backdrop {
+            position: fixed;
+            inset: 0;
+            background: rgba(0, 0, 0, 0.5);
             display: flex;
             align-items: center;
             justify-content: center;
             z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.2s, visibility 0.2s;
         }
+
+        .modal-backdrop.active {
+            opacity: 1;
+            visibility: visible;
+        }
+
         .modal {
-            background: #161b22;
-            border: 1px solid #30363d;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
             border-radius: 12px;
-            padding: 24px;
-            min-width: 380px;
-            max-width: 450px;
-        }
-        .modal-title {
-            font-size: 18px;
-            font-weight: 600;
-            margin-bottom: 16px;
-            color: #fff;
-        }
-        .modal-body {
-            margin-bottom: 20px;
-            max-height: 60vh;
+            width: 90%;
+            max-width: 480px;
+            max-height: 90vh;
             overflow-y: auto;
+            box-shadow: var(--shadow);
         }
+
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .modal-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .modal-close {
+            padding: 4px;
+            border: none;
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            border-radius: 4px;
+        }
+
+        .modal-close:hover {
+            color: var(--text-primary);
+            background: var(--bg-card-hover);
+        }
+
+        .modal-body {
+            padding: 20px;
+        }
+
         .modal-footer {
             display: flex;
             justify-content: flex-end;
-            gap: 10px;
+            gap: 8px;
+            padding: 16px 20px;
+            border-top: 1px solid var(--border-subtle);
         }
-        .radio-group { margin: 16px 0; }
-        .radio-option {
-            display: flex;
-            align-items: flex-start;
-            gap: 10px;
-            padding: 12px;
-            border: 1px solid #30363d;
+
+        /* ============================================
+           Doctor Results
+           ============================================ */
+        .doctor-results {
+            font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            white-space: pre-wrap;
+            background: var(--bg-input);
+            padding: 16px;
             border-radius: 8px;
-            margin-bottom: 10px;
-            cursor: pointer;
-            transition: border-color 0.15s;
+            max-height: 400px;
+            overflow-y: auto;
         }
-        .radio-option:hover { border-color: #58a6ff; }
-        .radio-option.selected { border-color: #58a6ff; background: #0d1117; }
-        .radio-option input[type="radio"] {
-            margin-top: 3px;
-            accent-color: #58a6ff;
+
+        .doctor-check {
+            margin-bottom: 4px;
         }
-        .radio-label { font-weight: 500; color: #c9d1d9; }
-        .radio-desc { font-size: 12px; color: #8b949e; margin-top: 2px; }
+
+        .doctor-check.pass { color: var(--accent-green); }
+        .doctor-check.fail { color: var(--accent-red); }
+        .doctor-check.warn { color: var(--accent-yellow); }
+
+        /* ============================================
+           Version / Build Info
+           ============================================ */
+        .version-info {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-align: center;
+            padding: 8px;
+        }
+
+        .version-info a {
+            color: var(--text-muted);
+            text-decoration: none;
+        }
+
+        .version-info a:hover {
+            color: var(--accent-blue);
+        }
     </style>
 </head>
 <body>
-    <div class="container" id="mainContent">
-        <header>
-            <div>
-                <h1>Issue Orchestrator</h1>
-                <div class="subtitle">Unified dashboard - manage all your repositories</div>
-            </div>
-            <div class="header-actions">
-                <button onclick="toggleAllRepos()" class="btn btn-toggle" id="allReposToggle" title="Show registered repositories table">All Repositories</button>
-                <button onclick="openSetupWizard()" class="btn btn-primary">+ New Setup</button>
-                <button onclick="showBuildInfo()" class="btn">Build Info</button>
-                <button onclick="shutdownControlCenter()" class="btn btn-danger">Shutdown</button>
-            </div>
-        </header>
-
-        <!-- Welcome screen (shown when no repos) -->
-        <div id="welcomeScreen" class="welcome-screen" style="display:none;">
-            <h2>Welcome to Issue Orchestrator</h2>
-            <p>Get started by setting up your first repository. The setup wizard will guide you through configuring agents, review workflows, and more.</p>
-            <button onclick="openSetupWizard()" class="btn btn-primary" style="padding:12px 32px;font-size:15px;">
-                Set Up Your First Repository
-            </button>
-        </div>
-
-        <!-- Main content (hidden when welcome screen shown) -->
-        <div id="repoContent">
-            <div class="card" id="primaryCard" style="display:none;">
-                <div class="card-header">
-                    <span>Orchestrator</span>
-                    <button onclick="loadRepos()" class="btn btn-sm">Refresh</button>
-                </div>
-                <div class="card-body" id="primaryBody"></div>
+    <div class="app-layout">
+        <!-- Sidebar Navigation -->
+        <aside class="sidebar" role="navigation" aria-label="Main navigation">
+            <div class="sidebar-header">
+                <a href="/" class="sidebar-logo" aria-label="Issue Orchestrator Home">
+                    <svg viewBox="0 0 24 24" aria-hidden="true">
+                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
+                    </svg>
+                    <span class="sidebar-logo-text">
+                        <span>Issue</span>
+                        <span>Orchestrator</span>
+                    </span>
+                </a>
             </div>
 
-            <!-- Discovered Repos Card -->
-            <div class="card" id="discoverCard">
-                <div class="card-header">
-                    <span>Discovered Repositories</span>
-                    <button onclick="discoverRepos()" class="btn btn-sm">Scan</button>
-                </div>
-                <div class="card-body">
-                    <div style="font-size:12px;color:#8b949e;margin-bottom:12px;">
-                        Repos with <code>.issue-orchestrator/config/</code> not yet registered:
-                    </div>
-                    <div id="discoveredRepos" class="discovered-list">
-                        <div class="empty-state" style="padding:24px;">Click "Scan" to find repositories</div>
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <button class="nav-item active" data-view="repositories" aria-current="page">
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <path fill-rule="evenodd" d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8zM5 12.25v3.25a.25.25 0 00.4.2l1.45-1.087a.25.25 0 01.3 0L8.6 15.7a.25.25 0 00.4-.2v-3.25a.25.25 0 00-.25-.25h-3.5a.25.25 0 00-.25.25z"/>
+                        </svg>
+                        Repositories
+                    </button>
+
+                    <div class="nav-repo-list" id="sidebarRepoList" role="list" aria-label="Running repositories">
+                        <!-- Populated by JS: running repos appear here -->
                     </div>
                 </div>
+
+                <div class="nav-section">
+                    <button class="nav-item" data-view="tools">
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <path fill-rule="evenodd" d="M7.429 1.525a6.593 6.593 0 011.142 0c.036.003.108.036.137.146l.289 1.105c.147.561.549.967.997 1.189.174.086.341.183.501.29.417.278.97.423 1.53.27l1.102-.303c.11-.03.175.016.195.046.219.31.41.641.573.989.014.031.022.11-.059.19l-.815.806c-.411.406-.562.957-.53 1.456a4.588 4.588 0 010 .582c-.032.499.119 1.05.53 1.456l.815.806c.08.08.073.159.059.19a6.494 6.494 0 01-.573.99c-.02.029-.086.074-.195.045l-1.103-.303c-.559-.153-1.112-.008-1.529.27-.16.107-.327.204-.5.29-.449.222-.851.628-.998 1.189l-.289 1.105c-.029.11-.101.143-.137.146a6.613 6.613 0 01-1.142 0c-.036-.003-.108-.037-.137-.146l-.289-1.105c-.147-.561-.549-.967-.998-1.189a4.502 4.502 0 01-.5-.29c-.417-.278-.97-.423-1.53-.27l-1.102.303c-.11.03-.175-.016-.195-.046a6.492 6.492 0 01-.573-.989c-.014-.031-.022-.11.059-.19l.815-.806c.411-.406.562-.957.53-1.456a4.587 4.587 0 010-.582c.032-.499-.119-1.05-.53-1.456l-.815-.806c-.08-.08-.073-.159-.059-.19.163-.349.354-.68.573-.99.02-.029.086-.074.195-.045l1.103.303c.559.153 1.112.008 1.529-.27.16-.107.327-.204.5-.29.449-.222.851-.628.998-1.189l.289-1.105c.029-.11.101-.143.137-.146zM8 0c-.236 0-.47.01-.701.03-.743.065-1.29.615-1.458 1.261l-.29 1.106c-.017.066-.078.158-.211.224a5.994 5.994 0 00-.668.386c-.123.082-.233.09-.3.071L3.27 2.776c-.644-.177-1.392.02-1.82.63a7.977 7.977 0 00-.704 1.217c-.315.675-.111 1.422.363 1.891l.815.806c.05.048.098.147.088.294a6.084 6.084 0 000 .772c.01.147-.038.246-.088.294l-.815.806c-.474.469-.678 1.216-.363 1.891.2.428.436.835.704 1.218.428.609 1.176.806 1.82.63l1.103-.303c.066-.019.176-.011.299.071.213.143.436.272.668.386.133.066.194.158.212.224l.289 1.106c.169.646.715 1.196 1.458 1.26a8.094 8.094 0 001.402 0c.743-.064 1.29-.614 1.458-1.26l.29-1.106c.017-.066.078-.158.211-.224a5.98 5.98 0 00.668-.386c.123-.082.233-.09.3-.071l1.102.302c.644.177 1.392-.02 1.82-.63.268-.382.505-.789.704-1.217.315-.675.111-1.422-.364-1.891l-.814-.806c-.05-.048-.098-.147-.088-.294a6.1 6.1 0 000-.772c-.01-.147.039-.246.088-.294l.814-.806c.475-.469.679-1.216.364-1.891a7.992 7.992 0 00-.704-1.218c-.428-.609-1.176-.806-1.82-.63l-1.103.303c-.066.019-.176.011-.299-.071a5.991 5.991 0 00-.668-.386c-.133-.066-.194-.158-.212-.224L10.16 1.29C9.99.645 9.444.095 8.701.031A8.094 8.094 0 008 0zm1.5 8a1.5 1.5 0 11-3 0 1.5 1.5 0 013 0zM11 8a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        </svg>
+                        Tools
+                    </button>
+                </div>
+
+                <div class="nav-section">
+                    <button class="nav-item" data-view="settings">
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <path fill-rule="evenodd" d="M2.5 1.75a.25.25 0 01.25-.25h10.5a.25.25 0 01.25.25v10.5a.25.25 0 01-.25.25h-4.5a.75.75 0 00-.53.22l-2.72 2.72v-2.19a.75.75 0 00-.75-.75H2.75a.25.25 0 01-.25-.25V1.75zM2.75 0A1.75 1.75 0 001 1.75v10.5c0 .966.784 1.75 1.75 1.75H4v1.293c0 .795.927 1.252 1.561.77l3.439-2.563h4.25A1.75 1.75 0 0015 11.75V1.75A1.75 1.75 0 0013.25 0H2.75z"/>
+                        </svg>
+                        Settings
+                    </button>
+                </div>
+            </nav>
+
+            <div class="sidebar-footer">
+                <div class="version-info">
+                    <a href="https://github.com/BruceBGordon/issue-orchestrator" target="_blank" rel="noopener">
+                        v{{ version }} ({{ commit_sha }})
+                    </a>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Header -->
+            <header class="header">
+                <h1 class="header-title" id="viewTitle">Repositories</h1>
+                <div class="header-actions">
+                    <button class="btn btn-icon" id="doctorBtn" title="Run diagnostics" aria-label="Run doctor diagnostics">
+                        <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
+                            <path fill="currentColor" d="M8.5 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm9-3a1 1 0 11-2 0 1 1 0 012 0zM6.5 8a.75.75 0 01.75-.75h.75v3.75H7A.75.75 0 017 9.5h.25v-2H7A.75.75 0 016.5 8zm2.25 3a.75.75 0 010 1.5h-1.5a.75.75 0 010-1.5h1.5z"/>
+                        </svg>
+                    </button>
+                    <button class="btn btn-icon" id="themeToggle" title="Toggle theme" aria-label="Toggle dark/light theme">
+                        <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" id="themeIcon">
+                            <path fill="currentColor" d="M9.598 1.591a.75.75 0 01.785-.175 7 7 0 11-8.967 8.967.75.75 0 01.961-.96 5.5 5.5 0 007.046-7.046.75.75 0 01.175-.786zm1.616 1.945a7 7 0 01-7.678 7.678 5.5 5.5 0 107.678-7.678z"/>
+                        </svg>
+                    </button>
+                    <button class="btn btn-danger btn-sm" id="shutdownBtn">
+                        Shutdown
+                    </button>
+                </div>
+            </header>
+
+            <!-- Repositories View -->
+            <div class="view-container active" id="repositoriesView" role="main" aria-labelledby="viewTitle">
+                <div id="reposContent">
+                    <div class="empty-state" id="loadingState">
+                        <div class="activity-loading">
+                            <div class="spinner"></div>
+                            <p>Loading repositories...</p>
+                        </div>
+                    </div>
+                </div>
             </div>
 
-            <div class="advanced-section" id="advancedSection">
-                <div class="card">
-                    <div class="card-header">
-                        <span>Registered Repositories</span>
-                        <button onclick="loadRepos()" class="btn btn-sm">Refresh</button>
+            <!-- Activity View (Embedded Dashboard) -->
+            <div class="view-container" id="activityView" role="main">
+                <div class="activity-header">
+                    <div class="activity-repo-info">
+                        <button class="btn btn-sm" id="backToRepos" aria-label="Back to repositories">
+                            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                                <path fill="currentColor" fill-rule="evenodd" d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z"/>
+                            </svg>
+                            Back
+                        </button>
+                        <span class="activity-repo-name" id="activityRepoName"></span>
+                        <span class="repo-card-badge running" id="activityRepoBadge">Running</span>
                     </div>
-                    <div class="card-body">
-                        <div class="repo-list">
-                            <div class="repo-header">
-                                <span>Repository</span>
-                                <span>Status</span>
-                                <span>Port</span>
-                                <span>Actions</span>
+                    <div class="header-actions">
+                        <button class="btn btn-sm" id="pauseResumeBtn">Pause</button>
+                        <button class="btn btn-danger btn-sm" id="stopRepoBtn">Stop</button>
+                    </div>
+                </div>
+                <div class="activity-iframe-container">
+                    <div class="activity-loading" id="activityLoading">
+                        <div class="spinner"></div>
+                        <p>Loading activity...</p>
+                    </div>
+                    <iframe id="activityIframe" title="Repository activity dashboard"></iframe>
+                </div>
+            </div>
+
+            <!-- Tools View -->
+            <div class="view-container" id="toolsView" role="main">
+                <div class="tools-section">
+                    <h2 class="tools-section-title">Diagnostics</h2>
+                    <div class="tools-grid">
+                        <button class="tool-card" id="doctorTool">
+                            <div class="tool-card-icon green">
+                                <svg viewBox="0 0 16 16" aria-hidden="true">
+                                    <path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zm3.78 4.97a.75.75 0 00-1.06 0L7 8.69 5.28 6.97a.75.75 0 00-1.06 1.06l2.25 2.25a.75.75 0 001.06 0l4.25-4.25a.75.75 0 000-1.06z"/>
+                                </svg>
                             </div>
-                            <div id="repoRows">
-                                <div class="loading-state" style="padding:16px;color:#8b949e;text-align:center;">Loading repositories...</div>
+                            <div class="tool-card-content">
+                                <div class="tool-card-title">Run Doctor</div>
+                                <div class="tool-card-desc">Check environment and dependencies</div>
+                            </div>
+                        </button>
+                        <button class="tool-card" id="auditTool">
+                            <div class="tool-card-icon">
+                                <svg viewBox="0 0 16 16" aria-hidden="true">
+                                    <path fill-rule="evenodd" d="M1.5 2.75a.25.25 0 01.25-.25h12.5a.25.25 0 01.25.25v8.5a.25.25 0 01-.25.25h-6.5a.75.75 0 00-.53.22L4.5 14.44v-2.19a.75.75 0 00-.75-.75h-2a.25.25 0 01-.25-.25v-8.5zM1.75 1A1.75 1.75 0 000 2.75v8.5C0 12.216.784 13 1.75 13H3v1.543a1.457 1.457 0 002.487 1.03L8.061 13h6.189A1.75 1.75 0 0016 11.25v-8.5A1.75 1.75 0 0014.25 1H1.75z"/>
+                                </svg>
+                            </div>
+                            <div class="tool-card-content">
+                                <div class="tool-card-title">Audit Issue</div>
+                                <div class="tool-card-desc">Investigate why an issue is blocked</div>
+                            </div>
+                        </button>
+                        <button class="tool-card" id="traceTool">
+                            <div class="tool-card-icon purple">
+                                <svg viewBox="0 0 16 16" aria-hidden="true">
+                                    <path fill-rule="evenodd" d="M2 1.75C2 .784 2.784 0 3.75 0h8.5C13.216 0 14 .784 14 1.75v12.5A1.75 1.75 0 0112.25 16h-8.5A1.75 1.75 0 012 14.25V1.75zm1.75-.25a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h8.5a.25.25 0 00.25-.25V1.75a.25.25 0 00-.25-.25h-8.5zM5 6.25a.75.75 0 01.75-.75h4.5a.75.75 0 010 1.5h-4.5A.75.75 0 015 6.25zm.75 2.25a.75.75 0 000 1.5h2.5a.75.75 0 000-1.5h-2.5z"/>
+                                </svg>
+                            </div>
+                            <div class="tool-card-content">
+                                <div class="tool-card-title">View Trace</div>
+                                <div class="tool-card-desc">Inspect logs for a specific issue</div>
+                            </div>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="tools-section">
+                    <h2 class="tools-section-title">Maintenance</h2>
+                    <div class="tools-grid">
+                        <button class="tool-card" id="refreshLabelsTool">
+                            <div class="tool-card-icon yellow">
+                                <svg viewBox="0 0 16 16" aria-hidden="true">
+                                    <path fill-rule="evenodd" d="M8 2.5a5.487 5.487 0 00-4.131 1.869l1.204 1.204A.25.25 0 014.896 6H1.25A.25.25 0 011 5.75V2.104a.25.25 0 01.427-.177l1.38 1.38A7.001 7.001 0 0114.95 7.16a.75.75 0 11-1.49.178A5.501 5.501 0 008 2.5zM1.705 8.005a.75.75 0 01.834.656 5.501 5.501 0 009.592 2.97l-1.204-1.204a.25.25 0 01.177-.427h3.646a.25.25 0 01.25.25v3.646a.25.25 0 01-.427.177l-1.38-1.38A7.001 7.001 0 011.05 8.84a.75.75 0 01.656-.834z"/>
+                                </svg>
+                            </div>
+                            <div class="tool-card-content">
+                                <div class="tool-card-title">Refresh Labels</div>
+                                <div class="tool-card-desc">Sync GitHub labels with config</div>
+                            </div>
+                        </button>
+                        <button class="tool-card" id="cleanupWorktreesTool">
+                            <div class="tool-card-icon red">
+                                <svg viewBox="0 0 16 16" aria-hidden="true">
+                                    <path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19c.9 0 1.652-.681 1.741-1.576l.66-6.6a.75.75 0 00-1.492-.149l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"/>
+                                </svg>
+                            </div>
+                            <div class="tool-card-content">
+                                <div class="tool-card-title">Cleanup Worktrees</div>
+                                <div class="tool-card-desc">Remove stale git worktrees</div>
+                            </div>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings View -->
+            <div class="view-container" id="settingsView" role="main">
+                <div class="settings-section">
+                    <h2 class="settings-section-title">Appearance</h2>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Theme</div>
+                            <div class="settings-item-desc">Choose your preferred color scheme</div>
+                        </div>
+                        <div class="settings-item-control">
+                            <div class="theme-selector" role="radiogroup" aria-label="Theme selection">
+                                <button class="theme-btn" data-theme="system" role="radio" aria-checked="true">System</button>
+                                <button class="theme-btn" data-theme="light" role="radio" aria-checked="false">Light</button>
+                                <button class="theme-btn" data-theme="dark" role="radio" aria-checked="false">Dark</button>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <div class="card" id="detailsCard" style="display:none;">
-                    <div class="card-header">
-                        <span id="detailsTitle">Repository Details</span>
-                        <button onclick="hideDetails()" class="btn btn-sm">Close</button>
+                <div class="settings-section">
+                    <h2 class="settings-section-title">Dashboard</h2>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Dashboard Port</div>
+                            <div class="settings-item-desc">Port for this unified dashboard</div>
+                        </div>
+                        <div class="settings-item-control">
+                            <span class="status-item">
+                                <span class="status-dot ok"></span>
+                                {{ dashboard_port }}
+                            </span>
+                        </div>
                     </div>
-                    <div class="card-body" id="detailsBody"></div>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Current Directory</div>
+                            <div class="settings-item-desc">Where issue-orchestrator was launched</div>
+                        </div>
+                        <div class="settings-item-control">
+                            <code style="font-size: 12px; color: var(--text-muted);">{{ current_directory }}</code>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="settings-section">
+                    <h2 class="settings-section-title">System Status</h2>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Running Orchestrators</div>
+                            <div class="settings-item-desc">Number of active orchestrator instances</div>
+                        </div>
+                        <div class="settings-item-control">
+                            <span id="runningCount">0</span>
+                        </div>
+                    </div>
                 </div>
             </div>
-        </div>
+        </main>
     </div>
 
-    <!-- Setup Wizard Modal -->
-    <div class="wizard-overlay" id="wizardOverlay">
-        <div class="wizard">
-            <div class="wizard-header">
-                <h2 id="wizardTitle">Setup Wizard</h2>
-                <button class="wizard-close" onclick="closeWizard()">&times;</button>
-            </div>
-            <div class="wizard-progress" id="wizardProgress"></div>
-            <div class="wizard-body" id="wizardBody"></div>
-            <div class="wizard-footer">
-                <button class="btn" id="wizardBack" onclick="wizardPrev()">Back</button>
-                <button class="btn btn-primary" id="wizardNext" onclick="wizardNext()">Next</button>
-            </div>
-        </div>
-    </div>
+    <!-- Toast Container -->
+    <div class="toast-container" id="toastContainer" role="status" aria-live="polite"></div>
 
-    <div id="toast" class="toast"></div>
-    <div id="blockingError" class="modal-overlay" style="display:none;">
+    <!-- Doctor Modal -->
+    <div class="modal-backdrop" id="doctorModal" role="dialog" aria-labelledby="doctorModalTitle" aria-modal="true">
         <div class="modal">
-            <div class="modal-title" id="blockingErrorTitle"></div>
-            <div class="modal-body" id="blockingErrorBody"></div>
+            <div class="modal-header">
+                <h2 class="modal-title" id="doctorModalTitle">Doctor Results</h2>
+                <button class="modal-close" id="closeDoctorModal" aria-label="Close dialog">
+                    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                        <path fill="currentColor" fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div class="doctor-results" id="doctorResults">
+                    Running diagnostics...
+                </div>
+            </div>
             <div class="modal-footer">
-                <button class="btn btn-primary" onclick="closeBlockingError()">OK</button>
+                <button class="btn" id="closeDoctorBtn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Shutdown Confirmation Modal -->
+    <div class="modal-backdrop" id="shutdownModal" role="dialog" aria-labelledby="shutdownModalTitle" aria-modal="true">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 class="modal-title" id="shutdownModalTitle">Confirm Shutdown</h2>
+                <button class="modal-close" id="closeShutdownModal" aria-label="Close dialog">
+                    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                        <path fill="currentColor" fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p>This will shut down the dashboard server. Any running orchestrators will continue running independently.</p>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" id="cancelShutdown">Cancel</button>
+                <button class="btn btn-danger" id="confirmShutdown">Shutdown</button>
             </div>
         </div>
     </div>
 
     <script>
-        // ==================== Utility Functions ====================
+        // ============================================
+        // State
+        // ============================================
+        const state = {
+            repos: [],
+            currentView: 'repositories',
+            activeRepo: null,
+            theme: localStorage.getItem('theme') || 'system'
+        };
+
+        // ============================================
+        // Theme Management
+        // ============================================
+        function applyTheme(theme) {
+            state.theme = theme;
+            localStorage.setItem('theme', theme);
+
+            let effectiveTheme = theme;
+            if (theme === 'system') {
+                effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+
+            document.documentElement.setAttribute('data-theme', effectiveTheme);
+
+            // Update theme selector buttons
+            document.querySelectorAll('.theme-btn').forEach(btn => {
+                const isActive = btn.dataset.theme === theme;
+                btn.classList.toggle('active', isActive);
+                btn.setAttribute('aria-checked', isActive);
+            });
+
+            // Update header theme icon
+            const icon = document.getElementById('themeIcon');
+            if (effectiveTheme === 'dark') {
+                icon.innerHTML = '<path fill="currentColor" d="M9.598 1.591a.75.75 0 01.785-.175 7 7 0 11-8.967 8.967.75.75 0 01.961-.96 5.5 5.5 0 007.046-7.046.75.75 0 01.175-.786zm1.616 1.945a7 7 0 01-7.678 7.678 5.5 5.5 0 107.678-7.678z"/>';
+            } else {
+                icon.innerHTML = '<path fill="currentColor" d="M8 12a4 4 0 100-8 4 4 0 000 8zM8 0a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0V.75A.75.75 0 018 0zm0 13a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 018 13zM3.17 3.17a.75.75 0 011.06 0l1.06 1.06a.75.75 0 11-1.06 1.06L3.17 4.23a.75.75 0 010-1.06zm9.6 9.6a.75.75 0 011.06 0l1.06 1.06a.75.75 0 11-1.06 1.06l-1.06-1.06a.75.75 0 010-1.06zM0 8a.75.75 0 01.75-.75h1.5a.75.75 0 010 1.5H.75A.75.75 0 010 8zm13 0a.75.75 0 01.75-.75h1.5a.75.75 0 010 1.5h-1.5A.75.75 0 0113 8zM3.17 12.77a.75.75 0 010-1.06l1.06-1.06a.75.75 0 111.06 1.06l-1.06 1.06a.75.75 0 01-1.06 0zm9.6-9.6a.75.75 0 010-1.06l1.06-1.06a.75.75 0 111.06 1.06l-1.06 1.06a.75.75 0 01-1.06 0z"/>';
+            }
+        }
+
+        // Listen for system theme changes
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+            if (state.theme === 'system') {
+                applyTheme('system');
+            }
+        });
+
+        // ============================================
+        // View Navigation
+        // ============================================
+        function switchView(viewName, repoPath = null) {
+            state.currentView = viewName;
+
+            // Update nav items
+            document.querySelectorAll('.nav-item[data-view]').forEach(item => {
+                const isActive = item.dataset.view === viewName;
+                item.classList.toggle('active', isActive);
+                item.setAttribute('aria-current', isActive ? 'page' : 'false');
+            });
+
+            // Update view containers
+            document.querySelectorAll('.view-container').forEach(container => {
+                container.classList.remove('active');
+            });
+
+            const viewContainer = document.getElementById(viewName + 'View');
+            if (viewContainer) {
+                viewContainer.classList.add('active');
+            }
+
+            // Update header title
+            const titles = {
+                repositories: 'Repositories',
+                activity: 'Activity',
+                tools: 'Tools',
+                settings: 'Settings'
+            };
+            document.getElementById('viewTitle').textContent = titles[viewName] || viewName;
+
+            // Handle activity view specifics
+            if (viewName === 'activity' && repoPath) {
+                loadActivityView(repoPath);
+            }
+        }
+
+        // ============================================
+        // Repository Loading
+        // ============================================
+        async function loadRepos() {
+            try {
+                const response = await fetch('/api/state');
+                const data = await response.json();
+                state.repos = data.repos || [];
+                renderRepos();
+                updateSidebarRepos();
+                updateRunningCount();
+
+                // Check for deep-link in URL
+                const params = new URLSearchParams(window.location.search);
+                const repoPath = params.get('repo');
+                if (repoPath) {
+                    const repo = state.repos.find(r => r.path === repoPath);
+                    if (repo && (repo.orchestrator_state === 'running' || repo.orchestrator_state === 'paused')) {
+                        switchView('activity', repoPath);
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load repos:', error);
+                showToast('Failed to load repositories', 'error');
+            }
+        }
+
+        function renderRepos() {
+            const container = document.getElementById('reposContent');
+
+            if (state.repos.length === 0) {
+                container.innerHTML = `
+                    <div class="empty-state">
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <path fill="currentColor" fill-rule="evenodd" d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8zM5 12.25v3.25a.25.25 0 00.4.2l1.45-1.087a.25.25 0 01.3 0L8.6 15.7a.25.25 0 00.4-.2v-3.25a.25.25 0 00-.25-.25h-3.5a.25.25 0 00-.25.25z"/>
+                        </svg>
+                        <h3>No repositories found</h3>
+                        <p>Run issue-orchestrator from a git repository to get started.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const html = `<div class="repos-grid">${state.repos.map(renderRepoCard).join('')}</div>`;
+            container.innerHTML = html;
+
+            // Attach event listeners
+            container.querySelectorAll('[data-action]').forEach(btn => {
+                btn.addEventListener('click', handleRepoAction);
+            });
+        }
+
+        function renderRepoCard(repo) {
+            const isRunning = repo.orchestrator_state === 'running';
+            const isPaused = repo.orchestrator_state === 'paused';
+            const isStopped = repo.orchestrator_state === 'stopped';
+            const needsSetup = repo.config_status === 'needs_setup';
+
+            let badgeClass = 'stopped';
+            let badgeText = 'Stopped';
+            if (isRunning) { badgeClass = 'running'; badgeText = 'Running'; }
+            if (isPaused) { badgeClass = 'paused'; badgeText = 'Paused'; }
+            if (needsSetup) { badgeClass = 'needs-setup'; badgeText = 'Needs Setup'; }
+
+            const stats = isRunning || isPaused ? `
+                <div class="repo-card-stats">
+                    <span class="repo-card-stat">
+                        <svg viewBox="0 0 16 16"><path fill-rule="evenodd" d="M7.775 3.275a.75.75 0 001.06 1.06l1.25-1.25a2 2 0 112.83 2.83l-2.5 2.5a2 2 0 01-2.83 0 .75.75 0 00-1.06 1.06 3.5 3.5 0 004.95 0l2.5-2.5a3.5 3.5 0 00-4.95-4.95l-1.25 1.25zm-4.69 9.64a2 2 0 010-2.83l2.5-2.5a2 2 0 012.83 0 .75.75 0 001.06-1.06 3.5 3.5 0 00-4.95 0l-2.5 2.5a3.5 3.5 0 004.95 4.95l1.25-1.25a.75.75 0 00-1.06-1.06l-1.25 1.25a2 2 0 01-2.83 0z"/></svg>
+                        Port ${repo.orchestrator_port || 'N/A'}
+                    </span>
+                </div>
+            ` : '';
+
+            let actions = '';
+            if (needsSetup) {
+                actions = `<button class="btn btn-primary" data-action="setup" data-path="${escapeHtml(repo.path)}">Setup</button>`;
+            } else if (isStopped) {
+                actions = `<button class="btn btn-primary" data-action="start" data-path="${escapeHtml(repo.path)}">Start</button>`;
+            } else {
+                actions = `
+                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">View Activity</button>
+                    <button class="btn btn-danger btn-sm" data-action="stop" data-path="${escapeHtml(repo.path)}">Stop</button>
+                `;
+            }
+
+            return `
+                <div class="repo-card ${repo.is_current_dir ? 'current-dir' : ''}">
+                    <div class="repo-card-header">
+                        <div>
+                            <div class="repo-card-title">${escapeHtml(repo.name)}</div>
+                            <div class="repo-card-path">${escapeHtml(repo.path)}</div>
+                        </div>
+                        <span class="repo-card-badge ${badgeClass}">${badgeText}</span>
+                    </div>
+                    ${stats}
+                    <div class="repo-card-actions">
+                        ${actions}
+                    </div>
+                </div>
+            `;
+        }
+
+        function updateSidebarRepos() {
+            const container = document.getElementById('sidebarRepoList');
+            const runningRepos = state.repos.filter(r =>
+                r.orchestrator_state === 'running' || r.orchestrator_state === 'paused'
+            );
+
+            if (runningRepos.length === 0) {
+                container.innerHTML = '';
+                return;
+            }
+
+            container.innerHTML = runningRepos.map(repo => `
+                <button class="nav-repo-item" data-repo-path="${escapeHtml(repo.path)}">
+                    <span class="nav-repo-dot ${repo.orchestrator_state === 'paused' ? 'paused' : ''}"></span>
+                    ${escapeHtml(repo.name)}
+                </button>
+            `).join('');
+
+            // Attach click handlers
+            container.querySelectorAll('.nav-repo-item').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    switchView('activity', btn.dataset.repoPath);
+                });
+            });
+        }
+
+        function updateRunningCount() {
+            const count = state.repos.filter(r =>
+                r.orchestrator_state === 'running' || r.orchestrator_state === 'paused'
+            ).length;
+            document.getElementById('runningCount').textContent = count;
+        }
+
+        // ============================================
+        // Activity View
+        // ============================================
+        function loadActivityView(repoPath) {
+            const repo = state.repos.find(r => r.path === repoPath);
+            if (!repo) {
+                showToast('Repository not found', 'error');
+                switchView('repositories');
+                return;
+            }
+
+            state.activeRepo = repo;
+
+            // Update header info
+            document.getElementById('activityRepoName').textContent = repo.name;
+            const badge = document.getElementById('activityRepoBadge');
+            badge.textContent = repo.orchestrator_state === 'paused' ? 'Paused' : 'Running';
+            badge.className = `repo-card-badge ${repo.orchestrator_state === 'paused' ? 'paused' : 'running'}`;
+
+            // Update pause/resume button
+            const pauseBtn = document.getElementById('pauseResumeBtn');
+            pauseBtn.textContent = repo.orchestrator_state === 'paused' ? 'Resume' : 'Pause';
+
+            // Load iframe
+            const iframe = document.getElementById('activityIframe');
+            const loading = document.getElementById('activityLoading');
+            loading.style.display = 'block';
+            iframe.style.display = 'none';
+
+            // Set iframe source to orchestrator dashboard
+            const port = repo.orchestrator_port;
+            if (port) {
+                iframe.src = `http://localhost:${port}/`;
+                iframe.onload = () => {
+                    loading.style.display = 'none';
+                    iframe.style.display = 'block';
+                };
+            } else {
+                loading.innerHTML = '<p>Orchestrator port not available</p>';
+            }
+
+            // Update sidebar selection
+            document.querySelectorAll('.nav-repo-item').forEach(item => {
+                item.classList.toggle('active', item.dataset.repoPath === repoPath);
+            });
+        }
+
+        // ============================================
+        // Repository Actions
+        // ============================================
+        async function handleRepoAction(e) {
+            const action = e.currentTarget.dataset.action;
+            const path = e.currentTarget.dataset.path;
+
+            switch (action) {
+                case 'start':
+                    await startRepo(path);
+                    break;
+                case 'stop':
+                    await stopRepo(path);
+                    break;
+                case 'view':
+                    switchView('activity', path);
+                    break;
+                case 'setup':
+                    showToast('Setup wizard coming soon', 'warning');
+                    break;
+            }
+        }
+
+        async function startRepo(path) {
+            try {
+                const response = await fetch('/api/repos/start', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Failed to start');
+                }
+
+                showToast('Orchestrator started', 'success');
+                await loadRepos();
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function stopRepo(path) {
+            try {
+                const response = await fetch('/api/repos/stop', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ path })
+                });
+
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.detail || 'Failed to stop');
+                }
+
+                showToast('Orchestrator stopped', 'success');
+
+                if (state.currentView === 'activity' && state.activeRepo?.path === path) {
+                    switchView('repositories');
+                }
+
+                await loadRepos();
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        // ============================================
+        // Doctor
+        // ============================================
+        async function runDoctor() {
+            const modal = document.getElementById('doctorModal');
+            const results = document.getElementById('doctorResults');
+
+            modal.classList.add('active');
+            results.innerHTML = 'Running diagnostics...';
+
+            try {
+                const response = await fetch('/api/doctor');
+                const data = await response.json();
+
+                let html = '';
+                for (const check of data.checks || []) {
+                    const status = check.passed ? 'pass' : 'fail';
+                    const icon = check.passed ? '✓' : '✗';
+                    html += `<div class="doctor-check ${status}">${icon} ${escapeHtml(check.name)}: ${escapeHtml(check.message)}</div>`;
+                }
+
+                results.innerHTML = html || 'All checks passed!';
+            } catch (error) {
+                results.innerHTML = `<div class="doctor-check fail">✗ Failed to run diagnostics: ${escapeHtml(error.message)}</div>`;
+            }
+        }
+
+        // ============================================
+        // Shutdown
+        // ============================================
+        function showShutdownModal() {
+            document.getElementById('shutdownModal').classList.add('active');
+        }
+
+        async function confirmShutdown() {
+            try {
+                await fetch('/api/shutdown', { method: 'POST' });
+                showToast('Dashboard shutting down...', 'success');
+                setTimeout(() => window.close(), 1000);
+            } catch (error) {
+                showToast('Failed to shutdown', 'error');
+            }
+        }
+
+        // ============================================
+        // Toasts
+        // ============================================
+        function showToast(message, type = 'info') {
+            const container = document.getElementById('toastContainer');
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = message;
+            container.appendChild(toast);
+
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }, 4000);
+        }
+
+        // ============================================
+        // Utilities
+        // ============================================
         function escapeHtml(str) {
             if (!str) return '';
             const div = document.createElement('div');
@@ -638,1903 +1605,128 @@
             return div.innerHTML;
         }
 
-        function toggleInstances(repoId) {
-            const container = document.getElementById(`instances-${repoId}`);
-            const toggle = document.getElementById(`toggle-${repoId}`);
-            if (container && toggle) {
-                const isExpanded = container.classList.toggle('expanded');
-                toggle.textContent = isExpanded ? '▼' : '▶';
-            }
-        }
+        // ============================================
+        // Event Listeners
+        // ============================================
+        document.addEventListener('DOMContentLoaded', () => {
+            // Apply initial theme
+            applyTheme(state.theme);
 
-        function showToast(message, isError = false) {
-            const toast = document.getElementById('toast');
-            toast.textContent = message;
-            toast.classList.toggle('error', isError);
-            toast.classList.add('visible');
-            setTimeout(() => toast.classList.remove('visible'), 3000);
-        }
+            // Load repos
+            loadRepos();
 
-        let allReposVisible = localStorage.getItem('ioAllRepos') === '1';
-        let lastRepos = [];
-        let primaryRepoPath = null;
-        let primaryDoctorRequestId = 0;
-        let lastPrimaryDoctor = null;
+            // Navigation
+            document.querySelectorAll('.nav-item[data-view]').forEach(item => {
+                item.addEventListener('click', () => switchView(item.dataset.view));
+            });
 
-        function toggleAllRepos() {
-            setAllReposVisible(!allReposVisible);
-        }
+            // Back to repos from activity
+            document.getElementById('backToRepos').addEventListener('click', () => {
+                switchView('repositories');
+            });
 
-        function setAllReposVisible(visible) {
-            allReposVisible = visible;
-            localStorage.setItem('ioAllRepos', visible ? '1' : '0');
-            const section = document.getElementById('advancedSection');
-            const toggle = document.getElementById('allReposToggle');
-            if (section) {
-                section.classList.toggle('visible', visible);
-            }
-            if (toggle) {
-                toggle.classList.toggle('active', visible);
-                toggle.textContent = visible ? 'All Repos (On)' : 'All Repositories';
-            }
-        }
+            // Theme toggle (header button cycles through)
+            document.getElementById('themeToggle').addEventListener('click', () => {
+                const themes = ['system', 'light', 'dark'];
+                const currentIndex = themes.indexOf(state.theme);
+                const nextTheme = themes[(currentIndex + 1) % themes.length];
+                applyTheme(nextTheme);
+            });
 
-        function showBlockingError(title, message) {
-            const modal = document.getElementById('blockingError');
-            const titleEl = document.getElementById('blockingErrorTitle');
-            const bodyEl = document.getElementById('blockingErrorBody');
-            titleEl.textContent = title;
-            bodyEl.textContent = message;
-            modal.style.display = 'flex';
-        }
+            // Theme selector buttons
+            document.querySelectorAll('.theme-btn').forEach(btn => {
+                btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
+            });
 
-        function closeBlockingError() {
-            const modal = document.getElementById('blockingError');
-            modal.style.display = 'none';
-        }
+            // Doctor
+            document.getElementById('doctorBtn').addEventListener('click', runDoctor);
+            document.getElementById('doctorTool').addEventListener('click', runDoctor);
+            document.getElementById('closeDoctorModal').addEventListener('click', () => {
+                document.getElementById('doctorModal').classList.remove('active');
+            });
+            document.getElementById('closeDoctorBtn').addEventListener('click', () => {
+                document.getElementById('doctorModal').classList.remove('active');
+            });
 
-        async function showBuildInfo() {
-            try {
-                const res = await fetch('/control/info');
-                const data = await res.json();
-                const modal = document.createElement('div');
-                modal.className = 'modal-overlay';
-                modal.id = 'buildInfoModal';
-                modal.innerHTML = `
-                    <div class="modal" style="max-width:520px;">
-                        <div class="modal-title">Build Info</div>
-                        <div class="modal-body">
-                            <div class="info-row"><span class="info-label">Repo Root</span><span class="info-value">${escapeHtml(data.repo_root || '-')}</span></div>
-                            <div class="info-row"><span class="info-label">Commit</span><span class="info-value">${escapeHtml(data.commit_short || 'unknown')}</span></div>
-                        </div>
-                        <div class="modal-footer">
-                            <button class="btn" onclick="document.getElementById('buildInfoModal').remove()">Close</button>
-                        </div>
-                    </div>
-                `;
-                document.body.appendChild(modal);
-            } catch (err) {
-                showBlockingError('Build Info Error', `Failed to load build info: ${err.message}`);
-            }
-        }
+            // Shutdown
+            document.getElementById('shutdownBtn').addEventListener('click', showShutdownModal);
+            document.getElementById('closeShutdownModal').addEventListener('click', () => {
+                document.getElementById('shutdownModal').classList.remove('active');
+            });
+            document.getElementById('cancelShutdown').addEventListener('click', () => {
+                document.getElementById('shutdownModal').classList.remove('active');
+            });
+            document.getElementById('confirmShutdown').addEventListener('click', confirmShutdown);
 
-        // ==================== Setup Wizard State ====================
-        const wizardSteps = [
-            { id: 'repo', title: 'Select Repository' },
-            { id: 'prereqs', title: 'Prerequisites' },
-            { id: 'agents', title: 'Agents' },
-            { id: 'settings', title: 'Settings' },
-            { id: 'review', title: 'Review Workflow' },
-            { id: 'preview', title: 'Preview & Save' },
-        ];
+            // Tools (stub handlers)
+            document.getElementById('auditTool').addEventListener('click', () => {
+                showToast('Audit tool coming soon', 'warning');
+            });
+            document.getElementById('traceTool').addEventListener('click', () => {
+                showToast('Trace tool coming soon', 'warning');
+            });
+            document.getElementById('refreshLabelsTool').addEventListener('click', () => {
+                showToast('Refresh labels coming soon', 'warning');
+            });
+            document.getElementById('cleanupWorktreesTool').addEventListener('click', () => {
+                showToast('Cleanup worktrees coming soon', 'warning');
+            });
 
-        let wizardState = {
-            step: 0,
-            repoRoot: '',
-            repoName: '',
-            detected: null,
-            isEditing: false,
-            config: {
-                repo: { name: '' },
-                worktrees: { base: '../' },
-                execution: { concurrency: { max_concurrent_sessions: 3 } },
-                ui: { mode: 'web', web_port: 8080 },
-                milestones: { sort: 'due_date' },
-                labels: { prefix: 'io' },
-                review: { enabled: false },
-                agents: {},
-            },
-        };
+            // Pause/Resume in activity view
+            document.getElementById('pauseResumeBtn').addEventListener('click', async () => {
+                if (!state.activeRepo) return;
+                const isPaused = state.activeRepo.orchestrator_state === 'paused';
+                const endpoint = isPaused ? '/api/repos/resume' : '/api/repos/pause';
 
-        function openSetupWizard(preselectedPath = null, existingConfig = null) {
-            // Reset state
-            wizardState = {
-                step: 0,
-                repoRoot: preselectedPath || '',
-                repoName: preselectedPath ? preselectedPath.split('/').pop() : '',
-                detected: null,
-                isEditing: !!existingConfig,
-                config: existingConfig ? { ...existingConfig } : {
-                    repo: { name: '' },
-                    worktrees: { base: '../' },
-                    execution: { concurrency: { max_concurrent_sessions: 3 } },
-                    ui: { mode: 'web', web_port: 8080 },
-                    milestones: { sort: 'due_date' },
-                    labels: { prefix: 'io' },
-                    review: { enabled: false },
-                    agents: {},
-                },
-            };
-
-            // If editing, skip to step 2 (prereqs) since we already have the repo
-            if (existingConfig && preselectedPath) {
-                wizardState.step = 1;
-            }
-
-            document.getElementById('wizardOverlay').classList.add('visible');
-            renderWizardStep();
-        }
-
-        async function openEditWizard(repoPath) {
-            // Fetch the existing config
-            showToast('Loading configuration...');
-            try {
-                const res = await fetch(`/control/setup/detect?repo_root=${encodeURIComponent(repoPath)}`);
-                const data = await res.json();
-
-                if (data.existing_config) {
-                    // Edit existing config
-                    openSetupWizard(repoPath, data.existing_config);
-                } else {
-                    // No config exists, create new with detected info
-                    const newConfig = {
-                        repo: { name: data.repo || '' },
-                        worktrees: { base: '../' },
-                        execution: { concurrency: { max_concurrent_sessions: 3 } },
-                        ui: { mode: 'web', web_port: 8080 },
-                        milestones: { sort: 'due_date' },
-                        labels: { prefix: 'io' },
-                        review: { enabled: false },
-                        agents: {},
-                    };
-                    // Pre-populate agents from detected labels
-                    if (data.agent_labels) {
-                        for (const label of data.agent_labels) {
-                            newConfig.agents[label] = {
-                                prompt: `.issue-orchestrator/prompts/${label.split(':')[1]}.md`,
-                                model: 'sonnet',
-                                timeout_minutes: 45,
-                            };
-                        }
-                    }
-                    openSetupWizard(repoPath, newConfig);  // Create new
-                }
-            } catch (err) {
-                showToast('Failed to load configuration', true);
-            }
-        }
-
-        function closeWizard() {
-            document.getElementById('wizardOverlay').classList.remove('visible');
-        }
-
-        async function wizardNext() {
-            const step = wizardSteps[wizardState.step];
-
-            // Validate current step
-            if (step.id === 'repo') {
-                const input = document.getElementById('wizardRepoPath');
-                if (!input || !input.value.trim()) {
-                    showToast('Please enter a repository path', true);
-                    return;
-                }
-                wizardState.repoRoot = input.value.trim();
-                wizardState.repoName = wizardState.repoRoot.split('/').pop();
-
-                // Detect repo info
-                showToast('Detecting repository...');
                 try {
-                    const res = await fetch(`/control/setup/detect?repo_root=${encodeURIComponent(wizardState.repoRoot)}`);
-                    wizardState.detected = await res.json();
-                    if (wizardState.detected.repo) {
-                        wizardState.config.repo = { name: wizardState.detected.repo };
-                    }
-                    // Pre-populate agents from existing labels
-                    if (wizardState.detected.agent_labels) {
-                        for (const label of wizardState.detected.agent_labels) {
-                            if (!wizardState.config.agents[label]) {
-                                wizardState.config.agents[label] = {
-                                    prompt: `.issue-orchestrator/prompts/${label.split(':')[1]}.md`,
-                                    model: 'sonnet',
-                                    timeout_minutes: 45,
-                                };
-                            }
-                        }
-                        // Ensure worktrees.base is set
-                        if (!wizardState.config.worktrees) {
-                            wizardState.config.worktrees = {};
-                        }
-                        if (!wizardState.config.worktrees.base) {
-                            wizardState.config.worktrees.base = '../';
-                        }
-                    }
-                } catch (err) {
-                    showToast('Failed to detect repository', true);
-                    return;
-                }
-            }
-
-            if (step.id === 'agents') {
-                // Ensure at least one agent
-                if (Object.keys(wizardState.config.agents).length === 0) {
-                    showToast('Add at least one agent', true);
-                    return;
-                }
-            }
-
-            if (step.id === 'preview') {
-                // Save!
-                await saveWizardConfig();
-                return;
-            }
-
-            wizardState.step++;
-            renderWizardStep();
-        }
-
-        function wizardPrev() {
-            if (wizardState.step > 0) {
-                wizardState.step--;
-                renderWizardStep();
-            }
-        }
-
-        function renderWizardStep() {
-            const step = wizardSteps[wizardState.step];
-            const modeLabel = wizardState.isEditing ? 'Edit' : 'New';
-
-            // Update progress
-            const progressHtml = wizardSteps.map((s, i) => {
-                let cls = 'wizard-step';
-                if (i < wizardState.step) cls += ' completed';
-                else if (i === wizardState.step) cls += ' active';
-                return `<div class="${cls}" title="${s.title}"></div>`;
-            }).join('');
-            document.getElementById('wizardProgress').innerHTML = progressHtml;
-
-            // Update title with mode indication
-            const titlePrefix = wizardState.isEditing ? '(Editing) ' : '';
-            document.getElementById('wizardTitle').textContent = titlePrefix + step.title;
-
-            // Update buttons - show first step differently when editing
-            const isFirstStep = wizardState.isEditing ? wizardState.step === 1 : wizardState.step === 0;
-            document.getElementById('wizardBack').style.visibility = isFirstStep ? 'hidden' : 'visible';
-            document.getElementById('wizardNext').textContent = step.id === 'preview' ? (wizardState.isEditing ? 'Update' : 'Save') : 'Next';
-
-            // Render step content
-            const body = document.getElementById('wizardBody');
-            if (step.id === 'repo') {
-                body.innerHTML = renderRepoStep();
-            } else if (step.id === 'prereqs') {
-                body.innerHTML = '<div style="text-align:center;padding:20px;">Checking prerequisites...</div>';
-                renderPrereqsStep();
-            } else if (step.id === 'agents') {
-                body.innerHTML = renderAgentsStep();
-            } else if (step.id === 'settings') {
-                body.innerHTML = renderSettingsStep();
-            } else if (step.id === 'review') {
-                body.innerHTML = renderReviewStep();
-            } else if (step.id === 'preview') {
-                body.innerHTML = '<div style="text-align:center;padding:20px;">Generating preview...</div>';
-                renderPreviewStep();
-            }
-        }
-
-        function renderRepoStep() {
-            return `
-                <div class="form-group">
-                    <label class="form-label">Repository Path</label>
-                    <input type="text" id="wizardRepoPath" class="form-input"
-                        placeholder="/path/to/your/repo"
-                        value="${escapeHtml(wizardState.repoRoot)}">
-                    <div class="form-hint">Enter the full path to your git repository</div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Or select from discovered repositories:</label>
-                    <div id="wizardRepoList" style="max-height:200px;overflow-y:auto;margin-top:8px;">
-                        <div style="color:#8b949e;font-size:13px;">Loading...</div>
-                    </div>
-                </div>
-            `;
-        }
-
-        async function renderPrereqsStep() {
-            const body = document.getElementById('wizardBody');
-            try {
-                const repoParam = wizardState.repoRoot ? `?repo_root=${encodeURIComponent(wizardState.repoRoot)}` : '';
-                const res = await fetch(`/control/setup/prereqs${repoParam}`);
-                const data = await res.json();
-
-                const checks = [
-                    { key: 'git', name: 'Git', detail: data.checks.git?.detail || 'Not found' },
-                    { key: 'github_auth', name: 'GitHub Auth', detail: data.checks.github_auth?.detail || 'Not configured' },
-                ];
-                const agentChecks = Array.isArray(data.agent_checks) ? data.agent_checks : [];
-
-                let html = '<div class="prereq-list">';
-                for (const check of checks) {
-                    const ok = data.checks[check.key]?.ok;
-                    html += `
-                        <div class="prereq-item ${ok ? 'prereq-ok' : 'prereq-fail'}">
-                            <span class="prereq-icon">${ok ? '&#10003;' : '&#10007;'}</span>
-                            <span class="prereq-name">${check.name}</span>
-                            <span class="prereq-detail">${escapeHtml(check.detail)}</span>
-                        </div>
-                    `;
-                }
-                for (const check of agentChecks) {
-                    const ok = !!check.ok;
-                    html += `
-                        <div class="prereq-item ${ok ? 'prereq-ok' : 'prereq-fail'}">
-                            <span class="prereq-icon">${ok ? '&#10003;' : '&#10007;'}</span>
-                            <span class="prereq-name">${escapeHtml(check.name || 'Agent CLI')}</span>
-                            <span class="prereq-detail">${escapeHtml(check.detail || '')}</span>
-                        </div>
-                    `;
-                }
-                html += '</div>';
-
-                if (!data.all_ok) {
-                    html += `
-                        <div style="margin-top:16px;padding:12px;background:#2d1b1b;border-radius:6px;border:1px solid #f85149;">
-                            <div style="color:#f85149;font-weight:500;margin-bottom:8px;">Missing Prerequisites</div>
-                            <div style="font-size:13px;">Some prerequisites are missing. You can continue, but the orchestrator may not work correctly.</div>
-                        </div>
-                    `;
-                }
-
-                body.innerHTML = html;
-            } catch (err) {
-                body.innerHTML = '<div style="color:#f85149;">Failed to check prerequisites</div>';
-            }
-        }
-
-        function renderAgentsStep() {
-            const agents = wizardState.config.agents;
-            let agentsHtml = '';
-
-            for (const [label, cfg] of Object.entries(agents)) {
-                agentsHtml += renderAgentCard(label, cfg);
-            }
-
-            return `
-                <div style="margin-bottom:16px;">
-                    <div style="font-size:13px;color:#8b949e;margin-bottom:12px;">
-                        Agents are identified by GitHub labels (e.g., "agent:backend"). Each agent needs a prompt file with instructions.
-                    </div>
-                    <div id="agentsList">${agentsHtml || '<div style="color:#8b949e;text-align:center;padding:20px;">No agents configured yet</div>'}</div>
-                </div>
-                <div style="border-top:1px solid #30363d;padding-top:16px;">
-                    <div class="form-group" style="margin-bottom:12px;">
-                        <label class="form-label">Add Agent</label>
-                        <div style="display:flex;gap:8px;">
-                            <input type="text" id="newAgentLabel" class="form-input" placeholder="agent:developer" style="flex:1;">
-                            <button onclick="addAgent()" class="btn btn-primary">Add</button>
-                        </div>
-                    </div>
-                </div>
-            `;
-        }
-
-        function renderAgentCard(label, cfg) {
-            const shortName = label.split(':')[1] || label;
-            return `
-                <div class="agent-card" id="agent-${escapeHtml(label)}">
-                    <div class="agent-card-header" onclick="toggleAgentCard('${escapeHtml(label)}')">
-                        <span style="font-weight:500;color:#58a6ff;">${escapeHtml(label)}</span>
-                        <button onclick="removeAgent('${escapeHtml(label)}');event.stopPropagation();" style="background:none;border:none;color:#f85149;cursor:pointer;font-size:16px;">&times;</button>
-                    </div>
-                    <div class="agent-card-body">
-                        <div class="agent-row">
-                            <div class="form-group" style="margin-bottom:0;">
-                                <label class="form-label">Model</label>
-                                <select class="form-select" onchange="updateAgent('${escapeHtml(label)}', 'model', this.value)">
-                                    <option value="sonnet" ${cfg.model === 'sonnet' ? 'selected' : ''}>Sonnet</option>
-                                    <option value="opus" ${cfg.model === 'opus' ? 'selected' : ''}>Opus</option>
-                                    <option value="haiku" ${cfg.model === 'haiku' ? 'selected' : ''}>Haiku</option>
-                                </select>
-                            </div>
-                            <div class="form-group" style="margin-bottom:0;">
-                                <label class="form-label">Timeout (minutes)</label>
-                                <input type="number" class="form-input" value="${cfg.timeout_minutes || 45}"
-                                    onchange="updateAgent('${escapeHtml(label)}', 'timeout_minutes', parseInt(this.value))">
-                            </div>
-                        </div>
-                        <div class="form-group" style="margin-bottom:0;">
-                            <label class="form-label">Prompt File</label>
-                            <input type="text" class="form-input" value="${escapeHtml(cfg.prompt)}"
-                                onchange="updateAgent('${escapeHtml(label)}', 'prompt', this.value)">
-                        </div>
-                    </div>
-                </div>
-            `;
-        }
-
-        function toggleAgentCard(label) {
-            const card = document.getElementById(`agent-${label}`);
-            if (card) card.classList.toggle('expanded');
-        }
-
-        function addAgent() {
-            const input = document.getElementById('newAgentLabel');
-            let label = input.value.trim();
-            if (!label) return;
-
-            if (!label.startsWith('agent:')) {
-                label = 'agent:' + label;
-            }
-
-            if (wizardState.config.agents[label]) {
-                showToast('Agent already exists', true);
-                return;
-            }
-
-            const shortName = label.split(':')[1];
-            wizardState.config.agents[label] = {
-                prompt: `.issue-orchestrator/prompts/${shortName}.md`,
-                model: 'sonnet',
-                timeout_minutes: 45,
-            };
-            // Ensure worktrees.base is set
-            if (!wizardState.config.worktrees) {
-                wizardState.config.worktrees = {};
-            }
-            if (!wizardState.config.worktrees.base) {
-                wizardState.config.worktrees.base = '../';
-            }
-
-            input.value = '';
-            document.getElementById('wizardBody').innerHTML = renderAgentsStep();
-        }
-
-        function removeAgent(label) {
-            delete wizardState.config.agents[label];
-            document.getElementById('wizardBody').innerHTML = renderAgentsStep();
-        }
-
-        function updateAgent(label, field, value) {
-            if (wizardState.config.agents[label]) {
-                wizardState.config.agents[label][field] = value;
-            }
-        }
-
-        function renderSettingsStep() {
-            const cfg = wizardState.config;
-            return `
-                <div class="form-group">
-                    <label class="form-label">GitHub Repository</label>
-                    <input type="text" class="form-input" value="${escapeHtml(cfg.repo?.name || '')}"
-                        onchange="wizardState.config.repo = {...(wizardState.config.repo||{}), name: this.value}"
-                        placeholder="owner/repo">
-                    <div class="form-hint">Detected from git remote, or enter manually</div>
-                </div>
-                <div class="agent-row">
-                    <div class="form-group">
-                        <label class="form-label">Max Concurrent Sessions</label>
-                        <input type="number" class="form-input" value="${cfg.execution?.concurrency?.max_concurrent_sessions || 3}"
-                            onchange="wizardState.config.execution = {...(wizardState.config.execution||{}), concurrency: {...(wizardState.config.execution?.concurrency||{}), max_concurrent_sessions: parseInt(this.value)}}">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">UI Mode</label>
-                        <select class="form-select" onchange="wizardState.config.ui = {...(wizardState.config.ui||{}), mode: this.value}">
-                            <option value="web" ${cfg.ui?.mode === 'web' ? 'selected' : ''}>Web Dashboard</option>
-                            <option value="tmux" ${cfg.ui?.mode === 'tmux' ? 'selected' : ''}>tmux</option>
-                        </select>
-                    </div>
-                </div>
-                <div class="agent-row">
-                    <div class="form-group">
-                        <label class="form-label">Web Port</label>
-                        <input type="number" class="form-input" value="${cfg.ui?.web_port || 8080}"
-                            onchange="wizardState.config.ui = {...(wizardState.config.ui||{}), web_port: parseInt(this.value)}">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Label Prefix</label>
-                        <input type="text" class="form-input" value="${escapeHtml(cfg.labels?.prefix || '')}"
-                            onchange="wizardState.config.labels = {...(wizardState.config.labels||{}), prefix: this.value}"
-                            placeholder="io">
-                        <div class="form-hint">e.g., "io" for io:in-progress</div>
-                    </div>
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Milestone Sort Strategy</label>
-                    <select class="form-select" onchange="wizardState.config.milestones = {...(wizardState.config.milestones||{}), sort: this.value}">
-                        <option value="due_date" ${cfg.milestones?.sort === 'due_date' ? 'selected' : ''}>By Due Date</option>
-                        <option value="milestone_number" ${cfg.milestones?.sort === 'milestone_number' ? 'selected' : ''}>By Number (M1, M2...)</option>
-                        <option value="name" ${cfg.milestones?.sort === 'name' ? 'selected' : ''}>Alphabetically</option>
-                    </select>
-                </div>
-            `;
-        }
-
-        function renderReviewStep() {
-            const review = wizardState.config.review || {};
-            return `
-                <div class="form-group">
-                    <label class="form-checkbox">
-                        <input type="checkbox" ${review.enabled ? 'checked' : ''}
-                            onchange="wizardState.config.review = {...(wizardState.config.review||{}), enabled: this.checked}; document.getElementById('wizardBody').innerHTML = renderReviewStep();">
-                        <span>Enable Code Review Workflow</span>
-                    </label>
-                    <div class="form-hint">When enabled, PRs are automatically reviewed by a review agent before merging</div>
-                </div>
-                ${review.enabled ? `
-                    <div style="border-left:2px solid #238636;padding-left:16px;margin-top:16px;">
-                        <div class="form-group">
-                            <label class="form-label">Review Agent</label>
-                            <select class="form-select" onchange="wizardState.config.review.default = this.value">
-                                <option value="">Select an agent...</option>
-                                ${Object.keys(wizardState.config.agents).map(label =>
-                                    `<option value="${escapeHtml(label)}" ${review.default === label ? 'selected' : ''}>${escapeHtml(label)}</option>`
-                                ).join('')}
-                                <option value="agent:reviewer" ${review.default === 'agent:reviewer' ? 'selected' : ''}>agent:reviewer (new)</option>
-                            </select>
-                            <div class="form-hint">Agent that reviews PRs created by work agents</div>
-                        </div>
-                        <div class="agent-row">
-                            <div class="form-group">
-                                <label class="form-label">Needs Review Label</label>
-                                <input type="text" class="form-input" value="${escapeHtml(review.code_review_label || 'needs-code-review')}"
-                                    onchange="wizardState.config.review.code_review_label = this.value">
-                            </div>
-                            <div class="form-group">
-                                <label class="form-label">Reviewed Label</label>
-                                <input type="text" class="form-input" value="${escapeHtml(review.code_reviewed_label || 'code-reviewed')}"
-                                    onchange="wizardState.config.review.code_reviewed_label = this.value">
-                            </div>
-                        </div>
-                    </div>
-                ` : ''}
-            `;
-        }
-
-        async function renderPreviewStep() {
-            const body = document.getElementById('wizardBody');
-
-            // Ensure review agent is in agents list if enabled
-            if (wizardState.config.review?.enabled && wizardState.config.review?.default) {
-                const reviewAgent = wizardState.config.review.default;
-                if (!wizardState.config.agents[reviewAgent] && reviewAgent === 'agent:reviewer') {
-                    wizardState.config.agents[reviewAgent] = {
-                        prompt: '.issue-orchestrator/prompts/reviewer.md',
-                        model: 'sonnet',
-                        timeout_minutes: 30,
-                    };
-                }
-            }
-
-            try {
-                const res = await fetch('/control/setup/preview', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        repo_root: wizardState.repoRoot,
-                        config: wizardState.config,
-                    }),
-                });
-                const data = await res.json();
-
-                const actionLabel = wizardState.isEditing ? 'Files to update:' : 'Files to create:';
-                let filesHtml = `<div style="margin-bottom:16px;"><strong>${actionLabel}</strong></div>`;
-                filesHtml += '<ul style="font-size:13px;color:#8b949e;margin-left:20px;">';
-                for (const f of data.files || []) {
-                    filesHtml += `<li>${escapeHtml(f.path)}</li>`;
-                }
-                filesHtml += '</ul>';
-
-                const modeNote = wizardState.isEditing
-                    ? '<div style="margin-bottom:16px;padding:10px;background:#1c3a5e;border-radius:6px;font-size:13px;">Updating existing configuration. Prompt files will only be created if they don\'t exist.</div>'
-                    : '';
-
-                body.innerHTML = `
-                    ${modeNote}
-                    ${filesHtml}
-                    <div style="margin-top:16px;margin-bottom:8px;"><strong>Configuration Preview:</strong></div>
-                    <div class="yaml-preview">${escapeHtml(data.yaml)}</div>
-                `;
-            } catch (err) {
-                body.innerHTML = '<div style="color:#f85149;">Failed to generate preview</div>';
-            }
-        }
-
-        async function saveWizardConfig() {
-            const actionLabel = wizardState.isEditing ? 'Updating' : 'Saving';
-            showToast(`${actionLabel} configuration...`);
-
-            try {
-                const res = await fetch('/control/setup/save', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        repo_root: wizardState.repoRoot,
-                        config: wizardState.config,
-                        create_prompts: true,
-                        create_labels: !wizardState.isEditing,  // Skip label creation when editing
-                    }),
-                });
-                const data = await res.json();
-
-                if (data.error) {
-                    showToast(data.detail || data.error, true);
-                    return;
-                }
-
-                // Add to registry (if not already registered)
-                if (!wizardState.isEditing) {
-                    await fetch('/control/repos', {
+                    const response = await fetch(endpoint, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ repo_root: wizardState.repoRoot }),
+                        body: JSON.stringify({ path: state.activeRepo.path })
                     });
-                }
 
-                const successMsg = wizardState.isEditing ? 'Configuration updated!' : 'Configuration saved!';
-                showToast(successMsg);
-                closeWizard();
-                loadRepos();
-                discoverRepos();
-            } catch (err) {
-                showToast('Failed to save configuration', true);
-            }
-        }
-
-        // Load repo list for wizard step 1
-        async function loadWizardRepoList() {
-            const container = document.getElementById('wizardRepoList');
-            if (!container) return;
-
-            try {
-                const res = await fetch('/control/repos/discover?max_depth=3');
-                const data = await res.json();
-
-                // Also get repos without config (to offer setup)
-                const searchPaths = ['~/dev', '~/projects', '~/code'].join(',');
-
-                if (!data.discovered || data.discovered.length === 0) {
-                    container.innerHTML = '<div style="color:#8b949e;font-size:13px;">No repositories found. Enter a path above.</div>';
-                    return;
-                }
-
-                let html = '';
-                for (const repo of data.discovered) {
-                    html += `
-                        <div style="padding:8px 12px;border-bottom:1px solid #21262d;cursor:pointer;display:flex;justify-content:space-between;align-items:center;"
-                            onclick="document.getElementById('wizardRepoPath').value='${escapeHtml(repo.path)}'">
-                            <div>
-                                <div style="font-weight:500;color:#58a6ff;">${escapeHtml(repo.name)}</div>
-                                <div style="font-size:11px;color:#8b949e;">${escapeHtml(repo.path)}</div>
-                            </div>
-                            <span style="font-size:11px;color:#3fb950;">Has config</span>
-                        </div>
-                    `;
-                }
-                container.innerHTML = html || '<div style="color:#8b949e;font-size:13px;">No repositories found</div>';
-            } catch (err) {
-                container.innerHTML = '<div style="color:#f85149;font-size:13px;">Failed to load repositories</div>';
-            }
-        }
-
-        // Watch for wizard step 1 to load repo list
-        const wizardBodyObserver = new MutationObserver(() => {
-            if (document.getElementById('wizardRepoList')) {
-                loadWizardRepoList();
-            }
-        });
-        wizardBodyObserver.observe(document.getElementById('wizardBody'), { childList: true });
-
-        // Track which repo has had doctor loaded to avoid repeated fetches on SSE updates
-        let primaryDoctorLoadedForRepo = null;
-
-        // ==================== Main UI Functions ====================
-        function renderPrimarySection(repos) {
-            const card = document.getElementById('primaryCard');
-            const body = document.getElementById('primaryBody');
-            if (!card || !body) return;
-
-            if (!repos || repos.length === 0) {
-                card.style.display = 'none';
-                return;
-            }
-
-            card.style.display = 'block';
-            if (!primaryRepoPath || !repos.find(r => r.path === primaryRepoPath)) {
-                primaryRepoPath = repos[0].path;
-            }
-            const repo = repos.find(r => r.path === primaryRepoPath) || repos[0];
-
-            const selector = repos.length > 1
-                ? `<div class="primary-select">
-                        <label style="font-size:12px;color:#8b949e;">Primary repo</label>
-                        <select class="form-select" onchange="setPrimaryRepo(this.value)">
-                            ${repos.map(r => `<option value="${escapeHtml(r.path)}" ${r.path === repo.path ? 'selected' : ''}>${escapeHtml(r.name)}</option>`).join('')}
-                        </select>
-                   </div>`
-                : '';
-
-            // Preserve existing doctor content if already loaded for this repo
-            const existingDoctor = document.getElementById('primaryDoctor');
-            const doctorContent = (primaryDoctorLoadedForRepo === repo.path && existingDoctor)
-                ? existingDoctor.outerHTML
-                : '<div class="primary-doctor" id="primaryDoctor">Loading doctor...</div>';
-
-            body.innerHTML = `
-                <div class="primary-header">
-                    <div>
-                        <div style="font-size:14px;font-weight:600;color:#58a6ff;">${escapeHtml(repo.name)}</div>
-                        <div style="font-size:12px;color:#8b949e;font-family:monospace;">${escapeHtml(repo.path)}</div>
-                        ${selector}
-                        ${renderPrimarySummary(repo)}
-                    </div>
-                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                        <button class="btn" onclick="showDetails('${escapeHtml(repo.path)}')">Details</button>
-                        <button class="btn" onclick="checkRepoHealth('${escapeHtml(repo.path)}', '${escapeHtml(repo.selected_config || (repo.configs && repo.configs[0]) || '')}')">Check</button>
-                    </div>
-                </div>
-                ${renderPrimaryStatus(repo)}
-                ${doctorContent}
-            `;
-
-            // Only load doctor if not already loaded for this repo
-            if (primaryDoctorLoadedForRepo !== repo.path) {
-                loadPrimaryDoctor(repo.path);
-            }
-        }
-
-        function setPrimaryRepo(path) {
-            primaryRepoPath = path;
-            renderPrimarySection(lastRepos);
-        }
-
-        function renderPrimaryStatus(repo) {
-            const status = repo.status || { state: 'unknown' };
-            const isRunning = status.state === 'running';
-            const isFailed = status.state === 'failed';
-            const activeSessionCount = status.active_session_count || 0;
-            const isOrphaned = status.orphaned === true;
-            const isShuttingDown = isRunning && status.shutdown_requested && activeSessionCount > 0;
-            const isShutdownComplete = isRunning && status.shutdown_requested && activeSessionCount === 0;
-            const isPaused = isRunning && status.paused && !status.shutdown_requested;
-            const hasConfigs = repo.configs && repo.configs.length > 0;
-
-            let statusClass = 'status-stopped';
-            if (isShuttingDown) statusClass = 'status-paused';
-            else if (isShutdownComplete) statusClass = 'status-stopped';
-            else if (isPaused) statusClass = 'status-paused';
-            else if (isRunning) statusClass = 'status-running';
-            else if (isFailed) statusClass = 'status-failed';
-
-            let statusLabel = 'Unknown';
-            if (isShuttingDown) statusLabel = `Stopping... (${activeSessionCount})`;
-            else if (isShutdownComplete) statusLabel = 'Stopped';
-            else if (isPaused) statusLabel = 'Paused';
-            else if (isOrphaned) statusLabel = 'Running (untracked)';
-            else if (status.state) statusLabel = status.state.charAt(0).toUpperCase() + status.state.slice(1);
-
-            const selectedConfig = repo.selected_config || (repo.configs && repo.configs[0]) || null;
-            const configOptions = (repo.configs || []).map(c =>
-                `<option value="${escapeHtml(c)}" ${c === selectedConfig ? 'selected' : ''}>${escapeHtml(c)}</option>`
-            ).join('');
-
-            if (!hasConfigs) {
-                return `
-                    <div class="primary-status">
-                        <span class="repo-status status-paused"><span class="status-dot"></span>No config</span>
-                        <div class="primary-actions">
-                            <button class="btn btn-primary" onclick="openSetupWizard('${escapeHtml(repo.path)}')">Set Up</button>
-                            <button class="btn" onclick="removeRepo('${escapeHtml(repo.path)}')">Remove</button>
-                        </div>
-                    </div>
-                `;
-            }
-
-            if (repo.expected_instances > 1 && repo.instances) {
-                const runningInstance = repo.instances.find(inst => inst.state === 'running' && inst.port);
-                return `
-                    <div class="primary-status">
-                        <span class="repo-status ${statusClass}"><span class="status-dot"></span>${statusLabel}</span>
-                        <div class="primary-actions">
-                            ${runningInstance ? `<button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${runningInstance.port})">Open UI</button>` : ''}
-                            ${status.state === 'running' || status.state === 'partial'
-                                ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}', null)">Stop All</button>`
-                                : `<button class="btn btn-primary" onclick="startRepo('${escapeHtml(repo.path)}', '${escapeHtml(selectedConfig || '')}')">Start All</button>`
-                            }
-                        </div>
-                    </div>
-                `;
-            }
-
-            const actionControls = isRunning && !isShuttingDown && !isShutdownComplete
-                ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}', ${status.port || 'null'})">Stop</button>
-                   <button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${status.port})">Open UI</button>`
-                : isShuttingDown
-                    ? `<button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${status.port})">Open UI</button>`
-                    : `<select class="btn" style="min-width:140px;" onchange="updateSelectedConfig('${escapeHtml(repo.path)}', this.value)">${configOptions}</select>
-                       <button class="btn btn-primary" onclick="startRepo('${escapeHtml(repo.path)}', '${escapeHtml(selectedConfig || '')}')">Start</button>`;
-
-            return `
-                <div class="primary-status">
-                    <span class="repo-status ${statusClass}"><span class="status-dot"></span>${statusLabel}</span>
-                    <div class="primary-actions">
-                        ${actionControls}
-                    </div>
-                </div>
-            `;
-        }
-
-        function renderPrimarySummary(repo) {
-            const status = repo.status || { state: 'unknown' };
-            const isRunning = status.state === 'running';
-            const activeSessionCount = status.active_session_count || 0;
-            const isShuttingDown = isRunning && status.shutdown_requested && activeSessionCount > 0;
-            const isShutdownComplete = isRunning && status.shutdown_requested && activeSessionCount === 0;
-            const isPaused = isRunning && status.paused && !status.shutdown_requested;
-            const isOrphaned = status.orphaned === true;
-
-            let statusLabel = 'Unknown';
-            if (isShuttingDown) statusLabel = `Stopping... (${activeSessionCount})`;
-            else if (isShutdownComplete) statusLabel = 'Stopped';
-            else if (isPaused) statusLabel = 'Paused';
-            else if (isOrphaned) statusLabel = 'Running (untracked)';
-            else if (status.state) statusLabel = status.state.charAt(0).toUpperCase() + status.state.slice(1);
-
-            const portLabel = status.port ? status.port : '-';
-            const selectedConfig = repo.selected_config || (repo.configs && repo.configs[0]) || '-';
-
-            return `
-                <div class="primary-meta">
-                    <span class="primary-pill"><strong>Status</strong> ${escapeHtml(statusLabel)}</span>
-                    <span class="primary-pill"><strong>Port</strong> ${escapeHtml(String(portLabel))}</span>
-                    <span class="primary-pill"><strong>Config</strong> ${escapeHtml(String(selectedConfig))}</span>
-                </div>
-            `;
-        }
-
-        async function loadPrimaryDoctor(repoPath) {
-            const container = document.getElementById('primaryDoctor');
-            if (!container) return;
-            const requestId = ++primaryDoctorRequestId;
-            container.innerHTML = 'Loading doctor...';
-            try {
-                const res = await fetch(`/control/orchestrator/doctor?repo_root=${encodeURIComponent(repoPath)}`);
-                const doc = await res.json();
-                if (requestId !== primaryDoctorRequestId) {
-                    return;
-                }
-                lastPrimaryDoctor = doc;
-                primaryDoctorLoadedForRepo = repoPath;  // Mark as loaded to avoid repeat fetches
-                container.innerHTML = renderPrimaryDoctor(doc, repoPath);
-            } catch (err) {
-                if (requestId !== primaryDoctorRequestId) {
-                    return;
-                }
-                primaryDoctorLoadedForRepo = repoPath;  // Also mark on error to avoid retrying every 3s
-                container.innerHTML = '<div style="color:#8b949e;">Doctor unavailable.</div>';
-            }
-        }
-
-        function renderPrimaryDoctor(doc, repoPath) {
-            const statusIcon = { 'ok': '&#10003;', 'warning': '&#9888;', 'error': '&#10007;' };
-            const statusColor = { 'ok': '#3fb950', 'warning': '#d29922', 'error': '#f85149' };
-            const overall = doc.overall || 'unknown';
-            const checks = Array.isArray(doc.checks) ? doc.checks : [];
-            const encodedPath = encodeURIComponent(repoPath);
-            return `
-                <div class="primary-doctor-header">
-                    <span class="repo-status status-${overall === 'error' ? 'failed' : overall === 'warning' ? 'paused' : 'running'}">
-                        <span class="status-dot"></span>Doctor
-                    </span>
-                    <div class="primary-doctor-summary">Overall: ${escapeHtml(overall.toUpperCase())} (${checks.length} checks)</div>
-                </div>
-                <div class="primary-doctor-actions">
-                    <button class="btn btn-primary" onclick="loadPrimaryDoctor(decodeURIComponent('${encodedPath}'))">Re-run Doctor</button>
-                    <button class="btn" onclick="copyPrimaryDoctor()">Copy Report</button>
-                </div>
-                <div class="primary-doctor-list">
-                    ${checks.map(c => `
-                        <div class="primary-doctor-item">
-                            <span style="color:${statusColor[c.status] || '#8b949e'}">${statusIcon[c.status] || '?'}</span>
-                            <div><strong>${escapeHtml(c.name)}</strong>: ${escapeHtml(c.detail)}</div>
-                        </div>
-                    `).join('') || '<div style="color:#8b949e;">No checks reported.</div>'}
-                </div>
-            `;
-        }
-
-        async function copyPrimaryDoctor() {
-            if (!lastPrimaryDoctor) {
-                showToast('Doctor report not available', true);
-                return;
-            }
-            const payload = JSON.stringify(lastPrimaryDoctor, null, 2);
-            try {
-                if (navigator.clipboard && navigator.clipboard.writeText) {
-                    await navigator.clipboard.writeText(payload);
-                    showToast('Doctor report copied');
-                    return;
-                }
-            } catch (err) {}
-
-            const textarea = document.createElement('textarea');
-            textarea.value = payload;
-            textarea.style.position = 'fixed';
-            textarea.style.left = '-9999px';
-            document.body.appendChild(textarea);
-            textarea.select();
-            try {
-                document.execCommand('copy');
-                showToast('Doctor report copied');
-            } catch (err) {
-                showToast('Failed to copy report', true);
-            } finally {
-                textarea.remove();
-            }
-        }
-
-        async function loadRepos(data = null) {
-            const repoRows = document.getElementById('repoRows');
-
-            try {
-                // Use provided data (from SSE) or fetch it
-                if (!data) {
-                    const res = await fetch('/control/repos');
-                    data = await res.json();
-                }
-
-                if (!data.repos || data.repos.length === 0) {
-                    lastRepos = [];
-                    renderPrimarySection([]);
-                    repoRows.innerHTML = '<div class="empty-state">No repositories registered yet</div>';
-                    checkShowWelcome(0);
-                    return;
-                }
-
-                lastRepos = data.repos;
-                renderPrimarySection(data.repos);
-                checkShowWelcome(data.repos.length);
-
-                let html = '';
-                for (const repo of data.repos) {
-                    const status = repo.status || { state: 'unknown' };
-                    const isRunning = status.state === 'running';
-                    const isFailed = status.state === 'failed';
-                    const activeSessionCount = status.active_session_count || 0;
-                    const isOrphaned = status.orphaned === true;
-                    // Distinguish between actively draining vs shutdown complete
-                    const isShuttingDown = isRunning && status.shutdown_requested && activeSessionCount > 0;
-                    const isShutdownComplete = isRunning && status.shutdown_requested && activeSessionCount === 0;
-                    const isPaused = isRunning && status.paused && !status.shutdown_requested;
-                    const hasConfigs = repo.configs && repo.configs.length > 0;
-
-                    // Status class for CSS styling
-                    let statusClass;
-                    if (isShuttingDown) statusClass = 'status-paused';  // Yellow for draining
-                    else if (isShutdownComplete) statusClass = 'status-stopped';  // Gray for stopped
-                    else if (isPaused) statusClass = 'status-paused';
-                    else if (isRunning) statusClass = 'status-running';
-                    else if (isFailed) statusClass = 'status-failed';
-                    else statusClass = 'status-stopped';
-
-                    // Status label
-                    let statusLabel;
-                    if (isShuttingDown) statusLabel = `Stopping... (${activeSessionCount})`;
-                    else if (isShutdownComplete) statusLabel = 'Stopped';
-                    else if (isPaused) statusLabel = 'Paused';
-                    else if (isOrphaned) statusLabel = 'Running (untracked)';
-                    else if (status.state) statusLabel = status.state.charAt(0).toUpperCase() + status.state.slice(1);
-                    else statusLabel = 'Unknown';
-
-                    if (!hasConfigs) {
-                        // No config - show setup prompt
-                        html += `
-                            <div class="repo-row" data-path="${escapeHtml(repo.path)}" style="background:#1c1c1e;">
-                                <div>
-                                    <div class="repo-name">${escapeHtml(repo.name)}</div>
-                                    <div class="repo-path" title="${escapeHtml(repo.path)}">${escapeHtml(repo.path)}</div>
-                                </div>
-                                <span class="repo-status" style="color:#d29922;">
-                                    <span style="margin-right:6px;">⚠️</span>
-                                    No config
-                                </span>
-                                <span class="repo-port">-</span>
-                                <div class="repo-actions">
-                                    <button class="btn btn-primary" onclick="openSetupWizard('${escapeHtml(repo.path)}')">Set Up Now</button>
-                                    <button class="btn" onclick="removeRepo('${escapeHtml(repo.path)}')" title="Remove">&times;</button>
-                                </div>
-                            </div>
-                        `;
-                    } else if (repo.expected_instances > 1 && repo.instances) {
-                        // Multi-instance mode - show aggregated row with expandable instances
-                        const selectedConfig = repo.selected_config || repo.configs[0];
-                        const configOptions = repo.configs.map(c =>
-                            `<option value="${escapeHtml(c)}" ${c === selectedConfig ? 'selected' : ''}>${escapeHtml(c)}</option>`
-                        ).join('');
-                        const runningCount = status.running_count || 0;
-                        const expectedCount = repo.expected_instances;
-                        const isPartial = status.state === 'partial';
-                        const allRunning = runningCount === expectedCount;
-                        const allStopped = runningCount === 0;
-
-                        // Status for multi-instance
-                        let multiStatusClass, multiStatusLabel;
-                        if (allRunning) {
-                            multiStatusClass = 'status-running';
-                            multiStatusLabel = `${runningCount}/${expectedCount} Running`;
-                        } else if (isPartial) {
-                            multiStatusClass = 'status-partial';
-                            multiStatusLabel = `${runningCount}/${expectedCount} Running`;
-                        } else {
-                            multiStatusClass = 'status-stopped';
-                            multiStatusLabel = 'Stopped';
-                        }
-
-                        const repoId = escapeHtml(repo.name).replace(/[^a-zA-Z0-9]/g, '_');
-
-                        html += `
-                            <div class="repo-row" data-path="${escapeHtml(repo.path)}">
-                                <div>
-                                    <span class="expand-toggle" onclick="toggleInstances('${repoId}')" id="toggle-${repoId}">▶</span>
-                                    <span>
-                                        <div class="repo-name" style="display:inline;">${escapeHtml(repo.name)}</div>
-                                        <span style="font-size:11px;color:#8b949e;margin-left:8px;">(${expectedCount} instances)</span>
-                                    </span>
-                                    <div class="repo-path" title="${escapeHtml(repo.path)}" style="margin-left:18px;">${escapeHtml(repo.path)}</div>
-                                </div>
-                                <span class="repo-status ${multiStatusClass}">
-                                    <span class="status-dot"></span>
-                                    ${multiStatusLabel}
-                                </span>
-                                <span class="repo-port">-</span>
-                                <div class="repo-actions">
-                                    ${allRunning || isPartial
-                                        ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}', null)">Stop All</button>`
-                                        : `<select class="btn" style="min-width:100px;" id="config-${repoId}" onchange="updateSelectedConfig('${escapeHtml(repo.path)}', this.value)">${configOptions}</select>
-                                           <button class="btn" onclick="viewConfig('${escapeHtml(repo.path)}', document.getElementById('config-${repoId}').value)" title="View config">View</button>
-                                           <button class="btn btn-primary" onclick="startRepo('${escapeHtml(repo.path)}', document.getElementById('config-${repoId}').value)">Start All</button>`
-                                    }
-                                    <button class="btn" onclick="showDetails('${escapeHtml(repo.path)}')">Details</button>
-                                    <button class="btn" onclick="removeRepo('${escapeHtml(repo.path)}')" title="Remove">&times;</button>
-                                </div>
-                            </div>
-                            <div class="instances-container" id="instances-${repoId}">
-                        `;
-
-                        // Render each instance as a sub-row
-                        for (const inst of repo.instances) {
-                            const instRunning = inst.state === 'running';
-                            const instFailed = inst.state === 'failed';
-                            const instPaused = inst.paused && !inst.shutdown_requested;
-                            let instStatusClass, instStatusLabel;
-
-                            if (instPaused) {
-                                instStatusClass = 'status-paused';
-                                instStatusLabel = 'Paused';
-                            } else if (instRunning) {
-                                instStatusClass = 'status-running';
-                                instStatusLabel = 'Running';
-                            } else if (instFailed) {
-                                instStatusClass = 'status-failed';
-                                instStatusLabel = 'Failed';
-                            } else {
-                                instStatusClass = 'status-stopped';
-                                instStatusLabel = 'Stopped';
-                            }
-
-                            const instId = inst.instance_id || 'default';
-
-                            // E2E role badge (only shown when running and role is set)
-                            let e2eBadge = '';
-                            if (instRunning && inst.e2e_role) {
-                                const roleClass = inst.e2e_role === 'executor' ? 'executor' : 'observer';
-                                const roleLabel = inst.e2e_role === 'executor' ? 'E2E' : 'E2E Observer';
-                                e2eBadge = `<span class="e2e-badge ${roleClass}">${roleLabel}</span>`;
-                            }
-
-                            html += `
-                                <div class="instance-row">
-                                    <div class="instance-id">${escapeHtml(instId)}${e2eBadge}</div>
-                                    <span class="instance-status ${instStatusClass}">
-                                        <span class="status-dot"></span>
-                                        ${instStatusLabel}
-                                    </span>
-                                    <span class="instance-port">${inst.port || '-'}</span>
-                                    <div class="instance-actions">
-                                        ${instRunning
-                                            ? `<button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${inst.port})">Open</button>`
-                                            : ''
-                                        }
-                                    </div>
-                                </div>
-                            `;
-                        }
-
-                        html += `</div>`; // Close instances-container
-
-                    } else {
-                        // Single instance mode - show normal row with config dropdown
-                        const selectedConfig = repo.selected_config || repo.configs[0];
-                        const configOptions = repo.configs.map(c =>
-                            `<option value="${escapeHtml(c)}" ${c === selectedConfig ? 'selected' : ''}>${escapeHtml(c)}</option>`
-                        ).join('');
-
-                        // E2E role badge for single-instance mode
-                        let singleE2eBadge = '';
-                        if (isRunning && status.e2e_role) {
-                            const roleClass = status.e2e_role === 'executor' ? 'executor' : 'observer';
-                            const roleLabel = status.e2e_role === 'executor' ? 'E2E' : 'E2E Observer';
-                            singleE2eBadge = `<span class="e2e-badge ${roleClass}">${roleLabel}</span>`;
-                        }
-
-                        html += `
-                            <div class="repo-row" data-path="${escapeHtml(repo.path)}">
-                                <div>
-                                    <div class="repo-name">${escapeHtml(repo.name)}${singleE2eBadge}</div>
-                                    <div class="repo-path" title="${escapeHtml(repo.path)}">${escapeHtml(repo.path)}</div>
-                                </div>
-                                <span class="repo-status ${statusClass}">
-                                    <span class="status-dot"></span>
-                                    ${statusLabel}
-                                </span>
-                                <span class="repo-port">${status.port || '-'}</span>
-                                <div class="repo-actions">
-                                    ${isRunning && !isShuttingDown && !isShutdownComplete
-                                        ? `<button class="btn" style="border-color:#f85149;color:#f85149;" onclick="stopRepo('${escapeHtml(repo.path)}', ${status.port || 'null'})">Stop</button>
-                                           <button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${status.port})">Open UI</button>`
-                                        : isShuttingDown
-                                            ? `<button class="btn" style="border-color:#1f6feb;color:#58a6ff;" onclick="openRepo(${status.port})">Open UI</button>`
-                                            : `<select class="btn" style="min-width:100px;" id="config-${escapeHtml(repo.name)}" onchange="updateSelectedConfig('${escapeHtml(repo.path)}', this.value)">${configOptions}</select>
-                                               <button class="btn" onclick="viewConfig('${escapeHtml(repo.path)}', document.getElementById('config-${escapeHtml(repo.name)}').value)" title="View config">View</button>
-                                               <button class="btn btn-primary" onclick="startRepo('${escapeHtml(repo.path)}', document.getElementById('config-${escapeHtml(repo.name)}').value)">Start</button>`
-                                    }
-                                    <button class="btn" onclick="checkRepoHealth('${escapeHtml(repo.path)}', ${isRunning ? `'${escapeHtml(selectedConfig)}'` : `document.getElementById('config-${escapeHtml(repo.name)}').value`})" title="Run health check">Check</button>
-                                    <button class="btn" onclick="showDetails('${escapeHtml(repo.path)}')">Details</button>
-                                    <button class="btn" onclick="removeRepo('${escapeHtml(repo.path)}')" title="Remove">&times;</button>
-                                </div>
-                            </div>
-                        `;
-                    }
-                }
-                repoRows.innerHTML = html;
-            } catch (err) {
-                console.error('Failed to load repos:', err);
-                renderPrimarySection([]);
-                repoRows.innerHTML = '<div class="empty-state" style="color:#f85149;">Failed to load repositories</div>';
-            }
-        }
-
-        function checkShowWelcome(repoCount) {
-            const welcomeScreen = document.getElementById('welcomeScreen');
-            const repoContent = document.getElementById('repoContent');
-            const primaryCard = document.getElementById('primaryCard');
-
-            if (repoCount === 0) {
-                // Check if there are discovered repos
-                const discoveredList = document.getElementById('discoveredRepos');
-                const hasDiscovered = discoveredList && !discoveredList.querySelector('.empty-state');
-
-                if (!hasDiscovered) {
-                    welcomeScreen.style.display = 'block';
-                    repoContent.style.display = 'none';
-                    if (primaryCard) {
-                        primaryCard.style.display = 'none';
-                    }
-                    return;
-                }
-            }
-
-            welcomeScreen.style.display = 'none';
-            repoContent.style.display = 'block';
-        }
-
-        async function discoverRepos() {
-            const container = document.getElementById('discoveredRepos');
-            container.innerHTML = '<div class="loading-state" style="padding:24px;color:#8b949e;">Scanning...</div>';
-
-            try {
-                const res = await fetch('/control/repos/discover');
-                const data = await res.json();
-
-                if (!data.discovered || data.discovered.length === 0) {
-                    container.innerHTML = '<div class="empty-state" style="padding:24px;">No new repositories found</div>';
-                    checkShowWelcome(0);
-                    return;
-                }
-
-                // Display discovered repos with status badges
-                let html = '';
-                for (const repo of data.discovered) {
-                    const status = repo.status || 'needs_setup';
-
-                    // Status badge and action button based on config status
-                    let statusBadge = '';
-                    let actionButton = '';
-
-                    if (status === 'ready') {
-                        // Has config - validate it
-                        let configValid = true;
-                        let configError = null;
-                        try {
-                            const valRes = await fetch('/control/repos/validate', {
-                                method: 'POST',
-                                headers: { 'Content-Type': 'application/json' },
-                                body: JSON.stringify({ repo_root: repo.path }),
-                            });
-                            const valData = await valRes.json();
-                            configValid = valData.valid;
-                            if (!configValid && valData.errors?.length) {
-                                configError = valData.errors[0];
-                            }
-                        } catch (e) {
-                            // Ignore validation errors
-                        }
-
-                        if (configValid) {
-                            statusBadge = '<span class="status-badge" style="background:#238636;color:#fff;">Ready</span>';
-                            actionButton = `<button class="btn btn-primary" onclick="addDiscoveredRepo('${escapeHtml(repo.path)}', this)">+ Add</button>`;
-                        } else {
-                            statusBadge = `<span class="status-badge" style="background:#da3633;color:#fff;" title="${configError || ''}">Config Error</span>`;
-                            actionButton = `<button class="btn" style="border-color:#d29922;color:#d29922;" onclick="openEditWizard('${escapeHtml(repo.path)}')">Fix</button>`;
-                        }
-                    } else if (status === 'legacy') {
-                        statusBadge = '<span class="status-badge" style="background:#d29922;color:#fff;">Legacy Config</span>';
-                        actionButton = `<button class="btn" style="border-color:#58a6ff;color:#58a6ff;" onclick="openEditWizard('${escapeHtml(repo.path)}')">Setup</button>`;
-                    } else {
-                        // needs_setup
-                        statusBadge = '<span class="status-badge" style="background:#6e7681;color:#fff;">No Config</span>';
-                        actionButton = `<button class="btn" style="border-color:#58a6ff;color:#58a6ff;" onclick="openEditWizard('${escapeHtml(repo.path)}')">Setup</button>`;
+                    if (!response.ok) {
+                        throw new Error('Operation failed');
                     }
 
-                    html += `
-                        <div class="discovered-item">
-                            <span class="discovered-name">${escapeHtml(repo.name)} ${statusBadge}</span>
-                            <span class="discovered-path">${escapeHtml(repo.path)}</span>
-                            ${actionButton}
-                        </div>
-                    `;
-                }
-
-                container.innerHTML = html;
-                // Re-evaluate welcome screen now that we have discovered repos
-                checkShowWelcome(lastRepos.length);
-            } catch (err) {
-                console.error('Failed to discover repos:', err);
-                container.innerHTML = '<div class="empty-state" style="padding:24px;color:#f85149;">Failed to scan</div>';
-            }
-        }
-
-        async function addDiscoveredRepo(path, btn) {
-            btn.disabled = true;
-            btn.textContent = '...';
-
-            try {
-                const res = await fetch('/control/repos', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path })
-                });
-                const data = await res.json();
-
-                if (data.error) {
-                    showToast(data.detail || data.error, true);
-                    btn.disabled = false;
-                    btn.textContent = '+ Add';
-                } else {
-                    showToast('Repository added');
-                    btn.closest('.discovered-item').remove();
-                    ignoreSSEBriefly();
-                    loadRepos();
-                }
-            } catch (err) {
-                showToast('Failed to add repository', true);
-                btn.disabled = false;
-                btn.textContent = '+ Add';
-            }
-        }
-
-        async function removeRepo(path) {
-            if (!confirm(`Remove ${path} from the registry?\n\nThis will also stop any running orchestrator.`)) return;
-
-            try {
-                const res = await fetch('/control/repos', {
-                    method: 'DELETE',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path })
-                });
-                const data = await res.json();
-
-                if (data.error) {
-                    showToast(data.error, true);
-                } else {
-                    showToast('Repository removed');
-                    ignoreSSEBriefly();
-                    loadRepos();
-                    hideDetails();
-                }
-            } catch (err) {
-                showToast('Failed to remove repository', true);
-            }
-        }
-
-        async function startRepo(path, configName = 'default.yaml') {
-            showToast('Checking health before start...');
-
-            // Run health check first
-            try {
-                const healthRes = await fetch('/control/repos/doctor', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path, config_name: configName })
-                });
-                const healthData = await healthRes.json();
-
-                if (healthData.status !== 'valid') {
-                    const errorCount = healthData.errors?.length || 0;
-                    const firstError = healthData.errors?.[0] || 'Unknown error';
-                    const message = errorCount > 1
-                        ? `${firstError} (+${errorCount - 1} more)`
-                        : firstError;
-                    showBlockingError('Cannot Start Orchestrator', message);
-                    loadRepos();
-                    return;
-                }
-            } catch (err) {
-                showBlockingError('Health Check Failed', 'Unable to run health check before start.');
-                return;
-            }
-
-            // If something is already running but unhealthy, offer restart
-            const status = await getOrchestratorStatus(path, configName);
-            if (status && status.state === 'running' && status.port) {
-                if (status.orphaned) {
-                    showRestartRecommendation(path, configName, status, {
-                        reason: 'orphaned',
-                        details: status,
-                    });
-                    return;
-                }
-                const health = await probeOrchestratorHealth(status.port);
-                if (health.unhealthy) {
-                    showRestartRecommendation(path, configName, status, health);
-                    return;
-                }
-            }
-
-            // Health check passed, proceed with start
-            showToast(`Starting orchestrator with ${configName}...`);
-
-            try {
-                const res = await fetch('/control/orchestrator/start', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path, config_name: configName })
-                });
-                const data = await res.json();
-
-                if (data.error) {
-                    if (data.error === 'orphaned_running') {
-                        showRestartRecommendation(path, configName, data, {
-                            reason: 'orphaned',
-                            details: data,
-                        });
-                    } else if (data.error === 'already_running') {
-                        showToast('Already running on port ' + data.port);
-                    } else if (data.error === 'config_not_found') {
-                        showBlockingError('Start Failed', 'Config not found: ' + configName);
-                    } else {
-                        showBlockingError('Start Failed', data.detail || data.error);
+                    showToast(isPaused ? 'Orchestrator resumed' : 'Orchestrator paused', 'success');
+                    await loadRepos();
+                    if (state.activeRepo) {
+                        loadActivityView(state.activeRepo.path);
                     }
-                } else if (data.status === 'restarted') {
-                    showToast('Restarted on port ' + data.port);
-                    openRepoWhenReady(data.port);
-                } else {
-                    showToast('Started on port ' + data.port);
-                    openRepoWhenReady(data.port);
-                }
-                ignoreSSEBriefly();
-                loadRepos();
-            } catch (err) {
-                showBlockingError('Start Failed', 'Failed to start orchestrator.');
-            }
-        }
-
-        async function getOrchestratorStatus(path, configName) {
-            try {
-                const params = new URLSearchParams({ repo_root: path });
-                if (configName) {
-                    params.set('config_name', configName);
-                }
-                const res = await fetch(`/control/orchestrator/status?${params.toString()}`);
-                if (!res.ok) return null;
-                return await res.json();
-            } catch (err) {
-                return null;
-            }
-        }
-
-        async function probeOrchestratorHealth(port) {
-            const baseUrl = `http://127.0.0.1:${port}`;
-            const result = { unhealthy: false, reason: '', details: {} };
-            try {
-                const infoRes = await fetch(`${baseUrl}/api/info`, { method: 'GET' });
-                const infoData = await infoRes.json();
-                result.details.info = infoData;
-                if (!infoRes.ok) {
-                    result.unhealthy = true;
-                    result.reason = 'info_unreachable';
-                }
-            } catch (err) {
-                result.unhealthy = true;
-                result.reason = 'info_unreachable';
-            }
-            try {
-                const statusRes = await fetch(`${baseUrl}/api/status`, { method: 'GET' });
-                const statusData = await statusRes.json();
-                result.details.status = statusData;
-                const lastTick = statusData.last_tick_time || 0;
-                if (lastTick > 0) {
-                    const ageMs = Date.now() - (lastTick * 1000);
-                    result.details.tick_age_ms = ageMs;
-                    if (ageMs > 120000) {
-                        result.unhealthy = true;
-                        result.reason = result.reason || 'tick_stale';
-                    }
-                }
-            } catch (err) {
-                result.unhealthy = true;
-                result.reason = result.reason || 'status_unreachable';
-            }
-            return result;
-        }
-
-        function showRestartRecommendation(path, configName, status, health) {
-            const modal = document.createElement('div');
-            modal.className = 'modal-overlay';
-            modal.id = 'restartModal';
-            const detail = health.reason || 'unhealthy';
-            const isOrphaned = detail === 'orphaned' || status?.orphaned;
-            const title = isOrphaned ? 'Orchestrator Already Running' : 'Orchestrator Unhealthy';
-            const summary = isOrphaned
-                ? 'An orchestrator is already running but is not tracked by Control Center.'
-                : `The orchestrator appears unhealthy (${escapeHtml(detail)}).`;
-            const encodedPath = encodeURIComponent(path);
-            const encodedConfig = encodeURIComponent(configName);
-            modal.innerHTML = `
-                <div class="modal" style="max-width:520px;">
-                    <div class="modal-title">${title}</div>
-                    <div class="modal-body">
-                        <div style="margin-bottom:8px;">${summary}</div>
-                        <div style="font-size:12px;color:#8b949e;">Recommended: restart to recover.</div>
-                        <details style="margin-top:10px;">
-                            <summary style="cursor:pointer;">Details</summary>
-                            <pre style="font-size:11px;margin-top:6px;white-space:pre-wrap;">${escapeHtml(JSON.stringify(health.details, null, 2))}</pre>
-                        </details>
-                    </div>
-                    <div class="modal-footer">
-                        <button class="btn" onclick="document.getElementById('restartModal').remove()">Cancel</button>
-                        <button class="btn btn-primary" onclick="restartOrchestrator(decodeURIComponent('${encodedPath}'), decodeURIComponent('${encodedConfig}'), ${isOrphaned ? 'true' : 'false'})">Restart</button>
-                    </div>
-                </div>
-            `;
-            document.body.appendChild(modal);
-        }
-
-        async function restartOrchestrator(path, configName, forceRestart = false) {
-            const modal = document.getElementById('restartModal');
-            if (modal) modal.remove();
-            showToast('Restarting orchestrator...');
-            try {
-                if (forceRestart) {
-                    await fetch('/control/orchestrator/start', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ repo_root: path, config_name: configName, force_restart: true })
-                    });
-                } else {
-                    await fetch('/control/orchestrator/stop', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ repo_root: path, force: true })
-                    });
-                    await new Promise(r => setTimeout(r, 400));
-                    await fetch('/control/orchestrator/start', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ repo_root: path, config_name: configName })
-                    });
-                }
-                ignoreSSEBriefly();
-                loadRepos();
-            } catch (err) {
-                showBlockingError('Restart Failed', 'Failed to restart orchestrator.');
-            }
-        }
-
-        async function viewConfig(path, configName) {
-            try {
-                const res = await fetch(`/control/repos/config?repo_root=${encodeURIComponent(path)}&config_name=${encodeURIComponent(configName)}`);
-                const data = await res.json();
-
-                if (data.error) {
-                    showToast(data.detail || data.error, true);
-                    return;
-                }
-
-                // Show modal with config contents
-                const modal = document.createElement('div');
-                modal.className = 'modal-overlay';
-                modal.id = 'configModal';
-                modal.innerHTML = `
-                    <div class="modal" style="max-width:600px;max-height:80vh;">
-                        <div class="modal-title">${escapeHtml(configName)}</div>
-                        <div class="modal-body" style="max-height:60vh;overflow-y:auto;">
-                            <pre style="font-size:12px;background:#0d1117;padding:12px;border-radius:6px;overflow-x:auto;white-space:pre-wrap;word-break:break-word;">${escapeHtml(data.content)}</pre>
-                        </div>
-                        <div class="modal-footer">
-                            <button class="btn" onclick="document.getElementById('configModal').remove()">Close</button>
-                        </div>
-                    </div>
-                `;
-                document.body.appendChild(modal);
-            } catch (err) {
-                showToast('Failed to load config', true);
-            }
-        }
-
-        async function updateSelectedConfig(path, configName) {
-            // Persist the selection to the registry so it survives SSE re-renders
-            try {
-                await fetch('/control/repos/select-config', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path, config_name: configName })
-                });
-            } catch (err) {
-                console.error('Failed to save config selection:', err);
-            }
-        }
-
-        async function stopRepo(path, port = null) {
-            showToast('Stopping orchestrator...');
-            console.log('[stopRepo] Stopping:', path);
-            try {
-                const res = await fetch('/control/orchestrator/stop', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path, port: port })
-                });
-                console.log('[stopRepo] Response status:', res.status);
-                const data = await res.json();
-                console.log('[stopRepo] Response data:', data);
-
-                if (data.error) {
-                    showToast(data.error, true);
-                } else if (data.status === 'not_running') {
-                    showToast('Orchestrator was not running');
-                } else {
-                    showToast('Orchestrator stopped');
-                }
-                ignoreSSEBriefly();
-                loadRepos();
-            } catch (err) {
-                console.error('[stopRepo] Error:', err);
-                showToast('Failed to stop orchestrator: ' + err.message, true);
-            }
-        }
-
-        function openRepo(port) {
-            window.open(`http://127.0.0.1:${port}`, `orchestrator-${port}`);
-        }
-
-        async function openRepoWhenReady(port, maxWaitMs = 5000) {
-            // Poll the orchestrator until it's ready
-            const startTime = Date.now();
-            const pollInterval = 200;
-
-            while (Date.now() - startTime < maxWaitMs) {
-                try {
-                    const resp = await fetch(`http://127.0.0.1:${port}/api/health`, {
-                        method: 'GET',
-                        mode: 'no-cors',  // Avoid CORS issues
-                    });
-                    // With no-cors, we can't read the response, but if fetch doesn't throw, server is up
-                    openRepo(port);
-                    return;
-                } catch (e) {
-                    // Server not ready yet, wait and retry
-                    await new Promise(r => setTimeout(r, pollInterval));
-                }
-            }
-            // Timeout - try opening anyway
-            console.warn('Orchestrator did not become ready in time, opening anyway');
-            openRepo(port);
-        }
-
-        function hideDetails() {
-            document.getElementById('detailsCard').style.display = 'none';
-        }
-
-        async function showDetails(path) {
-            const card = document.getElementById('detailsCard');
-            const title = document.getElementById('detailsTitle');
-            const body = document.getElementById('detailsBody');
-
-            title.textContent = path.split('/').pop() + ' - Details';
-            body.innerHTML = '<div style="color:#8b949e;">Loading...</div>';
-            card.style.display = 'block';
-
-            let html = '';
-
-            // Get status
-            try {
-                const statusRes = await fetch(`/control/orchestrator/status?repo_root=${encodeURIComponent(path)}`);
-                const status = await statusRes.json();
-
-                html += `
-                    <div style="margin-bottom:16px;">
-                        <h3 style="font-size:14px;margin-bottom:8px;">Status</h3>
-                        <div class="info-row"><span class="info-label">State</span><span class="info-value">${status.state || 'unknown'}</span></div>
-                        <div class="info-row"><span class="info-label">PID</span><span class="info-value">${status.pid || '-'}</span></div>
-                        <div class="info-row"><span class="info-label">Port</span><span class="info-value">${status.port || '-'}</span></div>
-                        <div class="info-row"><span class="info-label">Started</span><span class="info-value">${status.started_at || '-'}</span></div>
-                        ${status.error ? `<div class="info-row"><span class="info-label">Error</span><span class="info-value" style="color:#f85149;">${escapeHtml(status.error)}</span></div>` : ''}
-                    </div>
-                `;
-            } catch (err) {
-                html += '<div style="color:#f85149;margin-bottom:16px;">Failed to load status</div>';
-            }
-
-            // Get last failure
-            try {
-                const failRes = await fetch(`/control/orchestrator/last_failure?repo_root=${encodeURIComponent(path)}`);
-                const failData = await failRes.json();
-
-                if (failData.last_failure) {
-                    const f = failData.last_failure;
-                    html += `
-                        <div class="error-panel">
-                            <div class="error-panel-title">Last Startup Failure</div>
-                            <div class="error-panel-body">
-                                <strong>Phase:</strong> ${escapeHtml(f.phase || 'unknown')}<br>
-                                <strong>Message:</strong> ${escapeHtml(f.message || 'unknown')}
-                            </div>
-                        </div>
-                    `;
-                }
-            } catch (err) {}
-
-            // Get doctor output
-            try {
-                const docRes = await fetch(`/control/orchestrator/doctor?repo_root=${encodeURIComponent(path)}`);
-                const doc = await docRes.json();
-
-                const statusIcon = { 'ok': '&#10003;', 'warning': '&#9888;', 'error': '&#10007;' };
-                const statusColor = { 'ok': '#3fb950', 'warning': '#d29922', 'error': '#f85149' };
-
-                html += `
-                    <div style="margin-bottom:16px;">
-                        <h3 style="font-size:14px;margin-bottom:8px;">Doctor (${doc.overall || 'unknown'})</h3>
-                        ${(doc.checks || []).map(c => `
-                            <div class="doctor-check">
-                                <span class="doctor-check-status" style="color:${statusColor[c.status] || '#8b949e'}">${statusIcon[c.status] || '?'}</span>
-                                <strong>${escapeHtml(c.name)}</strong>: ${escapeHtml(c.detail)}
-                            </div>
-                        `).join('')}
-                    </div>
-                `;
-            } catch (err) {
-                html += '<div style="color:#8b949e;margin-bottom:16px;">Doctor not available</div>';
-            }
-
-            // Get log tail
-            try {
-                const logRes = await fetch(`/control/orchestrator/log_tail?repo_root=${encodeURIComponent(path)}&n=50`);
-                const logData = await logRes.json();
-
-                if (logData.lines && logData.lines.length > 0) {
-                    html += `
-                        <div>
-                            <h3 style="font-size:14px;margin-bottom:8px;">Recent Logs (${logData.returned_lines} of ${logData.total_lines})</h3>
-                            <div class="log-viewer">
-                                ${logData.lines.map(line => `<div class="log-line">${escapeHtml(line)}</div>`).join('')}
-                            </div>
-                        </div>
-                    `;
-                }
-            } catch (err) {}
-
-            body.innerHTML = html || '<div style="color:#8b949e;">No details available</div>';
-        }
-
-        function showShutdownModal() {
-            const modal = document.createElement('div');
-            modal.className = 'modal-overlay';
-            modal.id = 'shutdownModal';
-            modal.innerHTML = `
-                <div class="modal">
-                    <div class="modal-title">Shutdown Control Center</div>
-                    <div class="modal-body">
-                        <p style="color:#8b949e;margin-bottom:8px;">What should happen to running orchestrators?</p>
-                        <div class="radio-group">
-                            <label class="radio-option selected" onclick="selectShutdownOption(this, 'keep')">
-                                <input type="radio" name="shutdown-option" value="keep" checked>
-                                <div>
-                                    <div class="radio-label">Keep orchestrators running</div>
-                                    <div class="radio-desc">They'll continue independently in the background</div>
-                                </div>
-                            </label>
-                            <label class="radio-option" onclick="selectShutdownOption(this, 'stop')">
-                                <input type="radio" name="shutdown-option" value="stop">
-                                <div>
-                                    <div class="radio-label">Stop all orchestrators first</div>
-                                    <div class="radio-desc">Gracefully shut down all running orchestrators</div>
-                                </div>
-                            </label>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button class="btn" onclick="closeShutdownModal()">Cancel</button>
-                        <button class="btn btn-danger" onclick="confirmShutdown()">Shutdown</button>
-                    </div>
-                </div>
-            `;
-            document.body.appendChild(modal);
-        }
-
-        function selectShutdownOption(label, value) {
-            document.querySelectorAll('#shutdownModal .radio-option').forEach(opt => opt.classList.remove('selected'));
-            label.classList.add('selected');
-            label.querySelector('input').checked = true;
-        }
-
-        function closeShutdownModal() {
-            const modal = document.getElementById('shutdownModal');
-            if (modal) modal.remove();
-        }
-
-        async function confirmShutdown() {
-            const stopOrchestrators = document.querySelector('#shutdownModal input[value="stop"]')?.checked || false;
-            closeShutdownModal();
-
-            // Close SSE connection before shutdown to allow clean server exit
-            if (window._controlSSE) {
-                window._controlSSE.close();
-                window._controlSSE = null;
-            }
-
-            showToast(stopOrchestrators ? 'Stopping orchestrators and shutting down...' : 'Shutting down...');
-            try {
-                await fetch('/control/shutdown', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ stop_orchestrators: stopOrchestrators })
-                });
-            } catch (err) {
-                // Expected - server is shutting down
-            }
-
-            // Show disconnected message after a moment
-            setTimeout(() => {
-                document.body.innerHTML = `
-                    <div style="display:flex;align-items:center;justify-content:center;min-height:100vh;flex-direction:column;gap:16px;">
-                        <div style="font-size:48px;">👋</div>
-                        <h2 style="color:#fff;">Control Center Stopped</h2>
-                        <p style="color:#8b949e;">You can close this tab now.</p>
-                    </div>
-                `;
-            }, 500);
-        }
-
-        async function shutdownControlCenter() {
-            showShutdownModal();
-        }
-
-        async function checkRepoHealth(path, configName = 'default.yaml') {
-            showToast('Running health check...');
-
-            try {
-                const res = await fetch('/control/repos/doctor', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path, config_name: configName })
-                });
-                const data = await res.json();
-
-                if (data.error) {
-                    showToast(data.error, true);
-                } else if (data.status === 'valid') {
-                    showToast('Health check passed - ready to start');
-                } else {
-                    // Show modal with error details
-                    const errors = data.errors || [];
-                    const warnings = data.warnings || [];
-                    const modal = document.createElement('div');
-                    modal.className = 'modal-overlay';
-                    modal.id = 'healthModal';
-                    modal.innerHTML = `
-                        <div class="modal" style="max-width:600px;">
-                            <div class="modal-title" style="color:#f85149;">Health Check Failed</div>
-                            <div class="modal-body">
-                                ${errors.length ? `
-                                    <div style="margin-bottom:12px;">
-                                        <strong style="color:#f85149;">Errors:</strong>
-                                        <ul style="margin:8px 0;padding-left:20px;">
-                                            ${errors.map(e => `<li style="color:#f85149;">${escapeHtml(e)}</li>`).join('')}
-                                        </ul>
-                                    </div>
-                                ` : ''}
-                                ${warnings.length ? `
-                                    <div>
-                                        <strong style="color:#d29922;">Warnings:</strong>
-                                        <ul style="margin:8px 0;padding-left:20px;">
-                                            ${warnings.map(w => `<li style="color:#d29922;">${escapeHtml(w)}</li>`).join('')}
-                                        </ul>
-                                    </div>
-                                ` : ''}
-                            </div>
-                            <div class="modal-footer">
-                                <button class="btn" onclick="document.getElementById('healthModal').remove()">Close</button>
-                            </div>
-                        </div>
-                    `;
-                    document.body.appendChild(modal);
-                }
-                loadRepos();
-            } catch (err) {
-                showToast('Failed to run health check', true);
-            }
-        }
-
-        // Initial load
-        setAllReposVisible(allReposVisible);
-        loadRepos();
-        discoverRepos();
-
-        // SSE debounce: ignore SSE updates briefly after user actions
-        // to prevent stale data from overwriting fresh fetches
-        let sseIgnoreUntil = 0;
-        function ignoreSSEBriefly() {
-            sseIgnoreUntil = Date.now() + 3000;  // Ignore for 3 seconds
-        }
-
-        // SSE connection for real-time status updates
-        function connectSSE() {
-            const evtSource = new EventSource('/control/events');
-
-            evtSource.addEventListener('status', (event) => {
-                // Skip if we're in the ignore window (just did an action)
-                if (Date.now() < sseIgnoreUntil) {
-                    console.debug('Ignoring SSE update (recent action)');
-                    return;
-                }
-                try {
-                    const data = JSON.parse(event.data);
-                    loadRepos(data);
-                } catch (err) {
-                    console.error('Failed to parse SSE status:', err);
+                } catch (error) {
+                    showToast(error.message, 'error');
                 }
             });
 
-            evtSource.onerror = (err) => {
-                console.warn('SSE connection error, reconnecting in 5s...', err);
-                evtSource.close();
-                setTimeout(connectSSE, 5000);
-            };
+            // Stop from activity view
+            document.getElementById('stopRepoBtn').addEventListener('click', async () => {
+                if (state.activeRepo) {
+                    await stopRepo(state.activeRepo.path);
+                }
+            });
 
-            // Store reference for cleanup if needed
-            window._controlSSE = evtSource;
-        }
+            // Close modals on backdrop click
+            document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
+                backdrop.addEventListener('click', (e) => {
+                    if (e.target === backdrop) {
+                        backdrop.classList.remove('active');
+                    }
+                });
+            });
 
-        // Start SSE connection
-        connectSSE();
+            // Keyboard navigation for modals
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape') {
+                    document.querySelectorAll('.modal-backdrop.active').forEach(modal => {
+                        modal.classList.remove('active');
+                    });
+                }
+            });
+
+            // Refresh repos periodically
+            setInterval(loadRepos, 30000);
+        });
     </script>
 </body>
 </html>
