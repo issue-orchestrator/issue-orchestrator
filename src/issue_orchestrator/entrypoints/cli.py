@@ -1730,6 +1730,75 @@ def cmd_demo(args: argparse.Namespace) -> int:  # noqa: C901 - demo flow with dr
     return 0
 
 
+def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused but required for command signature
+    """Default command when no subcommand is given - open unified dashboard."""
+    import webbrowser
+
+    from ..observation.instance_detector import detect_system_state, get_best_entry_point
+
+    console.print("[cyan]Issue Orchestrator[/cyan]")
+
+    # Detect current state
+    state = detect_system_state()
+    entry = get_best_entry_point(state)
+
+    if entry["action"] == "open_dashboard":
+        # Dashboard is already running, just open it
+        console.print(f"[dim]Dashboard already running on port {entry['port']}[/dim]")
+        console.print(f"[green]Opening {entry['url']}[/green]")
+        webbrowser.open(entry["url"])
+        return 0
+
+    else:
+        # Need to start the dashboard
+        console.print("[dim]Starting dashboard...[/dim]")
+
+        # Start the control center (dashboard) server
+        import subprocess
+        import sys
+        import time
+        from urllib.parse import quote
+
+        port = entry["port"]
+        repo_path = entry.get("repo_path")
+
+        # Build URL with optional deep-link
+        if repo_path:
+            url = f"http://localhost:{port}?repo={quote(repo_path)}"
+        else:
+            url = f"http://localhost:{port}"
+
+        # Start control center as a subprocess
+        cmd = [
+            sys.executable,
+            "-m",
+            "issue_orchestrator.entrypoints.control_center",
+            "--port",
+            str(port),
+            "--no-browser",  # We'll open browser ourselves
+        ]
+
+        # Start in background
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+        # Wait a bit for server to start
+        time.sleep(1.5)
+
+        # Check if process is still running
+        if process.poll() is not None:
+            console.print("[red]Failed to start dashboard server[/red]")
+            return 1
+
+        console.print(f"[green]Dashboard started on {url}[/green]")
+        webbrowser.open(url)
+        return 0
+
+
 def cmd_trace(args: argparse.Namespace) -> int:  # noqa: C901 - log parsing with pattern matching and filtering logic
     """Trace log entries for a specific issue."""
     import re
@@ -1809,7 +1878,7 @@ def main() -> int:
         help="Override config value (path=value). Use YAML/JSON for lists or dicts.",
     )
     subparsers: Any = parser.add_subparsers(
-        dest="command", required=True
+        dest="command", required=False
     )
 
     # start command
@@ -2179,6 +2248,11 @@ def main() -> int:
     trace_parser.set_defaults(func=cmd_trace)
 
     args: argparse.Namespace = parser.parse_args()
+
+    # If no command specified, run the default (open dashboard)
+    if args.command is None:
+        return cmd_default(args)
+
     return args.func(args)
 
 

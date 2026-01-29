@@ -130,6 +130,11 @@ class McpApp:
         server.tool(name="orchestrator.session.focus")(self.tool_session_focus)
         server.tool(name="orchestrator.urls")(self.tool_urls)
         server.tool(name="orchestrator.doctor")(self.tool_doctor)
+        # Unified dashboard tools
+        server.tool(name="orchestrator.state")(self.tool_state)
+        server.tool(name="orchestrator.repos")(self.tool_repos)
+        server.tool(name="orchestrator.repos.start")(self.tool_repos_start)
+        server.tool(name="orchestrator.repos.stop")(self.tool_repos_stop)
 
     def tool_status(self) -> dict[str, Any]:
         return self._safe("orchestrator.status", self.status)
@@ -201,6 +206,59 @@ class McpApp:
 
     def tool_doctor(self) -> dict[str, Any]:
         return self._safe("orchestrator.doctor", self.doctor)
+
+    def tool_state(self) -> dict[str, Any]:
+        """Get complete system state for the unified dashboard."""
+        return self._safe("orchestrator.state", self.get_system_state)
+
+    def tool_repos(self) -> dict[str, Any]:
+        """List all repos with status."""
+        return self._safe("orchestrator.repos", self.list_repos)
+
+    def tool_repos_start(self, repo_path: str, config_name: str = "default.yaml") -> dict[str, Any]:
+        """Start orchestrator for a specific repo."""
+        return self._safe("orchestrator.repos.start", lambda: self.start_repo(repo_path, config_name))
+
+    def tool_repos_stop(self, repo_path: str, force: bool = False) -> dict[str, Any]:
+        """Stop orchestrator for a specific repo."""
+        return self._safe("orchestrator.repos.stop", lambda: self.stop_repo(repo_path, force))
+
+    def get_system_state(self) -> dict[str, Any]:
+        """Get complete system state."""
+        from ..observation.instance_detector import detect_system_state
+
+        state = detect_system_state()
+        return state.to_dict()
+
+    def list_repos(self) -> dict[str, Any]:
+        """List all repos with status."""
+        from ..observation.instance_detector import detect_system_state
+
+        state = detect_system_state()
+        return {"repos": [r.to_dict() for r in state.repos]}
+
+    def start_repo(self, repo_path: str, config_name: str = "default.yaml") -> dict[str, Any]:
+        """Start orchestrator for a specific repo."""
+        path = Path(repo_path)
+        if not path.exists():
+            return {"error": f"Repository not found: {repo_path}"}
+
+        try:
+            info = supervisor.start(path, config_name)
+            return {
+                "status": "started",
+                "pid": info.pid,
+                "port": info.http_port,
+            }
+        except Exception as e:
+            logger.exception("Failed to start orchestrator for %s", repo_path)
+            return {"error": str(e)}
+
+    def stop_repo(self, repo_path: str, force: bool = False) -> dict[str, Any]:
+        """Stop orchestrator for a specific repo."""
+        path = Path(repo_path)
+        stopped = supervisor.stop(path, force=force)
+        return {"status": "stopped" if stopped else "failed"}
 
     def status(self) -> dict[str, Any]:
         status = self._client.status()

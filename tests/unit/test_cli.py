@@ -248,11 +248,16 @@ class TestCmdInit:
 class TestMain:
     """Tests for the main entry point."""
 
-    def test_main_requires_command(self):
-        """Verify main requires a subcommand."""
-        with patch('sys.argv', ['issue-orchestrator']):
-            with pytest.raises(SystemExit):
-                main()
+    def test_main_without_command_calls_default(self):
+        """Verify main without command calls cmd_default (opens dashboard)."""
+        with patch('issue_orchestrator.entrypoints.cli.cmd_default') as mock_cmd_default:
+            mock_cmd_default.return_value = 0
+
+            with patch('sys.argv', ['issue-orchestrator']):
+                result = main()
+
+            mock_cmd_default.assert_called_once()
+            assert result == 0
 
     def test_main_dispatches_to_status(self):
         """Verify main dispatches to correct command handler."""

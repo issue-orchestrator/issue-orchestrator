@@ -1,12 +1,13 @@
-"""Standalone control center server.
+"""Unified dashboard server for issue-orchestrator.
 
-This serves the control center UI and API without requiring an orchestrator
-to be running. It can start/stop orchestrators for any registered repository.
+This serves the unified dashboard UI and API. It manages orchestrators for
+any registered repository and provides a single entry point for the user.
 
 Usage:
     python -m issue_orchestrator.entrypoints.control_center [--port 19080]
+    # Or via CLI: issue-orchestrator (no args)
 
-The control center will be available at http://127.0.0.1:19080/
+The dashboard will be available at http://127.0.0.1:19080/
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ import webbrowser
 import uvicorn
 
 from .control_api import control_app
+from ..observation.instance_detector import write_dashboard_pid, clear_dashboard_pid
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +118,11 @@ def main() -> int:
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
     url = f"http://{args.host}:{args.port}/"
-    print(f"Starting Control Center on {url}")
+    print(f"Starting Issue Orchestrator Dashboard on {url}")
     print("Press Ctrl+C to stop")
+
+    # Write PID file for detection by CLI
+    write_dashboard_pid(args.port)
 
     # Open browser in background thread after server starts
     if not args.no_browser:
@@ -148,6 +153,8 @@ def main() -> int:
     finally:
         # Stop the reaper thread
         _reaper_stop.set()
+        # Clear PID file
+        clear_dashboard_pid()
 
 
 if __name__ == "__main__":
