@@ -733,6 +733,9 @@ button:focus-visible,
     min-width: 0;
     overflow: hidden;
 }
+.issue-row > .issue-actions {
+    overflow: visible; /* Override above to show action buttons */
+}
 .issue-row::before {
     content: '';
     position: absolute;
@@ -743,14 +746,12 @@ button:focus-visible,
     background: transparent;
     transition: background 0.15s ease;
 }
-/* Blocked tab layout - wider action column, hide runtime */
+/* Blocked tab layout - 5 columns, hide runtime */
 .issue-list.blocked-list .issue-header,
 .issue-list.blocked-list .issue-row {
-    grid-template-columns: 70px 200px 1fr 140px 0px 210px;
+    grid-template-columns: 70px 200px 1fr 100px 200px;
 }
-.issue-list.blocked-list .issue-time {
-    display: none;
-}
+.issue-list.blocked-list .issue-time,
 .issue-list.blocked-list .header-runtime {
     display: none;
 }
@@ -973,6 +974,7 @@ button:focus-visible,
     align-items: center;
     justify-content: flex-end;
     gap: 8px;
+
 }
 .issue-action {
     font-size: 12px;
@@ -2664,4 +2666,9 @@ button:focus-visible,
 }
 .live-log-status.paused {
     background: #6e7681;
+}
+
+/* Center action header over buttons */
+.issue-list.blocked-list .issue-header span:last-child {
+    text-align: center;
 }

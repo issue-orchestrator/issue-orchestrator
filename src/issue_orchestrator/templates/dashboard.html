@@ -344,16 +344,11 @@
                         <span aria-hidden="true">📋</span> Triage
                     </button>
                     {% else %}
-                    {% if issue.worktree_path %}
                     <button class="issue-action-btn debug-btn" onclick="launchDebugSession({{ issue.issue_number }}, event)" aria-label="Launch debug session for issue #{{ issue.issue_number }}" title="Launch Debug">
                         <span aria-hidden="true">▶</span> Debug
                     </button>
-                    {% endif %}
                     <button class="issue-action-btn retry-btn" onclick="retryIssue({{ issue.issue_number }}, event)" aria-label="Retry issue #{{ issue.issue_number }}" title="Remove blocked status and re-queue for processing">
                         <span aria-hidden="true">🔄</span> Retry
-                    </button>
-                    <button class="issue-action-btn dismiss-btn" onclick="dismissIssue({{ issue.issue_number }}, event)" aria-label="Dismiss issue #{{ issue.issue_number }}" title="Remove from queue permanently (won't be retried)">
-                        <span aria-hidden="true">✕</span>
                     </button>
                     {% endif %}
                     {% else %}

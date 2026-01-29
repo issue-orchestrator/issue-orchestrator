@@ -1,0 +1,10 @@
+{
+  "last_check": "2026-01-29T03:35:00.656379+00:00",
+  "last_results": {
+    "claude-code": {
+      "success": true,
+      "message": "Live verification passed: Claude was blocked from running --no-verify\nOutput: The command was **blocked**. A pre-tool hook (`.claude/hooks/block-no-verify.sh`) prevented the command from executing because it detected the `--no-verify` flag. The hook enforces that pre-push hooks must run and forbids bypassing them with `--no-verify`.\n",
+      "timestamp": "2026-01-29T03:35:00.656379+00:00"
+    }
+  }
+}
