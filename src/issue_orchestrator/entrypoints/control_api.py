@@ -3035,7 +3035,7 @@ async def e2e_runs(
 async def e2e_run_details(
     run_id: int,
     repo_root: str = Query(...),
-    enhanced: bool = Query(True, description="Use enhanced response with categories and history"),
+    enhanced: bool = Query(False, description="Use enhanced response with categories and history"),
 ) -> JSONResponse:
     """Get details of a specific E2E run.
 
@@ -3044,7 +3044,7 @@ async def e2e_run_details(
 
     Query params:
         repo_root: str - Repository root path
-        enhanced: bool - If true (default), returns tests grouped by category with history
+        enhanced: bool - If true, returns tests grouped by category with history (default: false for backward compat)
 
     Enhanced response includes:
         - run: Run metadata

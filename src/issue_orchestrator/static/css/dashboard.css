@@ -3212,6 +3212,7 @@ button:focus-visible,
 .stats-pass-rate-value.pass-rate-good { color: #3fb950; }
 .stats-pass-rate-value.pass-rate-warn { color: #d29922; }
 .stats-pass-rate-value.pass-rate-bad { color: #f85149; }
+.stats-pass-rate-value.pass-rate-unknown { color: #8b949e; }
 
 .stats-pass-rate-bar {
     height: 8px;
@@ -3229,6 +3230,7 @@ button:focus-visible,
 .stats-pass-rate-fill.pass-rate-good { background: #3fb950; }
 .stats-pass-rate-fill.pass-rate-warn { background: #d29922; }
 .stats-pass-rate-fill.pass-rate-bad { background: #f85149; }
+.stats-pass-rate-fill.pass-rate-unknown { background: #8b949e; }
 
 .stats-row {
     display: flex;
