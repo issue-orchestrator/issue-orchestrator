@@ -3146,6 +3146,29 @@ async def tools_labels_init(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
+def _find_stale_worktrees(worktree_base: Path, active: set[Path]) -> list[dict[str, str]]:
+    """Find stale worktree directories that are not in git's active list."""
+    stale = []
+    if worktree_base.exists():
+        for entry in worktree_base.iterdir():
+            if entry.is_dir() and entry not in active:
+                stale.append({"path": str(entry), "name": entry.name})
+    return stale
+
+
+def _cleanup_worktrees(stale: list[dict[str, str]]) -> list[str]:
+    """Remove stale worktree directories, returning paths that were cleaned."""
+    import shutil
+    cleaned = []
+    for wt in stale:
+        try:
+            shutil.rmtree(wt["path"])
+            cleaned.append(wt["path"])
+        except Exception as e:
+            logger.warning("Failed to remove worktree %s: %s", wt["path"], e)
+    return cleaned
+
+
 @control_app.post("/control/tools/worktrees/cleanup")
 async def tools_worktrees_cleanup(request: Request) -> JSONResponse:
     """List and optionally cleanup stale worktrees.
@@ -3157,8 +3180,8 @@ async def tools_worktrees_cleanup(request: Request) -> JSONResponse:
     Returns:
         List of stale worktrees and cleanup results.
     """
+    from ..execution.git_working_copy import GitWorkingCopy
     from ..infra.config import Config
-    import subprocess
 
     try:
         body = await request.json()
@@ -3178,48 +3201,17 @@ async def tools_worktrees_cleanup(request: Request) -> JSONResponse:
 
     worktree_base = config.worktree_base
     if not worktree_base.exists():
-        return JSONResponse({
-            "stale_worktrees": [],
-            "message": "No worktree directory found",
-        })
+        return JSONResponse({"stale_worktrees": [], "message": "No worktree directory found"})
 
     try:
-        # List worktrees from git
-        result = subprocess.run(
-            ["git", "worktree", "list", "--porcelain"],
-            cwd=str(repo_path),
-            capture_output=True,
-            text=True,
-        )
-
-        active_worktrees = set()
-        for line in result.stdout.splitlines():
-            if line.startswith("worktree "):
-                active_worktrees.add(Path(line[9:]))
-
-        # Find stale worktrees (exist in worktree_base but not in git worktree list)
-        stale = []
-        if worktree_base.exists():
-            for entry in worktree_base.iterdir():
-                if entry.is_dir() and entry not in active_worktrees:
-                    stale.append({
-                        "path": str(entry),
-                        "name": entry.name,
-                    })
-
-        cleaned = []
-        if not dry_run:
-            import shutil
-            for wt in stale:
-                try:
-                    shutil.rmtree(wt["path"])
-                    cleaned.append(wt["path"])
-                except Exception as e:
-                    logger.warning("Failed to remove worktree %s: %s", wt["path"], e)
+        working_copy = GitWorkingCopy()
+        active = working_copy.list_active_worktrees(repo_path)
+        stale = _find_stale_worktrees(worktree_base, active)
+        cleaned = _cleanup_worktrees(stale) if not dry_run else []
 
         return JSONResponse({
             "stale_worktrees": stale,
-            "cleaned": cleaned if not dry_run else [],
+            "cleaned": cleaned,
             "dry_run": dry_run,
         })
     except Exception as e:
