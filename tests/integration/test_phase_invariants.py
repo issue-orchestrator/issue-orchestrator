@@ -101,64 +101,53 @@ class TestPhase3ControlCenterUI:
     """Phase 3: UI served by control plane, not by a running orchestrator."""
 
     def test_control_center_ui_served_by_control_api(self) -> None:
-        """Control center UI is served at / by control_api."""
+        """Unified dashboard UI is served at / by control_api."""
         client = TestClient(control_app)
 
         response = client.get("/")
 
         assert response.status_code == 200
         assert "text/html" in response.headers["content-type"]
-        assert "Control Center" in response.text
+        # New unified dashboard has "Issue Orchestrator" branding
+        assert "Issue Orchestrator" in response.text
 
     def test_control_center_ui_contains_repo_management(self) -> None:
-        """Control center UI has repo management functionality."""
+        """Unified dashboard has repo management functionality."""
         client = TestClient(control_app)
 
         response = client.get("/")
 
         assert response.status_code == 200
-        # UI should have setup wizard and discovery
-        assert "openSetupWizard" in response.text
-        assert "discoverRepos" in response.text
         # UI should have start/stop functionality
         assert "startRepo" in response.text
         assert "stopRepo" in response.text
+        # UI should have repository loading
+        assert "loadRepos" in response.text
 
-    def test_discovered_repos_visible_by_default(self) -> None:
-        """Discovered Repositories section is outside advancedSection (always visible)."""
+    def test_sidebar_navigation_present(self) -> None:
+        """Unified dashboard has sidebar navigation with key views."""
         client = TestClient(control_app)
 
         response = client.get("/")
         html = response.text
 
-        # Find positions in HTML
-        discover_card_pos = html.find('id="discoverCard"')
-        advanced_section_pos = html.find('id="advancedSection"')
+        # Sidebar should have navigation items
+        assert 'class="sidebar"' in html, "Sidebar not found"
+        assert 'data-view="repositories"' in html, "Repositories nav item not found"
+        assert 'data-view="tools"' in html, "Tools nav item not found"
+        assert 'data-view="settings"' in html, "Settings nav item not found"
 
-        assert discover_card_pos != -1, "discoverCard not found in HTML"
-        assert advanced_section_pos != -1, "advancedSection not found in HTML"
-        # discoverCard should appear BEFORE advancedSection (outside it)
-        assert discover_card_pos < advanced_section_pos, (
-            "discoverCard should appear before advancedSection in the DOM, "
-            "meaning it's always visible (not hidden inside advancedSection)"
-        )
-
-    def test_toggle_button_labeled_all_repositories(self) -> None:
-        """Toggle button uses 'All Repositories' label, not 'Advanced'."""
+    def test_theme_support_present(self) -> None:
+        """Unified dashboard has theme support (dark/light)."""
         client = TestClient(control_app)
 
         response = client.get("/")
         html = response.text
 
-        # Should have the new toggle button
-        assert 'id="allReposToggle"' in html, "allReposToggle button not found"
-        assert "All Repositories</button>" in html, (
-            "Button text should be 'All Repositories'"
-        )
-        # Should NOT have old 'Advanced' toggle
-        assert 'id="advancedToggle"' not in html, (
-            "Old advancedToggle should be removed"
-        )
+        # Theme selector should be present
+        assert 'class="theme-selector"' in html, "Theme selector not found"
+        assert 'data-theme="light"' in html, "Light theme option not found"
+        assert 'data-theme="dark"' in html, "Dark theme option not found"
 
 
 class TestPhase4FailureVisibility:
