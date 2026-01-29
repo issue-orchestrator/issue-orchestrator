@@ -2,6 +2,8 @@
 
 This document describes the multi-layer hook system that ensures agents cannot bypass safety guardrails.
 
+> **AI Agents:** The `hooks` skill (`.claude/skills/hooks/SKILL.md`) is auto-invoked when working on hook-related files. See also `hooks/AGENTS.md` for local git hook templates.
+
 ## Why Hooks Matter
 
 Policy documents (CLAUDE.md, prompts) are suggestions. Agents can forget, ignore, or creatively work around them. Hooks are **enforcement** - technical barriers that block unsafe actions before they execute.

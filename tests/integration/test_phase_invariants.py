@@ -124,6 +124,42 @@ class TestPhase3ControlCenterUI:
         assert "startRepo" in response.text
         assert "stopRepo" in response.text
 
+    def test_discovered_repos_visible_by_default(self) -> None:
+        """Discovered Repositories section is outside advancedSection (always visible)."""
+        client = TestClient(control_app)
+
+        response = client.get("/")
+        html = response.text
+
+        # Find positions in HTML
+        discover_card_pos = html.find('id="discoverCard"')
+        advanced_section_pos = html.find('id="advancedSection"')
+
+        assert discover_card_pos != -1, "discoverCard not found in HTML"
+        assert advanced_section_pos != -1, "advancedSection not found in HTML"
+        # discoverCard should appear BEFORE advancedSection (outside it)
+        assert discover_card_pos < advanced_section_pos, (
+            "discoverCard should appear before advancedSection in the DOM, "
+            "meaning it's always visible (not hidden inside advancedSection)"
+        )
+
+    def test_toggle_button_labeled_all_repositories(self) -> None:
+        """Toggle button uses 'All Repositories' label, not 'Advanced'."""
+        client = TestClient(control_app)
+
+        response = client.get("/")
+        html = response.text
+
+        # Should have the new toggle button
+        assert 'id="allReposToggle"' in html, "allReposToggle button not found"
+        assert "All Repositories</button>" in html, (
+            "Button text should be 'All Repositories'"
+        )
+        # Should NOT have old 'Advanced' toggle
+        assert 'id="advancedToggle"' not in html, (
+            "Old advancedToggle should be removed"
+        )
+
 
 class TestPhase4FailureVisibility:
     """Phase 4: Failures visible via control endpoints when orchestrator is down."""
