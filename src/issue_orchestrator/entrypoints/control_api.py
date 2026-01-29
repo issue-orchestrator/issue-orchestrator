@@ -68,6 +68,21 @@ logger = logging.getLogger(__name__)
 from ..infra.config import E2EConfig
 _DEFAULT_E2E_CONFIG = E2EConfig()
 
+
+def _get_e2e_config(repo_root: Path | None = None) -> E2EConfig:
+    """Get E2E config from orchestrator, falling back to defaults.
+
+    Args:
+        repo_root: Optional repo root path (currently unused but kept for API compat)
+
+    Returns:
+        E2EConfig instance (from orchestrator or defaults)
+    """
+    if _orchestrator is not None:
+        return _orchestrator.config.e2e
+    return _DEFAULT_E2E_CONFIG
+
+
 # Create minimal control API app
 control_app = FastAPI(title="Issue Orchestrator Control API")
 
@@ -3020,6 +3035,7 @@ async def e2e_runs(
 async def e2e_run_details(
     run_id: int,
     repo_root: str = Query(...),
+    enhanced: bool = Query(True, description="Use enhanced response with categories and history"),
 ) -> JSONResponse:
     """Get details of a specific E2E run.
 
@@ -3028,6 +3044,16 @@ async def e2e_run_details(
 
     Query params:
         repo_root: str - Repository root path
+        enhanced: bool - If true (default), returns tests grouped by category with history
+
+    Enhanced response includes:
+        - run: Run metadata
+        - tests_by_category: Tests grouped by state (untriaged, has_issue, flaky, fixed, passed)
+        - summary: Counts for each category
+
+    Legacy response (enhanced=false) includes:
+        - run: Run metadata
+        - results: Flat list of test results
     """
     from ..infra.e2e_db import E2EDB
 
@@ -3047,7 +3073,17 @@ async def e2e_run_details(
 
     try:
         db = E2EDB(db_path)
-        details = db.run_details(run_id)
+        if enhanced:
+            # Get E2E config for flake threshold
+            e2e_config = _get_e2e_config(validated_root)
+            details = db.run_details_enhanced(
+                run_id,
+                history_limit=5,
+                flake_threshold_percent=float(e2e_config.flake_threshold),
+            )
+        else:
+            details = db.run_details(run_id)
+
         if details is None:
             return JSONResponse(
                 {"error": "not_found", "detail": f"Run {run_id} not found"},
@@ -3286,6 +3322,100 @@ async def e2e_quarantine_modify(
         "count": len(current_tests),
         "added": added,
         "removed": removed,
+    })
+
+
+@control_app.get("/control/e2e/stats")
+async def e2e_stats(repo_root: str = Query(...)) -> JSONResponse:
+    """Get E2E statistics for the stats modal.
+
+    Query params:
+        repo_root: str - Repository root path
+
+    Returns:
+        {
+            pass_rate: float (0-1),
+            pass_rate_percent: int (0-100),
+            runs_analyzed: int,
+            flaky_count: int,
+            quarantine_count: int,
+            next_check: str or null,
+            next_check_reason: str or null,
+            flake_window_runs: int
+        }
+    """
+    from ..infra.e2e_runner import get_next_run_info
+    from ..infra.e2e_db import E2EDB, load_quarantine_list
+    from ..infra.config import Config
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    # Load config
+    try:
+        config = Config.find_and_load(validated_root)
+    except FileNotFoundError:
+        return JSONResponse(
+            {"error": "config_not_found", "detail": "No orchestrator config found"},
+            status_code=400,
+        )
+
+    e2e_config = config.e2e
+    flake_window = e2e_config.flake_window_runs
+    flake_threshold = float(e2e_config.flake_threshold)
+
+    # Initialize defaults
+    pass_rate = None
+    pass_rate_percent = None
+    runs_analyzed = 0
+    flaky_count = 0
+    quarantine_count = 0
+    next_check = None
+    next_check_reason = None
+
+    # Get quarantine count
+    quarantine_path = validated_root / e2e_config.quarantine_file
+    quarantined = load_quarantine_list(quarantine_path)
+    quarantine_count = len(quarantined)
+
+    # Get DB stats
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if db_path.exists():
+        db = E2EDB(db_path)
+
+        # Get signal score (pass rate)
+        signal_score = db.compute_signal_score(config.orchestrator_id)
+        if signal_score:
+            pass_rate = signal_score.get("pass_rate")
+            if pass_rate is not None:
+                pass_rate_percent = int(pass_rate * 100)
+            runs_analyzed = signal_score.get("runs_analyzed", 0)
+
+        # Get flaky test count
+        all_stability = db.get_all_test_stability(
+            window_runs=flake_window,
+            flake_threshold_percent=flake_threshold,
+        )
+        flaky_count = sum(1 for s in all_stability if s.is_likely_flaky)
+
+        # Get next run info
+        run_obj = db.latest_run(config.orchestrator_id)
+        if config.e2e.enabled:
+            next_info = get_next_run_info(config, validated_root, run_obj)
+            if next_info:
+                next_check = next_info.get("scheduled_time")
+                next_check_reason = next_info.get("reason")
+
+    return JSONResponse({
+        "pass_rate": pass_rate,
+        "pass_rate_percent": pass_rate_percent,
+        "runs_analyzed": runs_analyzed,
+        "flaky_count": flaky_count,
+        "quarantine_count": quarantine_count,
+        "next_check": next_check,
+        "next_check_reason": next_check_reason,
+        "flake_window_runs": flake_window,
     })
 
 
