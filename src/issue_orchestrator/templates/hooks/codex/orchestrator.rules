@@ -49,14 +49,16 @@ prefix_rule(
     not_match = ["gh pr create", "gh pr view 123"],
 )
 
-# Block gh api calls - require human approval
-# NOTE: Codex only supports prefix_rule (not regex), so we cannot specifically
-# target merge endpoints. All gh api calls require human approval instead.
-# This catches: gh api repos/.../pulls/.../merge and any other API call.
+# Block gh api calls - must be forbidden, not prompt
+# REASON: Codex CLI has --full-auto, --ask-for-approval=never, and --yolo flags
+# that skip interactive prompts. Using "prompt" would silently allow merge
+# requests in CI/automation environments, breaking the "agents cannot merge"
+# guardrail. Since prefix_rule cannot target specific endpoints (no regex),
+# we block all gh api calls to ensure safety.
 prefix_rule(
     pattern = ["gh", "api"],
-    decision = "prompt",
-    justification = "API calls require human review. Merge endpoints (pulls/*/merge) are forbidden.",
+    decision = "forbidden",
+    justification = "gh api calls are forbidden. Use gh pr/issue commands instead. Merge via API is never allowed.",
     match = ["gh api repos/owner/repo/pulls/123/merge", "gh api /repos/o/r/issues"],
     not_match = ["gh pr create", "gh issue list"],
 )
