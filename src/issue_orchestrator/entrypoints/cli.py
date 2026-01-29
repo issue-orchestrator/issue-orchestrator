@@ -1749,13 +1749,6 @@ def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused 
         webbrowser.open(entry["url"])
         return 0
 
-    elif entry["action"] == "open_orchestrator":
-        # Orchestrator is running for current repo, open its dashboard
-        console.print(f"[dim]Orchestrator running on port {entry['port']}[/dim]")
-        console.print(f"[green]Opening {entry['url']}[/green]")
-        webbrowser.open(entry["url"])
-        return 0
-
     else:
         # Need to start the dashboard
         console.print("[dim]Starting dashboard...[/dim]")
@@ -1764,9 +1757,16 @@ def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused 
         import subprocess
         import sys
         import time
+        from urllib.parse import quote
 
         port = entry["port"]
-        url = f"http://localhost:{port}"
+        repo_path = entry.get("repo_path")
+
+        # Build URL with optional deep-link
+        if repo_path:
+            url = f"http://localhost:{port}?repo={quote(repo_path)}"
+        else:
+            url = f"http://localhost:{port}"
 
         # Start control center as a subprocess
         cmd = [
