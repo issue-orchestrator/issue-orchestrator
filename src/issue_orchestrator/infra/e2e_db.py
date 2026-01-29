@@ -1062,7 +1062,11 @@ class E2EDB:
         run_id: int,
         history_limit: int,
     ) -> dict[str, list[dict]]:
-        """Batch fetch test outcome history for all nodeids."""
+        """Batch fetch test outcome history for all nodeids.
+
+        Uses SQL window function to limit rows per nodeid at the database level,
+        avoiding fetching unnecessary data for large test histories.
+        """
         if not nodeids:
             return {}
 
@@ -1071,29 +1075,32 @@ class E2EDB:
         placeholders = ",".join("?" * len(nodeids))
         cursor = conn.execute(
             f"""
-            SELECT
-                t.nodeid,
-                COALESCE(t.retry_outcome, t.outcome) AS effective_outcome,
-                r.id AS run_id,
-                r.started_at
-            FROM e2e_test_results t
-            JOIN e2e_runs r ON t.run_id = r.id
-            WHERE t.nodeid IN ({placeholders})
-                AND r.id != ?
-                AND r.status IN ('passed', 'failed')
-            ORDER BY t.nodeid, r.started_at DESC
+            WITH ranked_history AS (
+                SELECT
+                    t.nodeid,
+                    COALESCE(t.retry_outcome, t.outcome) AS effective_outcome,
+                    r.id AS run_id,
+                    ROW_NUMBER() OVER (PARTITION BY t.nodeid ORDER BY r.started_at DESC) AS rn
+                FROM e2e_test_results t
+                JOIN e2e_runs r ON t.run_id = r.id
+                WHERE t.nodeid IN ({placeholders})
+                    AND r.id != ?
+                    AND r.status IN ('passed', 'failed')
+            )
+            SELECT nodeid, effective_outcome, run_id
+            FROM ranked_history
+            WHERE rn <= ?
+            ORDER BY nodeid
             """,
-            (*nodeids, run_id),
+            (*nodeids, run_id, history_limit),
         )
-        temp_history: dict[str, list[dict]] = defaultdict(list)
-        for hist_row in cursor.fetchall():
-            nodeid = hist_row["nodeid"]
-            if len(temp_history[nodeid]) < history_limit:
-                temp_history[nodeid].append({
-                    "outcome": hist_row["effective_outcome"],
-                    "run_id": hist_row["run_id"],
-                })
-        return dict(temp_history)
+        history: dict[str, list[dict]] = defaultdict(list)
+        for row in cursor.fetchall():
+            history[row["nodeid"]].append({
+                "outcome": row["effective_outcome"],
+                "run_id": row["run_id"],
+            })
+        return dict(history)
 
     def _fetch_issue_info(
         self,
