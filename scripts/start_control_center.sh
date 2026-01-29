@@ -59,17 +59,26 @@ ensure_port_free() {
     fi
   done
 
-  # SIGTERM didn't work, try SIGKILL
-  echo "Graceful shutdown timed out, sending SIGKILL..."
+  # SIGTERM didn't work, try SIGKILL on Python processes only
+  echo "Graceful shutdown timed out, trying SIGKILL..."
   pids=$(lsof -ti :"${PORT}" 2>/dev/null || echo "")
+  local killed_any=false
   for pid in ${pids}; do
-    kill -9 "${pid}" 2>/dev/null || true
+    if ps -p "${pid}" -o comm= 2>/dev/null | grep -q -i python; then
+      echo "Sending SIGKILL to PID ${pid}..."
+      kill -9 "${pid}" 2>/dev/null || true
+      killed_any=true
+    fi
   done
 
   # Final wait
   sleep 1
   if lsof -ti :"${PORT}" >/dev/null 2>&1; then
-    echo "ERROR: Could not free port ${PORT} even with SIGKILL"
+    if [[ "${killed_any}" == "false" ]]; then
+      echo "ERROR: Port ${PORT} is in use by non-Python process(es)"
+    else
+      echo "ERROR: Could not free port ${PORT} even with SIGKILL"
+    fi
     echo "Please check what's using it: lsof -i :${PORT}"
     exit 1
   fi

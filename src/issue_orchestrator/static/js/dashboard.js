@@ -339,6 +339,9 @@ async function refreshFromGitHub() {
     }
 }
 
+// Shutdown state - used to cancel polling when "Shutdown now" is clicked
+let shutdownInProgress = false;
+
 async function shutdown() {
     // First, check if there are active sessions
     const statusRes = await fetch('/api/status');
@@ -418,6 +421,11 @@ async function pollForShutdown() {
     const statusEl = document.getElementById('shutdownWaitStatus');
 
     const poll = async () => {
+        // Check if shutdown was triggered manually
+        if (shutdownInProgress) {
+            return;
+        }
+
         try {
             const res = await fetch('/api/status');
             const status = await res.json();
@@ -425,6 +433,7 @@ async function pollForShutdown() {
 
             if (activeSessions.length === 0) {
                 if (statusEl) statusEl.textContent = 'All sessions complete. Shutting down...';
+                shutdownInProgress = true;
                 await executeShutdown();
                 return;
             }
@@ -433,8 +442,10 @@ async function pollForShutdown() {
                 statusEl.textContent = `Waiting for ${activeSessions.length} session(s) to complete...`;
             }
 
-            // Poll again in 3 seconds
-            setTimeout(poll, 3000);
+            // Poll again in 3 seconds (only if not shutting down)
+            if (!shutdownInProgress) {
+                setTimeout(poll, 3000);
+            }
         } catch (err) {
             // Server might already be down
             if (statusEl) statusEl.textContent = 'Server connection lost.';
@@ -445,6 +456,7 @@ async function pollForShutdown() {
 }
 
 async function shutdownNow() {
+    shutdownInProgress = true;  // Cancel any polling
     closeShutdownModal();
     await executeShutdown();
 }
