@@ -49,28 +49,41 @@ help:
 # System Python for venv creation - prefer 3.14, fall back to 3.13, 3.12, 3.11
 SYSTEM_PYTHON := $(shell command -v python3.14 2>/dev/null || command -v python3.13 2>/dev/null || command -v python3.12 2>/dev/null || command -v python3.11 2>/dev/null || echo python3)
 
+# Timing log for worktree setup analysis (central location for cumulative stats)
+SETUP_LOG ?= $(HOME)/.issue-orchestrator/worktree-setup.log
+
 venv:
+	@mkdir -p $$(dirname $(SETUP_LOG))
 	@if [ -d .venv ]; then \
 		echo "Removing existing .venv..."; \
 		rm -rf .venv; \
 	fi
 	@echo "Creating venv with $(SYSTEM_PYTHON)..."
-	$(SYSTEM_PYTHON) -m venv .venv
-	@echo "Installing agent-runner package first (avoids pip resolution issues)..."
-	.venv/bin/pip install -e "packages/agent_runner"
-	@echo "Installing main package with dev dependencies..."
-	.venv/bin/pip install -e ".[dev]"
-	@touch .venv/.deps-synced
+	@t0=$$(date +%s); \
+	$(SYSTEM_PYTHON) -m venv .venv; \
+	t1=$$(date +%s); \
+	echo "Installing agent-runner package first (avoids pip resolution issues)..."; \
+	.venv/bin/pip install -e "packages/agent_runner"; \
+	t2=$$(date +%s); \
+	echo "Installing main package with dev dependencies..."; \
+	.venv/bin/pip install -e ".[dev]"; \
+	t3=$$(date +%s); \
+	touch .venv/.deps-synced; \
+	echo "venv pid=$$$$ ts=$$(date -Iseconds) pwd=$$(pwd) venv_create=$$((t1-t0))s pip_agent_runner=$$((t2-t1))s pip_dev_deps=$$((t3-t2))s total=$$((t3-t0))s" >> $(SETUP_LOG)
 	@echo ""
 	@echo "Done! Activate with: source .venv/bin/activate"
 
 # Full worktree setup - use this when setting up a new git worktree
 worktree-setup: venv
 	@echo ""
-	@echo "Installing VS Code extension dependencies..."
-	@cd packages/vscode && npm install --silent
-	@echo "Installing Playwright browsers..."
-	@.venv/bin/playwright install chromium --with-deps 2>/dev/null || .venv/bin/playwright install chromium
+	@t0=$$(date +%s); \
+	echo "Installing VS Code extension dependencies..."; \
+	(cd packages/vscode && npm install --silent); \
+	t1=$$(date +%s); \
+	echo "Installing Playwright browsers..."; \
+	.venv/bin/playwright install chromium --with-deps 2>/dev/null || .venv/bin/playwright install chromium; \
+	t2=$$(date +%s); \
+	echo "worktree-setup pid=$$$$ ts=$$(date -Iseconds) pwd=$$(pwd) npm_vscode=$$((t1-t0))s playwright=$$((t2-t1))s total=$$((t2-t0))s" >> $(SETUP_LOG)
 	@echo ""
 	@echo "Worktree setup complete! Activate with: source .venv/bin/activate"
 
