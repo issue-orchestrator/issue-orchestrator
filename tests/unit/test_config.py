@@ -2097,3 +2097,159 @@ e2e:
         assert config2.session_timeout_minutes == config.session_timeout_minutes
         assert config2.e2e.enabled == config.e2e.enabled
         assert config2.e2e.auto_run_interval_minutes == config.e2e.auto_run_interval_minutes
+
+
+class TestHooksConfig:
+    """Tests for hooks configuration parsing."""
+
+    def test_hooks_config_defaults(self, tmp_path):
+        """Test default hooks config values."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        # Default values
+        assert config.hooks.safety_check.interval_days == 7
+        assert config.hooks.safety_check.dangerous_allow_failure is False
+
+    def test_hooks_config_custom_interval(self, tmp_path):
+        """Test custom safety check interval."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+hooks:
+  safety_check:
+    interval_days: 14
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.hooks.safety_check.interval_days == 14
+        assert config.hooks.safety_check.dangerous_allow_failure is False
+
+    def test_hooks_config_disabled(self, tmp_path):
+        """Test safety check disabled with interval_days=0."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+hooks:
+  safety_check:
+    interval_days: 0
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.hooks.safety_check.interval_days == 0
+
+    def test_hooks_config_dangerous_allow_failure(self, tmp_path):
+        """Test dangerous_allow_failure setting."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+hooks:
+  safety_check:
+    dangerous_allow_failure: true
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.hooks.safety_check.dangerous_allow_failure is True
+
+    def test_hooks_config_in_to_event_dict(self, tmp_path):
+        """Test hooks config is included in to_event_dict()."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+hooks:
+  safety_check:
+    interval_days: 30
+    dangerous_allow_failure: true
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        event_dict = config.to_event_dict()
+
+        assert "hooks" in event_dict
+        assert event_dict["hooks"]["safety_check"]["interval_days"] == 30
+        assert event_dict["hooks"]["safety_check"]["dangerous_allow_failure"] is True
+
+    def test_hooks_config_to_dict_non_default(self, tmp_path):
+        """Test to_dict() includes hooks when non-default."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+hooks:
+  safety_check:
+    interval_days: 14
+    dangerous_allow_failure: true
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        result = config.to_dict()
+
+        assert "hooks" in result
+        assert result["hooks"]["safety_check"]["interval_days"] == 14
+        assert result["hooks"]["safety_check"]["dangerous_allow_failure"] is True
+
+    def test_hooks_config_to_dict_default_values(self, tmp_path):
+        """Test to_dict() omits hooks when all values are default."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        result = config.to_dict()
+
+        # Hooks section should not be present when using defaults
+        assert "hooks" not in result

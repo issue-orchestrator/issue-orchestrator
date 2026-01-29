@@ -228,6 +228,22 @@ class DangerousConfig:
 
 
 @dataclass
+class SafetyCheckConfig:
+    """Safety check configuration for periodic hook verification.
+
+    Spawns actual AI agents to verify hooks block dangerous commands.
+    """
+    interval_days: int = 7  # Run safety check every N days (0 = disabled)
+    dangerous_allow_failure: bool = False  # If True, warn only; if False, block on failure
+
+
+@dataclass
+class HooksConfig:
+    """Hook management configuration."""
+    safety_check: SafetyCheckConfig = field(default_factory=SafetyCheckConfig)
+
+
+@dataclass
 class ValidationConfig:
     """Validation configuration - single command runs everywhere.
 
@@ -425,6 +441,16 @@ def _parse_claims_config(data: dict) -> ClaimsConfig:
         convergence_poll_max_ms=data.get("convergence_poll_max_ms", 500),
         convergence_required_wins=data.get("convergence_required_wins", 2),
     )
+
+
+def _parse_hooks_config(data: dict) -> HooksConfig:
+    """Parse hooks section from YAML data."""
+    safety_check_data = data.get("safety_check", {})
+    safety_check = SafetyCheckConfig(
+        interval_days=safety_check_data.get("interval_days", 7),
+        dangerous_allow_failure=safety_check_data.get("dangerous_allow_failure", False),
+    )
+    return HooksConfig(safety_check=safety_check)
 
 
 def _parse_triage_config(data: dict) -> TriageConfig:
@@ -738,7 +764,7 @@ def _load_agents_section(
 _TOP_LEVEL_SECTION_KEYS = (
     "agents", "labels", "review", "cleanup", "worktrees", "execution",
     "validation", "ui", "observability", "security", "filtering",
-    "triage", "e2e", "milestones", "state", "config", "claims",
+    "triage", "e2e", "milestones", "state", "config", "claims", "hooks",
 )
 
 # Derive ALLOWED_TOP_LEVEL_FIELDS from _TOP_LEVEL_SECTION_KEYS — single source of truth.
@@ -912,6 +938,9 @@ class Config:
 
     # Claims/lease configuration for multi-orchestrator coordination
     claims: ClaimsConfig = field(default_factory=ClaimsConfig)
+
+    # Hooks configuration - safety checks for AI agent hooks
+    hooks: HooksConfig = field(default_factory=HooksConfig)
 
     # Stale in-progress escalation threshold (0 = disabled)
     # If an issue has stale in-progress for K consecutive ticks, emit escalation event
@@ -1171,6 +1200,12 @@ class Config:
                 "convergence_poll_max_ms": self.claims.convergence_poll_max_ms,
                 "convergence_required_wins": self.claims.convergence_required_wins,
             },
+            "hooks": {
+                "safety_check": {
+                    "interval_days": self.hooks.safety_check.interval_days,
+                    "dangerous_allow_failure": self.hooks.safety_check.dangerous_allow_failure,
+                },
+            },
             "agents": {
                 label: {
                     "prompt_path": str(cfg.prompt_path),
@@ -1378,6 +1413,15 @@ class Config:
         if security_dict:
             result["security"] = security_dict
 
+        # Hooks section (only include if non-default)
+        hooks_dict: dict = {}
+        if self.hooks.safety_check.interval_days != 7:
+            hooks_dict.setdefault("safety_check", {})["interval_days"] = self.hooks.safety_check.interval_days
+        if self.hooks.safety_check.dangerous_allow_failure:
+            hooks_dict.setdefault("safety_check", {})["dangerous_allow_failure"] = True
+        if hooks_dict:
+            result["hooks"] = hooks_dict
+
         return result
 
     def save(self, path: Optional[Path] = None) -> Path:
@@ -1484,6 +1528,8 @@ class Config:
             config.e2e = _parse_e2e_config(sections["e2e"])
         if sections["claims"]:
             config.claims = _parse_claims_config(sections["claims"])
+        if sections["hooks"]:
+            config.hooks = _parse_hooks_config(sections["hooks"])
 
         return config
 

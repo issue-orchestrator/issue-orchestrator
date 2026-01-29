@@ -1,13 +1,17 @@
 """Hook verification checks for doctor."""
 
+import logging
+
 from ..types import Check
 from ...config import Config
+from ...hooks.hooks import get_adapter
+from ...safety_state import load_safety_state, save_safety_state
+
+logger = logging.getLogger(__name__)
 
 
 def _check_hook_installation(config: Config, unique_types: set, unsupported_types: set) -> tuple[Check, bool]:
     """Check if hooks are installed. Returns (check, hooks_ok)."""
-    from ...hooks.hooks import get_adapter
-
     missing_hooks = []
     unsupported = []
     for agent_type in unique_types:
@@ -70,8 +74,6 @@ def _check_hook_installation(config: Config, unique_types: set, unsupported_type
 
 def _check_full_verification(config: Config, unique_types: set, unsupported_types: set, hooks_ok: bool) -> Check:
     """Run full hook verification."""
-    from ...hooks.hooks import get_adapter
-
     if not hooks_ok:
         return Check(
             name="AI Agent Hooks (Verification)",
@@ -120,6 +122,105 @@ def _get_unsupported_types(unique_types: set) -> set:
     return unsupported
 
 
+def _run_live_safety_checks(
+    unique_types: set,
+    unsupported_types: set,
+    repo_root,
+    expandable: dict,
+) -> tuple[dict[str, tuple[bool, str]], list[str]]:
+    """Run live verification for each supported agent type.
+
+    Returns (results dict, failures list).
+    """
+    results: dict[str, tuple[bool, str]] = {}
+    failures: list[str] = []
+
+    for agent_type in unique_types:
+        if agent_type in unsupported_types:
+            continue
+
+        agent_name = agent_type.value
+        expandable["agents_tested"].append(agent_name)
+
+        adapter = get_adapter(agent_type)
+        try:
+            success, message = adapter.live_verify(repo_root)
+            results[agent_name] = (success, message)
+            expandable["results"][agent_name] = {"success": success, "message": message}
+
+            if not success:
+                failures.append(f"{agent_name}: {message[:50]}")
+        except Exception as e:
+            error_msg = f"Error: {e}"
+            results[agent_name] = (False, error_msg)
+            expandable["results"][agent_name] = {"success": False, "message": error_msg}
+            failures.append(f"{agent_name}: {error_msg[:50]}")
+            logger.warning("Live verification failed for %s: %s", agent_name, e)
+
+    return results, failures
+
+
+def _check_safety_report(
+    config: Config,
+    unique_types: set,
+    unsupported_types: set,
+    hooks_ok: bool,
+) -> Check | None:
+    """Check if safety check is stale and run live verification if needed.
+
+    Returns a Check with expandable details showing what was tested and results,
+    or None if safety check is disabled.
+    """
+    interval_days = config.hooks.safety_check.interval_days
+    if interval_days <= 0:
+        return None  # Disabled
+
+    state = load_safety_state(config.repo_root)
+    expandable: dict = {
+        "ran": False,
+        "triggered_by": None,
+        "agents_tested": [],
+        "results": {},
+        "last_check": state.last_check.isoformat() if state.last_check else None,
+    }
+
+    if not hooks_ok:
+        return Check(name="Safety Check", status="info", detail="Skipped - hooks not installed", expandable=expandable)
+
+    if not state.is_stale(interval_days):
+        # Use cached results - derive status from whether there were failures
+        cached_failures = []
+        for agent_type, result in state.last_results.items():
+            expandable["results"][agent_type] = {"success": result.success, "message": result.message}
+            if not result.success:
+                cached_failures.append(agent_type)
+        from datetime import datetime, timezone
+        days_ago = (datetime.now(timezone.utc).date() - state.last_check.date()).days if state.last_check else 0
+
+        if cached_failures:
+            if config.hooks.safety_check.dangerous_allow_failure:
+                return Check(name="Safety Check", status="warning", detail=f"Failed ({len(cached_failures)} agent(s), {days_ago}d ago) - allowed by config", expandable=expandable)
+            return Check(name="Safety Check", status="error", detail=f"Failed ({len(cached_failures)} agent(s), {days_ago}d ago)", expandable=expandable)
+        return Check(name="Safety Check", status="ok", detail=f"Passed (last check {days_ago}d ago)", expandable=expandable)
+
+    # Run live verification
+    expandable["ran"] = True
+    expandable["triggered_by"] = "first run" if state.last_check is None else "interval exceeded"
+
+    results, failures = _run_live_safety_checks(unique_types, unsupported_types, config.repo_root, expandable)
+
+    state.mark_checked(results)
+    save_safety_state(config.repo_root, state)
+
+    if not failures:
+        return Check(name="Safety Check", status="ok", detail=f"Passed ({len(results)} agent(s) verified)", expandable=expandable)
+
+    if config.hooks.safety_check.dangerous_allow_failure:
+        return Check(name="Safety Check", status="warning", detail=f"Failed ({len(failures)} agent(s)) - allowed by config", expandable=expandable)
+
+    return Check(name="Safety Check", status="error", detail=f"Failed: {'; '.join(failures)}", expandable=expandable)
+
+
 def check_hook_verification(config: Config) -> list[Check]:
     from ...hooks.hooks import detect_agents_from_config
 
@@ -138,5 +239,10 @@ def check_hook_verification(config: Config) -> list[Check]:
     # Run full verification (gated on installation success)
     full_check = _check_full_verification(config, unique_types, unsupported_types, hooks_ok)
     checks.append(full_check)
+
+    # Run safety check (live verification with state persistence)
+    safety_check = _check_safety_report(config, unique_types, unsupported_types, hooks_ok)
+    if safety_check:
+        checks.append(safety_check)
 
     return checks

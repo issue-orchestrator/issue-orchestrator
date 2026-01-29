@@ -139,6 +139,11 @@ security:
   dangerous:
     allow_unsupported_agents: false
 
+hooks:
+  safety_check:
+    interval_days: 7                    # Run live verification every N days (0 = disabled)
+    dangerous_allow_failure: false      # If true, warn only; if false, block on failure
+
 filtering:
   # label: "bot-ready"
   # milestone: "v1.0"

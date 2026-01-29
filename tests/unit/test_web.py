@@ -2586,7 +2586,7 @@ class TestSettingsEndpoints:
     """Tests for the settings page and API endpoints.
 
     The settings API uses a Pydantic schema-driven approach. Each tab
-    (concurrency, e2e, filtering, review, advanced) is a separate key
+    (concurrency, e2e, filtering, review, hooks, advanced) is a separate key
     in the request/response JSON.
     """
 
@@ -2615,7 +2615,7 @@ class TestSettingsEndpoints:
             web._orchestrator = None
 
     def test_get_settings_returns_all_tabs(self):
-        """GET /api/settings returns all five tabs."""
+        """GET /api/settings returns all six tabs."""
         from issue_orchestrator.entrypoints import web
 
         mock_orch = create_mock_orchestrator()
@@ -2626,7 +2626,7 @@ class TestSettingsEndpoints:
 
             assert response.status_code == 200
             data = response.json()
-            assert set(data.keys()) == {"concurrency", "e2e", "filtering", "review", "advanced"}
+            assert set(data.keys()) == {"concurrency", "e2e", "filtering", "review", "hooks", "advanced"}
         finally:
             web._orchestrator = None
 

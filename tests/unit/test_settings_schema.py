@@ -229,7 +229,7 @@ class TestFromConfig:
         """Default Config() should produce valid schema models."""
         cfg = Config()
         tabs = from_config(cfg)
-        assert len(tabs) == 5
+        assert len(tabs) == 6  # concurrency, e2e, filtering, review, hooks, advanced
         for key, model in tabs.items():
             assert model is not None
 
