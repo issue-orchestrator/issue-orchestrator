@@ -380,3 +380,432 @@ class TestVerificationResult:
 
         adapter = ClaudeCodeAdapter()
         assert not adapter.is_installed(test_repo_without_hooks)
+
+
+class TestHooksInWorktree:
+    """Tests that verify hooks work correctly in git worktree context.
+
+    This is critical: the orchestrator creates worktrees for each issue,
+    and hooks must work in those worktrees, not just the base repo.
+    """
+
+    @pytest.fixture
+    def base_repo_with_tracked_hooks(self, tmp_path: Path, fixtures_path: Path) -> Path:
+        """Create a base git repo with hooks tracked in git (not just installed).
+
+        This simulates a project where .claude/hooks/ is committed to the repo,
+        so worktrees will inherit the hooks via git checkout.
+        """
+        clean_env = _clean_git_env()
+
+        # Create bare "remote" repo
+        remote = tmp_path / "remote.git"
+        remote.mkdir()
+        subprocess.run(
+            ["git", "init", "--bare"],
+            cwd=remote,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Create working repo (base repo)
+        base = tmp_path / "base"
+        base.mkdir()
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Configure git user
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test User"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Add remote
+        subprocess.run(
+            ["git", "remote", "add", "origin", str(remote)],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Copy hooks from fixture and TRACK them in git
+        src_claude = fixtures_path / "hooks-installed" / ".claude"
+        dst_claude = base / ".claude"
+        shutil.copytree(src_claude, dst_claude)
+
+        # Ensure hook is executable
+        hook_script = dst_claude / "hooks" / "block-no-verify.sh"
+        hook_script.chmod(0o755)
+
+        # Create initial commit WITH hooks tracked
+        readme = base / "README.md"
+        readme.write_text("# Test Repo\n")
+        subprocess.run(
+            ["git", "add", "."],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Initial commit with hooks"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+        subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        return base
+
+    def test_hooks_work_in_worktree(self, base_repo_with_tracked_hooks: Path, tmp_path: Path):
+        """Test that hooks inherited from git work correctly in a worktree.
+
+        This is the critical test: when the orchestrator creates a worktree,
+        the agent runs there. The hooks must work in that context.
+        """
+        import json
+
+        clean_env = _clean_git_env()
+        base = base_repo_with_tracked_hooks
+
+        # Create a worktree (simulating what the orchestrator does)
+        worktree_path = tmp_path / "worktree-42"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), "-b", "42-test-issue"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Verify the hooks exist in the worktree (inherited from git)
+        hook_script = worktree_path / ".claude" / "hooks" / "block-no-verify.sh"
+        assert hook_script.exists(), "Hook script should exist in worktree (from git)"
+
+        parse_script = worktree_path / ".claude" / "hooks" / "parse_hook_input.py"
+        assert parse_script.exists(), "parse_hook_input.py should exist in worktree"
+
+        allow_script = worktree_path / ".claude" / "hooks" / "allow_git_push.py"
+        assert allow_script.exists(), "allow_git_push.py should exist in worktree"
+
+        # Test that the hook BLOCKS --no-verify in the worktree context
+        test_input = json.dumps({
+            "tool_input": {
+                "command": "git push --no-verify"
+            }
+        })
+
+        result = subprocess.run(
+            [str(hook_script)],
+            input=test_input,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_path),  # Run from worktree directory
+        )
+
+        assert result.returncode == 2, (
+            f"Hook should block --no-verify in worktree. "
+            f"Exit code: {result.returncode}, stderr: {result.stderr}"
+        )
+        assert "BLOCKED" in result.stderr
+
+    def test_hooks_allow_normal_push_in_worktree(
+        self, base_repo_with_tracked_hooks: Path, tmp_path: Path
+    ):
+        """Test that hooks allow normal commands in worktree context."""
+        import json
+
+        clean_env = _clean_git_env()
+        base = base_repo_with_tracked_hooks
+
+        # Create a worktree
+        worktree_path = tmp_path / "worktree-43"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), "-b", "43-another-issue"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        hook_script = worktree_path / ".claude" / "hooks" / "block-no-verify.sh"
+
+        # Test that normal push is ALLOWED
+        test_input = json.dumps({
+            "tool_input": {
+                "command": "git push origin main"
+            }
+        })
+
+        result = subprocess.run(
+            [str(hook_script)],
+            input=test_input,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_path),
+        )
+
+        assert result.returncode == 0, (
+            f"Hook should allow normal push in worktree. "
+            f"Exit code: {result.returncode}, stderr: {result.stderr}"
+        )
+
+
+class TestCursorHooksInWorktree:
+    """Tests that verify Cursor hooks work correctly in git worktree context.
+
+    Cursor uses beforeShellExecution hooks with JSON output format.
+    """
+
+    @pytest.fixture
+    def base_repo_with_cursor_hooks(self, tmp_path: Path) -> Path:
+        """Create a base git repo with Cursor hooks tracked in git.
+
+        Uses the CursorAdapter to install hooks, then commits them so
+        worktrees will inherit them via git checkout.
+        """
+        from issue_orchestrator.infra.hooks.hooks import CursorAdapter
+
+        clean_env = _clean_git_env()
+
+        # Create bare "remote" repo
+        remote = tmp_path / "remote.git"
+        remote.mkdir()
+        subprocess.run(
+            ["git", "init", "--bare"],
+            cwd=remote,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Create working repo (base repo)
+        base = tmp_path / "base"
+        base.mkdir()
+        subprocess.run(
+            ["git", "init", "-b", "main"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Configure git user
+        subprocess.run(
+            ["git", "config", "user.email", "test@test.com"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "Test User"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Add remote
+        subprocess.run(
+            ["git", "remote", "add", "origin", str(remote)],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Install Cursor hooks
+        adapter = CursorAdapter()
+        adapter.install_hooks(base)
+
+        # Create initial commit WITH hooks tracked
+        readme = base / "README.md"
+        readme.write_text("# Test Repo with Cursor Hooks\n")
+        subprocess.run(
+            ["git", "add", "."],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "Initial commit with Cursor hooks"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+        subprocess.run(
+            ["git", "push", "-u", "origin", "main"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        return base
+
+    def test_cursor_hooks_work_in_worktree(self, base_repo_with_cursor_hooks: Path, tmp_path: Path):
+        """Test that Cursor hooks inherited from git work correctly in a worktree."""
+        import json
+
+        clean_env = _clean_git_env()
+        base = base_repo_with_cursor_hooks
+
+        # Create a worktree
+        worktree_path = tmp_path / "cursor-worktree-42"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), "-b", "42-cursor-issue"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        # Verify the hooks exist in the worktree
+        hook_script = worktree_path / ".cursor" / "hooks" / "block-no-verify.sh"
+        assert hook_script.exists(), "Cursor hook script should exist in worktree"
+
+        parse_script = worktree_path / ".cursor" / "hooks" / "parse_hook_input.py"
+        assert parse_script.exists(), "parse_hook_input.py should exist in worktree"
+
+        hooks_json = worktree_path / ".cursor" / "hooks.json"
+        assert hooks_json.exists(), "hooks.json should exist in worktree"
+
+        # Test that the hook BLOCKS --no-verify (Cursor format: direct command key)
+        test_input = json.dumps({"command": "git push --no-verify"})
+
+        result = subprocess.run(
+            [str(hook_script)],
+            input=test_input,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_path),
+        )
+
+        # Cursor hooks output JSON with permission field
+        output = json.loads(result.stdout.strip()) if result.stdout.strip() else {}
+        assert output.get("permission") == "deny", (
+            f"Cursor hook should block --no-verify in worktree. "
+            f"Output: {result.stdout}, stderr: {result.stderr}"
+        )
+
+    def test_cursor_hooks_allow_normal_push_in_worktree(
+        self, base_repo_with_cursor_hooks: Path, tmp_path: Path
+    ):
+        """Test that Cursor hooks allow normal commands in worktree context."""
+        import json
+
+        clean_env = _clean_git_env()
+        base = base_repo_with_cursor_hooks
+
+        # Create a worktree
+        worktree_path = tmp_path / "cursor-worktree-43"
+        subprocess.run(
+            ["git", "worktree", "add", str(worktree_path), "-b", "43-cursor-issue"],
+            cwd=base,
+            capture_output=True,
+            check=True,
+            env=clean_env,
+        )
+
+        hook_script = worktree_path / ".cursor" / "hooks" / "block-no-verify.sh"
+
+        # Test that normal push is ALLOWED
+        test_input = json.dumps({"command": "git push origin main"})
+
+        result = subprocess.run(
+            [str(hook_script)],
+            input=test_input,
+            capture_output=True,
+            text=True,
+            cwd=str(worktree_path),
+        )
+
+        output = json.loads(result.stdout.strip()) if result.stdout.strip() else {}
+        assert output.get("permission") == "allow", (
+            f"Cursor hook should allow normal push in worktree. "
+            f"Output: {result.stdout}, stderr: {result.stderr}"
+        )
+
+
+class TestCursorVerificationResult:
+    """Tests for Cursor static (non-live) verification."""
+
+    @pytest.fixture
+    def test_repo_with_cursor_hooks(self, tmp_path: Path) -> Path:
+        """Create a test repo with Cursor hooks installed."""
+        from issue_orchestrator.infra.hooks.hooks import CursorAdapter
+
+        work = tmp_path / "work"
+        work.mkdir()
+
+        adapter = CursorAdapter()
+        adapter.install_hooks(work)
+
+        return work
+
+    def test_verify_hooks_passes_with_hooks(self, test_repo_with_cursor_hooks: Path):
+        """Test that verify_hooks passes when Cursor hooks are properly installed."""
+        from issue_orchestrator.infra.hooks.hooks import CursorAdapter
+
+        adapter = CursorAdapter()
+        result = adapter.verify_hooks(test_repo_with_cursor_hooks)
+
+        assert result.success, f"Verification should pass: {result.checks_failed}"
+        assert len(result.checks_passed) > 0
+
+    def test_verify_hooks_fails_without_hooks(self, tmp_path: Path):
+        """Test that verify_hooks fails when Cursor hooks are missing."""
+        from issue_orchestrator.infra.hooks.hooks import CursorAdapter
+
+        work = tmp_path / "work"
+        work.mkdir()
+
+        adapter = CursorAdapter()
+        result = adapter.verify_hooks(work)
+
+        assert not result.success, "Verification should fail when hooks missing"
+        assert len(result.checks_failed) > 0
+
+    def test_is_installed_true_with_hooks(self, test_repo_with_cursor_hooks: Path):
+        """Test that is_installed returns True when Cursor hooks are installed."""
+        from issue_orchestrator.infra.hooks.hooks import CursorAdapter
+
+        adapter = CursorAdapter()
+        assert adapter.is_installed(test_repo_with_cursor_hooks)
+
+    def test_is_installed_false_without_hooks(self, tmp_path: Path):
+        """Test that is_installed returns False when Cursor hooks are missing."""
+        from issue_orchestrator.infra.hooks.hooks import CursorAdapter
+
+        work = tmp_path / "work"
+        work.mkdir()
+
+        adapter = CursorAdapter()
+        assert not adapter.is_installed(work)

@@ -21,19 +21,34 @@ set -euo pipefail
 # Read input from stdin (JSON with tool_input)
 input=$(cat)
 
-# Extract the command being executed
-# Claude Code sends: {"tool_input": {"command": "git push ..."}}
-command=$(echo "$input" | jq -r '.tool_input.command // ""' 2>/dev/null || echo "")
-
-# Allow a dry-run no-verify push for reuse preflight when enabled.
+# Resolve python3 (required for JSON parsing and preflight check)
 python_bin="$(command -v python3 || true)"
-hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-allow_script="$hook_dir/allow_git_push.py"
-
 if [[ -z "$python_bin" ]]; then
     echo "BLOCKED: python3 is required for orchestrator hooks. Fix PATH or install python3." >&2
     exit 2
 fi
+
+# Extract the command being executed
+# Claude Code sends: {"tool_input": {"command": "git push ..."}}
+hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+parse_script="$hook_dir/parse_hook_input.py"
+if [[ ! -f "$parse_script" ]]; then
+    echo "BLOCKED: missing $parse_script. Reinstall or update the repo hooks." >&2
+    exit 2
+fi
+command=$("$python_bin" "$parse_script" <<< "$input" 2>&1) || {
+    echo "BLOCKED: failed to parse hook input. Error: $command" >&2
+    exit 2
+}
+
+# Fail closed: if input was non-empty but command is empty, parsing failed silently
+if [[ -z "$command" && -n "$input" ]]; then
+    echo "BLOCKED: unable to extract command from hook input. Input may be malformed." >&2
+    exit 2
+fi
+
+# Allow a dry-run no-verify push for reuse preflight when enabled.
+allow_script="$hook_dir/allow_git_push.py"
 if [[ ! -f "$allow_script" ]]; then
     echo "BLOCKED: missing $allow_script. Reinstall or update the repo hooks." >&2
     exit 2

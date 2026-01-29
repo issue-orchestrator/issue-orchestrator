@@ -170,6 +170,7 @@ class ClaudeCodeAdapter(AiAgentAdapter):
         # Copy hook scripts
         self._copy_hook_file(TEMPLATES_DIR / "claude" / "block-no-verify.sh", hooks_dir / "block-no-verify.sh", files_created)
         self._copy_hook_file(TEMPLATES_DIR / "claude" / "allow_git_push.py", hooks_dir / "allow_git_push.py", files_created)
+        self._copy_hook_file(TEMPLATES_DIR / "claude" / "parse_hook_input.py", hooks_dir / "parse_hook_input.py", files_created)
 
         # Update settings.json
         self._update_settings_json(project_root / ".claude" / "settings.json", files_created)
@@ -410,26 +411,674 @@ class ClaudeCodeAdapter(AiAgentAdapter):
 
 
 class CursorAdapter(AiAgentAdapter):
-    """Adapter for Cursor IDE."""
+    """Adapter for Cursor IDE.
+
+    Cursor uses beforeShellExecution hooks configured in .cursor/hooks.json.
+    Hook scripts output JSON: {"permission": "allow"} or {"permission": "deny", ...}
+    """
 
     @property
     def agent_type(self) -> AiAgentType:
         return AiAgentType.CURSOR
 
+    def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
+        """Copy a hook file and make it executable."""
+        if not src.exists():
+            raise FileNotFoundError(f"Template not found: {src}")
+        shutil.copy(src, target)
+        target.chmod(0o755)
+        files_created.append(target)
+        logger.info(f"Installed {target}")
+
+    def _update_hooks_json(self, hooks_json_path: Path, files_created: list[Path]) -> None:
+        """Update hooks.json with hook configuration."""
+        hooks_config: dict = {}
+        if hooks_json_path.exists():
+            try:
+                hooks_config = json.loads(hooks_json_path.read_text())
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON in {hooks_json_path}, will overwrite")
+
+        hooks_config.setdefault("beforeShellExecution", [])
+        our_cmd = ".cursor/hooks/block-no-verify.sh"
+
+        # Check if our hook is already configured
+        existing = hooks_config["beforeShellExecution"]
+        if not any(h.get("command") == our_cmd for h in existing):
+            existing.append({"command": our_cmd, "output": "json"})
+
+        hooks_json_path.write_text(json.dumps(hooks_config, indent=2) + "\n")
+        files_created.append(hooks_json_path)
+        logger.info(f"Updated {hooks_json_path}")
+
     def install_hooks(self, project_root: Path) -> list[Path]:
-        raise UnsupportedAiAgentError(
-            self.agent_type,
-            "Cursor support not yet implemented. Use Claude Code for now."
-        )
+        """Install Cursor beforeShellExecution hooks."""
+        files_created: list[Path] = []
+        hooks_dir = project_root / ".cursor" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy hook scripts
+        self._copy_hook_file(TEMPLATES_DIR / "cursor" / "block-no-verify.sh", hooks_dir / "block-no-verify.sh", files_created)
+        self._copy_hook_file(TEMPLATES_DIR / "cursor" / "parse_hook_input.py", hooks_dir / "parse_hook_input.py", files_created)
+
+        # Update hooks.json
+        self._update_hooks_json(project_root / ".cursor" / "hooks.json", files_created)
+
+        return files_created
+
+    def _verify_hooks_json(self, hooks_json_path: Path, checks_passed: list, checks_failed: list) -> None:
+        """Verify hooks.json configuration."""
+        if not hooks_json_path.exists():
+            checks_failed.append("hooks_json_configured: hooks.json not found")
+            return
+
+        try:
+            hooks_config = json.loads(hooks_json_path.read_text())
+            before_shell = hooks_config.get("beforeShellExecution", [])
+            found_hook = any(
+                h.get("command") == ".cursor/hooks/block-no-verify.sh"
+                for h in before_shell
+            )
+            if found_hook:
+                checks_passed.append("hooks_json_configured")
+            else:
+                checks_failed.append("hooks_json_configured: hook not in beforeShellExecution")
+        except json.JSONDecodeError as e:
+            checks_failed.append(f"hooks_json_configured: invalid JSON - {e}")
+
+    def _test_hook_blocks(
+        self,
+        hook_script: Path,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        return_stderr: bool = False,
+    ) -> bool | tuple[bool, str]:
+        """Test if the hook script blocks a command.
+
+        Simulates what Cursor sends to beforeShellExecution hooks.
+        Returns True if blocked (JSON permission=deny), False if allowed.
+        """
+        # Cursor sends JSON with command directly
+        test_input = json.dumps({"command": command})
+
+        project_root = hook_script.parents[2] if len(hook_script.parents) >= 2 else None
+        try:
+            result = subprocess.run(
+                [str(hook_script)],
+                input=test_input,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=str(project_root) if project_root else None,
+                env=env,
+            )
+            # Cursor hooks output JSON - parse for permission field
+            try:
+                output = json.loads(result.stdout.strip()) if result.stdout.strip() else {}
+                blocked = output.get("permission") == "deny"
+            except json.JSONDecodeError:
+                # If we can't parse JSON, treat as not blocked (hook is broken)
+                blocked = False
+
+            if return_stderr:
+                return blocked, result.stderr
+            return blocked
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Hook script timed out testing: {command}")
+            return (False, "") if return_stderr else False
+        except Exception as e:
+            logger.warning(f"Hook script error testing '{command}': {e}")
+            return (False, "") if return_stderr else False
+
+    def _run_hook_test_cases(self, hook_script: Path, checks_passed: list, checks_failed: list) -> None:
+        """Run hook test cases and record results."""
+        test_cases = [
+            ("git push --no-verify", True), ("git commit --no-verify -m 'test'", True),
+            ("git push origin main --no-verify", True), ("git --no-verify push", True),
+            ("git commit -n -m 'test'", True), ("git -c core.hooksPath=/dev/null push", True),
+            ("gh pr merge 123", True), ("gh pr merge 123 --squash", True),
+            ("gh api repos/owner/repo/pulls/123/merge -X PUT", True),
+            ("git push origin main", False), ("git commit -m 'test'", False),
+            ("gh pr create --title 'test'", False), ("gh pr view 123", False), ("ls -la", False),
+        ]
+
+        for cmd, should_block in test_cases:
+            blocked = self._test_hook_blocks(hook_script, cmd)
+            label = cmd[:30]
+            if should_block == blocked:
+                checks_passed.append(f"{'blocks' if should_block else 'allows'}:{label}")
+            else:
+                checks_failed.append(f"{'should_block' if should_block else 'wrongly_blocks'}:{label}")
 
     def verify_hooks(self, project_root: Path) -> VerificationResult:
-        raise UnsupportedAiAgentError(
-            self.agent_type,
-            "Cursor verification not yet implemented."
+        """Verify Cursor hooks are working."""
+        checks_passed: list[str] = []
+        checks_failed: list[str] = []
+
+        hook_script = project_root / ".cursor" / "hooks" / "block-no-verify.sh"
+        hooks_json_path = project_root / ".cursor" / "hooks.json"
+
+        if not hook_script.exists():
+            checks_failed.append("hook_script_exists: not found")
+            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+        checks_passed.append("hook_script_exists")
+
+        if os.access(hook_script, os.X_OK):
+            checks_passed.append("hook_script_executable")
+        else:
+            checks_failed.append("hook_script_executable: not executable")
+
+        self._verify_hooks_json(hooks_json_path, checks_passed, checks_failed)
+        self._run_hook_test_cases(hook_script, checks_passed, checks_failed)
+
+        return VerificationResult(
+            success=len(checks_failed) == 0,
+            meta_agent=self.agent_type,
+            checks_passed=checks_passed,
+            checks_failed=checks_failed,
         )
 
     def is_installed(self, project_root: Path) -> bool:
+        """Check if Cursor hooks are installed."""
+        hook_script = project_root / ".cursor" / "hooks" / "block-no-verify.sh"
+        hooks_json_path = project_root / ".cursor" / "hooks.json"
+
+        if not hook_script.exists() or not hooks_json_path.exists():
+            return False
+
+        try:
+            hooks_config = json.loads(hooks_json_path.read_text())
+            before_shell = hooks_config.get("beforeShellExecution", [])
+
+            for hook in before_shell:
+                if hook.get("command") == ".cursor/hooks/block-no-verify.sh":
+                    return True
+        except (json.JSONDecodeError, KeyError):
+            pass
+
         return False
+
+
+class GeminiAdapter(AiAgentAdapter):
+    """Adapter for Gemini CLI.
+
+    Gemini CLI uses BeforeTool hooks configured in .gemini/settings.json.
+    Nearly identical to Claude Code - exit code 2 blocks, 0 allows.
+    """
+
+    @property
+    def agent_type(self) -> AiAgentType:
+        return AiAgentType.GEMINI
+
+    def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
+        """Copy a hook file and make it executable."""
+        if not src.exists():
+            raise FileNotFoundError(f"Template not found: {src}")
+        shutil.copy(src, target)
+        target.chmod(0o755)
+        files_created.append(target)
+        logger.info(f"Installed {target}")
+
+    def _update_settings_json(self, settings_path: Path, files_created: list[Path]) -> None:
+        """Update settings.json with hook configuration."""
+        settings: dict = {}
+        if settings_path.exists():
+            try:
+                settings = json.loads(settings_path.read_text())
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON in {settings_path}, will overwrite")
+
+        settings.setdefault("hooks", {}).setdefault("BeforeTool", [])
+        our_cmd = ".gemini/hooks/block-no-verify.sh"
+
+        # Find existing Bash matcher
+        bash_matcher = next((h for h in settings["hooks"]["BeforeTool"] if h.get("matcher") == "Bash"), None)
+        if bash_matcher:
+            existing_hooks = bash_matcher.get("hooks", [])
+            if not any(h.get("type") == "command" and h.get("command") == our_cmd for h in existing_hooks):
+                existing_hooks.append({"type": "command", "command": our_cmd})
+                bash_matcher["hooks"] = existing_hooks
+        else:
+            settings["hooks"]["BeforeTool"].append({
+                "matcher": "Bash",
+                "hooks": [{"type": "command", "command": our_cmd}]
+            })
+
+        settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+        files_created.append(settings_path)
+        logger.info(f"Updated {settings_path}")
+
+    def install_hooks(self, project_root: Path) -> list[Path]:
+        """Install Gemini CLI BeforeTool hooks."""
+        files_created: list[Path] = []
+        hooks_dir = project_root / ".gemini" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy hook scripts
+        self._copy_hook_file(TEMPLATES_DIR / "gemini" / "block-no-verify.sh", hooks_dir / "block-no-verify.sh", files_created)
+        self._copy_hook_file(TEMPLATES_DIR / "gemini" / "allow_git_push.py", hooks_dir / "allow_git_push.py", files_created)
+        self._copy_hook_file(TEMPLATES_DIR / "gemini" / "parse_hook_input.py", hooks_dir / "parse_hook_input.py", files_created)
+
+        # Update settings.json
+        self._update_settings_json(project_root / ".gemini" / "settings.json", files_created)
+
+        return files_created
+
+    def _verify_settings_json(self, settings_path: Path, checks_passed: list, checks_failed: list) -> None:
+        """Verify settings.json configuration."""
+        if not settings_path.exists():
+            checks_failed.append("settings_json_configured: settings.json not found")
+            return
+
+        try:
+            settings = json.loads(settings_path.read_text())
+            before_tool = settings.get("hooks", {}).get("BeforeTool", [])
+            found_hook = any(
+                hook.get("command") == ".gemini/hooks/block-no-verify.sh"
+                for matcher in before_tool if matcher.get("matcher") == "Bash"
+                for hook in matcher.get("hooks", [])
+            )
+            if found_hook:
+                checks_passed.append("settings_json_configured")
+            else:
+                checks_failed.append("settings_json_configured: hook not in BeforeTool")
+        except json.JSONDecodeError as e:
+            checks_failed.append(f"settings_json_configured: invalid JSON - {e}")
+
+    def _test_hook_blocks(
+        self,
+        hook_script: Path,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        return_stderr: bool = False,
+    ) -> bool | tuple[bool, str]:
+        """Test if the hook script blocks a command.
+
+        Simulates what Gemini CLI sends to BeforeTool hooks.
+        Returns True if blocked (exit code 2), False if allowed.
+        """
+        # Gemini CLI sends JSON with tool_input.command (same as Claude)
+        test_input = json.dumps({
+            "tool_input": {
+                "command": command
+            }
+        })
+
+        project_root = hook_script.parents[2] if len(hook_script.parents) >= 2 else None
+        try:
+            result = subprocess.run(
+                [str(hook_script)],
+                input=test_input,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=str(project_root) if project_root else None,
+                env=env,
+            )
+            # Exit code 2 = blocked, 0 = allowed
+            blocked = result.returncode == 2
+            if return_stderr:
+                return blocked, result.stderr
+            return blocked
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Hook script timed out testing: {command}")
+            return (False, "") if return_stderr else False
+        except Exception as e:
+            logger.warning(f"Hook script error testing '{command}': {e}")
+            return (False, "") if return_stderr else False
+
+    def _run_hook_test_cases(self, hook_script: Path, checks_passed: list, checks_failed: list) -> None:
+        """Run hook test cases and record results."""
+        test_cases = [
+            ("git push --no-verify", True), ("git commit --no-verify -m 'test'", True),
+            ("git push origin main --no-verify", True), ("git --no-verify push", True),
+            ("git commit -n -m 'test'", True), ("git -c core.hooksPath=/dev/null push", True),
+            ("gh pr merge 123", True), ("gh pr merge 123 --squash", True),
+            ("gh api repos/owner/repo/pulls/123/merge -X PUT", True),
+            ("git push origin main", False), ("git commit -m 'test'", False),
+            ("gh pr create --title 'test'", False), ("gh pr view 123", False), ("ls -la", False),
+        ]
+
+        for cmd, should_block in test_cases:
+            blocked = self._test_hook_blocks(hook_script, cmd)
+            label = cmd[:30]
+            if should_block == blocked:
+                checks_passed.append(f"{'blocks' if should_block else 'allows'}:{label}")
+            else:
+                checks_failed.append(f"{'should_block' if should_block else 'wrongly_blocks'}:{label}")
+
+    def verify_hooks(self, project_root: Path) -> VerificationResult:
+        """Verify Gemini CLI hooks are working."""
+        checks_passed: list[str] = []
+        checks_failed: list[str] = []
+
+        hook_script = project_root / ".gemini" / "hooks" / "block-no-verify.sh"
+        settings_path = project_root / ".gemini" / "settings.json"
+
+        if not hook_script.exists():
+            checks_failed.append("hook_script_exists: not found")
+            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+        checks_passed.append("hook_script_exists")
+
+        if os.access(hook_script, os.X_OK):
+            checks_passed.append("hook_script_executable")
+        else:
+            checks_failed.append("hook_script_executable: not executable")
+
+        self._verify_settings_json(settings_path, checks_passed, checks_failed)
+        self._run_hook_test_cases(hook_script, checks_passed, checks_failed)
+
+        return VerificationResult(
+            success=len(checks_failed) == 0,
+            meta_agent=self.agent_type,
+            checks_passed=checks_passed,
+            checks_failed=checks_failed,
+        )
+
+    def is_installed(self, project_root: Path) -> bool:
+        """Check if Gemini CLI hooks are installed."""
+        hook_script = project_root / ".gemini" / "hooks" / "block-no-verify.sh"
+        settings_path = project_root / ".gemini" / "settings.json"
+
+        if not hook_script.exists() or not settings_path.exists():
+            return False
+
+        try:
+            settings = json.loads(settings_path.read_text())
+            before_tool = settings.get("hooks", {}).get("BeforeTool", [])
+
+            for matcher in before_tool:
+                if matcher.get("matcher") == "Bash":
+                    for hook in matcher.get("hooks", []):
+                        if hook.get("command") == ".gemini/hooks/block-no-verify.sh":
+                            return True
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+        return False
+
+
+class CopilotAdapter(AiAgentAdapter):
+    """Adapter for GitHub Copilot CLI.
+
+    Copilot CLI uses preToolUse hooks configured in .github/hooks/hooks.json.
+    Hook scripts output JSON: {"permissionDecision": "allow"} or {"permissionDecision": "deny", ...}
+    """
+
+    @property
+    def agent_type(self) -> AiAgentType:
+        return AiAgentType.COPILOT
+
+    def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
+        """Copy a hook file and make it executable."""
+        if not src.exists():
+            raise FileNotFoundError(f"Template not found: {src}")
+        shutil.copy(src, target)
+        target.chmod(0o755)
+        files_created.append(target)
+        logger.info(f"Installed {target}")
+
+    def _update_hooks_json(self, hooks_json_path: Path, files_created: list[Path]) -> None:
+        """Update hooks.json with hook configuration."""
+        hooks_config: dict = {"version": 1, "hooks": {}}
+        if hooks_json_path.exists():
+            try:
+                hooks_config = json.loads(hooks_json_path.read_text())
+            except json.JSONDecodeError:
+                logger.warning(f"Invalid JSON in {hooks_json_path}, will overwrite")
+
+        hooks_config.setdefault("version", 1)
+        hooks_config.setdefault("hooks", {}).setdefault("preToolUse", [])
+        our_cmd = ".github/hooks/block-no-verify.sh"
+
+        # Check if our hook is already configured
+        existing = hooks_config["hooks"]["preToolUse"]
+        if not any(h.get("bash") == our_cmd for h in existing):
+            existing.append({"type": "command", "bash": our_cmd})
+
+        hooks_json_path.write_text(json.dumps(hooks_config, indent=2) + "\n")
+        files_created.append(hooks_json_path)
+        logger.info(f"Updated {hooks_json_path}")
+
+    def install_hooks(self, project_root: Path) -> list[Path]:
+        """Install Copilot CLI preToolUse hooks."""
+        files_created: list[Path] = []
+        hooks_dir = project_root / ".github" / "hooks"
+        hooks_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy hook scripts
+        self._copy_hook_file(TEMPLATES_DIR / "copilot" / "block-no-verify.sh", hooks_dir / "block-no-verify.sh", files_created)
+        self._copy_hook_file(TEMPLATES_DIR / "copilot" / "parse_hook_input.py", hooks_dir / "parse_hook_input.py", files_created)
+
+        # Update hooks.json
+        self._update_hooks_json(project_root / ".github" / "hooks" / "hooks.json", files_created)
+
+        return files_created
+
+    def _verify_hooks_json(self, hooks_json_path: Path, checks_passed: list, checks_failed: list) -> None:
+        """Verify hooks.json configuration."""
+        if not hooks_json_path.exists():
+            checks_failed.append("hooks_json_configured: hooks.json not found")
+            return
+
+        try:
+            hooks_config = json.loads(hooks_json_path.read_text())
+            pre_tool_use = hooks_config.get("hooks", {}).get("preToolUse", [])
+            found_hook = any(
+                h.get("bash") == ".github/hooks/block-no-verify.sh"
+                for h in pre_tool_use
+            )
+            if found_hook:
+                checks_passed.append("hooks_json_configured")
+            else:
+                checks_failed.append("hooks_json_configured: hook not in preToolUse")
+        except json.JSONDecodeError as e:
+            checks_failed.append(f"hooks_json_configured: invalid JSON - {e}")
+
+    def _test_hook_blocks(
+        self,
+        hook_script: Path,
+        command: str,
+        *,
+        env: dict[str, str] | None = None,
+        return_output: bool = False,
+    ) -> bool | tuple[bool, str]:
+        """Test if the hook script blocks a command.
+
+        Simulates what Copilot CLI sends to preToolUse hooks.
+        Returns True if blocked (JSON permissionDecision=deny), False if allowed.
+        """
+        # Copilot sends JSON with toolArgs containing command
+        test_input = json.dumps({
+            "toolName": "bash",
+            "toolArgs": json.dumps({"command": command})
+        })
+
+        project_root = hook_script.parents[2] if len(hook_script.parents) >= 2 else None
+        try:
+            result = subprocess.run(
+                [str(hook_script)],
+                input=test_input,
+                capture_output=True,
+                text=True,
+                timeout=5,
+                cwd=str(project_root) if project_root else None,
+                env=env,
+            )
+            # Copilot hooks output JSON - parse for permissionDecision field
+            try:
+                output = json.loads(result.stdout.strip()) if result.stdout.strip() else {}
+                blocked = output.get("permissionDecision") == "deny"
+            except json.JSONDecodeError:
+                # If we can't parse JSON, treat as not blocked (hook is broken)
+                blocked = False
+
+            if return_output:
+                return blocked, result.stdout
+            return blocked
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Hook script timed out testing: {command}")
+            return (False, "") if return_output else False
+        except Exception as e:
+            logger.warning(f"Hook script error testing '{command}': {e}")
+            return (False, "") if return_output else False
+
+    def _run_hook_test_cases(self, hook_script: Path, checks_passed: list, checks_failed: list) -> None:
+        """Run hook test cases and record results."""
+        test_cases = [
+            ("git push --no-verify", True), ("git commit --no-verify -m 'test'", True),
+            ("git push origin main --no-verify", True), ("git --no-verify push", True),
+            ("git commit -n -m 'test'", True), ("git -c core.hooksPath=/dev/null push", True),
+            ("gh pr merge 123", True), ("gh pr merge 123 --squash", True),
+            ("gh api repos/owner/repo/pulls/123/merge -X PUT", True),
+            ("git push origin main", False), ("git commit -m 'test'", False),
+            ("gh pr create --title 'test'", False), ("gh pr view 123", False), ("ls -la", False),
+        ]
+
+        for cmd, should_block in test_cases:
+            blocked = self._test_hook_blocks(hook_script, cmd)
+            label = cmd[:30]
+            if should_block == blocked:
+                checks_passed.append(f"{'blocks' if should_block else 'allows'}:{label}")
+            else:
+                checks_failed.append(f"{'should_block' if should_block else 'wrongly_blocks'}:{label}")
+
+    def verify_hooks(self, project_root: Path) -> VerificationResult:
+        """Verify Copilot CLI hooks are working."""
+        checks_passed: list[str] = []
+        checks_failed: list[str] = []
+
+        hook_script = project_root / ".github" / "hooks" / "block-no-verify.sh"
+        hooks_json_path = project_root / ".github" / "hooks" / "hooks.json"
+
+        if not hook_script.exists():
+            checks_failed.append("hook_script_exists: not found")
+            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+        checks_passed.append("hook_script_exists")
+
+        if os.access(hook_script, os.X_OK):
+            checks_passed.append("hook_script_executable")
+        else:
+            checks_failed.append("hook_script_executable: not executable")
+
+        self._verify_hooks_json(hooks_json_path, checks_passed, checks_failed)
+        self._run_hook_test_cases(hook_script, checks_passed, checks_failed)
+
+        return VerificationResult(
+            success=len(checks_failed) == 0,
+            meta_agent=self.agent_type,
+            checks_passed=checks_passed,
+            checks_failed=checks_failed,
+        )
+
+    def is_installed(self, project_root: Path) -> bool:
+        """Check if Copilot CLI hooks are installed."""
+        hook_script = project_root / ".github" / "hooks" / "block-no-verify.sh"
+        hooks_json_path = project_root / ".github" / "hooks" / "hooks.json"
+
+        if not hook_script.exists() or not hooks_json_path.exists():
+            return False
+
+        try:
+            hooks_config = json.loads(hooks_json_path.read_text())
+            pre_tool_use = hooks_config.get("hooks", {}).get("preToolUse", [])
+
+            for hook in pre_tool_use:
+                if hook.get("bash") == ".github/hooks/block-no-verify.sh":
+                    return True
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+        return False
+
+
+class CodexAdapter(AiAgentAdapter):
+    """Adapter for OpenAI Codex CLI.
+
+    Codex CLI uses Starlark rules files in ~/.codex/rules/ directory.
+    Unlike other agents, this is user-global not project-local.
+    Rules use prefix_rule() with decision="forbidden" to block commands.
+    """
+
+    @property
+    def agent_type(self) -> AiAgentType:
+        return AiAgentType.CODEX
+
+    def _get_rules_dir(self) -> Path:
+        """Get the Codex rules directory."""
+        return Path.home() / ".codex" / "rules"
+
+    def _copy_rules_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
+        """Copy a rules file."""
+        if not src.exists():
+            raise FileNotFoundError(f"Template not found: {src}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy(src, target)
+        files_created.append(target)
+        logger.info(f"Installed {target}")
+
+    def install_hooks(self, project_root: Path) -> list[Path]:
+        """Install Codex CLI rules.
+
+        Note: Codex rules are user-global (~/.codex/rules/), not project-local.
+        The project_root parameter is ignored but kept for interface consistency.
+        """
+        files_created: list[Path] = []
+        rules_dir = self._get_rules_dir()
+        rules_dir.mkdir(parents=True, exist_ok=True)
+
+        # Copy rules file
+        self._copy_rules_file(
+            TEMPLATES_DIR / "codex" / "orchestrator.rules",
+            rules_dir / "orchestrator.rules",
+            files_created
+        )
+
+        return files_created
+
+    def verify_hooks(self, project_root: Path) -> VerificationResult:
+        """Verify Codex CLI rules are installed.
+
+        Note: Codex rules are user-global, so we check ~/.codex/rules/.
+        We can't run actual blocking tests without the codex CLI.
+        """
+        checks_passed: list[str] = []
+        checks_failed: list[str] = []
+
+        rules_file = self._get_rules_dir() / "orchestrator.rules"
+
+        if not rules_file.exists():
+            checks_failed.append("rules_file_exists: orchestrator.rules not found")
+            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+        checks_passed.append("rules_file_exists")
+
+        # Verify rules file contains our blocking rules
+        content = rules_file.read_text()
+        required_patterns = [
+            'pattern = ["git", "push", "--no-verify"]',
+            'decision = "forbidden"',
+            'pattern = ["gh", "pr", "merge"]',
+        ]
+
+        for pattern in required_patterns:
+            if pattern in content:
+                checks_passed.append(f"rule_contains:{pattern[:30]}")
+            else:
+                checks_failed.append(f"rule_missing:{pattern[:30]}")
+
+        return VerificationResult(
+            success=len(checks_failed) == 0,
+            meta_agent=self.agent_type,
+            checks_passed=checks_passed,
+            checks_failed=checks_failed,
+        )
+
+    def is_installed(self, project_root: Path) -> bool:
+        """Check if Codex CLI rules are installed."""
+        rules_file = self._get_rules_dir() / "orchestrator.rules"
+        return rules_file.exists()
 
 
 class UnsupportedAdapter(AiAgentAdapter):
@@ -462,16 +1111,28 @@ def detect_ai_agent(command: str) -> AiAgentType:
     Returns:
         The detected AiAgentType
     """
-    # Normalize: get first word (the executable)
-    executable = command.strip().split()[0] if command else ""
-    executable = Path(executable).name  # Handle full paths
+    if not command:
+        return AiAgentType.UNKNOWN
 
-    # Match patterns
+    # Normalize the command
+    normalized = command.strip().lower()
+    tokens = normalized.split()
+    if not tokens:
+        return AiAgentType.UNKNOWN
+
+    # Get the first executable (handle full paths)
+    executable = Path(tokens[0]).name
+
+    # Check for multi-word commands first (e.g., "gh copilot")
+    if executable == "gh" and len(tokens) > 1 and tokens[1] == "copilot":
+        return AiAgentType.COPILOT
+
+    # Match single-word patterns
     if re.match(r"^claude", executable, re.IGNORECASE):
         return AiAgentType.CLAUDE_CODE
     elif re.match(r"^cursor", executable, re.IGNORECASE):
         return AiAgentType.CURSOR
-    elif re.match(r"^(gh\s+)?copilot", executable, re.IGNORECASE):
+    elif re.match(r"^copilot", executable, re.IGNORECASE):
         return AiAgentType.COPILOT
     elif re.match(r"^codex", executable, re.IGNORECASE):
         return AiAgentType.CODEX
@@ -489,14 +1150,14 @@ def get_adapter(agent_type: AiAgentType) -> AiAgentAdapter:
         return ClaudeCodeAdapter()
     elif agent_type == AiAgentType.CURSOR:
         return CursorAdapter()
+    elif agent_type == AiAgentType.GEMINI:
+        return GeminiAdapter()
+    elif agent_type == AiAgentType.COPILOT:
+        return CopilotAdapter()
+    elif agent_type == AiAgentType.CODEX:
+        return CodexAdapter()
     elif agent_type == AiAgentType.AIDER:
         return UnsupportedAdapter(agent_type, "Aider has no command hook mechanism")
-    elif agent_type == AiAgentType.GEMINI:
-        return UnsupportedAdapter(agent_type, "Gemini hooks are in development")
-    elif agent_type == AiAgentType.COPILOT:
-        return UnsupportedAdapter(agent_type, "Copilot support not yet implemented")
-    elif agent_type == AiAgentType.CODEX:
-        return UnsupportedAdapter(agent_type, "Codex support not yet implemented")
     else:
         return UnsupportedAdapter(agent_type, "Unknown AI agent type")
 

@@ -262,7 +262,15 @@ $ issue-orchestrator setup
 # Exit 2 = BLOCK, Exit 0 = ALLOW
 
 input=$(cat)
-command=$(echo "$input" | jq -r '.tool_input.command // ""')
+
+python_bin="$(command -v python3 || true)"
+if [[ -z "$python_bin" ]]; then
+  echo "BLOCKED: python3 is required for orchestrator hooks." >&2
+  exit 2
+fi
+
+hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+command=$("$python_bin" "$hook_dir/parse_hook_input.py" <<< "$input" 2>/dev/null || echo "")
 
 # Block --no-verify bypass attempts
 if echo "$command" | grep -qE "git\s+(commit|push).*--no-verify"; then

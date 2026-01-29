@@ -104,22 +104,32 @@ def _check_full_verification(config: Config, unique_types: set, unsupported_type
     )
 
 
+def _get_unsupported_types(unique_types: set) -> set:
+    """Determine which agent types are unsupported by querying adapters.
+
+    Rather than maintaining a hardcoded list, we ask the adapter system
+    directly - if get_adapter returns an UnsupportedAdapter, it's unsupported.
+    """
+    from ...hooks.hooks import get_adapter, UnsupportedAdapter
+
+    unsupported = set()
+    for agent_type in unique_types:
+        adapter = get_adapter(agent_type)
+        if isinstance(adapter, UnsupportedAdapter):
+            unsupported.add(agent_type)
+    return unsupported
+
+
 def check_hook_verification(config: Config) -> list[Check]:
-    from ...hooks.hooks import detect_agents_from_config, AiAgentType
+    from ...hooks.hooks import detect_agents_from_config
 
     checks: list[Check] = []
 
     agent_types = detect_agents_from_config(config)
     unique_types = set(agent_types.values())
 
-    unsupported_types = {
-        AiAgentType.UNKNOWN,
-        AiAgentType.CURSOR,
-        AiAgentType.COPILOT,
-        AiAgentType.CODEX,
-        AiAgentType.AIDER,
-        AiAgentType.GEMINI,
-    }
+    # Ask the adapter system what's unsupported (no hardcoded list)
+    unsupported_types = _get_unsupported_types(unique_types)
 
     # Check hook installation
     install_check, hooks_ok = _check_hook_installation(config, unique_types, unsupported_types)

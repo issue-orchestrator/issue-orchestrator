@@ -1,17 +1,17 @@
 #!/bin/bash
-# Block git commit/push --no-verify for Claude Code agents
-# This hook is called by Claude Code PreToolUse mechanism
+# Block git commit/push --no-verify for Gemini CLI agents
+# This hook is called by Gemini CLI BeforeTool mechanism
 #
 # Exit codes:
 #   0 = ALLOW the command to execute
-#   2 = BLOCK the command (Claude Code convention)
+#   2 = BLOCK the command (Gemini CLI convention)
 #
-# Configured in .claude/settings.json:
+# Configured in .gemini/settings.json:
 # {
 #   "hooks": {
-#     "PreToolUse": [{
+#     "BeforeTool": [{
 #       "matcher": "Bash",
-#       "hooks": [{"type": "command", "command": ".claude/hooks/block-no-verify.sh"}]
+#       "hooks": [{"type": "command", "command": ".gemini/hooks/block-no-verify.sh"}]
 #     }]
 #   }
 # }
@@ -29,7 +29,7 @@ if [[ -z "$python_bin" ]]; then
 fi
 
 # Extract the command being executed
-# Claude Code sends: {"tool_input": {"command": "git push ..."}}
+# Gemini CLI sends: {"tool_input": {"command": "git push ..."}}
 hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 parse_script="$hook_dir/parse_hook_input.py"
 if [[ ! -f "$parse_script" ]]; then
