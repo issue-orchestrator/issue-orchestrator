@@ -3909,7 +3909,7 @@ function renderCategorySection(categoryKey, title, tests, description, styleClas
 
     let html = `
         <div class="category-section ${categoryKey}" data-category="${categoryKey}">
-            <div class="category-header" ${isCollapsible ? `onclick="toggleCategorySection('${categoryKey}')" role="button" tabindex="0" aria-expanded="${expanded}"` : ''}>
+            <div class="category-header" ${isCollapsible ? `onclick="toggleCategorySection('${categoryKey}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleCategorySection('${categoryKey}');}" role="button" tabindex="0" aria-expanded="${expanded}"` : ''}>
                 <span class="title">${title}</span>
                 <span class="count">${tests.length}</span>
                 ${isCollapsible ? `<span class="toggle-icon" id="toggle-${categoryKey}"></span>` : ''}
@@ -3984,7 +3984,7 @@ function renderTestRow(test, category) {
                 <button class="action-btn" onclick="quarantineSingleTest('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
                     Quarantine
                 </button>
-                <button class="action-btn" onclick="copyTestError('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
+                <button class="action-btn" onclick="copyTestErrorFromRun('${escapeAttr(test.nodeid)}'); event.stopPropagation();">
                     Copy Error
                 </button>
             </div>
@@ -3999,7 +3999,7 @@ function renderTestRow(test, category) {
         const hasMore = lines.length > 2;
         errorPreviewHtml = `
             <div class="test-error-preview">
-                <pre>${escapeHtml(preview)}</pre>
+                <pre class="error-text">${escapeHtml(preview)}</pre>
                 ${hasMore ? `<button class="expand-btn" onclick="toggleTestError(this); event.stopPropagation();">Expand ▼</button>` : ''}
             </div>
             <div class="test-error-full" style="display: none;">
