@@ -100,6 +100,52 @@ def get_supervisor() -> SupervisorOps:
     return _supervisor
 
 
+# Track orchestrator child PIDs for zombie reaping (used by control_center).
+# This avoids racing with subprocess.run() for unrelated children.
+#
+# Only control_start (and the restart path at line ~1139) spawn orchestrators
+# as children of the control center process. Other entry points (CLI, MCP server)
+# are separate processes that manage their own children independently.
+import threading as _threading
+
+_tracked_pids: set[int] = set()
+_tracked_pids_lock = _threading.Lock()
+
+
+def track_child_pid(pid: int) -> None:
+    """Register an orchestrator child PID for zombie reaping."""
+    with _tracked_pids_lock:
+        _tracked_pids.add(pid)
+        logger.debug("Tracking orchestrator PID %d for reaping", pid)
+
+
+def untrack_child_pid(pid: int) -> None:
+    """Unregister an orchestrator child PID."""
+    with _tracked_pids_lock:
+        _tracked_pids.discard(pid)
+
+
+def get_tracked_pids() -> list[int]:
+    """Get copy of tracked PIDs for reaping."""
+    with _tracked_pids_lock:
+        return list(_tracked_pids)
+
+
+def _track_launched_pids(supervisor_data: dict) -> None:
+    """Register launched orchestrator PIDs for zombie reaping.
+
+    Called by control_start after successfully launching orchestrators.
+    """
+    # Handle multi-instance launches
+    if "instances" in supervisor_data:
+        for instance in supervisor_data["instances"]:
+            if "pid" in instance:
+                track_child_pid(instance["pid"])
+    # Handle single-instance launches
+    elif "pid" in supervisor_data:
+        track_child_pid(supervisor_data["pid"])
+
+
 @control_app.post("/api/refresh")
 async def refresh(request: Request) -> JSONResponse:
     """Request an immediate refresh of issues from GitHub.
@@ -1075,6 +1121,8 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
         }
         if launch_result.supervisor:
             response_data.update(launch_result.supervisor)
+            # Track PIDs for zombie reaping (control center only)
+            _track_launched_pids(launch_result.supervisor)
         return JSONResponse(response_data)
     except FileNotFoundError as e:
         return JSONResponse({
@@ -1093,6 +1141,8 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
                 time.sleep(0.5)
                 # Try starting again
                 info = sv.start(repo_root, config_name=config_name)
+                # Track PID for zombie reaping
+                _track_launched_pids({"pid": info.pid})
                 return JSONResponse({
                     "status": "restarted",
                     "pid": info.pid,
