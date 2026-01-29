@@ -1026,12 +1026,14 @@ button:focus-visible,
     background: #388bfd;
 }
 .issue-action-btn.retry-btn {
-    background: #238636;
-    border-color: #238636;
-    color: #fff;
+    background: transparent;
+    border-color: #8b949e;
+    color: #8b949e;
 }
 .issue-action-btn.retry-btn:hover {
-    background: #2ea043;
+    background: rgba(139, 148, 158, 0.1);
+    border-color: #c9d1d9;
+    color: #c9d1d9;
 }
 .issue-action-btn.dismiss-btn {
     background: transparent;
