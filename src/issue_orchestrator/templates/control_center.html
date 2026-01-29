@@ -1199,6 +1199,112 @@
         </div>
     </div>
 
+    <!-- Issue Number Input Modal (for Audit and Trace) -->
+    <div class="modal-backdrop" id="issueInputModal" role="dialog" aria-labelledby="issueInputModalTitle" aria-modal="true">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 class="modal-title" id="issueInputModalTitle">Enter Issue Number</h2>
+                <button class="modal-close" id="closeIssueInputModal" aria-label="Close dialog">
+                    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                        <path fill="currentColor" fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="issueInputDesc">Enter the issue number to investigate.</p>
+                <div class="form-group" style="margin-top: 12px;">
+                    <label for="issueNumberInput" class="form-label">Issue Number</label>
+                    <input type="number" id="issueNumberInput" class="form-input" placeholder="e.g. 123" min="1" style="width: 100%;">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" id="cancelIssueInput">Cancel</button>
+                <button class="btn btn-primary" id="submitIssueInput">Submit</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Audit Results Modal -->
+    <div class="modal-backdrop" id="auditResultsModal" role="dialog" aria-labelledby="auditResultsModalTitle" aria-modal="true">
+        <div class="modal" style="max-width: 640px;">
+            <div class="modal-header">
+                <h2 class="modal-title" id="auditResultsModalTitle">Audit Results</h2>
+                <button class="modal-close" id="closeAuditResultsModal" aria-label="Close dialog">
+                    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                        <path fill="currentColor" fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body" style="max-height: 400px; overflow-y: auto;">
+                <div id="auditResultsContent">Loading...</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" id="closeAuditResultsBtn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Trace Results Modal -->
+    <div class="modal-backdrop" id="traceResultsModal" role="dialog" aria-labelledby="traceResultsModalTitle" aria-modal="true">
+        <div class="modal" style="max-width: 720px;">
+            <div class="modal-header">
+                <h2 class="modal-title" id="traceResultsModalTitle">Trace Logs</h2>
+                <button class="modal-close" id="closeTraceResultsModal" aria-label="Close dialog">
+                    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                        <path fill="currentColor" fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body" style="max-height: 450px; overflow-y: auto;">
+                <pre id="traceResultsContent" style="font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; margin: 0;">Loading...</pre>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" id="closeTraceResultsBtn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Labels Results Modal -->
+    <div class="modal-backdrop" id="labelsResultsModal" role="dialog" aria-labelledby="labelsResultsModalTitle" aria-modal="true">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 class="modal-title" id="labelsResultsModalTitle">Refresh Labels</h2>
+                <button class="modal-close" id="closeLabelsResultsModal" aria-label="Close dialog">
+                    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                        <path fill="currentColor" fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div id="labelsResultsContent">Loading...</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" id="closeLabelsResultsBtn">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Worktrees Cleanup Modal -->
+    <div class="modal-backdrop" id="worktreesModal" role="dialog" aria-labelledby="worktreesModalTitle" aria-modal="true">
+        <div class="modal" style="max-width: 560px;">
+            <div class="modal-header">
+                <h2 class="modal-title" id="worktreesModalTitle">Cleanup Worktrees</h2>
+                <button class="modal-close" id="closeWorktreesModal" aria-label="Close dialog">
+                    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                        <path fill="currentColor" fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <div id="worktreesContent">Scanning for stale worktrees...</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" id="cancelWorktrees">Close</button>
+                <button class="btn btn-danger" id="confirmWorktreesCleanup" style="display: none;">Cleanup Selected</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // ============================================
         // State
@@ -1701,18 +1807,313 @@
             });
             document.getElementById('confirmShutdown').addEventListener('click', confirmShutdown);
 
-            // Tools (stub handlers)
+            // Tools - helper to get current repo
+            function getToolRepoPath() {
+                // Prefer active repo if in activity view, else first configured repo
+                if (state.activeRepo) return state.activeRepo.path;
+                const configured = state.repos.find(r => r.configs && r.configs.length > 0);
+                return configured ? configured.path : null;
+            }
+
+            // Tools - Issue Input Modal state
+            let issueInputCallback = null;
+            let issueInputRequired = false;
+
+            function showIssueInputModal(title, description, required, callback) {
+                document.getElementById('issueInputModalTitle').textContent = title;
+                document.getElementById('issueInputDesc').textContent = description;
+                document.getElementById('issueNumberInput').value = '';
+                issueInputRequired = required;
+                issueInputCallback = callback;
+                document.getElementById('issueInputModal').classList.add('active');
+                document.getElementById('issueNumberInput').focus();
+            }
+
+            document.getElementById('closeIssueInputModal').addEventListener('click', () => {
+                document.getElementById('issueInputModal').classList.remove('active');
+            });
+            document.getElementById('cancelIssueInput').addEventListener('click', () => {
+                document.getElementById('issueInputModal').classList.remove('active');
+            });
+            document.getElementById('submitIssueInput').addEventListener('click', () => {
+                const value = document.getElementById('issueNumberInput').value;
+                const issueNum = value ? parseInt(value, 10) : null;
+                if (issueInputRequired && !issueNum) {
+                    showToast('Issue number is required', 'error');
+                    return;
+                }
+                document.getElementById('issueInputModal').classList.remove('active');
+                if (issueInputCallback) issueInputCallback(issueNum);
+            });
+
+            // Audit Tool
             document.getElementById('auditTool').addEventListener('click', () => {
-                showToast('Audit tool coming soon', 'warning');
+                const repoPath = getToolRepoPath();
+                if (!repoPath) {
+                    showToast('No configured repository selected', 'warning');
+                    return;
+                }
+                showIssueInputModal(
+                    'Audit Issue',
+                    'Enter an issue number to see why it is blocked, or leave empty to audit all issues.',
+                    false,
+                    async (issueNum) => {
+                        document.getElementById('auditResultsContent').innerHTML = '<div class="loading-spinner"></div> Loading...';
+                        document.getElementById('auditResultsModal').classList.add('active');
+
+                        try {
+                            let url = `/control/tools/audit?repo_root=${encodeURIComponent(repoPath)}`;
+                            if (issueNum) url += `&issue_number=${issueNum}`;
+                            const response = await fetch(url);
+                            const data = await response.json();
+
+                            if (data.error) {
+                                document.getElementById('auditResultsContent').innerHTML =
+                                    `<div class="error-message">${escapeHtml(data.error)}</div>`;
+                                return;
+                            }
+
+                            const entries = data.entries || [];
+                            if (entries.length === 0) {
+                                document.getElementById('auditResultsContent').innerHTML =
+                                    '<p>No issues found matching the criteria.</p>';
+                                return;
+                            }
+
+                            // Group by status
+                            const queued = entries.filter(e => e.status === 'queued');
+                            const blocked = entries.filter(e => e.status !== 'queued');
+
+                            let html = '';
+                            if (queued.length > 0) {
+                                html += '<h3 style="margin-top: 0; color: var(--success-color);">Queued (' + queued.length + ')</h3>';
+                                html += '<ul style="margin: 0 0 16px 0; padding-left: 20px;">';
+                                queued.forEach(e => {
+                                    html += `<li><strong>#${e.issue_number}</strong> ${escapeHtml(e.title)} <span style="color: var(--text-muted);">(${e.agent || 'no agent'})</span></li>`;
+                                });
+                                html += '</ul>';
+                            }
+                            if (blocked.length > 0) {
+                                html += '<h3 style="margin-top: 0; color: var(--warning-color);">Blocked (' + blocked.length + ')</h3>';
+                                html += '<ul style="margin: 0; padding-left: 20px;">';
+                                blocked.forEach(e => {
+                                    const reason = e.reason ? ` - ${escapeHtml(e.reason)}` : '';
+                                    html += `<li><strong>#${e.issue_number}</strong> ${escapeHtml(e.title)}: <em>${escapeHtml(e.status)}</em>${reason}</li>`;
+                                });
+                                html += '</ul>';
+                            }
+                            document.getElementById('auditResultsContent').innerHTML = html;
+                        } catch (error) {
+                            document.getElementById('auditResultsContent').innerHTML =
+                                `<div class="error-message">Failed to load audit: ${escapeHtml(error.message)}</div>`;
+                        }
+                    }
+                );
             });
+            document.getElementById('closeAuditResultsModal').addEventListener('click', () => {
+                document.getElementById('auditResultsModal').classList.remove('active');
+            });
+            document.getElementById('closeAuditResultsBtn').addEventListener('click', () => {
+                document.getElementById('auditResultsModal').classList.remove('active');
+            });
+
+            // Trace Tool
             document.getElementById('traceTool').addEventListener('click', () => {
-                showToast('Trace tool coming soon', 'warning');
+                const repoPath = getToolRepoPath();
+                if (!repoPath) {
+                    showToast('No configured repository selected', 'warning');
+                    return;
+                }
+                showIssueInputModal(
+                    'View Trace',
+                    'Enter the issue number to view its log entries.',
+                    true,
+                    async (issueNum) => {
+                        document.getElementById('traceResultsContent').textContent = 'Loading...';
+                        document.getElementById('traceResultsModalTitle').textContent = `Trace Logs - Issue #${issueNum}`;
+                        document.getElementById('traceResultsModal').classList.add('active');
+
+                        try {
+                            const url = `/control/tools/trace?repo_root=${encodeURIComponent(repoPath)}&issue_number=${issueNum}`;
+                            const response = await fetch(url);
+                            const data = await response.json();
+
+                            if (data.error) {
+                                document.getElementById('traceResultsContent').textContent = 'Error: ' + data.error;
+                                return;
+                            }
+
+                            if (data.message) {
+                                document.getElementById('traceResultsContent').textContent = data.message;
+                                return;
+                            }
+
+                            const entries = data.entries || [];
+                            if (entries.length === 0) {
+                                document.getElementById('traceResultsContent').textContent = 'No log entries found for this issue.';
+                            } else {
+                                document.getElementById('traceResultsContent').textContent = entries.join('\n');
+                            }
+                        } catch (error) {
+                            document.getElementById('traceResultsContent').textContent = 'Failed to load trace: ' + error.message;
+                        }
+                    }
+                );
             });
-            document.getElementById('refreshLabelsTool').addEventListener('click', () => {
-                showToast('Refresh labels coming soon', 'warning');
+            document.getElementById('closeTraceResultsModal').addEventListener('click', () => {
+                document.getElementById('traceResultsModal').classList.remove('active');
             });
-            document.getElementById('cleanupWorktreesTool').addEventListener('click', () => {
-                showToast('Cleanup worktrees coming soon', 'warning');
+            document.getElementById('closeTraceResultsBtn').addEventListener('click', () => {
+                document.getElementById('traceResultsModal').classList.remove('active');
+            });
+
+            // Refresh Labels Tool
+            document.getElementById('refreshLabelsTool').addEventListener('click', async () => {
+                const repoPath = getToolRepoPath();
+                if (!repoPath) {
+                    showToast('No configured repository selected', 'warning');
+                    return;
+                }
+
+                document.getElementById('labelsResultsContent').innerHTML = '<div class="loading-spinner"></div> Initializing labels on GitHub...';
+                document.getElementById('labelsResultsModal').classList.add('active');
+
+                try {
+                    const response = await fetch('/control/tools/labels/init', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ repo_root: repoPath })
+                    });
+                    const data = await response.json();
+
+                    if (data.error) {
+                        document.getElementById('labelsResultsContent').innerHTML =
+                            `<div class="error-message">${escapeHtml(data.error)}</div>`;
+                        return;
+                    }
+
+                    let html = '<p style="color: var(--success-color); margin-top: 0;">Labels synchronized successfully!</p>';
+                    if (data.created && data.created.length > 0) {
+                        html += '<p><strong>Created:</strong> ' + data.created.map(escapeHtml).join(', ') + '</p>';
+                    }
+                    if (data.updated && data.updated.length > 0) {
+                        html += '<p><strong>Updated:</strong> ' + data.updated.map(escapeHtml).join(', ') + '</p>';
+                    }
+                    if ((!data.created || data.created.length === 0) && (!data.updated || data.updated.length === 0)) {
+                        html += '<p>All labels were already up to date.</p>';
+                    }
+                    document.getElementById('labelsResultsContent').innerHTML = html;
+                } catch (error) {
+                    document.getElementById('labelsResultsContent').innerHTML =
+                        `<div class="error-message">Failed to refresh labels: ${escapeHtml(error.message)}</div>`;
+                }
+            });
+            document.getElementById('closeLabelsResultsModal').addEventListener('click', () => {
+                document.getElementById('labelsResultsModal').classList.remove('active');
+            });
+            document.getElementById('closeLabelsResultsBtn').addEventListener('click', () => {
+                document.getElementById('labelsResultsModal').classList.remove('active');
+            });
+
+            // Cleanup Worktrees Tool
+            let staleWorktrees = [];
+            document.getElementById('cleanupWorktreesTool').addEventListener('click', async () => {
+                const repoPath = getToolRepoPath();
+                if (!repoPath) {
+                    showToast('No configured repository selected', 'warning');
+                    return;
+                }
+
+                staleWorktrees = [];
+                document.getElementById('worktreesContent').innerHTML = '<div class="loading-spinner"></div> Scanning for stale worktrees...';
+                document.getElementById('confirmWorktreesCleanup').style.display = 'none';
+                document.getElementById('worktreesModal').classList.add('active');
+
+                try {
+                    const response = await fetch('/control/tools/worktrees/cleanup', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ repo_root: repoPath, dry_run: true })
+                    });
+                    const data = await response.json();
+
+                    if (data.error) {
+                        document.getElementById('worktreesContent').innerHTML =
+                            `<div class="error-message">${escapeHtml(data.error)}</div>`;
+                        return;
+                    }
+
+                    staleWorktrees = data.stale_worktrees || [];
+                    if (staleWorktrees.length === 0) {
+                        document.getElementById('worktreesContent').innerHTML =
+                            '<p style="color: var(--success-color);">No stale worktrees found. All clean!</p>';
+                    } else {
+                        let html = `<p>Found <strong>${staleWorktrees.length}</strong> stale worktree(s):</p>`;
+                        html += '<ul style="margin: 8px 0; padding-left: 20px;">';
+                        staleWorktrees.forEach(wt => {
+                            html += `<li><code>${escapeHtml(wt.path || wt)}</code></li>`;
+                        });
+                        html += '</ul>';
+                        html += '<p style="color: var(--warning-color);">Click "Cleanup Selected" to remove these worktrees.</p>';
+                        document.getElementById('worktreesContent').innerHTML = html;
+                        document.getElementById('confirmWorktreesCleanup').style.display = 'inline-flex';
+                    }
+                } catch (error) {
+                    document.getElementById('worktreesContent').innerHTML =
+                        `<div class="error-message">Failed to scan worktrees: ${escapeHtml(error.message)}</div>`;
+                }
+            });
+            document.getElementById('closeWorktreesModal').addEventListener('click', () => {
+                document.getElementById('worktreesModal').classList.remove('active');
+            });
+            document.getElementById('cancelWorktrees').addEventListener('click', () => {
+                document.getElementById('worktreesModal').classList.remove('active');
+            });
+            document.getElementById('confirmWorktreesCleanup').addEventListener('click', async () => {
+                const repoPath = getToolRepoPath();
+                if (!repoPath || staleWorktrees.length === 0) return;
+
+                document.getElementById('worktreesContent').innerHTML = '<div class="loading-spinner"></div> Cleaning up worktrees...';
+                document.getElementById('confirmWorktreesCleanup').style.display = 'none';
+
+                try {
+                    const response = await fetch('/control/tools/worktrees/cleanup', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ repo_root: repoPath, dry_run: false })
+                    });
+                    const data = await response.json();
+
+                    if (data.error) {
+                        document.getElementById('worktreesContent').innerHTML =
+                            `<div class="error-message">${escapeHtml(data.error)}</div>`;
+                        return;
+                    }
+
+                    const removed = data.cleaned || [];
+                    const failed = [];
+                    let html = '';
+                    if (removed.length > 0) {
+                        html += `<p style="color: var(--success-color);">Removed ${removed.length} worktree(s):</p>`;
+                        html += '<ul style="margin: 8px 0; padding-left: 20px;">';
+                        removed.forEach(wt => { html += `<li><code>${escapeHtml(wt)}</code></li>`; });
+                        html += '</ul>';
+                    }
+                    if (failed.length > 0) {
+                        html += `<p style="color: var(--error-color);">Failed to remove ${failed.length} worktree(s):</p>`;
+                        html += '<ul style="margin: 8px 0; padding-left: 20px;">';
+                        failed.forEach(wt => { html += `<li><code>${escapeHtml(wt)}</code></li>`; });
+                        html += '</ul>';
+                    }
+                    if (removed.length === 0 && failed.length === 0) {
+                        html = '<p>No worktrees were cleaned up.</p>';
+                    }
+                    document.getElementById('worktreesContent').innerHTML = html;
+                    staleWorktrees = [];
+                } catch (error) {
+                    document.getElementById('worktreesContent').innerHTML =
+                        `<div class="error-message">Failed to cleanup worktrees: ${escapeHtml(error.message)}</div>`;
+                }
             });
 
             // Pause/Resume in activity view

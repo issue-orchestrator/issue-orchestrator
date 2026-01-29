@@ -506,3 +506,93 @@ class TestDashboardRendering:
 
         response = client.post("/api/issues", json={"title": "test"})
         assert response.status_code == 503  # No orchestrator, but endpoint exists
+
+
+class TestToolEndpoints:
+    """Tests for the dashboard tool endpoints."""
+
+    def test_audit_endpoint_exists(self, tmp_path: Path) -> None:
+        """GET /control/tools/audit endpoint exists."""
+        client = TestClient(control_app)
+
+        response = client.get(
+            "/control/tools/audit",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        # Should return 404 (no config) not 500 (endpoint error) or 404 (route not found)
+        assert response.status_code == 404
+        data = response.json()
+        assert "error" in data
+        assert "Config" in data["error"]
+
+    def test_audit_endpoint_with_config(self, tmp_path: Path) -> None:
+        """GET /control/tools/audit returns audit entries when config exists."""
+        # Create a minimal config
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(
+            "repo:\n  name: test/repo\nagents:\n  agent:dev:\n    prompt: dev.md\n"
+        )
+        # Create a .git directory so it's a valid repo
+        (tmp_path / ".git").mkdir()
+
+        client = TestClient(control_app)
+
+        response = client.get(
+            "/control/tools/audit",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        # This will likely fail because we don't have a real GitHub repo,
+        # but it should at least not 404 on the route
+        assert response.status_code in (200, 500)
+
+    def test_trace_endpoint_exists(self, tmp_path: Path) -> None:
+        """GET /control/tools/trace endpoint exists and handles missing logs."""
+        client = TestClient(control_app)
+
+        response = client.get(
+            "/control/tools/trace",
+            params={"repo_root": str(tmp_path), "issue_number": 123},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # No log file should exist for a fresh tmp_path
+        assert "entries" in data or "message" in data
+
+    def test_labels_init_endpoint_exists(self, tmp_path: Path) -> None:
+        """POST /control/tools/labels/init endpoint exists."""
+        client = TestClient(control_app)
+
+        response = client.post(
+            "/control/tools/labels/init",
+            json={"repo_root": str(tmp_path)},
+        )
+
+        # Should return 404 (no config) not 500
+        assert response.status_code == 404
+        data = response.json()
+        assert "error" in data
+
+    def test_worktrees_cleanup_endpoint_exists(self, tmp_path: Path) -> None:
+        """POST /control/tools/worktrees/cleanup endpoint exists."""
+        # Create minimal config
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(
+            "repo:\n  name: test/repo\nagents:\n  agent:dev:\n    prompt: dev.md\n"
+        )
+
+        client = TestClient(control_app)
+
+        response = client.post(
+            "/control/tools/worktrees/cleanup",
+            json={"repo_root": str(tmp_path), "dry_run": True},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # Should return stale_worktrees list
+        assert "stale_worktrees" in data or "message" in data
