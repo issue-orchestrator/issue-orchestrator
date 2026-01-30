@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         SessionOutput,
         ManifestDownloader,
     )
+    from ..ports.goal_pilot_store import GoalPilotStore
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.working_copy import WorkingCopy
@@ -81,6 +82,7 @@ class OrchestratorDeps:
         lease_renewer: Renews leases for long-running sessions
         completion_observer: Observes session completions (fast, no execution)
         publish_executor: Executes publish jobs in background threads
+        goal_pilot_store: Durable Goal Pilot state store
     """
 
     # Core event/runtime ports
@@ -122,3 +124,6 @@ class OrchestratorDeps:
     # Async completion processing
     completion_observer: "CompletionObserver"
     publish_executor: "PublishJobExecutor"
+
+    # Goal Pilot external memory
+    goal_pilot_store: "GoalPilotStore"

@@ -56,6 +56,7 @@ from issue_orchestrator.ports.session_output import (
     ValidationState,
 )
 from issue_orchestrator.ports.manifest_downloader import ManifestDownloader, NullManifestDownloader
+from issue_orchestrator.ports.goal_pilot_store import GoalPilotStore
 
 __all__ = [
     # Issue Protocol (abstract work item)
@@ -113,4 +114,6 @@ __all__ = [
     # Manifest downloading
     "ManifestDownloader",
     "NullManifestDownloader",
+    # Goal pilot store
+    "GoalPilotStore",
 ]

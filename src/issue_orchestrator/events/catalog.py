@@ -185,6 +185,16 @@ class EventName(str, Enum):
     CONFIG_MERGED = "config.merged"
 
     # =========================================================================
+    # Goal Pilot
+    # =========================================================================
+    GOAL_PILOT_CREATED = "goal_pilot.created"
+    GOAL_PILOT_UPDATED = "goal_pilot.updated"
+    GOAL_PILOT_ACTION_PROPOSED = "goal_pilot.action_proposed"
+    GOAL_PILOT_ACTION_EXECUTED = "goal_pilot.action_executed"
+    GOAL_PILOT_ACTION_FAILED = "goal_pilot.action_failed"
+    GOAL_PILOT_COMPLETED = "goal_pilot.completed"
+
+    # =========================================================================
     # Reconciliation (label state verification)
     # =========================================================================
     RECONCILIATION_CHECKED = "reconciliation.checked"

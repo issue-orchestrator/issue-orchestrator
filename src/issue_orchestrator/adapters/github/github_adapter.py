@@ -1141,6 +1141,21 @@ class GitHubAdapter:
             )
         return result
 
+    def create_milestone(
+        self,
+        title: str,
+        description: str | None = None,
+        due_on: str | None = None,
+        state: str = "open",
+    ) -> dict[str, Any] | None:
+        """Create a new milestone."""
+        return self._client.create_milestone(
+            title=title,
+            description=description,
+            due_on=due_on,
+            state=state,
+        )
+
     def get_rate_limit_snapshot(self) -> dict[str, Any] | None:
         snapshot = self._client.get_rate_limit_snapshot()
         return snapshot.to_payload() if snapshot else None
@@ -1376,3 +1391,22 @@ class GitHubAdapter:
             List of milestone dictionaries with 'number', 'title', 'description', etc.
         """
         return self._client.list_milestones(state=state)
+
+    def update_issue_milestone(self, issue_number: int, milestone: int | None) -> None:
+        """Assign or clear a milestone on an issue."""
+        result = self._client.update_issue_milestone(issue_number=issue_number, milestone=milestone)
+        if result is None:
+            return
+
+        def _check() -> bool:
+            issue = self.get_issue(issue_number)
+            if issue is None:
+                return False
+            return issue.milestone_number == milestone
+
+        self._verify_write(
+            f"issue milestone #{issue_number}",
+            _check,
+            detail_fn=lambda: {"milestone": milestone},
+            issue_number=issue_number,
+        )

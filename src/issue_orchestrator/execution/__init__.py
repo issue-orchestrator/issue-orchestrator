@@ -43,6 +43,7 @@ from .session_runner_adapter import PluggySessionRunner
 from ..adapters.github.issue_resolver import GitHubIssueResolver
 from .command_runner import LocalCommandRunner
 from .session_output_adapter import FileSystemSessionOutput
+from .goal_pilot_store import SqliteGoalPilotStore
 
 __all__ = [
     # Main interface (internal, used by composition root)
@@ -72,4 +73,6 @@ __all__ = [
     "JsonSessionStore",
     # Session output
     "FileSystemSessionOutput",
+    # Goal pilot store
+    "SqliteGoalPilotStore",
 ]

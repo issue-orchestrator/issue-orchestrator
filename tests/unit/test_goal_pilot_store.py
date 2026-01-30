@@ -1,0 +1,70 @@
+from issue_orchestrator.execution.goal_pilot_store import SqliteGoalPilotStore
+
+
+def test_goal_pilot_store_round_trip(tmp_path):
+    db_path = tmp_path / "goal_pilot.sqlite"
+    store = SqliteGoalPilotStore(repo_root=tmp_path, db_path=db_path)
+
+    run = store.create_run(
+        goals=["ui clarity", "nav ease"],
+        done_criteria={"all_closed": True},
+        name="UI clarity sprint",
+    )
+    fetched = store.get_run(run.run_id)
+    assert fetched is not None
+    assert fetched.run_id == run.run_id
+    assert fetched.name == "UI clarity sprint"
+    assert fetched.goals == ["ui clarity", "nav ease"]
+    assert fetched.done_criteria == {"all_closed": True}
+
+    store.update_run_status(run.run_id, "blocked")
+    updated = store.get_run(run.run_id)
+    assert updated is not None
+    assert updated.status == "blocked"
+
+    snapshot = store.add_snapshot(
+        run_id=run.run_id,
+        source_hash="hash-1",
+        summary={"open": 3},
+    )
+    latest = store.get_latest_snapshot(run.run_id)
+    assert latest is not None
+    assert latest.snapshot_id == snapshot.snapshot_id
+    assert latest.summary == {"open": 3}
+
+    action = store.add_action(
+        run_id=run.run_id,
+        action_type="dispatch",
+        input_data={"max_sessions": 2},
+        result_data={"started": [101, 102]},
+        status="executed",
+    )
+    actions = store.list_actions(run.run_id)
+    assert [a.action_id for a in actions] == [action.action_id]
+    assert actions[0].status == "executed"
+
+    note = store.add_note(
+        run_id=run.run_id,
+        note_type="summary",
+        note_text="Kickoff",
+    )
+    notes = store.list_notes(run.run_id)
+    assert [n.note_id for n in notes] == [note.note_id]
+    assert notes[0].note_text == "Kickoff"
+
+    skill = store.upsert_skill(
+        title="UI clarity",
+        intent="Improve navigation clarity",
+        triggers=["UI feels cluttered"],
+        constraints=["Do not change API"],
+        playbook="Consolidate navigation into one layout.",
+        examples=["Centralized sidebar with consistent labels"],
+        sources=["issue-123"],
+        status="active",
+    )
+    fetched_skill = store.get_skill(skill.skill_id)
+    assert fetched_skill is not None
+    assert fetched_skill.title == "UI clarity"
+    assert fetched_skill.status == "active"
+    active_skills = store.list_skills(status="active")
+    assert [s.skill_id for s in active_skills] == [skill.skill_id]

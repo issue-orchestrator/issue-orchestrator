@@ -31,6 +31,7 @@ from ..execution import (
     LifecycleSSEPlugin,
     GitHubAdapter,
     CompositeEventSink,
+    SqliteGoalPilotStore,
 )
 from ..execution.gh_guard import install_gh_guard
 from ..events import EventHub, SequencedEventSink
@@ -472,6 +473,7 @@ def build_orchestrator(
 
     # Create IO adapters
     worktree_manager, working_copy, command_runner, session_output = _create_io_adapters()
+    goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
 
     # Create manifest downloader for triage sessions
     manifest_downloader = TriageDownloader(
@@ -581,6 +583,7 @@ def build_orchestrator(
         lease_renewer=lease_renewer,
         completion_observer=completion_observer,
         publish_executor=publish_executor,
+        goal_pilot_store=goal_pilot_store,
     )
 
     return Orchestrator(config=config, deps=deps)
@@ -665,6 +668,7 @@ def build_orchestrator_for_testing(
     working_copy = GitWorkingCopy()
     command_runner = LocalCommandRunner()
     session_output = FileSystemSessionOutput()
+    goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
 
     from ..execution.triage_downloader import TriageDownloader
     manifest_downloader = TriageDownloader(
@@ -816,6 +820,7 @@ def build_orchestrator_for_testing(
         lease_renewer=lease_renewer,
         completion_observer=completion_observer,
         publish_executor=publish_executor,
+        goal_pilot_store=goal_pilot_store,
     )
 
     return Orchestrator(config=config, deps=deps)

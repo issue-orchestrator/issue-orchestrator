@@ -190,10 +190,11 @@ class MockGitHubAdapter:
         title: str,
         body: str,
         labels: list[str] | None = None,
-    ) -> int | None:
+        milestone: int | None = None,
+    ) -> dict | None:
         """Create a new issue (mock).
 
-        Returns the issue number (next available number based on existing issues).
+        Returns a dict with issue data (number, html_url).
         """
         # Generate next issue number
         existing_numbers = [i.number for i in self.issues]
@@ -204,9 +205,46 @@ class MockGitHubAdapter:
             title=title,
             body=body,
             labels=labels or [],
+            milestone_number=milestone,
         )
         self.issues.append(issue)
-        return next_number
+        return {"number": next_number, "html_url": f"https://github.com/test/repo/issues/{next_number}"}
+
+    def list_milestones(self, state: str = "open") -> list[dict]:
+        return getattr(self, "milestones", [])
+
+    def create_milestone(
+        self,
+        title: str,
+        description: str | None = None,
+        due_on: str | None = None,
+        state: str = "open",
+    ) -> dict | None:
+        milestones = getattr(self, "milestones", [])
+        number = len(milestones) + 1
+        milestone = {
+            "number": number,
+            "title": title,
+            "description": description,
+            "due_on": due_on,
+            "state": state,
+        }
+        milestones.append(milestone)
+        self.milestones = milestones
+        return milestone
+
+    def update_issue_milestone(self, issue_number: int, milestone: int | None) -> None:
+        issue = self.get_issue(issue_number)
+        if issue is None:
+            return
+        issue.milestone_number = milestone
+        if milestone is None:
+            issue.milestone = None
+            return
+        for entry in getattr(self, "milestones", []):
+            if entry.get("number") == milestone:
+                issue.milestone = entry.get("title")
+                return
 
 
 @pytest.fixture
@@ -604,6 +642,8 @@ def build_test_orchestrator_deps(
         events=events,
         config=executor_config,
     )
+    from issue_orchestrator.execution.goal_pilot_store import SqliteGoalPilotStore
+    goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
 
     return OrchestratorDeps(
         events=events,
@@ -632,6 +672,7 @@ def build_test_orchestrator_deps(
         lease_renewer=lease_renewer,
         completion_observer=completion_observer,
         publish_executor=publish_executor,
+        goal_pilot_store=goal_pilot_store,
     )
 
 

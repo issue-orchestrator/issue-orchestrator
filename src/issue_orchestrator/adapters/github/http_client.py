@@ -534,6 +534,28 @@ class GitHubHttpClient:
         )
         return payload if isinstance(payload, list) else []
 
+    def create_milestone(
+        self,
+        title: str,
+        description: str | None = None,
+        due_on: str | None = None,
+        state: str = "open",
+    ) -> dict[str, Any] | None:
+        """Create a milestone."""
+        json_body: dict[str, Any] = {"title": title, "state": state}
+        if description:
+            json_body["description"] = description
+        if due_on:
+            json_body["due_on"] = due_on
+        payload = self._request_json(
+            "POST",
+            f"/repos/{self._config.repo}/milestones",
+            json_body=json_body,
+            use_cache=False,
+            caller="create_milestone",
+        )
+        return payload if isinstance(payload, dict) else None
+
     def create_label(
         self,
         name: str,
@@ -606,6 +628,16 @@ class GitHubHttpClient:
             use_cache=False,
             caller="update_issue_state",
         )
+
+    def update_issue_milestone(self, issue_number: int, milestone: int | None) -> dict[str, Any] | None:
+        payload = self._request_json(
+            "PATCH",
+            f"/repos/{self._config.repo}/issues/{issue_number}",
+            json_body={"milestone": milestone},
+            use_cache=False,
+            caller="update_issue_milestone",
+        )
+        return payload if isinstance(payload, dict) else None
 
     # -------------------- PRs --------------------
 

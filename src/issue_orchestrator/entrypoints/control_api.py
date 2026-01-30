@@ -54,6 +54,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..infra import gh_audit
 from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
+from ..control.goal_pilot import GoalPilot
 
 # Path to templates
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
@@ -102,6 +103,18 @@ def set_orchestrator(orchestrator: "Orchestrator") -> None:
 def get_orchestrator() -> "Orchestrator | None":
     """Get the orchestrator instance."""
     return _orchestrator
+
+
+def _get_goal_pilot() -> GoalPilot:
+    """Create a GoalPilot instance from the running orchestrator."""
+    if _orchestrator is None:
+        raise RuntimeError("Orchestrator not initialized")
+    return GoalPilot(
+        store=_orchestrator.deps.goal_pilot_store,
+        events=_orchestrator.deps.events,
+        repo_root=str(_orchestrator.config.repo_root),
+        ctx=_orchestrator.event_context,
+    )
 
 
 def set_supervisor(supervisor: SupervisorOps) -> None:
@@ -1984,6 +1997,91 @@ async def control_events(request: Request):
             raise
 
     return EventSourceResponse(event_generator())
+
+
+@control_app.post("/control/goal_pilot/runs")
+async def goal_pilot_create(request: Request) -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    body = await request.json()
+    goals = body.get("goals") or []
+    done_criteria = body.get("done_criteria") or {}
+    name = body.get("name")
+    milestones = body.get("milestones")
+    if not name or not str(name).strip():
+        return JSONResponse({"error": "name_required"}, status_code=400)
+    pilot = _get_goal_pilot()
+    run_id = pilot.create(goals=goals, done_criteria=done_criteria, name=name)
+    if milestones:
+        pilot.update_goals(run_id, goals, note=f"milestones={milestones}")
+    return JSONResponse({"run_id": run_id})
+
+
+@control_app.get("/control/goal_pilot/runs/{run_id}")
+async def goal_pilot_status(run_id: str) -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    pilot = _get_goal_pilot()
+    status = pilot.status(run_id)
+    return JSONResponse({"status": status})
+
+
+@control_app.patch("/control/goal_pilot/runs/{run_id}")
+async def goal_pilot_update(run_id: str, request: Request) -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    body = await request.json()
+    goals = body.get("goals")
+    note = body.get("note")
+    if not goals:
+        return JSONResponse({"error": "goals_required"}, status_code=400)
+    pilot = _get_goal_pilot()
+    result = pilot.update_goals(run_id, goals, note=note)
+    return JSONResponse(result)
+
+
+@control_app.post("/control/goal_pilot/runs/{run_id}/actions")
+async def goal_pilot_action(run_id: str, request: Request) -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    body = await request.json()
+    action = body.get("action")
+    if not isinstance(action, dict):
+        return JSONResponse({"error": "action_required"}, status_code=400)
+    pilot = _get_goal_pilot()
+    result = pilot.execute_action(run_id, action, _orchestrator.deps.repository_host)
+    return JSONResponse(result)
+
+
+@control_app.get("/control/goal_pilot/skills")
+async def goal_pilot_skills(request: Request) -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    status = request.query_params.get("status")
+    pilot = _get_goal_pilot()
+    skills = pilot.list_skills(status=status)
+    return JSONResponse({"skills": skills})
+
+
+@control_app.post("/control/goal_pilot/skills")
+async def goal_pilot_upsert_skill(request: Request) -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    body = await request.json()
+    pilot = _get_goal_pilot()
+    skill = pilot.upsert_skill(body)
+    return JSONResponse({"skill": skill})
+
+
+@control_app.post("/control/goal_pilot/skills/export")
+async def goal_pilot_export_skills(request: Request) -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    body = await request.json()
+    status = body.get("status", "active")
+    pilot = _get_goal_pilot()
+    result = pilot.export_skills(status=status)
+    return JSONResponse(result)
 
 
 @control_app.post("/control/repos")
