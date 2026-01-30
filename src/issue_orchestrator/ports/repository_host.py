@@ -97,6 +97,26 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
         """
         ...
 
+    def create_milestone(
+        self,
+        title: str,
+        description: str | None = None,
+        due_on: str | None = None,
+        state: str = "open",
+    ) -> dict[str, Any] | None:
+        """Create a milestone.
+
+        Args:
+            title: Milestone title
+            description: Optional description
+            due_on: Optional ISO timestamp
+            state: Milestone state ("open" or "closed")
+
+        Returns:
+            Milestone data dict with 'number', 'title', etc. or None on failure
+        """
+        ...
+
     def update_label_cache(self, issue_number: int, labels: list[str]) -> None:
         """Update cached labels for an issue.
 
@@ -112,6 +132,15 @@ class RepositoryHost(IssueTracker, LabelSet, PullRequestTracker, Protocol):
 
         Returns:
             List of milestone dictionaries with 'number', 'title', 'description', etc.
+        """
+        ...
+
+    def update_issue_milestone(self, issue_number: int, milestone: int | None) -> None:
+        """Assign or clear a milestone on an issue.
+
+        Args:
+            issue_number: The issue number to update
+            milestone: Milestone number to assign, or None to clear
         """
         ...
 

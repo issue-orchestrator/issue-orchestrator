@@ -91,6 +91,7 @@ from .reconciliation import (
     require_reconciliation,
 )
 from .session_controller import SessionController, SessionDecision
+from .goal_pilot import GoalPilot
 from .planner import Planner, Plan, OrchestratorSnapshot, SkippedItem
 from .orchestrator_deps import OrchestratorDeps
 
@@ -174,6 +175,8 @@ __all__ = [
     "Plan",
     "OrchestratorSnapshot",
     "SkippedItem",
+    # Goal pilot
+    "GoalPilot",
     # Dependencies container
     "OrchestratorDeps",
 ]

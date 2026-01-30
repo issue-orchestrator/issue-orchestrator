@@ -659,6 +659,152 @@
         }
 
         /* ============================================
+           Goal Pilot View
+           ============================================ */
+        .goal-pilot-grid {
+            display: grid;
+            gap: 16px;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+        }
+
+        .goal-pilot-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+        }
+
+        .goal-pilot-card h3 {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .goal-pilot-field {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 12px;
+        }
+
+        .goal-pilot-field label {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .goal-pilot-field textarea,
+        .goal-pilot-field input {
+            background: var(--bg-input);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 8px;
+            font-size: 12px;
+            font-family: ui-monospace, "SF Mono", Menlo, Monaco, monospace;
+        }
+
+        .goal-pilot-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        .goal-pilot-output {
+            margin-top: 10px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            white-space: pre-wrap;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            padding: 10px;
+        }
+
+        .goal-pilot-status {
+            display: grid;
+            gap: 12px;
+        }
+
+        .goal-pilot-status-grid {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        }
+
+        .goal-pilot-hero {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        }
+
+        .goal-pilot-metric {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px;
+        }
+
+        .goal-pilot-metric-value {
+            font-size: 18px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .goal-pilot-metric-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .goal-pilot-status-item {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 12px;
+        }
+
+        .goal-pilot-status-label {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            color: var(--text-muted);
+            margin-bottom: 4px;
+        }
+
+        .goal-pilot-status-value {
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        .goal-pilot-pill {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 2px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent-blue);
+        }
+
+        .goal-pilot-list {
+            list-style: none;
+            padding: 0;
+            margin: 0;
+            display: grid;
+            gap: 6px;
+        }
+
+        .goal-pilot-list li {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        /* ============================================
            Settings View
            ============================================ */
         .settings-section {
@@ -944,6 +1090,15 @@
                 </div>
 
                 <div class="nav-section">
+                    <button class="nav-item" data-view="goalPilot">
+                        <svg viewBox="0 0 16 16" aria-hidden="true">
+                            <path fill-rule="evenodd" d="M8 0a8 8 0 100 16A8 8 0 008 0zm3.25 5.5a.75.75 0 01.75.75c0 2.9-2.35 5.25-5.25 5.25a.75.75 0 010-1.5 3.75 3.75 0 003.75-3.75.75.75 0 01.75-.75zM6 4.75a.75.75 0 011.5 0v2.5a.75.75 0 01-1.5 0v-2.5z"/>
+                        </svg>
+                        Goal Pilot
+                    </button>
+                </div>
+
+                <div class="nav-section">
                     <button class="nav-item" data-view="settings">
                         <svg viewBox="0 0 16 16" aria-hidden="true">
                             <path fill-rule="evenodd" d="M2.5 1.75a.25.25 0 01.25-.25h10.5a.25.25 0 01.25.25v10.5a.25.25 0 01-.25.25h-4.5a.75.75 0 00-.53.22l-2.72 2.72v-2.19a.75.75 0 00-.75-.75H2.75a.25.25 0 01-.25-.25V1.75zM2.75 0A1.75 1.75 0 001 1.75v10.5c0 .966.784 1.75 1.75 1.75H4v1.293c0 .795.927 1.252 1.561.77l3.439-2.563h4.25A1.75 1.75 0 0015 11.75V1.75A1.75 1.75 0 0013.25 0H2.75z"/>
@@ -1089,6 +1244,82 @@
                                 <div class="tool-card-desc">Find orphaned worktree directories</div>
                             </div>
                         </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Goal Pilot View -->
+            <div class="view-container" id="goalPilotView" role="main">
+                <div class="goal-pilot-grid">
+                    <div class="goal-pilot-card">
+                        <h3>Run</h3>
+                        <div class="goal-pilot-field">
+                            <label for="goalPilotRunName">Run Name</label>
+                            <input id="goalPilotRunName" type="text" placeholder="UI clarity Q1" required>
+                        </div>
+                        <div class="goal-pilot-field">
+                            <label for="goalPilotGoals">Goals (one per line)</label>
+                            <textarea id="goalPilotGoals" rows="4" placeholder="UI should be clear and easy to navigate"></textarea>
+                        </div>
+                        <div class="goal-pilot-field">
+                            <label for="goalPilotDoneCriteria">Done Criteria (JSON)</label>
+                            <textarea id="goalPilotDoneCriteria" rows="3" placeholder='{"all_closed": true}'></textarea>
+                        </div>
+                        <div class="goal-pilot-field">
+                            <label for="goalPilotMilestones">Milestones (comma-separated)</label>
+                            <input id="goalPilotMilestones" type="text" placeholder="1,2">
+                        </div>
+                        <div class="goal-pilot-actions">
+                            <button class="btn btn-primary btn-sm" id="goalPilotCreateBtn">Create Run</button>
+                        </div>
+                        <div class="goal-pilot-output" id="goalPilotCreateOutput"></div>
+                    </div>
+
+                    <div class="goal-pilot-card">
+                        <h3>Status / Update</h3>
+                        <div class="goal-pilot-field">
+                            <label for="goalPilotRunId">Run ID</label>
+                            <input id="goalPilotRunId" type="text" placeholder="gpr-...">
+                        </div>
+                        <div class="goal-pilot-field">
+                            <label for="goalPilotUpdateGoals">Updated Goals (one per line)</label>
+                            <textarea id="goalPilotUpdateGoals" rows="3" placeholder="Clarify navigation..."></textarea>
+                        </div>
+                        <div class="goal-pilot-field">
+                            <label for="goalPilotUpdateNote">Update Note</label>
+                            <input id="goalPilotUpdateNote" type="text" placeholder="Why the goals changed">
+                        </div>
+                        <div class="goal-pilot-actions">
+                            <button class="btn btn-sm" id="goalPilotStatusBtn">Fetch Status</button>
+                            <button class="btn btn-sm" id="goalPilotUpdateBtn">Update Goals</button>
+                        </div>
+                        <div class="goal-pilot-status" id="goalPilotStatusOutput"></div>
+                    </div>
+
+                    <div class="goal-pilot-card">
+                        <h3>Actions</h3>
+                        <div class="goal-pilot-field">
+                            <label for="goalPilotActionJson">Action (JSON)</label>
+                            <textarea id="goalPilotActionJson" rows="5" placeholder='{"action_type":"create_issue","title":"Bug","body":"..."}'></textarea>
+                        </div>
+                        <div class="goal-pilot-actions">
+                            <button class="btn btn-sm" id="goalPilotActionBtn">Execute Action</button>
+                        </div>
+                        <div class="goal-pilot-output" id="goalPilotActionOutput"></div>
+                    </div>
+
+                    <div class="goal-pilot-card">
+                        <h3>Skills</h3>
+                        <div class="goal-pilot-field">
+                            <label for="goalPilotSkillJson">Skill (JSON)</label>
+                            <textarea id="goalPilotSkillJson" rows="6" placeholder='{"title":"UI clarity","intent":"...","triggers":[],"constraints":[],"playbook":"...","examples":[],"sources":[],"status":"active"}'></textarea>
+                        </div>
+                        <div class="goal-pilot-actions">
+                            <button class="btn btn-sm" id="goalPilotSkillsBtn">List Skills</button>
+                            <button class="btn btn-sm" id="goalPilotSkillUpsertBtn">Upsert Skill</button>
+                            <button class="btn btn-sm" id="goalPilotSkillsExportBtn">Export YAML</button>
+                        </div>
+                        <div class="goal-pilot-output" id="goalPilotSkillsOutput"></div>
                     </div>
                 </div>
             </div>
@@ -1441,7 +1672,8 @@
                 repositories: 'Repositories',
                 activity: 'Activity',
                 tools: 'Tools',
-                settings: 'Settings'
+                settings: 'Settings',
+                goalPilot: 'Goal Pilot'
             };
             document.getElementById('viewTitle').textContent = titles[viewName] || viewName;
 
@@ -1814,6 +2046,124 @@
             return div.innerHTML;
         }
 
+        function parseJsonInput(text, fallback) {
+            if (!text || !text.trim()) return fallback;
+            return JSON.parse(text);
+        }
+
+        function parseLines(text) {
+            if (!text) return [];
+            return text.split('\n').map(line => line.trim()).filter(Boolean);
+        }
+
+        function setOutput(id, data) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            if (typeof data === 'string') {
+                el.textContent = data;
+                return;
+            }
+            el.textContent = JSON.stringify(data, null, 2);
+        }
+
+        function renderGoalPilotStatus(status, skillsCount = null) {
+            const container = document.getElementById('goalPilotStatusOutput');
+            if (!container) return;
+            if (!status || !status.run) {
+                container.innerHTML = '<div class="goal-pilot-output">No status available.</div>';
+                return;
+            }
+
+            const run = status.run;
+            const snapshot = status.latest_snapshot;
+            const actions = status.actions || [];
+            const notes = status.notes || [];
+
+            const goals = run.goals || [];
+            const doneCriteria = run.done_criteria || {};
+            const recentActions = actions.slice(-5).reverse();
+            const recentNotes = notes.slice(-5).reverse();
+
+            const summaryItems = snapshot && snapshot.summary ? Object.entries(snapshot.summary) : [];
+            const lastAction = recentActions[0];
+            const lastNote = recentNotes[0];
+            const actionsCount = actions.length;
+            const notesCount = notes.length;
+            const skillsValue = skillsCount === null ? '—' : String(skillsCount);
+
+            container.innerHTML = `
+                <div class="goal-pilot-hero">
+                    <div class="goal-pilot-metric">
+                        <div class="goal-pilot-metric-value">${escapeHtml(run.status || 'unknown')}</div>
+                        <div class="goal-pilot-metric-label">Run Status</div>
+                    </div>
+                    <div class="goal-pilot-metric">
+                        <div class="goal-pilot-metric-value">${goals.length}</div>
+                        <div class="goal-pilot-metric-label">Goals</div>
+                    </div>
+                    <div class="goal-pilot-metric">
+                        <div class="goal-pilot-metric-value">${actionsCount}</div>
+                        <div class="goal-pilot-metric-label">Actions Logged</div>
+                    </div>
+                    <div class="goal-pilot-metric">
+                        <div class="goal-pilot-metric-value">${skillsValue}</div>
+                        <div class="goal-pilot-metric-label">Skills Active</div>
+                    </div>
+                </div>
+
+                <div class="goal-pilot-status-grid">
+                    <div class="goal-pilot-status-item">
+                        <div class="goal-pilot-status-label">Run Context</div>
+                        <div class="goal-pilot-status-value">
+                            <span class="goal-pilot-pill">${escapeHtml(run.status || 'unknown')}</span>
+                            <div style="margin-top: 6px;">${escapeHtml(run.name || 'Unnamed run')}</div>
+                            <div style="margin-top: 4px; color: var(--text-muted);">${escapeHtml(run.run_id || '')}</div>
+                            <div style="margin-top: 4px; color: var(--text-muted);">Updated: ${escapeHtml(run.updated_at || '')}</div>
+                        </div>
+                    </div>
+                    <div class="goal-pilot-status-item">
+                        <div class="goal-pilot-status-label">Goals</div>
+                        <ul class="goal-pilot-list">
+                            ${goals.length ? goals.map(goal => `<li>${escapeHtml(goal)}</li>`).join('') : '<li>No goals set</li>'}
+                        </ul>
+                    </div>
+                    <div class="goal-pilot-status-item">
+                        <div class="goal-pilot-status-label">Done Criteria</div>
+                        <div class="goal-pilot-status-value">${escapeHtml(JSON.stringify(doneCriteria))}</div>
+                    </div>
+                    <div class="goal-pilot-status-item">
+                        <div class="goal-pilot-status-label">Snapshot</div>
+                        <div class="goal-pilot-status-value">
+                            ${snapshot ? escapeHtml(snapshot.created_at || '') : 'No snapshot yet'}
+                        </div>
+                    </div>
+                </div>
+
+                <div class="goal-pilot-status-grid">
+                    <div class="goal-pilot-status-item">
+                        <div class="goal-pilot-status-label">Progress</div>
+                        <ul class="goal-pilot-list">
+                            ${summaryItems.length ? summaryItems.map(([key, value]) => `<li>${escapeHtml(key)}: ${escapeHtml(String(value))}</li>`).join('') : '<li>No progress summary</li>'}
+                        </ul>
+                    </div>
+                    <div class="goal-pilot-status-item">
+                        <div class="goal-pilot-status-label">Recent Actions</div>
+                        <ul class="goal-pilot-list">
+                            ${recentActions.length ? recentActions.map(action => `<li>${escapeHtml(action.action_type || '')} (${escapeHtml(action.status || '')})</li>`).join('') : '<li>No actions yet</li>'}
+                        </ul>
+                        ${lastAction ? `<div style="margin-top: 8px; color: var(--text-muted); font-size: 11px;">Last: ${escapeHtml(lastAction.action_type || '')}</div>` : ''}
+                    </div>
+                    <div class="goal-pilot-status-item">
+                        <div class="goal-pilot-status-label">Recent Notes</div>
+                        <ul class="goal-pilot-list">
+                            ${recentNotes.length ? recentNotes.map(note => `<li>${escapeHtml(note.note_type || '')}: ${escapeHtml(note.note_text || '')}</li>`).join('') : '<li>No notes yet</li>'}
+                        </ul>
+                        ${lastNote ? `<div style="margin-top: 8px; color: var(--text-muted); font-size: 11px;">Last: ${escapeHtml(lastNote.note_type || '')}</div>` : ''}
+                    </div>
+                </div>
+            `;
+        }
+
         // ============================================
         // Event Listeners
         // ============================================
@@ -1875,6 +2225,132 @@
                 return configured ? configured.path : null;
             }
 
+            // Goal Pilot
+            async function goalPilotCreate() {
+                try {
+                    const goals = parseLines(document.getElementById('goalPilotGoals').value);
+                    const doneCriteria = parseJsonInput(document.getElementById('goalPilotDoneCriteria').value, {});
+                    const milestonesRaw = document.getElementById('goalPilotMilestones').value;
+                    const name = document.getElementById('goalPilotRunName').value.trim() || null;
+                    if (!name) throw new Error('Run name required');
+                    const milestones = milestonesRaw
+                        ? milestonesRaw.split(',').map(item => item.trim()).filter(Boolean)
+                        : [];
+                    const response = await fetch('/control/goal_pilot/runs', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ goals, done_criteria: doneCriteria, milestones, name })
+                    });
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    setOutput('goalPilotCreateOutput', data);
+                    if (data.run_id) {
+                        document.getElementById('goalPilotRunId').value = data.run_id;
+                    }
+                } catch (error) {
+                    showToast(`Goal Pilot create failed: ${error.message}`, 'error');
+                }
+            }
+
+            async function goalPilotStatus() {
+                try {
+                    const runId = document.getElementById('goalPilotRunId').value.trim();
+                    if (!runId) throw new Error('Run ID required');
+                    const [statusResponse, skillsResponse] = await Promise.all([
+                        fetch(`/control/goal_pilot/runs/${encodeURIComponent(runId)}`),
+                        fetch('/control/goal_pilot/skills?status=active')
+                    ]);
+                    const statusData = await statusResponse.json();
+                    if (statusData.error) throw new Error(statusData.error);
+                    const skillsData = await skillsResponse.json();
+                    const skillsCount = Array.isArray(skillsData.skills) ? skillsData.skills.length : null;
+                    renderGoalPilotStatus(statusData.status || statusData, skillsCount);
+                } catch (error) {
+                    showToast(`Goal Pilot status failed: ${error.message}`, 'error');
+                }
+            }
+
+            async function goalPilotUpdate() {
+                try {
+                    const runId = document.getElementById('goalPilotRunId').value.trim();
+                    if (!runId) throw new Error('Run ID required');
+                    const goals = parseLines(document.getElementById('goalPilotUpdateGoals').value);
+                    const note = document.getElementById('goalPilotUpdateNote').value.trim();
+                    const response = await fetch(`/control/goal_pilot/runs/${encodeURIComponent(runId)}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ goals, note })
+                    });
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    await goalPilotStatus();
+                } catch (error) {
+                    showToast(`Goal Pilot update failed: ${error.message}`, 'error');
+                }
+            }
+
+            async function goalPilotAction() {
+                try {
+                    const runId = document.getElementById('goalPilotRunId').value.trim();
+                    if (!runId) throw new Error('Run ID required');
+                    const action = parseJsonInput(document.getElementById('goalPilotActionJson').value, null);
+                    if (!action) throw new Error('Action JSON required');
+                    const response = await fetch(`/control/goal_pilot/runs/${encodeURIComponent(runId)}/actions`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ action })
+                    });
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    setOutput('goalPilotActionOutput', data);
+                } catch (error) {
+                    showToast(`Goal Pilot action failed: ${error.message}`, 'error');
+                }
+            }
+
+            async function goalPilotSkills() {
+                try {
+                    const response = await fetch('/control/goal_pilot/skills');
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    setOutput('goalPilotSkillsOutput', data.skills || data);
+                } catch (error) {
+                    showToast(`Goal Pilot skills failed: ${error.message}`, 'error');
+                }
+            }
+
+            async function goalPilotUpsertSkill() {
+                try {
+                    const payload = parseJsonInput(document.getElementById('goalPilotSkillJson').value, null);
+                    if (!payload) throw new Error('Skill JSON required');
+                    const response = await fetch('/control/goal_pilot/skills', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    setOutput('goalPilotSkillsOutput', data.skill || data);
+                } catch (error) {
+                    showToast(`Goal Pilot upsert failed: ${error.message}`, 'error');
+                }
+            }
+
+            async function goalPilotExportSkills() {
+                try {
+                    const response = await fetch('/control/goal_pilot/skills/export', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ status: 'active' })
+                    });
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    setOutput('goalPilotSkillsOutput', data);
+                } catch (error) {
+                    showToast(`Goal Pilot export failed: ${error.message}`, 'error');
+                }
+            }
+
             // Tools - Issue Input Modal state
             let issueInputCallback = null;
             let issueInputRequired = false;
@@ -1905,6 +2381,15 @@
                 document.getElementById('issueInputModal').classList.remove('active');
                 if (issueInputCallback) issueInputCallback(issueNum);
             });
+
+            // Goal Pilot buttons
+            document.getElementById('goalPilotCreateBtn').addEventListener('click', goalPilotCreate);
+            document.getElementById('goalPilotStatusBtn').addEventListener('click', goalPilotStatus);
+            document.getElementById('goalPilotUpdateBtn').addEventListener('click', goalPilotUpdate);
+            document.getElementById('goalPilotActionBtn').addEventListener('click', goalPilotAction);
+            document.getElementById('goalPilotSkillsBtn').addEventListener('click', goalPilotSkills);
+            document.getElementById('goalPilotSkillUpsertBtn').addEventListener('click', goalPilotUpsertSkill);
+            document.getElementById('goalPilotSkillsExportBtn').addEventListener('click', goalPilotExportSkills);
 
             // Audit Tool
             document.getElementById('auditTool').addEventListener('click', () => {
