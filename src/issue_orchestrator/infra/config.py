@@ -530,6 +530,20 @@ def _parse_filtering_config(data: dict) -> FilteringConfig:
     )
 
 
+def _apply_optional_sections(config: "Config", sections: dict) -> None:
+    """Apply optional complex config sections."""
+    if sections["triage"]:
+        config.triage = _parse_triage_config(sections["triage"])
+    if sections["e2e"]:
+        config.e2e = _parse_e2e_config(sections["e2e"])
+    if sections["goal_pilot"]:
+        config.goal_pilot = _parse_goal_pilot_config(sections["goal_pilot"])
+    if sections["claims"]:
+        config.claims = _parse_claims_config(sections["claims"])
+    if sections["hooks"]:
+        config.hooks = _parse_hooks_config(sections["hooks"])
+
+
 def _load_repo_section(config: "Config", repo_section: dict, github_section: dict) -> None:
     """Load repo and GitHub settings into config."""
     config.repo = repo_section.get("name")
@@ -1561,17 +1575,8 @@ class Config:
         config.milestone_sort_config = sections["milestones"].get("sort_config", {})
         config.foundation_milestone = sections["milestones"].get("foundation", "M0")
 
-        # Parse complex configs
-        if sections["triage"]:
-            config.triage = _parse_triage_config(sections["triage"])
-        if sections["e2e"]:
-            config.e2e = _parse_e2e_config(sections["e2e"])
-        if sections["goal_pilot"]:
-            config.goal_pilot = _parse_goal_pilot_config(sections["goal_pilot"])
-        if sections["claims"]:
-            config.claims = _parse_claims_config(sections["claims"])
-        if sections["hooks"]:
-            config.hooks = _parse_hooks_config(sections["hooks"])
+        # Parse complex optional configs
+        _apply_optional_sections(config, sections)
 
         return config
 
