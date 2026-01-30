@@ -112,6 +112,7 @@ def _get_goal_pilot() -> GoalPilot:
     return GoalPilot(
         store=_orchestrator.deps.goal_pilot_store,
         events=_orchestrator.deps.events,
+        action_applier=_orchestrator.deps.action_applier,
         repo_root=str(_orchestrator.config.repo_root),
         ctx=_orchestrator.event_context,
     )

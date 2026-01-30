@@ -8,6 +8,8 @@ from ..events import EventContext, EventName
 from ..ports import EventSink, TraceEvent
 from ..ports.goal_pilot_store import GoalPilotStore
 from ..ports.repository_host import RepositoryHost
+from .action_applier import ActionApplier
+from .actions import AddLabelAction, RemoveLabelAction
 from .goal_pilot_skills import write_skill_manifest
 from ..infra.repo_identity import state_dir
 
@@ -23,11 +25,13 @@ class GoalPilot:
         self,
         store: GoalPilotStore,
         events: EventSink,
+        action_applier: ActionApplier,
         repo_root: str | None = None,
         ctx: EventContext | None = None,
     ) -> None:
         self._store = store
         self._events = events
+        self._action_applier = action_applier
         self._repo_root = repo_root
         self._ctx = ctx or EventContext()
 
@@ -249,9 +253,9 @@ class GoalPilot:
         if not add_labels and not remove_labels:
             raise ValueError("label update requires labels_add or labels_remove")
         for label in add_labels:
-            repository_host.add_label(issue_number, label)
+            self._action_applier.apply(AddLabelAction(issue_number=issue_number, label=label))
         for label in remove_labels:
-            repository_host.remove_label(issue_number, label)
+            self._action_applier.apply(RemoveLabelAction(issue_number=issue_number, label=label))
         return {"issue_number": issue_number, "labels_add": add_labels, "labels_remove": remove_labels}
 
     def _exec_change_approach(self, run_id: str, action: dict[str, Any]) -> dict[str, Any]:
