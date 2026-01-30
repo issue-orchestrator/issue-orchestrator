@@ -387,6 +387,7 @@ agents:
         config = Config()
         assert config.sqlite_backup.enabled is True
         assert config.sqlite_backup.cadence_hours == 24
+        assert config.sqlite_backup.check_interval_minutes == 60
         assert config.sqlite_backup.retention_daily == 14
         assert config.sqlite_backup.retention_weekly == 8
         assert config.sqlite_backup.enforce_on_startup is True
@@ -397,6 +398,7 @@ agents:
 sqlite_backup:
   enabled: false
   cadence_hours: 6
+  check_interval_minutes: 15
   retention_daily: 7
   retention_weekly: 4
   enforce_on_startup: false
@@ -408,6 +410,7 @@ sqlite_backup:
 
         assert config.sqlite_backup.enabled is False
         assert config.sqlite_backup.cadence_hours == 6
+        assert config.sqlite_backup.check_interval_minutes == 15
         assert config.sqlite_backup.retention_daily == 7
         assert config.sqlite_backup.retention_weekly == 4
         assert config.sqlite_backup.enforce_on_startup is False
@@ -2261,6 +2264,7 @@ agents:
 sqlite_backup:
   enabled: false
   cadence_hours: 6
+  check_interval_minutes: 15
   retention_daily: 7
   retention_weekly: 4
   enforce_on_startup: false
@@ -2274,6 +2278,7 @@ sqlite_backup:
         assert "sqlite_backup" in result
         assert result["sqlite_backup"]["enabled"] is False
         assert result["sqlite_backup"]["cadence_hours"] == 6
+        assert result["sqlite_backup"]["check_interval_minutes"] == 15
         assert result["sqlite_backup"]["retention_daily"] == 7
         assert result["sqlite_backup"]["retention_weekly"] == 4
         assert result["sqlite_backup"]["enforce_on_startup"] is False

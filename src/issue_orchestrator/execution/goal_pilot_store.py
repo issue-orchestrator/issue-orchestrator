@@ -21,6 +21,7 @@ from ..domain.goal_pilot import (
     GoalPilotSnapshot,
 )
 from ..infra.repo_identity import state_dir
+from ..infra.sqlite_connection import open_sqlite
 
 
 _SCHEMA = """
@@ -246,14 +247,12 @@ class SqliteGoalPilotStore:
 
     def _get_connection(self) -> sqlite3.Connection:
         if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(
-                str(self._db_path),
+            self._local.conn = open_sqlite(
+                self._db_path,
                 check_same_thread=False,
                 isolation_level=None,
+                row_factory=sqlite3.Row,
             )
-            self._local.conn.row_factory = sqlite3.Row
-            self._local.conn.execute("PRAGMA foreign_keys = ON")
-            self._local.conn.execute("PRAGMA journal_mode = WAL")
         return self._local.conn
 
     @contextmanager
@@ -589,12 +588,16 @@ class SqliteGoalPilotStore:
             now = _now_iso()
             for index, journey_id in enumerate(ordered_ids):
                 tx.execute(
+        with self._transaction() as conn:
+            for index, journey_id in enumerate(ordered_ids):
+                conn.execute(
                     """
                     UPDATE goal_pilot_journeys
                     SET order_index = ?, updated_at = ?
                     WHERE journey_id = ? AND run_id = ?
                     """,
                     (index, now, journey_id, run_id),
+                    (index, _now_iso(), journey_id, run_id),
                 )
     def update_run_goals(self, run_id: str, goals: list[str]) -> None:
         now = _now_iso()

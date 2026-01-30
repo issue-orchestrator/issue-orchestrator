@@ -44,6 +44,14 @@ def list_sqlite_databases(config: Config) -> list[SQLiteDatabase]:
             enforce_pragmas=True,
         ),
         SQLiteDatabase(
+            key="goal_pilot",
+            label="Goal Pilot",
+            path_fn=lambda cfg: _state_db(cfg, "goal_pilot.sqlite"),
+            enabled_fn=lambda cfg: True,
+            backup=True,
+            enforce_pragmas=True,
+        ),
+        SQLiteDatabase(
             key="e2e_results",
             label="E2E Results",
             path_fn=lambda cfg: cfg.repo_root / ".issue-orchestrator" / "e2e.db",

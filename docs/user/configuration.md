@@ -342,6 +342,7 @@ e2e:
 sqlite_backup:
   enabled: true
   cadence_hours: 24
+  check_interval_minutes: 60
   retention_daily: 14
   retention_weekly: 8
   enforce_on_startup: true
@@ -349,6 +350,7 @@ sqlite_backup:
 
 - `sqlite_backup.enabled`: Toggle automatic SQLite backups.
 - `sqlite_backup.cadence_hours`: Minimum hours between backups.
+- `sqlite_backup.check_interval_minutes`: How often to check whether backups are due.
 - `sqlite_backup.retention_daily`: Number of daily backups to keep (0 disables daily tier).
 - `sqlite_backup.retention_weekly`: Number of weekly backups to keep (0 disables weekly tier).
 - `sqlite_backup.enforce_on_startup`: If cadence elapsed, force a backup on startup.
@@ -357,6 +359,7 @@ sqlite_backup:
 - Backups live under `.issue-orchestrator/backups/sqlite/<db_key>/daily/` and `weekly/`.
 - Restore: stop the orchestrator, copy the newest backup `.db` over the target DB, then restart.
 - Doctor shows backup status and will warn if backups are overdue.
+- Long-running orchestrators check for due backups every `sqlite_backup.check_interval_minutes`.
 
 ### state
 
@@ -508,6 +511,7 @@ _Auto-generated from settings schema._
 |-------|------|---------|-------------|
 | `sqlite_backup.enabled` | boolean | `True` | Enable automatic backups of local SQLite state |
 | `sqlite_backup.cadence_hours` | integer | `24` | Minimum hours between backups |
+| `sqlite_backup.check_interval_minutes` | integer | `60` | How often to check whether backups are due |
 | `sqlite_backup.retention_daily` | integer | `14` | Number of daily backups to keep |
 | `sqlite_backup.retention_weekly` | integer | `8` | Number of weekly backups to keep |
 | `sqlite_backup.enforce_on_startup` | boolean | `True` | If cadence elapsed, force a backup on startup |

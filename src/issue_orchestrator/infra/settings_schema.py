@@ -432,6 +432,7 @@ class GoalPilotSettings(BaseModel):
         },
     )
     approval_policy: Literal["journeys_only", "gatekeeper", "batch"] = Field(
+    approval_policy: str = Field(
         "journeys_only",
         title="Approval Policy",
         description="How Goal Pilot applies repo changes",
@@ -490,6 +491,18 @@ class AdvancedSettings(BaseModel):
             "section": "State & Backups",
             "config_attr": "sqlite_backup.cadence_hours",
             "yaml_path": "sqlite_backup.cadence_hours",
+        },
+    )
+    sqlite_backup_check_interval_minutes: int = Field(
+        60,
+        title="Backup Check Interval (minutes)",
+        description="How often to check whether backups are due",
+        ge=5,
+        le=1440,
+        json_schema_extra={
+            "section": "State & Backups",
+            "config_attr": "sqlite_backup.check_interval_minutes",
+            "yaml_path": "sqlite_backup.check_interval_minutes",
         },
     )
     sqlite_backup_retention_daily: int = Field(

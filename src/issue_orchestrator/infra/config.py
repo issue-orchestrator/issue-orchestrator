@@ -385,6 +385,7 @@ class SqliteBackupConfig:
 
     enabled: bool = True
     cadence_hours: int = 24  # Minimum hours between backups
+    check_interval_minutes: int = 60  # How often to check for due backups
     retention_daily: int = 14  # Number of daily backups to keep
     retention_weekly: int = 8  # Number of weekly backups to keep
     enforce_on_startup: bool = True  # Force backup on startup if cadence elapsed
@@ -471,6 +472,8 @@ def _apply_complex_sections(config: "Config", sections: dict) -> None:
         config.e2e = _parse_e2e_config(sections["e2e"])
     if sections["sqlite_backup"]:
         config.sqlite_backup = _parse_sqlite_backup_config(sections["sqlite_backup"])
+    if sections["goal_pilot"]:
+        config.goal_pilot = _parse_goal_pilot_config(sections["goal_pilot"])
     if sections["claims"]:
         config.claims = _parse_claims_config(sections["claims"])
     if sections["hooks"]:
@@ -1057,6 +1060,9 @@ class Config:
     # SQLite backup configuration
     sqlite_backup: SqliteBackupConfig = field(default_factory=SqliteBackupConfig)
 
+    # Goal Pilot AI configuration
+    goal_pilot: GoalPilotConfig = field(default_factory=GoalPilotConfig)
+
     # Claims/lease configuration for multi-orchestrator coordination
     claims: ClaimsConfig = field(default_factory=ClaimsConfig)
 
@@ -1353,6 +1359,7 @@ class Config:
             "sqlite_backup": {
                 "enabled": self.sqlite_backup.enabled,
                 "cadence_hours": self.sqlite_backup.cadence_hours,
+                "check_interval_minutes": self.sqlite_backup.check_interval_minutes,
                 "retention_daily": self.sqlite_backup.retention_daily,
                 "retention_weekly": self.sqlite_backup.retention_weekly,
                 "enforce_on_startup": self.sqlite_backup.enforce_on_startup,
@@ -1589,6 +1596,7 @@ class Config:
             result["sqlite_backup"] = {
                 "enabled": self.sqlite_backup.enabled,
                 "cadence_hours": self.sqlite_backup.cadence_hours,
+                "check_interval_minutes": self.sqlite_backup.check_interval_minutes,
                 "retention_daily": self.sqlite_backup.retention_daily,
                 "retention_weekly": self.sqlite_backup.retention_weekly,
                 "enforce_on_startup": self.sqlite_backup.enforce_on_startup,
