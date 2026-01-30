@@ -9,7 +9,11 @@
 ```bash
 git worktree add ../issue-orchestrator-wt-my-branch-name -b my-branch-name
 cd ../issue-orchestrator-wt-my-branch-name
-make worktree-setup  # Set up venv, vscode extensions, and playwright
+
+# Run each step separately (each gets its own timeout window):
+make venv
+(cd packages/vscode && npm install)
+.venv/bin/playwright install chromium
 ```
 
 This is not optional. Do not edit files in the base repo. If the user explicitly says "edit directly" or "no worktree", then and only then may you skip this. Otherwise: **worktree first, then work.**
