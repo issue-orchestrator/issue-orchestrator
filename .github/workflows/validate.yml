@@ -60,7 +60,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
-      - name: Run validate (without web tests)
-        run: make typecheck lint-arch lint-complexity test-unit test-integration
+      - name: Install Playwright browsers
+        run: .venv/bin/playwright install chromium
+
+      - name: Run validate
+        run: make validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
