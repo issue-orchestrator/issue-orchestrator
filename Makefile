@@ -119,8 +119,13 @@ worktree-setup: venv
 	@echo ""
 	@echo "Worktree setup complete! Activate with: source .venv/bin/activate"
 
-install: ensure-uv
-	$(UV) sync --frozen --all-extras
+# Install/reinstall dependencies (uses uv if available, pip fallback for venv-pip users)
+install:
+	@if [ -x "$(UV)" ]; then \
+		$(UV) sync --frozen --all-extras; \
+	else \
+		pip install -e "packages/agent_runner" && pip install -e ".[dev]"; \
+	fi
 	@touch .venv/.deps-synced
 
 # Update dependencies after changing pyproject.toml
@@ -176,6 +181,7 @@ DEPS_MARKER ?= .venv/.deps-synced
 
 # Auto-sync dependencies if pyproject.toml or uv.lock is newer than last sync
 # This prevents cryptic errors like "unrecognized arguments: -n" when pytest-xdist is missing
+# Falls back to pip if uv is not available (for venv-pip users)
 sync-deps:
 	@if [ ! -f $(DEPS_MARKER) ] || [ pyproject.toml -nt $(DEPS_MARKER) ] || [ uv.lock -nt $(DEPS_MARKER) ]; then \
 		echo ""; \
@@ -183,7 +189,11 @@ sync-deps:
 		echo "[sync-deps] Dependencies changed since last install"; \
 		echo "[sync-deps] Auto-syncing dependencies on your behalf..."; \
 		echo "================================================================"; \
-		$(UV) sync --frozen --all-extras && touch $(DEPS_MARKER) && \
+		if [ -x "$(UV)" ]; then \
+			$(UV) sync --frozen --all-extras; \
+		else \
+			pip install -q -e "packages/agent_runner" && pip install -q -e ".[dev]"; \
+		fi && touch $(DEPS_MARKER) && \
 		echo "[sync-deps] Done. Continuing with original command..."; \
 		echo ""; \
 	fi
