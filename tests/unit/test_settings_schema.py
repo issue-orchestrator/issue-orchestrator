@@ -15,6 +15,7 @@ from issue_orchestrator.infra.settings_schema import (
     ConcurrencySettings,
     E2ESettings,
     FilteringSettings,
+    GoalPilotSettings,
     ReviewSettings,
     apply_to,
     from_config,
@@ -62,6 +63,12 @@ class TestModelDefaults:
         assert m.enabled is False
         assert m.default_reviewer is None
         assert m.max_rework_cycles == 2
+
+    def test_goal_pilot_defaults(self):
+        m = GoalPilotSettings()
+        assert m.enabled is False
+        assert m.agent is None
+        assert m.approval_policy == "journeys_only"
 
     def test_advanced_defaults(self):
         m = AdvancedSettings()
@@ -229,7 +236,7 @@ class TestFromConfig:
         """Default Config() should produce valid schema models."""
         cfg = Config()
         tabs = from_config(cfg)
-        assert len(tabs) == 6  # concurrency, e2e, filtering, review, hooks, advanced
+        assert len(tabs) == 7  # concurrency, e2e, filtering, review, goal_pilot, hooks, advanced
         for key, model in tabs.items():
             assert model is not None
 

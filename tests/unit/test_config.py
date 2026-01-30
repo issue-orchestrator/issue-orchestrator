@@ -772,6 +772,64 @@ agents:
         assert config.triage_reviewed_label is None
         assert config.triage_review_threshold == 0
 
+    def test_goal_pilot_defaults(self):
+        """Goal Pilot defaults to disabled with journeys-only approvals."""
+        config = Config()
+        assert config.goal_pilot.enabled is False
+        assert config.goal_pilot.agent is None
+        assert config.goal_pilot.approval_policy == "journeys_only"
+        assert config.goal_pilot.approval_batch_size == 10
+        assert config.goal_pilot.approval_batch_window_minutes == 60
+
+    def test_goal_pilot_from_yaml(self, tmp_path):
+        """Test loading goal pilot config from YAML."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+agents:
+  agent:goal-pilot:
+    prompt: /tmp/prompt.txt
+
+goal_pilot:
+  enabled: true
+  agent: agent:goal-pilot
+  approval_policy: batch
+  approval_batch_size: 20
+  approval_batch_window_minutes: 120
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.goal_pilot.enabled is True
+        assert config.goal_pilot.agent == "agent:goal-pilot"
+        assert config.goal_pilot.approval_policy == "batch"
+        assert config.goal_pilot.approval_batch_size == 20
+        assert config.goal_pilot.approval_batch_window_minutes == 120
+
+    def test_goal_pilot_requires_agent_when_enabled(self, tmp_path):
+        """Goal Pilot enabled requires a valid agent."""
+        config_content = """
+worktrees:
+  base: /tmp
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+goal_pilot:
+  enabled: true
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+
+        assert any("goal_pilot.enabled is true" in e for e in errors)
+
     def test_review_workflow_from_yaml(self, tmp_path):
         """Test loading review workflow config from YAML."""
         config_content = """

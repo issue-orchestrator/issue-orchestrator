@@ -13,6 +13,7 @@ class GoalPilotRun:
     updated_at: str
     status: str
     name: str
+    phase: str
     goals: list[str]
     done_criteria: dict[str, Any]
 
@@ -60,3 +61,31 @@ class GoalPilotSkill:
     examples: list[str]
     sources: list[str]
     last_verified: str | None
+
+
+@dataclass(frozen=True)
+class GoalPilotPhaseChange:
+    phase_id: str
+    run_id: str
+    created_at: str
+    from_phase: str
+    to_phase: str
+    reason: str
+    changes: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class GoalPilotJourney:
+    journey_id: str
+    run_id: str
+    created_at: str
+    updated_at: str
+    title: str
+    description: str
+    order_index: int
+    priority: str
+    status: str
+    success_criteria: str
+    under_the_covers: dict[str, Any]
+    lookahead: dict[str, Any]
+    milestone: str | None

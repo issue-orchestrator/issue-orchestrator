@@ -2018,6 +2018,30 @@ async def goal_pilot_create(request: Request) -> JSONResponse:
     return JSONResponse({"run_id": run_id})
 
 
+@control_app.get("/control/goal_pilot/runs")
+async def goal_pilot_runs() -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    pilot = _get_goal_pilot()
+    return JSONResponse({"runs": pilot.list_runs()})
+
+
+@control_app.get("/control/goal_pilot/config")
+async def goal_pilot_config() -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    gp_config = _orchestrator.config.goal_pilot
+    configured = bool(gp_config.enabled and gp_config.agent)
+    return JSONResponse({
+        "enabled": gp_config.enabled,
+        "agent": gp_config.agent,
+        "approval_policy": gp_config.approval_policy,
+        "approval_batch_size": gp_config.approval_batch_size,
+        "approval_batch_window_minutes": gp_config.approval_batch_window_minutes,
+        "configured": configured,
+    })
+
+
 @control_app.get("/control/goal_pilot/runs/{run_id}")
 async def goal_pilot_status(run_id: str) -> JSONResponse:
     if _orchestrator is None:
@@ -2025,6 +2049,68 @@ async def goal_pilot_status(run_id: str) -> JSONResponse:
     pilot = _get_goal_pilot()
     status = pilot.status(run_id)
     return JSONResponse({"status": status})
+
+
+@control_app.post("/control/goal_pilot/runs/{run_id}/phase")
+async def goal_pilot_phase(run_id: str, request: Request) -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    body = await request.json()
+    phase = body.get("phase")
+    reason = body.get("reason")
+    changes = body.get("changes") or {}
+    if not phase or not reason:
+        return JSONResponse({"error": "phase_and_reason_required"}, status_code=400)
+    pilot = _get_goal_pilot()
+    result = pilot.set_phase(run_id, phase=phase, reason=reason, changes=changes)
+    return JSONResponse(result)
+
+
+@control_app.get("/control/goal_pilot/runs/{run_id}/journeys")
+async def goal_pilot_journeys(run_id: str) -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    pilot = _get_goal_pilot()
+    return JSONResponse({"journeys": pilot.list_journeys(run_id)})
+
+
+@control_app.post("/control/goal_pilot/runs/{run_id}/journeys")
+async def goal_pilot_journey_create(run_id: str, request: Request) -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    body = await request.json()
+    pilot = _get_goal_pilot()
+    try:
+        journey = pilot.create_journey(run_id, body)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"journey": journey})
+
+
+@control_app.patch("/control/goal_pilot/journeys/{journey_id}")
+async def goal_pilot_journey_update(journey_id: str, request: Request) -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    body = await request.json()
+    pilot = _get_goal_pilot()
+    try:
+        journey = pilot.update_journey(journey_id, body)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    return JSONResponse({"journey": journey})
+
+
+@control_app.post("/control/goal_pilot/runs/{run_id}/journeys/reorder")
+async def goal_pilot_journey_reorder(run_id: str, request: Request) -> JSONResponse:
+    if _orchestrator is None:
+        return JSONResponse({"error": "orchestrator_not_initialized"}, status_code=503)
+    body = await request.json()
+    order = body.get("order")
+    if not isinstance(order, list):
+        return JSONResponse({"error": "order_list_required"}, status_code=400)
+    pilot = _get_goal_pilot()
+    result = pilot.reorder_journeys(run_id, order)
+    return JSONResponse(result)
 
 
 @control_app.patch("/control/goal_pilot/runs/{run_id}")

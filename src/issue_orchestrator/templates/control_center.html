@@ -879,16 +879,27 @@
         /* ============================================
            Goal Pilot View
            ============================================ */
-        .goal-pilot-grid {
+        .goal-pilot-layout {
+            display: grid;
+            gap: 18px;
+            grid-template-columns: minmax(320px, 1fr) minmax(360px, 1.2fr);
+        }
+
+        @media (max-width: 1100px) {
+            .goal-pilot-layout {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .goal-pilot-column {
             display: grid;
             gap: 16px;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
         }
 
         .goal-pilot-card {
             background: var(--bg-card);
             border: 1px solid var(--border-color);
-            border-radius: 8px;
+            border-radius: 10px;
             padding: 16px;
         }
 
@@ -896,6 +907,12 @@
             font-size: 14px;
             font-weight: 600;
             margin-bottom: 8px;
+        }
+
+        .goal-pilot-hint {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 10px;
         }
 
         .goal-pilot-field {
@@ -911,7 +928,8 @@
         }
 
         .goal-pilot-field textarea,
-        .goal-pilot-field input {
+        .goal-pilot-field input,
+        .goal-pilot-field select {
             background: var(--bg-input);
             color: var(--text-primary);
             border: 1px solid var(--border-color);
@@ -938,88 +956,146 @@
             padding: 10px;
         }
 
-        .goal-pilot-status {
+        .goal-pilot-runlist {
             display: grid;
-            gap: 12px;
+            gap: 8px;
+            max-height: 260px;
+            overflow-y: auto;
         }
 
-        .goal-pilot-status-grid {
-            display: grid;
-            gap: 12px;
-            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-        }
-
-        .goal-pilot-hero {
-            display: grid;
-            gap: 12px;
-            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        }
-
-        .goal-pilot-metric {
-            background: var(--bg-card);
+        .goal-pilot-run-item {
             border: 1px solid var(--border-color);
             border-radius: 8px;
-            padding: 12px;
+            padding: 10px;
+            background: var(--bg-input);
+            cursor: pointer;
         }
 
-        .goal-pilot-metric-value {
-            font-size: 18px;
+        .goal-pilot-run-item.active {
+            border-color: var(--accent-blue);
+            box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.25);
+        }
+
+        .goal-pilot-run-title {
+            font-size: 13px;
             font-weight: 600;
             color: var(--text-primary);
         }
 
-        .goal-pilot-metric-label {
+        .goal-pilot-run-meta {
             font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.4px;
-            color: var(--text-muted);
+            color: var(--text-secondary);
             margin-top: 4px;
         }
 
-        .goal-pilot-status-item {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            padding: 12px;
-        }
-
-        .goal-pilot-status-label {
-            font-size: 11px;
-            text-transform: uppercase;
-            letter-spacing: 0.4px;
-            color: var(--text-muted);
-            margin-bottom: 4px;
-        }
-
-        .goal-pilot-status-value {
-            font-size: 13px;
-            color: var(--text-primary);
+        .goal-pilot-badges {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
         }
 
         .goal-pilot-pill {
             display: inline-flex;
             align-items: center;
             gap: 6px;
-            padding: 2px 8px;
+            padding: 4px 8px;
             border-radius: 999px;
             font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            background: rgba(88, 166, 255, 0.15);
+            background: rgba(88, 166, 255, 0.12);
             color: var(--accent-blue);
         }
 
-        .goal-pilot-list {
-            list-style: none;
-            padding: 0;
-            margin: 0;
+        .goal-pilot-pill.warning {
+            background: rgba(249, 117, 0, 0.15);
+            color: var(--accent-orange);
+        }
+
+        .goal-pilot-pill.success {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--accent-green);
+        }
+
+        .goal-pilot-pill.danger {
+            background: rgba(248, 81, 73, 0.15);
+            color: var(--accent-red);
+        }
+
+        .goal-pilot-journey {
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 12px;
+            background: var(--bg-input);
+            margin-bottom: 10px;
+        }
+
+        .goal-pilot-journey-header {
+            display: flex;
+            justify-content: space-between;
+            gap: 10px;
+            align-items: baseline;
+        }
+
+        .goal-pilot-journey-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .goal-pilot-journey-meta {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 6px;
+        }
+
+        .goal-pilot-journey-actions {
+            display: flex;
+            gap: 6px;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        .goal-pilot-checklist {
             display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 6px;
+            margin-top: 8px;
+        }
+
+        .goal-pilot-checklist label {
+            font-size: 11px;
+            color: var(--text-secondary);
+            display: flex;
+            gap: 6px;
+            align-items: center;
+        }
+
+        .goal-pilot-alert {
+            grid-column: 1 / -1;
+            background: rgba(249, 117, 0, 0.08);
+            border: 1px solid rgba(249, 117, 0, 0.35);
+            border-radius: 10px;
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
             gap: 6px;
         }
 
-        .goal-pilot-list li {
+        .goal-pilot-alert-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .goal-pilot-alert-body {
             font-size: 12px;
             color: var(--text-secondary);
+            line-height: 1.4;
+        }
+
+        .goal-pilot-alert-meta {
+            font-size: 11px;
+            color: var(--text-muted);
         }
 
         /* ============================================
@@ -1493,76 +1569,158 @@
 
             <!-- Goal Pilot View -->
             <div class="view-container" id="goalPilotView" role="main">
-                <div class="goal-pilot-grid">
-                    <div class="goal-pilot-card">
-                        <h3>Run</h3>
-                        <div class="goal-pilot-field">
-                            <label for="goalPilotRunName">Run Name</label>
-                            <input id="goalPilotRunName" type="text" placeholder="UI clarity Q1" required>
+                <div class="goal-pilot-layout">
+                    <div class="goal-pilot-alert" id="goalPilotConfigAlert" style="display: none;">
+                        <div class="goal-pilot-alert-title">Goal Pilot AI not configured</div>
+                        <div class="goal-pilot-alert-body">
+                            Enable Goal Pilot and set an agent in your config (goal_pilot.enabled + goal_pilot.agent).
                         </div>
-                        <div class="goal-pilot-field">
-                            <label for="goalPilotGoals">Goals (one per line)</label>
-                            <textarea id="goalPilotGoals" rows="4" placeholder="UI should be clear and easy to navigate"></textarea>
+                        <div class="goal-pilot-alert-meta" id="goalPilotConfigDetails"></div>
+                    </div>
+                    <div class="goal-pilot-column">
+                        <div class="goal-pilot-card">
+                            <h3>Runs</h3>
+                            <div class="goal-pilot-hint">Select a run to work at the goal + journey level.</div>
+                            <div class="goal-pilot-runlist" id="goalPilotRunList"></div>
+                            <div class="goal-pilot-actions">
+                                <button class="btn btn-sm" id="goalPilotRefreshRunsBtn">Refresh Runs</button>
+                            </div>
                         </div>
-                        <div class="goal-pilot-field">
-                            <label for="goalPilotDoneCriteria">Done Criteria (JSON)</label>
-                            <textarea id="goalPilotDoneCriteria" rows="3" placeholder='{"all_closed": true}'></textarea>
+
+                        <div class="goal-pilot-card">
+                            <h3>Create Run</h3>
+                            <div class="goal-pilot-field">
+                                <label for="goalPilotRunName">Run Name</label>
+                                <input id="goalPilotRunName" type="text" placeholder="Unified UI clarity sprint" required>
+                            </div>
+                            <div class="goal-pilot-field">
+                                <label for="goalPilotGoals">Goals</label>
+                                <textarea id="goalPilotGoals" rows="5" placeholder="UI should be clear and easy to navigate&#10;Single UI to rule them all"></textarea>
+                            </div>
+                            <div class="goal-pilot-field">
+                                <label>Done Criteria (guided)</label>
+                                <div class="goal-pilot-checklist">
+                                    <label><input type="checkbox" id="goalPilotDoneJourneys"> Critical journeys mapped</label>
+                                    <label><input type="checkbox" id="goalPilotDoneMilestones"> Journeys mapped to milestones</label>
+                                    <label><input type="checkbox" id="goalPilotDoneTests"> Test layers planned</label>
+                                    <label><input type="checkbox" id="goalPilotDoneGuardrails"> Guardrails captured</label>
+                                </div>
+                            </div>
+                            <div class="goal-pilot-field">
+                                <label for="goalPilotDoneNotes">Custom Done Criteria</label>
+                                <textarea id="goalPilotDoneNotes" rows="2" placeholder="Any extra conditions that mean done"></textarea>
+                            </div>
+                            <div class="goal-pilot-actions">
+                                <button class="btn btn-primary btn-sm" id="goalPilotCreateBtn">Create Run</button>
+                            </div>
+                            <div class="goal-pilot-output" id="goalPilotCreateOutput"></div>
                         </div>
-                        <div class="goal-pilot-field">
-                            <label for="goalPilotMilestones">Milestones (comma-separated)</label>
-                            <input id="goalPilotMilestones" type="text" placeholder="1,2">
+
+                        <div class="goal-pilot-card">
+                            <h3>Current Phase</h3>
+                            <div class="goal-pilot-hint">Phases are a loop. Record pivots with a reason.</div>
+                            <div class="goal-pilot-field">
+                                <label for="goalPilotPhaseSelect">Phase</label>
+                                <select id="goalPilotPhaseSelect">
+                                    <option value="outcomes_opportunities">Outcomes &amp; Opportunities</option>
+                                    <option value="critical_journeys">Critical Journeys</option>
+                                    <option value="structure_betting">Structure &amp; Betting</option>
+                                    <option value="delivery_track">Delivery Track</option>
+                                    <option value="fill_cracks">Fill the Cracks</option>
+                                </select>
+                            </div>
+                            <div class="goal-pilot-field">
+                                <label for="goalPilotPhaseReason">Reason</label>
+                                <input id="goalPilotPhaseReason" type="text" placeholder="Pivoting due to discovery...">
+                            </div>
+                            <div class="goal-pilot-actions">
+                                <button class="btn btn-sm" id="goalPilotPhaseBtn">Record Phase Change</button>
+                            </div>
+                            <div class="goal-pilot-output" id="goalPilotPhaseHistory"></div>
                         </div>
-                        <div class="goal-pilot-actions">
-                            <button class="btn btn-primary btn-sm" id="goalPilotCreateBtn">Create Run</button>
-                        </div>
-                        <div class="goal-pilot-output" id="goalPilotCreateOutput"></div>
                     </div>
 
-                    <div class="goal-pilot-card">
-                        <h3>Status / Update</h3>
-                        <div class="goal-pilot-field">
-                            <label for="goalPilotRunId">Run ID</label>
-                            <input id="goalPilotRunId" type="text" placeholder="gpr-...">
+                    <div class="goal-pilot-column">
+                        <div class="goal-pilot-card">
+                            <h3>Critical User Journeys (Roadmap Order)</h3>
+                            <div class="goal-pilot-hint">Order reflects planned execution. Under-the-covers work is required for each journey.</div>
+                            <div id="goalPilotJourneyList"></div>
                         </div>
-                        <div class="goal-pilot-field">
-                            <label for="goalPilotUpdateGoals">Updated Goals (one per line)</label>
-                            <textarea id="goalPilotUpdateGoals" rows="3" placeholder="Clarify navigation..."></textarea>
-                        </div>
-                        <div class="goal-pilot-field">
-                            <label for="goalPilotUpdateNote">Update Note</label>
-                            <input id="goalPilotUpdateNote" type="text" placeholder="Why the goals changed">
-                        </div>
-                        <div class="goal-pilot-actions">
-                            <button class="btn btn-sm" id="goalPilotStatusBtn">Fetch Status</button>
-                            <button class="btn btn-sm" id="goalPilotUpdateBtn">Update Goals</button>
-                        </div>
-                        <div class="goal-pilot-status" id="goalPilotStatusOutput"></div>
-                    </div>
 
-                    <div class="goal-pilot-card">
-                        <h3>Actions</h3>
-                        <div class="goal-pilot-field">
-                            <label for="goalPilotActionJson">Action (JSON)</label>
-                            <textarea id="goalPilotActionJson" rows="5" placeholder='{"action_type":"create_issue","title":"Bug","body":"..."}'></textarea>
+                        <div class="goal-pilot-card">
+                            <h3>Add Journey</h3>
+                            <div class="goal-pilot-field">
+                                <label for="goalPilotJourneyTitle">Journey Title</label>
+                                <input id="goalPilotJourneyTitle" type="text" placeholder="Browse and understand issues quickly">
+                            </div>
+                            <div class="goal-pilot-field">
+                                <label for="goalPilotJourneyDesc">Description</label>
+                                <textarea id="goalPilotJourneyDesc" rows="3" placeholder="User can navigate repos, see activity, and understand state at a glance."></textarea>
+                            </div>
+                            <div class="goal-pilot-field">
+                                <label for="goalPilotJourneySuccess">Success Criteria</label>
+                                <input id="goalPilotJourneySuccess" type="text" placeholder="Time-to-understand under 30 seconds">
+                            </div>
+                            <div class="goal-pilot-field">
+                                <label for="goalPilotJourneyPriority">Priority</label>
+                                <select id="goalPilotJourneyPriority">
+                                    <option value="high">High</option>
+                                    <option value="medium" selected>Medium</option>
+                                    <option value="low">Low</option>
+                                </select>
+                            </div>
+                            <div class="goal-pilot-field">
+                                <label for="goalPilotJourneyMilestone">GitHub Milestone (optional)</label>
+                                <input id="goalPilotJourneyMilestone" type="text" placeholder="M1">
+                            </div>
+                            <div class="goal-pilot-field">
+                                <label>Under the Covers</label>
+                                <div class="goal-pilot-checklist">
+                                    <label><input type="checkbox" data-under="architecture"> Architecture spine</label>
+                                    <label><input type="checkbox" data-under="unit_tests"> Unit tests</label>
+                                    <label><input type="checkbox" data-under="integration_tests"> Integration tests</label>
+                                    <label><input type="checkbox" data-under="e2e_tests"> E2E tests</label>
+                                    <label><input type="checkbox" data-under="guardrails"> Guardrails</label>
+                                    <label><input type="checkbox" data-under="integration_contracts"> Integration contracts</label>
+                                </div>
+                            </div>
+                            <div class="goal-pilot-field">
+                                <label for="goalPilotJourneyLookahead">Future Fit</label>
+                                <select id="goalPilotJourneyLookahead">
+                                    <option value="green">Green - compatible</option>
+                                    <option value="yellow">Yellow - temporary</option>
+                                    <option value="red">Red - blocks future CUJs</option>
+                                </select>
+                                <input id="goalPilotJourneyLookaheadNote" type="text" placeholder="Look-ahead note (e.g., blocks CUJ3)">
+                            </div>
+                            <div class="goal-pilot-actions">
+                                <button class="btn btn-sm" id="goalPilotJourneyCreateBtn">Add Journey</button>
+                            </div>
+                            <div class="goal-pilot-output" id="goalPilotJourneyOutput"></div>
                         </div>
-                        <div class="goal-pilot-actions">
-                            <button class="btn btn-sm" id="goalPilotActionBtn">Execute Action</button>
-                        </div>
-                        <div class="goal-pilot-output" id="goalPilotActionOutput"></div>
-                    </div>
 
-                    <div class="goal-pilot-card">
-                        <h3>Skills</h3>
-                        <div class="goal-pilot-field">
-                            <label for="goalPilotSkillJson">Skill (JSON)</label>
-                            <textarea id="goalPilotSkillJson" rows="6" placeholder='{"title":"UI clarity","intent":"...","triggers":[],"constraints":[],"playbook":"...","examples":[],"sources":[],"status":"active"}'></textarea>
+                        <div class="goal-pilot-card">
+                            <h3>Goal Pilot Suggested Changes</h3>
+                            <div class="goal-pilot-hint">Nothing is applied automatically unless configured.</div>
+                            <div id="goalPilotSuggestedChanges"></div>
                         </div>
-                        <div class="goal-pilot-actions">
-                            <button class="btn btn-sm" id="goalPilotSkillsBtn">List Skills</button>
-                            <button class="btn btn-sm" id="goalPilotSkillUpsertBtn">Upsert Skill</button>
-                            <button class="btn btn-sm" id="goalPilotSkillsExportBtn">Export YAML</button>
-                        </div>
-                        <div class="goal-pilot-output" id="goalPilotSkillsOutput"></div>
+
+                        <details class="goal-pilot-card">
+                            <summary style="cursor: pointer; font-size: 13px; font-weight: 600;">Skills (export to agent skills)</summary>
+                            <div class="goal-pilot-hint" style="margin-top: 10px;">
+                                Skills are reusable playbooks. Export writes YAML + SKILL.md for agents to use.
+                            </div>
+                            <div class="goal-pilot-field">
+                                <label for="goalPilotSkillJson">Skill (JSON)</label>
+                                <textarea id="goalPilotSkillJson" rows="6" placeholder='{"title":"UI clarity","intent":"...","triggers":[],"constraints":[],"playbook":"...","examples":[],"sources":[],"status":"active"}'></textarea>
+                            </div>
+                            <div class="goal-pilot-actions">
+                                <button class="btn btn-sm" id="goalPilotSkillsBtn">List Skills</button>
+                                <button class="btn btn-sm" id="goalPilotSkillUpsertBtn">Save Skill</button>
+                                <button class="btn btn-sm" id="goalPilotSkillsExportBtn">Export Skills</button>
+                            </div>
+                            <div class="goal-pilot-output" id="goalPilotSkillsOutput"></div>
+                        </details>
                     </div>
                 </div>
             </div>
@@ -2219,6 +2377,10 @@
             if (viewName === 'activity' && repoPath) {
                 loadActivityView(repoPath);
             }
+            if (viewName === 'goalPilot') {
+                goalPilotConfig();
+                goalPilotLoadRuns();
+            }
         }
 
         // ============================================
@@ -2844,26 +3006,117 @@
             }
 
             // Goal Pilot
+            const goalPilotState = {
+                runId: null,
+                runs: [],
+                journeys: [],
+                actions: []
+            };
+
+            function parseGoalsInput(raw) {
+                const text = (raw || '').trim();
+                if (!text) return [];
+                const lines = text.split('\n').map(line => line.replace(/^[-*]\s+/, '').trim()).filter(Boolean);
+                if (lines.length > 1) return lines;
+                return text.split(';').map(part => part.trim()).filter(Boolean);
+            }
+
+            function buildDoneCriteria() {
+                return {
+                    journeys_mapped: document.getElementById('goalPilotDoneJourneys').checked,
+                    milestones_mapped: document.getElementById('goalPilotDoneMilestones').checked,
+                    tests_planned: document.getElementById('goalPilotDoneTests').checked,
+                    guardrails_planned: document.getElementById('goalPilotDoneGuardrails').checked,
+                    notes: document.getElementById('goalPilotDoneNotes').value.trim()
+                };
+            }
+
+            async function goalPilotConfig() {
+                const banner = document.getElementById('goalPilotConfigAlert');
+                const details = document.getElementById('goalPilotConfigDetails');
+                if (!banner || !details) return;
+                try {
+                    const response = await fetch('/control/goal_pilot/config');
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    if (data.configured) {
+                        banner.style.display = 'none';
+                        details.textContent = '';
+                        return;
+                    }
+                    const enabled = data.enabled ? 'enabled' : 'disabled';
+                    const agent = data.agent || 'none';
+                    const policy = data.approval_policy || 'journeys_only';
+                    banner.style.display = 'flex';
+                    details.textContent = `Status: ${enabled}. Agent: ${agent}. Policy: ${policy}.`;
+                } catch (error) {
+                    banner.style.display = 'flex';
+                    details.textContent = `Status: unknown (${error.message}).`;
+                }
+            }
+
+            async function goalPilotLoadRuns() {
+                try {
+                    const response = await fetch('/control/goal_pilot/runs');
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    goalPilotState.runs = Array.isArray(data.runs) ? data.runs : [];
+                    renderGoalPilotRuns();
+                } catch (error) {
+                    showToast(`Goal Pilot runs failed: ${error.message}`, 'error');
+                }
+            }
+
+            function renderGoalPilotRuns() {
+                const list = document.getElementById('goalPilotRunList');
+                if (!list) return;
+                if (goalPilotState.runs.length === 0) {
+                    list.innerHTML = '<div class="goal-pilot-hint">No runs yet. Create one to begin.</div>';
+                    return;
+                }
+                list.innerHTML = goalPilotState.runs.map(run => {
+                    const isActive = goalPilotState.runId === run.run_id;
+                    const goalsCount = Array.isArray(run.goals) ? run.goals.length : 0;
+                    return `
+                        <div class="goal-pilot-run-item ${isActive ? 'active' : ''}" data-run="${run.run_id}">
+                            <div class="goal-pilot-run-title">${escapeHtml(run.name || run.run_id)}</div>
+                            <div class="goal-pilot-run-meta">Phase: ${escapeHtml(run.phase || 'n/a')} · Goals: ${goalsCount}</div>
+                            <div class="goal-pilot-run-meta">Updated: ${escapeHtml(run.updated_at || '')}</div>
+                        </div>
+                    `;
+                }).join('');
+                list.querySelectorAll('.goal-pilot-run-item').forEach(item => {
+                    item.addEventListener('click', () => {
+                        const runId = item.dataset.run;
+                        if (!runId) return;
+                        goalPilotSelectRun(runId);
+                    });
+                });
+            }
+
+            async function goalPilotSelectRun(runId) {
+                goalPilotState.runId = runId;
+                renderGoalPilotRuns();
+                await goalPilotStatus();
+            }
+
             async function goalPilotCreate() {
                 try {
-                    const goals = parseLines(document.getElementById('goalPilotGoals').value);
-                    const doneCriteria = parseJsonInput(document.getElementById('goalPilotDoneCriteria').value, {});
-                    const milestonesRaw = document.getElementById('goalPilotMilestones').value;
+                    const goals = parseGoalsInput(document.getElementById('goalPilotGoals').value);
+                    const doneCriteria = buildDoneCriteria();
                     const name = document.getElementById('goalPilotRunName').value.trim() || null;
                     if (!name) throw new Error('Run name required');
-                    const milestones = milestonesRaw
-                        ? milestonesRaw.split(',').map(item => item.trim()).filter(Boolean)
-                        : [];
                     const response = await fetch('/control/goal_pilot/runs', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ goals, done_criteria: doneCriteria, milestones, name })
+                        body: JSON.stringify({ goals, done_criteria: doneCriteria, name })
                     });
                     const data = await response.json();
                     if (data.error) throw new Error(data.error);
                     setOutput('goalPilotCreateOutput', data);
                     if (data.run_id) {
-                        document.getElementById('goalPilotRunId').value = data.run_id;
+                        await goalPilotLoadRuns();
+                        await goalPilotSelectRun(data.run_id);
                     }
                 } catch (error) {
                     showToast(`Goal Pilot create failed: ${error.message}`, 'error');
@@ -2872,58 +3125,175 @@
 
             async function goalPilotStatus() {
                 try {
-                    const runId = document.getElementById('goalPilotRunId').value.trim();
-                    if (!runId) throw new Error('Run ID required');
-                    const [statusResponse, skillsResponse] = await Promise.all([
-                        fetch(`/control/goal_pilot/runs/${encodeURIComponent(runId)}`),
-                        fetch('/control/goal_pilot/skills?status=active')
-                    ]);
+                    const runId = goalPilotState.runId;
+                    if (!runId) throw new Error('Select a run first');
+                    const statusResponse = await fetch(`/control/goal_pilot/runs/${encodeURIComponent(runId)}`);
                     const statusData = await statusResponse.json();
                     if (statusData.error) throw new Error(statusData.error);
-                    const skillsData = await skillsResponse.json();
-                    const skillsCount = Array.isArray(skillsData.skills) ? skillsData.skills.length : null;
-                    renderGoalPilotStatus(statusData.status || statusData, skillsCount);
+                    const status = statusData.status || statusData;
+                    goalPilotState.journeys = status.journeys || [];
+                    goalPilotState.actions = status.actions || [];
+                    renderGoalPilotJourneys();
+                    renderGoalPilotPhaseHistory(status.phase_history || [], status.run);
+                    renderGoalPilotSuggestedChanges(goalPilotState.actions);
+                    renderGoalPilotRuns();
                 } catch (error) {
                     showToast(`Goal Pilot status failed: ${error.message}`, 'error');
                 }
             }
 
-            async function goalPilotUpdate() {
+            function renderGoalPilotPhaseHistory(history, run) {
+                const output = document.getElementById('goalPilotPhaseHistory');
+                const selector = document.getElementById('goalPilotPhaseSelect');
+                if (!output) return;
+                if (selector && run && run.phase) {
+                    selector.value = run.phase;
+                }
+                if (!history.length) {
+                    output.innerHTML = '<div class="goal-pilot-hint">No phase changes yet.</div>';
+                    return;
+                }
+                output.innerHTML = history.map(item => `
+                    <div class="goal-pilot-run-meta">${escapeHtml(item.created_at || '')} — ${escapeHtml(item.from_phase)} → ${escapeHtml(item.to_phase)} · ${escapeHtml(item.reason || '')}</div>
+                `).join('');
+            }
+
+            async function goalPilotPhaseChange() {
                 try {
-                    const runId = document.getElementById('goalPilotRunId').value.trim();
-                    if (!runId) throw new Error('Run ID required');
-                    const goals = parseLines(document.getElementById('goalPilotUpdateGoals').value);
-                    const note = document.getElementById('goalPilotUpdateNote').value.trim();
-                    const response = await fetch(`/control/goal_pilot/runs/${encodeURIComponent(runId)}`, {
-                        method: 'PATCH',
+                    const runId = goalPilotState.runId;
+                    if (!runId) throw new Error('Select a run first');
+                    const phase = document.getElementById('goalPilotPhaseSelect').value;
+                    const reason = document.getElementById('goalPilotPhaseReason').value.trim();
+                    if (!reason) throw new Error('Reason required');
+                    const response = await fetch(`/control/goal_pilot/runs/${encodeURIComponent(runId)}/phase`, {
+                        method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ goals, note })
+                        body: JSON.stringify({ phase, reason })
                     });
                     const data = await response.json();
                     if (data.error) throw new Error(data.error);
                     await goalPilotStatus();
                 } catch (error) {
-                    showToast(`Goal Pilot update failed: ${error.message}`, 'error');
+                    showToast(`Goal Pilot phase change failed: ${error.message}`, 'error');
                 }
             }
 
-            async function goalPilotAction() {
+            function renderGoalPilotJourneys() {
+                const container = document.getElementById('goalPilotJourneyList');
+                if (!container) return;
+                if (!goalPilotState.journeys.length) {
+                    container.innerHTML = '<div class="goal-pilot-hint">No journeys yet. Add the first critical user journey.</div>';
+                    return;
+                }
+                container.innerHTML = goalPilotState.journeys.map((journey, index) => {
+                    const lookahead = journey.lookahead || {};
+                    const lookaheadStatus = lookahead.status || 'green';
+                    const lookaheadNote = lookahead.note || '';
+                    const under = journey.under_the_covers || {};
+                    const badges = [
+                        `<span class="goal-pilot-pill">${escapeHtml(journey.priority || 'medium')}</span>`,
+                        `<span class="goal-pilot-pill ${lookaheadStatus === 'green' ? 'success' : lookaheadStatus === 'yellow' ? 'warning' : 'danger'}">Future fit: ${escapeHtml(lookaheadStatus)}</span>`
+                    ];
+                    if (journey.milestone) {
+                        badges.push(`<span class="goal-pilot-pill">Milestone: ${escapeHtml(journey.milestone)}</span>`);
+                    }
+                    return `
+                        <div class="goal-pilot-journey">
+                            <div class="goal-pilot-journey-header">
+                                <div class="goal-pilot-journey-title">${index + 1}. ${escapeHtml(journey.title)}</div>
+                                <div class="goal-pilot-journey-meta">${escapeHtml(journey.status || 'planned')}</div>
+                            </div>
+                            <div class="goal-pilot-journey-meta">${escapeHtml(journey.description || '')}</div>
+                            <div class="goal-pilot-journey-meta">Success: ${escapeHtml(journey.success_criteria || 'Not set')}</div>
+                            <div class="goal-pilot-badges">${badges.join('')}</div>
+                            <div class="goal-pilot-journey-meta">Look-ahead: ${escapeHtml(lookaheadNote || 'No conflicts noted')}</div>
+                            <div class="goal-pilot-journey-meta">Under the covers: ${Object.keys(under).filter(key => under[key]).map(key => key.replace('_', ' ')).join(', ') || 'None set'}</div>
+                            <div class="goal-pilot-journey-actions">
+                                <button class="btn btn-xs" data-move="up" data-journey="${journey.journey_id}">Move Up</button>
+                                <button class="btn btn-xs" data-move="down" data-journey="${journey.journey_id}">Move Down</button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+                container.querySelectorAll('button[data-move]').forEach(btn => {
+                    btn.addEventListener('click', async () => {
+                        const journeyId = btn.dataset.journey;
+                        const direction = btn.dataset.move;
+                        await reorderJourney(journeyId, direction);
+                    });
+                });
+            }
+
+            async function reorderJourney(journeyId, direction) {
+                const index = goalPilotState.journeys.findIndex(j => j.journey_id === journeyId);
+                if (index === -1) return;
+                const swapWith = direction === 'up' ? index - 1 : index + 1;
+                if (swapWith < 0 || swapWith >= goalPilotState.journeys.length) return;
+                const reordered = [...goalPilotState.journeys];
+                [reordered[index], reordered[swapWith]] = [reordered[swapWith], reordered[index]];
+                const order = reordered.map(j => j.journey_id);
+                const runId = goalPilotState.runId;
                 try {
-                    const runId = document.getElementById('goalPilotRunId').value.trim();
-                    if (!runId) throw new Error('Run ID required');
-                    const action = parseJsonInput(document.getElementById('goalPilotActionJson').value, null);
-                    if (!action) throw new Error('Action JSON required');
-                    const response = await fetch(`/control/goal_pilot/runs/${encodeURIComponent(runId)}/actions`, {
+                    const response = await fetch(`/control/goal_pilot/runs/${encodeURIComponent(runId)}/journeys/reorder`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ action })
+                        body: JSON.stringify({ order })
                     });
                     const data = await response.json();
                     if (data.error) throw new Error(data.error);
-                    setOutput('goalPilotActionOutput', data);
+                    goalPilotState.journeys = reordered;
+                    renderGoalPilotJourneys();
                 } catch (error) {
-                    showToast(`Goal Pilot action failed: ${error.message}`, 'error');
+                    showToast(`Goal Pilot reorder failed: ${error.message}`, 'error');
                 }
+            }
+
+            async function goalPilotCreateJourney() {
+                try {
+                    const runId = goalPilotState.runId;
+                    if (!runId) throw new Error('Select a run first');
+                    const title = document.getElementById('goalPilotJourneyTitle').value.trim();
+                    if (!title) throw new Error('Journey title required');
+                    const underTheCovers = {};
+                    document.querySelectorAll('[data-under]').forEach(el => {
+                        underTheCovers[el.dataset.under] = el.checked;
+                    });
+                    const lookaheadStatus = document.getElementById('goalPilotJourneyLookahead').value;
+                    const lookaheadNote = document.getElementById('goalPilotJourneyLookaheadNote').value.trim();
+                    const payload = {
+                        title,
+                        description: document.getElementById('goalPilotJourneyDesc').value.trim(),
+                        success_criteria: document.getElementById('goalPilotJourneySuccess').value.trim(),
+                        priority: document.getElementById('goalPilotJourneyPriority').value,
+                        milestone: document.getElementById('goalPilotJourneyMilestone').value.trim() || null,
+                        under_the_covers: underTheCovers,
+                        lookahead: { status: lookaheadStatus, note: lookaheadNote },
+                        order_index: goalPilotState.journeys.length
+                    };
+                    const response = await fetch(`/control/goal_pilot/runs/${encodeURIComponent(runId)}/journeys`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    setOutput('goalPilotJourneyOutput', data.journey || data);
+                    await goalPilotStatus();
+                } catch (error) {
+                    showToast(`Goal Pilot journey failed: ${error.message}`, 'error');
+                }
+            }
+
+            function renderGoalPilotSuggestedChanges(actions) {
+                const container = document.getElementById('goalPilotSuggestedChanges');
+                if (!container) return;
+                if (!actions.length) {
+                    container.innerHTML = '<div class="goal-pilot-hint">No suggested changes yet.</div>';
+                    return;
+                }
+                container.innerHTML = actions.slice(0, 6).map(action => `
+                    <div class="goal-pilot-run-meta">${escapeHtml(action.created_at || '')} · ${escapeHtml(action.action_type || 'action')} · ${escapeHtml(action.status || '')}</div>
+                `).join('');
             }
 
             async function goalPilotSkills() {
@@ -3002,9 +3372,9 @@
 
             // Goal Pilot buttons
             document.getElementById('goalPilotCreateBtn').addEventListener('click', goalPilotCreate);
-            document.getElementById('goalPilotStatusBtn').addEventListener('click', goalPilotStatus);
-            document.getElementById('goalPilotUpdateBtn').addEventListener('click', goalPilotUpdate);
-            document.getElementById('goalPilotActionBtn').addEventListener('click', goalPilotAction);
+            document.getElementById('goalPilotRefreshRunsBtn').addEventListener('click', goalPilotLoadRuns);
+            document.getElementById('goalPilotPhaseBtn').addEventListener('click', goalPilotPhaseChange);
+            document.getElementById('goalPilotJourneyCreateBtn').addEventListener('click', goalPilotCreateJourney);
             document.getElementById('goalPilotSkillsBtn').addEventListener('click', goalPilotSkills);
             document.getElementById('goalPilotSkillUpsertBtn').addEventListener('click', goalPilotUpsertSkill);
             document.getElementById('goalPilotSkillsExportBtn').addEventListener('click', goalPilotExportSkills);

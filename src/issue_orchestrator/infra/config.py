@@ -403,6 +403,17 @@ class ClaimsConfig:
     convergence_required_wins: int = 2  # Consecutive wins needed
 
 
+@dataclass
+class GoalPilotConfig:
+    """Configuration for Goal Pilot AI."""
+
+    enabled: bool = False
+    agent: Optional[str] = None
+    approval_policy: str = "journeys_only"  # journeys_only | gatekeeper | batch
+    approval_batch_size: int = 10
+    approval_batch_window_minutes: int = 60
+
+
 def _parse_e2e_config(data: dict) -> E2EConfig:
     """Parse e2e section from YAML data."""
     pytest_args = data.get("pytest_args") or ["tests/e2e", "-v"]
@@ -440,6 +451,17 @@ def _parse_claims_config(data: dict) -> ClaimsConfig:
         convergence_poll_min_ms=data.get("convergence_poll_min_ms", 250),
         convergence_poll_max_ms=data.get("convergence_poll_max_ms", 500),
         convergence_required_wins=data.get("convergence_required_wins", 2),
+    )
+
+
+def _parse_goal_pilot_config(data: dict) -> GoalPilotConfig:
+    """Parse goal_pilot section from YAML data."""
+    return GoalPilotConfig(
+        enabled=data.get("enabled", False),
+        agent=data.get("agent"),
+        approval_policy=data.get("approval_policy", "journeys_only"),
+        approval_batch_size=data.get("approval_batch_size", 10),
+        approval_batch_window_minutes=data.get("approval_batch_window_minutes", 60),
     )
 
 
@@ -764,7 +786,7 @@ def _load_agents_section(
 _TOP_LEVEL_SECTION_KEYS = (
     "agents", "labels", "review", "cleanup", "worktrees", "execution",
     "validation", "ui", "observability", "security", "filtering",
-    "triage", "e2e", "milestones", "state", "config", "claims", "hooks",
+    "triage", "e2e", "goal_pilot", "milestones", "state", "config", "claims", "hooks",
 )
 
 # Derive ALLOWED_TOP_LEVEL_FIELDS from _TOP_LEVEL_SECTION_KEYS — single source of truth.
@@ -935,6 +957,9 @@ class Config:
 
     # E2E async test runner configuration
     e2e: E2EConfig = field(default_factory=E2EConfig)
+
+    # Goal Pilot AI configuration
+    goal_pilot: GoalPilotConfig = field(default_factory=GoalPilotConfig)
 
     # Claims/lease configuration for multi-orchestrator coordination
     claims: ClaimsConfig = field(default_factory=ClaimsConfig)
@@ -1366,6 +1391,21 @@ class Config:
         if review_dict:
             result["review"] = review_dict
 
+        # Goal Pilot section
+        goal_pilot_dict: dict = {}
+        if self.goal_pilot.enabled:
+            goal_pilot_dict["enabled"] = True
+        if self.goal_pilot.agent:
+            goal_pilot_dict["agent"] = self.goal_pilot.agent
+        if self.goal_pilot.approval_policy != "journeys_only":
+            goal_pilot_dict["approval_policy"] = self.goal_pilot.approval_policy
+        if self.goal_pilot.approval_batch_size != 10:
+            goal_pilot_dict["approval_batch_size"] = self.goal_pilot.approval_batch_size
+        if self.goal_pilot.approval_batch_window_minutes != 60:
+            goal_pilot_dict["approval_batch_window_minutes"] = self.goal_pilot.approval_batch_window_minutes
+        if goal_pilot_dict:
+            result["goal_pilot"] = goal_pilot_dict
+
         # Worktrees section
         worktrees_dict: dict = {}
         # Only include worktree_base if it was explicitly set (not the default)
@@ -1526,6 +1566,8 @@ class Config:
             config.triage = _parse_triage_config(sections["triage"])
         if sections["e2e"]:
             config.e2e = _parse_e2e_config(sections["e2e"])
+        if sections["goal_pilot"]:
+            config.goal_pilot = _parse_goal_pilot_config(sections["goal_pilot"])
         if sections["claims"]:
             config.claims = _parse_claims_config(sections["claims"])
         if sections["hooks"]:
@@ -1571,6 +1613,7 @@ class Config:
         """
         from .validators import (
             AgentValidator,
+            GoalPilotValidator,
             IsolationValidator,
             ReviewWorkflowValidator,
             TemplateValidator,
@@ -1584,6 +1627,7 @@ class Config:
         errors.extend(WorktreeValidator().validate(self))
         errors.extend(AgentValidator().validate(self))
         errors.extend(ReviewWorkflowValidator().validate(self))
+        errors.extend(GoalPilotValidator().validate(self))
         errors.extend(IsolationValidator().validate(self))
         errors.extend(TemplateValidator().validate(self))
         errors.extend(UnknownFieldsValidator().validate(self))

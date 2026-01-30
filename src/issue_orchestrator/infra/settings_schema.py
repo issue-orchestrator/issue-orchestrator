@@ -324,6 +324,73 @@ class ReviewSettings(BaseModel):
     )
 
 
+class GoalPilotSettings(BaseModel):
+    """Settings for the Goal Pilot tab."""
+
+    enabled: bool = Field(
+        False,
+        title="Enable Goal Pilot",
+        description="Enable the Goal Pilot AI controller",
+        json_schema_extra={
+            "section": "Goal Pilot",
+            "config_attr": "goal_pilot.enabled",
+            "yaml_path": "goal_pilot.enabled",
+            "summary": {
+                "section": "goal_pilot",
+                "format": SUMMARY_ENABLED_FLAG,
+                "label": "Goal Pilot",
+            },
+        },
+    )
+    agent: Optional[str] = Field(
+        None,
+        title="Goal Pilot Agent",
+        description="Agent label to run as Goal Pilot (e.g., agent:goal-pilot)",
+        json_schema_extra={
+            "section": "Goal Pilot",
+            "config_attr": "goal_pilot.agent",
+            "yaml_path": "goal_pilot.agent",
+            "doctor_check": DOCTOR_CHECK_REFERENCES_AGENT,
+            "doctor_check_condition": "goal_pilot.enabled",
+            "doctor_severity": DOCTOR_SEVERITY_ERROR,
+        },
+    )
+    approval_policy: str = Field(
+        "journeys_only",
+        title="Approval Policy",
+        description="How Goal Pilot applies repo changes",
+        json_schema_extra={
+            "section": "Goal Pilot",
+            "config_attr": "goal_pilot.approval_policy",
+            "yaml_path": "goal_pilot.approval_policy",
+        },
+    )
+    approval_batch_size: int = Field(
+        10,
+        title="Approval Batch Size",
+        description="How many changes to bundle before approval (batch mode)",
+        ge=1,
+        le=200,
+        json_schema_extra={
+            "section": "Goal Pilot",
+            "config_attr": "goal_pilot.approval_batch_size",
+            "yaml_path": "goal_pilot.approval_batch_size",
+        },
+    )
+    approval_batch_window_minutes: int = Field(
+        60,
+        title="Approval Batch Window (minutes)",
+        description="Max time to wait before asking for approval (batch mode)",
+        ge=1,
+        le=1440,
+        json_schema_extra={
+            "section": "Goal Pilot",
+            "config_attr": "goal_pilot.approval_batch_window_minutes",
+            "yaml_path": "goal_pilot.approval_batch_window_minutes",
+        },
+    )
+
+
 class AdvancedSettings(BaseModel):
     """Settings for the Advanced tab."""
 
@@ -461,6 +528,7 @@ TAB_DEFINITIONS: list[dict[str, Any]] = [
     {"key": "e2e", "label": "E2E Runner", "model": E2ESettings},
     {"key": "filtering", "label": "Filtering", "model": FilteringSettings},
     {"key": "review", "label": "Review", "model": ReviewSettings},
+    {"key": "goal_pilot", "label": "Goal Pilot", "model": GoalPilotSettings},
     {"key": "hooks", "label": "Hooks", "model": HooksSettings},
     {"key": "advanced", "label": "Advanced", "model": AdvancedSettings},
 ]

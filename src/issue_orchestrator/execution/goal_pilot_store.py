@@ -13,7 +13,9 @@ from typing import Any, Iterator
 
 from ..domain.goal_pilot import (
     GoalPilotAction,
+    GoalPilotJourney,
     GoalPilotNote,
+    GoalPilotPhaseChange,
     GoalPilotRun,
     GoalPilotSkill,
     GoalPilotSnapshot,
@@ -28,6 +30,7 @@ CREATE TABLE IF NOT EXISTS goal_pilot_runs (
     updated_at TEXT NOT NULL,
     status TEXT NOT NULL,
     name TEXT NOT NULL,
+    phase TEXT NOT NULL,
     goals_json TEXT NOT NULL,
     done_criteria_json TEXT NOT NULL
 );
@@ -76,6 +79,34 @@ CREATE TABLE IF NOT EXISTS goal_pilot_skills (
     last_verified TEXT
 );
 
+CREATE TABLE IF NOT EXISTS goal_pilot_phase_history (
+    phase_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    from_phase TEXT NOT NULL,
+    to_phase TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    changes_json TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES goal_pilot_runs(run_id)
+);
+
+CREATE TABLE IF NOT EXISTS goal_pilot_journeys (
+    journey_id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    order_index INTEGER NOT NULL,
+    priority TEXT NOT NULL,
+    status TEXT NOT NULL,
+    success_criteria TEXT NOT NULL,
+    under_the_covers_json TEXT NOT NULL,
+    lookahead_json TEXT NOT NULL,
+    milestone TEXT,
+    FOREIGN KEY(run_id) REFERENCES goal_pilot_runs(run_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_goal_pilot_runs_status
     ON goal_pilot_runs(status);
 
@@ -87,6 +118,12 @@ CREATE INDEX IF NOT EXISTS idx_goal_pilot_snapshots_run_id
 
 CREATE INDEX IF NOT EXISTS idx_goal_pilot_skills_status
     ON goal_pilot_skills(status);
+
+CREATE INDEX IF NOT EXISTS idx_goal_pilot_phase_history_run_id
+    ON goal_pilot_phase_history(run_id);
+
+CREATE INDEX IF NOT EXISTS idx_goal_pilot_journeys_run_id
+    ON goal_pilot_journeys(run_id);
 """
 
 
@@ -108,6 +145,56 @@ class SqliteGoalPilotStore:
         conn = self._get_connection()
         conn.executescript(_SCHEMA)
         self._ensure_run_name_not_null()
+        self._ensure_run_phase_column()
+
+    def _ensure_run_phase_column(self) -> None:
+        conn = self._get_connection()
+        columns = {row["name"]: row for row in conn.execute("PRAGMA table_info(goal_pilot_runs)").fetchall()}
+        if not columns:
+            return
+        phase_info = columns.get("phase")
+        if phase_info is None:
+            with self._transaction() as tx:
+                tx.execute("ALTER TABLE goal_pilot_runs ADD COLUMN phase TEXT")
+                tx.execute(
+                    "UPDATE goal_pilot_runs SET phase = 'outcomes_opportunities' "
+                    "WHERE phase IS NULL OR phase = ''"
+                )
+            columns = {row["name"]: row for row in conn.execute("PRAGMA table_info(goal_pilot_runs)").fetchall()}
+            phase_info = columns.get("phase")
+        if phase_info and phase_info["notnull"] == 1:
+            return
+
+        with self._transaction() as tx:
+            tx.execute(
+                "UPDATE goal_pilot_runs SET phase = 'outcomes_opportunities' "
+                "WHERE phase IS NULL OR phase = ''"
+            )
+            tx.execute("""
+                CREATE TABLE IF NOT EXISTS goal_pilot_runs_v3 (
+                    run_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    goals_json TEXT NOT NULL,
+                    done_criteria_json TEXT NOT NULL
+                )
+            """)
+            tx.execute("""
+                INSERT INTO goal_pilot_runs_v3 (
+                    run_id, created_at, updated_at, status, name, phase, goals_json, done_criteria_json
+                )
+                SELECT run_id, created_at, updated_at, status, name, phase, goals_json, done_criteria_json
+                FROM goal_pilot_runs
+            """)
+            tx.execute("DROP TABLE goal_pilot_runs")
+            tx.execute("ALTER TABLE goal_pilot_runs_v3 RENAME TO goal_pilot_runs")
+            tx.execute("""
+                CREATE INDEX IF NOT EXISTS idx_goal_pilot_runs_status
+                    ON goal_pilot_runs(status)
+            """)
 
     def _ensure_run_name_not_null(self) -> None:
         """Ensure goal_pilot_runs.name is NOT NULL (migrates if needed)."""
@@ -188,6 +275,7 @@ class SqliteGoalPilotStore:
         status: str = "active",
         run_id: str | None = None,
         name: str = "",
+        phase: str = "outcomes_opportunities",
     ) -> GoalPilotRun:
         run_id = run_id or f"gpr-{uuid.uuid4().hex[:12]}"
         if not name or not str(name).strip():
@@ -200,10 +288,10 @@ class SqliteGoalPilotStore:
             conn.execute(
                 """
                 INSERT INTO goal_pilot_runs (
-                    run_id, created_at, updated_at, status, name, goals_json, done_criteria_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    run_id, created_at, updated_at, status, name, phase, goals_json, done_criteria_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, now, now, status, name, goals_json, done_criteria_json),
+                (run_id, now, now, status, name, phase, goals_json, done_criteria_json),
             )
 
         return GoalPilotRun(
@@ -212,9 +300,30 @@ class SqliteGoalPilotStore:
             updated_at=now,
             status=status,
             name=name,
+            phase=phase,
             goals=goals,
             done_criteria=done_criteria,
         )
+
+    def list_runs(self, limit: int = 50) -> list[GoalPilotRun]:
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT * FROM goal_pilot_runs ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [
+            GoalPilotRun(
+                run_id=row["run_id"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                status=row["status"],
+                name=row["name"],
+                phase=row["phase"],
+                goals=json.loads(row["goals_json"]),
+                done_criteria=json.loads(row["done_criteria_json"]),
+            )
+            for row in rows
+        ]
 
     def get_run(self, run_id: str) -> GoalPilotRun | None:
         conn = self._get_connection()
@@ -230,6 +339,7 @@ class SqliteGoalPilotStore:
             updated_at=row["updated_at"],
             status=row["status"],
             name=row["name"],
+            phase=row["phase"],
             goals=json.loads(row["goals_json"]),
             done_criteria=json.loads(row["done_criteria_json"]),
         )
@@ -246,6 +356,233 @@ class SqliteGoalPilotStore:
                 (status, now, run_id),
             )
 
+    def update_run_phase(self, run_id: str, phase: str) -> None:
+        now = _now_iso()
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                UPDATE goal_pilot_runs
+                SET phase = ?, updated_at = ?
+                WHERE run_id = ?
+                """,
+                (phase, now, run_id),
+            )
+
+    def add_phase_change(
+        self,
+        run_id: str,
+        from_phase: str,
+        to_phase: str,
+        reason: str,
+        changes: dict[str, Any],
+        phase_id: str | None = None,
+    ) -> GoalPilotPhaseChange:
+        now = _now_iso()
+        phase_id = phase_id or f"gpp-{uuid.uuid4().hex[:12]}"
+        changes_json = json.dumps(changes)
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO goal_pilot_phase_history (
+                    phase_id, run_id, created_at, from_phase, to_phase, reason, changes_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (phase_id, run_id, now, from_phase, to_phase, reason, changes_json),
+            )
+        return GoalPilotPhaseChange(
+            phase_id=phase_id,
+            run_id=run_id,
+            created_at=now,
+            from_phase=from_phase,
+            to_phase=to_phase,
+            reason=reason,
+            changes=changes,
+        )
+
+    def list_phase_history(self, run_id: str, limit: int = 50) -> list[GoalPilotPhaseChange]:
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT * FROM goal_pilot_phase_history
+            WHERE run_id = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (run_id, limit),
+        ).fetchall()
+        return [
+            GoalPilotPhaseChange(
+                phase_id=row["phase_id"],
+                run_id=row["run_id"],
+                created_at=row["created_at"],
+                from_phase=row["from_phase"],
+                to_phase=row["to_phase"],
+                reason=row["reason"],
+                changes=json.loads(row["changes_json"]),
+            )
+            for row in rows
+        ]
+
+    def add_journey(
+        self,
+        run_id: str,
+        title: str,
+        description: str,
+        order_index: int,
+        priority: str,
+        status: str,
+        success_criteria: str,
+        under_the_covers: dict[str, Any],
+        lookahead: dict[str, Any],
+        milestone: str | None = None,
+        journey_id: str | None = None,
+    ) -> GoalPilotJourney:
+        now = _now_iso()
+        journey_id = journey_id or f"gpj-{uuid.uuid4().hex[:12]}"
+        with self._transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO goal_pilot_journeys (
+                    journey_id, run_id, created_at, updated_at, title, description,
+                    order_index, priority, status, success_criteria,
+                    under_the_covers_json, lookahead_json, milestone
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    journey_id,
+                    run_id,
+                    now,
+                    now,
+                    title,
+                    description,
+                    order_index,
+                    priority,
+                    status,
+                    success_criteria,
+                    json.dumps(under_the_covers),
+                    json.dumps(lookahead),
+                    milestone,
+                ),
+            )
+        return GoalPilotJourney(
+            journey_id=journey_id,
+            run_id=run_id,
+            created_at=now,
+            updated_at=now,
+            title=title,
+            description=description,
+            order_index=order_index,
+            priority=priority,
+            status=status,
+            success_criteria=success_criteria,
+            under_the_covers=under_the_covers,
+            lookahead=lookahead,
+            milestone=milestone,
+        )
+
+    def list_journeys(self, run_id: str) -> list[GoalPilotJourney]:
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT * FROM goal_pilot_journeys
+            WHERE run_id = ?
+            ORDER BY order_index ASC, created_at ASC
+            """,
+            (run_id,),
+        ).fetchall()
+        return [
+            GoalPilotJourney(
+                journey_id=row["journey_id"],
+                run_id=row["run_id"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+                title=row["title"],
+                description=row["description"],
+                order_index=row["order_index"],
+                priority=row["priority"],
+                status=row["status"],
+                success_criteria=row["success_criteria"],
+                under_the_covers=json.loads(row["under_the_covers_json"]),
+                lookahead=json.loads(row["lookahead_json"]),
+                milestone=row["milestone"],
+            )
+            for row in rows
+        ]
+
+    def update_journey(
+        self,
+        journey_id: str,
+        updates: dict[str, Any],
+    ) -> GoalPilotJourney:
+        allowed = {
+            "title",
+            "description",
+            "order_index",
+            "priority",
+            "status",
+            "success_criteria",
+            "under_the_covers",
+            "lookahead",
+            "milestone",
+        }
+        fields = {key: value for key, value in updates.items() if key in allowed}
+        if not fields:
+            raise ValueError("No valid journey updates provided")
+        now = _now_iso()
+        columns = []
+        values: list[Any] = []
+        for key, value in fields.items():
+            if key in {"under_the_covers", "lookahead"}:
+                columns.append(f"{key}_json = ?")
+                values.append(json.dumps(value))
+            else:
+                columns.append(f"{key} = ?")
+                values.append(value)
+        columns.append("updated_at = ?")
+        values.append(now)
+        values.append(journey_id)
+        with self._transaction() as conn:
+            conn.execute(
+                f"""
+                UPDATE goal_pilot_journeys
+                SET {", ".join(columns)}
+                WHERE journey_id = ?
+                """,
+                tuple(values),
+            )
+        row = self._get_connection().execute(
+            "SELECT * FROM goal_pilot_journeys WHERE journey_id = ?",
+            (journey_id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError("Journey not found after update")
+        return GoalPilotJourney(
+            journey_id=row["journey_id"],
+            run_id=row["run_id"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            title=row["title"],
+            description=row["description"],
+            order_index=row["order_index"],
+            priority=row["priority"],
+            status=row["status"],
+            success_criteria=row["success_criteria"],
+            under_the_covers=json.loads(row["under_the_covers_json"]),
+            lookahead=json.loads(row["lookahead_json"]),
+            milestone=row["milestone"],
+        )
+
+    def reorder_journeys(self, run_id: str, ordered_ids: list[str]) -> None:
+        with self._transaction() as conn:
+            for index, journey_id in enumerate(ordered_ids):
+                conn.execute(
+                    """
+                    UPDATE goal_pilot_journeys
+                    SET order_index = ?, updated_at = ?
+                    WHERE journey_id = ? AND run_id = ?
+                    """,
+                    (index, _now_iso(), journey_id, run_id),
+                )
     def update_run_goals(self, run_id: str, goals: list[str]) -> None:
         now = _now_iso()
         goals_json = json.dumps(goals)

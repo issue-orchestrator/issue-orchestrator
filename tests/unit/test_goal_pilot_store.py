@@ -14,6 +14,7 @@ def test_goal_pilot_store_round_trip(tmp_path):
     assert fetched is not None
     assert fetched.run_id == run.run_id
     assert fetched.name == "UI clarity sprint"
+    assert fetched.phase == "outcomes_opportunities"
     assert fetched.goals == ["ui clarity", "nav ease"]
     assert fetched.done_criteria == {"all_closed": True}
 
@@ -51,6 +52,31 @@ def test_goal_pilot_store_round_trip(tmp_path):
     notes = store.list_notes(run.run_id)
     assert [n.note_id for n in notes] == [note.note_id]
     assert notes[0].note_text == "Kickoff"
+
+    phase_change = store.add_phase_change(
+        run_id=run.run_id,
+        from_phase="outcomes_opportunities",
+        to_phase="critical_journeys",
+        reason="Journey mapping started",
+        changes={"journeys": 2},
+    )
+    history = store.list_phase_history(run.run_id)
+    assert history[0].phase_id == phase_change.phase_id
+
+    journey = store.add_journey(
+        run_id=run.run_id,
+        title="Browse issues",
+        description="Navigate quickly",
+        order_index=0,
+        priority="high",
+        status="planned",
+        success_criteria="Fast comprehension",
+        under_the_covers={"architecture": True},
+        lookahead={"status": "green"},
+        milestone="M1",
+    )
+    journeys = store.list_journeys(run.run_id)
+    assert [j.journey_id for j in journeys] == [journey.journey_id]
 
     skill = store.upsert_skill(
         title="UI clarity",
