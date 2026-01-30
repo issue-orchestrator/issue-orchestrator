@@ -2935,6 +2935,305 @@ Find PRs with `{review_label}` label and audit them for patterns, issues, and qu
 
 
 # =============================================================================
+# Tools API
+# =============================================================================
+# These endpoints provide utilities accessible from the unified dashboard.
+
+
+@control_app.get("/control/tools/audit")
+async def tools_audit(
+    repo_root: str = Query(...),
+    issue_number: int | None = Query(default=None),
+) -> JSONResponse:
+    """Audit why issues are queued or blocked.
+
+    Query params:
+        repo_root: str - Repository root path
+        issue_number: int (optional) - Specific issue to audit
+
+    Returns:
+        List of audit entries with issue status and reasons.
+    """
+    from ..infra.audit import audit_queue
+    from ..execution.providers import create_repository_host
+    from ..execution.git_working_copy import GitWorkingCopy
+    from ..infra.analysis import extract_issue_branches
+    from ..infra.config import Config
+
+    repo_path = _validate_repo_root(repo_root)
+    if repo_path is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    try:
+        config = Config.find_and_load(start_path=repo_path)
+    except FileNotFoundError:
+        return JSONResponse({"error": "Config not found for repo"}, status_code=404)
+
+    if not config.repo:
+        return JSONResponse({"error": "No repository configured"}, status_code=400)
+
+    try:
+        issue_tracker = create_repository_host(config.repo)
+        working_copy = GitWorkingCopy()
+        issue_branches = extract_issue_branches(
+            working_copy.list_remote_branches(config.repo_root)
+        )
+        entries = audit_queue(
+            config,
+            state=None,
+            issue_tracker=issue_tracker,
+            issue_branches=issue_branches,
+        )
+
+        # Filter by issue if specified
+        if issue_number is not None:
+            entries = [e for e in entries if e.issue.number == issue_number]
+
+        return JSONResponse({
+            "entries": [
+                {
+                    "issue_number": e.issue.number,
+                    "title": e.issue.title,
+                    "status": e.status.value,  # SkipReason enum
+                    "reason": e.detail,
+                    "labels": list(e.issue.labels),
+                    "agent": e.issue.agent_type,
+                    "priority": e.issue.priority,
+                }
+                for e in entries
+            ]
+        })
+    except Exception as e:
+        logger.exception("Audit failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@control_app.get("/control/tools/trace")
+async def tools_trace(
+    repo_root: str = Query(...),
+    issue_number: int = Query(...),
+    limit: int = Query(default=100),
+) -> JSONResponse:
+    """Get trace log entries for a specific issue.
+
+    Query params:
+        repo_root: str - Repository root path
+        issue_number: int - Issue number to trace
+        limit: int - Max lines to return (default: 100)
+
+    Returns:
+        List of log entries related to the issue.
+    """
+    import re
+
+    repo_path = _validate_repo_root(repo_root)
+    if repo_path is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    log_file = repo_path / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log"
+    if not log_file.exists():
+        return JSONResponse({
+            "entries": [],
+            "message": "No log file found. Has the orchestrator run for this repo?",
+        })
+
+    try:
+        content = log_file.read_text()
+        lines = content.splitlines()
+
+        # Find the last startup marker
+        last_start = 0
+        for i, line in enumerate(lines):
+            if "Starting orchestrator" in line:
+                last_start = i
+
+        # Filter entries for this issue
+        pattern = re.compile(
+            rf"\[issue-{issue_number}\]|"
+            rf"issue={issue_number}(?![0-9])|"
+            rf"issue_number={issue_number}(?![0-9])|"
+            rf"issue #{issue_number}(?![0-9])"
+        )
+
+        matches = []
+        for line in lines[last_start:]:
+            if pattern.search(line):
+                matches.append(line)
+                if len(matches) >= limit:
+                    break
+
+        return JSONResponse({
+            "entries": matches,
+            "total": len(matches),
+            "truncated": len(matches) >= limit,
+        })
+    except Exception as e:
+        logger.exception("Trace failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@control_app.post("/control/tools/labels/init")
+async def tools_labels_init(request: Request) -> JSONResponse:
+    """Initialize or refresh GitHub labels for a repository.
+
+    JSON body:
+        repo_root: str - Repository root path
+
+    Returns:
+        Summary of created/updated labels.
+    """
+    from ..execution.providers import create_repository_host
+    from ..infra.config import Config
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    repo_path = _validate_repo_root(body.get("repo_root"))
+    if repo_path is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    try:
+        config = Config.find_and_load(start_path=repo_path)
+    except FileNotFoundError:
+        return JSONResponse({"error": "Config not found for repo"}, status_code=404)
+
+    if not config.repo:
+        return JSONResponse({"error": "No repository configured"}, status_code=400)
+
+    try:
+        client = create_repository_host(config.repo)
+
+        # Collect labels to create
+        labels = [
+            config.get_label_in_progress(),
+            config.get_label_blocked(),
+            config.get_label_needs_human(),
+            "priority:high",
+            "priority:medium",
+            "priority:low",
+        ]
+        labels.extend(config.agents.keys())
+
+        created: list[str] = []
+        updated: list[str] = []
+        failed: list[str] = []
+        existing = {label.get("name") for label in client.list_labels() if isinstance(label, dict)}
+
+        for label in labels:
+            try:
+                client.create_label(label, force=True)
+                if label in existing:
+                    updated.append(label)
+                else:
+                    created.append(label)
+            except Exception as exc:
+                logger.warning("Failed to create/update label %s: %s", label, exc)
+                failed.append(label)
+
+        return JSONResponse({
+            "created": created,
+            "updated": updated,
+            "failed": failed,
+        })
+    except Exception as e:
+        logger.exception("Label init failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+def _find_stale_worktrees(
+    repo_root: Path,
+    worktree_base: Path,
+    active: set[Path],
+) -> list[dict[str, str]]:
+    """Find stale worktree directories matching the orchestrator naming convention.
+
+    Only considers directories that:
+    1. Match the pattern {repo_name}-{number} (orchestrator worktree convention)
+    2. Have a .git file (worktrees have a file, not a directory)
+    3. Are not in git's active worktree list
+
+    This prevents accidentally identifying unrelated directories as stale.
+    """
+    import re
+
+    stale = []
+    if not worktree_base.exists():
+        return stale
+
+    repo_name = repo_root.name
+    # Pattern: {repo_name}-{issue_number}
+    worktree_pattern = re.compile(rf"^{re.escape(repo_name)}-(\d+)$")
+
+    for entry in worktree_base.iterdir():
+        if not entry.is_dir():
+            continue
+        # Must match our naming convention
+        if not worktree_pattern.match(entry.name):
+            continue
+        # Must have a .git file (worktrees have a .git file, not directory)
+        git_path = entry / ".git"
+        if not git_path.exists() or git_path.is_dir():
+            continue
+        # Must not be in active worktrees
+        if entry in active:
+            continue
+        stale.append({"path": str(entry), "name": entry.name})
+
+    return stale
+
+
+@control_app.post("/control/tools/worktrees/cleanup")
+async def tools_worktrees_cleanup(request: Request) -> JSONResponse:
+    """List stale worktrees (read-only, no deletion).
+
+    This endpoint only LISTS stale worktrees. It does not delete them.
+    Users should run `git worktree prune` manually to clean up.
+
+    JSON body:
+        repo_root: str - Repository root path
+
+    Returns:
+        List of stale worktrees and instructions for cleanup.
+    """
+    from ..execution.git_working_copy import GitWorkingCopy
+    from ..infra.config import Config
+
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    repo_path = _validate_repo_root(body.get("repo_root"))
+    if repo_path is None:
+        return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
+
+    try:
+        config = Config.find_and_load(start_path=repo_path)
+    except FileNotFoundError:
+        return JSONResponse({"error": "Config not found for repo"}, status_code=404)
+
+    worktree_base = config.worktree_base
+    if not worktree_base.exists():
+        return JSONResponse({"stale_worktrees": [], "message": "No worktree directory found"})
+
+    try:
+        working_copy = GitWorkingCopy()
+        active = working_copy.list_active_worktrees(repo_path)
+        stale = _find_stale_worktrees(repo_path, worktree_base, active)
+
+        return JSONResponse({
+            "stale_worktrees": stale,
+            "cleanup_command": f"cd {repo_path} && git worktree prune",
+            "message": "Run the cleanup_command in terminal to remove stale worktrees safely.",
+        })
+    except Exception as e:
+        logger.exception("Worktree listing failed")
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+
+# =============================================================================
 # E2E Test Runner API
 # =============================================================================
 # These endpoints manage async E2E test execution per repository.

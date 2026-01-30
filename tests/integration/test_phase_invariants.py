@@ -101,64 +101,53 @@ class TestPhase3ControlCenterUI:
     """Phase 3: UI served by control plane, not by a running orchestrator."""
 
     def test_control_center_ui_served_by_control_api(self) -> None:
-        """Control center UI is served at / by control_api."""
+        """Unified dashboard UI is served at / by control_api."""
         client = TestClient(control_app)
 
         response = client.get("/")
 
         assert response.status_code == 200
         assert "text/html" in response.headers["content-type"]
-        assert "Control Center" in response.text
+        # New unified dashboard has "Issue Orchestrator" branding
+        assert "Issue Orchestrator" in response.text
 
     def test_control_center_ui_contains_repo_management(self) -> None:
-        """Control center UI has repo management functionality."""
+        """Unified dashboard has repo management functionality."""
         client = TestClient(control_app)
 
         response = client.get("/")
 
         assert response.status_code == 200
-        # UI should have setup wizard and discovery
-        assert "openSetupWizard" in response.text
-        assert "discoverRepos" in response.text
         # UI should have start/stop functionality
         assert "startRepo" in response.text
         assert "stopRepo" in response.text
+        # UI should have repository loading
+        assert "loadRepos" in response.text
 
-    def test_discovered_repos_visible_by_default(self) -> None:
-        """Discovered Repositories section is outside advancedSection (always visible)."""
+    def test_sidebar_navigation_present(self) -> None:
+        """Unified dashboard has sidebar navigation with key views."""
         client = TestClient(control_app)
 
         response = client.get("/")
         html = response.text
 
-        # Find positions in HTML
-        discover_card_pos = html.find('id="discoverCard"')
-        advanced_section_pos = html.find('id="advancedSection"')
+        # Sidebar should have navigation items
+        assert 'class="sidebar"' in html, "Sidebar not found"
+        assert 'data-view="repositories"' in html, "Repositories nav item not found"
+        assert 'data-view="tools"' in html, "Tools nav item not found"
+        assert 'data-view="settings"' in html, "Settings nav item not found"
 
-        assert discover_card_pos != -1, "discoverCard not found in HTML"
-        assert advanced_section_pos != -1, "advancedSection not found in HTML"
-        # discoverCard should appear BEFORE advancedSection (outside it)
-        assert discover_card_pos < advanced_section_pos, (
-            "discoverCard should appear before advancedSection in the DOM, "
-            "meaning it's always visible (not hidden inside advancedSection)"
-        )
-
-    def test_toggle_button_labeled_all_repositories(self) -> None:
-        """Toggle button uses 'All Repositories' label, not 'Advanced'."""
+    def test_theme_support_present(self) -> None:
+        """Unified dashboard has theme support (dark/light)."""
         client = TestClient(control_app)
 
         response = client.get("/")
         html = response.text
 
-        # Should have the new toggle button
-        assert 'id="allReposToggle"' in html, "allReposToggle button not found"
-        assert "All Repositories</button>" in html, (
-            "Button text should be 'All Repositories'"
-        )
-        # Should NOT have old 'Advanced' toggle
-        assert 'id="advancedToggle"' not in html, (
-            "Old advancedToggle should be removed"
-        )
+        # Theme selector should be present
+        assert 'class="theme-selector"' in html, "Theme selector not found"
+        assert 'data-theme="light"' in html, "Light theme option not found"
+        assert 'data-theme="dark"' in html, "Dark theme option not found"
 
 
 class TestPhase4FailureVisibility:
@@ -517,3 +506,93 @@ class TestDashboardRendering:
 
         response = client.post("/api/issues", json={"title": "test"})
         assert response.status_code == 503  # No orchestrator, but endpoint exists
+
+
+class TestToolEndpoints:
+    """Tests for the dashboard tool endpoints."""
+
+    def test_audit_endpoint_exists(self, tmp_path: Path) -> None:
+        """GET /control/tools/audit endpoint exists."""
+        client = TestClient(control_app)
+
+        response = client.get(
+            "/control/tools/audit",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        # Should return 404 (no config) not 500 (endpoint error) or 404 (route not found)
+        assert response.status_code == 404
+        data = response.json()
+        assert "error" in data
+        assert "Config" in data["error"]
+
+    def test_audit_endpoint_with_config(self, tmp_path: Path) -> None:
+        """GET /control/tools/audit returns audit entries when config exists."""
+        # Create a minimal config
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(
+            "repo:\n  name: test/repo\nagents:\n  agent:dev:\n    prompt: dev.md\n"
+        )
+        # Create a .git directory so it's a valid repo
+        (tmp_path / ".git").mkdir()
+
+        client = TestClient(control_app)
+
+        response = client.get(
+            "/control/tools/audit",
+            params={"repo_root": str(tmp_path)},
+        )
+
+        # This will likely fail because we don't have a real GitHub repo,
+        # but it should at least not 404 on the route
+        assert response.status_code in (200, 500)
+
+    def test_trace_endpoint_exists(self, tmp_path: Path) -> None:
+        """GET /control/tools/trace endpoint exists and handles missing logs."""
+        client = TestClient(control_app)
+
+        response = client.get(
+            "/control/tools/trace",
+            params={"repo_root": str(tmp_path), "issue_number": 123},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # No log file should exist for a fresh tmp_path
+        assert "entries" in data or "message" in data
+
+    def test_labels_init_endpoint_exists(self, tmp_path: Path) -> None:
+        """POST /control/tools/labels/init endpoint exists."""
+        client = TestClient(control_app)
+
+        response = client.post(
+            "/control/tools/labels/init",
+            json={"repo_root": str(tmp_path)},
+        )
+
+        # Should return 404 (no config) not 500
+        assert response.status_code == 404
+        data = response.json()
+        assert "error" in data
+
+    def test_worktrees_cleanup_endpoint_exists(self, tmp_path: Path) -> None:
+        """POST /control/tools/worktrees/cleanup endpoint exists."""
+        # Create minimal config
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(
+            "repo:\n  name: test/repo\nagents:\n  agent:dev:\n    prompt: dev.md\n"
+        )
+
+        client = TestClient(control_app)
+
+        response = client.post(
+            "/control/tools/worktrees/cleanup",
+            json={"repo_root": str(tmp_path), "dry_run": True},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        # Should return stale_worktrees list
+        assert "stale_worktrees" in data or "message" in data

@@ -202,6 +202,22 @@ class GitWorkingCopy:
             logger.warning("Failed to list remote branches in %s: %s", repo_root, e)
             return []
 
+    def list_active_worktrees(self, repo_root: Path) -> set[Path]:
+        """List paths of active git worktrees for a repository."""
+        try:
+            result = self._run_git(
+                repo_root,
+                ["worktree", "list", "--porcelain"],
+            )
+            active = set()
+            for line in result.stdout.splitlines():
+                if line.startswith("worktree "):
+                    active.add(Path(line[9:]))
+            return active
+        except GitError as e:
+            logger.warning("Failed to list worktrees in %s: %s", repo_root, e)
+            return set()
+
     def list_branch_names(self, worktree: Path) -> list[str]:
         """List local and remote branch names for the repo."""
         try:
