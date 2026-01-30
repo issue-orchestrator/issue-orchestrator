@@ -56,15 +56,14 @@ SETUP_LOG ?= $(HOME)/.issue-orchestrator/worktree-setup.log
 # Shared playwright browser cache - avoids 250MB re-downloads across worktrees
 export PLAYWRIGHT_BROWSERS_PATH ?= $(HOME)/.cache/ms-playwright
 
-# Check for uv (fast path) or fall back to pip
-UV := $(shell command -v uv 2>/dev/null)
+# uv command - prefer PATH, fall back to default install location
+UV := $(shell command -v uv 2>/dev/null || echo $(HOME)/.local/bin/uv)
 
 # Auto-install uv if not present (one-time per machine)
 ensure-uv:
-	@if ! command -v uv >/dev/null 2>&1; then \
+	@if [ ! -x "$(UV)" ]; then \
 		echo "Installing uv for fast package management..."; \
 		curl -LsSf https://astral.sh/uv/install.sh | sh; \
-		echo "uv installed. You may need to restart your shell or run: source ~/.local/bin/env"; \
 	fi
 
 venv: ensure-uv
@@ -73,11 +72,11 @@ venv: ensure-uv
 		echo "Removing existing .venv..."; \
 		rm -rf .venv; \
 	fi
-	@echo "Creating venv and installing dependencies with uv..."
+	@echo "Creating venv with $(SYSTEM_PYTHON) and installing dependencies..."
 	@t0=$$(date +%s); \
-	uv venv .venv; \
+	$(UV) venv .venv --python $(SYSTEM_PYTHON); \
 	t1=$$(date +%s); \
-	uv sync --frozen --all-extras; \
+	$(UV) sync --frozen --all-extras; \
 	t2=$$(date +%s); \
 	touch .venv/.deps-synced; \
 	echo "venv pid=$$$$ ts=$$(date -Iseconds) pwd=$$(pwd) uv_venv=$$((t1-t0))s uv_sync=$$((t2-t1))s total=$$((t2-t0))s" >> $(SETUP_LOG)
@@ -120,12 +119,9 @@ worktree-setup: venv
 	@echo ""
 	@echo "Worktree setup complete! Activate with: source .venv/bin/activate"
 
-install:
-	pip install -e ".[dev]"
+install: ensure-uv
+	$(UV) sync --frozen --all-extras
 	@touch .venv/.deps-synced
-	@echo ""
-	@echo "NOTE: On macOS, install GNU make for parallel validation:"
-	@echo "  brew install make"
 
 # Update dependencies after changing pyproject.toml
 # Usage: make upgrade-deps           - re-resolve after pyproject.toml changes
@@ -133,13 +129,13 @@ install:
 upgrade-deps: ensure-uv
 ifdef UPGRADE
 	@echo "Upgrading all dependencies to latest versions..."
-	uv lock --upgrade
+	$(UV) lock --upgrade
 else
 	@echo "Updating uv.lock..."
-	uv lock
+	$(UV) lock
 endif
 	@echo "Syncing dependencies..."
-	uv sync --frozen --all-extras
+	$(UV) sync --frozen --all-extras
 	@touch .venv/.deps-synced
 	@echo ""
 	@echo "Done! Commit uv.lock with your changes."
@@ -178,16 +174,16 @@ PYTHON ?= .venv/bin/python
 # Marker file for tracking when deps were last synced
 DEPS_MARKER ?= .venv/.deps-synced
 
-# Auto-sync dependencies if pyproject.toml is newer than last sync
+# Auto-sync dependencies if pyproject.toml or uv.lock is newer than last sync
 # This prevents cryptic errors like "unrecognized arguments: -n" when pytest-xdist is missing
 sync-deps:
-	@if [ ! -f $(DEPS_MARKER) ] || [ pyproject.toml -nt $(DEPS_MARKER) ]; then \
+	@if [ ! -f $(DEPS_MARKER) ] || [ pyproject.toml -nt $(DEPS_MARKER) ] || [ uv.lock -nt $(DEPS_MARKER) ]; then \
 		echo ""; \
 		echo "================================================================"; \
-		echo "[sync-deps] pyproject.toml changed since last install"; \
+		echo "[sync-deps] Dependencies changed since last install"; \
 		echo "[sync-deps] Auto-syncing dependencies on your behalf..."; \
 		echo "================================================================"; \
-		pip install -q -e ".[dev]" && touch $(DEPS_MARKER) && \
+		$(UV) sync --frozen --all-extras && touch $(DEPS_MARKER) && \
 		echo "[sync-deps] Done. Continuing with original command..."; \
 		echo ""; \
 	fi
