@@ -1,0 +1,24 @@
+# Dependabot configuration
+# https://docs.github.com/en/code-security/dependabot/dependabot-version-updates
+version: 2
+updates:
+  # GitHub Actions - keep workflow actions up to date
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # npm - VS Code extension dependencies
+  - package-ecosystem: "npm"
+    directory: "/packages/vscode"
+    schedule:
+      interval: "weekly"
+
+  # Python (pip) - best-effort for pyproject.toml/uv.lock
+  # NOTE: Dependabot has limited support for uv workspaces and lock files.
+  # PRs from Dependabot should be verified with 'make upgrade-deps' to ensure
+  # uv.lock stays in sync. Manual intervention may be needed for workspace members.
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
