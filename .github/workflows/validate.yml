@@ -34,6 +34,7 @@ jobs:
               - Makefile
               - requirements*.txt
               - pyproject.toml
+              - uv.lock
               - pyrightconfig*.json
               - tools/ast_guardrails.yml
               - .github/workflows/**
@@ -52,12 +53,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version-file: .python-version
-          cache: pip
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+        run: uv sync --frozen --all-extras
 
       - name: Get Playwright version
         id: playwright-version
@@ -82,7 +83,7 @@ jobs:
             .pyright
             ~/.cache/pip
             ~/.cache/pre-commit
-          key: tooling-${{ runner.os }}-${{ hashFiles('requirements*.txt', 'pyproject.toml', 'pyrightconfig*.json', 'tools/ast_guardrails.yml', 'Makefile') }}
+          key: tooling-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml', 'pyrightconfig*.json', 'tools/ast_guardrails.yml', 'Makefile') }}
 
       - name: Run validate
         run: make validate PYRIGHT=pyright PYTEST=pytest LINT_IMPORTS=lint-imports RUFF=ruff PYTHON=python
