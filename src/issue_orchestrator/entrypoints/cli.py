@@ -1778,25 +1778,53 @@ def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused 
             "--no-browser",  # We'll open browser ourselves
         ]
 
-        # Start in background
+        # Start in background, but capture stderr for error reporting
+        import tempfile
+        stderr_file = tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.log')
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=stderr_file,
             start_new_session=True,
         )
 
-        # Wait a bit for server to start
-        time.sleep(1.5)
+        # Health check: verify server is actually responding
+        import urllib.request
+        import urllib.error
 
-        # Check if process is still running
-        if process.poll() is not None:
-            console.print("[red]Failed to start dashboard server[/red]")
-            return 1
+        health_url = f"http://localhost:{port}/control/info"
+        max_attempts = 10
+        for _ in range(max_attempts):
+            time.sleep(0.5)
 
-        console.print(f"[green]Dashboard started on {url}[/green]")
-        webbrowser.open(url)
-        return 0
+            # Check if process died
+            if process.poll() is not None:
+                stderr_file.close()
+                with open(stderr_file.name) as f:
+                    error_output = f.read()
+                console.print("[red]Failed to start dashboard server[/red]")
+                if "address already in use" in error_output.lower():
+                    console.print(f"[yellow]Port {port} is already in use. Kill the existing process:[/yellow]")
+                    console.print(f"  lsof -ti :{port} | xargs kill")
+                elif error_output.strip():
+                    console.print(f"[dim]Error: {error_output[:500]}[/dim]")
+                return 1
+
+            # Try to reach the server
+            try:
+                urllib.request.urlopen(health_url, timeout=1)
+                # Success!
+                stderr_file.close()
+                console.print(f"[green]Dashboard started on {url}[/green]")
+                webbrowser.open(url)
+                return 0
+            except urllib.error.URLError:
+                continue  # Not ready yet
+
+        # Timed out waiting for server
+        console.print("[red]Dashboard server failed to respond[/red]")
+        console.print(f"[dim]Check logs or try: curl {health_url}[/dim]")
+        return 1
 
 
 def cmd_trace(args: argparse.Namespace) -> int:  # noqa: C901 - log parsing with pattern matching and filtering logic
