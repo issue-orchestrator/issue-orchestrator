@@ -187,9 +187,11 @@ class SqliteGoalPilotStore:
         done_criteria: dict[str, Any],
         status: str = "active",
         run_id: str | None = None,
-        name: str | None = None,
+        name: str = "",
     ) -> GoalPilotRun:
         run_id = run_id or f"gpr-{uuid.uuid4().hex[:12]}"
+        if not name or not str(name).strip():
+            raise ValueError("GoalPilot run name is required")
         now = _now_iso()
         goals_json = json.dumps(goals)
         done_criteria_json = json.dumps(done_criteria)

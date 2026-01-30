@@ -12,7 +12,7 @@ class GoalPilotRun:
     created_at: str
     updated_at: str
     status: str
-    name: str | None
+    name: str
     goals: list[str]
     done_criteria: dict[str, Any]
 

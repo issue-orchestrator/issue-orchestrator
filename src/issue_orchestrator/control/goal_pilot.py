@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any
+from dataclasses import asdict, is_dataclass
+from typing import Any, cast
 
 from ..events import EventContext, EventName
 from ..ports import EventSink, TraceEvent
@@ -35,7 +36,7 @@ class GoalPilot:
         self._repo_root = repo_root
         self._ctx = ctx or EventContext()
 
-    def create(self, goals: list[str], done_criteria: dict[str, Any], name: str | None = None) -> str:
+    def create(self, goals: list[str], done_criteria: dict[str, Any], name: str) -> str:
         if not name or not name.strip():
             raise ValueError("GoalPilot run name is required")
         run = self._store.create_run(goals=goals, done_criteria=done_criteria, name=name)
@@ -53,10 +54,10 @@ class GoalPilot:
         actions = self._store.list_actions(run_id)
         notes = self._store.list_notes(run_id)
         return {
-            "run": run,
-            "latest_snapshot": snapshot,
-            "actions": actions,
-            "notes": notes,
+            "run": _serialize_dataclasses(run),
+            "latest_snapshot": _serialize_dataclasses(snapshot),
+            "actions": _serialize_dataclasses(actions),
+            "notes": _serialize_dataclasses(notes),
         }
 
     def update_goals(self, run_id: str, goals: list[str], note: str | None = None) -> dict[str, Any]:
@@ -76,25 +77,26 @@ class GoalPilot:
         )
         return {"run_id": run_id, "goals": goals}
 
-    def next_action(self, run_id: str) -> dict[str, Any]:
+    def next_action(self, run_id: str, record: bool = True) -> dict[str, Any]:
         self._require_run(run_id)
         action = {
             "action_type": "noop",
             "reason": "no_action_available",
         }
-        self._store.add_action(
-            run_id=run_id,
-            action_type=action["action_type"],
-            input_data=action,
-            result_data={},
-            status="proposed",
-        )
-        self._events.publish(
-            TraceEvent(
-                EventName.GOAL_PILOT_ACTION_PROPOSED,
-                self._ctx.enrich({"run_id": run_id, "action": action}),
+        if record:
+            self._store.add_action(
+                run_id=run_id,
+                action_type=action["action_type"],
+                input_data=action,
+                result_data={},
+                status="proposed",
             )
-        )
+            self._events.publish(
+                TraceEvent(
+                    EventName.GOAL_PILOT_ACTION_PROPOSED,
+                    self._ctx.enrich({"run_id": run_id, "action": action}),
+                )
+            )
         return action
 
     @staticmethod
@@ -115,7 +117,7 @@ class GoalPilot:
         ]
 
     def step(self, run_id: str) -> dict[str, Any]:
-        action = self.next_action(run_id)
+        action = self.next_action(run_id, record=False)
         result = {"status": "executed", "action": action}
         self._store.add_action(
             run_id=run_id,
@@ -246,8 +248,8 @@ class GoalPilot:
 
     def _exec_label_update(self, action: dict[str, Any], repository_host: RepositoryHost) -> dict[str, Any]:
         issue_number = action.get("issue_number")
-        add_labels = action.get("labels_add", [])
-        remove_labels = action.get("labels_remove", [])
+        add_labels = _require_label_list(action.get("labels_add"), "labels_add")
+        remove_labels = _require_label_list(action.get("labels_remove"), "labels_remove")
         if issue_number is None:
             raise ValueError("label update requires 'issue_number'")
         if not add_labels and not remove_labels:
@@ -309,3 +311,27 @@ class GoalPilot:
         if run is None:
             raise ValueError(f"GoalPilot run not found: {run_id}")
         return run
+
+
+def _serialize_dataclasses(value: Any) -> Any:
+    if value is None:
+        return None
+    if is_dataclass(value) and not isinstance(value, type):
+        return asdict(cast(Any, value))
+    if isinstance(value, list):
+        serialized: list[Any] = []
+        for item in value:
+            if is_dataclass(item) and not isinstance(item, type):
+                serialized.append(asdict(cast(Any, item)))
+            else:
+                serialized.append(item)
+        return serialized
+    return value
+
+
+def _require_label_list(value: Any, field_name: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ValueError(f"{field_name} must be a list of strings")
+    return [label for label in value if label]

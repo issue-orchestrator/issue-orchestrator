@@ -22,7 +22,7 @@ class GoalPilotStore(Protocol):
         done_criteria: dict[str, Any],
         status: str = "active",
         run_id: str | None = None,
-        name: str | None = None,
+        name: str = "",
     ) -> GoalPilotRun:
         ...
 
