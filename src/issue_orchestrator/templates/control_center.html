@@ -271,6 +271,224 @@
         }
 
         /* ============================================
+           Repo Dropdown (Header Context Selector)
+           ============================================ */
+        .repo-dropdown-container {
+            position: relative;
+        }
+
+        .repo-dropdown-trigger {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 12px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            border: 1px solid var(--border-color);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            transition: background 0.15s, border-color 0.15s;
+            min-width: 180px;
+        }
+
+        .repo-dropdown-trigger:hover {
+            background: var(--bg-card-hover);
+            border-color: var(--accent-blue);
+        }
+
+        .repo-dropdown-trigger .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .repo-dropdown-trigger .status-dot.running { background: var(--accent-green); }
+        .repo-dropdown-trigger .status-dot.paused { background: var(--accent-yellow); }
+        .repo-dropdown-trigger .status-dot.stopped { background: var(--text-muted); }
+        .repo-dropdown-trigger .status-dot.discovered {
+            background: transparent;
+            border: 2px solid var(--text-muted);
+        }
+
+        .repo-dropdown-trigger .repo-name {
+            flex: 1;
+            text-align: left;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .repo-dropdown-trigger .repo-state {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-left: 4px;
+        }
+
+        .repo-dropdown-trigger .dropdown-arrow {
+            width: 12px;
+            height: 12px;
+            fill: var(--text-secondary);
+            transition: transform 0.15s;
+        }
+
+        .repo-dropdown-container.open .dropdown-arrow {
+            transform: rotate(180deg);
+        }
+
+        .repo-dropdown-menu {
+            position: absolute;
+            top: calc(100% + 4px);
+            left: 0;
+            min-width: 280px;
+            max-width: 350px;
+            max-height: 400px;
+            overflow-y: auto;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            z-index: 200;
+            display: none;
+        }
+
+        .repo-dropdown-container.open .repo-dropdown-menu {
+            display: block;
+        }
+
+        .dropdown-section {
+            padding: 8px 0;
+        }
+
+        .dropdown-section:not(:last-child) {
+            border-bottom: 1px solid var(--border-subtle);
+        }
+
+        .dropdown-section-label {
+            padding: 4px 12px 8px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            letter-spacing: 0.5px;
+        }
+
+        .dropdown-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            cursor: pointer;
+            transition: background 0.1s;
+        }
+
+        .dropdown-item:hover {
+            background: var(--bg-card-hover);
+        }
+
+        .dropdown-item.selected {
+            background: rgba(88, 166, 255, 0.1);
+        }
+
+        .dropdown-item .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .dropdown-item .status-dot.running { background: var(--accent-green); }
+        .dropdown-item .status-dot.paused { background: var(--accent-yellow); }
+        .dropdown-item .status-dot.stopped { background: var(--text-muted); }
+        .dropdown-item .status-dot.discovered {
+            background: transparent;
+            border: 2px solid var(--text-muted);
+        }
+
+        .dropdown-item-content {
+            flex: 1;
+            min-width: 0;
+        }
+
+        .dropdown-item-name {
+            font-size: 13px;
+            font-weight: 500;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .dropdown-item-meta {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+
+        .dropdown-item-badge {
+            font-size: 11px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            background: var(--bg-main);
+            color: var(--text-secondary);
+        }
+
+        .dropdown-item-badge.needs-setup {
+            background: rgba(210, 153, 34, 0.2);
+            color: var(--accent-yellow);
+        }
+
+        .dropdown-item .check-icon {
+            width: 14px;
+            height: 14px;
+            fill: var(--accent-blue);
+            flex-shrink: 0;
+        }
+
+        .dropdown-empty {
+            padding: 12px;
+            text-align: center;
+            color: var(--text-muted);
+            font-size: 13px;
+        }
+
+        /* Config selector (appears below dropdown when multi-config) */
+        .config-selector {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 4px;
+            padding: 4px 0;
+        }
+
+        .config-selector label {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .config-selector select {
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-input);
+            color: var(--text-primary);
+            font-size: 12px;
+        }
+
+        .config-selector .set-default {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            font-size: 11px;
+            color: var(--text-secondary);
+            cursor: pointer;
+        }
+
+        .config-selector .set-default input {
+            margin: 0;
+        }
+
+        /* ============================================
            Buttons
            ============================================ */
         .btn {
@@ -1121,7 +1339,32 @@
         <main class="main-content">
             <!-- Header -->
             <header class="header">
-                <h1 class="header-title" id="viewTitle">Repositories</h1>
+                <div style="display: flex; align-items: center; gap: 16px;">
+                    <h1 class="header-title" id="viewTitle">Repositories</h1>
+                    <!-- Repo Context Dropdown -->
+                    <div class="repo-dropdown-container" id="repoDropdownContainer">
+                        <button class="repo-dropdown-trigger" id="repoDropdownTrigger" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="status-dot stopped" id="dropdownStatusDot"></span>
+                            <span class="repo-name" id="dropdownRepoName">No repo selected</span>
+                            <span class="repo-state" id="dropdownRepoState"></span>
+                            <svg class="dropdown-arrow" viewBox="0 0 16 16" aria-hidden="true">
+                                <path fill="currentColor" d="M4.427 7.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 7H4.604a.25.25 0 00-.177.427z"/>
+                            </svg>
+                        </button>
+                        <div class="repo-dropdown-menu" id="repoDropdownMenu" role="listbox" aria-label="Select repository">
+                            <!-- Populated by JavaScript -->
+                        </div>
+                    </div>
+                    <!-- Config selector (shown when multi-config repo selected) -->
+                    <div class="config-selector" id="configSelector" style="display: none;">
+                        <label for="configSelect">Config:</label>
+                        <select id="configSelect"></select>
+                        <label class="set-default">
+                            <input type="checkbox" id="setDefaultConfig">
+                            Set as default
+                        </label>
+                    </div>
+                </div>
                 <div class="header-actions">
                     <button class="btn btn-icon" id="doctorBtn" title="Run diagnostics" aria-label="Run doctor diagnostics">
                         <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
@@ -1602,10 +1845,41 @@
         // ============================================
         const state = {
             repos: [],
+            discoveredRepos: [],
             currentView: 'repositories',
-            activeRepo: null,
+            activeRepo: null,  // { path, config, source: 'registered'|'discovered' }
             theme: localStorage.getItem('theme') || 'system'
         };
+
+        // Load recently used repo from localStorage
+        function loadRecentRepo() {
+            try {
+                const saved = localStorage.getItem('recentRepo');
+                if (saved) return JSON.parse(saved);
+            } catch (e) {}
+            return null;
+        }
+
+        function saveRecentRepo(path, config) {
+            localStorage.setItem('recentRepo', JSON.stringify({ path, config }));
+        }
+
+        // Load default config for a repo from localStorage
+        function getDefaultConfig(repoPath) {
+            try {
+                const defaults = JSON.parse(localStorage.getItem('repoDefaultConfigs') || '{}');
+                return defaults[repoPath];
+            } catch (e) {}
+            return null;
+        }
+
+        function setDefaultConfigForRepo(repoPath, configName) {
+            try {
+                const defaults = JSON.parse(localStorage.getItem('repoDefaultConfigs') || '{}');
+                defaults[repoPath] = configName;
+                localStorage.setItem('repoDefaultConfigs', JSON.stringify(defaults));
+            } catch (e) {}
+        }
 
         // ============================================
         // Theme Management
@@ -1643,6 +1917,270 @@
                 applyTheme('system');
             }
         });
+
+        // ============================================
+        // Repo Dropdown (Context Selector)
+        // ============================================
+        async function loadDiscoveredRepos() {
+            try {
+                const response = await fetch('/control/repos/discover');
+                const data = await response.json();
+                state.discoveredRepos = data.discovered || [];
+            } catch (error) {
+                console.error('Failed to load discovered repos:', error);
+                state.discoveredRepos = [];
+            }
+        }
+
+        function getRepoStateClass(repo, isDiscovered = false) {
+            if (isDiscovered) return 'discovered';
+            const status = repo.status || {};
+            if (status.paused) return 'paused';
+            if (status.state === 'running' || status.state === 'partial') return 'running';
+            return 'stopped';
+        }
+
+        function getRepoStateText(repo, isDiscovered = false) {
+            if (isDiscovered) {
+                if (repo.status === 'needs_setup') return 'needs setup';
+                if (repo.status === 'ready') return 'ready';
+                return '';
+            }
+            const status = repo.status || {};
+            if (status.paused) return 'paused';
+            if (status.state === 'running' || status.state === 'partial') return 'running';
+            return 'stopped';
+        }
+
+        function selectRepo(path, config = null, source = 'registered') {
+            const repo = source === 'discovered'
+                ? state.discoveredRepos.find(r => r.path === path)
+                : state.repos.find(r => r.path === path);
+
+            if (!repo) return;
+
+            // Determine config to use
+            let selectedConfig = config;
+            if (!selectedConfig && repo.configs && repo.configs.length > 0) {
+                selectedConfig = getDefaultConfig(path) || repo.configs[0];
+            }
+
+            state.activeRepo = { path, config: selectedConfig, source };
+            saveRecentRepo(path, selectedConfig);
+
+            updateDropdownDisplay();
+            updateConfigSelector(repo);
+            closeDropdown();
+        }
+
+        function updateDropdownDisplay() {
+            const dot = document.getElementById('dropdownStatusDot');
+            const nameEl = document.getElementById('dropdownRepoName');
+            const stateEl = document.getElementById('dropdownRepoState');
+
+            if (!state.activeRepo) {
+                dot.className = 'status-dot stopped';
+                nameEl.textContent = 'No repo selected';
+                stateEl.textContent = '';
+                return;
+            }
+
+            const isDiscovered = state.activeRepo.source === 'discovered';
+            const repo = isDiscovered
+                ? state.discoveredRepos.find(r => r.path === state.activeRepo.path)
+                : state.repos.find(r => r.path === state.activeRepo.path);
+
+            if (!repo) {
+                dot.className = 'status-dot stopped';
+                nameEl.textContent = state.activeRepo.path.split('/').pop();
+                stateEl.textContent = '· unknown';
+                return;
+            }
+
+            const stateClass = getRepoStateClass(repo, isDiscovered);
+            const stateText = getRepoStateText(repo, isDiscovered);
+
+            dot.className = `status-dot ${stateClass}`;
+            nameEl.textContent = repo.name;
+            stateEl.textContent = stateText ? `· ${stateText}` : '';
+        }
+
+        function updateConfigSelector(repo) {
+            const selector = document.getElementById('configSelector');
+            const select = document.getElementById('configSelect');
+            const setDefaultCheckbox = document.getElementById('setDefaultConfig');
+
+            if (!repo || !repo.configs || repo.configs.length <= 1) {
+                selector.style.display = 'none';
+                return;
+            }
+
+            // Populate config options
+            const currentConfig = state.activeRepo?.config || repo.configs[0];
+            select.innerHTML = repo.configs.map(c =>
+                `<option value="${escapeHtml(c)}" ${c === currentConfig ? 'selected' : ''}>${escapeHtml(c)}</option>`
+            ).join('');
+
+            // Check if current is the default
+            const savedDefault = getDefaultConfig(repo.path);
+            setDefaultCheckbox.checked = savedDefault === currentConfig;
+
+            selector.style.display = 'flex';
+        }
+
+        function renderDropdownMenu() {
+            const menu = document.getElementById('repoDropdownMenu');
+
+            // Categorize repos
+            const running = state.repos.filter(r => {
+                const s = r.status || {};
+                return s.state === 'running' || s.state === 'partial' || s.paused;
+            });
+            const stopped = state.repos.filter(r => {
+                const s = r.status || {};
+                return s.state !== 'running' && s.state !== 'partial' && !s.paused;
+            });
+            const discovered = state.discoveredRepos;
+
+            let html = '';
+
+            // Running section
+            if (running.length > 0) {
+                html += `<div class="dropdown-section">
+                    <div class="dropdown-section-label">Running</div>
+                    ${running.map(r => renderDropdownItem(r, false)).join('')}
+                </div>`;
+            }
+
+            // Stopped section
+            if (stopped.length > 0) {
+                html += `<div class="dropdown-section">
+                    <div class="dropdown-section-label">Stopped</div>
+                    ${stopped.map(r => renderDropdownItem(r, false)).join('')}
+                </div>`;
+            }
+
+            // Discovered section
+            if (discovered.length > 0) {
+                html += `<div class="dropdown-section">
+                    <div class="dropdown-section-label">Discovered</div>
+                    ${discovered.map(r => renderDropdownItem(r, true)).join('')}
+                </div>`;
+            }
+
+            if (!html) {
+                html = '<div class="dropdown-empty">No repositories found</div>';
+            }
+
+            menu.innerHTML = html;
+
+            // Attach click handlers
+            menu.querySelectorAll('.dropdown-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    const path = item.dataset.path;
+                    const source = item.dataset.source;
+                    const isDiscovered = source === 'discovered';
+                    const repo = isDiscovered
+                        ? state.discoveredRepos.find(r => r.path === path)
+                        : state.repos.find(r => r.path === path);
+
+                    if (isDiscovered && repo?.status === 'needs_setup') {
+                        // Open setup wizard for this repo
+                        closeDropdown();
+                        openSetupWizard(path);
+                        return;
+                    }
+
+                    selectRepo(path, null, source);
+                });
+            });
+        }
+
+        function renderDropdownItem(repo, isDiscovered) {
+            const stateClass = getRepoStateClass(repo, isDiscovered);
+            const isSelected = state.activeRepo?.path === repo.path;
+            const meta = isDiscovered
+                ? (repo.configs?.length ? repo.configs[0] : repo.status)
+                : (repo.configs?.length ? repo.configs[0] : '');
+
+            let badge = '';
+            if (isDiscovered && repo.status === 'needs_setup') {
+                badge = '<span class="dropdown-item-badge needs-setup">needs setup</span>';
+            }
+
+            const checkIcon = isSelected
+                ? '<svg class="check-icon" viewBox="0 0 16 16"><path fill="currentColor" fill-rule="evenodd" d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.75.75 0 011.06-1.06L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>'
+                : '';
+
+            return `
+                <div class="dropdown-item ${isSelected ? 'selected' : ''}"
+                     data-path="${escapeHtml(repo.path)}"
+                     data-source="${isDiscovered ? 'discovered' : 'registered'}"
+                     role="option"
+                     aria-selected="${isSelected}">
+                    <span class="status-dot ${stateClass}"></span>
+                    <div class="dropdown-item-content">
+                        <div class="dropdown-item-name">${escapeHtml(repo.name)}</div>
+                        ${meta ? `<div class="dropdown-item-meta">${escapeHtml(meta)}</div>` : ''}
+                    </div>
+                    ${badge}
+                    ${checkIcon}
+                </div>
+            `;
+        }
+
+        function toggleDropdown() {
+            const container = document.getElementById('repoDropdownContainer');
+            const trigger = document.getElementById('repoDropdownTrigger');
+            const isOpen = container.classList.toggle('open');
+            trigger.setAttribute('aria-expanded', isOpen);
+
+            if (isOpen) {
+                renderDropdownMenu();
+                // Load discovered repos in background if stale
+                if (state.discoveredRepos.length === 0) {
+                    loadDiscoveredRepos().then(renderDropdownMenu);
+                }
+            }
+        }
+
+        function closeDropdown() {
+            const container = document.getElementById('repoDropdownContainer');
+            const trigger = document.getElementById('repoDropdownTrigger');
+            container.classList.remove('open');
+            trigger.setAttribute('aria-expanded', 'false');
+        }
+
+        // Initialize active repo from recent or first available
+        function initializeActiveRepo() {
+            const recent = loadRecentRepo();
+            if (recent) {
+                // Check if recent repo still exists
+                const inRegistered = state.repos.find(r => r.path === recent.path);
+                const inDiscovered = state.discoveredRepos.find(r => r.path === recent.path);
+                if (inRegistered) {
+                    selectRepo(recent.path, recent.config, 'registered');
+                    return;
+                } else if (inDiscovered) {
+                    selectRepo(recent.path, recent.config, 'discovered');
+                    return;
+                }
+            }
+
+            // Fall back to first running, then first registered
+            const running = state.repos.find(r => {
+                const s = r.status || {};
+                return s.state === 'running' || s.state === 'partial';
+            });
+            if (running) {
+                selectRepo(running.path, null, 'registered');
+                return;
+            }
+
+            if (state.repos.length > 0) {
+                selectRepo(state.repos[0].path, null, 'registered');
+            }
+        }
 
         // ============================================
         // View Navigation
@@ -1690,22 +2228,35 @@
 
         async function loadRepos() {
             try {
+                // Load registered repos
                 const response = await fetch('/control/repos');
                 const data = await response.json();
                 state.repos = data.repos || [];
+
+                // Also load discovered repos (in parallel on first load)
+                if (!deepLinkHandled) {
+                    await loadDiscoveredRepos();
+                }
+
                 renderRepos();
                 updateSidebarRepos();
                 updateRunningCount();
+                updateDropdownDisplay();
 
                 // Check for deep-link in URL (only on first load)
                 if (!deepLinkHandled) {
                     deepLinkHandled = true;
+
+                    // Initialize active repo from recent/first available
+                    initializeActiveRepo();
+
                     const params = new URLSearchParams(window.location.search);
                     const repoPath = params.get('repo');
                     if (repoPath) {
                         const repo = state.repos.find(r => r.path === repoPath);
                         const repoState = repo?.status?.state;
                         if (repo && (repoState === 'running' || repo?.status?.paused)) {
+                            selectRepo(repoPath, null, 'registered');
                             switchView('activity', repoPath);
                         }
                     }
@@ -1917,12 +2468,35 @@
             }
         }
 
-        async function startRepo(path) {
+        async function startRepo(path, configName = null) {
             try {
+                // Determine config to use:
+                // 1. Explicit configName parameter
+                // 2. Active repo's config (if same path)
+                // 3. Saved default config for this repo
+                // 4. First available config from repo
+                // 5. Fallback to 'default.yaml'
+                let config = configName;
+                if (!config && state.activeRepo?.path === path) {
+                    config = state.activeRepo.config;
+                }
+                if (!config) {
+                    config = getDefaultConfig(path);
+                }
+                if (!config) {
+                    const repo = state.repos.find(r => r.path === path);
+                    if (repo?.configs?.length > 0) {
+                        config = repo.configs[0];
+                    }
+                }
+                if (!config) {
+                    config = 'default.yaml';
+                }
+
                 const response = await fetch('/control/orchestrator/start', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path, config_name: 'default.yaml' })
+                    body: JSON.stringify({ repo_root: path, config_name: config })
                 });
 
                 if (!response.ok) {
@@ -1930,7 +2504,11 @@
                     throw new Error(error.detail || 'Failed to start');
                 }
 
-                showToast('Orchestrator started', 'success');
+                showToast(`Orchestrator started with ${config}`, 'success');
+
+                // Select this repo as active
+                selectRepo(path, config, 'registered');
+
                 await loadRepos();
             } catch (error) {
                 showToast(error.message, 'error');
@@ -2195,6 +2773,46 @@
             // Theme selector buttons
             document.querySelectorAll('.theme-btn').forEach(btn => {
                 btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
+            });
+
+            // Repo dropdown
+            document.getElementById('repoDropdownTrigger').addEventListener('click', (e) => {
+                e.stopPropagation();
+                toggleDropdown();
+            });
+
+            // Close dropdown when clicking outside
+            document.addEventListener('click', (e) => {
+                const container = document.getElementById('repoDropdownContainer');
+                if (!container.contains(e.target)) {
+                    closeDropdown();
+                }
+            });
+
+            // Config selector change
+            document.getElementById('configSelect').addEventListener('change', (e) => {
+                const newConfig = e.target.value;
+                if (state.activeRepo) {
+                    state.activeRepo.config = newConfig;
+                    saveRecentRepo(state.activeRepo.path, newConfig);
+
+                    // Update set-as-default checkbox
+                    const savedDefault = getDefaultConfig(state.activeRepo.path);
+                    document.getElementById('setDefaultConfig').checked = savedDefault === newConfig;
+                }
+            });
+
+            // Set default config checkbox
+            document.getElementById('setDefaultConfig').addEventListener('change', (e) => {
+                if (state.activeRepo && state.activeRepo.config) {
+                    if (e.target.checked) {
+                        setDefaultConfigForRepo(state.activeRepo.path, state.activeRepo.config);
+                        showToast(`${state.activeRepo.config} set as default`, 'success');
+                    } else {
+                        // Clear default
+                        setDefaultConfigForRepo(state.activeRepo.path, null);
+                    }
+                }
             });
 
             // Doctor
