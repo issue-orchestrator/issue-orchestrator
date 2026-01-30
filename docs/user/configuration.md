@@ -457,6 +457,16 @@ _Auto-generated from settings schema._
 | `review.triage_review_agent` | string (optional) | `None` | Agent for batch reviews (optional) |
 | `review.triage_review_threshold` | integer | `0` | Trigger triage after N PRs (0 = manual only) |
 
+## Goal Pilot
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `goal_pilot.enabled` | boolean | `False` | Enable the Goal Pilot AI controller |
+| `goal_pilot.agent` | string (optional) | `None` | Agent label to run as Goal Pilot (e.g., agent:goal-pilot) |
+| `goal_pilot.approval_policy` | string | `journeys_only` | How Goal Pilot applies repo changes |
+| `goal_pilot.approval_batch_size` | integer | `10` | How many changes to bundle before approval (batch mode) |
+| `goal_pilot.approval_batch_window_minutes` | integer | `60` | Max time to wait before asking for approval (batch mode) |
+
 ## Hooks
 
 | Field | Type | Default | Description |
