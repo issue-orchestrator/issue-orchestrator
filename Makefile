@@ -1,4 +1,4 @@
-.PHONY: help venv worktree-setup install typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -12,6 +12,7 @@ help:
 	@echo "  venv                Create/recreate .venv with Python 3.14+ and install all deps"
 	@echo "  worktree-setup      Full worktree setup: venv + vscode extensions + playwright"
 	@echo "  install             Install dev dependencies (assumes venv exists)"
+	@echo "  upgrade-deps        Update uv.lock after changing pyproject.toml"
 	@echo "  typecheck           Run pyright type checking"
 	@echo "  lint-arch           Run import-linter + AST guardrails"
 	@echo "  lint-complexity     Check cyclomatic complexity (C901) and branch count (PLR0912)"
@@ -52,24 +53,55 @@ SYSTEM_PYTHON := $(shell command -v python3.14 2>/dev/null || command -v python3
 # Timing log for worktree setup analysis (central location for cumulative stats)
 SETUP_LOG ?= $(HOME)/.issue-orchestrator/worktree-setup.log
 
-venv:
+# Shared playwright browser cache - avoids 250MB re-downloads across worktrees
+export PLAYWRIGHT_BROWSERS_PATH ?= $(HOME)/.cache/ms-playwright
+
+# uv command - prefer PATH, fall back to default install location
+UV := $(shell command -v uv 2>/dev/null || echo $(HOME)/.local/bin/uv)
+
+# Auto-install uv if not present (one-time per machine)
+ensure-uv:
+	@if [ ! -x "$(UV)" ]; then \
+		echo "Installing uv for fast package management..."; \
+		curl -LsSf https://astral.sh/uv/install.sh | sh; \
+	fi
+
+venv: ensure-uv
 	@mkdir -p $$(dirname $(SETUP_LOG))
 	@if [ -d .venv ]; then \
 		echo "Removing existing .venv..."; \
 		rm -rf .venv; \
 	fi
-	@echo "Creating venv with $(SYSTEM_PYTHON)..."
+	@echo "Creating venv with $(SYSTEM_PYTHON) and installing dependencies..."
+	@t0=$$(date +%s); \
+	$(UV) venv .venv --python $(SYSTEM_PYTHON); \
+	t1=$$(date +%s); \
+	$(UV) sync --frozen --all-extras; \
+	t2=$$(date +%s); \
+	touch .venv/.deps-synced; \
+	echo "venv pid=$$$$ ts=$$(date -Iseconds) pwd=$$(pwd) uv_venv=$$((t1-t0))s uv_sync=$$((t2-t1))s total=$$((t2-t0))s" >> $(SETUP_LOG)
+	@echo ""
+	@echo "Done! Activate with: source .venv/bin/activate"
+
+# Legacy pip-based venv for systems without uv
+venv-pip:
+	@mkdir -p $$(dirname $(SETUP_LOG))
+	@if [ -d .venv ]; then \
+		echo "Removing existing .venv..."; \
+		rm -rf .venv; \
+	fi
+	@echo "Creating venv with $(SYSTEM_PYTHON) (pip fallback)..."
 	@t0=$$(date +%s); \
 	$(SYSTEM_PYTHON) -m venv .venv; \
 	t1=$$(date +%s); \
-	echo "Installing agent-runner package first (avoids pip resolution issues)..."; \
+	echo "Installing agent-runner package first..."; \
 	.venv/bin/pip install -e "packages/agent_runner"; \
 	t2=$$(date +%s); \
 	echo "Installing main package with dev dependencies..."; \
 	.venv/bin/pip install -e ".[dev]"; \
 	t3=$$(date +%s); \
 	touch .venv/.deps-synced; \
-	echo "venv pid=$$$$ ts=$$(date -Iseconds) pwd=$$(pwd) venv_create=$$((t1-t0))s pip_agent_runner=$$((t2-t1))s pip_dev_deps=$$((t3-t2))s total=$$((t3-t0))s" >> $(SETUP_LOG)
+	echo "venv-pip pid=$$$$ ts=$$(date -Iseconds) pwd=$$(pwd) venv_create=$$((t1-t0))s pip_agent_runner=$$((t2-t1))s pip_dev_deps=$$((t3-t2))s total=$$((t3-t0))s" >> $(SETUP_LOG)
 	@echo ""
 	@echo "Done! Activate with: source .venv/bin/activate"
 
@@ -87,12 +119,27 @@ worktree-setup: venv
 	@echo ""
 	@echo "Worktree setup complete! Activate with: source .venv/bin/activate"
 
-install:
-	pip install -e ".[dev]"
+# Install/reinstall dependencies
+install: ensure-uv
+	$(UV) sync --frozen --all-extras
+	@touch .venv/.deps-synced
+
+# Update dependencies after changing pyproject.toml
+# Usage: make upgrade-deps           - re-resolve after pyproject.toml changes
+#        make upgrade-deps UPGRADE=1 - upgrade all deps to latest versions
+upgrade-deps: ensure-uv
+ifdef UPGRADE
+	@echo "Upgrading all dependencies to latest versions..."
+	$(UV) lock --upgrade
+else
+	@echo "Updating uv.lock..."
+	$(UV) lock
+endif
+	@echo "Syncing dependencies..."
+	$(UV) sync --frozen --all-extras
 	@touch .venv/.deps-synced
 	@echo ""
-	@echo "NOTE: On macOS, install GNU make for parallel validation:"
-	@echo "  brew install make"
+	@echo "Done! Commit uv.lock with your changes."
 
 PYRIGHT ?= .venv/bin/pyright --pythonpath .venv/bin/python
 PYTEST ?= .venv/bin/pytest
@@ -128,16 +175,20 @@ PYTHON ?= .venv/bin/python
 # Marker file for tracking when deps were last synced
 DEPS_MARKER ?= .venv/.deps-synced
 
-# Auto-sync dependencies if pyproject.toml is newer than last sync
+# Auto-sync dependencies if pyproject.toml or uv.lock is newer than last sync
 # This prevents cryptic errors like "unrecognized arguments: -n" when pytest-xdist is missing
 sync-deps:
-	@if [ ! -f $(DEPS_MARKER) ] || [ pyproject.toml -nt $(DEPS_MARKER) ]; then \
+	@if [ ! -f $(DEPS_MARKER) ] || [ pyproject.toml -nt $(DEPS_MARKER) ] || [ uv.lock -nt $(DEPS_MARKER) ]; then \
 		echo ""; \
 		echo "================================================================"; \
-		echo "[sync-deps] pyproject.toml changed since last install"; \
+		echo "[sync-deps] Dependencies changed since last install"; \
 		echo "[sync-deps] Auto-syncing dependencies on your behalf..."; \
 		echo "================================================================"; \
-		pip install -q -e ".[dev]" && touch $(DEPS_MARKER) && \
+		if [ ! -x "$(UV)" ]; then \
+			echo "ERROR: uv not found. Run: curl -LsSf https://astral.sh/uv/install.sh | sh"; \
+			exit 1; \
+		fi; \
+		$(UV) sync --frozen --all-extras && touch $(DEPS_MARKER) && \
 		echo "[sync-deps] Done. Continuing with original command..."; \
 		echo ""; \
 	fi

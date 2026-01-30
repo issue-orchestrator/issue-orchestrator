@@ -34,6 +34,7 @@ jobs:
               - Makefile
               - requirements*.txt
               - pyproject.toml
+              - uv.lock
               - pyrightconfig*.json
               - tools/ast_guardrails.yml
               - .github/workflows/**
@@ -52,39 +53,17 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version-file: .python-version
-          cache: pip
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-
-      - name: Get Playwright version
-        id: playwright-version
-        run: echo "version=$(playwright --version | cut -d' ' -f2)" >> $GITHUB_OUTPUT
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        id: playwright-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
+        run: uv sync --frozen --all-extras
 
       - name: Install Playwright browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: playwright install chromium
-
-      - name: Cache tool state
-        uses: actions/cache@v4
-        with:
-          path: |
-            .pytest_cache
-            .pyright
-            ~/.cache/pip
-            ~/.cache/pre-commit
-          key: tooling-${{ runner.os }}-${{ hashFiles('requirements*.txt', 'pyproject.toml', 'pyrightconfig*.json', 'tools/ast_guardrails.yml', 'Makefile') }}
+        run: .venv/bin/playwright install chromium
 
       - name: Run validate
-        run: make validate PYRIGHT=pyright PYTEST=pytest LINT_IMPORTS=lint-imports RUFF=ruff PYTHON=python
+        run: make validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

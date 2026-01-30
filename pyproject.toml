@@ -19,7 +19,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "agent-runner @ file:packages/agent_runner",  # Provider-agnostic agent execution
+    "agent-runner",  # Workspace member - provider-agnostic agent execution
     "pyyaml>=6.0",
     "rich>=13.0",      # Nice terminal UI
     "textual>=0.40",   # TUI framework with keyboard input
@@ -48,7 +48,7 @@ dev = [
     "pyright>=1.1.408",
     "ruff>=0.9",  # Fast Python linter
     "import-linter>=2.0",  # Architecture boundary enforcement
-    "playwright>=1.57",  # Browser automation for web UI tests
+    "playwright==1.57.0",  # Pinned to avoid 250MB browser re-downloads on version bumps
     "pytest-playwright>=0.7",  # Playwright pytest integration
 ]
 
@@ -70,6 +70,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+# uv workspace - enables fast installs with local packages
+[tool.uv.workspace]
+members = ["packages/agent_runner"]
+
+[tool.uv.sources]
+agent-runner = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/issue_orchestrator"]
