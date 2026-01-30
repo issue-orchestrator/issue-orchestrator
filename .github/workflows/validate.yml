@@ -60,32 +60,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
-      - name: Get Playwright version
-        id: playwright-version
-        run: echo "version=$(playwright --version | cut -d' ' -f2)" >> $GITHUB_OUTPUT
-
-      - name: Cache Playwright browsers
-        uses: actions/cache@v4
-        id: playwright-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
-
-      - name: Install Playwright browsers
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-        run: playwright install chromium
-
-      - name: Cache tool state
-        uses: actions/cache@v4
-        with:
-          path: |
-            .pytest_cache
-            .pyright
-            ~/.cache/pip
-            ~/.cache/pre-commit
-          key: tooling-${{ runner.os }}-${{ hashFiles('uv.lock', 'pyproject.toml', 'pyrightconfig*.json', 'tools/ast_guardrails.yml', 'Makefile') }}
-
       - name: Run validate
-        run: make validate PYRIGHT=pyright PYTEST=pytest LINT_IMPORTS=lint-imports RUFF=ruff PYTHON=python
+        run: make validate
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
