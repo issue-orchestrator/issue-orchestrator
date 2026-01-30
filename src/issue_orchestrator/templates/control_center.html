@@ -1079,14 +1079,14 @@
                             </div>
                         </button>
                         <button class="tool-card" id="cleanupWorktreesTool">
-                            <div class="tool-card-icon red">
+                            <div class="tool-card-icon yellow">
                                 <svg viewBox="0 0 16 16" aria-hidden="true">
-                                    <path fill-rule="evenodd" d="M6.5 1.75a.25.25 0 01.25-.25h2.5a.25.25 0 01.25.25V3h-3V1.75zm4.5 0V3h2.25a.75.75 0 010 1.5H2.75a.75.75 0 010-1.5H5V1.75C5 .784 5.784 0 6.75 0h2.5C10.216 0 11 .784 11 1.75zM4.496 6.675a.75.75 0 10-1.492.15l.66 6.6A1.75 1.75 0 005.405 15h5.19c.9 0 1.652-.681 1.741-1.576l.66-6.6a.75.75 0 00-1.492-.149l-.66 6.6a.25.25 0 01-.249.225h-5.19a.25.25 0 01-.249-.225l-.66-6.6z"/>
+                                    <path fill-rule="evenodd" d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1.5a.75.75 0 01.75.75v3.5a.75.75 0 01-.75.75h-1.5a.75.75 0 01-.75-.75v-3.5zm.75-2.25a.75.75 0 100-1.5.75.75 0 000 1.5z"/>
                                 </svg>
                             </div>
                             <div class="tool-card-content">
-                                <div class="tool-card-title">Cleanup Worktrees</div>
-                                <div class="tool-card-desc">Remove stale git worktrees</div>
+                                <div class="tool-card-title">List Stale Worktrees</div>
+                                <div class="tool-card-desc">Find orphaned worktree directories</div>
                             </div>
                         </button>
                     </div>
@@ -1288,7 +1288,7 @@
     <div class="modal-backdrop" id="worktreesModal" role="dialog" aria-labelledby="worktreesModalTitle" aria-modal="true">
         <div class="modal" style="max-width: 560px;">
             <div class="modal-header">
-                <h2 class="modal-title" id="worktreesModalTitle">Cleanup Worktrees</h2>
+                <h2 class="modal-title" id="worktreesModalTitle">Stale Worktrees</h2>
                 <button class="modal-close" id="closeWorktreesModal" aria-label="Close dialog">
                     <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
                         <path fill="currentColor" fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
@@ -1300,7 +1300,6 @@
             </div>
             <div class="modal-footer">
                 <button class="btn" id="cancelWorktrees">Close</button>
-                <button class="btn btn-danger" id="confirmWorktreesCleanup" style="display: none;">Cleanup Selected</button>
             </div>
         </div>
     </div>
@@ -2076,8 +2075,7 @@
                 document.getElementById('labelsResultsModal').classList.remove('active');
             });
 
-            // Cleanup Worktrees Tool
-            let staleWorktrees = [];
+            // List Stale Worktrees Tool (read-only, no deletion)
             document.getElementById('cleanupWorktreesTool').addEventListener('click', async () => {
                 const repoPath = getToolRepoPath();
                 if (!repoPath) {
@@ -2085,16 +2083,14 @@
                     return;
                 }
 
-                staleWorktrees = [];
                 document.getElementById('worktreesContent').innerHTML = '<div class="loading-spinner"></div> Scanning for stale worktrees...';
-                document.getElementById('confirmWorktreesCleanup').style.display = 'none';
                 document.getElementById('worktreesModal').classList.add('active');
 
                 try {
                     const response = await fetch('/control/tools/worktrees/cleanup', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ repo_root: repoPath, dry_run: true })
+                        body: JSON.stringify({ repo_root: repoPath })
                     });
                     const data = await response.json();
 
@@ -2104,20 +2100,22 @@
                         return;
                     }
 
-                    staleWorktrees = data.stale_worktrees || [];
-                    if (staleWorktrees.length === 0) {
+                    const staleList = data.stale_worktrees || [];
+                    if (staleList.length === 0) {
                         document.getElementById('worktreesContent').innerHTML =
                             '<p style="color: var(--success-color);">No stale worktrees found. All clean!</p>';
                     } else {
-                        let html = `<p>Found <strong>${staleWorktrees.length}</strong> stale worktree(s):</p>`;
+                        let html = `<p>Found <strong>${staleList.length}</strong> stale worktree(s):</p>`;
                         html += '<ul style="margin: 8px 0; padding-left: 20px;">';
-                        staleWorktrees.forEach(wt => {
+                        staleList.forEach(wt => {
                             html += `<li><code>${escapeHtml(wt.path || wt)}</code></li>`;
                         });
                         html += '</ul>';
-                        html += '<p style="color: var(--warning-color);">Click "Cleanup Selected" to remove these worktrees.</p>';
+                        if (data.cleanup_command) {
+                            html += '<p style="margin-top: 16px;"><strong>To clean up, run in terminal:</strong></p>';
+                            html += `<pre style="background: var(--bg-tertiary); padding: 12px; border-radius: 8px; font-size: 12px; overflow-x: auto; user-select: all;">${escapeHtml(data.cleanup_command)}</pre>`;
+                        }
                         document.getElementById('worktreesContent').innerHTML = html;
-                        document.getElementById('confirmWorktreesCleanup').style.display = 'inline-flex';
                     }
                 } catch (error) {
                     document.getElementById('worktreesContent').innerHTML =
@@ -2129,52 +2127,6 @@
             });
             document.getElementById('cancelWorktrees').addEventListener('click', () => {
                 document.getElementById('worktreesModal').classList.remove('active');
-            });
-            document.getElementById('confirmWorktreesCleanup').addEventListener('click', async () => {
-                const repoPath = getToolRepoPath();
-                if (!repoPath || staleWorktrees.length === 0) return;
-
-                document.getElementById('worktreesContent').innerHTML = '<div class="loading-spinner"></div> Cleaning up worktrees...';
-                document.getElementById('confirmWorktreesCleanup').style.display = 'none';
-
-                try {
-                    const response = await fetch('/control/tools/worktrees/cleanup', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ repo_root: repoPath, dry_run: false })
-                    });
-                    const data = await response.json();
-
-                    if (data.error) {
-                        document.getElementById('worktreesContent').innerHTML =
-                            `<div class="error-message">${escapeHtml(data.error)}</div>`;
-                        return;
-                    }
-
-                    const removed = data.cleaned || [];
-                    const failed = [];
-                    let html = '';
-                    if (removed.length > 0) {
-                        html += `<p style="color: var(--success-color);">Removed ${removed.length} worktree(s):</p>`;
-                        html += '<ul style="margin: 8px 0; padding-left: 20px;">';
-                        removed.forEach(wt => { html += `<li><code>${escapeHtml(wt)}</code></li>`; });
-                        html += '</ul>';
-                    }
-                    if (failed.length > 0) {
-                        html += `<p style="color: var(--error-color);">Failed to remove ${failed.length} worktree(s):</p>`;
-                        html += '<ul style="margin: 8px 0; padding-left: 20px;">';
-                        failed.forEach(wt => { html += `<li><code>${escapeHtml(wt)}</code></li>`; });
-                        html += '</ul>';
-                    }
-                    if (removed.length === 0 && failed.length === 0) {
-                        html = '<p>No worktrees were cleaned up.</p>';
-                    }
-                    document.getElementById('worktreesContent').innerHTML = html;
-                    staleWorktrees = [];
-                } catch (error) {
-                    document.getElementById('worktreesContent').innerHTML =
-                        `<div class="error-message">Failed to cleanup worktrees: ${escapeHtml(error.message)}</div>`;
-                }
             });
 
             // Setup Wizard

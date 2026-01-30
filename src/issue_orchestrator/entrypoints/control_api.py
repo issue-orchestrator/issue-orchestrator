@@ -3146,39 +3146,60 @@ async def tools_labels_init(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-def _find_stale_worktrees(worktree_base: Path, active: set[Path]) -> list[dict[str, str]]:
-    """Find stale worktree directories that are not in git's active list."""
+def _find_stale_worktrees(
+    repo_root: Path,
+    worktree_base: Path,
+    active: set[Path],
+) -> list[dict[str, str]]:
+    """Find stale worktree directories matching the orchestrator naming convention.
+
+    Only considers directories that:
+    1. Match the pattern {repo_name}-{number} (orchestrator worktree convention)
+    2. Have a .git file (worktrees have a file, not a directory)
+    3. Are not in git's active worktree list
+
+    This prevents accidentally identifying unrelated directories as stale.
+    """
+    import re
+
     stale = []
-    if worktree_base.exists():
-        for entry in worktree_base.iterdir():
-            if entry.is_dir() and entry not in active:
-                stale.append({"path": str(entry), "name": entry.name})
+    if not worktree_base.exists():
+        return stale
+
+    repo_name = repo_root.name
+    # Pattern: {repo_name}-{issue_number}
+    worktree_pattern = re.compile(rf"^{re.escape(repo_name)}-(\d+)$")
+
+    for entry in worktree_base.iterdir():
+        if not entry.is_dir():
+            continue
+        # Must match our naming convention
+        if not worktree_pattern.match(entry.name):
+            continue
+        # Must have a .git file (worktrees have a .git file, not directory)
+        git_path = entry / ".git"
+        if not git_path.exists() or git_path.is_dir():
+            continue
+        # Must not be in active worktrees
+        if entry in active:
+            continue
+        stale.append({"path": str(entry), "name": entry.name})
+
     return stale
-
-
-def _cleanup_worktrees(stale: list[dict[str, str]]) -> list[str]:
-    """Remove stale worktree directories, returning paths that were cleaned."""
-    import shutil
-    cleaned = []
-    for wt in stale:
-        try:
-            shutil.rmtree(wt["path"])
-            cleaned.append(wt["path"])
-        except Exception as e:
-            logger.warning("Failed to remove worktree %s: %s", wt["path"], e)
-    return cleaned
 
 
 @control_app.post("/control/tools/worktrees/cleanup")
 async def tools_worktrees_cleanup(request: Request) -> JSONResponse:
-    """List and optionally cleanup stale worktrees.
+    """List stale worktrees (read-only, no deletion).
+
+    This endpoint only LISTS stale worktrees. It does not delete them.
+    Users should run `git worktree prune` manually to clean up.
 
     JSON body:
         repo_root: str - Repository root path
-        dry_run: bool - If true, only list stale worktrees (default: true)
 
     Returns:
-        List of stale worktrees and cleanup results.
+        List of stale worktrees and instructions for cleanup.
     """
     from ..execution.git_working_copy import GitWorkingCopy
     from ..infra.config import Config
@@ -3192,8 +3213,6 @@ async def tools_worktrees_cleanup(request: Request) -> JSONResponse:
     if repo_path is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
-    dry_run = body.get("dry_run", True)
-
     try:
         config = Config.find_and_load(start_path=repo_path)
     except FileNotFoundError:
@@ -3206,16 +3225,15 @@ async def tools_worktrees_cleanup(request: Request) -> JSONResponse:
     try:
         working_copy = GitWorkingCopy()
         active = working_copy.list_active_worktrees(repo_path)
-        stale = _find_stale_worktrees(worktree_base, active)
-        cleaned = _cleanup_worktrees(stale) if not dry_run else []
+        stale = _find_stale_worktrees(repo_path, worktree_base, active)
 
         return JSONResponse({
             "stale_worktrees": stale,
-            "cleaned": cleaned,
-            "dry_run": dry_run,
+            "cleanup_command": f"cd {repo_path} && git worktree prune",
+            "message": "Run the cleanup_command in terminal to remove stale worktrees safely.",
         })
     except Exception as e:
-        logger.exception("Worktree cleanup failed")
+        logger.exception("Worktree listing failed")
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
