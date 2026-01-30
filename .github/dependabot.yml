@@ -7,18 +7,51 @@ updates:
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   # npm - VS Code extension dependencies
   - package-ecosystem: "npm"
     directory: "/packages/vscode"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
 
   # Python (pip) - best-effort for pyproject.toml/uv.lock
   # NOTE: Dependabot has limited support for uv workspaces and lock files.
-  # PRs from Dependabot should be verified with 'make upgrade-deps' to ensure
+  # Do not merge Dependabot PRs without verifying with 'make upgrade-deps' so
   # uv.lock stays in sync. Manual intervention may be needed for workspace members.
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/Los_Angeles"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
