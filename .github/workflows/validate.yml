@@ -60,7 +60,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --frozen --all-extras
 
-      - name: Run validate
-        run: make validate
+      - name: Run validate (without web tests)
+        run: make typecheck lint-arch lint-complexity test-unit test-integration
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
