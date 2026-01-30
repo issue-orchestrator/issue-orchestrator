@@ -3116,30 +3116,26 @@ async def tools_labels_init(request: Request) -> JSONResponse:
         ]
         labels.extend(config.agents.keys())
 
-        created = 0
-        updated = 0
-        failed = 0
+        created: list[str] = []
+        updated: list[str] = []
+        failed: list[str] = []
         existing = {label.get("name") for label in client.list_labels() if isinstance(label, dict)}
 
-        results = []
         for label in labels:
             try:
                 client.create_label(label, force=True)
                 if label in existing:
-                    updated += 1
-                    results.append({"label": label, "status": "updated"})
+                    updated.append(label)
                 else:
-                    created += 1
-                    results.append({"label": label, "status": "created"})
+                    created.append(label)
             except Exception as exc:
-                failed += 1
-                results.append({"label": label, "status": "failed", "error": str(exc)})
+                logger.warning("Failed to create/update label %s: %s", label, exc)
+                failed.append(label)
 
         return JSONResponse({
             "created": created,
             "updated": updated,
             "failed": failed,
-            "results": results,
         })
     except Exception as e:
         logger.exception("Label init failed")

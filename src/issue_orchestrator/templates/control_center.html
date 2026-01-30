@@ -2052,14 +2052,26 @@
                         return;
                     }
 
-                    let html = '<p style="color: var(--success-color); margin-top: 0;">Labels synchronized successfully!</p>';
-                    if (data.created && data.created.length > 0) {
-                        html += '<p><strong>Created:</strong> ' + data.created.map(escapeHtml).join(', ') + '</p>';
+                    const created = data.created || [];
+                    const updated = data.updated || [];
+                    const failed = data.failed || [];
+
+                    let html = '';
+                    if (failed.length === 0) {
+                        html += '<p style="color: var(--success-color); margin-top: 0;">Labels synchronized successfully!</p>';
+                    } else {
+                        html += '<p style="color: var(--warning-color); margin-top: 0;">Labels synchronized with some failures.</p>';
                     }
-                    if (data.updated && data.updated.length > 0) {
-                        html += '<p><strong>Updated:</strong> ' + data.updated.map(escapeHtml).join(', ') + '</p>';
+                    if (created.length > 0) {
+                        html += '<p><strong>Created:</strong> ' + created.map(escapeHtml).join(', ') + '</p>';
                     }
-                    if ((!data.created || data.created.length === 0) && (!data.updated || data.updated.length === 0)) {
+                    if (updated.length > 0) {
+                        html += '<p><strong>Updated:</strong> ' + updated.map(escapeHtml).join(', ') + '</p>';
+                    }
+                    if (failed.length > 0) {
+                        html += '<p style="color: var(--error-color);"><strong>Failed:</strong> ' + failed.map(escapeHtml).join(', ') + '</p>';
+                    }
+                    if (created.length === 0 && updated.length === 0 && failed.length === 0) {
                         html += '<p>All labels were already up to date.</p>';
                     }
                     document.getElementById('labelsResultsContent').innerHTML = html;
