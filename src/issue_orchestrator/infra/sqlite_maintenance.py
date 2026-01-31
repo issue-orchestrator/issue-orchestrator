@@ -24,9 +24,8 @@ def apply_pragmas(conn: sqlite3.Connection) -> None:
 
 def quick_check_db(path: Path) -> tuple[bool, str]:
     try:
-        conn = sqlite3.connect(str(path), timeout=2.0)
-        row = conn.execute("PRAGMA quick_check").fetchone()
-        conn.close()
+        with sqlite3.connect(str(path), timeout=2.0) as conn:
+            row = conn.execute("PRAGMA quick_check").fetchone()
     except sqlite3.DatabaseError as exc:
         return False, f"quick_check error: {exc}"
     if row and row[0] == "ok":
@@ -159,6 +158,16 @@ def _rotate_backups(dir_path: Path, keep: int) -> None:
             continue
 
 
+def _delete_backups(dir_path: Path) -> None:
+    if not dir_path.exists():
+        return
+    for entry in dir_path.glob("*.db"):
+        try:
+            entry.unlink()
+        except FileNotFoundError:
+            continue
+
+
 def _ensure_weekly_copy(daily_file: Path, weekly_dir: Path, now_dt: datetime) -> None:
     iso_year, iso_week, _ = now_dt.isocalendar()
     weekly_name = f"{iso_year}-W{iso_week:02d}.db"
@@ -191,21 +200,43 @@ def run_backups_if_due(config: Config) -> list[BackupResult]:
             results.append(BackupResult(db=db, path=src_path, performed=False, reason="missing"))
             continue
 
+        keep_daily = config.sqlite_backup.retention_daily > 0
+        keep_weekly = config.sqlite_backup.retention_weekly > 0
+        daily_dir = _daily_dir(backup_root, db.key)
+        weekly_dir = _weekly_dir(backup_root, db.key)
+
+        if not keep_daily:
+            _delete_backups(daily_dir)
+        if not keep_weekly:
+            _delete_backups(weekly_dir)
+        if not keep_daily and not keep_weekly:
+            results.append(BackupResult(db=db, path=src_path, performed=False, reason="retention=0"))
+            continue
+
         if not _backup_due(config, backup_root, db, now):
             results.append(BackupResult(db=db, path=src_path, performed=False, reason="cadence"))
             continue
 
-        daily_dir = _daily_dir(backup_root, db.key)
-        weekly_dir = _weekly_dir(backup_root, db.key)
         daily_name = _backup_filename(now_dt.date().isoformat(), now_dt)
         daily_file = daily_dir / daily_name
 
         try:
-            _backup_db(src_path, daily_file)
-            _ensure_weekly_copy(daily_file, weekly_dir, now_dt)
-            _rotate_backups(daily_dir, config.sqlite_backup.retention_daily)
-            _rotate_backups(weekly_dir, config.sqlite_backup.retention_weekly)
-            results.append(BackupResult(db=db, path=daily_file, performed=True, reason="ok"))
+            if keep_daily:
+                _backup_db(src_path, daily_file)
+                _rotate_backups(daily_dir, config.sqlite_backup.retention_daily)
+            if keep_weekly:
+                if keep_daily:
+                    _ensure_weekly_copy(daily_file, weekly_dir, now_dt)
+                else:
+                    iso_year, iso_week, _ = now_dt.isocalendar()
+                    weekly_file = weekly_dir / f"{iso_year}-W{iso_week:02d}.db"
+                    if not weekly_file.exists():
+                        _backup_db(src_path, weekly_file)
+                _rotate_backups(weekly_dir, config.sqlite_backup.retention_weekly)
+            result_path = daily_file if keep_daily else (
+                weekly_dir / f"{now_dt.isocalendar()[0]}-W{now_dt.isocalendar()[1]:02d}.db"
+            )
+            results.append(BackupResult(db=db, path=result_path, performed=True, reason="ok"))
         except sqlite3.DatabaseError as exc:
             logger.warning("[backup] Failed to backup %s: %s", db.key, exc)
             results.append(BackupResult(db=db, path=daily_file, performed=False, reason="error"))

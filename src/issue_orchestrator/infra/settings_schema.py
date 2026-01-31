@@ -496,7 +496,7 @@ class AdvancedSettings(BaseModel):
         14,
         title="Daily Backup Retention",
         description="Number of daily backups to keep",
-        ge=1,
+        ge=0,
         le=60,
         json_schema_extra={
             "section": "State & Backups",

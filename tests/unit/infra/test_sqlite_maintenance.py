@@ -56,3 +56,21 @@ def test_run_backups_if_due_respects_cadence(tmp_path):
     publish_result = next(r for r in second if r.db.key == "publish_jobs")
     assert publish_result.performed is False
     assert publish_result.reason == "cadence"
+
+
+def test_retention_zero_disables_backups(tmp_path):
+    config = Config()
+    config.repo_root = tmp_path
+    config.sqlite_backup.retention_daily = 0
+    config.sqlite_backup.retention_weekly = 0
+
+    publish_db = state_dir(tmp_path) / "publish_jobs.db"
+    _create_sqlite_db(publish_db)
+
+    results = run_backups_if_due(config)
+    publish_result = next(r for r in results if r.db.key == "publish_jobs")
+    assert publish_result.performed is False
+    assert publish_result.reason == "retention=0"
+
+    backup_root = tmp_path / ".issue-orchestrator" / "backups" / "sqlite"
+    assert not (backup_root / "publish_jobs").exists()

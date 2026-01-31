@@ -349,8 +349,8 @@ sqlite_backup:
 
 - `sqlite_backup.enabled`: Toggle automatic SQLite backups.
 - `sqlite_backup.cadence_hours`: Minimum hours between backups.
-- `sqlite_backup.retention_daily`: Number of daily backups to keep.
-- `sqlite_backup.retention_weekly`: Number of weekly backups to keep.
+- `sqlite_backup.retention_daily`: Number of daily backups to keep (0 disables daily tier).
+- `sqlite_backup.retention_weekly`: Number of weekly backups to keep (0 disables weekly tier).
 - `sqlite_backup.enforce_on_startup`: If cadence elapsed, force a backup on startup.
 
 **Care & feeding**
