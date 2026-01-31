@@ -13,7 +13,6 @@ Exit codes:
 """
 
 import logging
-import subprocess
 import sys
 import time
 from pathlib import Path
@@ -63,78 +62,38 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
     return None, 0, dirty_check
 
 
-def _git_diff_quiet(worktree: Path, args: list[str]) -> bool:
-    """Return True when git diff reports changes."""
-    result = subprocess.run(
-        ["git", "-C", str(worktree), "diff", "--quiet", *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode == 0:
-        return False
-    if result.returncode == 1:
-        return True
-    raise RuntimeError(result.stderr.strip() or "git diff failed")
-
-
-def _has_dirty_tracked_changes(worktree: Path, mode: str) -> bool:
-    """Check for dirty tracked changes based on configured mode."""
-    if mode == "off":
-        return False
-    if _git_diff_quiet(worktree, []):
-        return True
-    if mode == "tracked" and _git_diff_quiet(worktree, ["--cached"]):
-        return True
-    return False
-
-
-def run_prepush_check(verbose: bool = False) -> int:
-    """Run pre-push validation check.
-
-    This function:
-    1. Finds the worktree root
-    2. Loads validation config
-    3. Checks cache for existing valid result
-    4. Runs validation if needed
-    5. Returns exit code based on result
-
-    Args:
-        verbose: Whether to print status messages
-
-    Returns:
-        Exit code (0 = passed, 1 = failed, 2 = error)
-    """
-    worktree = find_worktree_root()
-    cmd, timeout, dirty_check = load_validation_cmd(worktree)
-
-    if dirty_check not in DIRTY_CHECK_MODES:
+def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
+    """Return exit code if dirty guard should block, else None."""
+    if mode not in DIRTY_CHECK_MODES:
         if verbose:
             print(
                 "Invalid validation.pre_push_dirty_check value: "
-                f"{dirty_check!r} (expected tracked|unstaged|off)"
+                f"{mode!r} (expected tracked|unstaged|off)"
             )
         return 1
+    if mode == "off":
+        return None
 
-    try:
-        if _has_dirty_tracked_changes(worktree, dirty_check):
-            if verbose:
-                print(
-                    "Tracked files are dirty; commit or stash before pushing. "
-                    "Ignored files are allowed. "
-                    "Override with validation.pre_push_dirty_check."
-                )
-            return 1
-    except Exception as e:
+    include_staged = mode == "tracked"
+    working_copy = GitWorkingCopy()
+    if working_copy.has_tracked_changes(worktree, include_staged=include_staged):
         if verbose:
-            print(f"Error checking dirty tracked files: {e}")
+            print(
+                "Tracked files are dirty; commit or stash before pushing. "
+                "Ignored files are allowed. "
+                "Override with validation.pre_push_dirty_check."
+            )
         return 1
+    return None
 
-    if not cmd:
-        if verbose:
-            print("No validation configured - allowing push")
-        return 0
 
+def _run_validation_gate(
+    worktree: Path,
+    cmd: str,
+    timeout: int,
+    verbose: bool,
+) -> int:
+    """Run the publish gate and return exit code."""
     if verbose:
         print(f"Validation configured: {cmd}")
 
@@ -163,15 +122,46 @@ def run_prepush_check(verbose: bool = False) -> int:
         if verbose:
             print(f"Validation passed{cache_note}: {result.reason} (%.2fs)" % duration)
         return 0
-    else:
+
+    if verbose:
+        print(f"Validation failed: {result.reason} (%.2fs)" % duration)
+        if result.record and result.record.stderr_path:
+            stderr_path = worktree / result.record.stderr_path
+            if stderr_path.exists():
+                print("\nValidation stderr:")
+                print(stderr_path.read_text()[:1000])
+    return 1
+
+
+def run_prepush_check(verbose: bool = False) -> int:
+    """Run pre-push validation check.
+
+    This function:
+    1. Finds the worktree root
+    2. Loads validation config
+    3. Checks cache for existing valid result
+    4. Runs validation if needed
+    5. Returns exit code based on result
+
+    Args:
+        verbose: Whether to print status messages
+
+    Returns:
+        Exit code (0 = passed, 1 = failed, 2 = error)
+    """
+    worktree = find_worktree_root()
+    cmd, timeout, dirty_check = load_validation_cmd(worktree)
+
+    dirty_result = _run_dirty_guard(worktree, dirty_check, verbose)
+    if dirty_result is not None:
+        return dirty_result
+
+    if not cmd:
         if verbose:
-            print(f"Validation failed: {result.reason} (%.2fs)" % duration)
-            if result.record and result.record.stderr_path:
-                stderr_path = worktree / result.record.stderr_path
-                if stderr_path.exists():
-                    print("\nValidation stderr:")
-                    print(stderr_path.read_text()[:1000])
-        return 1
+            print("No validation configured - allowing push")
+        return 0
+
+    return _run_validation_gate(worktree, cmd, timeout, verbose)
 
 
 def main() -> None:
