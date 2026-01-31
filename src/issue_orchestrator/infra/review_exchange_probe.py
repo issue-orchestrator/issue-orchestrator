@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import timedelta
 from typing import Optional
 
@@ -11,6 +12,14 @@ from .ai_systems_config import get_ai_systems_config
 from .doctor.types import Check
 from .review_exchange_registry import supports_mcp_pair
 from .review_exchange_state import load_state, save_state
+
+
+@dataclass(frozen=True)
+class ExchangePair:
+    coder_label: str
+    reviewer_label: str
+    coder_system: str
+    reviewer_system: str
 
 
 def probe_review_exchange(
@@ -35,6 +44,35 @@ def probe_review_exchange(
     if mode not in {"via-mcp", "auto"}:
         return checks
 
+    pair, pair_checks = _resolve_exchange_pair(config, mode)
+    if pair_checks:
+        return pair_checks
+    if pair is None:
+        return checks
+
+    if runner is None:
+        checks.append(Check(
+            name="Review Exchange",
+            status="info",
+            detail="MCP probe skipped (no CommandRunner provided)",
+        ))
+        return checks
+
+    state = load_state(config.repo_root)
+    skip_check = _probe_schedule_guard(config, state, force)
+    if skip_check is not None:
+        return [skip_check]
+
+    checks.extend(_probe_mcp_systems(pair.coder_system, pair.reviewer_system, runner))
+    checks.extend(_probe_mcp_round_trip(pair.coder_system, pair.reviewer_system, runner))
+
+    _update_probe_state(config, state, checks)
+
+    return checks
+
+
+def _resolve_exchange_pair(config, mode: str) -> tuple[Optional[ExchangePair], list[Check]]:
+    checks: list[Check] = []
     coder_label = config.review_exchange_coder
     reviewer_label = config.review_exchange_reviewer
     if not coder_label or not reviewer_label:
@@ -43,21 +81,10 @@ def probe_review_exchange(
             status="error",
             detail="review.exchange.agent_pair is required for via-mcp/auto",
         ))
-        return checks
+        return None, checks
 
-    def resolve_system(label: str) -> str:
-        agent = config.agents[label]
-        if agent.ai_system:
-            return agent.ai_system
-        detected = detect_ai_system_from_command(agent.command)
-        if detected:
-            return detected
-        systems = get_ai_systems_config(config.repo_root)
-        return systems.default_ai_system
-
-    coder_system = resolve_system(coder_label)
-    reviewer_system = resolve_system(reviewer_label)
-
+    coder_system = _resolve_ai_system(config, coder_label)
+    reviewer_system = _resolve_ai_system(config, reviewer_label)
     if not supports_mcp_pair(coder_system, reviewer_system):
         status = "error" if mode == "via-mcp" else "warning"
         checks.append(Check(
@@ -69,50 +96,61 @@ def probe_review_exchange(
                 "Use via-draft-pr or update the MCP allowlist."
             ),
         ))
-        return checks
+        return None, checks
 
-    if runner is None:
-        checks.append(Check(
-            name="Review Exchange",
-            status="info",
-            detail="MCP probe skipped (no CommandRunner provided)",
-        ))
-        return checks
+    return ExchangePair(
+        coder_label=coder_label,
+        reviewer_label=reviewer_label,
+        coder_system=coder_system,
+        reviewer_system=reviewer_system,
+    ), checks
 
+
+def _resolve_ai_system(config, label: str) -> str:
+    agent = config.agents[label]
+    if agent.ai_system:
+        return agent.ai_system
+    detected = detect_ai_system_from_command(agent.command)
+    if detected:
+        return detected
+    systems = get_ai_systems_config(config.repo_root)
+    return systems.default_ai_system
+
+
+def _probe_schedule_guard(config, state, force: bool) -> Optional[Check]:
     schedule = config.review_exchange_probe_schedule
     interval_days = config.review_exchange_probe_interval_days
     if schedule == "manual" and not force:
-        checks.append(Check(
+        return Check(
             name="Review Exchange",
             status="info",
             detail="MCP probe skipped (manual schedule)",
-        ))
-        return checks
+        )
 
-    state = load_state(config.repo_root)
-    if not force:
-        if schedule == "startup":
-            pass
-        elif schedule == "daily":
-            if not state.is_stale(timedelta(days=1)):
-                checks.append(Check(
-                    name="Review Exchange",
-                    status="info",
-                    detail="MCP round-trip probe skipped (recently checked)",
-                ))
-                return checks
-        elif schedule == "interval":
-            if not state.is_stale(timedelta(days=interval_days)):
-                checks.append(Check(
-                    name="Review Exchange",
-                    status="info",
-                    detail="MCP round-trip probe skipped (recently checked)",
-                ))
-                return checks
+    if force:
+        return None
 
-    checks.extend(_probe_mcp_systems(coder_system, reviewer_system, runner))
-    checks.extend(_probe_mcp_round_trip(coder_system, reviewer_system, runner))
+    if schedule == "startup":
+        return None
 
+    if schedule == "daily" and not state.is_stale(timedelta(days=1)):
+        return Check(
+            name="Review Exchange",
+            status="info",
+            detail="MCP round-trip probe skipped (recently checked)",
+        )
+
+    if schedule == "interval" and not state.is_stale(timedelta(days=interval_days)):
+        return Check(
+            name="Review Exchange",
+            status="info",
+            detail="MCP round-trip probe skipped (recently checked)",
+        )
+
+    return None
+
+
+def _update_probe_state(config, state, checks: list[Check]) -> None:
     summary = {
         check.name: (check.status == "ok", check.detail)
         for check in checks
@@ -121,8 +159,6 @@ def probe_review_exchange(
     if summary:
         state.mark_checked(summary)
         save_state(config.repo_root, state)
-
-    return checks
 
 
 def _probe_mcp_systems(
