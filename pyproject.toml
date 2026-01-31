@@ -187,7 +187,15 @@ ignore_imports = [
 name = "Only execution may import httpx"
 type = "forbidden"
 source_modules = [
-  "issue_orchestrator",
+  "issue_orchestrator.adapters",
+  "issue_orchestrator.agent_runner",
+  "issue_orchestrator.control",
+  "issue_orchestrator.domain",
+  "issue_orchestrator.entrypoints",
+  "issue_orchestrator.execution",
+  "issue_orchestrator.infra",
+  "issue_orchestrator.observation",
+  "issue_orchestrator.ports",
 ]
 forbidden_modules = ["httpx"]
 ignore_imports = [
