@@ -380,6 +380,17 @@ class E2EConfig:
 
 
 @dataclass
+class SqliteBackupConfig:
+    """SQLite backup configuration."""
+
+    enabled: bool = True
+    cadence_hours: int = 24  # Minimum hours between backups
+    retention_daily: int = 14  # Number of daily backups to keep
+    retention_weekly: int = 8  # Number of weekly backups to keep
+    enforce_on_startup: bool = True  # Force backup on startup if cadence elapsed
+
+
+@dataclass
 class ClaimsConfig:
     """Claims/lease configuration for multi-orchestrator coordination.
 
