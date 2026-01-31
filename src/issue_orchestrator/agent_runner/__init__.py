@@ -3,8 +3,8 @@
 This keeps imports stable while agent_runner is bundled inside issue_orchestrator.
 """
 
-from .._vendor.agent_runner import AgentRunner, AIProvider, RunResult, RunSpec
-from .._vendor.agent_runner import get_provider, is_valid_provider, list_providers
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "AgentRunner",
@@ -14,6 +14,18 @@ __all__ = [
     "list_providers",
     "get_provider",
     "is_valid_provider",
+    "__version__",
 ]
 
-__version__ = "0.1.0"
+_VENDOR_MODULE = "issue_orchestrator._vendor.agent_runner"
+
+
+def __getattr__(name: str) -> Any:
+    if name not in __all__:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    vendor = import_module(_VENDOR_MODULE)
+    return getattr(vendor, name)
+
+
+def __dir__() -> list[str]:
+    return sorted(list(globals().keys()) + __all__)
