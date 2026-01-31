@@ -111,9 +111,9 @@ class TestCodexWithAgentRunner:
 
     def test_codex_via_agent_runner_captures_output(self, tmp_path):
         """Test that AgentRunner correctly captures Codex output to log files."""
-        from agent_runner import AgentRunner
-        from agent_runner.ports import RunSpec
-        from agent_runner.providers import CodexProvider
+        from issue_orchestrator.agent_runner import AgentRunner
+        from issue_orchestrator.agent_runner.ports import RunSpec
+        from issue_orchestrator.agent_runner.providers import CodexProvider
 
         # Set up a git repo
         subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
@@ -327,9 +327,9 @@ class TestCodexWithAgentRunnerFullPath:
         4. completion.json is written
         5. AgentRunner captures all output
         """
-        from agent_runner import AgentRunner
-        from agent_runner.ports import RunSpec
-        from agent_runner.providers import CodexProvider
+        from issue_orchestrator.agent_runner import AgentRunner
+        from issue_orchestrator.agent_runner.ports import RunSpec
+        from issue_orchestrator.agent_runner.providers import CodexProvider
 
         # Get scripts directory
         repo_root = Path(__file__).parent.parent.parent

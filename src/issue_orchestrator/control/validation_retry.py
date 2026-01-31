@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
 
-from agent_runner import AgentRunner, RunResult, RunSpec
+from issue_orchestrator.agent_runner import AgentRunner, RunResult, RunSpec
 
 from ..infra.config import RetryConfig
 

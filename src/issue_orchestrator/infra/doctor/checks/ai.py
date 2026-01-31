@@ -137,7 +137,7 @@ def check_ai_keys(config: Config) -> list[Check]:
 
 
 def check_ai_provider_clis() -> list[Check]:
-    from agent_runner import list_providers, get_provider
+    from issue_orchestrator.agent_runner import list_providers, get_provider
 
     checks: list[Check] = []
 

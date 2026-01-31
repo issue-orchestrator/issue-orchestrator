@@ -466,7 +466,7 @@ class AgentConfig:
         Returns:
             Shell-safe command string
         """
-        from agent_runner import get_provider
+        from issue_orchestrator.agent_runner import get_provider
 
         # self.provider is guaranteed non-None here (caller checks)
         assert self.provider is not None

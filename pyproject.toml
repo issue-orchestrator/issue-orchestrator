@@ -19,7 +19,6 @@ classifiers = [
 ]
 
 dependencies = [
-    "agent-runner",  # Workspace member - provider-agnostic agent execution
     "pyyaml>=6.0",
     "rich>=13.0",      # Nice terminal UI
     "textual>=0.40",   # TUI framework with keyboard input
@@ -70,13 +69,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
-
-# uv workspace - enables fast installs with local packages
-[tool.uv.workspace]
-members = ["packages/agent_runner"]
-
-[tool.uv.sources]
-agent-runner = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/issue_orchestrator"]
@@ -205,16 +197,36 @@ ignore_imports = [
   "issue_orchestrator.entrypoints.control_api -> httpx",  # Passthrough to orchestrator
 ]
 
-# agent-runner package boundary
+# Vendored agent_runner boundary
 [[tool.importlinter.contracts]]
-name = "agent_runner must not import issue_orchestrator"
+name = "vendored agent_runner must not import issue_orchestrator"
 type = "forbidden"
-source_modules = ["agent_runner"]
+source_modules = ["issue_orchestrator._vendor.agent_runner"]
 forbidden_modules = ["issue_orchestrator"]
+
+# Orchestrator must not import vendored code directly (use facade)
+[[tool.importlinter.contracts]]
+name = "orchestrator must not import vendored agent_runner directly"
+type = "forbidden"
+source_modules = ["issue_orchestrator"]
+forbidden_modules = ["issue_orchestrator._vendor.agent_runner"]
+ignore_imports = [
+  "issue_orchestrator.agent_runner -> issue_orchestrator._vendor.agent_runner",
+  "issue_orchestrator.agent_runner.providers -> issue_orchestrator._vendor.agent_runner.providers",
+  "issue_orchestrator.agent_runner.ports -> issue_orchestrator._vendor.agent_runner.ports",
+  "issue_orchestrator.agent_runner.runner -> issue_orchestrator._vendor.agent_runner.runner",
+  "issue_orchestrator.agent_runner.env_filter -> issue_orchestrator._vendor.agent_runner.env_filter",
+]
+
+[[tool.importlinter.contracts]]
+name = "orchestrator must not import external agent_runner package"
+type = "forbidden"
+source_modules = ["issue_orchestrator"]
+forbidden_modules = ["agent_runner"]
 
 # Ruff linter - complexity checks (reporting only, --exit-zero)
 [tool.ruff]
-src = ["src", "packages/agent_runner/src"]
+src = ["src"]
 target-version = "py311"
 
 [tool.ruff.lint]

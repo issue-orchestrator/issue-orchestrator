@@ -23,7 +23,7 @@ class AgentValidator(ConfigValidator):
     KNOWN_CLAUDE_MODELS = {"haiku", "sonnet", "opus"}
 
     def validate(self, config: "Config") -> list[str]:
-        from agent_runner import is_valid_provider, list_providers
+        from issue_orchestrator.agent_runner import is_valid_provider, list_providers
 
         errors = []
 

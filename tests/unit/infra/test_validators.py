@@ -325,8 +325,8 @@ class TestAgentValidator:
     def test_no_agents_error(self):
         """Verify error when no agents configured."""
         config = self._make_config(agents={})
-        with patch("agent_runner.is_valid_provider", return_value=True), \
-             patch("agent_runner.list_providers", return_value=["claude-code"]):
+        with patch("issue_orchestrator.agent_runner.is_valid_provider", return_value=True), \
+             patch("issue_orchestrator.agent_runner.list_providers", return_value=["claude-code"]):
             errors = AgentValidator().validate(config)
         assert len(errors) == 1
         assert "No agents configured" in errors[0]
@@ -338,8 +338,8 @@ class TestAgentValidator:
         agent = self._make_agent(prompt_path=prompt_file, provider="claude-code")
         config = self._make_config(agents={"agent:dev": agent})
 
-        with patch("agent_runner.is_valid_provider", return_value=True), \
-             patch("agent_runner.list_providers", return_value=["claude-code"]):
+        with patch("issue_orchestrator.agent_runner.is_valid_provider", return_value=True), \
+             patch("issue_orchestrator.agent_runner.list_providers", return_value=["claude-code"]):
             errors = AgentValidator().validate(config)
         assert errors == []
 
@@ -348,8 +348,8 @@ class TestAgentValidator:
         agent = self._make_agent(provider="claude-code", prompt_exists=False)
         config = self._make_config(agents={"agent:dev": agent})
 
-        with patch("agent_runner.is_valid_provider", return_value=True), \
-             patch("agent_runner.list_providers", return_value=["claude-code"]):
+        with patch("issue_orchestrator.agent_runner.is_valid_provider", return_value=True), \
+             patch("issue_orchestrator.agent_runner.list_providers", return_value=["claude-code"]):
             errors = AgentValidator().validate(config)
         assert any("prompt file not found" in e for e in errors)
 
@@ -358,8 +358,8 @@ class TestAgentValidator:
         agent = self._make_agent(model="gpt-4", provider="claude-code")
         config = self._make_config(agents={"agent:dev": agent})
 
-        with patch("agent_runner.is_valid_provider", return_value=True), \
-             patch("agent_runner.list_providers", return_value=["claude-code"]):
+        with patch("issue_orchestrator.agent_runner.is_valid_provider", return_value=True), \
+             patch("issue_orchestrator.agent_runner.list_providers", return_value=["claude-code"]):
             errors = AgentValidator().validate(config)
         assert any("unknown model" in e for e in errors)
 
@@ -368,8 +368,8 @@ class TestAgentValidator:
         agent = self._make_agent(provider="claude-code", reviewer="agent:nonexistent")
         config = self._make_config(agents={"agent:dev": agent})
 
-        with patch("agent_runner.is_valid_provider", return_value=True), \
-             patch("agent_runner.list_providers", return_value=["claude-code"]):
+        with patch("issue_orchestrator.agent_runner.is_valid_provider", return_value=True), \
+             patch("issue_orchestrator.agent_runner.list_providers", return_value=["claude-code"]):
             errors = AgentValidator().validate(config)
         assert any("reviewer" in e and "not found" in e for e in errors)
 
@@ -381,8 +381,8 @@ class TestAgentValidator:
             raw_agents={"agent:dev": {}},  # No command override
         )
 
-        with patch("agent_runner.is_valid_provider", return_value=True), \
-             patch("agent_runner.list_providers", return_value=["claude-code"]):
+        with patch("issue_orchestrator.agent_runner.is_valid_provider", return_value=True), \
+             patch("issue_orchestrator.agent_runner.list_providers", return_value=["claude-code"]):
             errors = AgentValidator().validate(config)
         assert any("no provider specified" in e for e in errors)
 
@@ -394,8 +394,8 @@ class TestAgentValidator:
             raw_agents={"agent:dev": {"command": "custom-agent {prompt}"}},
         )
 
-        with patch("agent_runner.is_valid_provider", return_value=True), \
-             patch("agent_runner.list_providers", return_value=["claude-code"]):
+        with patch("issue_orchestrator.agent_runner.is_valid_provider", return_value=True), \
+             patch("issue_orchestrator.agent_runner.list_providers", return_value=["claude-code"]):
             errors = AgentValidator().validate(config)
         # Should not have "no provider specified" error
         assert not any("no provider specified" in e for e in errors)
