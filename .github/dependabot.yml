@@ -36,22 +36,4 @@ updates:
           - "minor"
           - "patch"
 
-  # Python (pip) - best-effort for pyproject.toml/uv.lock
-  # NOTE: Dependabot has limited support for uv workspaces and lock files.
-  # Do not merge Dependabot PRs without verifying with 'make upgrade-deps' so
-  # uv.lock stays in sync. Manual intervention may be needed for workspace members.
-  - package-ecosystem: "pip"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-      time: "09:00"
-      timezone: "America/Los_Angeles"
-    open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-    groups:
-      minor-and-patch:
-        update-types:
-          - "minor"
-          - "patch"
+  # Python dependencies are handled by Renovate (see renovate.json).
