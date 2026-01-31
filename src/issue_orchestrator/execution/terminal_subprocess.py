@@ -27,7 +27,7 @@ from ..control.isolation import build_isolation_prefix
 if TYPE_CHECKING:
     import pexpect
 from ..infra.env import get_env
-from ..infra.sqlite_maintenance import apply_pragmas
+from ..infra.sqlite_connection import open_sqlite
 from ..infra.hooks.hookspec import hookimpl
 from ..infra.repo_identity import state_dir
 from .session_output_adapter import FileSystemSessionOutput
@@ -63,9 +63,7 @@ class _SubprocessRegistry:
         self._migrate_legacy_if_needed()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self._db_path)
-        apply_pragmas(conn)
-        return conn
+        return open_sqlite(self._db_path)
 
     def _ensure_db(self) -> None:
         with self._connect() as conn:

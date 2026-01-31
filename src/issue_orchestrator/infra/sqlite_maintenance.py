@@ -11,20 +11,14 @@ from pathlib import Path
 
 from .config import Config
 from .sqlite_registry import list_sqlite_databases, SQLiteDatabase
+from .sqlite_connection import open_sqlite
 
 logger = logging.getLogger(__name__)
 
 
-def apply_pragmas(conn: sqlite3.Connection) -> None:
-    """Apply durability pragmas."""
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = FULL")
-
-
 def quick_check_db(path: Path) -> tuple[bool, str]:
     try:
-        with sqlite3.connect(str(path), timeout=2.0) as conn:
+        with open_sqlite(path, timeout=2.0) as conn:
             row = conn.execute("PRAGMA quick_check").fetchone()
     except sqlite3.DatabaseError as exc:
         return False, f"quick_check error: {exc}"
@@ -42,8 +36,7 @@ def enforce_pragmas_on_startup(config: Config) -> None:
         if not path.exists():
             continue
         try:
-            conn = sqlite3.connect(str(path), timeout=2.0)
-            apply_pragmas(conn)
+            conn = open_sqlite(path, timeout=2.0)
             conn.close()
         except sqlite3.DatabaseError as exc:
             logger.warning("[startup] Failed to apply sqlite pragmas (%s): %s", db.key, exc)
