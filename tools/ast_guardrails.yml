@@ -16,6 +16,7 @@ layer_boundaries:
 allow_prefixes:
   - src/issue_orchestrator/execution
   - src/issue_orchestrator/adapters
+  - src/issue_orchestrator/_vendor/agent_runner
   - src/issue_orchestrator/entrypoints/cli.py
   - src/issue_orchestrator/entrypoints/control_api.py  # Passthrough calls to orchestrator
   - src/issue_orchestrator/adapters/terminal/_iterm2.py
