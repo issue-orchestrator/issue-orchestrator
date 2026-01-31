@@ -506,6 +506,11 @@ _Auto-generated from settings schema._
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `sqlite_backup.enabled` | boolean | `True` | Enable automatic backups of local SQLite state |
+| `sqlite_backup.cadence_hours` | integer | `24` | Minimum hours between backups |
+| `sqlite_backup.retention_daily` | integer | `14` | Number of daily backups to keep |
+| `sqlite_backup.retention_weekly` | integer | `8` | Number of weekly backups to keep |
+| `sqlite_backup.enforce_on_startup` | boolean | `True` | If cadence elapsed, force a backup on startup |
 | `observability.session_no_output_seconds` | integer | `120` | Emit event after this much idle time |
 | `observability.stale_escalation_ticks` | integer | `0` | Escalate after K consecutive stale ticks (0 = disabled) |
 | `ui.web_port` | integer | `8080` |  |
