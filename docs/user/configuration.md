@@ -362,7 +362,6 @@ sqlite_backup:
 - Restore: stop the orchestrator, copy the newest backup `.db` over the target DB, then restart.
 - Doctor shows backup status and will warn if backups are overdue.
 - Long-running orchestrators check for due backups every `sqlite_backup.check_interval_minutes`.
-- Long-running orchestrators check for due backups every `sqlite_backup.check_interval_minutes`.
 
 ### state
 
