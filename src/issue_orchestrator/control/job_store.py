@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from ..domain.models import PublishJob
+from ..infra.sqlite_maintenance import apply_pragmas
 
 logger = logging.getLogger(__name__)
 
@@ -204,8 +205,7 @@ class JobStore:
             )
             self._local.conn.row_factory = sqlite3.Row
             # Enable foreign keys and WAL mode for better concurrency
-            self._local.conn.execute("PRAGMA foreign_keys = ON")
-            self._local.conn.execute("PRAGMA journal_mode = WAL")
+            apply_pragmas(self._local.conn)
         return self._local.conn
 
     @contextmanager

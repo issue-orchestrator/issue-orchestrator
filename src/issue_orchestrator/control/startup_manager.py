@@ -40,6 +40,7 @@ from ..infra import labels
 from ..infra import gh_audit
 from ..infra.validation_state import has_pending_retry, read_validation_state, get_retry_prompt_path
 from ..infra.repo_identity import get_repo_head_sha
+from ..infra.sqlite_maintenance import enforce_pragmas_on_startup, run_backups_if_due
 from .worktree_manager import get_worktree_path
 
 
@@ -123,6 +124,12 @@ class StartupManager:
             logger.info("Orchestrator starting: commit=%s (%s)", commit_sha[:7], commit_sha)
         else:
             logger.warning("Orchestrator starting: commit=unknown (could not read git HEAD)")
+
+        # Step 1: Enforce SQLite pragmas and backups
+        state.startup_message = "Checking SQLite state..."
+        enforce_pragmas_on_startup(self.config)
+        if self.config.sqlite_backup.enforce_on_startup:
+            run_backups_if_due(self.config)
 
         # Step 2: Clean up stale claims
         state.startup_message = "Cleaning up stale claims..."

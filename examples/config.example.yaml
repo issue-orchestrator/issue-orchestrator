@@ -204,6 +204,13 @@ e2e:
   flake_window_runs: 10               # Number of recent runs to check for flip rate
   pr_labels: ["io-e2e-test-data"]
 
+sqlite_backup:
+  enabled: true
+  cadence_hours: 24
+  retention_daily: 14
+  retention_weekly: 8
+  enforce_on_startup: true
+
 state:
   # file: ".issue-orchestrator/state.json"
 

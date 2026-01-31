@@ -336,6 +336,28 @@ e2e:
 - `e2e.flake_threshold`: Flip rate percentage (0-100) above which a test is flagged as flaky. Default `20`.
 - `e2e.flake_window_runs`: Number of recent E2E runs to check when calculating flip rate. Default `10`.
 
+### sqlite_backup
+
+```yaml
+sqlite_backup:
+  enabled: true
+  cadence_hours: 24
+  retention_daily: 14
+  retention_weekly: 8
+  enforce_on_startup: true
+```
+
+- `sqlite_backup.enabled`: Toggle automatic SQLite backups.
+- `sqlite_backup.cadence_hours`: Minimum hours between backups.
+- `sqlite_backup.retention_daily`: Number of daily backups to keep.
+- `sqlite_backup.retention_weekly`: Number of weekly backups to keep.
+- `sqlite_backup.enforce_on_startup`: If cadence elapsed, force a backup on startup.
+
+**Care & feeding**
+- Backups live under `.issue-orchestrator/backups/sqlite/<db_key>/daily/` and `weekly/`.
+- Restore: stop the orchestrator, copy the newest backup `.db` over the target DB, then restart.
+- Doctor shows backup status and will warn if backups are overdue.
+
 ### state
 
 ```yaml

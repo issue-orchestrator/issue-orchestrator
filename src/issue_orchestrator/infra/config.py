@@ -380,6 +380,17 @@ class E2EConfig:
 
 
 @dataclass
+class SqliteBackupConfig:
+    """SQLite backup configuration."""
+
+    enabled: bool = True
+    cadence_hours: int = 24  # Minimum hours between backups
+    retention_daily: int = 14  # Number of daily backups to keep
+    retention_weekly: int = 8  # Number of weekly backups to keep
+    enforce_on_startup: bool = True  # Force backup on startup if cadence elapsed
+
+
+@dataclass
 class ClaimsConfig:
     """Claims/lease configuration for multi-orchestrator coordination.
 
@@ -437,6 +448,18 @@ def _parse_e2e_config(data: dict) -> E2EConfig:
         stop_on_first_failure=data.get("stop_on_first_failure", False),
         flake_threshold=data.get("flake_threshold", 20),
         flake_window_runs=data.get("flake_window_runs", 10),
+    )
+
+
+def _parse_sqlite_backup_config(data: dict) -> SqliteBackupConfig:
+    """Parse sqlite_backup section from YAML data."""
+    return SqliteBackupConfig(
+        enabled=data.get("enabled", True),
+        cadence_hours=data.get("cadence_hours", 24),
+        check_interval_minutes=data.get("check_interval_minutes", 60),
+        retention_daily=data.get("retention_daily", 14),
+        retention_weekly=data.get("retention_weekly", 8),
+        enforce_on_startup=data.get("enforce_on_startup", True),
     )
 
 
@@ -829,6 +852,8 @@ _TOP_LEVEL_SECTION_KEYS = (
     "validation", "ui", "observability", "security", "filtering",
     "triage", "e2e", "goal_pilot", "milestones", "state", "config", "claims", "hooks",
     "ai_systems",
+    "triage", "e2e", "milestones", "state", "config", "claims", "hooks",
+    "sqlite_backup",
 )
 
 # Derive ALLOWED_TOP_LEVEL_FIELDS from _TOP_LEVEL_SECTION_KEYS — single source of truth.
@@ -1015,6 +1040,8 @@ class Config:
 
     # Goal Pilot AI configuration
     goal_pilot: GoalPilotConfig = field(default_factory=GoalPilotConfig)
+    # SQLite backup configuration
+    sqlite_backup: SqliteBackupConfig = field(default_factory=SqliteBackupConfig)
 
     # Claims/lease configuration for multi-orchestrator coordination
     claims: ClaimsConfig = field(default_factory=ClaimsConfig)
@@ -1309,6 +1336,13 @@ class Config:
                 "quarantine_file": self.e2e.quarantine_file,
                 "survive_restart": self.e2e.survive_restart,
             },
+            "sqlite_backup": {
+                "enabled": self.sqlite_backup.enabled,
+                "cadence_hours": self.sqlite_backup.cadence_hours,
+                "retention_daily": self.sqlite_backup.retention_daily,
+                "retention_weekly": self.sqlite_backup.retention_weekly,
+                "enforce_on_startup": self.sqlite_backup.enforce_on_startup,
+            },
             "claims": {
                 "enabled": self.claims.enabled,
                 "claimant_id": self.claims.claimant_id,
@@ -1536,6 +1570,16 @@ class Config:
         if e2e_dict:
             result["e2e"] = e2e_dict
 
+        # SQLite backup section
+        if self.sqlite_backup != SqliteBackupConfig():
+            result["sqlite_backup"] = {
+                "enabled": self.sqlite_backup.enabled,
+                "cadence_hours": self.sqlite_backup.cadence_hours,
+                "retention_daily": self.sqlite_backup.retention_daily,
+                "retention_weekly": self.sqlite_backup.retention_weekly,
+                "enforce_on_startup": self.sqlite_backup.enforce_on_startup,
+            }
+
         # Validation section
         if self.validation.cmd:
             validation_dict: dict = {"cmd": self.validation.cmd}
@@ -1665,6 +1709,17 @@ class Config:
 
         # Parse complex optional configs
         _apply_optional_sections(config, sections)
+        # Parse complex configs
+        if sections["triage"]:
+            config.triage = _parse_triage_config(sections["triage"])
+        if sections["e2e"]:
+            config.e2e = _parse_e2e_config(sections["e2e"])
+        if sections["sqlite_backup"]:
+            config.sqlite_backup = _parse_sqlite_backup_config(sections["sqlite_backup"])
+        if sections["claims"]:
+            config.claims = _parse_claims_config(sections["claims"])
+        if sections["hooks"]:
+            config.hooks = _parse_hooks_config(sections["hooks"])
 
         return config
 

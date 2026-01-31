@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
+from .sqlite_maintenance import apply_pragmas
+
 logger = logging.getLogger(__name__)
 
 
@@ -550,7 +552,7 @@ class E2EDB:
         """Get a database connection with row factory."""
         conn = sqlite3.connect(str(self.db_path), timeout=10.0)
         conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA foreign_keys = ON")
+        apply_pragmas(conn)
         try:
             yield conn
             conn.commit()

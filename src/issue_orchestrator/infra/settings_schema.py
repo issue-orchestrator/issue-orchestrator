@@ -470,6 +470,63 @@ class GoalPilotSettings(BaseModel):
 class AdvancedSettings(BaseModel):
     """Settings for the Advanced tab."""
 
+    sqlite_backup_enabled: bool = Field(
+        True,
+        title="Enable SQLite Backups",
+        description="Enable automatic backups of local SQLite state",
+        json_schema_extra={
+            "section": "State & Backups",
+            "config_attr": "sqlite_backup.enabled",
+            "yaml_path": "sqlite_backup.enabled",
+        },
+    )
+    sqlite_backup_cadence_hours: int = Field(
+        24,
+        title="Backup Cadence (hours)",
+        description="Minimum hours between backups",
+        ge=1,
+        le=168,
+        json_schema_extra={
+            "section": "State & Backups",
+            "config_attr": "sqlite_backup.cadence_hours",
+            "yaml_path": "sqlite_backup.cadence_hours",
+        },
+    )
+    sqlite_backup_retention_daily: int = Field(
+        14,
+        title="Daily Backup Retention",
+        description="Number of daily backups to keep",
+        ge=1,
+        le=60,
+        json_schema_extra={
+            "section": "State & Backups",
+            "config_attr": "sqlite_backup.retention_daily",
+            "yaml_path": "sqlite_backup.retention_daily",
+        },
+    )
+    sqlite_backup_retention_weekly: int = Field(
+        8,
+        title="Weekly Backup Retention",
+        description="Number of weekly backups to keep",
+        ge=0,
+        le=52,
+        json_schema_extra={
+            "section": "State & Backups",
+            "config_attr": "sqlite_backup.retention_weekly",
+            "yaml_path": "sqlite_backup.retention_weekly",
+        },
+    )
+    sqlite_backup_enforce_on_startup: bool = Field(
+        True,
+        title="Enforce Backup on Startup",
+        description="If cadence elapsed, force a backup on startup",
+        json_schema_extra={
+            "section": "State & Backups",
+            "config_attr": "sqlite_backup.enforce_on_startup",
+            "yaml_path": "sqlite_backup.enforce_on_startup",
+        },
+    )
+
     session_no_output_seconds: int = Field(
         120,
         title="No-Output Threshold (seconds)",
