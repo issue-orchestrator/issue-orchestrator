@@ -2,30 +2,6 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 
-[manifest]
-members = [
-    "agent-runner",
-    "issue-orchestrator",
-]
-
-[[package]]
-name = "agent-runner"
-version = "0.1.0"
-source = { editable = "packages/agent_runner" }
-
-[package.optional-dependencies]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-asyncio" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
-    { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = ">=0.23" },
-]
-provides-extras = ["dev"]
-
 [[package]]
 name = "annotated-doc"
 version = "0.0.4"
@@ -664,7 +640,6 @@ name = "issue-orchestrator"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "agent-runner" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "jinja2" },
@@ -699,7 +674,6 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "agent-runner", editable = "packages/agent_runner" },
     { name = "fastapi", specifier = ">=0.104" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "import-linter", marker = "extra == 'dev'", specifier = ">=2.0" },
