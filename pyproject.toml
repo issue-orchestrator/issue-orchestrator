@@ -208,7 +208,16 @@ forbidden_modules = ["issue_orchestrator"]
 [[tool.importlinter.contracts]]
 name = "orchestrator must not import vendored agent_runner directly"
 type = "forbidden"
-source_modules = ["issue_orchestrator"]
+source_modules = [
+  "issue_orchestrator.adapters",
+  "issue_orchestrator.control",
+  "issue_orchestrator.domain",
+  "issue_orchestrator.entrypoints",
+  "issue_orchestrator.execution",
+  "issue_orchestrator.infra",
+  "issue_orchestrator.observation",
+  "issue_orchestrator.ports",
+]
 forbidden_modules = ["issue_orchestrator._vendor.agent_runner"]
 ignore_imports = [
   "issue_orchestrator.agent_runner -> issue_orchestrator._vendor.agent_runner",
@@ -221,7 +230,16 @@ ignore_imports = [
 [[tool.importlinter.contracts]]
 name = "orchestrator must not import external agent_runner package"
 type = "forbidden"
-source_modules = ["issue_orchestrator"]
+source_modules = [
+  "issue_orchestrator.adapters",
+  "issue_orchestrator.control",
+  "issue_orchestrator.domain",
+  "issue_orchestrator.entrypoints",
+  "issue_orchestrator.execution",
+  "issue_orchestrator.infra",
+  "issue_orchestrator.observation",
+  "issue_orchestrator.ports",
+]
 forbidden_modules = ["agent_runner"]
 
 # Ruff linter - complexity checks (reporting only, --exit-zero)
