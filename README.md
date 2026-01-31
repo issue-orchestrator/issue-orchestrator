@@ -110,7 +110,9 @@ See [E2E Documentation](docs/user/e2e.md) for full configuration reference, API 
 
 The **Goal Pilot** is an experimental agentic layer built *on top* of the stable Issue-Orchestrator core. 
 
-While the core orchestrator provides a deterministic, Hexagonal Architecture platform for managing lifecycle events (the "engine"), the Goal Pilot acts as an autonomous driver. It replaces the passive human operator with an agentic loop that can reason about high-level goals.
+While the core orchestrator provides a deterministic, Hexagonal Architecture platform for managing lifecycle events (the "engine"), the Goal Pilot acts as an autonomous driver. It reduces manual operator involvement by introducing an agentic loop that can reason about high-level goals.
+
+See [Design Document](docs/design/goal-pilot.md) and [Configuration](docs/user/configuration.md#goal-pilot) to enable.
 
 ### Why this architecture?
 We explicitly separated the **Stable Core** from the **Experimental Pilot** to ensure safety and reliability.
