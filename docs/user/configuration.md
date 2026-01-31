@@ -179,7 +179,18 @@ cleanup:
 validation:
   cmd: null
   timeout_seconds: 300
+  pre_push_dirty_check: "tracked"
 ```
+
+- `validation.pre_push_dirty_check`: Controls pre-push dirty checks for tracked files. Values:
+  - `"tracked"`: block on staged + unstaged changes (default)
+  - `"unstaged"`: allow staged changes, block unstaged changes
+  - `"off"`: disable the dirty-check guard
+
+This guard prevents “validated one commit, pushed another” mistakes by requiring
+the working tree (tracked files only) to be clean before validation and push.
+Ignored/untracked files are not considered, so build caches and logs won’t block
+you. Adjust the strictness with `validation.pre_push_dirty_check` if needed.
 
 ### retry
 

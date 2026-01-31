@@ -255,6 +255,7 @@ class ValidationConfig:
     """
     cmd: Optional[str] = None  # Command to run (e.g., "make validate")
     timeout_seconds: int = 300  # Default 5 minutes
+    pre_push_dirty_check: str = "tracked"  # "tracked" | "unstaged" | "off"
 
 
 @dataclass
@@ -697,6 +698,7 @@ def _load_validation_section(config: "Config", validation_section: dict) -> None
         config.validation = ValidationConfig(
             cmd=validation_section.get("cmd"),
             timeout_seconds=validation_section.get("timeout_seconds", 300),
+            pre_push_dirty_check=validation_section.get("pre_push_dirty_check", "tracked"),
         )
 
 
@@ -1131,6 +1133,7 @@ class Config:
                 "enabled": self.is_validation_enabled(),
                 "cmd": self.validation.cmd,
                 "timeout_seconds": self.validation.timeout_seconds,
+                "pre_push_dirty_check": self.validation.pre_push_dirty_check,
             },
             "review": {
                 "enabled": self.review_enabled,
@@ -1398,10 +1401,12 @@ class Config:
             result["e2e"] = e2e_dict
 
         # Validation section
-        if self.validation.cmd:
+        if self.validation.cmd or self.validation.pre_push_dirty_check != "tracked":
             validation_dict: dict = {"cmd": self.validation.cmd}
             if self.validation.timeout_seconds != 300:
                 validation_dict["timeout_seconds"] = self.validation.timeout_seconds
+            if self.validation.pre_push_dirty_check != "tracked":
+                validation_dict["pre_push_dirty_check"] = self.validation.pre_push_dirty_check
             result["validation"] = validation_dict
 
         # Security section
@@ -1727,11 +1732,12 @@ def load_validation_config(
         {
             "cmd": "make validate",  # or None if not configured
             "timeout_seconds": 300,
+            "pre_push_dirty_check": "tracked",
         }
     """
     config_path = find_config_file(start_path)
     if not config_path:
-        return {"cmd": None, "timeout_seconds": 300}
+        return {"cmd": None, "timeout_seconds": 300, "pre_push_dirty_check": "off"}
 
     try:
         with open(config_path) as f:
@@ -1741,6 +1747,7 @@ def load_validation_config(
         return {
             "cmd": validation.get("cmd"),
             "timeout_seconds": validation.get("timeout_seconds", 300),
+            "pre_push_dirty_check": validation.get("pre_push_dirty_check", "tracked"),
         }
     except Exception:
-        return {"cmd": None, "timeout_seconds": 300}
+        return {"cmd": None, "timeout_seconds": 300, "pre_push_dirty_check": "off"}
