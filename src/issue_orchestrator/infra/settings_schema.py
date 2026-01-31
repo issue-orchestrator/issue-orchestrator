@@ -355,7 +355,7 @@ class GoalPilotSettings(BaseModel):
             "doctor_severity": DOCTOR_SEVERITY_ERROR,
         },
     )
-    approval_policy: str = Field(
+    approval_policy: Literal["journeys_only", "gatekeeper", "batch"] = Field(
         "journeys_only",
         title="Approval Policy",
         description="How Goal Pilot applies repo changes",

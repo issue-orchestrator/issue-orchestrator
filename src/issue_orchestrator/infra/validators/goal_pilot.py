@@ -14,6 +14,7 @@ class GoalPilotValidator(ConfigValidator):
     def validate(self, config: "Config") -> list[str]:
         errors: list[str] = []
         goal_pilot = config.goal_pilot
+        allowed_policies = {"journeys_only", "gatekeeper", "batch"}
         if goal_pilot.enabled:
             if not goal_pilot.agent:
                 errors.append(
@@ -29,5 +30,10 @@ class GoalPilotValidator(ConfigValidator):
             errors.append(
                 f"goal_pilot.agent '{goal_pilot.agent}' not found in agents. "
                 f"Available: {list(config.agents.keys())}"
+            )
+        if goal_pilot.approval_policy not in allowed_policies:
+            errors.append(
+                "goal_pilot.approval_policy must be one of "
+                f"{sorted(allowed_policies)} (got '{goal_pilot.approval_policy}')."
             )
         return errors

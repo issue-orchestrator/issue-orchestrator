@@ -121,7 +121,10 @@ class GoalPilot:
         if not title:
             raise ValueError("journey requires title")
         description = payload.get("description", "")
-        order_index = int(payload.get("order_index", 0))
+        try:
+            order_index = _parse_order_index(payload.get("order_index", 0))
+        except ValueError as exc:
+            raise ValueError("order_index must be an integer") from exc
         priority = payload.get("priority", "medium")
         status = payload.get("status", "planned")
         success_criteria = payload.get("success_criteria", "")
@@ -409,3 +412,22 @@ def _require_label_list(value: Any, field_name: str) -> list[str]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise ValueError(f"{field_name} must be a list of strings")
     return [label for label in value if label]
+
+
+def _parse_order_index(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        raise ValueError("order_index must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not trimmed:
+            return 0
+        return int(trimmed)
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        raise ValueError("order_index must be an integer")
+    return int(value)

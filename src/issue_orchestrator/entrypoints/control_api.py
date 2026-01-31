@@ -2109,7 +2109,10 @@ async def goal_pilot_journey_reorder(run_id: str, request: Request) -> JSONRespo
     if not isinstance(order, list):
         return JSONResponse({"error": "order_list_required"}, status_code=400)
     pilot = _get_goal_pilot()
-    result = pilot.reorder_journeys(run_id, order)
+    try:
+        result = pilot.reorder_journeys(run_id, order)
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
     return JSONResponse(result)
 
 

@@ -573,15 +573,28 @@ class SqliteGoalPilotStore:
         )
 
     def reorder_journeys(self, run_id: str, ordered_ids: list[str]) -> None:
-        with self._transaction() as conn:
+        conn = self._get_connection()
+        rows = conn.execute(
+            "SELECT journey_id FROM goal_pilot_journeys WHERE run_id = ?",
+            (run_id,),
+        ).fetchall()
+        current_ids = [row["journey_id"] for row in rows]
+        if not ordered_ids and not current_ids:
+            return
+        if len(set(ordered_ids)) != len(ordered_ids):
+            raise ValueError("reorder_journeys requires unique journey ids")
+        if set(ordered_ids) != set(current_ids):
+            raise ValueError("reorder_journeys must include all journeys for the run")
+        with self._transaction() as tx:
+            now = _now_iso()
             for index, journey_id in enumerate(ordered_ids):
-                conn.execute(
+                tx.execute(
                     """
                     UPDATE goal_pilot_journeys
                     SET order_index = ?, updated_at = ?
                     WHERE journey_id = ? AND run_id = ?
                     """,
-                    (index, _now_iso(), journey_id, run_id),
+                    (index, now, journey_id, run_id),
                 )
     def update_run_goals(self, run_id: str, goals: list[str]) -> None:
         now = _now_iso()

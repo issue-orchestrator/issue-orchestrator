@@ -1,3 +1,5 @@
+import pytest
+
 from issue_orchestrator.execution.goal_pilot_store import SqliteGoalPilotStore
 
 
@@ -77,6 +79,21 @@ def test_goal_pilot_store_round_trip(tmp_path):
     )
     journeys = store.list_journeys(run.run_id)
     assert [j.journey_id for j in journeys] == [journey.journey_id]
+
+    journey_two = store.add_journey(
+        run_id=run.run_id,
+        title="Review status",
+        description="Understand progress",
+        order_index=1,
+        priority="medium",
+        status="planned",
+        success_criteria="Clear state",
+        under_the_covers={},
+        lookahead={},
+        milestone=None,
+    )
+    with pytest.raises(ValueError, match="must include all journeys"):
+        store.reorder_journeys(run.run_id, [journey_two.journey_id])
 
     skill = store.upsert_skill(
         title="UI clarity",
