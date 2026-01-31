@@ -48,16 +48,24 @@ class GoalPilot:
         )
         return run.run_id
 
+    def list_runs(self, limit: int = 50) -> list[dict[str, Any]]:
+        runs = self._store.list_runs(limit=limit)
+        return _serialize_dataclasses(runs)
+
     def status(self, run_id: str) -> dict[str, Any]:
         run = self._require_run(run_id)
         snapshot = self._store.get_latest_snapshot(run_id)
         actions = self._store.list_actions(run_id)
         notes = self._store.list_notes(run_id)
+        journeys = self._store.list_journeys(run_id)
+        phase_history = self._store.list_phase_history(run_id)
         return {
             "run": _serialize_dataclasses(run),
             "latest_snapshot": _serialize_dataclasses(snapshot),
             "actions": _serialize_dataclasses(actions),
             "notes": _serialize_dataclasses(notes),
+            "journeys": _serialize_dataclasses(journeys),
+            "phase_history": _serialize_dataclasses(phase_history),
         }
 
     def update_goals(self, run_id: str, goals: list[str], note: str | None = None) -> dict[str, Any]:
@@ -76,6 +84,75 @@ class GoalPilot:
             )
         )
         return {"run_id": run_id, "goals": goals}
+
+    def set_phase(
+        self,
+        run_id: str,
+        phase: str,
+        reason: str,
+        changes: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        run = self._require_run(run_id)
+        changes = changes or {}
+        self._store.update_run_phase(run_id, phase)
+        self._store.add_phase_change(
+            run_id=run_id,
+            from_phase=run.phase,
+            to_phase=phase,
+            reason=reason,
+            changes=changes,
+        )
+        self._events.publish(
+            TraceEvent(
+                EventName.GOAL_PILOT_UPDATED,
+                self._ctx.enrich({"run_id": run_id, "phase": phase, "reason": reason}),
+            )
+        )
+        return {"run_id": run_id, "phase": phase}
+
+    def list_journeys(self, run_id: str) -> list[dict[str, Any]]:
+        self._require_run(run_id)
+        journeys = self._store.list_journeys(run_id)
+        return _serialize_dataclasses(journeys)
+
+    def create_journey(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        self._require_run(run_id)
+        title = payload.get("title")
+        if not title:
+            raise ValueError("journey requires title")
+        description = payload.get("description", "")
+        try:
+            order_index = _parse_order_index(payload.get("order_index", 0))
+        except ValueError as exc:
+            raise ValueError("order_index must be an integer") from exc
+        priority = payload.get("priority", "medium")
+        status = payload.get("status", "planned")
+        success_criteria = payload.get("success_criteria", "")
+        under_the_covers = payload.get("under_the_covers") or {}
+        lookahead = payload.get("lookahead") or {}
+        milestone = payload.get("milestone")
+        journey = self._store.add_journey(
+            run_id=run_id,
+            title=title,
+            description=description,
+            order_index=order_index,
+            priority=priority,
+            status=status,
+            success_criteria=success_criteria,
+            under_the_covers=under_the_covers,
+            lookahead=lookahead,
+            milestone=milestone,
+        )
+        return _serialize_dataclasses(journey)
+
+    def update_journey(self, journey_id: str, updates: dict[str, Any]) -> dict[str, Any]:
+        journey = self._store.update_journey(journey_id, updates)
+        return _serialize_dataclasses(journey)
+
+    def reorder_journeys(self, run_id: str, ordered_ids: list[str]) -> dict[str, Any]:
+        self._require_run(run_id)
+        self._store.reorder_journeys(run_id, ordered_ids)
+        return {"run_id": run_id, "order": ordered_ids}
 
     def next_action(self, run_id: str, record: bool = True) -> dict[str, Any]:
         self._require_run(run_id)
@@ -335,3 +412,22 @@ def _require_label_list(value: Any, field_name: str) -> list[str]:
     if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
         raise ValueError(f"{field_name} must be a list of strings")
     return [label for label in value if label]
+
+
+def _parse_order_index(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bool):
+        raise ValueError("order_index must be an integer")
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not trimmed:
+            return 0
+        return int(trimmed)
+    if isinstance(value, float):
+        if value.is_integer():
+            return int(value)
+        raise ValueError("order_index must be an integer")
+    return int(value)

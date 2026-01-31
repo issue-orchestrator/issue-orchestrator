@@ -6,7 +6,9 @@ from typing import Any, Protocol
 
 from ..domain.goal_pilot import (
     GoalPilotAction,
+    GoalPilotJourney,
     GoalPilotNote,
+    GoalPilotPhaseChange,
     GoalPilotRun,
     GoalPilotSkill,
     GoalPilotSnapshot,
@@ -23,13 +25,59 @@ class GoalPilotStore(Protocol):
         status: str = "active",
         run_id: str | None = None,
         name: str = "",
+        phase: str = "outcomes_opportunities",
     ) -> GoalPilotRun:
+        ...
+
+    def list_runs(self, limit: int = 50) -> list[GoalPilotRun]:
         ...
 
     def get_run(self, run_id: str) -> GoalPilotRun | None:
         ...
 
     def update_run_status(self, run_id: str, status: str) -> None:
+        ...
+
+    def update_run_phase(self, run_id: str, phase: str) -> None:
+        ...
+
+    def add_phase_change(
+        self,
+        run_id: str,
+        from_phase: str,
+        to_phase: str,
+        reason: str,
+        changes: dict[str, Any],
+        phase_id: str | None = None,
+    ) -> GoalPilotPhaseChange:
+        ...
+
+    def list_phase_history(self, run_id: str, limit: int = 50) -> list[GoalPilotPhaseChange]:
+        ...
+
+    def add_journey(
+        self,
+        run_id: str,
+        title: str,
+        description: str,
+        order_index: int,
+        priority: str,
+        status: str,
+        success_criteria: str,
+        under_the_covers: dict[str, Any],
+        lookahead: dict[str, Any],
+        milestone: str | None = None,
+        journey_id: str | None = None,
+    ) -> GoalPilotJourney:
+        ...
+
+    def list_journeys(self, run_id: str) -> list[GoalPilotJourney]:
+        ...
+
+    def update_journey(self, journey_id: str, updates: dict[str, Any]) -> GoalPilotJourney:
+        ...
+
+    def reorder_journeys(self, run_id: str, ordered_ids: list[str]) -> None:
         ...
 
     def update_run_goals(self, run_id: str, goals: list[str]) -> None:
