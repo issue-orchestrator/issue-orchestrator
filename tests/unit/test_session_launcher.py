@@ -113,6 +113,9 @@ class MockRepositoryHost:
     def get_prs_for_issue(self, issue_number: int, state: str = "open") -> list[PRInfo]:
         return self.prs.get(issue_number, [])
 
+    def get_pr(self, pr_number: int) -> PRInfo | None:
+        return None
+
     def get_pr_reviews(self, pr_number: int) -> list[dict]:
         return self.pr_reviews.get(pr_number, [])
 
