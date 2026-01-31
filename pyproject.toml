@@ -166,7 +166,17 @@ ignore_imports = [
 [[tool.importlinter.contracts]]
 name = "Legacy GitHub CLI impl is forbidden"
 type = "forbidden"
-source_modules = ["issue_orchestrator"]
+source_modules = [
+  "issue_orchestrator.adapters",
+  "issue_orchestrator.agent_runner",
+  "issue_orchestrator.control",
+  "issue_orchestrator.domain",
+  "issue_orchestrator.entrypoints",
+  "issue_orchestrator.execution",
+  "issue_orchestrator.infra",
+  "issue_orchestrator.observation",
+  "issue_orchestrator.ports",
+]
 forbidden_modules = ["issue_orchestrator._github_impl"]
 
 [[tool.importlinter.contracts]]
