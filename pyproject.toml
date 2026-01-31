@@ -334,7 +334,6 @@ name = "orchestrator must not import vendored agent_runner directly"
 type = "forbidden"
 source_modules = [
   "issue_orchestrator.adapters",
-  "issue_orchestrator.agent_runner",
   "issue_orchestrator.control",
   "issue_orchestrator.domain",
   "issue_orchestrator.entrypoints",
