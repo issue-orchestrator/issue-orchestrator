@@ -607,6 +607,20 @@ def _load_review_section(config: "Config", review_section: dict) -> None:
     config.triage_review_on_failure = review_section.get("triage_review_on_failure", True)
     config.max_rework_cycles = review_section.get("max_rework_cycles", 2)
     config.reviewer_feedback_cache_minutes = review_section.get("reviewer_feedback_cache_minutes", 5)
+    config.review_keep_current_approach_label = review_section.get(
+        "keep_current_approach_label",
+        "reviewer-keep-current-approach",
+    )
+    exchange_section = review_section.get("exchange", {})
+    config.review_exchange_mode = exchange_section.get("mode", "via-draft-pr")
+    probe_section = exchange_section.get("probe", {})
+    if isinstance(probe_section, dict):
+        config.review_exchange_probe_schedule = probe_section.get("schedule", "daily")
+        config.review_exchange_probe_interval_days = probe_section.get("interval_days", 1)
+    agent_pair = exchange_section.get("agent_pair", {})
+    if isinstance(agent_pair, dict):
+        config.review_exchange_coder = agent_pair.get("coder")
+        config.review_exchange_reviewer = agent_pair.get("reviewer")
 
 
 def _load_cleanup_section(config: "Config", cleanup_section: dict) -> None:
@@ -953,6 +967,15 @@ class Config:
     # for rework sessions within this time window (avoids GitHub eventual consistency issues)
     # -1 = disabled, 0+ = minutes to trust local file over GitHub API
     reviewer_feedback_cache_minutes: int = 5  # Default: 5 minutes
+    # Label to tell reviewer to keep the current approach
+    review_keep_current_approach_label: str = "reviewer-keep-current-approach"
+
+    # Review exchange mode (via-mcp loop vs via-draft-pr review)
+    review_exchange_mode: str = "via-draft-pr"
+    review_exchange_coder: Optional[str] = None  # Agent label for coder in exchange (optional)
+    review_exchange_reviewer: Optional[str] = None  # Agent label for reviewer in exchange (optional)
+    review_exchange_probe_schedule: str = "daily"  # startup, daily, interval, manual
+    review_exchange_probe_interval_days: int = 1
 
     # Dangerous options (use with caution)
     dangerous: DangerousConfig = field(default_factory=DangerousConfig)
@@ -1063,6 +1086,45 @@ class Config:
         agent = self.agents[agent_label]
         # Per-agent reviewer takes precedence over default
         return agent.reviewer or self.code_review_agent
+
+    def _serialization_exchange_dict(self) -> dict:
+        exchange_dict: dict = {}
+        if self.review_exchange_mode != "via-draft-pr":
+            exchange_dict["mode"] = self.review_exchange_mode
+        elif self.review_exchange_coder or self.review_exchange_reviewer:
+            exchange_dict["mode"] = self.review_exchange_mode
+        if self.review_exchange_probe_schedule != "daily" or self.review_exchange_probe_interval_days != 1:
+            exchange_dict["probe"] = {
+                "schedule": self.review_exchange_probe_schedule,
+                "interval_days": self.review_exchange_probe_interval_days,
+            }
+        agent_pair: dict = {}
+        if self.review_exchange_coder:
+            agent_pair["coder"] = self.review_exchange_coder
+        if self.review_exchange_reviewer:
+            agent_pair["reviewer"] = self.review_exchange_reviewer
+        if agent_pair:
+            exchange_dict["agent_pair"] = agent_pair
+        return exchange_dict
+
+    def _runtime_exchange_dict(self) -> dict[str, object]:
+        exchange_dict: dict[str, object] = {"mode": self.review_exchange_mode}
+        exchange_dict["probe"] = {
+            "schedule": self.review_exchange_probe_schedule,
+            "interval_days": self.review_exchange_probe_interval_days,
+        }
+        agent_pair: dict = {}
+        if self.review_exchange_coder:
+            agent_pair["coder"] = self.review_exchange_coder
+        if self.review_exchange_reviewer:
+            agent_pair["reviewer"] = self.review_exchange_reviewer
+        if agent_pair:
+            exchange_dict["agent_pair"] = agent_pair
+        return exchange_dict
+
+    def get_label_review_keep_current_approach(self) -> str:
+        """Get the reviewer keep-current-approach label with prefix if configured."""
+        return self.prefixed_label(self.review_keep_current_approach_label)
 
     def to_event_dict(self) -> dict:
         """Convert config to a dict for event emission.
@@ -1176,6 +1238,7 @@ class Config:
                 "default": self.code_review_agent,
                 "code_review_label": self.code_review_label,
                 "code_reviewed_label": self.code_reviewed_label,
+                "exchange": self._runtime_exchange_dict(),
                 "triage_review": {
                     "agent": self.triage_review_agent,
                     "label": self.triage_review_label,
@@ -1402,6 +1465,11 @@ class Config:
             review_dict["triage_review_threshold"] = self.triage_review_threshold
         if self.max_rework_cycles != 2:
             review_dict["max_rework_cycles"] = self.max_rework_cycles
+        if self.review_keep_current_approach_label != "reviewer-keep-current-approach":
+            review_dict["keep_current_approach_label"] = self.review_keep_current_approach_label
+        exchange_dict = self._serialization_exchange_dict()
+        if exchange_dict:
+            review_dict["exchange"] = exchange_dict
         if review_dict:
             result["review"] = review_dict
 

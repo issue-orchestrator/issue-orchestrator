@@ -5,6 +5,7 @@ This module provides a single doctor function that both CLI and web can call.
 
 import os
 import shutil
+
 from pathlib import Path
 from typing import Optional
 
@@ -103,6 +104,7 @@ def run_doctor(
     _check_hook_dependencies(result)
     _check_agents(result, config)
     _check_code_review(result, config)
+    _check_review_exchange(result, config, runner)
     _check_e2e_runner(result, config)
     _check_guardrails(result, config, runner)
 
@@ -447,7 +449,7 @@ def _check_code_review(result: DoctorResult, config: Config) -> None:
             status="info",
             detail="Disabled",
         ))
-        return
+    return
 
     if not config.code_review_agent:
         result.checks.append(Check(
@@ -501,7 +503,20 @@ def _check_e2e_runner(result: DoctorResult, config: Config) -> None:
             status="info",
             detail="Disabled",
         ))
-        return
+    return
+
+
+def _check_review_exchange(
+    result: DoctorResult,
+    config: Config,
+    runner: Optional[CommandRunner],
+) -> None:
+    """Probe MCP review exchange for configured pairs."""
+    from .review_exchange_probe import probe_review_exchange
+
+    result.checks.extend(probe_review_exchange(config, runner))
+
+
 
     repo_root = Path.cwd()
     e2e_checks = []

@@ -913,6 +913,20 @@ class SessionLauncher:
                 "need to be resolved before the PR can be merged."
             )
             logger.warning("[launch] Rebase failed for review - PR branch is behind main")
+        pr_info = self.repository_host.get_pr(review.pr_number)
+        if pr_info:
+            keep_current_label = self.config.get_label_review_keep_current_approach()
+            if keep_current_label in pr_info.labels:
+                keep_current_note = (
+                    f"REVIEWER INSTRUCTION: This PR is labeled '{keep_current_label}'. "
+                    "Keep the current approach. Do not propose alternative approaches unless "
+                    "the current approach cannot work or violates correctness, safety, or security. "
+                    "If the current approach is invalid, fail the review with a brief note."
+                )
+                if existing_work:
+                    existing_work = f"{existing_work}\n\n{keep_current_note}"
+                else:
+                    existing_work = keep_current_note
 
         # Build command
         base_command = agent_config.get_command(

@@ -766,6 +766,12 @@ agents:
         assert config.code_review_agent is None
         assert config.code_review_label is None
         assert config.code_reviewed_label is None
+        assert config.review_exchange_mode == "via-draft-pr"
+        assert config.review_exchange_coder is None
+        assert config.review_exchange_reviewer is None
+        assert config.review_exchange_probe_schedule == "daily"
+        assert config.review_exchange_probe_interval_days == 1
+        assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
         # triage review defaults (all None when not configured)
         assert config.triage_review_agent is None
         assert config.triage_review_label is None
@@ -839,12 +845,27 @@ worktrees:
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
+  agent:coder:
+    prompt: /tmp/prompt.txt
+  agent:reviewer:
+    prompt: /tmp/prompt.txt
+  agent:triage:
+    prompt: /tmp/prompt.txt
 
 review:
   enabled: true
   default: agent:reviewer
   code_review_label: needs-code-review
   code_reviewed_label: code-reviewed
+  exchange:
+    mode: via-mcp
+    agent_pair:
+      coder: agent:coder
+      reviewer: agent:reviewer
+    probe:
+      schedule: interval
+      interval_days: 2
+  keep_current_approach_label: reviewer-keep-current-approach
   triage_review_agent: agent:triage
   triage_reviewed_label: triage-reviewed
   triage_review_threshold: 5
@@ -857,6 +878,12 @@ review:
         assert config.code_review_agent == "agent:reviewer"
         assert config.code_review_label == "needs-code-review"
         assert config.code_reviewed_label == "code-reviewed"
+        assert config.review_exchange_mode == "via-mcp"
+        assert config.review_exchange_coder == "agent:coder"
+        assert config.review_exchange_reviewer == "agent:reviewer"
+        assert config.review_exchange_probe_schedule == "interval"
+        assert config.review_exchange_probe_interval_days == 2
+        assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
         assert config.triage_review_agent == "agent:triage"
         assert config.triage_reviewed_label == "triage-reviewed"
         assert config.triage_review_threshold == 5
@@ -1063,6 +1090,98 @@ review:
 
         errors = config.validate()
         assert any("no default reviewer set" in e for e in errors)
+
+    def test_review_exchange_requires_agent_pair_for_mcp(self, tmp_path):
+        """Test that via-mcp requires an agent_pair."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:reviewer:
+    prompt: {prompt_file}
+
+review:
+  enabled: true
+  default: agent:reviewer
+  exchange:
+    mode: via-mcp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert any("review.exchange.agent_pair" in e for e in errors)
+
+    def test_review_exchange_validates_supported_pair(self, tmp_path):
+        """Test via-mcp requires a supported (coder, reviewer) system pair."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+    ai_system: gemini
+  agent:reviewer:
+    prompt: {prompt_file}
+    ai_system: claude-code
+
+review:
+  enabled: true
+  default: agent:reviewer
+  exchange:
+    mode: via-mcp
+    agent_pair:
+      coder: agent:coder
+      reviewer: agent:reviewer
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert any("not supported" in e for e in errors)
+
+    def test_review_exchange_probe_invalid_schedule(self, tmp_path):
+        """Test invalid probe schedule fails validation."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+  agent:reviewer:
+    prompt: {prompt_file}
+
+review:
+  enabled: true
+  default: agent:reviewer
+  exchange:
+    mode: via-mcp
+    agent_pair:
+      coder: agent:coder
+      reviewer: agent:reviewer
+    probe:
+      schedule: sometimes
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert any("probe.schedule" in e for e in errors)
 
     def test_validate_no_error_when_review_disabled(self, tmp_path):
         """Test that no error when review.enabled is false (default)."""
