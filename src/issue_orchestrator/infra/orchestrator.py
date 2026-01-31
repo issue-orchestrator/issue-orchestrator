@@ -67,6 +67,7 @@ from ..ports import TraceEvent, RepositoryHost, SessionRunner
 from ..control.health_gate import HealthDecision
 from ..control.orchestrator_deps import OrchestratorDeps
 from .e2e_runner import maybe_trigger_e2e, get_e2e_runner_manager
+from .sqlite_maintenance import run_backups_if_due
 
 
 @dataclass
@@ -95,6 +96,7 @@ class Orchestrator:
     _loop_error_limit: int = field(default=3, init=False)
     _last_tick_time: float = field(default=0.0, init=False)
     _state_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
+    _last_backup_check: float = field(default=0.0, init=False)
 
     def __post_init__(self):
         # All validation is done by OrchestratorDeps being a frozen dataclass with no Optional fields.
@@ -247,6 +249,7 @@ class Orchestrator:
             )
         # Check if we should auto-trigger E2E tests
         self._maybe_trigger_e2e()
+        self._maybe_run_sqlite_backups()
         return cont
 
     def _maybe_trigger_e2e(self) -> None:
@@ -272,6 +275,21 @@ class Orchestrator:
                 EventName.E2E_AUTO_TRIGGERED,
                 self._event_context.enrich({}),
             ))
+
+    def _maybe_run_sqlite_backups(self) -> None:
+        if not self.config.sqlite_backup.enabled:
+            return
+
+        now = time.time()
+        interval_seconds = max(60, self.config.sqlite_backup.check_interval_minutes * 60)
+        if self._last_backup_check and now - self._last_backup_check < interval_seconds:
+            return
+        self._last_backup_check = now
+
+        try:
+            run_backups_if_due(self.config)
+        except Exception as exc:
+            logger.warning("[backup] Failed to run SQLite backups: %s", exc)
 
     def _cleanup_e2e_runner(self) -> None:
         """Clean up E2E runner on orchestrator shutdown.
