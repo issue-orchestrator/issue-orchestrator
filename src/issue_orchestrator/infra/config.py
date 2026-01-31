@@ -464,22 +464,6 @@ def _parse_sqlite_backup_config(data: dict) -> SqliteBackupConfig:
     )
 
 
-def _apply_complex_sections(config: "Config", sections: dict) -> None:
-    """Apply complex nested config sections."""
-    if sections["triage"]:
-        config.triage = _parse_triage_config(sections["triage"])
-    if sections["e2e"]:
-        config.e2e = _parse_e2e_config(sections["e2e"])
-    if sections["sqlite_backup"]:
-        config.sqlite_backup = _parse_sqlite_backup_config(sections["sqlite_backup"])
-    if sections["goal_pilot"]:
-        config.goal_pilot = _parse_goal_pilot_config(sections["goal_pilot"])
-    if sections["claims"]:
-        config.claims = _parse_claims_config(sections["claims"])
-    if sections["hooks"]:
-        config.hooks = _parse_hooks_config(sections["hooks"])
-
-
 def _parse_claims_config(data: dict) -> ClaimsConfig:
     """Parse claims section from YAML data."""
     return ClaimsConfig(
