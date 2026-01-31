@@ -353,12 +353,15 @@ sqlite_backup:
 - `sqlite_backup.check_interval_minutes`: How often to check whether backups are due.
 - `sqlite_backup.retention_daily`: Number of daily backups to keep (0 disables daily tier).
 - `sqlite_backup.retention_weekly`: Number of weekly backups to keep (0 disables weekly tier).
+- `sqlite_backup.retention_daily`: Number of daily backups to keep.
+- `sqlite_backup.retention_weekly`: Number of weekly backups to keep.
 - `sqlite_backup.enforce_on_startup`: If cadence elapsed, force a backup on startup.
 
 **Care & feeding**
 - Backups live under `.issue-orchestrator/backups/sqlite/<db_key>/daily/` and `weekly/`.
 - Restore: stop the orchestrator, copy the newest backup `.db` over the target DB, then restart.
 - Doctor shows backup status and will warn if backups are overdue.
+- Long-running orchestrators check for due backups every `sqlite_backup.check_interval_minutes`.
 - Long-running orchestrators check for due backups every `sqlite_backup.check_interval_minutes`.
 
 ### state

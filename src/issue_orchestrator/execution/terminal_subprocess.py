@@ -64,6 +64,7 @@ class _SubprocessRegistry:
 
     def _connect(self) -> sqlite3.Connection:
         return open_sqlite(self._db_path)
+        return open_sqlite(self._db_path)
 
     def _ensure_db(self) -> None:
         with self._connect() as conn:

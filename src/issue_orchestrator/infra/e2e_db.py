@@ -551,6 +551,7 @@ class E2EDB:
     def _connect(self) -> Iterator[sqlite3.Connection]:
         """Get a database connection with row factory."""
         conn = open_sqlite(self.db_path, timeout=10.0, row_factory=sqlite3.Row)
+        conn = open_sqlite(self.db_path, timeout=10.0, row_factory=sqlite3.Row)
         try:
             yield conn
             conn.commit()
