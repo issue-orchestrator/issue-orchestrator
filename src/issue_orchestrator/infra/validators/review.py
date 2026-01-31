@@ -40,4 +40,63 @@ class ReviewWorkflowValidator(ConfigValidator):
                 f"Available: {list(config.agents.keys())}"
             )
 
+        # Validate review exchange configuration
+        exchange_mode = config.review_exchange_mode
+        allowed_modes = {"via-draft-pr", "via-mcp", "auto"}
+        if exchange_mode not in allowed_modes:
+            errors.append(
+                f"review.exchange.mode '{exchange_mode}' is invalid. "
+                f"Allowed: {sorted(allowed_modes)}"
+            )
+        coder_label = config.review_exchange_coder
+        reviewer_label = config.review_exchange_reviewer
+        if exchange_mode in {"via-mcp", "auto"}:
+            if not coder_label or not reviewer_label:
+                errors.append(
+                    "review.exchange.mode requires review.exchange.agent_pair "
+                    "with both coder and reviewer when using via-mcp or auto."
+                )
+        for label, role in ((coder_label, "coder"), (reviewer_label, "reviewer")):
+            if label and label not in config.agents:
+                errors.append(
+                    f"review.exchange.agent_pair.{role} '{label}' not found in agents. "
+                    f"Available: {list(config.agents.keys())}"
+                )
+
+        schedule = config.review_exchange_probe_schedule
+        allowed_schedules = {"startup", "daily", "interval", "manual"}
+        if schedule not in allowed_schedules:
+            errors.append(
+                f"review.exchange.probe.schedule '{schedule}' is invalid. "
+                f"Allowed: {sorted(allowed_schedules)}"
+            )
+        if schedule == "interval" and config.review_exchange_probe_interval_days < 1:
+            errors.append(
+                "review.exchange.probe.interval_days must be >= 1 when schedule=interval."
+            )
+
+        if exchange_mode == "via-mcp" and coder_label and reviewer_label:
+            from ..ai_systems_config import get_ai_systems_config
+            from ..review_exchange_registry import supports_mcp_pair
+            from ...ports.session_log import detect_ai_system_from_command
+
+            def _resolve_system(label: str) -> str:
+                agent = config.agents[label]
+                if agent.ai_system:
+                    return agent.ai_system
+                detected = detect_ai_system_from_command(agent.command)
+                if detected:
+                    return detected
+                systems = get_ai_systems_config(config.repo_root)
+                return systems.default_ai_system
+
+            coder_system = _resolve_system(coder_label)
+            reviewer_system = _resolve_system(reviewer_label)
+            if not supports_mcp_pair(coder_system, reviewer_system):
+                errors.append(
+                    "review.exchange.mode is via-mcp but agent pair is not supported: "
+                    f"{coder_label}({coder_system}) -> {reviewer_label}({reviewer_system}). "
+                    "Switch to via-draft-pr or update the MCP allowlist."
+                )
+
         return errors

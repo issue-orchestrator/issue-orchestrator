@@ -1638,6 +1638,22 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     if prompter.yes_no("\nSet up AI provider API keys now?", default=True):
         setup_ai_providers(prompter)
 
+    # MCP review exchange probe (if configured)
+    try:
+        from ...infra.config import Config
+        from ...infra.review_exchange_probe import probe_review_exchange
+        from ...execution.command_runner import LocalCommandRunner
+
+        exchange = (config.get("review") or {}).get("exchange", {})
+        if isinstance(exchange, dict) and exchange.get("mode") in ("via-mcp", "auto"):
+            prompter.print("\nRunning MCP review-exchange validation...")
+            temp_config = Config.load(output_path)
+            checks = probe_review_exchange(temp_config, LocalCommandRunner(), force=True)
+            for check in checks:
+                prompter.print(f"  - {check.name}: {check.status} ({check.detail})")
+    except Exception as exc:
+        prompter.print(f"\nMCP validation skipped: {exc}")
+
     prompter.print("\n" + "=" * 50)
     prompter.print("Setup complete! Next steps:")
     prompter.print("=" * 50)

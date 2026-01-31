@@ -93,12 +93,22 @@ review:
   default: "agent:reviewer"
   code_review_label: "needs-code-review"
   code_reviewed_label: "code-reviewed"
+  keep_current_approach_label: "reviewer-keep-current-approach"
   triage_review_agent: "agent:triage"
   triage_review_label: "needs-triage-review"
   triage_reviewed_label: "triage-reviewed"
   triage_review_threshold: 0
   triage_review_on_failure: true
   max_rework_cycles: 2
+  exchange:
+    mode: "via-draft-pr"         # via-mcp or via-draft-pr (auto optional)
+    probe:
+      schedule: "daily"          # startup, daily, interval, manual
+      interval_days: 1           # used when schedule=interval
+    # agent_pair required for via-mcp or auto
+    # agent_pair:
+    #   coder: "agent:coder"
+    #   reviewer: "agent:reviewer"
 
 cleanup:
   with_triage:

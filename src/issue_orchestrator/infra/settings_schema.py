@@ -297,6 +297,68 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.max_rework_cycles",
         },
     )
+    keep_current_approach_label: str = Field(
+        "reviewer-keep-current-approach",
+        title="Keep Current Approach Label",
+        description="Label that tells reviewer to avoid alternative approaches",
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_keep_current_approach_label",
+            "yaml_path": "review.keep_current_approach_label",
+        },
+    )
+    exchange_mode: Literal["via-draft-pr", "via-mcp", "auto"] = Field(
+        "via-draft-pr",
+        title="Review Exchange Mode",
+        description="Review exchange mode (via-mcp loop or via-draft-pr review)",
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_mode",
+            "yaml_path": "review.exchange.mode",
+        },
+    )
+    exchange_coder: Optional[str] = Field(
+        None,
+        title="Exchange Coder Agent",
+        description="Agent label for coder in review exchange (optional)",
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_coder",
+            "yaml_path": "review.exchange.agent_pair.coder",
+        },
+    )
+    exchange_reviewer: Optional[str] = Field(
+        None,
+        title="Exchange Reviewer Agent",
+        description="Agent label for reviewer in review exchange (optional)",
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_reviewer",
+            "yaml_path": "review.exchange.agent_pair.reviewer",
+        },
+    )
+    exchange_probe_schedule: Literal["startup", "daily", "interval", "manual"] = Field(
+        "daily",
+        title="Exchange Probe Schedule",
+        description="When to run MCP round-trip validation",
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_probe_schedule",
+            "yaml_path": "review.exchange.probe.schedule",
+        },
+    )
+    exchange_probe_interval_days: int = Field(
+        1,
+        title="Exchange Probe Interval (days)",
+        description="Interval for MCP round-trip validation when schedule=interval",
+        ge=1,
+        le=30,
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_probe_interval_days",
+            "yaml_path": "review.exchange.probe.interval_days",
+        },
+    )
     triage_agent: Optional[str] = Field(
         None,
         title="Triage Review Agent",
