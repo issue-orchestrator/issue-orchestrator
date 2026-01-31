@@ -58,7 +58,7 @@ from ..ports import (
     CommandRunner,
 )
 from ..ports.session_output import SessionOutput
-from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
+from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions, WorktreeInfo
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .session_manager import SessionManager
@@ -904,29 +904,7 @@ class SessionLauncher:
             claude_project_dir.exists(),
         )
 
-        # Check if rebase failed (PR branch couldn't be updated to latest main)
-        existing_work: str | None = None
-        if worktree_info.rebase_failed:
-            existing_work = (
-                "WARNING: This PR branch could not be rebased onto main due to merge conflicts. "
-                "The branch is behind main. When reviewing, consider whether merge conflicts "
-                "need to be resolved before the PR can be merged."
-            )
-            logger.warning("[launch] Rebase failed for review - PR branch is behind main")
-        pr_info = self.repository_host.get_pr(review.pr_number)
-        if pr_info:
-            keep_current_label = self.config.get_label_review_keep_current_approach()
-            if keep_current_label in pr_info.labels:
-                keep_current_note = (
-                    f"REVIEWER INSTRUCTION: This PR is labeled '{keep_current_label}'. "
-                    "Keep the current approach. Do not propose alternative approaches unless "
-                    "the current approach cannot work or violates correctness, safety, or security. "
-                    "If the current approach is invalid, fail the review with a brief note."
-                )
-                if existing_work:
-                    existing_work = f"{existing_work}\n\n{keep_current_note}"
-                else:
-                    existing_work = keep_current_note
+        existing_work = self._build_review_existing_work(worktree_info, review.pr_number)
 
         # Build command
         base_command = agent_config.get_command(
@@ -1007,6 +985,38 @@ class SessionLauncher:
         self._trigger_review_state_transition(review.pr_number, review.issue_number)
 
         return LaunchResult(session, True)
+
+    def _build_review_existing_work(
+        self,
+        worktree_info: WorktreeInfo,
+        pr_number: int,
+    ) -> str | None:
+        existing_work: str | None = None
+        if worktree_info.rebase_failed:
+            existing_work = (
+                "WARNING: This PR branch could not be rebased onto main due to merge conflicts. "
+                "The branch is behind main. When reviewing, consider whether merge conflicts "
+                "need to be resolved before the PR can be merged."
+            )
+            logger.warning("[launch] Rebase failed for review - PR branch is behind main")
+
+        pr_info = self.repository_host.get_pr(pr_number)
+        if not pr_info:
+            return existing_work
+
+        keep_current_label = self.config.get_label_review_keep_current_approach()
+        if keep_current_label not in pr_info.labels:
+            return existing_work
+
+        keep_current_note = (
+            f"REVIEWER INSTRUCTION: This PR is labeled '{keep_current_label}'. "
+            "Keep the current approach. Do not propose alternative approaches unless "
+            "the current approach cannot work or violates correctness, safety, or security. "
+            "If the current approach is invalid, fail the review with a brief note."
+        )
+        if existing_work:
+            return f"{existing_work}\n\n{keep_current_note}"
+        return keep_current_note
 
     def launch_rework_session(
         self,
