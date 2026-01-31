@@ -16,6 +16,10 @@ Issue-Orchestrator is a local-first control plane that turns GitHub issues into 
 2) **Write->Observe**: correctness-critical writes are verified by observation before state advances.
 3) **Reconciliation-first**: drift pauses/quarantines work; state never "guesses".
 
+## Dependency updates
+Dependency updates are managed by Renovate. The config lives in `renovate.json` and is the
+single source of truth for dependency PRs and lockfile updates.
+
 ## Main first workflow
 Issue-Orchestrator is designed around a main-first development flow.
 

@@ -68,6 +68,13 @@ cat $WORKTREE/.issue-orchestrator/sessions/index.json | jq '.runs'
 
 ## Common Issues
 
+### Dependency Changes Not Reflected Locally
+
+**Symptom:** You updated `pyproject.toml`, but dependencies or `uv.lock` are out of sync.
+
+**Fix:** Run `make upgrade-deps` to re-resolve and sync, then commit `uv.lock` alongside
+the `pyproject.toml` change.
+
 ### Sessions Failing Without Completion
 
 **Symptom:** Sessions end with "without completion markers", marked as FAILED.
