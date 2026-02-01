@@ -346,6 +346,76 @@ class TestReviewExchangeExecution:
         mock_label_adapter.add_label.assert_any_call(42, "code-reviewed")
         mock_label_adapter.remove_label.assert_any_call(42, "needs-code-review")
 
+    def test_exchange_uses_cached_summary_after_restart(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        monkeypatch,
+    ) -> None:
+        config = self._make_config(tmp_path)
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        run_dir = worktree / ".issue-orchestrator" / "sessions" / "20260201-000000Z__review-exchange-123"
+        exchange_dir = run_dir / "review-exchange"
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        (exchange_dir / "summary.json").write_text(
+            json.dumps({
+                "completed_rounds": 2,
+                "status": "ok",
+                "response_text": "Looks good",
+                "timestamp": "2026-02-01T00:00:00Z",
+            })
+        )
+        completion_path = (
+            ".issue-orchestrator/sessions/20260201-000000Z__review-exchange-123/"
+            "completion-coder.json"
+        )
+        completion_file = worktree / completion_path
+        completion_file.parent.mkdir(parents=True, exist_ok=True)
+        completion_file.write_text(json.dumps(record.to_dict()))
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.review_exchange_registry.supports_mcp_pair",
+            lambda *_args, **_kwargs: True,
+        )
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            side_effect=AssertionError("exchange should not re-run")
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+            completion_path=completion_path,
+        )
+
+        assert result.success is True
+        assert result.review_exchange_completed is True
+
     def test_auto_mode_falls_back_to_local_loop(self, tmp_path, monkeypatch):
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "auto"

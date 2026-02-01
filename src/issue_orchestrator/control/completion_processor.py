@@ -968,6 +968,15 @@ class CompletionProcessor:
             return None, None, True
         if exchange_mode not in {"via-mcp", "via-local-loop"}:
             return exchange_mode, None, False
+        existing_outcome = self._load_existing_review_exchange_outcome(worktree, session_name)
+        if existing_outcome:
+            if existing_outcome.status == "ok":
+                actions_taken.append("Review exchange passed (cached)")
+                return exchange_mode, existing_outcome, False
+            errors.append(
+                f"review_exchange: {existing_outcome.status} ({existing_outcome.reason})"
+            )
+            return exchange_mode, existing_outcome, True
         logger.info("Review exchange mode selected: %s", exchange_mode)
         exchange_result = self._run_review_exchange_loop(
             worktree=worktree,
@@ -983,6 +992,45 @@ class CompletionProcessor:
             return exchange_mode, exchange_result, True
         actions_taken.append("Review exchange passed")
         return exchange_mode, exchange_result, False
+
+    def _load_existing_review_exchange_outcome(
+        self,
+        worktree: Path,
+        session_name: str | None,
+    ) -> Any | None:
+        if not session_name:
+            return None
+        run_dir = self.session_output.find_run_dir(worktree, session_name)
+        if not run_dir:
+            return None
+        exchange_dir = run_dir / "review-exchange"
+        if not exchange_dir.exists():
+            manifest = self.session_output.read_manifest(run_dir) or {}
+            manifest_dir = manifest.get("review_exchange_dir")
+            if manifest_dir:
+                exchange_dir = Path(manifest_dir)
+        summary_path = exchange_dir / "summary.json"
+        if not summary_path.exists():
+            return None
+        try:
+            summary = json.loads(summary_path.read_text())
+        except json.JSONDecodeError:
+            return None
+        status = summary.get("status")
+        rounds = summary.get("completed_rounds")
+        if not status or rounds is None:
+            return None
+        from .review_exchange_loop import ReviewExchangeOutcome, ReviewExchangeResponse
+
+        return ReviewExchangeOutcome(
+            status=status,
+            rounds=rounds,
+            reason="cached_summary",
+            reviewer_response=ReviewExchangeResponse(
+                response_type=status,
+                response_text=summary.get("response_text") or "",
+            ),
+        )
 
     def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         if not self._config:
