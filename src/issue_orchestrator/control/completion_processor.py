@@ -30,6 +30,7 @@ from ..domain.models import (
     CompletionRecord,
     RequestedAction,
     COMPLETION_RECORD_PATH,
+    sanitize_agent_label,
 )
 from ..domain.events import EventBus, SessionEvent
 from ..infra.issue_diagnostics import write_issue_diagnostic
@@ -219,6 +220,30 @@ class CompletionProcessor:
             logger.error(f"Invalid completion record: {e}")
             return None
 
+    def _resolve_agent_label_from_completion_path(
+        self, completion_path: str | None
+    ) -> tuple[str | None, str | None]:
+        if completion_path is None or self._config is None:
+            return None, None
+        filename = Path(completion_path).name
+        if not (filename.startswith("completion-") and filename.endswith(".json")):
+            return None, None
+        safe_name = filename[len("completion-"):-len(".json")]
+        matches = [
+            label
+            for label in self._config.agents.keys()
+            if sanitize_agent_label(label) == safe_name
+        ]
+        if not matches:
+            return None, None
+        if len(matches) > 1:
+            return (
+                None,
+                "Multiple agent labels map to completion file "
+                f"{filename}: {', '.join(matches)}",
+            )
+        return matches[0], None
+
     def validate_worktree_state(
         self, worktree: Path, record: CompletionRecord
     ) -> tuple[bool, str]:
@@ -345,9 +370,13 @@ class CompletionProcessor:
             self.session_output.update_manifest(run_dir, updates)
 
     def process(
-        self, worktree: Path, issue_number: int, issue_title: str,
+        self,
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
         pr_number: int | None = None,
         completion_path: str | None = None,
+        agent_label: str | None = None,
     ) -> ProcessingResult:
         """Process a completion record and execute actions.
 
@@ -411,6 +440,17 @@ class CompletionProcessor:
             [a.value for a in record.requested_actions],
         )
 
+        if agent_label is None:
+            agent_label, agent_error = self._resolve_agent_label_from_completion_path(
+                completion_path
+            )
+            if agent_error:
+                return ProcessingResult(
+                    success=False,
+                    message=agent_error,
+                    errors=[agent_error],
+                )
+
         # Execute requested actions in order
         branch, pr_url = self._execute_actions(
             worktree=worktree,
@@ -420,6 +460,7 @@ class CompletionProcessor:
             label_target=label_target,
             branch=branch,
             session_name=session_name,
+            agent_label=agent_label,
             actions_taken=actions_taken,
             errors=errors,
             error_details=error_details,
@@ -589,6 +630,7 @@ class CompletionProcessor:
         label_target: int,
         branch: str | None,
         session_name: str | None,
+        agent_label: str | None,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
@@ -614,6 +656,7 @@ class CompletionProcessor:
                     label_target=label_target,
                     branch=branch,
                     session_name=session_name,
+                    agent_label=agent_label,
                     actions_taken=actions_taken,
                     errors=errors,
                     error_details=error_details,
@@ -678,6 +721,7 @@ class CompletionProcessor:
         label_target: int,
         branch: str | None,
         session_name: str | None,
+        agent_label: str | None,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
@@ -695,6 +739,7 @@ class CompletionProcessor:
                 issue_title=issue_title,
                 branch=branch,
                 session_name=session_name,
+                agent_label=agent_label,
                 actions_taken=actions_taken,
                 errors=errors,
             )
@@ -808,6 +853,7 @@ class CompletionProcessor:
         issue_title: str,
         branch: str | None,
         session_name: str | None,
+        agent_label: str | None,
         actions_taken: list[str],
         errors: list[str],
     ) -> "_ActionResult":
@@ -844,7 +890,7 @@ class CompletionProcessor:
                 skip_hooks=skip_hooks,
             )
 
-        exchange_mode = self._resolve_review_exchange_mode()
+        exchange_mode = self._resolve_review_exchange_mode(agent_label)
         exchange_result = None
         if exchange_mode in {"via-mcp", "via-local-loop"}:
             logger.info("Review exchange mode selected: %s", exchange_mode)
@@ -853,6 +899,7 @@ class CompletionProcessor:
                 issue_number=issue_number,
                 issue_title=issue_title,
                 session_name=session_name,
+                agent_label=agent_label,
             )
             if exchange_result.status != "ok":
                 errors.append(
@@ -894,34 +941,31 @@ class CompletionProcessor:
 
         return self._ActionResult(branch=branch)
 
-    def _resolve_review_exchange_mode(self) -> str | None:
+    def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         if not self._config:
             return None
         mode = self._config.review_exchange_mode
         if mode in {"via-mcp", "via-local-loop"}:
+            if not agent_label:
+                raise ValueError("Review exchange requires agent_label")
             return mode
         if mode != "auto":
             return None
-        coder_label = self._config.review_exchange_coder
-        reviewer_label = self._config.review_exchange_reviewer
-        if not coder_label or not reviewer_label:
-            return None
+        if not agent_label:
+            raise ValueError("Review exchange requires agent_label for auto mode")
         from ..infra.review_exchange_registry import supports_mcp_pair
-        from ..infra.ai_systems_config import get_ai_systems_config
-        from ..ports.session_log import detect_ai_system_from_command
 
-        def resolve_system(label: str) -> str:
-            agent = self._config.agents[label]
-            if agent.ai_system:
-                return agent.ai_system
-            detected = detect_ai_system_from_command(agent.command)
-            if detected:
-                return detected
-            systems = get_ai_systems_config(self._config.repo_root)
-            return systems.default_ai_system
-
-        coder_system = resolve_system(coder_label)
-        reviewer_system = resolve_system(reviewer_label)
+        if agent_label not in self._config.agents:
+            raise ValueError(f"Review exchange agent '{agent_label}' not found in config.agents")
+        reviewer_label = self._config.get_reviewer_for_agent(agent_label)
+        if not reviewer_label:
+            raise ValueError("Review exchange requires review.default or per-agent reviewer")
+        if reviewer_label not in self._config.agents:
+            raise ValueError(f"Review exchange reviewer '{reviewer_label}' not found in config.agents")
+        coder_system = self._config.agents[agent_label].ai_system
+        reviewer_system = self._config.agents[reviewer_label].ai_system
+        if not coder_system or not reviewer_system:
+            raise ValueError("Review exchange requires ai_system on coder and reviewer agents")
         if supports_mcp_pair(coder_system, reviewer_system):
             return "via-mcp"
         return "via-local-loop"
@@ -933,13 +977,20 @@ class CompletionProcessor:
         issue_number: int,
         issue_title: str,
         session_name: str | None,
+        agent_label: str | None,
     ):
         if not self._config:
             raise ValueError("Review exchange requires config")
-        coder_label = self._config.review_exchange_coder
-        reviewer_label = self._config.review_exchange_reviewer
-        if not coder_label or not reviewer_label:
-            raise ValueError("Review exchange agent pair not configured")
+        if not agent_label:
+            raise ValueError("Review exchange requires agent_label")
+        if agent_label not in self._config.agents:
+            raise ValueError(f"Review exchange agent '{agent_label}' not found in config.agents")
+        coder_label = agent_label
+        reviewer_label = self._config.get_reviewer_for_agent(agent_label)
+        if not reviewer_label:
+            raise ValueError("Review exchange requires review.default or per-agent reviewer")
+        if reviewer_label not in self._config.agents:
+            raise ValueError(f"Review exchange reviewer '{reviewer_label}' not found in config.agents")
         coder_agent = self._config.agents[coder_label]
         reviewer_agent = self._config.agents[reviewer_label]
         max_rounds = self._config.review_exchange_max_rounds

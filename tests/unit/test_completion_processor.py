@@ -21,6 +21,7 @@ from issue_orchestrator.domain.models import (
     CompletionOutcome,
     RequestedAction,
     COMPLETION_RECORD_PATH,
+    AgentConfig,
 )
 from issue_orchestrator.control.completion_processor import (
     CompletionProcessor,
@@ -29,6 +30,7 @@ from issue_orchestrator.control.completion_processor import (
     PRAdapter,
     GitAdapter,
 )
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.working_copy import PushResult
@@ -172,6 +174,100 @@ class TestCompletionProcessorLabelActions:
         assert result.success
         mock_label_adapter.add_label.assert_not_called()
         mock_label_adapter.remove_label.assert_not_called()
+
+
+class TestReviewExchangeModeResolution:
+    """Tests for review exchange mode selection and derivation."""
+
+    def _make_config(self, tmp_path: Path) -> Config:
+        coder_prompt = tmp_path / "coder.md"
+        reviewer_prompt = tmp_path / "reviewer.md"
+        coder_prompt.write_text("Coder prompt")
+        reviewer_prompt.write_text("Reviewer prompt")
+        config = Config()
+        config.review_enabled = True
+        config.review_exchange_mode = "auto"
+        config.code_review_agent = "agent:reviewer"
+        config.agents = {
+            "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
+            "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
+        }
+        return config
+
+    def _make_processor(self, config: Config) -> CompletionProcessor:
+        return CompletionProcessor(
+            label_adapter=Mock(spec=LabelAdapter),
+            pr_adapter=Mock(spec=PRAdapter),
+            git_adapter=Mock(spec=GitAdapter),
+            session_output=FileSystemSessionOutput(),
+            event_bus=EventBus(),
+            label_config={},
+            config=config,
+        )
+
+    def test_auto_mode_uses_mcp_when_supported(self, tmp_path, monkeypatch):
+        config = self._make_config(tmp_path)
+        processor = self._make_processor(config)
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.review_exchange_registry.supports_mcp_pair",
+            lambda *_args, **_kwargs: True,
+        )
+
+        assert processor._resolve_review_exchange_mode("agent:coder") == "via-mcp"
+
+    def test_auto_mode_falls_back_to_local_loop(self, tmp_path, monkeypatch):
+        config = self._make_config(tmp_path)
+        processor = self._make_processor(config)
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.review_exchange_registry.supports_mcp_pair",
+            lambda *_args, **_kwargs: False,
+        )
+
+        assert processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"
+
+    def test_run_review_exchange_uses_default_reviewer(self, tmp_path, monkeypatch):
+        config = self._make_config(tmp_path)
+        processor = self._make_processor(config)
+        captured: dict[str, str] = {}
+
+        def _fake_run(**kwargs):
+            captured["coder_label"] = kwargs["coder_label"]
+            captured["reviewer_label"] = kwargs["reviewer_label"]
+            return MagicMock(status="ok", rounds=1, reason="reviewer_ok")
+
+        monkeypatch.setattr(
+            "issue_orchestrator.control.review_exchange_loop.run_review_exchange_loop",
+            _fake_run,
+        )
+
+        processor._run_review_exchange_loop(
+            worktree=tmp_path,
+            issue_number=1,
+            issue_title="Test",
+            session_name="session-1",
+            agent_label="agent:coder",
+        )
+
+        assert captured["coder_label"] == "agent:coder"
+        assert captured["reviewer_label"] == "agent:reviewer"
+
+    def test_resolve_agent_label_from_completion_path(self, tmp_path):
+        coder_prompt = tmp_path / "coder.md"
+        coder_prompt.write_text("Coder prompt")
+        config = Config()
+        config.agents = {
+            "agent:backend": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code")
+        }
+        processor = self._make_processor(config)
+
+        label, error = processor._resolve_agent_label_from_completion_path(
+            ".issue-orchestrator/sessions/issue-123/completion-agent_backend.json"
+        )
+
+        assert error is None
+        assert label == "agent:backend"
 
     def test_blocked_outcome_adds_blocked_label(
         self, processor, mock_label_adapter, worktree_with_completion

@@ -586,10 +586,7 @@ def _load_review_section(config: "Config", review_section: dict) -> None:
         config.review_exchange_max_rounds = loop_section.get("max_rounds", 10)
         config.review_exchange_max_no_progress = loop_section.get("max_no_progress", 2)
         config.review_exchange_require_validation = loop_section.get("require_validation", True)
-    agent_pair = exchange_section.get("agent_pair", {})
-    if isinstance(agent_pair, dict):
-        config.review_exchange_coder = agent_pair.get("coder")
-        config.review_exchange_reviewer = agent_pair.get("reviewer")
+    # agent_pair removed; coder/reviewer derived at runtime
 
 
 def _load_cleanup_section(config: "Config", cleanup_section: dict) -> None:
@@ -941,8 +938,6 @@ class Config:
 
     # Review exchange mode (via-mcp, via-local-loop, or via-draft-pr review)
     review_exchange_mode: str = "via-draft-pr"
-    review_exchange_coder: Optional[str] = None  # Agent label for coder in exchange (optional)
-    review_exchange_reviewer: Optional[str] = None  # Agent label for reviewer in exchange (optional)
     review_exchange_probe_schedule: str = "daily"  # startup, daily, interval, manual
     review_exchange_probe_interval_days: int = 1
     review_exchange_max_rounds: int = 10
@@ -1060,8 +1055,6 @@ class Config:
         exchange_dict: dict = {}
         if self.review_exchange_mode != "via-draft-pr":
             exchange_dict["mode"] = self.review_exchange_mode
-        elif self.review_exchange_coder or self.review_exchange_reviewer:
-            exchange_dict["mode"] = self.review_exchange_mode
         if self.review_exchange_probe_schedule != "daily" or self.review_exchange_probe_interval_days != 1:
             exchange_dict["probe"] = {
                 "schedule": self.review_exchange_probe_schedule,
@@ -1077,13 +1070,6 @@ class Config:
                 "max_no_progress": self.review_exchange_max_no_progress,
                 "require_validation": self.review_exchange_require_validation,
             }
-        agent_pair: dict = {}
-        if self.review_exchange_coder:
-            agent_pair["coder"] = self.review_exchange_coder
-        if self.review_exchange_reviewer:
-            agent_pair["reviewer"] = self.review_exchange_reviewer
-        if agent_pair:
-            exchange_dict["agent_pair"] = agent_pair
         return exchange_dict
 
     def _runtime_exchange_dict(self) -> dict[str, object]:
@@ -1097,13 +1083,6 @@ class Config:
             "max_no_progress": self.review_exchange_max_no_progress,
             "require_validation": self.review_exchange_require_validation,
         }
-        agent_pair: dict = {}
-        if self.review_exchange_coder:
-            agent_pair["coder"] = self.review_exchange_coder
-        if self.review_exchange_reviewer:
-            agent_pair["reviewer"] = self.review_exchange_reviewer
-        if agent_pair:
-            exchange_dict["agent_pair"] = agent_pair
         return exchange_dict
 
     def get_label_review_keep_current_approach(self) -> str:

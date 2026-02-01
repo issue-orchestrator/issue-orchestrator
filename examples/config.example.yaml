@@ -109,10 +109,6 @@ review:
       max_rounds: 10
       max_no_progress: 2
       require_validation: true
-    # agent_pair required for via-mcp or auto
-    # agent_pair:
-    #   coder: "agent:coder"
-    #   reviewer: "agent:reviewer"
 
 cleanup:
   with_triage:

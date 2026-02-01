@@ -13,24 +13,18 @@ flowchart TD
   E --> F[Run reviewer against PR]
   F --> G[Apply review labels/actions]
 
-  C -- via-mcp --> H{agent_pair configured?}
-  H -- no --> X[Config error: missing coder/reviewer]
-  H -- yes --> I[Resolve coder+reviewer agent configs]
-  I --> J[Run MCP exchange loop]
+  C -- via-mcp --> H[Resolve coder: issue agent, reviewer: per-agent/default]
+  H --> J[Run MCP exchange loop]
   J --> K{reviewer ok + validation record?}
   K -- yes --> D2[Create non-draft PR + mark code-reviewed]
   K -- no --> L[Stop/halts PR creation]
 
-  C -- via-local-loop --> M{agent_pair configured?}
-  M -- no --> X
-  M -- yes --> N[Resolve coder+reviewer agent configs]
-  N --> O[Run local loop exchange]
+  C -- via-local-loop --> M[Resolve coder: issue agent, reviewer: per-agent/default]
+  M --> O[Run local loop exchange]
   O --> K
 
-  C -- auto --> P{agent_pair configured?}
-  P -- no --> X
-  P -- yes --> Q[Resolve coder+reviewer AI systems]
-  Q --> R{MCP pair supported?}
+  C -- auto --> P[Resolve coder+reviewer AI systems]
+  P --> R{MCP pair supported?}
   R -- yes --> J
   R -- no --> O
 ```
