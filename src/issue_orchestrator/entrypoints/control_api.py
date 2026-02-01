@@ -52,6 +52,9 @@ from fastapi import FastAPI, Request, Query
 from fastapi.responses import JSONResponse, HTMLResponse
 from sse_starlette.sse import EventSourceResponse
 
+from ..control.worktree_manager import get_worktree_path
+from ..domain.models import get_completion_path
+from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
 from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
 from ..control.goal_pilot import GoalPilot
@@ -651,8 +654,6 @@ async def resume_issue(issue_number: int) -> JSONResponse:
             status_code=503
         )
 
-    from ..control.worktree_manager import get_worktree_path
-
     # Get worktree path for this issue
     worktree = get_worktree_path(_orchestrator.config, issue_number)
 
@@ -737,8 +738,6 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
             status_code=503
         )
 
-    from ..control.worktree_manager import get_worktree_path
-
     config = _orchestrator.config
     state = _orchestrator.state
 
@@ -817,10 +816,23 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
         existing_work=debug_context,
     )
 
+    completion_path = get_completion_path(agent_type, session_name=session_name)
+    run_dir = _orchestrator.deps.session_output.ensure_run_dir(worktree, session_name)
+    _orchestrator.deps.session_output.update_manifest(
+        run_dir,
+        {
+            "completion_path": completion_path,
+            "issue_number": issue_number,
+            "agent_label": agent_type,
+        },
+    )
+
     # Set env vars for agent-done --resume
     env_exports = f"export ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
     env_exports += f" ORCHESTRATOR_API_PORT='{config.web_port}'"
     env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_type}'"
+    env_exports += f" ORCHESTRATOR_SESSION_ID='{session_name}'"
+    env_exports += f" {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
     command = f"{env_exports} && {base_command}"
 
     logger.info(
