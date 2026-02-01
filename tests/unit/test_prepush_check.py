@@ -29,7 +29,7 @@ class TestLoadValidationCmd:
         cmd, timeout, dirty_check = load_validation_cmd(temp_worktree)
         assert cmd is None
         assert timeout == 0
-        assert dirty_check == "off"
+        assert dirty_check == "tracked"
 
     def test_returns_none_when_no_cmd(self, temp_worktree):
         """Test returns None when cmd not configured."""
@@ -260,5 +260,53 @@ validation:
             os.chdir(temp_worktree)
             result = run_prepush_check(verbose=False)
             assert result == 0
+        finally:
+            os.chdir(orig_cwd)
+
+    def test_allows_staged_when_unstaged_mode(self, temp_worktree):
+        """Test unstaged mode allows staged changes."""
+        import os
+        import subprocess
+
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "echo 'ok'"
+  pre_push_dirty_check: "unstaged"
+""")
+
+        (temp_worktree / "README.md").write_text("dirty")
+        subprocess.run(["git", "add", "README.md"], cwd=temp_worktree, check=True, capture_output=True)
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=False)
+            assert result == 0
+        finally:
+            os.chdir(orig_cwd)
+
+    def test_rejects_invalid_dirty_mode(self, temp_worktree, capsys):
+        """Test invalid dirty mode exits 1 and reports error when verbose."""
+        import os
+
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "echo 'ok'"
+  pre_push_dirty_check: "bogus"
+""")
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=True)
+            captured = capsys.readouterr()
+            assert result == 1
+            assert "Invalid validation.pre_push_dirty_check value" in captured.out
         finally:
             os.chdir(orig_cwd)
