@@ -140,51 +140,60 @@ def _backup_due(config: Config, backup_root: Path, db: SQLiteDatabase, now: floa
     return now - latest >= cadence_seconds
 
 
+
+
+def _status_for_db(
+    config: Config,
+    backup_root: Path,
+    db: SQLiteDatabase,
+    now: float,
+) -> BackupStatus:
+    if not db.backup or not db.enabled_fn(config):
+        return BackupStatus(db=db, latest_mtime=None, due=False, reason="not enabled")
+
+    src_path = db.path_fn(config)
+    if not src_path.exists():
+        return BackupStatus(db=db, latest_mtime=None, due=False, reason="missing")
+
+    latest = _latest_backup_mtime(backup_root / db.key)
+    failure = _read_failure(backup_root, db)
+
+    if latest is None:
+        if failure:
+            return BackupStatus(db=db, latest_mtime=None, due=True, reason="error", detail=failure[1])
+        return BackupStatus(db=db, latest_mtime=None, due=True, reason="none")
+
+    cadence_seconds = config.sqlite_backup.cadence_hours * 3600
+    due = now - latest >= cadence_seconds
+    if failure and failure[0] > latest:
+        return BackupStatus(db=db, latest_mtime=latest, due=due, reason="error", detail=failure[1])
+
+    reason = "cadence" if due else "ok"
+    return BackupStatus(db=db, latest_mtime=latest, due=due, reason=reason)
+
+
 def get_backup_statuses(config: Config) -> list[BackupStatus]:
     """Return backup status per DB without performing backups."""
     backup_root = _backup_root(config)
     now = datetime.now(timezone.utc).timestamp()
-    statuses: list[BackupStatus] = []
 
     if not config.sqlite_backup.enabled:
-        for db in list_sqlite_databases(config):
-            statuses.append(BackupStatus(db=db, latest_mtime=None, due=False, reason="disabled"))
-        return statuses
+        return [
+            BackupStatus(db=db, latest_mtime=None, due=False, reason="disabled")
+            for db in list_sqlite_databases(config)
+        ]
 
     keep_daily, keep_weekly = _tier_flags(config)
     if not keep_daily and not keep_weekly:
-        for db in list_sqlite_databases(config):
-            statuses.append(BackupStatus(db=db, latest_mtime=None, due=False, reason="retention=0"))
-        return statuses
+        return [
+            BackupStatus(db=db, latest_mtime=None, due=False, reason="retention=0")
+            for db in list_sqlite_databases(config)
+        ]
 
-    for db in list_sqlite_databases(config):
-        if not db.backup or not db.enabled_fn(config):
-            statuses.append(BackupStatus(db=db, latest_mtime=None, due=False, reason="not enabled"))
-            continue
-
-        src_path = db.path_fn(config)
-        if not src_path.exists():
-            statuses.append(BackupStatus(db=db, latest_mtime=None, due=False, reason="missing"))
-            continue
-
-        latest = _latest_backup_mtime(backup_root / db.key)
-        failure = _read_failure(backup_root, db)
-
-        if latest is None:
-            if failure:
-                statuses.append(BackupStatus(db=db, latest_mtime=None, due=True, reason="error", detail=failure[1]))
-            else:
-                statuses.append(BackupStatus(db=db, latest_mtime=None, due=True, reason="none"))
-            continue
-
-        cadence_seconds = config.sqlite_backup.cadence_hours * 3600
-        due = now - latest >= cadence_seconds
-        if failure and failure[0] > latest:
-            statuses.append(BackupStatus(db=db, latest_mtime=latest, due=due, reason="error", detail=failure[1]))
-        else:
-            statuses.append(BackupStatus(db=db, latest_mtime=latest, due=due, reason="cadence" if due else "ok"))
-
-    return statuses
+    return [
+        _status_for_db(config, backup_root, db, now)
+        for db in list_sqlite_databases(config)
+    ]
 
 
 def _backup_filename(prefix: str, now_dt: datetime) -> str:

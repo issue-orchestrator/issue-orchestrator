@@ -643,6 +643,46 @@ def _format_age_hours(seconds: float) -> str:
     return f"{hours:.1f}h"
 
 
+
+
+def _backup_detail_for_status(status: BackupStatus, now: float) -> dict[str, str]:
+    if status.reason == "missing":
+        return {"status": "missing", "detail": "db file not found"}
+    if status.reason == "not enabled":
+        return {"status": "skipped", "detail": "not enabled"}
+    if status.reason == "disabled":
+        return {"status": "disabled", "detail": "backups disabled"}
+    if status.reason == "retention=0":
+        return {"status": "disabled", "detail": "retention set to 0"}
+    if status.reason == "error":
+        detail = status.detail or "last backup failed"
+        return {"status": "error", "detail": detail}
+    if status.latest_mtime is None:
+        return {"status": "overdue", "detail": "no backups yet"}
+    age = _format_age_hours(now - status.latest_mtime)
+    label = "overdue" if status.due else "ok"
+    return {"status": label, "detail": f"last backup {age} ago"}
+
+
+def _summarize_backup_statuses(statuses: list[BackupStatus]) -> tuple[str, str]:
+    errors = [s for s in statuses if s.reason == "error"]
+    overdue = [s for s in statuses if s.due and s.reason in {"none", "cadence"}]
+    missing = [s for s in statuses if s.reason == "missing"]
+
+    if errors:
+        return "warning", f"{len(errors)} DB(s) failed last backup. See per-DB details."
+    if overdue:
+        detail = (
+            f"{len(overdue)} DB(s) overdue. "
+            "Suggestion: keep the orchestrator running or restart it to force a backup; "
+            "adjust sqlite_backup.cadence_hours if needed."
+        )
+        return "warning", detail
+    if missing:
+        return "info", "Some DBs missing (will create on use). Backups will start after first write."
+    return "ok", "Backups are up to date"
+
+
 def _check_sqlite_backups(result: DoctorResult, config: Config) -> None:
     """Surface backup status and suggestions for local SQLite DBs."""
     statuses = get_backup_statuses(config)
@@ -665,47 +705,8 @@ def _check_sqlite_backups(result: DoctorResult, config: Config) -> None:
     missing = [s for s in statuses if s.reason == "missing"]
 
     now = time.time()
-    per_db: dict[str, dict[str, str]] = {}
-    for status in statuses:
-        if status.reason == "missing":
-            per_db[status.db.label] = {"status": "missing", "detail": "db file not found"}
-            continue
-        if status.reason == "not enabled":
-            per_db[status.db.label] = {"status": "skipped", "detail": "not enabled"}
-            continue
-        if status.reason == "disabled":
-            per_db[status.db.label] = {"status": "disabled", "detail": "backups disabled"}
-            continue
-        if status.reason == "retention=0":
-            per_db[status.db.label] = {"status": "disabled", "detail": "retention set to 0"}
-            continue
-        if status.reason == "error":
-            detail = status.detail or "last backup failed"
-            per_db[status.db.label] = {"status": "error", "detail": detail}
-            continue
-        if status.latest_mtime is None:
-            per_db[status.db.label] = {"status": "overdue", "detail": "no backups yet"}
-            continue
-        age = _format_age_hours(now - status.latest_mtime)
-        label = "overdue" if status.due else "ok"
-        per_db[status.db.label] = {"status": label, "detail": f"last backup {age} ago"}
-
-    if errors:
-        detail = f"{len(errors)} DB(s) failed last backup. See per-DB details."
-        status = "warning"
-    elif overdue:
-        detail = (
-            f"{len(overdue)} DB(s) overdue. "
-            "Suggestion: keep the orchestrator running or restart it to force a backup; "
-            "adjust sqlite_backup.cadence_hours if needed."
-        )
-        status = "warning"
-    elif missing:
-        detail = "Some DBs missing (will create on use). Backups will start after first write."
-        status = "info"
-    else:
-        detail = "Backups are up to date"
-        status = "ok"
+    per_db = {status.db.label: _backup_detail_for_status(status, now) for status in statuses}
+    status, detail = _summarize_backup_statuses(statuses)
 
     result.checks.append(Check(
         name="SQLite Backups",
