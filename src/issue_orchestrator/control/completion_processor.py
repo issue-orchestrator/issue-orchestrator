@@ -1019,15 +1019,7 @@ class CompletionProcessor:
         run_dir = self.session_output.find_run_dir(worktree, session_name)
         if not run_dir:
             return None
-        exchange_dir: Path | None = None
-        manifest = self.session_output.read_manifest(run_dir) or {}
-        manifest_dir = manifest.get("review_exchange_dir")
-        if manifest_dir:
-            exchange_dir = Path(manifest_dir)
-        if exchange_dir is None or not exchange_dir.exists():
-            fallback_dir = run_dir / "review-exchange"
-            if fallback_dir.exists():
-                exchange_dir = fallback_dir
+        exchange_dir = self._resolve_cached_exchange_dir(run_dir)
         if exchange_dir is None:
             return None
         summary_path = exchange_dir / "summary.json"
@@ -1066,6 +1058,18 @@ class CompletionProcessor:
         except (OSError, json.JSONDecodeError):
             return False
         return bool(data.get("passed"))
+
+    def _resolve_cached_exchange_dir(self, run_dir: Path) -> Path | None:
+        manifest = self.session_output.read_manifest(run_dir) or {}
+        manifest_dir = manifest.get("review_exchange_dir")
+        if manifest_dir:
+            exchange_dir = Path(manifest_dir)
+            if exchange_dir.exists():
+                return exchange_dir
+        fallback_dir = run_dir / "review-exchange"
+        if fallback_dir.exists():
+            return fallback_dir
+        return None
 
     def _persist_review_exchange_cache(
         self,
