@@ -6,15 +6,13 @@ import argparse
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
-
-from anyio import to_thread
+from typing import Any, Callable, Awaitable
+import inspect
 from mcp.server.fastmcp import FastMCP
 
 from ..infra import supervisor
 from ..infra.config import Config, get_config_path
-from ..execution.orchestrator_http_api import OrchestratorHttpApi
-from ..ports.orchestrator_api import OrchestratorApi
+from ..execution.orchestrator_http_api import OrchestratorAsyncHttpApi
 
 logger = logging.getLogger(__name__)
 
@@ -107,18 +105,26 @@ class McpApp:
     def __init__(self, settings: McpSettings) -> None:
         self._settings = settings
         self._client = OrchestratorHttpClient(settings)
-        self._api: OrchestratorApi = OrchestratorHttpApi(
+        self._api = OrchestratorAsyncHttpApi(
             self._client.base_url,
             refresh_base_url=self._client.refresh_base_url,
         )
 
     def close(self) -> None:
         self._client.close()
-        self._api.close()
+        # FastMCP does not expose a shutdown hook; best-effort cleanup.
+        return None
 
-    async def _safe(self, tool_name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    async def _safe(
+        self,
+        tool_name: str,
+        fn: Callable[[], dict[str, Any]] | Callable[[], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
         try:
-            return await to_thread.run_sync(fn)
+            result = fn()
+            if inspect.isawaitable(result):
+                return await result
+            return result
         except Exception as exc:  # noqa: BLE001
             logger.exception("MCP tool %s failed", tool_name)
             return {
@@ -158,7 +164,7 @@ class McpApp:
 
     async def tool_start(self) -> dict[str, Any]:
         try:
-            return await to_thread.run_sync(self.start)
+            return await self._safe("orchestrator.start", self.start)
         except Exception as exc:  # noqa: BLE001
             logger.exception("MCP tool orchestrator.start failed")
             ui_hint: dict[str, Any] = {"kind": "doctor"}
@@ -304,12 +310,12 @@ class McpApp:
         stopped = supervisor.stop(path, force=force)
         return {"status": "stopped" if stopped else "failed"}
 
-    def status(self) -> dict[str, Any]:
+    async def status(self) -> dict[str, Any]:
         status = self._client.status()
         result: dict[str, Any] = {"supervisor": status.to_dict()}
         if status.state == "running" and status.port is not None:
-            result["status"] = self._api.status()
-            result["info"] = self._api.info()
+            result["status"] = await self._api.status()
+            result["info"] = await self._api.info()
         return result
 
     def start(self) -> dict[str, Any]:
@@ -339,53 +345,53 @@ class McpApp:
         )
         return {"stopped": stopped}
 
-    def pause(self) -> dict[str, Any]:
-        return self._api.pause()
+    async def pause(self) -> dict[str, Any]:
+        return await self._api.pause()
 
-    def resume(self) -> dict[str, Any]:
-        return self._api.resume()
+    async def resume(self) -> dict[str, Any]:
+        return await self._api.resume()
 
-    def refresh(self, inflight_stable_ids: list[str] | None) -> dict[str, Any]:
-        return self._api.refresh(inflight_stable_ids or [])
+    async def refresh(self, inflight_stable_ids: list[str] | None) -> dict[str, Any]:
+        return await self._api.refresh(inflight_stable_ids or [])
 
-    def shutdown(self, force: bool = False) -> dict[str, Any]:
-        return self._api.shutdown(force=force)
+    async def shutdown(self, force: bool = False) -> dict[str, Any]:
+        return await self._api.shutdown(force=force)
 
-    def snapshot(self) -> dict[str, Any]:
+    async def snapshot(self) -> dict[str, Any]:
         return {
-            "status": self._api.status(),
-            "info": self._api.info(),
-            "blocked": self._api.blocked_issues(),
-            "stale": self._api.stale_issues(),
-            "dependency_problems": self._api.dependency_problems(),
-            "excluded": self._api.excluded_issues(),
-            "publish_jobs": self._api.publish_jobs(),
-            "history": self._api.history(),
+            "status": await self._api.status(),
+            "info": await self._api.info(),
+            "blocked": await self._api.blocked_issues(),
+            "stale": await self._api.stale_issues(),
+            "dependency_problems": await self._api.dependency_problems(),
+            "excluded": await self._api.excluded_issues(),
+            "publish_jobs": await self._api.publish_jobs(),
+            "history": await self._api.history(),
         }
 
-    def session_worktree(self, issue_number: int) -> dict[str, Any]:
-        return self._api.session_worktree(issue_number)
+    async def session_worktree(self, issue_number: int) -> dict[str, Any]:
+        return await self._api.session_worktree(issue_number)
 
-    def session_manifest(self, issue_number: int) -> dict[str, Any]:
-        return self._api.session_manifest(issue_number)
+    async def session_manifest(self, issue_number: int) -> dict[str, Any]:
+        return await self._api.session_manifest(issue_number)
 
-    def session_phases(self, issue_number: int) -> dict[str, Any]:
-        return self._api.session_phases(issue_number)
+    async def session_phases(self, issue_number: int) -> dict[str, Any]:
+        return await self._api.session_phases(issue_number)
 
-    def session_claude_log(self, issue_number: int, limit: int = 200) -> dict[str, Any]:
-        return self._api.session_claude_log(issue_number, limit)
+    async def session_claude_log(self, issue_number: int, limit: int = 200) -> dict[str, Any]:
+        return await self._api.session_claude_log(issue_number, limit)
 
-    def session_orchestrator_log(self, issue_number: int) -> dict[str, Any]:
-        return self._api.session_orchestrator_log(issue_number)
+    async def session_orchestrator_log(self, issue_number: int) -> dict[str, Any]:
+        return await self._api.session_orchestrator_log(issue_number)
 
-    def session_send(self, issue_number: int, text: str) -> dict[str, Any]:
-        return self._api.send(issue_number, text)
+    async def session_send(self, issue_number: int, text: str) -> dict[str, Any]:
+        return await self._api.send(issue_number, text)
 
-    def session_kill(self, issue_number: int) -> dict[str, Any]:
-        return self._api.kill(issue_number)
+    async def session_kill(self, issue_number: int) -> dict[str, Any]:
+        return await self._api.kill(issue_number)
 
-    def session_focus(self, issue_number: int) -> dict[str, Any]:
-        return self._api.focus(issue_number)
+    async def session_focus(self, issue_number: int) -> dict[str, Any]:
+        return await self._api.focus(issue_number)
 
     def urls(self) -> dict[str, Any]:
         base = self._client.base_url()
