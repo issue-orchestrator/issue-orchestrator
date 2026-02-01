@@ -968,7 +968,14 @@ class CompletionProcessor:
             return None, None, True
         if exchange_mode not in {"via-mcp", "via-local-loop"}:
             return exchange_mode, None, False
-        existing_outcome = self._load_existing_review_exchange_outcome(worktree, session_name)
+        require_validation = bool(
+            self._config and self._config.review_exchange_require_validation
+        )
+        existing_outcome = self._load_existing_review_exchange_outcome(
+            worktree,
+            session_name,
+            require_validation=require_validation,
+        )
         if existing_outcome:
             if existing_outcome.status == "ok":
                 actions_taken.append("Review exchange passed (cached)")
@@ -997,6 +1004,8 @@ class CompletionProcessor:
         self,
         worktree: Path,
         session_name: str | None,
+        *,
+        require_validation: bool,
     ) -> Any | None:
         if not session_name:
             return None
@@ -1020,6 +1029,8 @@ class CompletionProcessor:
         rounds = summary.get("completed_rounds")
         if not status or rounds is None:
             return None
+        if require_validation and not self._review_exchange_validation_passed(run_dir):
+            return None
         from .review_exchange_loop import ReviewExchangeOutcome, ReviewExchangeResponse
 
         return ReviewExchangeOutcome(
@@ -1031,6 +1042,17 @@ class CompletionProcessor:
                 response_text=summary.get("response_text") or "",
             ),
         )
+
+    @staticmethod
+    def _review_exchange_validation_passed(run_dir: Path) -> bool:
+        record_path = run_dir / "validation-record.json"
+        if not record_path.exists():
+            return False
+        try:
+            data = json.loads(record_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return False
+        return bool(data.get("passed"))
 
     def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         if not self._config:
