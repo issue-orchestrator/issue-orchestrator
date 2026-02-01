@@ -946,15 +946,28 @@ class CompletionProcessor:
             return None
         mode = self._config.review_exchange_mode
         if mode in {"via-mcp", "via-local-loop"}:
-            if not agent_label:
-                raise ValueError("Review exchange requires agent_label")
+            self._require_review_exchange_agent_label(agent_label, mode)
             return mode
         if mode != "auto":
             return None
-        if not agent_label:
-            raise ValueError("Review exchange requires agent_label for auto mode")
+        agent_label = self._require_review_exchange_agent_label(agent_label, "auto")
         from ..infra.review_exchange_registry import supports_mcp_pair
 
+        coder_system, reviewer_system = self._resolve_exchange_systems(agent_label)
+        if supports_mcp_pair(coder_system, reviewer_system):
+            return "via-mcp"
+        return "via-local-loop"
+
+    def _require_review_exchange_agent_label(
+        self, agent_label: str | None, mode: str
+    ) -> str:
+        if not agent_label:
+            raise ValueError(f"Review exchange requires agent_label for {mode} mode")
+        return agent_label
+
+    def _resolve_reviewer_label(self, agent_label: str) -> str:
+        if not self._config:
+            raise ValueError("Review exchange requires config")
         if agent_label not in self._config.agents:
             raise ValueError(f"Review exchange agent '{agent_label}' not found in config.agents")
         reviewer_label = self._config.get_reviewer_for_agent(agent_label)
@@ -962,13 +975,17 @@ class CompletionProcessor:
             raise ValueError("Review exchange requires review.default or per-agent reviewer")
         if reviewer_label not in self._config.agents:
             raise ValueError(f"Review exchange reviewer '{reviewer_label}' not found in config.agents")
+        return reviewer_label
+
+    def _resolve_exchange_systems(self, agent_label: str) -> tuple[str, str]:
+        if not self._config:
+            raise ValueError("Review exchange requires config")
+        reviewer_label = self._resolve_reviewer_label(agent_label)
         coder_system = self._config.agents[agent_label].ai_system
         reviewer_system = self._config.agents[reviewer_label].ai_system
         if not coder_system or not reviewer_system:
             raise ValueError("Review exchange requires ai_system on coder and reviewer agents")
-        if supports_mcp_pair(coder_system, reviewer_system):
-            return "via-mcp"
-        return "via-local-loop"
+        return coder_system, reviewer_system
 
     def _run_review_exchange_loop(
         self,
@@ -983,14 +1000,8 @@ class CompletionProcessor:
             raise ValueError("Review exchange requires config")
         if not agent_label:
             raise ValueError("Review exchange requires agent_label")
-        if agent_label not in self._config.agents:
-            raise ValueError(f"Review exchange agent '{agent_label}' not found in config.agents")
         coder_label = agent_label
-        reviewer_label = self._config.get_reviewer_for_agent(agent_label)
-        if not reviewer_label:
-            raise ValueError("Review exchange requires review.default or per-agent reviewer")
-        if reviewer_label not in self._config.agents:
-            raise ValueError(f"Review exchange reviewer '{reviewer_label}' not found in config.agents")
+        reviewer_label = self._resolve_reviewer_label(agent_label)
         coder_agent = self._config.agents[coder_label]
         reviewer_agent = self._config.agents[reviewer_label]
         max_rounds = self._config.review_exchange_max_rounds
