@@ -108,7 +108,6 @@ def get_orchestrator() -> "Orchestrator | None":
     return _orchestrator
 
 
-<<<<<<< HEAD
 def _with_state_lock(fn):
     if _orchestrator is None:
         return fn()
