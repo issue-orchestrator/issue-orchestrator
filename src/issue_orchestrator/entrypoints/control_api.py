@@ -672,29 +672,7 @@ async def resume_issue(issue_number: int) -> JSONResponse:
             "hint": "Run 'agent-done completed --implementation ... --problems ...' first.",
         }, status_code=404)
 
-    # Get issue title - try cache first, then fetch
-    issue_title = f"Issue #{issue_number}"  # Default fallback
-    try:
-        orchestrator = _orchestrator
-
-        def _cached_title() -> str | None:
-            assert orchestrator is not None
-            for issue in orchestrator.state.cached_queue_issues:
-                if issue.number == issue_number:
-                    return issue.title
-            return None
-
-        cached_title = _with_state_lock(_cached_title)
-        if cached_title:
-            issue_title = cached_title
-        else:
-            # Fetch from GitHub
-            issue_data = _orchestrator.deps.repository_host.get_issue(issue_number)
-            if issue_data:
-                issue_title = issue_data.title
-    except Exception as e:
-        logger.warning("Could not fetch issue title for #%d: %s", issue_number, e)
-        # Continue with default title
+    issue_title = _get_issue_title(_orchestrator, issue_number)
 
     # Process the completion
     try:
@@ -896,6 +874,29 @@ def _update_cached_issue_labels(issue_number: int, labels_to_remove: list[str]) 
                 break
 
     _with_state_lock(_update)
+
+
+def _get_issue_title(orchestrator: "Orchestrator", issue_number: int) -> str:
+    """Resolve issue title from cache, falling back to GitHub."""
+    issue_title = f"Issue #{issue_number}"
+    try:
+        def _cached_title() -> str | None:
+            for issue in orchestrator.state.cached_queue_issues:
+                if issue.number == issue_number:
+                    return issue.title
+            return None
+
+        cached_title = _with_state_lock(_cached_title)
+        if cached_title:
+            return cached_title
+
+        issue_data = orchestrator.deps.repository_host.get_issue(issue_number)
+        if issue_data:
+            return issue_data.title
+    except Exception as e:
+        logger.warning("Could not fetch issue title for #%d: %s", issue_number, e)
+
+    return issue_title
 
 
 @control_app.post("/api/issues/{issue_number}/retry")
