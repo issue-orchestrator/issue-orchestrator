@@ -932,6 +932,25 @@ class TestReviewQueueDecision:
 
         assert result.should_queue_review is False
 
+    @pytest.mark.parametrize("mode", ["via-mcp", "via-local-loop", "auto"])
+    def test_loop_modes_skip_review_queue(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path, mode: str
+    ) -> None:
+        """Loop review modes should not queue PR review."""
+        config.code_review_agent = "agent:reviewer"
+        config.review_exchange_mode = mode
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-1")
+
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(session, SessionStatus.COMPLETED)
+
+        assert result.should_queue_review is False
+
 
 # =============================================================================
 # Test: Label Action Generation
