@@ -8,9 +8,13 @@ import threading
 import time
 
 import uvicorn
+import pytest
 
 from issue_orchestrator.entrypoints import mcp_server, web
-from issue_orchestrator.execution.orchestrator_http_api import OrchestratorHttpApi
+from issue_orchestrator.execution.orchestrator_http_api import (
+    OrchestratorHttpApi,
+    OrchestratorAsyncHttpApi,
+)
 from issue_orchestrator.domain.models import SessionHistoryEntry
 
 
@@ -83,7 +87,8 @@ def test_http_api_status_queue_and_history(sample_orchestrator, sample_issues, t
         web.set_orchestrator(None)
 
 
-def test_mcp_snapshot_uses_api(sample_orchestrator, sample_issues):
+@pytest.mark.asyncio
+async def test_mcp_snapshot_uses_api(sample_orchestrator, sample_issues):
     web.set_orchestrator(sample_orchestrator)
     try:
         queue_items = [
@@ -93,7 +98,6 @@ def test_mcp_snapshot_uses_api(sample_orchestrator, sample_issues):
         sample_orchestrator.state.priority_queue = queue_items
         port = _find_free_port()
         server = _start_server(port)
-        api, _ = _make_api(f"http://127.0.0.1:{port}")
         try:
             settings = mcp_server.McpSettings(
                 repo_root=Path.cwd(),
@@ -103,8 +107,8 @@ def test_mcp_snapshot_uses_api(sample_orchestrator, sample_issues):
                 auto_start=False,
             )
             app = mcp_server.McpApp(settings)
-            app._api = api  # test hook to avoid supervisor dependency
-            snapshot = app.snapshot()
+            app._api = OrchestratorAsyncHttpApi(lambda: f"http://127.0.0.1:{port}")  # test hook
+            snapshot = await app.snapshot()
             assert "status" in snapshot
             assert "info" in snapshot
             assert len(snapshot["status"]["queue"]) == len(queue_items)
