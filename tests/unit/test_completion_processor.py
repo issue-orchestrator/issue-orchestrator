@@ -227,6 +227,19 @@ class TestReviewExchangeModeResolution:
 
         assert processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"
 
+    def test_via_mcp_requires_supported_pair(self, tmp_path, monkeypatch):
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-mcp"
+        processor = self._make_processor(config)
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.review_exchange_registry.supports_mcp_pair",
+            lambda *_args, **_kwargs: False,
+        )
+
+        with pytest.raises(ValueError, match="supported ai_system pair"):
+            processor._resolve_review_exchange_mode("agent:coder")
+
     def test_run_review_exchange_uses_default_reviewer(self, tmp_path, monkeypatch):
         config = self._make_config(tmp_path)
         processor = self._make_processor(config)

@@ -1176,8 +1176,8 @@ ai_systems:
         errors = config.validate()
         assert not any("ai_system" in e for e in errors)
 
-    def test_review_exchange_validates_supported_pair(self, tmp_path):
-        """Test via-mcp requires a supported system pair among configured agents."""
+    def test_review_exchange_defers_pair_validation(self, tmp_path):
+        """Config validation should not fail on unsupported pairs (runtime handles it)."""
         prompt_file = tmp_path / "prompt.txt"
         prompt_file.write_text("Prompt content")
 
@@ -1204,7 +1204,7 @@ review:
 
         config = Config.load(config_file)
         errors = config.validate()
-        assert any("unsupported ai_system" in e for e in errors)
+        assert not any("unsupported ai_system" in e for e in errors)
 
     def test_review_exchange_ignores_unrelated_agents(self, tmp_path):
         """Test via-mcp validation ignores unrelated agents (e.g., triage)."""

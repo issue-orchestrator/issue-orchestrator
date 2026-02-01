@@ -947,7 +947,11 @@ class TestReviewQueueDecision:
         )
         handler = make_handler(config, repository_host=repository_host)
 
-        result = handler.process_completion(session, SessionStatus.COMPLETED)
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            review_exchange_completed=True,
+        )
 
         assert result.should_queue_review is False
 
