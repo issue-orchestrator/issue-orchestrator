@@ -453,18 +453,15 @@ _Auto-generated from settings schema._
 | `review.enabled` | boolean | `False` | Enable automated code review workflow |
 | `review.default` | string (optional) | `None` | Agent label for code reviews (e.g., agent:reviewer) |
 | `review.max_rework_cycles` | integer | `2` | Max times to re-queue work agent before escalating |
+| `review.keep_current_approach_label` | string | `reviewer-keep-current-approach` | Label that tells reviewer to avoid alternative approaches |
+| `review.exchange.mode` | string | `via-draft-pr` | Review exchange mode (via-mcp loop, local loop, or via-draft-pr review) |
+| `review.exchange.probe.schedule` | string | `daily` | When to run MCP round-trip validation |
+| `review.exchange.probe.interval_days` | integer | `1` | Interval for MCP round-trip validation when schedule=interval |
+| `review.exchange.loop.max_rounds` | integer | `10` | Max coder/reviewer rounds before stopping the MCP loop |
+| `review.exchange.loop.max_no_progress` | integer | `2` | Max rounds where reviewer reports no progress before stopping |
+| `review.exchange.loop.require_validation` | boolean | `True` | Require a validation record before reviewer can approve |
 | `review.triage_review_agent` | string (optional) | `None` | Agent for batch reviews (optional) |
 | `review.triage_review_threshold` | integer | `0` | Trigger triage after N PRs (0 = manual only) |
-
-## Goal Pilot
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `goal_pilot.enabled` | boolean | `False` | Enable the Goal Pilot AI controller |
-| `goal_pilot.agent` | string (optional) | `None` | Agent label to run as Goal Pilot (e.g., agent:goal-pilot) |
-| `goal_pilot.approval_policy` | string | `journeys_only` | How Goal Pilot applies repo changes |
-| `goal_pilot.approval_batch_size` | integer | `10` | How many changes to bundle before approval (batch mode) |
-| `goal_pilot.approval_batch_window_minutes` | integer | `60` | Max time to wait before asking for approval (batch mode) |
 
 ## Hooks
 
@@ -481,6 +478,7 @@ _Auto-generated from settings schema._
 | `observability.stale_escalation_ticks` | integer | `0` | Escalate after K consecutive stale ticks (0 = disabled) |
 | `ui.web_port` | integer | `8080` |  |
 | `ui.control_api_port` | integer | `19080` | 0 = disabled |
+| `ai_systems.allowed` | string | `` | Additional ai_system values allowed in config (comma-separated) |
 | `worktrees.base` | string | `../` | Directory where git worktrees are created |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch |
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->
