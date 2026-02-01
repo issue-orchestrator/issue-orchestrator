@@ -154,7 +154,11 @@ class SessionController:
 
         pr_number = self._extract_pr_number_from_session_name(session_name)
         result = self.completion_processor.process(
-            worktree_path, issue_number, issue_title, pr_number=pr_number, completion_path=completion_path,
+            worktree_path,
+            issue_number,
+            issue_title,
+            pr_number=pr_number,
+            completion_path=completion_path,
         )
         self._emit_processing_completed_event(issue_number, session_name, result)
 

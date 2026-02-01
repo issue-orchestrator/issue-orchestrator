@@ -1,5 +1,34 @@
 # Review Workflow
 
+## Review Exchange Decision Flow
+
+```mermaid
+flowchart TD
+  A[Completion record processed] --> B{review.enabled?}
+  B -- no --> Z[No review workflow]
+  B -- yes --> C{review.exchange.mode}
+
+  C -- via-draft-pr --> D[Create draft PR]
+  D --> E[Select reviewer agent]
+  E --> F[Run reviewer against PR]
+  F --> G[Apply review labels/actions]
+
+  C -- via-mcp --> H[Resolve coder: issue agent, reviewer: per-agent/default]
+  H --> J[Run MCP exchange loop]
+  J --> K{reviewer ok + validation record?}
+  K -- yes --> D2[Create non-draft PR + mark code-reviewed]
+  K -- no --> L[Stop/halts PR creation]
+
+  C -- via-local-loop --> M[Resolve coder: issue agent, reviewer: per-agent/default]
+  M --> O[Run local loop exchange]
+  O --> K
+
+  C -- auto --> P[Resolve coder+reviewer AI systems]
+  P --> R{MCP pair supported?}
+  R -- yes --> J
+  R -- no --> O
+```
+
 ## Multi-Stage Review Pipeline
 
 ```

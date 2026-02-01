@@ -44,20 +44,24 @@ def get_completion_path(
         completion_dir = f"{COMPLETION_DIR}/sessions/{run_dir}"
         if not agent_name:
             return f"{completion_dir}/completion.json"
-        safe_name = agent_name.replace(":", "_").replace("/", "_").replace(" ", "_")
+        safe_name = sanitize_agent_label(agent_name)
         return f"{completion_dir}/completion-{safe_name}.json"
     if session_name:
         completion_dir = f"{COMPLETION_DIR}/sessions/{session_name}"
         if not agent_name:
             return f"{completion_dir}/completion.json"
         # Sanitize agent name for filename (replace : and other special chars)
-        safe_name = agent_name.replace(":", "_").replace("/", "_").replace(" ", "_")
+        safe_name = sanitize_agent_label(agent_name)
         return f"{completion_dir}/completion-{safe_name}.json"
     if not agent_name:
         return COMPLETION_RECORD_PATH
     # Sanitize agent name for filename (replace : and other special chars)
-    safe_name = agent_name.replace(":", "_").replace("/", "_").replace(" ", "_")
+    safe_name = sanitize_agent_label(agent_name)
     return f"{COMPLETION_DIR}/completion-{safe_name}.json"
+
+
+def sanitize_agent_label(agent_name: str) -> str:
+    return agent_name.replace(":", "_").replace("/", "_").replace(" ", "_")
 
 
 class CompletionOutcome(Enum):
@@ -1017,6 +1021,7 @@ class PublishJobResult:
     errors: tuple[str, ...] | None = None
     diagnostic_path: str | None = None
     duration_seconds: float | None = None
+    review_exchange_completed: bool = False
 
     # Validation results (if validation was run)
     validation_passed: bool | None = None

@@ -110,6 +110,12 @@ class TestReviewWorkflowValidator:
         review_enabled=False,
         code_review_agent=None,
         triage_review_agent=None,
+        review_exchange_mode="via-draft-pr",
+        review_exchange_probe_schedule="daily",
+        review_exchange_probe_interval_days=1,
+        review_exchange_max_rounds=10,
+        review_exchange_max_no_progress=2,
+        review_exchange_require_validation=True,
         agents=None,
     ):
         """Create a mock config with review settings."""
@@ -117,7 +123,16 @@ class TestReviewWorkflowValidator:
         config.review_enabled = review_enabled
         config.code_review_agent = code_review_agent
         config.triage_review_agent = triage_review_agent
+        config.review_exchange_mode = review_exchange_mode
+        config.review_exchange_probe_schedule = review_exchange_probe_schedule
+        config.review_exchange_probe_interval_days = review_exchange_probe_interval_days
+        config.review_exchange_max_rounds = review_exchange_max_rounds
+        config.review_exchange_max_no_progress = review_exchange_max_no_progress
+        config.review_exchange_require_validation = review_exchange_require_validation
         config.agents = agents or {}
+        config.get_reviewer_for_agent = lambda _label: config.code_review_agent
+        for agent in config.agents.values():
+            agent.skip_review = False
         return config
 
     def test_reviews_disabled_valid(self):
@@ -132,6 +147,20 @@ class TestReviewWorkflowValidator:
         errors = ReviewWorkflowValidator().validate(config)
         assert len(errors) == 1
         assert "no default reviewer" in errors[0]
+
+    def test_exchange_mode_requires_ai_system(self):
+        """Verify exchange modes pass when ai_system is already validated elsewhere."""
+        agent = MagicMock()
+        agent.ai_system = "claude-code"
+        agent.command = "claude"
+        config = self._make_config(
+            review_enabled=True,
+            code_review_agent="agent:reviewer",
+            review_exchange_mode="via-mcp",
+            agents={"agent:reviewer": agent},
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert errors == []
 
     def test_reviews_enabled_invalid_reviewer_error(self):
         """Verify error when reviewer doesn't exist in agents."""
@@ -297,6 +326,8 @@ class TestAgentValidator:
         config.agents = agents or {}
         config.default_agent = default_agent
         config.raw_agents = raw_agents or {}
+        config.ai_systems_allowed = []
+        config.repo_root = Path("/tmp")
         return config
 
     def _make_agent(
@@ -306,6 +337,7 @@ class TestAgentValidator:
         model="sonnet",
         reviewer=None,
         prompt_exists=True,
+        ai_system="claude-code",
     ):
         """Create a mock agent config."""
         agent = MagicMock()
@@ -320,6 +352,7 @@ class TestAgentValidator:
         agent.provider = provider
         agent.model = model
         agent.reviewer = reviewer
+        agent.ai_system = ai_system
         return agent
 
     def test_no_agents_error(self):
@@ -337,6 +370,39 @@ class TestAgentValidator:
         prompt_file.touch()
         agent = self._make_agent(prompt_path=prompt_file, provider="claude-code")
         config = self._make_config(agents={"agent:dev": agent})
+
+        with patch("agent_runner.is_valid_provider", return_value=True), \
+             patch("agent_runner.list_providers", return_value=["claude-code"]):
+            errors = AgentValidator().validate(config)
+        assert errors == []
+
+    def test_missing_ai_system_error(self, tmp_path):
+        """Verify error when ai_system is missing."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.touch()
+        agent = self._make_agent(
+            prompt_path=prompt_file,
+            provider="claude-code",
+            ai_system=None,
+        )
+        config = self._make_config(agents={"agent:dev": agent})
+
+        with patch("agent_runner.is_valid_provider", return_value=True), \
+             patch("agent_runner.list_providers", return_value=["claude-code"]):
+            errors = AgentValidator().validate(config)
+        assert any("ai_system" in e for e in errors)
+
+    def test_custom_ai_system_allowlist(self, tmp_path):
+        """Verify allowlist accepts custom ai_system values."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.touch()
+        agent = self._make_agent(
+            prompt_path=prompt_file,
+            provider="claude-code",
+            ai_system="custom-ai",
+        )
+        config = self._make_config(agents={"agent:dev": agent})
+        config.ai_systems_allowed = ["custom-ai"]
 
         with patch("agent_runner.is_valid_provider", return_value=True), \
              patch("agent_runner.list_providers", return_value=["claude-code"]):

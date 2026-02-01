@@ -297,6 +297,82 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.max_rework_cycles",
         },
     )
+    keep_current_approach_label: str = Field(
+        "reviewer-keep-current-approach",
+        title="Keep Current Approach Label",
+        description="Label that tells reviewer to avoid alternative approaches",
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_keep_current_approach_label",
+            "yaml_path": "review.keep_current_approach_label",
+        },
+    )
+    exchange_mode: Literal["via-draft-pr", "via-mcp", "via-local-loop", "auto"] = Field(
+        "via-draft-pr",
+        title="Review Exchange Mode",
+        description="Review exchange mode (via-mcp loop, local loop, or via-draft-pr review)",
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_mode",
+            "yaml_path": "review.exchange.mode",
+        },
+    )
+    exchange_probe_schedule: Literal["startup", "daily", "interval", "manual"] = Field(
+        "daily",
+        title="Exchange Probe Schedule",
+        description="When to run MCP round-trip validation",
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_probe_schedule",
+            "yaml_path": "review.exchange.probe.schedule",
+        },
+    )
+    exchange_probe_interval_days: int = Field(
+        1,
+        title="Exchange Probe Interval (days)",
+        description="Interval for MCP round-trip validation when schedule=interval",
+        ge=1,
+        le=30,
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_probe_interval_days",
+            "yaml_path": "review.exchange.probe.interval_days",
+        },
+    )
+    exchange_max_rounds: int = Field(
+        10,
+        title="Exchange Max Rounds",
+        description="Max coder/reviewer rounds before stopping the MCP loop",
+        ge=1,
+        le=50,
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_max_rounds",
+            "yaml_path": "review.exchange.loop.max_rounds",
+        },
+    )
+    exchange_max_no_progress: int = Field(
+        2,
+        title="Exchange Max No-Progress",
+        description="Max rounds where reviewer reports no progress before stopping",
+        ge=1,
+        le=10,
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_max_no_progress",
+            "yaml_path": "review.exchange.loop.max_no_progress",
+        },
+    )
+    exchange_require_validation: bool = Field(
+        True,
+        title="Exchange Requires Validation",
+        description="Require a validation record before reviewer can approve",
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_require_validation",
+            "yaml_path": "review.exchange.loop.require_validation",
+        },
+    )
     triage_agent: Optional[str] = Field(
         None,
         title="Triage Review Agent",
@@ -447,6 +523,17 @@ class AdvancedSettings(BaseModel):
             "restart_required": True,
             "config_attr": "control_api_port",
             "yaml_path": "ui.control_api_port",
+        },
+    )
+    ai_systems_allowed: str = Field(
+        "",
+        title="AI Systems Allowlist",
+        description="Additional ai_system values allowed in config (comma-separated)",
+        json_schema_extra={
+            "section": "AI Systems",
+            "config_attr": "ai_systems_allowed",
+            "yaml_path": "ai_systems.allowed",
+            "ui_transform": "comma_separated_list",
         },
     )
     worktree_base: str = Field(

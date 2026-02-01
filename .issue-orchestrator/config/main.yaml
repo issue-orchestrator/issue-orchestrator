@@ -8,21 +8,25 @@ agents:
   agent:backend:
     prompt: .prompts/simple-fix.md
     model: haiku
+    ai_system: claude-code
     permission_mode: bypassPermissions
     command: "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
   agent:frontend:
     prompt: .prompts/simple-fix.md
     model: haiku
+    ai_system: claude-code
     permission_mode: bypassPermissions
     command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
   agent:mobile:
     prompt: .prompts/simple-fix.md
     model: haiku
+    ai_system: claude-code
     permission_mode: bypassPermissions
     command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
   agent:reviewer:
     prompt: .prompts/reviewer.md
     model: sonnet
+    ai_system: claude-code
     timeout_minutes: 30
     permission_mode: bypassPermissions
     command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
@@ -30,6 +34,7 @@ agents:
   agent:triage:
     prompt: .prompts/triage.md
     model: sonnet
+    ai_system: claude-code
     timeout_minutes: 60
     permission_mode: bypassPermissions
     command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"

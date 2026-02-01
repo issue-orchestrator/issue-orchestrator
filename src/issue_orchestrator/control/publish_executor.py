@@ -521,6 +521,7 @@ class PublishJobExecutor:
             issue_title=job.issue_title,
             pr_number=job.pr_number,
             completion_path=job.completion_path,
+            agent_label=job.agent_label,
         )
 
         # Emit push completed event
@@ -561,6 +562,7 @@ class PublishJobExecutor:
             errors=tuple(processing_result.errors) if processing_result.errors else None,
             diagnostic_path=processing_result.diagnostic_path,
             duration_seconds=job.duration_seconds,
+            review_exchange_completed=processing_result.review_exchange_completed,
         )
 
     def _extract_pr_number(self, pr_url: str | None) -> int | None:

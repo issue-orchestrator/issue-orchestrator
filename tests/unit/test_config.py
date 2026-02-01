@@ -135,6 +135,7 @@ agents:
   agent:web:
     prompt: {prompt}
     model: sonnet
+    ai_system: claude-code
 worktrees:
   base: {worktree_base}
   worktree_branch_on_recreate: nope
@@ -766,6 +767,13 @@ agents:
         assert config.code_review_agent is None
         assert config.code_review_label is None
         assert config.code_reviewed_label is None
+        assert config.review_exchange_mode == "via-draft-pr"
+        assert config.review_exchange_probe_schedule == "daily"
+        assert config.review_exchange_probe_interval_days == 1
+        assert config.review_exchange_max_rounds == 10
+        assert config.review_exchange_max_no_progress == 2
+        assert config.review_exchange_require_validation is True
+        assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
         # triage review defaults (all None when not configured)
         assert config.triage_review_agent is None
         assert config.triage_review_label is None
@@ -839,12 +847,32 @@ worktrees:
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
+    ai_system: claude-code
+  agent:coder:
+    prompt: /tmp/prompt.txt
+    ai_system: claude-code
+  agent:reviewer:
+    prompt: /tmp/prompt.txt
+    ai_system: codex
+  agent:triage:
+    prompt: /tmp/prompt.txt
+    ai_system: claude-code
 
 review:
   enabled: true
   default: agent:reviewer
   code_review_label: needs-code-review
   code_reviewed_label: code-reviewed
+  exchange:
+    mode: via-mcp
+    probe:
+      schedule: interval
+      interval_days: 2
+    loop:
+      max_rounds: 6
+      max_no_progress: 1
+      require_validation: false
+  keep_current_approach_label: reviewer-keep-current-approach
   triage_review_agent: agent:triage
   triage_reviewed_label: triage-reviewed
   triage_review_threshold: 5
@@ -857,6 +885,13 @@ review:
         assert config.code_review_agent == "agent:reviewer"
         assert config.code_review_label == "needs-code-review"
         assert config.code_reviewed_label == "code-reviewed"
+        assert config.review_exchange_mode == "via-mcp"
+        assert config.review_exchange_probe_schedule == "interval"
+        assert config.review_exchange_probe_interval_days == 2
+        assert config.review_exchange_max_rounds == 6
+        assert config.review_exchange_max_no_progress == 1
+        assert config.review_exchange_require_validation is False
+        assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
         assert config.triage_review_agent == "agent:triage"
         assert config.triage_reviewed_label == "triage-reviewed"
         assert config.triage_review_threshold == 5
@@ -1029,6 +1064,7 @@ worktrees:
 agents:
   agent:frontend:
     prompt: {prompt_file}
+    ai_system: claude-code
     reviewer: agent:nonexistent-reviewer
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
@@ -1051,6 +1087,7 @@ worktrees:
 agents:
   agent:frontend:
     prompt: {prompt_file}
+    ai_system: claude-code
 
 review:
   enabled: true
@@ -1064,6 +1101,177 @@ review:
         errors = config.validate()
         assert any("no default reviewer set" in e for e in errors)
 
+    def test_agents_require_ai_system(self, tmp_path):
+        """Test that agents require ai_system."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:reviewer:
+    prompt: {prompt_file}
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert any("ai_system" in e for e in errors)
+
+    def test_ai_systems_allowlist_accepts_custom(self, tmp_path):
+        """Test that ai_systems.allowed accepts custom ai_system values."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+default_agent:
+  provider: claude-code
+
+agents:
+  agent:custom:
+    prompt: {prompt_file}
+    ai_system: custom-ai
+
+ai_systems:
+  allowed:
+    - custom-ai
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert not any("ai_system" in e for e in errors)
+
+    def test_ai_systems_allowlist_accepts_comma_string(self, tmp_path):
+        """Test that ai_systems.allowed can be provided as a comma-separated string."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+default_agent:
+  provider: claude-code
+
+agents:
+  agent:custom:
+    prompt: {prompt_file}
+    ai_system: custom-ai
+
+ai_systems:
+  allowed: custom-ai, other-ai
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert not any("ai_system" in e for e in errors)
+
+    def test_review_exchange_defers_pair_validation(self, tmp_path):
+        """Config validation should not fail on unsupported pairs (runtime handles it)."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+    ai_system: gemini
+  agent:reviewer:
+    prompt: {prompt_file}
+    ai_system: claude-code
+
+review:
+  enabled: true
+  default: agent:reviewer
+  exchange:
+    mode: via-mcp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert not any("unsupported ai_system" in e for e in errors)
+
+    def test_review_exchange_ignores_unrelated_agents(self, tmp_path):
+        """Test via-mcp validation ignores unrelated agents (e.g., triage)."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+    ai_system: claude-code
+  agent:reviewer:
+    prompt: {prompt_file}
+    ai_system: codex
+  agent:triage:
+    prompt: {prompt_file}
+    ai_system: gemini
+
+review:
+  enabled: true
+  default: agent:reviewer
+  triage_review_agent: agent:triage
+  exchange:
+    mode: via-mcp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert not any("unsupported ai_system" in e for e in errors)
+
+    def test_review_exchange_probe_invalid_schedule(self, tmp_path):
+        """Test invalid probe schedule fails validation."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+    ai_system: claude-code
+  agent:reviewer:
+    prompt: {prompt_file}
+    ai_system: codex
+
+review:
+  enabled: true
+  default: agent:reviewer
+  exchange:
+    mode: via-mcp
+    probe:
+      schedule: sometimes
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert any("probe.schedule" in e for e in errors)
+
     def test_validate_no_error_when_review_disabled(self, tmp_path):
         """Test that no error when review.enabled is false (default)."""
         prompt_file = tmp_path / "prompt.txt"
@@ -1076,6 +1284,7 @@ worktrees:
 agents:
   agent:frontend:
     prompt: {prompt_file}
+    ai_system: claude-code
 
 # No review section - defaults to enabled: false
 """
@@ -1273,6 +1482,7 @@ worktrees:
 agents:
   agent:test:
     prompt: /nonexistent/path/prompt.md
+    ai_system: claude-code
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -1294,6 +1504,7 @@ worktrees:
 agents:
   agent:test:
     prompt: {prompt_file}
+    ai_system: claude-code
 """
         # Config must be at <repo>/.issue-orchestrator/config/<name>.yaml
         # so repo_root is correctly calculated (3 levels up)
@@ -1352,6 +1563,7 @@ worktrees:
 agents:
   agent:test:
     prompt: {prompt_file}
+    ai_system: claude-code
 
 review:
   enabled: true
@@ -1383,6 +1595,7 @@ agents:
   agent:test:
     prompt: {prompt_file}
     model: haiku
+    ai_system: claude-code
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -1401,6 +1614,7 @@ worktrees:
 agents:
   agent:test:
     prompt: /nonexistent/prompt.md
+    ai_system: claude-code
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)

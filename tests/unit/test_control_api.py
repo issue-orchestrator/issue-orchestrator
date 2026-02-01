@@ -1349,7 +1349,7 @@ class TestResumeIssueEndpoint:
         client, mock_orch = client_with_orchestrator
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = tmp_path / "nonexistent-worktree"
 
@@ -1371,7 +1371,7 @@ class TestResumeIssueEndpoint:
         worktree.mkdir()
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -1406,7 +1406,7 @@ class TestResumeIssueEndpoint:
         mock_orch.deps.completion_processor.process.return_value = mock_result
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -1424,6 +1424,43 @@ class TestResumeIssueEndpoint:
         call_kwargs = mock_orch.deps.completion_processor.process.call_args.kwargs
         assert call_kwargs["worktree"] == worktree
         assert call_kwargs["issue_number"] == 123
+
+    def test_resume_uses_non_legacy_completion_path(
+        self, client_with_orchestrator, tmp_path
+    ):
+        """Uses manifest completion_path when present."""
+        client, mock_orch = client_with_orchestrator
+
+        worktree = tmp_path / "repo-123"
+        worktree.mkdir()
+        run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+        run_dir.mkdir(parents=True)
+        completion_path = ".issue-orchestrator/sessions/run-1/completion-issue.json"
+        (worktree / completion_path).write_text('{"outcome": "completed"}')
+
+        mock_orch.deps.session_output.find_run_dir.return_value = run_dir
+        mock_orch.deps.session_output.read_manifest.return_value = {
+            "completion_path": completion_path
+        }
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.message = "Completion processed"
+        mock_result.pr_url = None
+        mock_result.actions_taken = []
+        mock_result.errors = []
+        mock_orch.deps.completion_processor.process.return_value = mock_result
+
+        with patch(
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
+        ) as mock_get_path:
+            mock_get_path.return_value = worktree
+
+            response = client.post("/api/issues/123/resume")
+
+        assert response.status_code == 200
+        call_kwargs = mock_orch.deps.completion_processor.process.call_args.kwargs
+        assert call_kwargs["completion_path"] == completion_path
 
     def test_resume_handles_processing_failure(
         self, client_with_orchestrator, tmp_path
@@ -1445,7 +1482,7 @@ class TestResumeIssueEndpoint:
         )
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -1484,7 +1521,7 @@ class TestResumeIssueEndpoint:
         mock_orch.deps.completion_processor.process.return_value = mock_result
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -1515,7 +1552,7 @@ class TestDebugSessionEndpoint:
         client, mock_orch = client_with_orchestrator
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = tmp_path / "nonexistent-worktree"
 
@@ -1542,7 +1579,7 @@ class TestDebugSessionEndpoint:
         mock_orch.deps.repository_host.get_issue.return_value = None
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -1571,7 +1608,7 @@ class TestDebugSessionEndpoint:
         mock_orch.state.cached_queue_issues = [mock_issue]
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -1601,7 +1638,7 @@ class TestDebugSessionEndpoint:
         mock_orch.config.agents = {}  # No agent configs
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -1639,7 +1676,7 @@ class TestDebugSessionEndpoint:
         mock_orch.deps.runner.session_exists.return_value = True
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -1677,9 +1714,10 @@ class TestDebugSessionEndpoint:
         mock_orch.deps.runner.session_exists.return_value = False
         # Session creation succeeds
         mock_orch.deps.runner.create_session.return_value = True
+        mock_orch.deps.session_output.ensure_run_dir.return_value = tmp_path / "run-dir"
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -1709,6 +1747,9 @@ class TestDebugSessionEndpoint:
         assert call_kwargs["session_name"] == "debug-123"
         assert "ORCHESTRATOR_ISSUE_NUMBER='123'" in call_kwargs["command"]
         assert "ORCHESTRATOR_API_PORT='8080'" in call_kwargs["command"]
+        assert "ORCHESTRATOR_SESSION_ID='debug-123'" in call_kwargs["command"]
+        assert "ISSUE_ORCHESTRATOR_COMPLETION_PATH='.issue-orchestrator/sessions/debug-123/completion-agent_claude.json'" in call_kwargs["command"]
+        mock_orch.deps.session_output.update_manifest.assert_called_once()
 
     def test_debug_session_returns_500_when_session_creation_fails(
         self, client_with_orchestrator, tmp_path
@@ -1739,7 +1780,7 @@ class TestDebugSessionEndpoint:
         mock_orch.deps.runner.create_session.return_value = False
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 
@@ -1777,7 +1818,7 @@ class TestDebugSessionEndpoint:
         mock_orch.deps.runner.create_session.return_value = True
 
         with patch(
-            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+            "issue_orchestrator.entrypoints.control_api.get_worktree_path"
         ) as mock_get_path:
             mock_get_path.return_value = worktree
 

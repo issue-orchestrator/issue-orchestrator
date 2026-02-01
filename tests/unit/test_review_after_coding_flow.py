@@ -38,11 +38,12 @@ from issue_orchestrator.control.actions import (
     SessionType,
 )
 from issue_orchestrator.control.planner import Planner, OrchestratorSnapshot
-from issue_orchestrator.control.completion_handler import SessionStatus
+from issue_orchestrator.control.completion_handler import CompletionHandler, SessionStatus
 from issue_orchestrator.control.session_launcher import handle_session_completion
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.control.workflows.review_workflow import ReviewDecision
+from issue_orchestrator.ports import NullEventSink
 
 
 def make_config(**kwargs) -> Config:
@@ -53,6 +54,26 @@ def make_config(**kwargs) -> Config:
     }
     defaults.update(kwargs)
     return Config(**defaults)
+
+
+def make_repository_host(prs):
+    return MagicMock(
+        get_prs_for_branch=lambda _branch: prs,
+        get_pr=lambda _pr_number: None,
+        set_pr_draft=MagicMock(),
+    )
+
+
+def make_completion_handler(config: Config, repository_host) -> CompletionHandler:
+    return CompletionHandler(
+        config=config,
+        events=NullEventSink(),
+        repository_host=repository_host,
+        get_issue_machine_fn=lambda _issue: None,
+        get_session_machine_fn=lambda _terminal_id: None,
+        get_review_machine_fn=lambda _pr_number: None,
+        session_output=MagicMock(spec=SessionOutput),
+    )
 
 
 @pytest.fixture
@@ -145,6 +166,79 @@ class TestReviewAfterCodingFlow:
         assert state.discovered_reviews[0].pr_number == 456
         assert state.discovered_reviews[0].issue_number == 123
 
+    def test_auto_mode_fallback_queues_review(
+        self, sample_session
+    ):
+        """Auto mode should still queue review when exchange doesn't run."""
+        config = make_config(code_review_agent="agent:reviewer")
+        config.review_exchange_mode = "auto"
+
+        state = OrchestratorState()
+        state.active_sessions = [sample_session]
+
+        repository_host = make_repository_host(
+            prs=[MagicMock(url="https://github.com/test/repo/pull/456", number=456, labels=[])]
+        )
+        completion_handler = make_completion_handler(config, repository_host)
+
+        handle_session_completion(
+            session=sample_session,
+            status=SessionStatus.COMPLETED,
+            state=state,
+            completion_handler=completion_handler,
+            action_applier=MagicMock(),
+            observer=MagicMock(),
+            worktree_manager=None,
+            kill_session_fn=lambda _x: None,
+            config=config,
+            session_output=MagicMock(spec=SessionOutput),
+            review_exchange_completed=False,
+        )
+
+        assert len(state.discovered_reviews) == 1
+        planner = Planner(config=config, scheduler=Scheduler(config))
+        snapshot = OrchestratorSnapshot(
+            issues=(),
+            active_sessions=(),
+            pending_reviews=(),
+            pending_reworks=(),
+            pending_triage=(),
+            paused=False,
+            discovered_reviews=tuple(state.discovered_reviews),
+        )
+        plan = planner.plan(snapshot)
+        assert any(isinstance(a, QueueReviewAction) for a in plan.actions)
+
+    def test_exchange_completed_skips_review_queue(
+        self, sample_session
+    ):
+        """Exchange-completed PRs should not enqueue review actions."""
+        config = make_config(code_review_agent="agent:reviewer")
+        config.review_exchange_mode = "via-mcp"
+
+        state = OrchestratorState()
+        state.active_sessions = [sample_session]
+
+        repository_host = make_repository_host(
+            prs=[MagicMock(url="https://github.com/test/repo/pull/456", number=456, labels=[])]
+        )
+        completion_handler = make_completion_handler(config, repository_host)
+
+        handle_session_completion(
+            session=sample_session,
+            status=SessionStatus.COMPLETED,
+            state=state,
+            completion_handler=completion_handler,
+            action_applier=MagicMock(),
+            observer=MagicMock(),
+            worktree_manager=None,
+            kill_session_fn=lambda _x: None,
+            config=config,
+            session_output=MagicMock(spec=SessionOutput),
+            review_exchange_completed=True,
+        )
+
+        assert len(state.discovered_reviews) == 0
     def test_planner_generates_queue_review_action_from_discovered_reviews(self):
         """Planner produces QueueReviewAction from discovered_reviews.
 

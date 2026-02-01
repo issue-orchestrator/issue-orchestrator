@@ -91,4 +91,20 @@ class AgentValidator(ConfigValidator):
                 f"Available: {list(config.agents.keys())}"
             )
 
+        if not agent.ai_system:
+            errors.append(
+                f"Agent '{label}': ai_system is required. "
+                "Set ai_system to a value from ai_systems.yaml (e.g., 'claude-code')."
+            )
+        else:
+            from ..ai_systems_config import get_ai_systems_config
+
+            systems = get_ai_systems_config(config.repo_root)
+            allowed = set(systems.systems.keys()) | set(config.ai_systems_allowed)
+            if agent.ai_system not in allowed:
+                errors.append(
+                    f"Agent '{label}': ai_system '{agent.ai_system}' is not recognized. "
+                    "Add it to ai_systems.allowed or ai_systems.yaml."
+                )
+
         return errors

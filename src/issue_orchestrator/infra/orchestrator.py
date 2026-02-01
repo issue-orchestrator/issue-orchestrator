@@ -1,6 +1,6 @@
 """Main orchestrator - ties everything together."""
 
-import asyncio, logging, os, signal, time
+import asyncio, logging, os, signal, threading, time
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
@@ -94,6 +94,7 @@ class Orchestrator:
     _loop_error_count: int = field(default=0, init=False)
     _loop_error_limit: int = field(default=3, init=False)
     _last_tick_time: float = field(default=0.0, init=False)
+    _state_lock: threading.RLock = field(default_factory=threading.RLock, init=False, repr=False)
 
     def __post_init__(self):
         # All validation is done by OrchestratorDeps being a frozen dataclass with no Optional fields.
@@ -138,6 +139,10 @@ class Orchestrator:
     def last_tick_time(self) -> float:
         """Get the timestamp of the last tick."""
         return self._last_tick_time
+
+    @property
+    def state_lock(self) -> threading.RLock:
+        return self._state_lock
 
     def kill_session(self, name: str) -> None:
         """Kill a session by terminal ID (public wrapper)."""
@@ -226,8 +231,20 @@ class Orchestrator:
     def handle_session_completion(self, session: Session, status: SessionStatus) -> None: _handle_session_completion(session, status, self.state, self._completion_handler, self.deps.action_applier, self.observer, self.deps.worktree_manager, self._kill_session, self.config, self.deps.session_output)
 
     def tick(self) -> bool:
-        self._last_tick_time = time.time()
-        self._loop_iteration, cont = _run_tick_impl(self._loop_iteration, self._event_context, self._inflight_stable_ids, self.state, self.deps.events, self._shutdown_requested, self._process_active_sessions, self._check_health, self._run_planning_cycle, self._emit_heartbeat_if_needed)
+        with self._state_lock:
+            self._last_tick_time = time.time()
+            self._loop_iteration, cont = _run_tick_impl(
+                self._loop_iteration,
+                self._event_context,
+                self._inflight_stable_ids,
+                self.state,
+                self.deps.events,
+                self._shutdown_requested,
+                self._process_active_sessions,
+                self._check_health,
+                self._run_planning_cycle,
+                self._emit_heartbeat_if_needed,
+            )
         # Check if we should auto-trigger E2E tests
         self._maybe_trigger_e2e()
         return cont
@@ -357,8 +374,8 @@ class Orchestrator:
             # Remove from pending
             self.state.pending_publish_jobs.pop(result.job_id, None)
 
-            # Handle job result - queue review if successful
-            if result.success and result.pr_url and result.pr_number:
+            # Handle job result - queue review if successful and exchange not completed
+            if result.success and result.pr_url and result.pr_number and not result.review_exchange_completed:
                 from ..domain.models import DiscoveredReview
                 # Queue for code review
                 # We need to look up the branch_name from the job or session
@@ -371,6 +388,8 @@ class Orchestrator:
                     branch_name,
                     agent_label=None,  # TODO: track agent label in job
                 ))
+                self.state.completed_today.append(result.issue_number)
+            elif result.success and result.pr_url and result.pr_number:
                 self.state.completed_today.append(result.issue_number)
             elif not result.success:
                 # Track failure
@@ -551,7 +570,8 @@ class Orchestrator:
     def request_shutdown(self, force: bool = False) -> None:
         """Request graceful or forced shutdown."""
         self._shutdown_requested = True
-        active = self.state.active_sessions
+        with self._state_lock:
+            active = self.state.active_sessions
         self.deps.events.publish(TraceEvent(
             EventName.ORCHESTRATOR_SHUTDOWN_REQUESTED,
             self._event_context.enrich({
@@ -566,18 +586,27 @@ class Orchestrator:
         if force:
             logger.info("Force shutdown - killing %d session(s)", len(active))
             for s in active:
-                try: self._kill_session(s.terminal_id)
-                except Exception as e: logger.warning("Failed to kill session %s: %s", s.terminal_id, e)
-            self.state.active_sessions = []
+                try:
+                    self._kill_session(s.terminal_id)
+                except Exception as e:
+                    logger.warning("Failed to kill session %s: %s", s.terminal_id, e)
+            with self._state_lock:
+                self.state.active_sessions = []
         else:
             logger.info("Shutdown requested - waiting for %d session(s)", len(active))
 
     def request_refresh(self, inflight_stable_ids: set[str] | None = None) -> None:
-        self._refresh_requested = True
-        self._plan_applier.request_refresh(inflight_stable_ids, self._inflight_stable_ids, self._INFLIGHT_TTL_SECONDS)
+        with self._state_lock:
+            self._refresh_requested = True
+            self._plan_applier.request_refresh(
+                inflight_stable_ids,
+                self._inflight_stable_ids,
+                self._INFLIGHT_TTL_SECONDS,
+            )
 
     def pause(self) -> None:
-        self.state.paused = True
+        with self._state_lock:
+            self.state.paused = True
         logger.info("Orchestrator paused")
         self.deps.events.publish(TraceEvent(
             EventName.ORCHESTRATOR_PAUSED,
@@ -585,7 +614,8 @@ class Orchestrator:
         ))
 
     def resume(self) -> None:
-        self.state.paused = False
+        with self._state_lock:
+            self.state.paused = False
         logger.info("Orchestrator resumed")
         self.deps.events.publish(TraceEvent(
             EventName.ORCHESTRATOR_RESUMED,

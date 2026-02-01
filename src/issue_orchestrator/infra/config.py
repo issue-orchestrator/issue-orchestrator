@@ -607,6 +607,22 @@ def _load_review_section(config: "Config", review_section: dict) -> None:
     config.triage_review_on_failure = review_section.get("triage_review_on_failure", True)
     config.max_rework_cycles = review_section.get("max_rework_cycles", 2)
     config.reviewer_feedback_cache_minutes = review_section.get("reviewer_feedback_cache_minutes", 5)
+    config.review_keep_current_approach_label = review_section.get(
+        "keep_current_approach_label",
+        "reviewer-keep-current-approach",
+    )
+    exchange_section = review_section.get("exchange", {})
+    config.review_exchange_mode = exchange_section.get("mode", "via-draft-pr")
+    probe_section = exchange_section.get("probe", {})
+    if isinstance(probe_section, dict):
+        config.review_exchange_probe_schedule = probe_section.get("schedule", "daily")
+        config.review_exchange_probe_interval_days = probe_section.get("interval_days", 1)
+    loop_section = exchange_section.get("loop", {})
+    if isinstance(loop_section, dict):
+        config.review_exchange_max_rounds = loop_section.get("max_rounds", 10)
+        config.review_exchange_max_no_progress = loop_section.get("max_no_progress", 2)
+        config.review_exchange_require_validation = loop_section.get("require_validation", True)
+    # agent_pair removed; coder/reviewer derived at runtime
 
 
 def _load_cleanup_section(config: "Config", cleanup_section: dict) -> None:
@@ -747,6 +763,17 @@ def _load_retry_section(config: "Config", data: dict) -> None:
         )
 
 
+def _parse_ai_systems_allowed(value: object) -> list[str]:
+    """Normalize ai_systems.allowed values from config."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [entry.strip() for entry in value.split(",") if entry.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return []
+
+
 def _load_agents_section(
     config: "Config",
     agents_section: dict,
@@ -801,6 +828,7 @@ _TOP_LEVEL_SECTION_KEYS = (
     "agents", "labels", "review", "cleanup", "worktrees", "execution",
     "validation", "ui", "observability", "security", "filtering",
     "triage", "e2e", "goal_pilot", "milestones", "state", "config", "claims", "hooks",
+    "ai_systems",
 )
 
 # Derive ALLOWED_TOP_LEVEL_FIELDS from _TOP_LEVEL_SECTION_KEYS — single source of truth.
@@ -848,6 +876,9 @@ class Config:
 
     # Config validation
     config_strict: bool = False  # If True, unknown fields cause validation errors; if False, warnings only
+
+    # AI systems allowlist (merged with built-in ai_systems.yaml)
+    ai_systems_allowed: list[str] = field(default_factory=list)
 
     # GitHub settings
     repo: Optional[str] = None  # owner/repo, or None to auto-detect
@@ -953,6 +984,16 @@ class Config:
     # for rework sessions within this time window (avoids GitHub eventual consistency issues)
     # -1 = disabled, 0+ = minutes to trust local file over GitHub API
     reviewer_feedback_cache_minutes: int = 5  # Default: 5 minutes
+    # Label to tell reviewer to keep the current approach
+    review_keep_current_approach_label: str = "reviewer-keep-current-approach"
+
+    # Review exchange mode (via-mcp, via-local-loop, or via-draft-pr review)
+    review_exchange_mode: str = "via-draft-pr"
+    review_exchange_probe_schedule: str = "daily"  # startup, daily, interval, manual
+    review_exchange_probe_interval_days: int = 1
+    review_exchange_max_rounds: int = 10
+    review_exchange_max_no_progress: int = 2
+    review_exchange_require_validation: bool = True
 
     # Dangerous options (use with caution)
     dangerous: DangerousConfig = field(default_factory=DangerousConfig)
@@ -1063,6 +1104,44 @@ class Config:
         agent = self.agents[agent_label]
         # Per-agent reviewer takes precedence over default
         return agent.reviewer or self.code_review_agent
+
+    def _serialization_exchange_dict(self) -> dict:
+        exchange_dict: dict = {}
+        if self.review_exchange_mode != "via-draft-pr":
+            exchange_dict["mode"] = self.review_exchange_mode
+        if self.review_exchange_probe_schedule != "daily" or self.review_exchange_probe_interval_days != 1:
+            exchange_dict["probe"] = {
+                "schedule": self.review_exchange_probe_schedule,
+                "interval_days": self.review_exchange_probe_interval_days,
+            }
+        if (
+            self.review_exchange_max_rounds != 10
+            or self.review_exchange_max_no_progress != 2
+            or self.review_exchange_require_validation is not True
+        ):
+            exchange_dict["loop"] = {
+                "max_rounds": self.review_exchange_max_rounds,
+                "max_no_progress": self.review_exchange_max_no_progress,
+                "require_validation": self.review_exchange_require_validation,
+            }
+        return exchange_dict
+
+    def _runtime_exchange_dict(self) -> dict[str, object]:
+        exchange_dict: dict[str, object] = {"mode": self.review_exchange_mode}
+        exchange_dict["probe"] = {
+            "schedule": self.review_exchange_probe_schedule,
+            "interval_days": self.review_exchange_probe_interval_days,
+        }
+        exchange_dict["loop"] = {
+            "max_rounds": self.review_exchange_max_rounds,
+            "max_no_progress": self.review_exchange_max_no_progress,
+            "require_validation": self.review_exchange_require_validation,
+        }
+        return exchange_dict
+
+    def get_label_review_keep_current_approach(self) -> str:
+        """Get the reviewer keep-current-approach label with prefix if configured."""
+        return self.prefixed_label(self.review_keep_current_approach_label)
 
     def to_event_dict(self) -> dict:
         """Convert config to a dict for event emission.
@@ -1176,6 +1255,7 @@ class Config:
                 "default": self.code_review_agent,
                 "code_review_label": self.code_review_label,
                 "code_reviewed_label": self.code_reviewed_label,
+                "exchange": self._runtime_exchange_dict(),
                 "triage_review": {
                     "agent": self.triage_review_agent,
                     "label": self.triage_review_label,
@@ -1402,6 +1482,11 @@ class Config:
             review_dict["triage_review_threshold"] = self.triage_review_threshold
         if self.max_rework_cycles != 2:
             review_dict["max_rework_cycles"] = self.max_rework_cycles
+        if self.review_keep_current_approach_label != "reviewer-keep-current-approach":
+            review_dict["keep_current_approach_label"] = self.review_keep_current_approach_label
+        exchange_dict = self._serialization_exchange_dict()
+        if exchange_dict:
+            review_dict["exchange"] = exchange_dict
         if review_dict:
             result["review"] = review_dict
 
@@ -1574,6 +1659,9 @@ class Config:
         config.milestone_sort = sections["milestones"].get("sort", "due_date")
         config.milestone_sort_config = sections["milestones"].get("sort_config", {})
         config.foundation_milestone = sections["milestones"].get("foundation", "M0")
+        config.ai_systems_allowed = _parse_ai_systems_allowed(
+            sections["ai_systems"].get("allowed", [])
+        )
 
         # Parse complex optional configs
         _apply_optional_sections(config, sections)

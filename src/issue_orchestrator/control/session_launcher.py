@@ -58,7 +58,7 @@ from ..ports import (
     CommandRunner,
 )
 from ..ports.session_output import SessionOutput
-from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions
+from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions, WorktreeInfo
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .session_manager import SessionManager
@@ -904,15 +904,7 @@ class SessionLauncher:
             claude_project_dir.exists(),
         )
 
-        # Check if rebase failed (PR branch couldn't be updated to latest main)
-        existing_work: str | None = None
-        if worktree_info.rebase_failed:
-            existing_work = (
-                "WARNING: This PR branch could not be rebased onto main due to merge conflicts. "
-                "The branch is behind main. When reviewing, consider whether merge conflicts "
-                "need to be resolved before the PR can be merged."
-            )
-            logger.warning("[launch] Rebase failed for review - PR branch is behind main")
+        existing_work = self._build_review_existing_work(worktree_info, review.pr_number)
 
         # Build command
         base_command = agent_config.get_command(
@@ -993,6 +985,38 @@ class SessionLauncher:
         self._trigger_review_state_transition(review.pr_number, review.issue_number)
 
         return LaunchResult(session, True)
+
+    def _build_review_existing_work(
+        self,
+        worktree_info: WorktreeInfo,
+        pr_number: int,
+    ) -> str | None:
+        existing_work: str | None = None
+        if worktree_info.rebase_failed:
+            existing_work = (
+                "WARNING: This PR branch could not be rebased onto main due to merge conflicts. "
+                "The branch is behind main. When reviewing, consider whether merge conflicts "
+                "need to be resolved before the PR can be merged."
+            )
+            logger.warning("[launch] Rebase failed for review - PR branch is behind main")
+
+        pr_info = self.repository_host.get_pr(pr_number)
+        if not pr_info:
+            return existing_work
+
+        keep_current_label = self.config.get_label_review_keep_current_approach()
+        if keep_current_label not in pr_info.labels:
+            return existing_work
+
+        keep_current_note = (
+            f"REVIEWER INSTRUCTION: This PR is labeled '{keep_current_label}'. "
+            "Keep the current approach. Do not propose alternative approaches unless "
+            "the current approach cannot work or violates correctness, safety, or security. "
+            "If the current approach is invalid, fail the review with a brief note."
+        )
+        if existing_work:
+            return f"{existing_work}\n\n{keep_current_note}"
+        return keep_current_note
 
     def launch_rework_session(
         self,
@@ -1563,6 +1587,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     diagnostic_path: Optional[str] = None,
     validation_error: Optional[str] = None,
     validation_error_file: Optional[str] = None,
+    review_exchange_completed: bool = False,
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
 ) -> None:
@@ -1628,7 +1653,9 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         state.completed_today.append(session.issue.number)
     result = completion_handler.process_completion(
         session, status, pr_url_hint=pr_url_hint,
-        processing_errors=processing_errors, diagnostic_path=diagnostic_path
+        processing_errors=processing_errors,
+        diagnostic_path=diagnostic_path,
+        review_exchange_completed=review_exchange_completed,
     )
     if session.worktree_path:
         run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
@@ -1906,6 +1933,7 @@ def process_active_sessions(
         diagnostic_path = None
         validation_error = decision.validation_error
         validation_error_file = decision.validation_error_file
+        review_exchange_completed = False
         if decision.processing_result:
             if decision.processing_result.pr_url:
                 pr_url_hint = decision.processing_result.pr_url
@@ -1913,6 +1941,7 @@ def process_active_sessions(
                 processing_errors = decision.processing_result.errors
             if decision.processing_result.diagnostic_path:
                 diagnostic_path = decision.processing_result.diagnostic_path
+            review_exchange_completed = decision.processing_result.review_exchange_completed
         handle_session_completion(
             session, decision.status, state, completion_handler, action_applier,
             observer, worktree_manager, kill_session_fn, config,
@@ -1921,6 +1950,7 @@ def process_active_sessions(
             diagnostic_path=diagnostic_path,
             validation_error=validation_error,
             validation_error_file=str(validation_error_file) if validation_error_file else None,
+            review_exchange_completed=review_exchange_completed,
         )
         session_elapsed = time.monotonic() - session_start
         if session_elapsed > 5:

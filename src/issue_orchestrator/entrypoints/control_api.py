@@ -52,6 +52,9 @@ from fastapi import FastAPI, Request, Query
 from fastapi.responses import JSONResponse, HTMLResponse
 from sse_starlette.sse import EventSourceResponse
 
+from ..control.worktree_manager import get_worktree_path
+from ..domain.models import get_completion_path
+from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
 from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
 from ..control.goal_pilot import GoalPilot
@@ -104,6 +107,15 @@ def get_orchestrator() -> "Orchestrator | None":
     """Get the orchestrator instance."""
     return _orchestrator
 
+
+def _with_state_lock(fn):
+    if _orchestrator is None:
+        return fn()
+    lock = getattr(_orchestrator, "state_lock", None)
+    if lock is None:
+        return fn()
+    with lock:
+        return fn()
 
 def _get_goal_pilot() -> GoalPilot:
     """Create a GoalPilot instance from the running orchestrator."""
@@ -641,8 +653,6 @@ async def resume_issue(issue_number: int) -> JSONResponse:
             status_code=503
         )
 
-    from ..control.worktree_manager import get_worktree_path
-
     # Get worktree path for this issue
     worktree = get_worktree_path(_orchestrator.config, issue_number)
 
@@ -654,30 +664,26 @@ async def resume_issue(issue_number: int) -> JSONResponse:
         }, status_code=404)
 
     # Check for completion.json
-    completion_path = worktree / ".issue-orchestrator" / "completion.json"
-    if not completion_path.exists():
+    completion_path: str | None = None
+    run_dir = _orchestrator.deps.session_output.find_run_dir(worktree)
+    if isinstance(run_dir, Path):
+        manifest = _orchestrator.deps.session_output.read_manifest(run_dir)
+        if manifest and manifest.get("completion_path"):
+            completion_path = manifest["completion_path"]
+
+    legacy_completion = worktree / ".issue-orchestrator" / "completion.json"
+    completion_record = worktree / completion_path if completion_path else legacy_completion
+    if completion_path and not completion_record.exists() and legacy_completion.exists():
+        completion_path = None
+        completion_record = legacy_completion
+    if not completion_record.exists():
         return JSONResponse({
             "success": False,
             "error": "No completion record found",
             "hint": "Run 'agent-done completed --implementation ... --problems ...' first.",
         }, status_code=404)
 
-    # Get issue title - try cache first, then fetch
-    issue_title = f"Issue #{issue_number}"  # Default fallback
-    try:
-        # Check if issue is in cached queue
-        for issue in _orchestrator.state.cached_queue_issues:
-            if issue.number == issue_number:
-                issue_title = issue.title
-                break
-        else:
-            # Fetch from GitHub
-            issue_data = _orchestrator.deps.repository_host.get_issue(issue_number)
-            if issue_data:
-                issue_title = issue_data.title
-    except Exception as e:
-        logger.warning("Could not fetch issue title for #%d: %s", issue_number, e)
-        # Continue with default title
+    issue_title = _get_issue_title(_orchestrator, issue_number)
 
     # Process the completion
     try:
@@ -685,6 +691,7 @@ async def resume_issue(issue_number: int) -> JSONResponse:
             worktree=worktree,
             issue_number=issue_number,
             issue_title=issue_title,
+            completion_path=completion_path,
         )
 
         return JSONResponse({
@@ -730,8 +737,6 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
             status_code=503
         )
 
-    from ..control.worktree_manager import get_worktree_path
-
     config = _orchestrator.config
     state = _orchestrator.state
 
@@ -746,11 +751,16 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
         }, status_code=404)
 
     # Find the issue in cached queue to get its agent type
-    issue = None
-    for cached_issue in state.cached_queue_issues:
-        if cached_issue.number == issue_number:
-            issue = cached_issue
-            break
+    orchestrator = _orchestrator
+
+    def _cached_issue():
+        assert orchestrator is not None
+        for cached_issue in state.cached_queue_issues:
+            if cached_issue.number == issue_number:
+                return cached_issue
+        return None
+
+    issue = _with_state_lock(_cached_issue)
 
     if not issue:
         # Try to fetch from GitHub
@@ -805,10 +815,23 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
         existing_work=debug_context,
     )
 
+    completion_path = get_completion_path(agent_type, session_name=session_name)
+    run_dir = _orchestrator.deps.session_output.ensure_run_dir(worktree, session_name)
+    _orchestrator.deps.session_output.update_manifest(
+        run_dir,
+        {
+            "completion_path": completion_path,
+            "issue_number": issue_number,
+            "agent_label": agent_type,
+        },
+    )
+
     # Set env vars for agent-done --resume
     env_exports = f"export ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
     env_exports += f" ORCHESTRATOR_API_PORT='{config.web_port}'"
     env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_type}'"
+    env_exports += f" ORCHESTRATOR_SESSION_ID='{session_name}'"
+    env_exports += f" {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
     command = f"{env_exports} && {base_command}"
 
     logger.info(
@@ -850,22 +873,53 @@ def _update_cached_issue_labels(issue_number: int, labels_to_remove: list[str]) 
     if _orchestrator is None:
         return
 
+    orchestrator = _orchestrator
     from dataclasses import is_dataclass, replace
 
-    state = _orchestrator.state
-    for i, issue in enumerate(state.cached_queue_issues):
-        if issue.number == issue_number:
-            # Remove the specified labels from the issue
-            new_labels = tuple(
-                label for label in issue.labels
-                if label not in labels_to_remove
-            )
-            # Create updated issue with new labels (only works for dataclass implementations)
-            if is_dataclass(issue) and not isinstance(issue, type):
-                updated_issue = replace(issue, labels=new_labels)
-                state.cached_queue_issues[i] = updated_issue
-                logger.debug("[cache] Updated issue #%d labels: removed %s", issue_number, labels_to_remove)
-            break
+    def _update() -> None:
+        state = orchestrator.state
+        for i, issue in enumerate(state.cached_queue_issues):
+            if issue.number == issue_number:
+                # Remove the specified labels from the issue
+                new_labels = tuple(
+                    label for label in issue.labels
+                    if label not in labels_to_remove
+                )
+                # Create updated issue with new labels (only works for dataclass implementations)
+                if is_dataclass(issue) and not isinstance(issue, type):
+                    updated_issue = replace(issue, labels=new_labels)
+                    state.cached_queue_issues[i] = updated_issue
+                    logger.debug(
+                        "[cache] Updated issue #%d labels: removed %s",
+                        issue_number,
+                        labels_to_remove,
+                    )
+                break
+
+    _with_state_lock(_update)
+
+
+def _get_issue_title(orchestrator: "Orchestrator", issue_number: int) -> str:
+    """Resolve issue title from cache, falling back to GitHub."""
+    issue_title = f"Issue #{issue_number}"
+    try:
+        def _cached_title() -> str | None:
+            for issue in orchestrator.state.cached_queue_issues:
+                if issue.number == issue_number:
+                    return issue.title
+            return None
+
+        cached_title = _with_state_lock(_cached_title)
+        if cached_title:
+            return cached_title
+
+        issue_data = orchestrator.deps.repository_host.get_issue(issue_number)
+        if issue_data:
+            return issue_data.title
+    except Exception as e:
+        logger.warning("Could not fetch issue title for #%d: %s", issue_number, e)
+
+    return issue_title
 
 
 @control_app.post("/api/issues/{issue_number}/retry")
@@ -966,17 +1020,23 @@ async def dismiss_issue(issue_number: int) -> JSONResponse:
             except Exception:
                 pass  # Label might not exist, that's fine
 
-        # Remove from session history if present
-        _orchestrator.state.session_history = [
-            entry for entry in _orchestrator.state.session_history
-            if entry.issue_number != issue_number
-        ]
+        orchestrator = _orchestrator
 
-        # Remove from cached queue (dismissed issues won't be picked up again)
-        _orchestrator.state.cached_queue_issues = [
-            issue for issue in _orchestrator.state.cached_queue_issues
-            if issue.number != issue_number
-        ]
+        def _prune_state() -> None:
+            assert orchestrator is not None
+            # Remove from session history if present
+            orchestrator.state.session_history = [
+                entry for entry in orchestrator.state.session_history
+                if entry.issue_number != issue_number
+            ]
+
+            # Remove from cached queue (dismissed issues won't be picked up again)
+            orchestrator.state.cached_queue_issues = [
+                issue for issue in orchestrator.state.cached_queue_issues
+                if issue.number != issue_number
+            ]
+
+        _with_state_lock(_prune_state)
 
         logger.info("[dismiss] Issue #%d dismissed, removed labels: %s", issue_number, removed)
         return JSONResponse({
@@ -1304,6 +1364,16 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
                 "detail": "Pre-flight checks failed",
                 "doctor": launch_result.doctor.to_dict(),
             }, status_code=422)
+
+        if launch_result.status == "already_running":
+            response = {
+                "error": "already_running",
+                "detail": launch_result.error or "Orchestrator already running",
+                "doctor": launch_result.doctor.to_dict(),
+            }
+            if launch_result.supervisor:
+                response.update(launch_result.supervisor)
+            return JSONResponse(response, status_code=409)
 
         if not launch_result.launched:
             return JSONResponse({

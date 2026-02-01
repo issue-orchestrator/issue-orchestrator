@@ -33,6 +33,7 @@ agents:
     prompt: ".prompts/backend.md"
     model: "sonnet"
     timeout_minutes: 45
+    ai_system: "claude-code"
     # command: "claude --model {model} '{initial_prompt}'"  # Custom command
 
   "agent:frontend":
@@ -40,27 +41,32 @@ agents:
     model: "sonnet"
     timeout_minutes: 45
     reviewer: "agent:web-reviewer"
+    ai_system: "claude-code"
 
   "agent:domain-expert":
     prompt: ".prompts/domain-expert.md"
     model: "sonnet"
     timeout_minutes: 30
     skip_review: true
+    ai_system: "claude-code"
 
   "agent:reviewer":
     prompt: ".prompts/code-review.md"
     model: "sonnet"
     timeout_minutes: 10
+    ai_system: "claude-code"
 
   "agent:web-reviewer":
     prompt: ".prompts/code-review-web.md"
     model: "sonnet"
     timeout_minutes: 10
+    ai_system: "claude-code"
 
   "agent:triage":
     prompt: ".prompts/triage-review.md"
     model: "sonnet"
     timeout_minutes: 30
+    ai_system: "claude-code"
 
 worktrees:
   base: "../"                     # Where to create worktrees (relative to repo)
@@ -93,12 +99,22 @@ review:
   default: "agent:reviewer"
   code_review_label: "needs-code-review"
   code_reviewed_label: "code-reviewed"
+  keep_current_approach_label: "reviewer-keep-current-approach"
   triage_review_agent: "agent:triage"
   triage_review_label: "needs-triage-review"
   triage_reviewed_label: "triage-reviewed"
   triage_review_threshold: 0
   triage_review_on_failure: true
   max_rework_cycles: 2
+  exchange:
+    mode: "via-draft-pr"         # via-mcp, via-local-loop, or via-draft-pr (auto optional)
+    probe:
+      schedule: "daily"          # startup, daily, interval, manual
+      interval_days: 1           # used when schedule=interval
+    loop:
+      max_rounds: 10
+      max_no_progress: 2
+      require_validation: true
 
 goal_pilot:
   enabled: false
@@ -150,6 +166,9 @@ hooks:
   safety_check:
     interval_days: 7                    # Run live verification every N days (0 = disabled)
     dangerous_allow_failure: false      # If true, warn only; if false, block on failure
+
+ai_systems:
+  allowed: []                           # Extra ai_system values beyond ai_systems.yaml
 
 filtering:
   # label: "bot-ready"

@@ -30,6 +30,7 @@ from ..domain.models import (
     CompletionRecord,
     RequestedAction,
     COMPLETION_RECORD_PATH,
+    sanitize_agent_label,
 )
 from ..domain.events import EventBus, SessionEvent
 from ..infra.issue_diagnostics import write_issue_diagnostic
@@ -100,6 +101,7 @@ class ProcessingResult:
     actions_taken: list[str] | None = None
     errors: list[str] | None = None
     diagnostic_path: str | None = None  # Path to detailed failure diagnostics
+    review_exchange_completed: bool = False
 
 
 class CompletionProcessor:
@@ -143,6 +145,7 @@ class CompletionProcessor:
         self.event_bus = event_bus
         self.label_config = label_config or {}
         self.publish_gate = publish_gate
+        self._config = config
         self._pr_collision_strategy = (
             config.worktree_remediation_pr_collision
             if config is not None
@@ -217,6 +220,30 @@ class CompletionProcessor:
         except ValueError as e:
             logger.error(f"Invalid completion record: {e}")
             return None
+
+    def _resolve_agent_label_from_completion_path(
+        self, completion_path: str | None
+    ) -> tuple[str | None, str | None]:
+        if completion_path is None or self._config is None:
+            return None, None
+        filename = Path(completion_path).name
+        if not (filename.startswith("completion-") and filename.endswith(".json")):
+            return None, None
+        safe_name = filename[len("completion-"):-len(".json")]
+        matches = [
+            label
+            for label in self._config.agents.keys()
+            if sanitize_agent_label(label) == safe_name
+        ]
+        if not matches:
+            return None, None
+        if len(matches) > 1:
+            return (
+                None,
+                "Multiple agent labels map to completion file "
+                f"{filename}: {', '.join(matches)}",
+            )
+        return matches[0], None
 
     def validate_worktree_state(
         self, worktree: Path, record: CompletionRecord
@@ -344,9 +371,13 @@ class CompletionProcessor:
             self.session_output.update_manifest(run_dir, updates)
 
     def process(
-        self, worktree: Path, issue_number: int, issue_title: str,
+        self,
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
         pr_number: int | None = None,
         completion_path: str | None = None,
+        agent_label: str | None = None,
     ) -> ProcessingResult:
         """Process a completion record and execute actions.
 
@@ -410,14 +441,27 @@ class CompletionProcessor:
             [a.value for a in record.requested_actions],
         )
 
+        if agent_label is None:
+            agent_label, agent_error = self._resolve_agent_label_from_completion_path(
+                completion_path
+            )
+            if agent_error:
+                return ProcessingResult(
+                    success=False,
+                    message=agent_error,
+                    errors=[agent_error],
+                )
+
         # Execute requested actions in order
-        branch, pr_url = self._execute_actions(
+        branch, pr_url, review_exchange_completed = self._execute_actions(
             worktree=worktree,
             record=record,
             issue_number=issue_number,
             issue_title=issue_title,
             label_target=label_target,
             branch=branch,
+            session_name=session_name,
+            agent_label=agent_label,
             actions_taken=actions_taken,
             errors=errors,
             error_details=error_details,
@@ -440,6 +484,7 @@ class CompletionProcessor:
             issue_title=issue_title,
             branch=branch,
             pr_url=pr_url,
+            review_exchange_completed=review_exchange_completed,
             actions_taken=actions_taken,
             errors=errors,
             error_details=error_details,
@@ -586,17 +631,20 @@ class CompletionProcessor:
         issue_title: str,
         label_target: int,
         branch: str | None,
+        session_name: str | None,
+        agent_label: str | None,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, str | None, bool]:
         """Execute all requested actions from completion record.
 
         Returns:
-            Tuple of (final_branch, pr_url).
+            Tuple of (final_branch, pr_url, review_exchange_completed).
         """
         pr_url: str | None = None
         halt_actions = False
+        review_exchange_completed = False
 
         for action in record.requested_actions:
             action_start = time.monotonic()
@@ -610,6 +658,8 @@ class CompletionProcessor:
                     issue_title=issue_title,
                     label_target=label_target,
                     branch=branch,
+                    session_name=session_name,
+                    agent_label=agent_label,
                     actions_taken=actions_taken,
                     errors=errors,
                     error_details=error_details,
@@ -620,6 +670,8 @@ class CompletionProcessor:
                     branch = result.branch
                 if result.pr_url:
                     pr_url = result.pr_url
+                if result.review_exchange_completed:
+                    review_exchange_completed = True
                 if result.skip_remaining:
                     continue
 
@@ -652,7 +704,7 @@ class CompletionProcessor:
                 )
                 break
 
-        return branch, pr_url
+        return branch, pr_url, review_exchange_completed
 
     @dataclass
     class _ActionResult:
@@ -662,6 +714,7 @@ class CompletionProcessor:
         skip_remaining: bool = False  # Skip to next action (used by continue)
         branch: str | None = None  # Updated branch name
         pr_url: str | None = None  # PR URL if created
+        review_exchange_completed: bool = False
 
     def _execute_single_action(
         self,
@@ -673,6 +726,8 @@ class CompletionProcessor:
         issue_title: str,
         label_target: int,
         branch: str | None,
+        session_name: str | None,
+        agent_label: str | None,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
@@ -689,6 +744,8 @@ class CompletionProcessor:
                 issue_number=issue_number,
                 issue_title=issue_title,
                 branch=branch,
+                session_name=session_name,
+                agent_label=agent_label,
                 actions_taken=actions_taken,
                 errors=errors,
             )
@@ -801,6 +858,8 @@ class CompletionProcessor:
         issue_number: int,
         issue_title: str,
         branch: str | None,
+        session_name: str | None,
+        agent_label: str | None,
         actions_taken: list[str],
         errors: list[str],
     ) -> "_ActionResult":
@@ -837,8 +896,21 @@ class CompletionProcessor:
                 skip_hooks=skip_hooks,
             )
 
+        exchange_mode, exchange_result, exchange_halt = self._run_review_exchange_if_needed(
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+            errors=errors,
+            actions_taken=actions_taken,
+        )
+        if exchange_halt:
+            return self._ActionResult(halt=True)
+
         # Create the PR
         logger.info("Creating PR for #%d: branch=%s", issue_number, branch)
+        draft_pr = exchange_mode not in {"via-mcp", "via-local-loop"}
         pr = self._create_pr_with_collision_handling(
             worktree=worktree,
             pr_title=pr_title,
@@ -847,13 +919,243 @@ class CompletionProcessor:
             issue_number=issue_number,
             actions_taken=actions_taken,
             skip_hooks=skip_hooks,
+            draft=draft_pr,
         )
 
         if pr:
             self._apply_pr_labels(pr, record, actions_taken)
-            return self._ActionResult(branch=branch, pr_url=pr.url)
+            review_exchange_completed = False
+            if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
+                review_exchange_completed = True
+                label = self._get_label("code_reviewed")
+                self.label_adapter.add_label(pr.number, label)
+                actions_taken.append(f"Added '{label}' label to PR #{pr.number}")
+                review_label = self._get_label("code_review")
+                self.label_adapter.remove_label(pr.number, review_label)
+                actions_taken.append(f"Removed '{review_label}' label from PR #{pr.number}")
+                comment = (
+                    f"✅ Review completed via {exchange_mode} loop.\n\n"
+                    f"- Rounds: {exchange_result.rounds}\n"
+                    f"- Outcome: {exchange_result.reason}\n"
+                )
+                if self._config and self._config.review_exchange_require_validation:
+                    comment += "- Validation: required and passed\n"
+                self.pr_adapter.add_comment(pr.number, comment)
+                actions_taken.append(f"Posted review completion comment to PR #{pr.number}")
+            return self._ActionResult(
+                branch=branch,
+                pr_url=pr.url,
+                review_exchange_completed=review_exchange_completed,
+            )
 
         return self._ActionResult(branch=branch)
+
+    def _run_review_exchange_if_needed(
+        self,
+        *,
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
+        session_name: str | None,
+        agent_label: str | None,
+        errors: list[str],
+        actions_taken: list[str],
+    ) -> tuple[str | None, Any | None, bool]:
+        try:
+            exchange_mode = self._resolve_review_exchange_mode(agent_label)
+        except ValueError as exc:
+            errors.append(f"review_exchange: {exc}")
+            return None, None, True
+        if exchange_mode not in {"via-mcp", "via-local-loop"}:
+            return exchange_mode, None, False
+        require_validation = bool(
+            self._config and self._config.review_exchange_require_validation
+        )
+        existing_outcome = self._load_existing_review_exchange_outcome(
+            worktree,
+            session_name,
+            require_validation=require_validation,
+        )
+        if existing_outcome:
+            if existing_outcome.status == "ok":
+                actions_taken.append("Review exchange passed (cached)")
+                return exchange_mode, existing_outcome, False
+            errors.append(
+                f"review_exchange: {existing_outcome.status} ({existing_outcome.reason})"
+            )
+            return exchange_mode, existing_outcome, True
+        logger.info("Review exchange mode selected: %s", exchange_mode)
+        exchange_result = self._run_review_exchange_loop(
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+        )
+        if exchange_result.status != "ok":
+            errors.append(
+                f"review_exchange: {exchange_result.status} ({exchange_result.reason})"
+            )
+            return exchange_mode, exchange_result, True
+        actions_taken.append("Review exchange passed")
+        if session_name and exchange_result.summary:
+            validation_record_path: Path | None = None
+            if exchange_result.exchange_dir:
+                candidate = exchange_result.exchange_dir.parent / "validation-record.json"
+                if candidate.exists():
+                    validation_record_path = candidate
+            self.session_output.store_review_exchange_summary(
+                worktree,
+                session_name,
+                exchange_result.summary,
+                validation_record_path=validation_record_path,
+            )
+        return exchange_mode, exchange_result, False
+
+    def _load_existing_review_exchange_outcome(
+        self,
+        worktree: Path,
+        session_name: str | None,
+        *,
+        require_validation: bool,
+    ) -> Any | None:
+        if not session_name:
+            return None
+        cached = self.session_output.load_review_exchange_summary(worktree, session_name)
+        if not cached:
+            return None
+        if require_validation and not self._review_exchange_validation_passed(
+            cached.validation_record_path
+        ):
+            return None
+        status = cached.summary.get("status")
+        rounds = cached.summary.get("completed_rounds")
+        if not status or rounds is None:
+            return None
+        from .review_exchange_loop import ReviewExchangeOutcome, ReviewExchangeResponse
+
+        return ReviewExchangeOutcome(
+            status=status,
+            rounds=rounds,
+            reason="cached_summary",
+            reviewer_response=ReviewExchangeResponse(
+                response_type=status,
+                response_text=cached.summary.get("response_text") or "",
+            ),
+            exchange_dir=cached.exchange_dir,
+            summary=cached.summary,
+        )
+
+    @staticmethod
+    def _review_exchange_validation_passed(record_path: Path | None) -> bool:
+        if not record_path or not record_path.exists():
+            return False
+        try:
+            data = json.loads(record_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            return False
+        return bool(data.get("passed"))
+
+    def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
+        if not self._config:
+            return None
+        if not self._config.review_enabled:
+            return None
+        mode = self._config.review_exchange_mode
+        if mode in {"via-mcp", "via-local-loop"}:
+            agent_label = self._require_review_exchange_agent_label(agent_label, mode)
+            if mode == "via-mcp":
+                from ..infra.review_exchange_registry import supports_mcp_pair
+
+                coder_system, reviewer_system = self._resolve_exchange_systems(agent_label)
+                if not supports_mcp_pair(coder_system, reviewer_system):
+                    raise ValueError(
+                        "Review exchange via-mcp requires a supported ai_system pair: "
+                        f"{agent_label} ({coder_system}->{reviewer_system})"
+                    )
+            return mode
+        if mode != "auto":
+            return None
+        if not agent_label:
+            logger.warning(
+                "Review exchange auto mode requires agent label; falling back to draft PR."
+            )
+            return None
+        agent_label = self._require_review_exchange_agent_label(agent_label, "auto")
+        from ..infra.review_exchange_registry import supports_mcp_pair
+
+        coder_system, reviewer_system = self._resolve_exchange_systems(agent_label)
+        if supports_mcp_pair(coder_system, reviewer_system):
+            return "via-mcp"
+        return "via-local-loop"
+
+    def _require_review_exchange_agent_label(
+        self, agent_label: str | None, mode: str
+    ) -> str:
+        if not agent_label:
+            raise ValueError(f"Review exchange requires agent_label for {mode} mode")
+        return agent_label
+
+    def _resolve_reviewer_label(self, agent_label: str) -> str:
+        if not self._config:
+            raise ValueError("Review exchange requires config")
+        if agent_label not in self._config.agents:
+            raise ValueError(f"Review exchange agent '{agent_label}' not found in config.agents")
+        reviewer_label = self._config.get_reviewer_for_agent(agent_label)
+        if not reviewer_label:
+            raise ValueError("Review exchange requires review.default or per-agent reviewer")
+        if reviewer_label not in self._config.agents:
+            raise ValueError(f"Review exchange reviewer '{reviewer_label}' not found in config.agents")
+        return reviewer_label
+
+    def _resolve_exchange_systems(self, agent_label: str) -> tuple[str, str]:
+        if not self._config:
+            raise ValueError("Review exchange requires config")
+        reviewer_label = self._resolve_reviewer_label(agent_label)
+        coder_system = self._config.agents[agent_label].ai_system
+        reviewer_system = self._config.agents[reviewer_label].ai_system
+        if not coder_system or not reviewer_system:
+            raise ValueError("Review exchange requires ai_system on coder and reviewer agents")
+        return coder_system, reviewer_system
+
+    def _run_review_exchange_loop(
+        self,
+        *,
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
+        session_name: str | None,
+        agent_label: str | None,
+    ):
+        if not self._config:
+            raise ValueError("Review exchange requires config")
+        if not agent_label:
+            raise ValueError("Review exchange requires agent_label")
+        coder_label = agent_label
+        reviewer_label = self._resolve_reviewer_label(agent_label)
+        coder_agent = self._config.agents[coder_label]
+        reviewer_agent = self._config.agents[reviewer_label]
+        max_rounds = self._config.review_exchange_max_rounds
+        max_no_progress = self._config.review_exchange_max_no_progress
+        require_validation = self._config.review_exchange_require_validation
+        web_port = self._config.web_port
+
+        from .review_exchange_loop import run_review_exchange_loop
+
+        return run_review_exchange_loop(
+            session_output=self.session_output,
+            worktree_path=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            coder_label=coder_label,
+            reviewer_label=reviewer_label,
+            coder_agent=coder_agent,
+            reviewer_agent=reviewer_agent,
+            max_rounds=max_rounds,
+            max_no_progress=max_no_progress,
+            require_validation=require_validation,
+            web_port=web_port,
+        )
 
     def _create_pr_with_collision_handling(
         self,
@@ -865,6 +1167,7 @@ class CompletionProcessor:
         issue_number: int,
         actions_taken: list[str],
         skip_hooks: bool,
+        draft: bool,
     ) -> PRInfo | None:
         """Create PR with collision handling."""
         try:
@@ -873,7 +1176,7 @@ class CompletionProcessor:
                 body=pr_body,
                 head=branch,
                 base="main",
-                draft=True,
+                draft=draft,
             )
         except Exception as e:
             if self._pr_collision_strategy == "new_branch" and self._is_pr_collision_error(e):
@@ -889,7 +1192,7 @@ class CompletionProcessor:
                     body=pr_body,
                     head=new_branch,
                     base="main",
-                    draft=True,
+                    draft=draft,
                 )
             elif self._is_no_commits_error(e):
                 raise RuntimeError(
@@ -932,6 +1235,7 @@ class CompletionProcessor:
         issue_title: str,
         branch: str | None,
         pr_url: str | None,
+        review_exchange_completed: bool,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
@@ -945,6 +1249,8 @@ class CompletionProcessor:
             RequestedAction.PUSH_BRANCH in record.requested_actions
             and "Pushed branch to remote" in actions_taken
         )
+        if any(error.startswith("review_exchange:") for error in errors):
+            success = False
         logger.info(
             "Completion result: issue=%s success=%s actions=%s errors=%s pr_url=%s",
             issue_number,
@@ -1008,6 +1314,7 @@ class CompletionProcessor:
             actions_taken=actions_taken if actions_taken else None,
             diagnostic_path=diagnostic_path,
             errors=errors if errors else None,
+            review_exchange_completed=review_exchange_completed,
         )
 
     def _cleanup_completion_record(
