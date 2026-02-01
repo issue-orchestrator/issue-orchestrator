@@ -34,6 +34,7 @@ class ReviewExchangeOutcome:
     rounds: int
     reason: str
     reviewer_response: ReviewExchangeResponse | None = None
+    exchange_dir: Path | None = None
 
 
 def run_review_exchange_loop(
@@ -113,6 +114,7 @@ def run_review_exchange_loop(
                     rounds=round_index,
                     reason="reviewer_ok",
                     reviewer_response=reviewer_response,
+                    exchange_dir=exchange_dir,
                 )
         _write_round_log(
             exchange_dir=exchange_dir,
@@ -133,6 +135,7 @@ def run_review_exchange_loop(
                 rounds=round_index,
                 reason="reviewer_reports_no_progress",
                 reviewer_response=reviewer_response,
+                exchange_dir=exchange_dir,
             )
 
         last_reviewer_text = reviewer_response.response_text
@@ -165,6 +168,7 @@ def run_review_exchange_loop(
         rounds=max_rounds,
         reason="max_rounds_exceeded",
         reviewer_response=None,
+        exchange_dir=exchange_dir,
     )
 
 

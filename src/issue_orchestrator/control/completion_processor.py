@@ -19,6 +19,7 @@ import json
 import re
 import logging
 import os
+import shutil
 import time
 import traceback
 from dataclasses import dataclass
@@ -998,6 +999,12 @@ class CompletionProcessor:
             )
             return exchange_mode, exchange_result, True
         actions_taken.append("Review exchange passed")
+        if session_name and exchange_result.exchange_dir:
+            self._persist_review_exchange_cache(
+                worktree=worktree,
+                session_name=session_name,
+                exchange_dir=exchange_result.exchange_dir,
+            )
         return exchange_mode, exchange_result, False
 
     def _load_existing_review_exchange_outcome(
@@ -1012,12 +1019,17 @@ class CompletionProcessor:
         run_dir = self.session_output.find_run_dir(worktree, session_name)
         if not run_dir:
             return None
-        exchange_dir = run_dir / "review-exchange"
-        if not exchange_dir.exists():
-            manifest = self.session_output.read_manifest(run_dir) or {}
-            manifest_dir = manifest.get("review_exchange_dir")
-            if manifest_dir:
-                exchange_dir = Path(manifest_dir)
+        exchange_dir: Path | None = None
+        manifest = self.session_output.read_manifest(run_dir) or {}
+        manifest_dir = manifest.get("review_exchange_dir")
+        if manifest_dir:
+            exchange_dir = Path(manifest_dir)
+        if exchange_dir is None or not exchange_dir.exists():
+            fallback_dir = run_dir / "review-exchange"
+            if fallback_dir.exists():
+                exchange_dir = fallback_dir
+        if exchange_dir is None:
+            return None
         summary_path = exchange_dir / "summary.json"
         if not summary_path.exists():
             return None
@@ -1029,7 +1041,7 @@ class CompletionProcessor:
         rounds = summary.get("completed_rounds")
         if not status or rounds is None:
             return None
-        if require_validation and not self._review_exchange_validation_passed(run_dir):
+        if require_validation and not self._review_exchange_validation_passed(exchange_dir):
             return None
         from .review_exchange_loop import ReviewExchangeOutcome, ReviewExchangeResponse
 
@@ -1041,11 +1053,12 @@ class CompletionProcessor:
                 response_type=status,
                 response_text=summary.get("response_text") or "",
             ),
+            exchange_dir=exchange_dir,
         )
 
     @staticmethod
-    def _review_exchange_validation_passed(run_dir: Path) -> bool:
-        record_path = run_dir / "validation-record.json"
+    def _review_exchange_validation_passed(exchange_dir: Path) -> bool:
+        record_path = exchange_dir.parent / "validation-record.json"
         if not record_path.exists():
             return False
         try:
@@ -1053,6 +1066,33 @@ class CompletionProcessor:
         except (OSError, json.JSONDecodeError):
             return False
         return bool(data.get("passed"))
+
+    def _persist_review_exchange_cache(
+        self,
+        *,
+        worktree: Path,
+        session_name: str,
+        exchange_dir: Path,
+    ) -> None:
+        run_dir = self.session_output.ensure_run_dir(worktree, session_name)
+        issue_exchange_dir = run_dir / "review-exchange"
+        issue_exchange_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = exchange_dir / "summary.json"
+        if summary_path.exists():
+            try:
+                shutil.copy2(summary_path, issue_exchange_dir / "summary.json")
+            except OSError:
+                logger.debug("Failed to copy review exchange summary to %s", issue_exchange_dir)
+        validation_record = exchange_dir.parent / "validation-record.json"
+        if validation_record.exists():
+            try:
+                shutil.copy2(validation_record, run_dir / "validation-record.json")
+            except OSError:
+                logger.debug("Failed to copy validation record to %s", run_dir)
+        self.session_output.update_manifest(
+            run_dir,
+            {"review_exchange_dir": str(issue_exchange_dir)},
+        )
 
     def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         if not self._config:
