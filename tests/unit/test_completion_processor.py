@@ -348,6 +348,7 @@ class TestReviewExchangeExecution:
 
     def test_auto_mode_falls_back_to_local_loop(self, tmp_path, monkeypatch):
         config = self._make_config(tmp_path)
+        config.review_exchange_mode = "auto"
         processor = self._make_processor(config)
 
         monkeypatch.setattr(
