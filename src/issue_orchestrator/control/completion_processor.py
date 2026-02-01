@@ -143,6 +143,7 @@ class CompletionProcessor:
         self.event_bus = event_bus
         self.label_config = label_config or {}
         self.publish_gate = publish_gate
+        self._config = config
         self._pr_collision_strategy = (
             config.worktree_remediation_pr_collision
             if config is not None
