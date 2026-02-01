@@ -139,13 +139,27 @@ def _probe_mcp_round_trip_from_set(
     """Run a minimal MCP round-trip probe for supported pairs."""
     checks: list[Check] = []
 
-    supported_pair = {"claude-code", "codex"}
-    if not supported_pair.issubset(systems):
+    from .review_exchange_registry import SUPPORTED_MCP_PAIRS
+
+    supported_pairs = [
+        pair for pair in SUPPORTED_MCP_PAIRS
+        if {pair[0], pair[1]}.issubset(systems)
+    ]
+    if not supported_pairs:
         status = "error" if mode == "via-mcp" else "info"
         checks.append(Check(
             name="MCP Round-trip",
             status=status,
-            detail="MCP round-trip skipped (no supported pair configured)",
+            detail="MCP round-trip skipped (no supported MCP pairs configured)",
+        ))
+        return checks
+
+    if not {"claude-code", "codex"}.issubset(systems):
+        status = "warning" if mode == "via-mcp" else "info"
+        checks.append(Check(
+            name="MCP Round-trip",
+            status=status,
+            detail="MCP round-trip skipped (requires claude-code + codex)",
         ))
         return checks
 

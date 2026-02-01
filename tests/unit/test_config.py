@@ -1121,6 +1121,34 @@ agents:
         errors = config.validate()
         assert any("ai_system" in e for e in errors)
 
+    def test_ai_systems_allowlist_accepts_custom(self, tmp_path):
+        """Test that ai_systems.allowed accepts custom ai_system values."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+default_agent:
+  provider: claude-code
+
+agents:
+  agent:custom:
+    prompt: {prompt_file}
+    ai_system: custom-ai
+
+ai_systems:
+  allowed:
+    - custom-ai
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert not any("ai_system" in e for e in errors)
+
     def test_review_exchange_validates_supported_pair(self, tmp_path):
         """Test via-mcp requires a supported system pair among configured agents."""
         prompt_file = tmp_path / "prompt.txt"

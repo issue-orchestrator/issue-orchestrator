@@ -817,6 +817,7 @@ _TOP_LEVEL_SECTION_KEYS = (
     "agents", "labels", "review", "cleanup", "worktrees", "execution",
     "validation", "ui", "observability", "security", "filtering",
     "triage", "e2e", "goal_pilot", "milestones", "state", "config", "claims", "hooks",
+    "ai_systems",
 )
 
 # Derive ALLOWED_TOP_LEVEL_FIELDS from _TOP_LEVEL_SECTION_KEYS — single source of truth.
@@ -864,6 +865,9 @@ class Config:
 
     # Config validation
     config_strict: bool = False  # If True, unknown fields cause validation errors; if False, warnings only
+
+    # AI systems allowlist (merged with built-in ai_systems.yaml)
+    ai_systems_allowed: list[str] = field(default_factory=list)
 
     # GitHub settings
     repo: Optional[str] = None  # owner/repo, or None to auto-detect
@@ -1644,6 +1648,7 @@ class Config:
         config.milestone_sort = sections["milestones"].get("sort", "due_date")
         config.milestone_sort_config = sections["milestones"].get("sort_config", {})
         config.foundation_milestone = sections["milestones"].get("foundation", "M0")
+        config.ai_systems_allowed = sections["ai_systems"].get("allowed", [])
 
         # Parse complex optional configs
         _apply_optional_sections(config, sections)

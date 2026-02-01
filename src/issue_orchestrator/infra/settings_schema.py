@@ -525,6 +525,17 @@ class AdvancedSettings(BaseModel):
             "yaml_path": "ui.control_api_port",
         },
     )
+    ai_systems_allowed: list[str] = Field(
+        default_factory=list,
+        title="AI Systems Allowlist",
+        description="Additional ai_system values allowed in config (comma-separated)",
+        json_schema_extra={
+            "section": "AI Systems",
+            "config_attr": "ai_systems_allowed",
+            "yaml_path": "ai_systems.allowed",
+            "ui_transform": "comma_separated_list",
+        },
+    )
     worktree_base: str = Field(
         "../",
         title="Worktree Base Directory",
