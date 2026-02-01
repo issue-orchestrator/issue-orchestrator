@@ -771,6 +771,9 @@ agents:
         assert config.review_exchange_reviewer is None
         assert config.review_exchange_probe_schedule == "daily"
         assert config.review_exchange_probe_interval_days == 1
+        assert config.review_exchange_max_rounds == 10
+        assert config.review_exchange_max_no_progress == 2
+        assert config.review_exchange_require_validation is True
         assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
         # triage review defaults (all None when not configured)
         assert config.triage_review_agent is None
@@ -865,6 +868,10 @@ review:
     probe:
       schedule: interval
       interval_days: 2
+    loop:
+      max_rounds: 6
+      max_no_progress: 1
+      require_validation: false
   keep_current_approach_label: reviewer-keep-current-approach
   triage_review_agent: agent:triage
   triage_reviewed_label: triage-reviewed
@@ -883,6 +890,9 @@ review:
         assert config.review_exchange_reviewer == "agent:reviewer"
         assert config.review_exchange_probe_schedule == "interval"
         assert config.review_exchange_probe_interval_days == 2
+        assert config.review_exchange_max_rounds == 6
+        assert config.review_exchange_max_no_progress == 1
+        assert config.review_exchange_require_validation is False
         assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
         assert config.triage_review_agent == "agent:triage"
         assert config.triage_reviewed_label == "triage-reviewed"

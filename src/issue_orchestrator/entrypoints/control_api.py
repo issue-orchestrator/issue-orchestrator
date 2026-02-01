@@ -1305,6 +1305,16 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
                 "doctor": launch_result.doctor.to_dict(),
             }, status_code=422)
 
+        if launch_result.status == "already_running":
+            response = {
+                "error": "already_running",
+                "detail": launch_result.error or "Orchestrator already running",
+                "doctor": launch_result.doctor.to_dict(),
+            }
+            if launch_result.supervisor:
+                response.update(launch_result.supervisor)
+            return JSONResponse(response, status_code=409)
+
         if not launch_result.launched:
             return JSONResponse({
                 "error": "launch_failed",

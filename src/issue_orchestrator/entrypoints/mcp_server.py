@@ -45,6 +45,10 @@ class OrchestratorHttpClient:
             config_name=self._settings.config_path.name,
             instance_id=self._settings.instance_id,
         )
+        if result.status == "already_running":
+            if result.supervisor and "port" in result.supervisor:
+                self._cached_port = result.supervisor["port"]
+            return supervisor.status(self._settings.repo_root, instance_id=self._settings.instance_id)
         if not result.launched:
             raise RuntimeError(
                 f"Failed to start orchestrator: {result.status}"

@@ -96,6 +96,11 @@ class ReviewWorkflowValidator(ConfigValidator):
                 "review.exchange.probe.interval_days must be >= 1 when schedule=interval."
             )
 
+        if config.review_exchange_max_rounds < 1:
+            errors.append("review.exchange.loop.max_rounds must be >= 1.")
+        if config.review_exchange_max_no_progress < 1:
+            errors.append("review.exchange.loop.max_no_progress must be >= 1.")
+
     def _validate_supported_exchange_pair(
         self,
         exchange_mode: str,
@@ -107,6 +112,8 @@ class ReviewWorkflowValidator(ConfigValidator):
         if exchange_mode != "via-mcp":
             return
         if not coder_label or not reviewer_label:
+            return
+        if coder_label not in config.agents or reviewer_label not in config.agents:
             return
         from ..ai_systems_config import get_ai_systems_config
         from ..review_exchange_registry import supports_mcp_pair
