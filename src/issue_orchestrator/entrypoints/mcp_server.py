@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from anyio import to_thread
 from mcp.server.fastmcp import FastMCP
 
 from ..infra import supervisor
@@ -77,6 +78,15 @@ class OrchestratorHttpClient:
         self._cached_port = status.port
         return f"http://{self._settings.host}:{status.port}"
 
+    def refresh_base_url(self) -> str:
+        status = self.status()
+        if status.state != "running":
+            raise RuntimeError(f"Orchestrator not running (state={status.state})")
+        if status.port is None:
+            raise RuntimeError("Orchestrator running but no port available")
+        self._cached_port = status.port
+        return f"http://{self._settings.host}:{status.port}"
+
     def doctor_url(self) -> str | None:
         if self._cached_port:
             return f"http://{self._settings.host}:{self._cached_port}/api/doctor"
@@ -97,15 +107,18 @@ class McpApp:
     def __init__(self, settings: McpSettings) -> None:
         self._settings = settings
         self._client = OrchestratorHttpClient(settings)
-        self._api: OrchestratorApi = OrchestratorHttpApi(self._client.base_url)
+        self._api: OrchestratorApi = OrchestratorHttpApi(
+            self._client.base_url,
+            refresh_base_url=self._client.refresh_base_url,
+        )
 
     def close(self) -> None:
         self._client.close()
         self._api.close()
 
-    def _safe(self, tool_name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    async def _safe(self, tool_name: str, fn: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         try:
-            return fn()
+            return await to_thread.run_sync(fn)
         except Exception as exc:  # noqa: BLE001
             logger.exception("MCP tool %s failed", tool_name)
             return {
@@ -140,12 +153,12 @@ class McpApp:
         server.tool(name="orchestrator.repos.start")(self.tool_repos_start)
         server.tool(name="orchestrator.repos.stop")(self.tool_repos_stop)
 
-    def tool_status(self) -> dict[str, Any]:
-        return self._safe("orchestrator.status", self.status)
+    async def tool_status(self) -> dict[str, Any]:
+        return await self._safe("orchestrator.status", self.status)
 
-    def tool_start(self) -> dict[str, Any]:
+    async def tool_start(self) -> dict[str, Any]:
         try:
-            return self.start()
+            return await to_thread.run_sync(self.start)
         except Exception as exc:  # noqa: BLE001
             logger.exception("MCP tool orchestrator.start failed")
             ui_hint: dict[str, Any] = {"kind": "doctor"}
@@ -160,72 +173,99 @@ class McpApp:
                 "ui_hint": ui_hint,
             }
 
-    def tool_stop(self, force: bool = False) -> dict[str, Any]:
-        return self._safe("orchestrator.stop", lambda: self.stop(force))
+    async def tool_stop(self, force: bool = False) -> dict[str, Any]:
+        return await self._safe("orchestrator.stop", lambda: self.stop(force))
 
-    def tool_pause(self) -> dict[str, Any]:
-        return self._safe("orchestrator.pause", self.pause)
+    async def tool_pause(self) -> dict[str, Any]:
+        return await self._safe("orchestrator.pause", self.pause)
 
-    def tool_resume(self) -> dict[str, Any]:
-        return self._safe("orchestrator.resume", self.resume)
+    async def tool_resume(self) -> dict[str, Any]:
+        return await self._safe("orchestrator.resume", self.resume)
 
-    def tool_refresh(self, inflight_stable_ids: list[str] | None = None) -> dict[str, Any]:
-        return self._safe("orchestrator.refresh", lambda: self.refresh(inflight_stable_ids))
+    async def tool_refresh(self, inflight_stable_ids: list[str] | None = None) -> dict[str, Any]:
+        return await self._safe("orchestrator.refresh", lambda: self.refresh(inflight_stable_ids))
 
-    def tool_shutdown(self, force: bool = False) -> dict[str, Any]:
-        return self._safe("orchestrator.shutdown", lambda: self.shutdown(force))
+    async def tool_shutdown(self, force: bool = False) -> dict[str, Any]:
+        return await self._safe("orchestrator.shutdown", lambda: self.shutdown(force))
 
-    def tool_snapshot(self) -> dict[str, Any]:
-        return self._safe("orchestrator.snapshot", self.snapshot)
+    async def tool_snapshot(self) -> dict[str, Any]:
+        return await self._safe("orchestrator.snapshot", self.snapshot)
 
-    def tool_session_worktree(self, issue_number: int) -> dict[str, Any]:
-        return self._safe("orchestrator.session.worktree", lambda: self.session_worktree(issue_number))
+    async def tool_session_worktree(self, issue_number: int) -> dict[str, Any]:
+        return await self._safe(
+            "orchestrator.session.worktree",
+            lambda: self.session_worktree(issue_number),
+        )
 
-    def tool_session_manifest(self, issue_number: int) -> dict[str, Any]:
-        return self._safe("orchestrator.session.manifest", lambda: self.session_manifest(issue_number))
+    async def tool_session_manifest(self, issue_number: int) -> dict[str, Any]:
+        return await self._safe(
+            "orchestrator.session.manifest",
+            lambda: self.session_manifest(issue_number),
+        )
 
-    def tool_session_phases(self, issue_number: int) -> dict[str, Any]:
-        return self._safe("orchestrator.session.phases", lambda: self.session_phases(issue_number))
+    async def tool_session_phases(self, issue_number: int) -> dict[str, Any]:
+        return await self._safe(
+            "orchestrator.session.phases",
+            lambda: self.session_phases(issue_number),
+        )
 
-    def tool_session_claude_log(self, issue_number: int, limit: int = 200) -> dict[str, Any]:
-        return self._safe("orchestrator.session.claude_log", lambda: self.session_claude_log(issue_number, limit))
+    async def tool_session_claude_log(self, issue_number: int, limit: int = 200) -> dict[str, Any]:
+        return await self._safe(
+            "orchestrator.session.claude_log",
+            lambda: self.session_claude_log(issue_number, limit),
+        )
 
-    def tool_session_orchestrator_log(self, issue_number: int) -> dict[str, Any]:
-        return self._safe(
+    async def tool_session_orchestrator_log(self, issue_number: int) -> dict[str, Any]:
+        return await self._safe(
             "orchestrator.session.orchestrator_log",
             lambda: self.session_orchestrator_log(issue_number),
         )
 
-    def tool_session_send(self, issue_number: int, text: str) -> dict[str, Any]:
-        return self._safe("orchestrator.session.send", lambda: self.session_send(issue_number, text))
+    async def tool_session_send(self, issue_number: int, text: str) -> dict[str, Any]:
+        return await self._safe(
+            "orchestrator.session.send",
+            lambda: self.session_send(issue_number, text),
+        )
 
-    def tool_session_kill(self, issue_number: int) -> dict[str, Any]:
-        return self._safe("orchestrator.session.kill", lambda: self.session_kill(issue_number))
+    async def tool_session_kill(self, issue_number: int) -> dict[str, Any]:
+        return await self._safe(
+            "orchestrator.session.kill",
+            lambda: self.session_kill(issue_number),
+        )
 
-    def tool_session_focus(self, issue_number: int) -> dict[str, Any]:
-        return self._safe("orchestrator.session.focus", lambda: self.session_focus(issue_number))
+    async def tool_session_focus(self, issue_number: int) -> dict[str, Any]:
+        return await self._safe(
+            "orchestrator.session.focus",
+            lambda: self.session_focus(issue_number),
+        )
 
-    def tool_urls(self) -> dict[str, Any]:
-        return self._safe("orchestrator.urls", self.urls)
+    async def tool_urls(self) -> dict[str, Any]:
+        return await self._safe("orchestrator.urls", self.urls)
 
-    def tool_doctor(self) -> dict[str, Any]:
-        return self._safe("orchestrator.doctor", self.doctor)
+    async def tool_doctor(self) -> dict[str, Any]:
+        return await self._safe("orchestrator.doctor", self.doctor)
 
-    def tool_state(self) -> dict[str, Any]:
+    async def tool_state(self) -> dict[str, Any]:
         """Get complete system state for the unified dashboard."""
-        return self._safe("orchestrator.state", self.get_system_state)
+        return await self._safe("orchestrator.state", self.get_system_state)
 
-    def tool_repos(self) -> dict[str, Any]:
+    async def tool_repos(self) -> dict[str, Any]:
         """List all repos with status."""
-        return self._safe("orchestrator.repos", self.list_repos)
+        return await self._safe("orchestrator.repos", self.list_repos)
 
-    def tool_repos_start(self, repo_path: str, config_name: str = "default.yaml") -> dict[str, Any]:
+    async def tool_repos_start(self, repo_path: str, config_name: str = "default.yaml") -> dict[str, Any]:
         """Start orchestrator for a specific repo."""
-        return self._safe("orchestrator.repos.start", lambda: self.start_repo(repo_path, config_name))
+        return await self._safe(
+            "orchestrator.repos.start",
+            lambda: self.start_repo(repo_path, config_name),
+        )
 
-    def tool_repos_stop(self, repo_path: str, force: bool = False) -> dict[str, Any]:
+    async def tool_repos_stop(self, repo_path: str, force: bool = False) -> dict[str, Any]:
         """Stop orchestrator for a specific repo."""
-        return self._safe("orchestrator.repos.stop", lambda: self.stop_repo(repo_path, force))
+        return await self._safe(
+            "orchestrator.repos.stop",
+            lambda: self.stop_repo(repo_path, force),
+        )
 
     def get_system_state(self) -> dict[str, Any]:
         """Get complete system state."""

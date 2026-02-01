@@ -13,10 +13,12 @@ class OrchestratorHttpApi(OrchestratorApi):
     def __init__(
         self,
         base_url_provider: Callable[[], str],
+        refresh_base_url: Callable[[], str] | None = None,
         client: httpx.Client | None = None,
         timeout_seconds: float = 10.0,
     ) -> None:
         self._base_url_provider = base_url_provider
+        self._refresh_base_url = refresh_base_url
         self._client = client or httpx.Client(timeout=timeout_seconds)
 
     def close(self) -> None:
@@ -24,9 +26,17 @@ class OrchestratorHttpApi(OrchestratorApi):
 
     def _request(self, method: str, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
         url = f"{self._base_url_provider()}{path}"
-        response = self._client.request(method, url, json=json_body)
-        response.raise_for_status()
-        return response.json()
+        try:
+            response = self._client.request(method, url, json=json_body)
+            response.raise_for_status()
+            return response.json()
+        except httpx.RequestError:
+            if not self._refresh_base_url:
+                raise
+            refreshed_url = f"{self._refresh_base_url()}{path}"
+            response = self._client.request(method, refreshed_url, json=json_body)
+            response.raise_for_status()
+            return response.json()
 
     def status(self) -> dict[str, Any]:
         return self._request("GET", "/api/status")
