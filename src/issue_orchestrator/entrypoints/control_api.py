@@ -666,12 +666,16 @@ async def resume_issue(issue_number: int) -> JSONResponse:
     # Check for completion.json
     completion_path: str | None = None
     run_dir = _orchestrator.deps.session_output.find_run_dir(worktree)
-    if run_dir:
+    if isinstance(run_dir, Path):
         manifest = _orchestrator.deps.session_output.read_manifest(run_dir)
         if manifest and manifest.get("completion_path"):
             completion_path = manifest["completion_path"]
 
-    completion_record = worktree / (completion_path or ".issue-orchestrator/completion.json")
+    legacy_completion = worktree / ".issue-orchestrator" / "completion.json"
+    completion_record = worktree / completion_path if completion_path else legacy_completion
+    if completion_path and not completion_record.exists() and legacy_completion.exists():
+        completion_path = None
+        completion_record = legacy_completion
     if not completion_record.exists():
         return JSONResponse({
             "success": False,
