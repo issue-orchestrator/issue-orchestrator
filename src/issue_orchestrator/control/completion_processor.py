@@ -844,7 +844,9 @@ class CompletionProcessor:
                 skip_hooks=skip_hooks,
             )
 
-        if self._should_run_review_exchange():
+        exchange_mode = self._resolve_review_exchange_mode()
+        if exchange_mode in {"via-mcp", "via-local-loop"}:
+            logger.info("Review exchange mode selected: %s", exchange_mode)
             exchange_result = self._run_review_exchange_loop(
                 worktree=worktree,
                 issue_number=issue_number,
@@ -876,18 +878,18 @@ class CompletionProcessor:
 
         return self._ActionResult(branch=branch)
 
-    def _should_run_review_exchange(self) -> bool:
+    def _resolve_review_exchange_mode(self) -> str | None:
         if not self._config:
-            return False
+            return None
         mode = self._config.review_exchange_mode
-        if mode == "via-mcp":
-            return True
+        if mode in {"via-mcp", "via-local-loop"}:
+            return mode
         if mode != "auto":
-            return False
+            return None
         coder_label = self._config.review_exchange_coder
         reviewer_label = self._config.review_exchange_reviewer
         if not coder_label or not reviewer_label:
-            return False
+            return None
         from ..infra.review_exchange_registry import supports_mcp_pair
         from ..infra.ai_systems_config import get_ai_systems_config
         from ..ports.session_log import detect_ai_system_from_command
@@ -904,7 +906,9 @@ class CompletionProcessor:
 
         coder_system = resolve_system(coder_label)
         reviewer_system = resolve_system(reviewer_label)
-        return supports_mcp_pair(coder_system, reviewer_system)
+        if supports_mcp_pair(coder_system, reviewer_system):
+            return "via-mcp"
+        return "via-local-loop"
 
     def _run_review_exchange_loop(
         self,

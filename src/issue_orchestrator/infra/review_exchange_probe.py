@@ -98,14 +98,23 @@ def _resolve_exchange_pair(config, mode: str) -> tuple[Optional[ExchangePair], l
     coder_system = _resolve_ai_system(config, coder_label)
     reviewer_system = _resolve_ai_system(config, reviewer_label)
     if not supports_mcp_pair(coder_system, reviewer_system):
-        status = "error" if mode == "via-mcp" else "warning"
+        if mode == "auto":
+            checks.append(Check(
+                name="Review Exchange",
+                status="info",
+                detail=(
+                    "MCP probe skipped (auto uses local loop for unsupported pair "
+                    f"{coder_label}({coder_system}) -> {reviewer_label}({reviewer_system}))."
+                ),
+            ))
+            return None, checks
         checks.append(Check(
             name="Review Exchange",
-            status=status,
+            status="error",
             detail=(
                 "Unsupported MCP pair "
                 f"{coder_label}({coder_system}) -> {reviewer_label}({reviewer_system}). "
-                "Use via-draft-pr or update the MCP allowlist."
+                "Use via-local-loop/via-draft-pr or update the MCP allowlist."
             ),
         ))
         return None, checks

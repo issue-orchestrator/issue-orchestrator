@@ -65,16 +65,16 @@ class ReviewWorkflowValidator(ConfigValidator):
         config: "Config",
         errors: list[str],
     ) -> None:
-        allowed_modes = {"via-draft-pr", "via-mcp", "auto"}
+        allowed_modes = {"via-draft-pr", "via-mcp", "via-local-loop", "auto"}
         if exchange_mode not in allowed_modes:
             errors.append(
                 f"review.exchange.mode '{exchange_mode}' is invalid. "
                 f"Allowed: {sorted(allowed_modes)}"
             )
-        if exchange_mode in {"via-mcp", "auto"} and (not coder_label or not reviewer_label):
+        if exchange_mode in {"via-mcp", "via-local-loop", "auto"} and (not coder_label or not reviewer_label):
             errors.append(
                 "review.exchange.mode requires review.exchange.agent_pair "
-                "with both coder and reviewer when using via-mcp or auto."
+                "with both coder and reviewer when using via-mcp, via-local-loop, or auto."
             )
         for label, role in ((coder_label, "coder"), (reviewer_label, "reviewer")):
             if label and label not in config.agents:
