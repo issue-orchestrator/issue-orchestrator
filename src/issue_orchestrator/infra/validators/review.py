@@ -66,13 +66,6 @@ class ReviewWorkflowValidator(ConfigValidator):
                 f"review.exchange.mode '{exchange_mode}' is invalid. "
                 f"Allowed: {sorted(allowed_modes)}"
             )
-        if exchange_mode in {"via-mcp", "via-local-loop", "auto"}:
-            missing_ai = [label for label, agent in config.agents.items() if not agent.ai_system]
-            if missing_ai:
-                errors.append(
-                    "review.exchange.mode requires ai_system on all agents. "
-                    f"Missing: {missing_ai}"
-                )
 
     def _validate_probe_schedule(self, config: "Config", errors: list[str]) -> None:
         schedule = config.review_exchange_probe_schedule

@@ -33,6 +33,7 @@ agents:
     prompt: ".prompts/backend.md"
     model: "sonnet"
     timeout_minutes: 45
+    ai_system: "claude-code"
     # command: "claude --model {model} '{initial_prompt}'"  # Custom command
 
   "agent:frontend":
@@ -40,27 +41,32 @@ agents:
     model: "sonnet"
     timeout_minutes: 45
     reviewer: "agent:web-reviewer"
+    ai_system: "claude-code"
 
   "agent:domain-expert":
     prompt: ".prompts/domain-expert.md"
     model: "sonnet"
     timeout_minutes: 30
     skip_review: true
+    ai_system: "claude-code"
 
   "agent:reviewer":
     prompt: ".prompts/code-review.md"
     model: "sonnet"
     timeout_minutes: 10
+    ai_system: "claude-code"
 
   "agent:web-reviewer":
     prompt: ".prompts/code-review-web.md"
     model: "sonnet"
     timeout_minutes: 10
+    ai_system: "claude-code"
 
   "agent:triage":
     prompt: ".prompts/triage-review.md"
     model: "sonnet"
     timeout_minutes: 30
+    ai_system: "claude-code"
 
 worktrees:
   base: "../"                     # Where to create worktrees (relative to repo)

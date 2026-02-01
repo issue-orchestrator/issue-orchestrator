@@ -91,4 +91,10 @@ class AgentValidator(ConfigValidator):
                 f"Available: {list(config.agents.keys())}"
             )
 
+        if not agent.ai_system:
+            errors.append(
+                f"Agent '{label}': ai_system is required. "
+                "Set ai_system to a value from ai_systems.yaml (e.g., 'claude-code')."
+            )
+
         return errors
