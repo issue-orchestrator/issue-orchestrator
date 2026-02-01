@@ -1425,6 +1425,43 @@ class TestResumeIssueEndpoint:
         assert call_kwargs["worktree"] == worktree
         assert call_kwargs["issue_number"] == 123
 
+    def test_resume_uses_non_legacy_completion_path(
+        self, client_with_orchestrator, tmp_path
+    ):
+        """Uses manifest completion_path when present."""
+        client, mock_orch = client_with_orchestrator
+
+        worktree = tmp_path / "repo-123"
+        worktree.mkdir()
+        run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+        run_dir.mkdir(parents=True)
+        completion_path = ".issue-orchestrator/sessions/run-1/completion-issue.json"
+        (worktree / completion_path).write_text('{"outcome": "completed"}')
+
+        mock_orch.deps.session_output.find_run_dir.return_value = run_dir
+        mock_orch.deps.session_output.read_manifest.return_value = {
+            "completion_path": completion_path
+        }
+
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.message = "Completion processed"
+        mock_result.pr_url = None
+        mock_result.actions_taken = []
+        mock_result.errors = []
+        mock_orch.deps.completion_processor.process.return_value = mock_result
+
+        with patch(
+            "issue_orchestrator.control.worktree_manager.get_worktree_path"
+        ) as mock_get_path:
+            mock_get_path.return_value = worktree
+
+            response = client.post("/api/issues/123/resume")
+
+        assert response.status_code == 200
+        call_kwargs = mock_orch.deps.completion_processor.process.call_args.kwargs
+        assert call_kwargs["completion_path"] == completion_path
+
     def test_resume_handles_processing_failure(
         self, client_with_orchestrator, tmp_path
     ):
