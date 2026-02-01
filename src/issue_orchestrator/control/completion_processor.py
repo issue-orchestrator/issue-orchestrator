@@ -890,7 +890,11 @@ class CompletionProcessor:
                 skip_hooks=skip_hooks,
             )
 
-        exchange_mode = self._resolve_review_exchange_mode(agent_label)
+        try:
+            exchange_mode = self._resolve_review_exchange_mode(agent_label)
+        except ValueError as exc:
+            errors.append(f"review_exchange: {exc}")
+            return self._ActionResult(halt=True)
         exchange_result = None
         if exchange_mode in {"via-mcp", "via-local-loop"}:
             logger.info("Review exchange mode selected: %s", exchange_mode)
@@ -944,11 +948,18 @@ class CompletionProcessor:
     def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         if not self._config:
             return None
+        if not self._config.review_enabled:
+            return None
         mode = self._config.review_exchange_mode
         if mode in {"via-mcp", "via-local-loop"}:
             self._require_review_exchange_agent_label(agent_label, mode)
             return mode
         if mode != "auto":
+            return None
+        if not agent_label:
+            logger.warning(
+                "Review exchange auto mode requires agent label; falling back to draft PR."
+            )
             return None
         agent_label = self._require_review_exchange_agent_label(agent_label, "auto")
         from ..infra.review_exchange_registry import supports_mcp_pair

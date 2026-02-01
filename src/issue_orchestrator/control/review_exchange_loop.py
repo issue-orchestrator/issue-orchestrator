@@ -53,7 +53,13 @@ def run_review_exchange_loop(
 ) -> ReviewExchangeOutcome:
     """Run the coder↔reviewer exchange loop and capture round-trip logs."""
     session_name = f"review-exchange-{issue_number}"
-    run_dir = session_output.ensure_run_dir(worktree_path, session_name)
+    run = session_output.start_run(
+        worktree_path,
+        session_name,
+        issue_number=issue_number,
+        agent_label=coder_label,
+    )
+    run_dir = run.run_dir
     exchange_dir = run_dir / "review-exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
     session_output.update_manifest(run_dir, {"review_exchange_dir": str(exchange_dir)})
