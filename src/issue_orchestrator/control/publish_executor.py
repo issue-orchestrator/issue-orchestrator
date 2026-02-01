@@ -521,6 +521,7 @@ class PublishJobExecutor:
             issue_title=job.issue_title,
             pr_number=job.pr_number,
             completion_path=job.completion_path,
+            agent_label=job.agent_label,
         )
 
         # Emit push completed event

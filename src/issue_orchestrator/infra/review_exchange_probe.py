@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import timedelta
 from typing import Optional
 
@@ -10,16 +9,7 @@ from ..ports.command_runner import CommandRunner
 from ..ports.session_log import detect_ai_system_from_command
 from .ai_systems_config import get_ai_systems_config
 from .doctor.types import Check
-from .review_exchange_registry import supports_mcp_pair
 from .review_exchange_state import load_state, save_state
-
-
-@dataclass(frozen=True)
-class ExchangePair:
-    coder_label: str
-    reviewer_label: str
-    coder_system: str
-    reviewer_system: str
 
 
 def probe_review_exchange(
@@ -44,12 +34,6 @@ def probe_review_exchange(
     if mode not in {"via-mcp", "auto"}:
         return checks
 
-    pair, pair_checks = _resolve_exchange_pair(config, mode)
-    if pair_checks:
-        return pair_checks
-    if pair is None:
-        return checks
-
     if runner is None:
         checks.append(Check(
             name="Review Exchange",
@@ -63,68 +47,13 @@ def probe_review_exchange(
     if skip_check is not None:
         return [skip_check]
 
-    checks.extend(_probe_mcp_systems(pair.coder_system, pair.reviewer_system, runner))
-    checks.extend(_probe_mcp_round_trip(pair.coder_system, pair.reviewer_system, runner))
+    systems = {_resolve_ai_system(config, label) for label in config.agents}
+    checks.extend(_probe_mcp_systems_from_set(systems, runner))
+    checks.extend(_probe_mcp_round_trip_from_set(systems, mode, runner))
 
     _update_probe_state(config, state, checks)
 
     return checks
-
-
-def _resolve_exchange_pair(config, mode: str) -> tuple[Optional[ExchangePair], list[Check]]:
-    checks: list[Check] = []
-    coder_label = config.review_exchange_coder
-    reviewer_label = config.review_exchange_reviewer
-    if not coder_label or not reviewer_label:
-        checks.append(Check(
-            name="Review Exchange",
-            status="error",
-            detail="review.exchange.agent_pair is required for via-mcp/auto",
-        ))
-        return None, checks
-    if coder_label not in config.agents or reviewer_label not in config.agents:
-        missing = [
-            label
-            for label in (coder_label, reviewer_label)
-            if label not in config.agents
-        ]
-        checks.append(Check(
-            name="Review Exchange",
-            status="error",
-            detail=f"review.exchange.agent_pair references unknown agent(s): {', '.join(missing)}",
-        ))
-        return None, checks
-
-    coder_system = _resolve_ai_system(config, coder_label)
-    reviewer_system = _resolve_ai_system(config, reviewer_label)
-    if not supports_mcp_pair(coder_system, reviewer_system):
-        if mode == "auto":
-            checks.append(Check(
-                name="Review Exchange",
-                status="info",
-                detail=(
-                    "MCP probe skipped (auto uses local loop for unsupported pair "
-                    f"{coder_label}({coder_system}) -> {reviewer_label}({reviewer_system}))."
-                ),
-            ))
-            return None, checks
-        checks.append(Check(
-            name="Review Exchange",
-            status="error",
-            detail=(
-                "Unsupported MCP pair "
-                f"{coder_label}({coder_system}) -> {reviewer_label}({reviewer_system}). "
-                "Use via-local-loop/via-draft-pr or update the MCP allowlist."
-            ),
-        ))
-        return None, checks
-
-    return ExchangePair(
-        coder_label=coder_label,
-        reviewer_label=reviewer_label,
-        coder_system=coder_system,
-        reviewer_system=reviewer_system,
-    ), checks
 
 
 def _resolve_ai_system(config, label: str) -> str:
@@ -182,18 +111,13 @@ def _update_probe_state(config, state, checks: list[Check]) -> None:
         save_state(config.repo_root, state)
 
 
-def _probe_mcp_systems(
-    coder_system: str,
-    reviewer_system: str,
+def _probe_mcp_systems_from_set(
+    systems: set[str],
     runner: CommandRunner,
 ) -> list[Check]:
     """Run a lightweight MCP probe for involved systems."""
     checks: list[Check] = []
-    systems: list[str] = []
-    for system in (coder_system, reviewer_system):
-        if system not in systems:
-            systems.append(system)
-    for system in systems:
+    for system in sorted(systems):
         if system == "claude-code":
             checks.extend(_probe_claude_mcp(runner))
         elif system == "codex":
@@ -207,20 +131,21 @@ def _probe_mcp_systems(
     return checks
 
 
-def _probe_mcp_round_trip(
-    coder_system: str,
-    reviewer_system: str,
+def _probe_mcp_round_trip_from_set(
+    systems: set[str],
+    mode: str,
     runner: CommandRunner,
 ) -> list[Check]:
     """Run a minimal MCP round-trip probe for supported pairs."""
     checks: list[Check] = []
 
-    supports_round_trip = {coder_system, reviewer_system} == {"claude-code", "codex"}
-    if not supports_round_trip:
+    supported_pair = {"claude-code", "codex"}
+    if not supported_pair.issubset(systems):
+        status = "error" if mode == "via-mcp" else "info"
         checks.append(Check(
             name="MCP Round-trip",
-            status="warning",
-            detail="Round-trip probe not implemented for this pair",
+            status=status,
+            detail="MCP round-trip skipped (no supported pair configured)",
         ))
         return checks
 

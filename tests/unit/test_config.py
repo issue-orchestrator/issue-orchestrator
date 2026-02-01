@@ -767,8 +767,6 @@ agents:
         assert config.code_review_label is None
         assert config.code_reviewed_label is None
         assert config.review_exchange_mode == "via-draft-pr"
-        assert config.review_exchange_coder is None
-        assert config.review_exchange_reviewer is None
         assert config.review_exchange_probe_schedule == "daily"
         assert config.review_exchange_probe_interval_days == 1
         assert config.review_exchange_max_rounds == 10
@@ -848,12 +846,16 @@ worktrees:
 agents:
   agent:test:
     prompt: /tmp/prompt.txt
+    ai_system: claude-code
   agent:coder:
     prompt: /tmp/prompt.txt
+    ai_system: claude-code
   agent:reviewer:
     prompt: /tmp/prompt.txt
+    ai_system: codex
   agent:triage:
     prompt: /tmp/prompt.txt
+    ai_system: claude-code
 
 review:
   enabled: true
@@ -862,9 +864,6 @@ review:
   code_reviewed_label: code-reviewed
   exchange:
     mode: via-mcp
-    agent_pair:
-      coder: agent:coder
-      reviewer: agent:reviewer
     probe:
       schedule: interval
       interval_days: 2
@@ -886,8 +885,6 @@ review:
         assert config.code_review_label == "needs-code-review"
         assert config.code_reviewed_label == "code-reviewed"
         assert config.review_exchange_mode == "via-mcp"
-        assert config.review_exchange_coder == "agent:coder"
-        assert config.review_exchange_reviewer == "agent:reviewer"
         assert config.review_exchange_probe_schedule == "interval"
         assert config.review_exchange_probe_interval_days == 2
         assert config.review_exchange_max_rounds == 6
@@ -1101,8 +1098,8 @@ review:
         errors = config.validate()
         assert any("no default reviewer set" in e for e in errors)
 
-    def test_review_exchange_requires_agent_pair_for_mcp(self, tmp_path):
-        """Test that via-mcp requires an agent_pair."""
+    def test_review_exchange_requires_ai_system(self, tmp_path):
+        """Test that exchange modes require ai_system on agents."""
         prompt_file = tmp_path / "prompt.txt"
         prompt_file.write_text("Prompt content")
 
@@ -1125,10 +1122,10 @@ review:
 
         config = Config.load(config_file)
         errors = config.validate()
-        assert any("review.exchange.agent_pair" in e for e in errors)
+        assert any("ai_system" in e for e in errors)
 
     def test_review_exchange_validates_supported_pair(self, tmp_path):
-        """Test via-mcp requires a supported (coder, reviewer) system pair."""
+        """Test via-mcp requires a supported system pair among configured agents."""
         prompt_file = tmp_path / "prompt.txt"
         prompt_file.write_text("Prompt content")
 
@@ -1149,16 +1146,13 @@ review:
   default: agent:reviewer
   exchange:
     mode: via-mcp
-    agent_pair:
-      coder: agent:coder
-      reviewer: agent:reviewer
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
 
         config = Config.load(config_file)
         errors = config.validate()
-        assert any("not supported" in e for e in errors)
+        assert any("unsupported ai_system" in e for e in errors)
 
     def test_review_exchange_probe_invalid_schedule(self, tmp_path):
         """Test invalid probe schedule fails validation."""
@@ -1172,17 +1166,16 @@ worktrees:
 agents:
   agent:coder:
     prompt: {prompt_file}
+    ai_system: claude-code
   agent:reviewer:
     prompt: {prompt_file}
+    ai_system: codex
 
 review:
   enabled: true
   default: agent:reviewer
   exchange:
     mode: via-mcp
-    agent_pair:
-      coder: agent:coder
-      reviewer: agent:reviewer
     probe:
       schedule: sometimes
 """

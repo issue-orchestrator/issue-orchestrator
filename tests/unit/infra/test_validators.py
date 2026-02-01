@@ -111,8 +111,6 @@ class TestReviewWorkflowValidator:
         code_review_agent=None,
         triage_review_agent=None,
         review_exchange_mode="via-draft-pr",
-        review_exchange_coder=None,
-        review_exchange_reviewer=None,
         review_exchange_probe_schedule="daily",
         review_exchange_probe_interval_days=1,
         review_exchange_max_rounds=10,
@@ -126,8 +124,6 @@ class TestReviewWorkflowValidator:
         config.code_review_agent = code_review_agent
         config.triage_review_agent = triage_review_agent
         config.review_exchange_mode = review_exchange_mode
-        config.review_exchange_coder = review_exchange_coder
-        config.review_exchange_reviewer = review_exchange_reviewer
         config.review_exchange_probe_schedule = review_exchange_probe_schedule
         config.review_exchange_probe_interval_days = review_exchange_probe_interval_days
         config.review_exchange_max_rounds = review_exchange_max_rounds
@@ -148,6 +144,20 @@ class TestReviewWorkflowValidator:
         errors = ReviewWorkflowValidator().validate(config)
         assert len(errors) == 1
         assert "no default reviewer" in errors[0]
+
+    def test_exchange_mode_requires_ai_system(self):
+        """Verify exchange modes require ai_system on agents."""
+        agent = MagicMock()
+        agent.ai_system = None
+        agent.command = "claude"
+        config = self._make_config(
+            review_enabled=True,
+            code_review_agent="agent:reviewer",
+            review_exchange_mode="via-mcp",
+            agents={"agent:reviewer": agent},
+        )
+        errors = ReviewWorkflowValidator().validate(config)
+        assert any("ai_system" in e for e in errors)
 
     def test_reviews_enabled_invalid_reviewer_error(self):
         """Verify error when reviewer doesn't exist in agents."""

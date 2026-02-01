@@ -317,26 +317,6 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.exchange.mode",
         },
     )
-    exchange_coder: Optional[str] = Field(
-        None,
-        title="Exchange Coder Agent",
-        description="Agent label for coder in review exchange (optional)",
-        json_schema_extra={
-            "section": "Code Review Workflow",
-            "config_attr": "review_exchange_coder",
-            "yaml_path": "review.exchange.agent_pair.coder",
-        },
-    )
-    exchange_reviewer: Optional[str] = Field(
-        None,
-        title="Exchange Reviewer Agent",
-        description="Agent label for reviewer in review exchange (optional)",
-        json_schema_extra={
-            "section": "Code Review Workflow",
-            "config_attr": "review_exchange_reviewer",
-            "yaml_path": "review.exchange.agent_pair.reviewer",
-        },
-    )
     exchange_probe_schedule: Literal["startup", "daily", "interval", "manual"] = Field(
         "daily",
         title="Exchange Probe Schedule",

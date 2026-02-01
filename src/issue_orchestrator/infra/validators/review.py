@@ -24,12 +24,9 @@ class ReviewWorkflowValidator(ConfigValidator):
         self._validate_triage_agent(config, errors)
 
         exchange_mode = config.review_exchange_mode
-        coder_label = config.review_exchange_coder
-        reviewer_label = config.review_exchange_reviewer
-
-        self._validate_exchange_mode(exchange_mode, coder_label, reviewer_label, config, errors)
+        self._validate_exchange_mode(exchange_mode, config, errors)
         self._validate_probe_schedule(config, errors)
-        self._validate_supported_exchange_pair(exchange_mode, coder_label, reviewer_label, config, errors)
+        self._validate_supported_exchange_pair(exchange_mode, config, errors)
 
         return errors
 
@@ -60,8 +57,6 @@ class ReviewWorkflowValidator(ConfigValidator):
     def _validate_exchange_mode(
         self,
         exchange_mode: str,
-        coder_label: str | None,
-        reviewer_label: str | None,
         config: "Config",
         errors: list[str],
     ) -> None:
@@ -71,16 +66,12 @@ class ReviewWorkflowValidator(ConfigValidator):
                 f"review.exchange.mode '{exchange_mode}' is invalid. "
                 f"Allowed: {sorted(allowed_modes)}"
             )
-        if exchange_mode in {"via-mcp", "via-local-loop", "auto"} and (not coder_label or not reviewer_label):
-            errors.append(
-                "review.exchange.mode requires review.exchange.agent_pair "
-                "with both coder and reviewer when using via-mcp, via-local-loop, or auto."
-            )
-        for label, role in ((coder_label, "coder"), (reviewer_label, "reviewer")):
-            if label and label not in config.agents:
+        if exchange_mode in {"via-mcp", "via-local-loop", "auto"}:
+            missing_ai = [label for label, agent in config.agents.items() if not agent.ai_system]
+            if missing_ai:
                 errors.append(
-                    f"review.exchange.agent_pair.{role} '{label}' not found in agents. "
-                    f"Available: {list(config.agents.keys())}"
+                    "review.exchange.mode requires ai_system on all agents. "
+                    f"Missing: {missing_ai}"
                 )
 
     def _validate_probe_schedule(self, config: "Config", errors: list[str]) -> None:
@@ -104,23 +95,21 @@ class ReviewWorkflowValidator(ConfigValidator):
     def _validate_supported_exchange_pair(
         self,
         exchange_mode: str,
-        coder_label: str | None,
-        reviewer_label: str | None,
         config: "Config",
         errors: list[str],
     ) -> None:
         if exchange_mode != "via-mcp":
             return
-        if not coder_label or not reviewer_label:
-            return
-        if coder_label not in config.agents or reviewer_label not in config.agents:
+        if not config.code_review_agent:
+            errors.append(
+                "review.exchange.mode is via-mcp but review.default is not set."
+            )
             return
         from ..ai_systems_config import get_ai_systems_config
-        from ..review_exchange_registry import supports_mcp_pair
+        from ..review_exchange_registry import SUPPORTED_MCP_PAIRS
         from ...ports.session_log import detect_ai_system_from_command
 
-        def _resolve_system(label: str) -> str:
-            agent = config.agents[label]
+        def _resolve_system(agent) -> str:
             if agent.ai_system:
                 return agent.ai_system
             detected = detect_ai_system_from_command(agent.command)
@@ -129,11 +118,13 @@ class ReviewWorkflowValidator(ConfigValidator):
             systems = get_ai_systems_config(config.repo_root)
             return systems.default_ai_system
 
-        coder_system = _resolve_system(coder_label)
-        reviewer_system = _resolve_system(reviewer_label)
-        if not supports_mcp_pair(coder_system, reviewer_system):
+        allowed_systems = {system for pair in SUPPORTED_MCP_PAIRS for system in pair}
+        unsupported_agents = [
+            label for label, agent in config.agents.items()
+            if _resolve_system(agent) not in allowed_systems
+        ]
+        if unsupported_agents:
             errors.append(
-                "review.exchange.mode is via-mcp but agent pair is not supported: "
-                f"{coder_label}({coder_system}) -> {reviewer_label}({reviewer_system}). "
-                "Switch to via-draft-pr or update the MCP allowlist."
+                "review.exchange.mode is via-mcp but unsupported ai_system(s) found: "
+                f"{unsupported_agents}. Use via-local-loop or update the MCP allowlist."
             )
