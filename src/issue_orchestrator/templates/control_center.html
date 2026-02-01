@@ -1354,6 +1354,19 @@
             max-height: 400px;
             overflow-y: auto;
         }
+        .doctor-subchecks {
+            margin: 6px 0 10px 22px;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+        .doctor-subcheck {
+            margin: 2px 0;
+        }
+        .doctor-subcheck.ok { color: var(--accent-green); }
+        .doctor-subcheck.warning { color: var(--accent-yellow); }
+        .doctor-subcheck.error { color: var(--accent-red); }
+        .doctor-subcheck.info { color: var(--text-muted); }
+
 
         .doctor-check {
             margin-bottom: 4px;
@@ -2836,12 +2849,45 @@
                 let html = '';
                 // Handle doctor endpoint format
                 if (data.checks) {
-                    for (const [name, check] of Object.entries(data.checks)) {
-                        const passed = check.ok || check.passed;
-                        const status = passed ? 'pass' : 'fail';
-                        const icon = passed ? '✓' : '✗';
-                        const message = check.message || check.detail || (passed ? 'OK' : 'Failed');
-                        html += `<div class="doctor-check ${status}">${icon} ${escapeHtml(name)}: ${escapeHtml(message)}</div>`;
+                    const renderExpandable = (check) => {
+                        if (!check.expandable || !check.expandable.per_db) return '';
+                        const rows = Object.entries(check.expandable.per_db)
+                            .map(([label, detail]) => {
+                                const rawStatus = detail.status || 'info';
+                                const statusClass = rawStatus === 'ok'
+                                    ? 'ok'
+                                    : rawStatus === 'error'
+                                        ? 'error'
+                                        : rawStatus === 'overdue'
+                                            ? 'warning'
+                                            : rawStatus === 'missing'
+                                                ? 'info'
+                                                : rawStatus === 'disabled' || rawStatus === 'skipped'
+                                                    ? 'info'
+                                                    : 'warning';
+                                const message = detail.detail || '';
+                                return `<div class="doctor-subcheck ${statusClass}">${escapeHtml(label)}: ${escapeHtml(message)}</div>`;
+                            })
+                            .join('');
+                        return rows ? `<div class="doctor-subchecks">${rows}</div>` : '';
+                    };
+
+                    const renderCheck = (name, check) => {
+                        const status = check.status || (check.ok || check.passed ? 'ok' : 'error');
+                        const icon = status === 'ok' ? '✓' : status === 'warning' ? '!' : status === 'info' ? 'i' : '✗';
+                        const message = check.message || check.detail || (status === 'ok' ? 'OK' : 'Failed');
+                        const subchecks = renderExpandable(check);
+                        html += `<div class="doctor-check ${status === 'ok' ? 'pass' : status === 'warning' ? 'warn' : status === 'info' ? 'warn' : 'fail'}">${icon} ${escapeHtml(name)}: ${escapeHtml(message)}</div>${subchecks}`;
+                    };
+
+                    if (Array.isArray(data.checks)) {
+                        for (const check of data.checks) {
+                            renderCheck(check.name || 'Check', check);
+                        }
+                    } else {
+                        for (const [name, check] of Object.entries(data.checks)) {
+                            renderCheck(name, check);
+                        }
                     }
                 }
                 // Handle prereqs endpoint format
