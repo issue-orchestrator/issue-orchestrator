@@ -24,7 +24,14 @@ from issue_orchestrator.domain.models import (
     PendingRework,
     PendingTriageReview,
     AgentConfig,
+    CompletionRecord,
+    CompletionOutcome,
+    RequestedAction,
+    ObservedCompletion,
+    SessionIdentity,
+    WorktreeLocation,
 )
+from issue_orchestrator.infra import labels
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 
@@ -203,6 +210,46 @@ class TestPlanIssues:
         # Should only plan issue 2, not issue 1 (already active)
         assert plan.action_count == 1
         assert plan.actions[0].number == 2
+
+
+class TestObservedCompletionLabels:
+    """Tests for immediate label projection on observed completions."""
+
+    def test_completed_completion_adds_pr_pending_when_publish_needed(self):
+        config = make_config()
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        record = CompletionRecord(
+            session_id="session-1",
+            timestamp="2026-01-01T00:00:00",
+            outcome=CompletionOutcome.COMPLETED,
+            summary="done",
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        observed = ObservedCompletion(
+            identity=SessionIdentity(
+                issue_number=42,
+                issue_title="Test Issue",
+                session_key="code:42",
+                terminal_id="issue-42",
+            ),
+            worktree=WorktreeLocation(
+                path="/tmp/worktree-42",
+                branch_name="issue-42",
+                completion_path=".issue-orchestrator/completion.json",
+            ),
+            record=record,
+        )
+
+        snapshot = make_snapshot(
+            issues=[],
+            observed_completions=(observed,),
+        )
+        plan = planner.plan(snapshot)
+
+        add_labels = [a for a in plan.actions if getattr(a, "label", None) == labels.PR_PENDING]
+        assert len(add_labels) == 1
 
     def test_respects_max_issues_to_start(self):
         """Planner respects the max_issues_to_start limit."""

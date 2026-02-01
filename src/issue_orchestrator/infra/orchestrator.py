@@ -374,8 +374,8 @@ class Orchestrator:
             # Remove from pending
             self.state.pending_publish_jobs.pop(result.job_id, None)
 
-            # Handle job result - queue review if successful
-            if result.success and result.pr_url and result.pr_number:
+            # Handle job result - queue review if successful and exchange not completed
+            if result.success and result.pr_url and result.pr_number and not result.review_exchange_completed:
                 from ..domain.models import DiscoveredReview
                 # Queue for code review
                 # We need to look up the branch_name from the job or session
@@ -388,6 +388,8 @@ class Orchestrator:
                     branch_name,
                     agent_label=None,  # TODO: track agent label in job
                 ))
+                self.state.completed_today.append(result.issue_number)
+            elif result.success and result.pr_url and result.pr_number:
                 self.state.completed_today.append(result.issue_number)
             elif not result.success:
                 # Track failure

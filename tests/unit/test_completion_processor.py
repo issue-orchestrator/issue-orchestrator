@@ -23,6 +23,7 @@ from issue_orchestrator.domain.models import (
     COMPLETION_RECORD_PATH,
     AgentConfig,
 )
+from issue_orchestrator.control.review_exchange_loop import ReviewExchangeOutcome
 from issue_orchestrator.control.completion_processor import (
     CompletionProcessor,
     ProcessingResult,
@@ -216,6 +217,135 @@ class TestReviewExchangeModeResolution:
 
         assert processor._resolve_review_exchange_mode("agent:coder") == "via-mcp"
 
+
+class TestReviewExchangeExecution:
+    """Tests for review exchange execution paths."""
+
+    def _make_config(self, tmp_path: Path) -> Config:
+        coder_prompt = tmp_path / "coder.md"
+        reviewer_prompt = tmp_path / "reviewer.md"
+        coder_prompt.write_text("Coder prompt")
+        reviewer_prompt.write_text("Reviewer prompt")
+        config = Config()
+        config.review_enabled = True
+        config.review_exchange_mode = "via-mcp"
+        config.code_review_agent = "agent:reviewer"
+        config.agents = {
+            "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
+            "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
+        }
+        return config
+
+    def _make_processor(self, config: Config) -> CompletionProcessor:
+        return CompletionProcessor(
+            label_adapter=Mock(spec=LabelAdapter),
+            pr_adapter=Mock(spec=PRAdapter),
+            git_adapter=Mock(spec=GitAdapter),
+            session_output=FileSystemSessionOutput(),
+            event_bus=EventBus(),
+            label_config={},
+            config=config,
+        )
+
+    def test_exchange_failure_halts_before_pr_creation(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+        monkeypatch,
+    ) -> None:
+        config = self._make_config(tmp_path)
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+        )
+        worktree = worktree_with_completion(record)
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.review_exchange_registry.supports_mcp_pair",
+            lambda *_args, **_kwargs: True,
+        )
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(status="error", rounds=1, reason="boom")
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+        )
+
+        assert result.success is False
+        assert result.pr_url is None
+        assert result.errors and "review_exchange" in result.errors[0]
+        mock_pr_adapter.create_pr.assert_not_called()
+
+    def test_exchange_success_marks_review_labels(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ) -> None:
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-local-loop"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+        )
+        worktree = worktree_with_completion(record)
+
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(status="ok", rounds=2, reason="reviewer_ok")
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+        )
+
+        assert result.success is True
+        mock_label_adapter.add_label.assert_any_call(42, "code-reviewed")
+        mock_label_adapter.remove_label.assert_any_call(42, "needs-code-review")
+
     def test_auto_mode_falls_back_to_local_loop(self, tmp_path, monkeypatch):
         config = self._make_config(tmp_path)
         processor = self._make_processor(config)
@@ -226,6 +356,13 @@ class TestReviewExchangeModeResolution:
         )
 
         assert processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"
+
+    def test_auto_mode_without_agent_label_returns_none(self, tmp_path):
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "auto"
+        processor = self._make_processor(config)
+
+        assert processor._resolve_review_exchange_mode(None) is None
 
     def test_via_mcp_requires_supported_pair(self, tmp_path, monkeypatch):
         config = self._make_config(tmp_path)

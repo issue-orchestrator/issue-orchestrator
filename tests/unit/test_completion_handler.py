@@ -964,6 +964,28 @@ class TestReviewQueueDecision:
 class TestLabelActionGeneration:
     """Tests for label/comment action generation on completion."""
 
+    def test_review_exchange_completed_adds_pr_pending_label(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Review exchange completion should add pr-pending when PR exists."""
+        config.code_review_agent = "agent:reviewer"
+        issue = make_issue(number=123)
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-123")
+
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            review_exchange_completed=True,
+        )
+
+        add_labels = [a for a in result.actions if isinstance(a, AddLabelAction)]
+        assert any(action.label == labels.PR_PENDING for action in add_labels)
+
     def test_timeout_generates_blocked_failed_label_and_comment(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:

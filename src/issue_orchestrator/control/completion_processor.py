@@ -1177,6 +1177,8 @@ class CompletionProcessor:
             RequestedAction.PUSH_BRANCH in record.requested_actions
             and "Pushed branch to remote" in actions_taken
         )
+        if any(error.startswith("review_exchange:") for error in errors):
+            success = False
         logger.info(
             "Completion result: issue=%s success=%s actions=%s errors=%s pr_url=%s",
             issue_number,

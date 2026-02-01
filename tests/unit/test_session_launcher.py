@@ -810,6 +810,28 @@ class TestLaunchReviewSession:
         review_machine = launcher_bundle.review_machines[456]
         assert review_machine.state == ReviewState.IN_REVIEW.value
 
+    def test_review_existing_work_includes_keep_current_note(
+        self, launcher_bundle, mock_repo_host
+    ):
+        """Keep-current label should inject reviewer instruction."""
+        keep_current_label = launcher_bundle.launcher.config.get_label_review_keep_current_approach()
+        mock_repo_host.get_pr = MagicMock(return_value=PRInfo(
+            number=456,
+            title="Test PR",
+            url="https://github.com/test/repo/pull/456",
+            branch="issue-123",
+            body="Test body",
+            state="open",
+            labels=[keep_current_label],
+        ))
+
+        worktree_info = WorktreeInfo(path=Path("/tmp/worktree"), branch_name="issue-123")
+
+        note = launcher_bundle.launcher._build_review_existing_work(worktree_info, pr_number=456)
+
+        assert note is not None
+        assert "Keep the current approach" in note
+
     def test_per_session_worktree(self, session_launcher):
         """Verify per-session worktree mode for reviews (lines 463-465)."""
         with patch.dict(os.environ, {"ORCHESTRATOR_WORKTREE_PER_SESSION": "1"}):

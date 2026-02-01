@@ -1021,6 +1021,7 @@ class PublishJobResult:
     errors: tuple[str, ...] | None = None
     diagnostic_path: str | None = None
     duration_seconds: float | None = None
+    review_exchange_completed: bool = False
 
     # Validation results (if validation was run)
     validation_passed: bool | None = None

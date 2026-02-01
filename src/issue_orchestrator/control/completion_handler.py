@@ -279,10 +279,18 @@ class CompletionHandler:
         )
 
         # Generate actions for label/comment changes (policy logic)
-        completion_actions = self.generate_completion_actions(
+        completion_actions = list(self.generate_completion_actions(
             session, status, processing_errors=processing_errors,
             diagnostic_path=diagnostic_path
-        )
+        ))
+        if review_exchange_completed and pr_url:
+            completion_actions.append(AddLabelAction(
+                issue_number=session.issue.number,
+                label=labels.PR_PENDING,
+                reason="review exchange completed - awaiting merge",
+                expected=build_expected_for_mutation(),
+            ))
+        completion_actions = tuple(completion_actions)
 
         if status in (
             SessionStatus.FAILED,

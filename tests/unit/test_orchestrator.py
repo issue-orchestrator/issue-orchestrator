@@ -13,6 +13,7 @@ from issue_orchestrator.domain.models import (
     SessionStatus,
     AgentConfig,
     OrchestratorState,
+    PublishJobResult,
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
@@ -3124,3 +3125,29 @@ class TestRefreshRequestPreservation:
         assert orchestrator._refresh_requested is True  # noqa: SLF001
         assert 'issue-1' in orchestrator._inflight_stable_ids  # noqa: SLF001
         assert 'issue-2' in orchestrator._inflight_stable_ids  # noqa: SLF001
+
+
+class TestAsyncPublishResults:
+    """Tests for async publish result handling."""
+
+    def test_poll_job_results_skips_review_when_exchange_completed(self, sample_config):
+        orchestrator = create_test_orchestrator(sample_config)
+        orchestrator.state.pending_publish_jobs = {"job-1": MagicMock()}
+
+        orchestrator.deps.publish_executor.poll_results = MagicMock(return_value=[
+            PublishJobResult(
+                job_id="job-1",
+                issue_number=42,
+                session_key="code:42",
+                success=True,
+                pr_url="https://github.com/test/repo/pull/123",
+                pr_number=123,
+                review_exchange_completed=True,
+            )
+        ])
+
+        orchestrator._poll_job_results()
+
+        assert orchestrator.state.discovered_reviews == []
+        assert orchestrator.state.completed_today == [42]
+        assert orchestrator.state.pending_publish_jobs == {}
