@@ -118,6 +118,19 @@ class ValidationState:
         return self.retry_count < self.max_retries
 
 
+@dataclass(frozen=True)
+class ReviewExchangeSummary:
+    """Review exchange summary metadata.
+
+    Stored at: <run_dir>/review-exchange/summary.json
+    """
+
+    summary: dict[str, Any]
+    exchange_dir: Path
+    summary_path: Path
+    validation_record_path: Path | None = None
+
+
 class SessionOutput(Protocol):
     """Protocol for session artifact storage.
 
@@ -398,6 +411,46 @@ class SessionOutput(Protocol):
 
         Returns:
             Path to the written diagnostic file
+        """
+        ...
+
+    # -------------------------------------------------------------------------
+    # Review Exchange Artifacts
+    # -------------------------------------------------------------------------
+
+    def store_review_exchange_summary(
+        self,
+        worktree_path: Path,
+        session_name: str,
+        summary: dict[str, Any],
+        validation_record_path: Path | None = None,
+    ) -> ReviewExchangeSummary:
+        """Persist review exchange summary artifacts for a session.
+
+        Args:
+            worktree_path: Path to the worktree
+            session_name: Session name to attach summary
+            summary: Summary payload to store
+            validation_record_path: Optional validation record to copy alongside summary
+
+        Returns:
+            ReviewExchangeSummary describing stored artifacts
+        """
+        ...
+
+    def load_review_exchange_summary(
+        self,
+        worktree_path: Path,
+        session_name: str,
+    ) -> ReviewExchangeSummary | None:
+        """Load stored review exchange summary for a session.
+
+        Args:
+            worktree_path: Path to the worktree
+            session_name: Session name to load summary
+
+        Returns:
+            ReviewExchangeSummary if found, None otherwise
         """
         ...
 

@@ -35,6 +35,7 @@ class ReviewExchangeOutcome:
     reason: str
     reviewer_response: ReviewExchangeResponse | None = None
     exchange_dir: Path | None = None
+    summary: dict[str, Any] | None = None
 
 
 def run_review_exchange_loop(
@@ -108,13 +109,14 @@ def run_review_exchange_loop(
                     role="reviewer",
                     response=reviewer_response,
                 )
-                _write_summary(exchange_dir, round_index, reviewer_response)
+                summary = _write_summary(exchange_dir, round_index, reviewer_response)
                 return ReviewExchangeOutcome(
                     status="ok",
                     rounds=round_index,
                     reason="reviewer_ok",
                     reviewer_response=reviewer_response,
                     exchange_dir=exchange_dir,
+                    summary=summary,
                 )
         _write_round_log(
             exchange_dir=exchange_dir,
@@ -129,13 +131,14 @@ def run_review_exchange_loop(
             no_progress_count = 0
 
         if max_no_progress > 0 and no_progress_count >= max_no_progress:
-            _write_summary(exchange_dir, round_index, reviewer_response)
+            summary = _write_summary(exchange_dir, round_index, reviewer_response)
             return ReviewExchangeOutcome(
                 status="stopped",
                 rounds=round_index,
                 reason="reviewer_reports_no_progress",
                 reviewer_response=reviewer_response,
                 exchange_dir=exchange_dir,
+                summary=summary,
             )
 
         last_reviewer_text = reviewer_response.response_text
@@ -162,13 +165,14 @@ def run_review_exchange_loop(
         )
         last_coder_text = coder_response.response_text
 
-    _write_summary(exchange_dir, max_rounds, reviewer_response=None)
+    summary = _write_summary(exchange_dir, max_rounds, reviewer_response=None)
     return ReviewExchangeOutcome(
         status="stopped",
         rounds=max_rounds,
         reason="max_rounds_exceeded",
         reviewer_response=None,
         exchange_dir=exchange_dir,
+        summary=summary,
     )
 
 
@@ -498,7 +502,7 @@ def _write_summary(
     exchange_dir: Path,
     round_index: int,
     reviewer_response: ReviewExchangeResponse | None,
-) -> None:
+) -> dict[str, Any]:
     summary = {
         "completed_rounds": round_index,
         "status": reviewer_response.response_type if reviewer_response else "unknown",
@@ -507,3 +511,4 @@ def _write_summary(
     }
     summary_path = exchange_dir / "summary.json"
     summary_path.write_text(json.dumps(summary, indent=2))
+    return summary

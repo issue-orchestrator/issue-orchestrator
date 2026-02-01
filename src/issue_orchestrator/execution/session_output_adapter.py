@@ -11,12 +11,14 @@ from __future__ import annotations
 import json
 import logging
 import re
+import shutil
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ..ports.session_output import (
+    ReviewExchangeSummary,
     SessionRun,
     ValidationRecord,
     ValidationState,
@@ -47,6 +49,10 @@ RETRY_PROMPT_NAME = "retry-prompt.md"
 # Other artifact names
 WORKTREE_NOTE_NAME = "worktree.json"
 SESSION_IDENTITY_NAME = "session-identity.json"
+
+# Review exchange artifacts
+REVIEW_EXCHANGE_DIR_NAME = "review-exchange"
+REVIEW_EXCHANGE_SUMMARY_NAME = "summary.json"
 
 
 class FileSystemSessionOutput:
@@ -462,6 +468,72 @@ Timestamp: {self._now_iso()}
         self.update_manifest(run_dir, {"diagnostic_path": str(diagnostic_path)})
         logger.info("Wrote diagnostic to %s", diagnostic_path)
         return diagnostic_path
+
+    # -------------------------------------------------------------------------
+    # Review Exchange Artifacts
+    # -------------------------------------------------------------------------
+
+    def store_review_exchange_summary(
+        self,
+        worktree_path: Path,
+        session_name: str,
+        summary: dict[str, Any],
+        validation_record_path: Path | None = None,
+    ) -> ReviewExchangeSummary:
+        run_dir = self.ensure_run_dir(worktree_path, session_name)
+        exchange_dir = run_dir / REVIEW_EXCHANGE_DIR_NAME
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
+        self._write_json(summary_path, summary)
+
+        stored_validation: Path | None = None
+        if validation_record_path and validation_record_path.exists():
+            stored_validation = run_dir / VALIDATION_RECORD_NAME
+            try:
+                shutil.copy2(validation_record_path, stored_validation)
+            except OSError:
+                logger.debug("Failed to copy validation record to %s", stored_validation)
+                stored_validation = None
+
+        updates = {
+            "review_exchange_dir": str(exchange_dir),
+            "review_exchange_summary_path": str(summary_path),
+        }
+        if stored_validation:
+            updates["validation_record_path"] = str(stored_validation)
+        self.update_manifest(run_dir, updates)
+
+        return ReviewExchangeSummary(
+            summary=summary,
+            exchange_dir=exchange_dir,
+            summary_path=summary_path,
+            validation_record_path=stored_validation,
+        )
+
+    def load_review_exchange_summary(
+        self,
+        worktree_path: Path,
+        session_name: str,
+    ) -> ReviewExchangeSummary | None:
+        run_dir = self.find_run_dir(worktree_path, session_name=session_name)
+        if not run_dir:
+            return None
+        manifest = self.read_manifest(run_dir) or {}
+        manifest_dir = manifest.get("review_exchange_dir")
+        exchange_dir = Path(manifest_dir) if manifest_dir else run_dir / REVIEW_EXCHANGE_DIR_NAME
+        summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
+        if not summary_path.exists():
+            return None
+        summary = self._read_json(summary_path)
+        if not isinstance(summary, dict):
+            return None
+        validation_path = run_dir / VALIDATION_RECORD_NAME
+        return ReviewExchangeSummary(
+            summary=summary,
+            exchange_dir=exchange_dir,
+            summary_path=summary_path,
+            validation_record_path=validation_path if validation_path.exists() else None,
+        )
 
     # -------------------------------------------------------------------------
     # Session Metadata

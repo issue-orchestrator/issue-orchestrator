@@ -11,6 +11,9 @@ from issue_orchestrator.execution.session_output_adapter import (
     FileSystemSessionOutput,
     INDEX_NAME,
     MANIFEST_NAME,
+    REVIEW_EXCHANGE_DIR_NAME,
+    REVIEW_EXCHANGE_SUMMARY_NAME,
+    VALIDATION_RECORD_NAME,
 )
 
 
@@ -195,3 +198,64 @@ class TestListRuns:
         runs = session_output.list_runs(tmp_path)
         assert len(runs) == 1
         assert runs[0]["session_name"] == "coding-1"
+
+
+class TestReviewExchangeSummary:
+    """Tests for review exchange summary persistence."""
+
+    @pytest.fixture
+    def session_output(self):
+        """Create a FileSystemSessionOutput instance."""
+        return FileSystemSessionOutput()
+
+    def test_store_review_exchange_summary_writes_manifest_and_validation(
+        self, session_output, tmp_path
+    ):
+        worktree = tmp_path
+        session_name = "issue-1"
+        summary = {"status": "ok", "completed_rounds": 2}
+        validation_source = tmp_path / "validation-source.json"
+        validation_source.write_text(json.dumps({"passed": True}))
+
+        stored = session_output.store_review_exchange_summary(
+            worktree,
+            session_name,
+            summary,
+            validation_record_path=validation_source,
+        )
+
+        run_dir = session_output.find_run_dir(worktree, session_name=session_name)
+        assert run_dir is not None
+        summary_path = run_dir / REVIEW_EXCHANGE_DIR_NAME / REVIEW_EXCHANGE_SUMMARY_NAME
+        assert summary_path.exists()
+        assert json.loads(summary_path.read_text()) == summary
+        assert stored.summary == summary
+        assert stored.summary_path == summary_path
+        assert stored.exchange_dir == summary_path.parent
+        assert stored.validation_record_path == run_dir / VALIDATION_RECORD_NAME
+        assert (run_dir / VALIDATION_RECORD_NAME).exists()
+
+        manifest = session_output.read_manifest(run_dir)
+        assert manifest is not None
+        assert manifest.get("review_exchange_dir") == str(summary_path.parent)
+
+    def test_load_review_exchange_summary_returns_none_when_missing(
+        self, session_output, tmp_path
+    ):
+        assert (
+            session_output.load_review_exchange_summary(tmp_path, "missing-session") is None
+        )
+
+    def test_load_review_exchange_summary_returns_none_for_invalid_json(
+        self, session_output, tmp_path
+    ):
+        worktree = tmp_path
+        session_name = "issue-2"
+        run_dir = session_output.ensure_run_dir(worktree, session_name)
+        exchange_dir = run_dir / REVIEW_EXCHANGE_DIR_NAME
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        (exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME).write_text("not-json")
+
+        assert (
+            session_output.load_review_exchange_summary(worktree, session_name) is None
+        )

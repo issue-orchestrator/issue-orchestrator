@@ -533,9 +533,7 @@ class TestReviewExchangeExecution:
                 "timestamp": "2026-02-01T00:00:00Z",
             })
         )
-        (exchange_run_dir / "validation-record.json").write_text(
-            json.dumps({"passed": True})
-        )
+        (issue_run_dir / "validation-record.json").write_text(json.dumps({"passed": True}))
         session_output.update_manifest(
             issue_run_dir,
             {"review_exchange_dir": str(exchange_dir)},

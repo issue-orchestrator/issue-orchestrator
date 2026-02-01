@@ -19,7 +19,6 @@ import json
 import re
 import logging
 import os
-import shutil
 import time
 import traceback
 from dataclasses import dataclass
@@ -999,11 +998,17 @@ class CompletionProcessor:
             )
             return exchange_mode, exchange_result, True
         actions_taken.append("Review exchange passed")
-        if session_name and exchange_result.exchange_dir:
-            self._persist_review_exchange_cache(
-                worktree=worktree,
-                session_name=session_name,
-                exchange_dir=exchange_result.exchange_dir,
+        if session_name and exchange_result.summary:
+            validation_record_path: Path | None = None
+            if exchange_result.exchange_dir:
+                candidate = exchange_result.exchange_dir.parent / "validation-record.json"
+                if candidate.exists():
+                    validation_record_path = candidate
+            self.session_output.store_review_exchange_summary(
+                worktree,
+                session_name,
+                exchange_result.summary,
+                validation_record_path=validation_record_path,
             )
         return exchange_mode, exchange_result, False
 
@@ -1016,24 +1021,16 @@ class CompletionProcessor:
     ) -> Any | None:
         if not session_name:
             return None
-        run_dir = self.session_output.find_run_dir(worktree, session_name)
-        if not run_dir:
+        cached = self.session_output.load_review_exchange_summary(worktree, session_name)
+        if not cached:
             return None
-        exchange_dir = self._resolve_cached_exchange_dir(run_dir)
-        if exchange_dir is None:
+        if require_validation and not self._review_exchange_validation_passed(
+            cached.validation_record_path
+        ):
             return None
-        summary_path = exchange_dir / "summary.json"
-        if not summary_path.exists():
-            return None
-        try:
-            summary = json.loads(summary_path.read_text())
-        except json.JSONDecodeError:
-            return None
-        status = summary.get("status")
-        rounds = summary.get("completed_rounds")
+        status = cached.summary.get("status")
+        rounds = cached.summary.get("completed_rounds")
         if not status or rounds is None:
-            return None
-        if require_validation and not self._review_exchange_validation_passed(exchange_dir):
             return None
         from .review_exchange_loop import ReviewExchangeOutcome, ReviewExchangeResponse
 
@@ -1043,60 +1040,21 @@ class CompletionProcessor:
             reason="cached_summary",
             reviewer_response=ReviewExchangeResponse(
                 response_type=status,
-                response_text=summary.get("response_text") or "",
+                response_text=cached.summary.get("response_text") or "",
             ),
-            exchange_dir=exchange_dir,
+            exchange_dir=cached.exchange_dir,
+            summary=cached.summary,
         )
 
     @staticmethod
-    def _review_exchange_validation_passed(exchange_dir: Path) -> bool:
-        record_path = exchange_dir.parent / "validation-record.json"
-        if not record_path.exists():
+    def _review_exchange_validation_passed(record_path: Path | None) -> bool:
+        if not record_path or not record_path.exists():
             return False
         try:
             data = json.loads(record_path.read_text())
         except (OSError, json.JSONDecodeError):
             return False
         return bool(data.get("passed"))
-
-    def _resolve_cached_exchange_dir(self, run_dir: Path) -> Path | None:
-        manifest = self.session_output.read_manifest(run_dir) or {}
-        manifest_dir = manifest.get("review_exchange_dir")
-        if manifest_dir:
-            exchange_dir = Path(manifest_dir)
-            if exchange_dir.exists():
-                return exchange_dir
-        fallback_dir = run_dir / "review-exchange"
-        if fallback_dir.exists():
-            return fallback_dir
-        return None
-
-    def _persist_review_exchange_cache(
-        self,
-        *,
-        worktree: Path,
-        session_name: str,
-        exchange_dir: Path,
-    ) -> None:
-        run_dir = self.session_output.ensure_run_dir(worktree, session_name)
-        issue_exchange_dir = run_dir / "review-exchange"
-        issue_exchange_dir.mkdir(parents=True, exist_ok=True)
-        summary_path = exchange_dir / "summary.json"
-        if summary_path.exists():
-            try:
-                shutil.copy2(summary_path, issue_exchange_dir / "summary.json")
-            except OSError:
-                logger.debug("Failed to copy review exchange summary to %s", issue_exchange_dir)
-        validation_record = exchange_dir.parent / "validation-record.json"
-        if validation_record.exists():
-            try:
-                shutil.copy2(validation_record, run_dir / "validation-record.json")
-            except OSError:
-                logger.debug("Failed to copy validation record to %s", run_dir)
-        self.session_output.update_manifest(
-            run_dir,
-            {"review_exchange_dir": str(issue_exchange_dir)},
-        )
 
     def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         if not self._config:
