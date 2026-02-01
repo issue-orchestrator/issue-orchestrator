@@ -459,6 +459,8 @@ _Auto-generated from settings schema._
 
 ## Goal Pilot
 
+Goal Pilot runs as a standard agent. Define the agent in `agents` with a prompt file and reference it via `goal_pilot.agent`.
+
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `goal_pilot.enabled` | boolean | `False` | Enable the Goal Pilot AI controller |
