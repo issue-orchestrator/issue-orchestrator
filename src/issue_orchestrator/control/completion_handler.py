@@ -706,6 +706,12 @@ class CompletionHandler:
         The actual review queuing is controlled by the planner, which skips dry-run PRs.
         """
         is_review_session = session.terminal_id.startswith("review-")
+        if self.config.review_exchange_mode in {"via-mcp", "via-local-loop", "auto"}:
+            logger.info(
+                "[REVIEW] Review exchange mode '%s' - skipping PR review queue",
+                self.config.review_exchange_mode,
+            )
+            return False
 
         if pr_url and self.config.code_review_agent and not session.agent_config.skip_review and not is_review_session:
             logger.info(f"[REVIEW] Session #{session.issue.number} completed with PR, queuing code review")

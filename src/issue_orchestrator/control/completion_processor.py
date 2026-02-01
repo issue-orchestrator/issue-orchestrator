@@ -845,6 +845,7 @@ class CompletionProcessor:
             )
 
         exchange_mode = self._resolve_review_exchange_mode()
+        exchange_result = None
         if exchange_mode in {"via-mcp", "via-local-loop"}:
             logger.info("Review exchange mode selected: %s", exchange_mode)
             exchange_result = self._run_review_exchange_loop(
@@ -862,6 +863,7 @@ class CompletionProcessor:
 
         # Create the PR
         logger.info("Creating PR for #%d: branch=%s", issue_number, branch)
+        draft_pr = exchange_mode not in {"via-mcp", "via-local-loop"}
         pr = self._create_pr_with_collision_handling(
             worktree=worktree,
             pr_title=pr_title,
@@ -870,10 +872,24 @@ class CompletionProcessor:
             issue_number=issue_number,
             actions_taken=actions_taken,
             skip_hooks=skip_hooks,
+            draft=draft_pr,
         )
 
         if pr:
             self._apply_pr_labels(pr, record, actions_taken)
+            if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
+                label = self._get_label("code_reviewed")
+                self.label_adapter.add_label(pr.number, label)
+                actions_taken.append(f"Added '{label}' label to PR #{pr.number}")
+                comment = (
+                    f"✅ Review completed via {exchange_mode} loop.\n\n"
+                    f"- Rounds: {exchange_result.rounds}\n"
+                    f"- Outcome: {exchange_result.reason}\n"
+                )
+                if self._config and self._config.review_exchange_require_validation:
+                    comment += "- Validation: required and passed\n"
+                self.pr_adapter.add_comment(pr.number, comment)
+                actions_taken.append(f"Posted review completion comment to PR #{pr.number}")
             return self._ActionResult(branch=branch, pr_url=pr.url)
 
         return self._ActionResult(branch=branch)
@@ -958,6 +974,7 @@ class CompletionProcessor:
         issue_number: int,
         actions_taken: list[str],
         skip_hooks: bool,
+        draft: bool,
     ) -> PRInfo | None:
         """Create PR with collision handling."""
         try:
@@ -966,7 +983,7 @@ class CompletionProcessor:
                 body=pr_body,
                 head=branch,
                 base="main",
-                draft=True,
+                draft=draft,
             )
         except Exception as e:
             if self._pr_collision_strategy == "new_branch" and self._is_pr_collision_error(e):
@@ -982,7 +999,7 @@ class CompletionProcessor:
                     body=pr_body,
                     head=new_branch,
                     base="main",
-                    draft=True,
+                    draft=draft,
                 )
             elif self._is_no_commits_error(e):
                 raise RuntimeError(
