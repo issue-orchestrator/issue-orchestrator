@@ -1149,6 +1149,33 @@ ai_systems:
         errors = config.validate()
         assert not any("ai_system" in e for e in errors)
 
+    def test_ai_systems_allowlist_accepts_comma_string(self, tmp_path):
+        """Test that ai_systems.allowed can be provided as a comma-separated string."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+default_agent:
+  provider: claude-code
+
+agents:
+  agent:custom:
+    prompt: {prompt_file}
+    ai_system: custom-ai
+
+ai_systems:
+  allowed: custom-ai, other-ai
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert not any("ai_system" in e for e in errors)
+
     def test_review_exchange_validates_supported_pair(self, tmp_path):
         """Test via-mcp requires a supported system pair among configured agents."""
         prompt_file = tmp_path / "prompt.txt"
@@ -1178,6 +1205,40 @@ review:
         config = Config.load(config_file)
         errors = config.validate()
         assert any("unsupported ai_system" in e for e in errors)
+
+    def test_review_exchange_ignores_unrelated_agents(self, tmp_path):
+        """Test via-mcp validation ignores unrelated agents (e.g., triage)."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+worktrees:
+  base: {tmp_path}
+
+agents:
+  agent:coder:
+    prompt: {prompt_file}
+    ai_system: claude-code
+  agent:reviewer:
+    prompt: {prompt_file}
+    ai_system: codex
+  agent:triage:
+    prompt: {prompt_file}
+    ai_system: gemini
+
+review:
+  enabled: true
+  default: agent:reviewer
+  triage_review_agent: agent:triage
+  exchange:
+    mode: via-mcp
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert not any("unsupported ai_system" in e for e in errors)
 
     def test_review_exchange_probe_invalid_schedule(self, tmp_path):
         """Test invalid probe schedule fails validation."""

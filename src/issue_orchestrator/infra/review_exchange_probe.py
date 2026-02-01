@@ -47,9 +47,22 @@ def probe_review_exchange(
     if skip_check is not None:
         return [skip_check]
 
-    systems = {_resolve_ai_system(config, label) for label in config.agents}
+    pairs = _exchange_pairs(config)
+    if not pairs:
+        checks.append(Check(
+            name="Review Exchange",
+            status="info",
+            detail="MCP probe skipped (no review exchange pairs configured)",
+        ))
+        return checks
+
+    systems = {
+        _resolve_ai_system(config, label)
+        for pair in pairs
+        for label in pair
+    }
     checks.extend(_probe_mcp_systems_from_set(systems, runner))
-    checks.extend(_probe_mcp_round_trip_from_set(systems, mode, runner))
+    checks.extend(_probe_mcp_round_trip_from_pairs(pairs, config, mode, runner))
 
     _update_probe_state(config, state, checks)
 
@@ -65,6 +78,22 @@ def _resolve_ai_system(config, label: str) -> str:
         return detected
     systems = get_ai_systems_config(config.repo_root)
     return systems.default_ai_system
+
+
+def _exchange_pairs(config) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for label, agent in config.agents.items():
+        if config.triage_review_agent and label == config.triage_review_agent:
+            continue
+        if agent.skip_review:
+            continue
+        reviewer_label = config.get_reviewer_for_agent(label)
+        if not reviewer_label:
+            continue
+        if reviewer_label not in config.agents:
+            continue
+        pairs.append((label, reviewer_label))
+    return pairs
 
 
 def _probe_schedule_guard(config, state, force: bool) -> Optional[Check]:
@@ -131,8 +160,9 @@ def _probe_mcp_systems_from_set(
     return checks
 
 
-def _probe_mcp_round_trip_from_set(
-    systems: set[str],
+def _probe_mcp_round_trip_from_pairs(
+    pairs: list[tuple[str, str]],
+    config,
     mode: str,
     runner: CommandRunner,
 ) -> list[Check]:
@@ -141,10 +171,11 @@ def _probe_mcp_round_trip_from_set(
 
     from .review_exchange_registry import SUPPORTED_MCP_PAIRS
 
-    supported_pairs = [
-        pair for pair in SUPPORTED_MCP_PAIRS
-        if {pair[0], pair[1]}.issubset(systems)
+    system_pairs = [
+        (_resolve_ai_system(config, coder), _resolve_ai_system(config, reviewer))
+        for coder, reviewer in pairs
     ]
+    supported_pairs = [pair for pair in system_pairs if pair in SUPPORTED_MCP_PAIRS]
     if not supported_pairs:
         status = "error" if mode == "via-mcp" else "info"
         checks.append(Check(
@@ -154,12 +185,12 @@ def _probe_mcp_round_trip_from_set(
         ))
         return checks
 
-    if not {"claude-code", "codex"}.issubset(systems):
+    if not any(set(pair) == {"claude-code", "codex"} for pair in supported_pairs):
         status = "warning" if mode == "via-mcp" else "info"
         checks.append(Check(
             name="MCP Round-trip",
             status=status,
-            detail="MCP round-trip skipped (requires claude-code + codex)",
+            detail="MCP round-trip skipped (no claude-code↔codex pairs configured)",
         ))
         return checks
 

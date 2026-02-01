@@ -1648,7 +1648,14 @@ class Config:
         config.milestone_sort = sections["milestones"].get("sort", "due_date")
         config.milestone_sort_config = sections["milestones"].get("sort_config", {})
         config.foundation_milestone = sections["milestones"].get("foundation", "M0")
-        config.ai_systems_allowed = sections["ai_systems"].get("allowed", [])
+        ai_systems_allowed = sections["ai_systems"].get("allowed", [])
+        if isinstance(ai_systems_allowed, str):
+            ai_systems_allowed = [
+                entry.strip()
+                for entry in ai_systems_allowed.split(",")
+                if entry.strip()
+            ]
+        config.ai_systems_allowed = list(ai_systems_allowed)
 
         # Parse complex optional configs
         _apply_optional_sections(config, sections)

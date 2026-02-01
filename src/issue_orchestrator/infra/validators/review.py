@@ -91,33 +91,39 @@ class ReviewWorkflowValidator(ConfigValidator):
         config: "Config",
         errors: list[str],
     ) -> None:
-        if exchange_mode != "via-mcp":
+        if exchange_mode != "via-mcp" or not config.review_enabled:
             return
+        from ..review_exchange_registry import SUPPORTED_MCP_PAIRS
         if not config.code_review_agent:
             errors.append(
                 "review.exchange.mode is via-mcp but review.default is not set."
             )
             return
-        from ..ai_systems_config import get_ai_systems_config
-        from ..review_exchange_registry import SUPPORTED_MCP_PAIRS
-        from ...ports.session_log import detect_ai_system_from_command
 
-        def _resolve_system(agent) -> str:
-            if agent.ai_system:
-                return agent.ai_system
-            detected = detect_ai_system_from_command(agent.command)
-            if detected:
-                return detected
-            systems = get_ai_systems_config(config.repo_root)
-            return systems.default_ai_system
+        pairs = []
+        for label, agent in config.agents.items():
+            if config.triage_review_agent and label == config.triage_review_agent:
+                continue
+            if agent.skip_review:
+                continue
+            reviewer_label = config.get_reviewer_for_agent(label)
+            if not reviewer_label or reviewer_label not in config.agents:
+                continue
+            pairs.append((label, reviewer_label))
 
-        allowed_systems = {system for pair in SUPPORTED_MCP_PAIRS for system in pair}
-        unsupported_agents = [
-            label for label, agent in config.agents.items()
-            if _resolve_system(agent) not in allowed_systems
-        ]
-        if unsupported_agents:
+        if not pairs:
+            return
+
+        unsupported_pairs = []
+        for coder_label, reviewer_label in pairs:
+            coder_system = config.agents[coder_label].ai_system
+            reviewer_system = config.agents[reviewer_label].ai_system
+            if (coder_system, reviewer_system) not in SUPPORTED_MCP_PAIRS:
+                unsupported_pairs.append(
+                    f"{coder_label}->{reviewer_label} ({coder_system}->{reviewer_system})"
+                )
+        if unsupported_pairs:
             errors.append(
-                "review.exchange.mode is via-mcp but unsupported ai_system(s) found: "
-                f"{unsupported_agents}. Use via-local-loop or update the MCP allowlist."
+                "review.exchange.mode is via-mcp but unsupported ai_system pair(s) configured: "
+                f"{unsupported_pairs}. Use via-local-loop or update the MCP allowlist."
             )

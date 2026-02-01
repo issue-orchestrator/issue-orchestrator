@@ -130,6 +130,9 @@ class TestReviewWorkflowValidator:
         config.review_exchange_max_no_progress = review_exchange_max_no_progress
         config.review_exchange_require_validation = review_exchange_require_validation
         config.agents = agents or {}
+        config.get_reviewer_for_agent = lambda _label: config.code_review_agent
+        for agent in config.agents.values():
+            agent.skip_review = False
         return config
 
     def test_reviews_disabled_valid(self):
