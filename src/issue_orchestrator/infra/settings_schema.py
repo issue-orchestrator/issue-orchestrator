@@ -458,8 +458,8 @@ class AdvancedSettings(BaseModel):
             "yaml_path": "ui.control_api_port",
         },
     )
-    ai_systems_allowed: list[str] = Field(
-        default_factory=list,
+    ai_systems_allowed: str = Field(
+        "",
         title="AI Systems Allowlist",
         description="Additional ai_system values allowed in config (comma-separated)",
         json_schema_extra={
