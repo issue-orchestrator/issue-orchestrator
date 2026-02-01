@@ -165,7 +165,7 @@ def _check_github_auth(result: DoctorResult) -> None:
 def _check_ai_providers(result: DoctorResult) -> None:
     """Check AI provider keys and CLIs."""
     from .ai_keys import list_ai_keys, AI_PROVIDERS
-    from agent_runner import list_providers, get_provider
+    from issue_orchestrator.agent_runner import list_providers, get_provider
 
     # Check AI keys
     ai_keys = list_ai_keys()

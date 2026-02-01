@@ -26,6 +26,7 @@ ensure_deps() {
     echo "Reinstalling from ${ROOT_DIR}..."
     "${VENV_PATH}/bin/python" -m pip install -e ".[dev]"
   fi
+
 }
 
 ensure_port_free() {

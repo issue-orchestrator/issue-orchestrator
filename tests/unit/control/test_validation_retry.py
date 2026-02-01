@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from agent_runner import AgentRunner, RunResult, RunSpec
+from issue_orchestrator.agent_runner import AgentRunner, RunResult, RunSpec
 from issue_orchestrator.control.validation_retry import (
     RETRY_PROMPT_TEMPLATE,
     ValidationResult,

@@ -8,7 +8,7 @@ from typing import Any, Optional, Protocol, cast
 import yaml
 
 # Import provider registry for agent type selection
-from agent_runner import list_providers, get_provider
+from issue_orchestrator.agent_runner import list_providers, get_provider
 
 # Schema metadata for defaults/labels/hints
 from ...infra.settings_schema import get_setup_fields

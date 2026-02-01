@@ -358,6 +358,19 @@
             display: block;
         }
 
+        .repo-dropdown-actions {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 10px;
+            border-bottom: 1px solid var(--border-color);
+            background: var(--bg-secondary);
+        }
+
+        .repo-dropdown-actions .btn {
+            font-size: 11px;
+            padding: 4px 8px;
+        }
+
         .dropdown-section {
             padding: 8px 0;
         }
@@ -587,6 +600,16 @@
             display: grid;
             gap: 16px;
             grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+        }
+
+        .repos-toolbar {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 12px;
+        }
+
+        .repos-toolbar .btn {
+            font-size: 12px;
         }
 
         .repo-card {
@@ -943,6 +966,22 @@
             display: flex;
             gap: 8px;
             flex-wrap: wrap;
+        }
+
+        .issue-picker-row {
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        .issue-picker-row select {
+            flex: 1;
+        }
+
+        .form-hint {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 6px;
         }
 
         .goal-pilot-output {
@@ -1460,6 +1499,9 @@
 
             <!-- Repositories View -->
             <div class="view-container active" id="repositoriesView" role="main" aria-labelledby="viewTitle">
+                <div class="repos-toolbar">
+                    <button class="btn btn-sm" id="rescanReposBtn">Rescan Repositories</button>
+                </div>
                 <div id="reposContent">
                     <div class="empty-state" id="loadingState">
                         <div class="activity-loading">
@@ -1520,8 +1562,8 @@
                                 </svg>
                             </div>
                             <div class="tool-card-content">
-                                <div class="tool-card-title">Audit Issue</div>
-                                <div class="tool-card-desc">Investigate why an issue is blocked</div>
+                                <div class="tool-card-title">Audit Issues</div>
+                                <div class="tool-card-desc">Explain queue/blocked reasons using labels + branches</div>
                             </div>
                         </button>
                         <button class="tool-card" id="traceTool">
@@ -1531,8 +1573,8 @@
                                 </svg>
                             </div>
                             <div class="tool-card-content">
-                                <div class="tool-card-title">View Trace</div>
-                                <div class="tool-card-desc">Inspect logs for a specific issue</div>
+                                <div class="tool-card-title">Issue Trace Logs</div>
+                                <div class="tool-card-desc">Show recent orchestrator log lines for one issue</div>
                             </div>
                         </button>
                     </div>
@@ -1549,7 +1591,7 @@
                             </div>
                             <div class="tool-card-content">
                                 <div class="tool-card-title">Refresh Labels</div>
-                                <div class="tool-card-desc">Sync GitHub labels with config</div>
+                                <div class="tool-card-desc">Create/update agent + priority + status labels on GitHub</div>
                             </div>
                         </button>
                         <button class="tool-card" id="cleanupWorktreesTool">
@@ -1560,7 +1602,7 @@
                             </div>
                             <div class="tool-card-content">
                                 <div class="tool-card-title">List Stale Worktrees</div>
-                                <div class="tool-card-desc">Find orphaned worktree directories</div>
+                                <div class="tool-card-desc">Find orphaned worktree directories (read-only)</div>
                             </div>
                         </button>
                     </div>
@@ -1753,8 +1795,8 @@
                         </div>
                         <div class="settings-item-control">
                             <span class="status-item">
-                                <span class="status-dot ok"></span>
-                                {{ dashboard_port }}
+                                <span class="status-dot ok" id="settingsDashboardStatusDot"></span>
+                                <span id="settingsDashboardPort">N/A</span>
                             </span>
                         </div>
                     </div>
@@ -1764,7 +1806,7 @@
                             <div class="settings-item-desc">Where issue-orchestrator was launched</div>
                         </div>
                         <div class="settings-item-control">
-                            <code style="font-size: 12px; color: var(--text-muted);">{{ current_directory }}</code>
+                            <code id="settingsCurrentDirectory" style="font-size: 12px; color: var(--text-muted);">N/A</code>
                         </div>
                     </div>
                 </div>
@@ -1845,6 +1887,16 @@
             <div class="modal-body">
                 <p id="issueInputDesc">Enter the issue number to investigate.</p>
                 <div class="form-group" style="margin-top: 12px;">
+                    <label for="issueNumberSelect" class="form-label">Known Issues</label>
+                    <div class="issue-picker-row">
+                        <select id="issueNumberSelect" class="form-input" style="width: 100%;">
+                            <option value="">Load known issues...</option>
+                        </select>
+                        <button class="btn btn-sm" id="loadKnownIssuesBtn" type="button">Load</button>
+                    </div>
+                    <div class="form-hint">Loads issue list from GitHub/config (on demand).</div>
+                </div>
+                <div class="form-group" style="margin-top: 12px;">
                     <label for="issueNumberInput" class="form-label">Issue Number</label>
                     <input type="number" id="issueNumberInput" class="form-input" placeholder="e.g. 123" min="1" style="width: 100%;">
                 </div>
@@ -1880,7 +1932,7 @@
     <div class="modal-backdrop" id="traceResultsModal" role="dialog" aria-labelledby="traceResultsModalTitle" aria-modal="true">
         <div class="modal" style="max-width: 720px;">
             <div class="modal-header">
-                <h2 class="modal-title" id="traceResultsModalTitle">Trace Logs</h2>
+                <h2 class="modal-title" id="traceResultsModalTitle">Issue Trace Logs</h2>
                 <button class="modal-close" id="closeTraceResultsModal" aria-label="Close dialog">
                     <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
                         <path fill="currentColor" fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
@@ -2004,10 +2056,13 @@
         const state = {
             repos: [],
             discoveredRepos: [],
+            discoveredLoadedAt: 0,
             currentView: 'repositories',
             activeRepo: null,  // { path, config, source: 'registered'|'discovered' }
             theme: localStorage.getItem('theme') || 'system'
         };
+
+        const DISCOVERED_STALE_MS = 5 * 60 * 1000;
 
         // Load recently used repo from localStorage
         function loadRecentRepo() {
@@ -2084,6 +2139,7 @@
                 const response = await fetch('/control/repos/discover');
                 const data = await response.json();
                 state.discoveredRepos = data.discovered || [];
+                state.discoveredLoadedAt = Date.now();
             } catch (error) {
                 console.error('Failed to load discovered repos:', error);
                 state.discoveredRepos = [];
@@ -2200,10 +2256,16 @@
             });
             const discovered = state.discoveredRepos;
 
-            let html = '';
+            let html = `
+                <div class="repo-dropdown-actions">
+                    <button class="btn btn-sm" id="rescanReposDropdown">Rescan</button>
+                </div>
+            `;
+            let hasItems = false;
 
             // Running section
             if (running.length > 0) {
+                hasItems = true;
                 html += `<div class="dropdown-section">
                     <div class="dropdown-section-label">Running</div>
                     ${running.map(r => renderDropdownItem(r, false)).join('')}
@@ -2212,6 +2274,7 @@
 
             // Stopped section
             if (stopped.length > 0) {
+                hasItems = true;
                 html += `<div class="dropdown-section">
                     <div class="dropdown-section-label">Stopped</div>
                     ${stopped.map(r => renderDropdownItem(r, false)).join('')}
@@ -2220,17 +2283,26 @@
 
             // Discovered section
             if (discovered.length > 0) {
+                hasItems = true;
                 html += `<div class="dropdown-section">
                     <div class="dropdown-section-label">Discovered</div>
                     ${discovered.map(r => renderDropdownItem(r, true)).join('')}
                 </div>`;
             }
 
-            if (!html) {
-                html = '<div class="dropdown-empty">No repositories found</div>';
+            if (!hasItems) {
+                html += '<div class="dropdown-empty">No repositories found</div>';
             }
 
             menu.innerHTML = html;
+
+            const rescanBtn = menu.querySelector('#rescanReposDropdown');
+            if (rescanBtn) {
+                rescanBtn.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    rescanRepos();
+                });
+            }
 
             // Attach click handlers
             menu.querySelectorAll('.dropdown-item').forEach(item => {
@@ -2296,7 +2368,8 @@
             if (isOpen) {
                 renderDropdownMenu();
                 // Load discovered repos in background if stale
-                if (state.discoveredRepos.length === 0) {
+                const isStale = Date.now() - state.discoveredLoadedAt > DISCOVERED_STALE_MS;
+                if (state.discoveredRepos.length === 0 || isStale) {
                     loadDiscoveredRepos().then(renderDropdownMenu);
                 }
             }
@@ -2426,6 +2499,45 @@
             } catch (error) {
                 console.error('Failed to load repos:', error);
                 showToast('Failed to load repositories', 'error');
+            }
+        }
+
+        async function loadSystemState() {
+            try {
+                const response = await fetch('/api/state');
+                const data = await response.json();
+                const portEl = document.getElementById('settingsDashboardPort');
+                const dirEl = document.getElementById('settingsCurrentDirectory');
+                const dotEl = document.getElementById('settingsDashboardStatusDot');
+
+                if (portEl) {
+                    portEl.textContent = data.dashboard?.port ? String(data.dashboard.port) : 'Not running';
+                }
+                if (dirEl) {
+                    dirEl.textContent = data.current_directory || 'Unknown';
+                }
+                if (dotEl) {
+                    dotEl.className = `status-dot ${data.dashboard?.running ? 'ok' : 'warning'}`;
+                }
+            } catch (error) {
+                const portEl = document.getElementById('settingsDashboardPort');
+                const dirEl = document.getElementById('settingsCurrentDirectory');
+                const dotEl = document.getElementById('settingsDashboardStatusDot');
+                if (portEl) portEl.textContent = 'Unavailable';
+                if (dirEl) dirEl.textContent = 'Unavailable';
+                if (dotEl) dotEl.className = 'status-dot warning';
+            }
+        }
+
+        async function rescanRepos() {
+            try {
+                showToast('Rescanning repositories...', 'info');
+                await loadDiscoveredRepos();
+                await loadRepos();
+                renderDropdownMenu();
+                showToast('Repository scan complete', 'success');
+            } catch (error) {
+                showToast('Failed to rescan repositories', 'error');
             }
         }
 
@@ -2913,6 +3025,7 @@
 
             // Load repos
             loadRepos();
+            loadSystemState();
 
             // Navigation
             document.querySelectorAll('.nav-item[data-view]').forEach(item => {
@@ -2942,6 +3055,8 @@
                 e.stopPropagation();
                 toggleDropdown();
             });
+
+            document.getElementById('rescanReposBtn').addEventListener('click', rescanRepos);
 
             // Close dropdown when clicking outside
             document.addEventListener('click', (e) => {
@@ -2998,11 +3113,48 @@
             document.getElementById('confirmShutdown').addEventListener('click', confirmShutdown);
 
             // Tools - helper to get current repo
-            function getToolRepoPath() {
-                // Prefer active repo if in activity view, else first configured repo
-                if (state.activeRepo) return state.activeRepo.path;
-                const configured = state.repos.find(r => r.configs && r.configs.length > 0);
-                return configured ? configured.path : null;
+            function resolveActiveRepo() {
+                if (!state.activeRepo) return null;
+                const path = state.activeRepo.path || state.activeRepo;
+                const source = state.activeRepo.source || 'registered';
+                let repo = null;
+                if (source === 'discovered') {
+                    repo = state.discoveredRepos.find(r => r.path === path) || null;
+                }
+                if (!repo) {
+                    repo = state.repos.find(r => r.path === path) || null;
+                }
+                return { path, source, repo };
+            }
+
+            function repoHasConfig(repo, source) {
+                if (!repo) return false;
+                if (repo.configs && repo.configs.length > 0) return true;
+                if (source === 'discovered' && repo.status === 'legacy') return true;
+                if (repo.status && (repo.status.state === 'running' || repo.status.state === 'partial' || repo.status.paused)) {
+                    return true;
+                }
+                return false;
+            }
+
+            function getToolRepoPath(options = {}) {
+                const requireConfig = options.requireConfig === true;
+                const active = resolveActiveRepo();
+                if (active) {
+                    if (!requireConfig || repoHasConfig(active.repo, active.source)) {
+                        return active.path;
+                    }
+                }
+
+                if (requireConfig) {
+                    const configured = state.repos.find(r => r.configs && r.configs.length > 0);
+                    if (configured) return configured.path;
+                    const discoveredConfigured = state.discoveredRepos.find(r => r.configs && r.configs.length > 0);
+                    if (discoveredConfigured) return discoveredConfigured.path;
+                    return null;
+                }
+
+                return state.repos[0]?.path || null;
             }
 
             // Goal Pilot
@@ -3342,13 +3494,68 @@
             // Tools - Issue Input Modal state
             let issueInputCallback = null;
             let issueInputRequired = false;
+            let issueInputRepoPath = null;
 
-            function showIssueInputModal(title, description, required, callback) {
+            function resetIssuePicker() {
+                const select = document.getElementById('issueNumberSelect');
+                select.innerHTML = '<option value="">Load known issues...</option>';
+                select.value = '';
+                document.getElementById('loadKnownIssuesBtn').disabled = false;
+            }
+
+            function setIssueSelectOptions(entries) {
+                const select = document.getElementById('issueNumberSelect');
+                select.innerHTML = '<option value="">Select an issue...</option>';
+                entries.forEach(entry => {
+                    const label = `#${entry.issue_number} - ${entry.title} (${entry.status || 'unknown'})`;
+                    const option = document.createElement('option');
+                    option.value = String(entry.issue_number);
+                    option.textContent = label;
+                    select.appendChild(option);
+                });
+            }
+
+            async function loadKnownIssues() {
+                if (!issueInputRepoPath) {
+                    showToast('Select a repository first', 'warning');
+                    return;
+                }
+                const button = document.getElementById('loadKnownIssuesBtn');
+                button.disabled = true;
+                button.textContent = 'Loading...';
+                try {
+                    const url = `/control/tools/audit?repo_root=${encodeURIComponent(issueInputRepoPath)}`;
+                    const response = await fetch(url);
+                    const data = await response.json();
+                    if (data.error) {
+                        if (data.error === 'Config not found for repo') {
+                            throw new Error('No config found for this repo. Run Setup first.');
+                        }
+                        throw new Error(data.error);
+                    }
+                    const entries = data.entries || [];
+                    if (entries.length === 0) {
+                        showToast('No issues found in audit', 'info');
+                        resetIssuePicker();
+                        return;
+                    }
+                    setIssueSelectOptions(entries);
+                } catch (error) {
+                    showToast(`Failed to load issues: ${error.message}`, 'error');
+                } finally {
+                    button.disabled = false;
+                    button.textContent = 'Load';
+                }
+            }
+
+            function showIssueInputModal(title, description, required, repoPath, callback) {
                 document.getElementById('issueInputModalTitle').textContent = title;
                 document.getElementById('issueInputDesc').textContent = description;
                 document.getElementById('issueNumberInput').value = '';
                 issueInputRequired = required;
                 issueInputCallback = callback;
+                issueInputRepoPath = repoPath;
+                resetIssuePicker();
                 document.getElementById('issueInputModal').classList.add('active');
                 document.getElementById('issueNumberInput').focus();
             }
@@ -3358,6 +3565,13 @@
             });
             document.getElementById('cancelIssueInput').addEventListener('click', () => {
                 document.getElementById('issueInputModal').classList.remove('active');
+            });
+            document.getElementById('loadKnownIssuesBtn').addEventListener('click', loadKnownIssues);
+            document.getElementById('issueNumberSelect').addEventListener('change', (e) => {
+                const value = e.target.value;
+                if (value) {
+                    document.getElementById('issueNumberInput').value = value;
+                }
             });
             document.getElementById('submitIssueInput').addEventListener('click', () => {
                 const value = document.getElementById('issueNumberInput').value;
@@ -3381,15 +3595,16 @@
 
             // Audit Tool
             document.getElementById('auditTool').addEventListener('click', () => {
-                const repoPath = getToolRepoPath();
+                const repoPath = getToolRepoPath({ requireConfig: true });
                 if (!repoPath) {
-                    showToast('No configured repository selected', 'warning');
+                    showToast('Select a repository with a config (or run Setup) to audit issues', 'warning');
                     return;
                 }
                 showIssueInputModal(
-                    'Audit Issue',
-                    'Enter an issue number to see why it is blocked, or leave empty to audit all issues.',
+                    'Audit Issues',
+                    'Optional: enter an issue number to audit just one. Leave empty to audit all issues (uses GitHub labels + branches).',
                     false,
+                    repoPath,
                     async (issueNum) => {
                         document.getElementById('auditResultsContent').innerHTML = '<div class="loading-spinner"></div> Loading...';
                         document.getElementById('auditResultsModal').classList.add('active');
@@ -3401,6 +3616,11 @@
                             const data = await response.json();
 
                             if (data.error) {
+                                if (data.error === 'Config not found for repo') {
+                                    document.getElementById('auditResultsContent').innerHTML =
+                                        '<div class="error-message">No config found for this repo. Run Setup first.</div>';
+                                    return;
+                                }
                                 document.getElementById('auditResultsContent').innerHTML =
                                     `<div class="error-message">${escapeHtml(data.error)}</div>`;
                                 return;
@@ -3452,18 +3672,19 @@
 
             // Trace Tool
             document.getElementById('traceTool').addEventListener('click', () => {
-                const repoPath = getToolRepoPath();
+                const repoPath = getToolRepoPath({ requireConfig: false });
                 if (!repoPath) {
-                    showToast('No configured repository selected', 'warning');
+                    showToast('Select a repository first', 'warning');
                     return;
                 }
                 showIssueInputModal(
-                    'View Trace',
-                    'Enter the issue number to view its log entries.',
+                    'Issue Trace Logs',
+                    'Required: enter the issue number to view recent orchestrator log entries for that issue.',
                     true,
+                    repoPath,
                     async (issueNum) => {
                         document.getElementById('traceResultsContent').textContent = 'Loading...';
-                        document.getElementById('traceResultsModalTitle').textContent = `Trace Logs - Issue #${issueNum}`;
+                        document.getElementById('traceResultsModalTitle').textContent = `Issue Trace Logs - Issue #${issueNum}`;
                         document.getElementById('traceResultsModal').classList.add('active');
 
                         try {
@@ -3502,13 +3723,13 @@
 
             // Refresh Labels Tool
             document.getElementById('refreshLabelsTool').addEventListener('click', async () => {
-                const repoPath = getToolRepoPath();
+                const repoPath = getToolRepoPath({ requireConfig: true });
                 if (!repoPath) {
-                    showToast('No configured repository selected', 'warning');
+                    showToast('Select a repository with a config (or run Setup) to refresh labels', 'warning');
                     return;
                 }
 
-                document.getElementById('labelsResultsContent').innerHTML = '<div class="loading-spinner"></div> Initializing labels on GitHub...';
+                document.getElementById('labelsResultsContent').innerHTML = '<div class="loading-spinner"></div> Creating/updating labels on GitHub...';
                 document.getElementById('labelsResultsModal').classList.add('active');
 
                 try {
@@ -3520,6 +3741,11 @@
                     const data = await response.json();
 
                     if (data.error) {
+                        if (data.error === 'Config not found for repo') {
+                            document.getElementById('labelsResultsContent').innerHTML =
+                                '<div class="error-message">No config found for this repo. Run Setup first.</div>';
+                            return;
+                        }
                         document.getElementById('labelsResultsContent').innerHTML =
                             `<div class="error-message">${escapeHtml(data.error)}</div>`;
                         return;
@@ -3562,9 +3788,9 @@
 
             // List Stale Worktrees Tool (read-only, no deletion)
             document.getElementById('cleanupWorktreesTool').addEventListener('click', async () => {
-                const repoPath = getToolRepoPath();
+                const repoPath = getToolRepoPath({ requireConfig: true });
                 if (!repoPath) {
-                    showToast('No configured repository selected', 'warning');
+                    showToast('Select a repository with a config (or run Setup) to scan worktrees', 'warning');
                     return;
                 }
 
@@ -3580,6 +3806,11 @@
                     const data = await response.json();
 
                     if (data.error) {
+                        if (data.error === 'Config not found for repo') {
+                            document.getElementById('worktreesContent').innerHTML =
+                                '<div class="error-message">No config found for this repo. Run Setup first.</div>';
+                            return;
+                        }
                         document.getElementById('worktreesContent').innerHTML =
                             `<div class="error-message">${escapeHtml(data.error)}</div>`;
                         return;
@@ -3922,7 +4153,10 @@
             });
 
             // Refresh repos periodically
-            setInterval(loadRepos, 30000);
+            setInterval(() => {
+                loadRepos();
+                loadSystemState();
+            }, 30000);
         });
     </script>
 </body>

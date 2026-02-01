@@ -19,7 +19,6 @@ classifiers = [
 ]
 
 dependencies = [
-    "agent-runner",  # Workspace member - provider-agnostic agent execution
     "pyyaml>=6.0",
     "rich>=13.0",      # Nice terminal UI
     "textual>=0.40",   # TUI framework with keyboard input
@@ -70,13 +69,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
-
-# uv workspace - enables fast installs with local packages
-[tool.uv.workspace]
-members = ["packages/agent_runner"]
-
-[tool.uv.sources]
-agent-runner = { workspace = true }
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/issue_orchestrator"]
@@ -174,7 +166,65 @@ ignore_imports = [
 [[tool.importlinter.contracts]]
 name = "Legacy GitHub CLI impl is forbidden"
 type = "forbidden"
-source_modules = ["issue_orchestrator"]
+source_modules = [
+  "issue_orchestrator.adapters",
+  "issue_orchestrator.control",
+  "issue_orchestrator.domain",
+  "issue_orchestrator.entrypoints",
+  "issue_orchestrator.events",
+  "issue_orchestrator.execution",
+  "issue_orchestrator.infra",
+  "issue_orchestrator.observation",
+  "issue_orchestrator.ports",
+  "issue_orchestrator.testing",
+  "issue_orchestrator.infra.ai_diagnose",
+  "issue_orchestrator.infra.ai_keys",
+  "issue_orchestrator.infra.ai_systems_config",
+  "issue_orchestrator.infra.analysis",
+  "issue_orchestrator.infra.audit",
+  "issue_orchestrator.infra.config",
+  "issue_orchestrator.infra.doctor.checks.ai",
+  "issue_orchestrator.infra.doctor.checks.config",
+  "issue_orchestrator.infra.doctor.checks.e2e",
+  "issue_orchestrator.infra.doctor.checks.github",
+  "issue_orchestrator.infra.doctor.checks.guardrails",
+  "issue_orchestrator.infra.doctor.checks.hooks",
+  "issue_orchestrator.infra.doctor.checks.review",
+  "issue_orchestrator.infra.doctor.checks.schema",
+  "issue_orchestrator.infra.doctor.checks.workspace",
+  "issue_orchestrator.infra.doctor.runner",
+  "issue_orchestrator.infra.doctor.types",
+  "issue_orchestrator.infra.doctor",
+  "issue_orchestrator.infra.e2e_db",
+  "issue_orchestrator.infra.e2e_run_diagnosis",
+  "issue_orchestrator.infra.e2e_runner",
+  "issue_orchestrator.infra.emit",
+  "issue_orchestrator.infra.env",
+  "issue_orchestrator.infra.gh_audit",
+  "issue_orchestrator.infra.hooks.hooks",
+  "issue_orchestrator.infra.hooks.hookspec",
+  "issue_orchestrator.infra.issue_diagnostics",
+  "issue_orchestrator.infra.labels",
+  "issue_orchestrator.infra.launcher",
+  "issue_orchestrator.infra.logging_config",
+  "issue_orchestrator.infra.orchestrator",
+  "issue_orchestrator.infra.repo_identity",
+  "issue_orchestrator.infra.repo_lock",
+  "issue_orchestrator.infra.repo_registry",
+  "issue_orchestrator.infra.safety_state",
+  "issue_orchestrator.infra.session_failure_diagnosis",
+  "issue_orchestrator.infra.settings_schema",
+  "issue_orchestrator.infra.startup_errors",
+  "issue_orchestrator.infra.supervisor",
+  "issue_orchestrator.infra.validation_state",
+  "issue_orchestrator.infra.validators.agent",
+  "issue_orchestrator.infra.validators.base",
+  "issue_orchestrator.infra.validators.isolation",
+  "issue_orchestrator.infra.validators.review",
+  "issue_orchestrator.infra.validators.template",
+  "issue_orchestrator.infra.validators.unknown_fields",
+  "issue_orchestrator.infra.validators.worktree",
+]
 forbidden_modules = ["issue_orchestrator._github_impl"]
 
 [[tool.importlinter.contracts]]
@@ -195,7 +245,63 @@ ignore_imports = [
 name = "Only execution may import httpx"
 type = "forbidden"
 source_modules = [
-  "issue_orchestrator",
+  "issue_orchestrator.adapters",
+  "issue_orchestrator.control",
+  "issue_orchestrator.domain",
+  "issue_orchestrator.entrypoints",
+  "issue_orchestrator.events",
+  "issue_orchestrator.execution",
+  "issue_orchestrator.infra",
+  "issue_orchestrator.observation",
+  "issue_orchestrator.ports",
+  "issue_orchestrator.testing",
+  "issue_orchestrator.infra.ai_diagnose",
+  "issue_orchestrator.infra.ai_keys",
+  "issue_orchestrator.infra.ai_systems_config",
+  "issue_orchestrator.infra.analysis",
+  "issue_orchestrator.infra.audit",
+  "issue_orchestrator.infra.config",
+  "issue_orchestrator.infra.doctor.checks.ai",
+  "issue_orchestrator.infra.doctor.checks.config",
+  "issue_orchestrator.infra.doctor.checks.e2e",
+  "issue_orchestrator.infra.doctor.checks.github",
+  "issue_orchestrator.infra.doctor.checks.guardrails",
+  "issue_orchestrator.infra.doctor.checks.hooks",
+  "issue_orchestrator.infra.doctor.checks.review",
+  "issue_orchestrator.infra.doctor.checks.schema",
+  "issue_orchestrator.infra.doctor.checks.workspace",
+  "issue_orchestrator.infra.doctor.runner",
+  "issue_orchestrator.infra.doctor.types",
+  "issue_orchestrator.infra.doctor",
+  "issue_orchestrator.infra.e2e_db",
+  "issue_orchestrator.infra.e2e_run_diagnosis",
+  "issue_orchestrator.infra.e2e_runner",
+  "issue_orchestrator.infra.emit",
+  "issue_orchestrator.infra.env",
+  "issue_orchestrator.infra.gh_audit",
+  "issue_orchestrator.infra.hooks.hooks",
+  "issue_orchestrator.infra.hooks.hookspec",
+  "issue_orchestrator.infra.issue_diagnostics",
+  "issue_orchestrator.infra.labels",
+  "issue_orchestrator.infra.launcher",
+  "issue_orchestrator.infra.logging_config",
+  "issue_orchestrator.infra.orchestrator",
+  "issue_orchestrator.infra.repo_identity",
+  "issue_orchestrator.infra.repo_lock",
+  "issue_orchestrator.infra.repo_registry",
+  "issue_orchestrator.infra.safety_state",
+  "issue_orchestrator.infra.session_failure_diagnosis",
+  "issue_orchestrator.infra.settings_schema",
+  "issue_orchestrator.infra.startup_errors",
+  "issue_orchestrator.infra.supervisor",
+  "issue_orchestrator.infra.validation_state",
+  "issue_orchestrator.infra.validators.agent",
+  "issue_orchestrator.infra.validators.base",
+  "issue_orchestrator.infra.validators.isolation",
+  "issue_orchestrator.infra.validators.review",
+  "issue_orchestrator.infra.validators.template",
+  "issue_orchestrator.infra.validators.unknown_fields",
+  "issue_orchestrator.infra.validators.worktree",
 ]
 forbidden_modules = ["httpx"]
 ignore_imports = [
@@ -205,16 +311,156 @@ ignore_imports = [
   "issue_orchestrator.entrypoints.control_api -> httpx",  # Passthrough to orchestrator
 ]
 
-# agent-runner package boundary
+# Vendored agent_runner boundary
 [[tool.importlinter.contracts]]
-name = "agent_runner must not import issue_orchestrator"
+name = "vendored agent_runner must not import issue_orchestrator"
 type = "forbidden"
-source_modules = ["agent_runner"]
-forbidden_modules = ["issue_orchestrator"]
+source_modules = ["issue_orchestrator._vendor.agent_runner"]
+forbidden_modules = [
+  "issue_orchestrator.adapters",
+  "issue_orchestrator.agent_runner",
+  "issue_orchestrator.control",
+  "issue_orchestrator.domain",
+  "issue_orchestrator.entrypoints",
+  "issue_orchestrator.execution",
+  "issue_orchestrator.infra",
+  "issue_orchestrator.observation",
+  "issue_orchestrator.ports",
+]
+
+# Orchestrator must not import vendored code directly (use facade)
+[[tool.importlinter.contracts]]
+name = "orchestrator must not import vendored agent_runner directly"
+type = "forbidden"
+source_modules = [
+  "issue_orchestrator.adapters",
+  "issue_orchestrator.control",
+  "issue_orchestrator.domain",
+  "issue_orchestrator.entrypoints",
+  "issue_orchestrator.events",
+  "issue_orchestrator.execution",
+  "issue_orchestrator.infra",
+  "issue_orchestrator.observation",
+  "issue_orchestrator.ports",
+  "issue_orchestrator.testing",
+  "issue_orchestrator.infra.ai_diagnose",
+  "issue_orchestrator.infra.ai_keys",
+  "issue_orchestrator.infra.ai_systems_config",
+  "issue_orchestrator.infra.analysis",
+  "issue_orchestrator.infra.audit",
+  "issue_orchestrator.infra.config",
+  "issue_orchestrator.infra.doctor.checks.ai",
+  "issue_orchestrator.infra.doctor.checks.config",
+  "issue_orchestrator.infra.doctor.checks.e2e",
+  "issue_orchestrator.infra.doctor.checks.github",
+  "issue_orchestrator.infra.doctor.checks.guardrails",
+  "issue_orchestrator.infra.doctor.checks.hooks",
+  "issue_orchestrator.infra.doctor.checks.review",
+  "issue_orchestrator.infra.doctor.checks.schema",
+  "issue_orchestrator.infra.doctor.checks.workspace",
+  "issue_orchestrator.infra.doctor.runner",
+  "issue_orchestrator.infra.doctor.types",
+  "issue_orchestrator.infra.doctor",
+  "issue_orchestrator.infra.e2e_db",
+  "issue_orchestrator.infra.e2e_run_diagnosis",
+  "issue_orchestrator.infra.e2e_runner",
+  "issue_orchestrator.infra.emit",
+  "issue_orchestrator.infra.env",
+  "issue_orchestrator.infra.gh_audit",
+  "issue_orchestrator.infra.hooks.hooks",
+  "issue_orchestrator.infra.hooks.hookspec",
+  "issue_orchestrator.infra.issue_diagnostics",
+  "issue_orchestrator.infra.labels",
+  "issue_orchestrator.infra.launcher",
+  "issue_orchestrator.infra.logging_config",
+  "issue_orchestrator.infra.orchestrator",
+  "issue_orchestrator.infra.repo_identity",
+  "issue_orchestrator.infra.repo_lock",
+  "issue_orchestrator.infra.repo_registry",
+  "issue_orchestrator.infra.safety_state",
+  "issue_orchestrator.infra.session_failure_diagnosis",
+  "issue_orchestrator.infra.settings_schema",
+  "issue_orchestrator.infra.startup_errors",
+  "issue_orchestrator.infra.supervisor",
+  "issue_orchestrator.infra.validation_state",
+  "issue_orchestrator.infra.validators.agent",
+  "issue_orchestrator.infra.validators.base",
+  "issue_orchestrator.infra.validators.isolation",
+  "issue_orchestrator.infra.validators.review",
+  "issue_orchestrator.infra.validators.template",
+  "issue_orchestrator.infra.validators.unknown_fields",
+  "issue_orchestrator.infra.validators.worktree",
+]
+forbidden_modules = ["issue_orchestrator._vendor.agent_runner"]
+
+[[tool.importlinter.contracts]]
+name = "orchestrator must not import external agent_runner package"
+type = "forbidden"
+source_modules = [
+  "issue_orchestrator.adapters",
+  "issue_orchestrator.agent_runner",
+  "issue_orchestrator.control",
+  "issue_orchestrator.domain",
+  "issue_orchestrator.entrypoints",
+  "issue_orchestrator.events",
+  "issue_orchestrator.execution",
+  "issue_orchestrator.infra",
+  "issue_orchestrator.observation",
+  "issue_orchestrator.ports",
+  "issue_orchestrator.testing",
+  "issue_orchestrator.infra.ai_diagnose",
+  "issue_orchestrator.infra.ai_keys",
+  "issue_orchestrator.infra.ai_systems_config",
+  "issue_orchestrator.infra.analysis",
+  "issue_orchestrator.infra.audit",
+  "issue_orchestrator.infra.config",
+  "issue_orchestrator.infra.doctor.checks.ai",
+  "issue_orchestrator.infra.doctor.checks.config",
+  "issue_orchestrator.infra.doctor.checks.e2e",
+  "issue_orchestrator.infra.doctor.checks.github",
+  "issue_orchestrator.infra.doctor.checks.guardrails",
+  "issue_orchestrator.infra.doctor.checks.hooks",
+  "issue_orchestrator.infra.doctor.checks.review",
+  "issue_orchestrator.infra.doctor.checks.schema",
+  "issue_orchestrator.infra.doctor.checks.workspace",
+  "issue_orchestrator.infra.doctor.runner",
+  "issue_orchestrator.infra.doctor.types",
+  "issue_orchestrator.infra.doctor",
+  "issue_orchestrator.infra.e2e_db",
+  "issue_orchestrator.infra.e2e_run_diagnosis",
+  "issue_orchestrator.infra.e2e_runner",
+  "issue_orchestrator.infra.emit",
+  "issue_orchestrator.infra.env",
+  "issue_orchestrator.infra.gh_audit",
+  "issue_orchestrator.infra.hooks.hooks",
+  "issue_orchestrator.infra.hooks.hookspec",
+  "issue_orchestrator.infra.issue_diagnostics",
+  "issue_orchestrator.infra.labels",
+  "issue_orchestrator.infra.launcher",
+  "issue_orchestrator.infra.logging_config",
+  "issue_orchestrator.infra.orchestrator",
+  "issue_orchestrator.infra.repo_identity",
+  "issue_orchestrator.infra.repo_lock",
+  "issue_orchestrator.infra.repo_registry",
+  "issue_orchestrator.infra.safety_state",
+  "issue_orchestrator.infra.session_failure_diagnosis",
+  "issue_orchestrator.infra.settings_schema",
+  "issue_orchestrator.infra.startup_errors",
+  "issue_orchestrator.infra.supervisor",
+  "issue_orchestrator.infra.validation_state",
+  "issue_orchestrator.infra.validators.agent",
+  "issue_orchestrator.infra.validators.base",
+  "issue_orchestrator.infra.validators.isolation",
+  "issue_orchestrator.infra.validators.review",
+  "issue_orchestrator.infra.validators.template",
+  "issue_orchestrator.infra.validators.unknown_fields",
+  "issue_orchestrator.infra.validators.worktree",
+]
+forbidden_modules = ["agent_runner"]
 
 # Ruff linter - complexity checks (reporting only, --exit-zero)
 [tool.ruff]
-src = ["src", "packages/agent_runner/src"]
+src = ["src"]
 target-version = "py311"
 
 [tool.ruff.lint]
