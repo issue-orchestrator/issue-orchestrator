@@ -115,6 +115,9 @@ class TestReviewWorkflowValidator:
         review_exchange_reviewer=None,
         review_exchange_probe_schedule="daily",
         review_exchange_probe_interval_days=1,
+        review_exchange_max_rounds=10,
+        review_exchange_max_no_progress=2,
+        review_exchange_require_validation=True,
         agents=None,
     ):
         """Create a mock config with review settings."""
@@ -127,6 +130,9 @@ class TestReviewWorkflowValidator:
         config.review_exchange_reviewer = review_exchange_reviewer
         config.review_exchange_probe_schedule = review_exchange_probe_schedule
         config.review_exchange_probe_interval_days = review_exchange_probe_interval_days
+        config.review_exchange_max_rounds = review_exchange_max_rounds
+        config.review_exchange_max_no_progress = review_exchange_max_no_progress
+        config.review_exchange_require_validation = review_exchange_require_validation
         config.agents = agents or {}
         return config
 

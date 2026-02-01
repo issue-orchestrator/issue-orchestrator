@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import logging
 import shutil
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -481,6 +482,8 @@ def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI ent
 
     try:
         from .bootstrap import build_orchestrator
+        from ..infra.repo_lock import is_locked, read_lock
+        from ..infra import supervisor
 
         # Load config first - repo_root is derived from config file location
         config = _load_config(args)
@@ -601,6 +604,25 @@ def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI ent
     # Handle dry-run mode
     if hasattr(args, 'dry_run') and args.dry_run:
         return _run_dry_run(args, config)
+
+    if is_locked(config.repo_root):
+        info = read_lock(config.repo_root)
+        if info:
+            console.print(
+                f"[yellow]Orchestrator already running (pid={info.pid}, port={info.http_port}).[/yellow]"
+            )
+        if sys.stdin.isatty():
+            choice = console.input("Abort start? [Y/n]: ").strip().lower() or "y"
+            if choice in {"y", "yes"}:
+                return 1
+            console.print("[yellow]Stopping existing orchestrator...[/yellow]")
+            stopped = supervisor.stop(config.repo_root, force=True)
+            if not stopped:
+                console.print("[red]Failed to stop existing orchestrator.[/red]")
+                return 1
+        else:
+            console.print("[red]Non-interactive start aborted (orchestrator already running).[/red]")
+            return 1
 
     orchestrator = build_orchestrator(config=config)
 

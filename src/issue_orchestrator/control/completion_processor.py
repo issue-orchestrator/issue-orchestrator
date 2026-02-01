@@ -418,6 +418,7 @@ class CompletionProcessor:
             issue_title=issue_title,
             label_target=label_target,
             branch=branch,
+            session_name=session_name,
             actions_taken=actions_taken,
             errors=errors,
             error_details=error_details,
@@ -586,6 +587,7 @@ class CompletionProcessor:
         issue_title: str,
         label_target: int,
         branch: str | None,
+        session_name: str | None,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
@@ -610,6 +612,7 @@ class CompletionProcessor:
                     issue_title=issue_title,
                     label_target=label_target,
                     branch=branch,
+                    session_name=session_name,
                     actions_taken=actions_taken,
                     errors=errors,
                     error_details=error_details,
@@ -673,6 +676,7 @@ class CompletionProcessor:
         issue_title: str,
         label_target: int,
         branch: str | None,
+        session_name: str | None,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
@@ -689,6 +693,7 @@ class CompletionProcessor:
                 issue_number=issue_number,
                 issue_title=issue_title,
                 branch=branch,
+                session_name=session_name,
                 actions_taken=actions_taken,
                 errors=errors,
             )
@@ -801,6 +806,7 @@ class CompletionProcessor:
         issue_number: int,
         issue_title: str,
         branch: str | None,
+        session_name: str | None,
         actions_taken: list[str],
         errors: list[str],
     ) -> "_ActionResult":
@@ -837,6 +843,20 @@ class CompletionProcessor:
                 skip_hooks=skip_hooks,
             )
 
+        if self._should_run_review_exchange():
+            exchange_result = self._run_review_exchange_loop(
+                worktree=worktree,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                session_name=session_name,
+            )
+            if exchange_result.status != "ok":
+                errors.append(
+                    f"review_exchange: {exchange_result.status} ({exchange_result.reason})"
+                )
+                return self._ActionResult(halt=True)
+            actions_taken.append("Review exchange passed")
+
         # Create the PR
         logger.info("Creating PR for #%d: branch=%s", issue_number, branch)
         pr = self._create_pr_with_collision_handling(
@@ -854,6 +874,74 @@ class CompletionProcessor:
             return self._ActionResult(branch=branch, pr_url=pr.url)
 
         return self._ActionResult(branch=branch)
+
+    def _should_run_review_exchange(self) -> bool:
+        if not self._config:
+            return False
+        mode = self._config.review_exchange_mode
+        if mode == "via-mcp":
+            return True
+        if mode != "auto":
+            return False
+        coder_label = self._config.review_exchange_coder
+        reviewer_label = self._config.review_exchange_reviewer
+        if not coder_label or not reviewer_label:
+            return False
+        from ..infra.review_exchange_registry import supports_mcp_pair
+        from ..infra.ai_systems_config import get_ai_systems_config
+        from ..ports.session_log import detect_ai_system_from_command
+
+        def resolve_system(label: str) -> str:
+            agent = self._config.agents[label]
+            if agent.ai_system:
+                return agent.ai_system
+            detected = detect_ai_system_from_command(agent.command)
+            if detected:
+                return detected
+            systems = get_ai_systems_config(self._config.repo_root)
+            return systems.default_ai_system
+
+        coder_system = resolve_system(coder_label)
+        reviewer_system = resolve_system(reviewer_label)
+        return supports_mcp_pair(coder_system, reviewer_system)
+
+    def _run_review_exchange_loop(
+        self,
+        *,
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
+        session_name: str | None,
+    ):
+        if not self._config:
+            raise ValueError("Review exchange requires config")
+        coder_label = self._config.review_exchange_coder
+        reviewer_label = self._config.review_exchange_reviewer
+        if not coder_label or not reviewer_label:
+            raise ValueError("Review exchange agent pair not configured")
+        coder_agent = self._config.agents[coder_label]
+        reviewer_agent = self._config.agents[reviewer_label]
+        max_rounds = self._config.review_exchange_max_rounds
+        max_no_progress = self._config.review_exchange_max_no_progress
+        require_validation = self._config.review_exchange_require_validation
+        web_port = self._config.web_port
+
+        from .review_exchange_loop import run_review_exchange_loop
+
+        return run_review_exchange_loop(
+            session_output=self.session_output,
+            worktree_path=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            coder_label=coder_label,
+            reviewer_label=reviewer_label,
+            coder_agent=coder_agent,
+            reviewer_agent=reviewer_agent,
+            max_rounds=max_rounds,
+            max_no_progress=max_no_progress,
+            require_validation=require_validation,
+            web_port=web_port,
+        )
 
     def _create_pr_with_collision_handling(
         self,

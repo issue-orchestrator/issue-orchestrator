@@ -359,6 +359,40 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.exchange.probe.interval_days",
         },
     )
+    exchange_max_rounds: int = Field(
+        10,
+        title="Exchange Max Rounds",
+        description="Max coder/reviewer rounds before stopping the MCP loop",
+        ge=1,
+        le=50,
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_max_rounds",
+            "yaml_path": "review.exchange.loop.max_rounds",
+        },
+    )
+    exchange_max_no_progress: int = Field(
+        2,
+        title="Exchange Max No-Progress",
+        description="Max rounds where reviewer reports no progress before stopping",
+        ge=1,
+        le=10,
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_max_no_progress",
+            "yaml_path": "review.exchange.loop.max_no_progress",
+        },
+    )
+    exchange_require_validation: bool = Field(
+        True,
+        title="Exchange Requires Validation",
+        description="Require a validation record before reviewer can approve",
+        json_schema_extra={
+            "section": "Code Review Workflow",
+            "config_attr": "review_exchange_require_validation",
+            "yaml_path": "review.exchange.loop.require_validation",
+        },
+    )
     triage_agent: Optional[str] = Field(
         None,
         title="Triage Review Agent",

@@ -82,6 +82,18 @@ def _resolve_exchange_pair(config, mode: str) -> tuple[Optional[ExchangePair], l
             detail="review.exchange.agent_pair is required for via-mcp/auto",
         ))
         return None, checks
+    if coder_label not in config.agents or reviewer_label not in config.agents:
+        missing = [
+            label
+            for label in (coder_label, reviewer_label)
+            if label not in config.agents
+        ]
+        checks.append(Check(
+            name="Review Exchange",
+            status="error",
+            detail=f"review.exchange.agent_pair references unknown agent(s): {', '.join(missing)}",
+        ))
+        return None, checks
 
     coder_system = _resolve_ai_system(config, coder_label)
     reviewer_system = _resolve_ai_system(config, reviewer_label)

@@ -182,7 +182,23 @@ def launch_subprocess(
             supervisor=supervisor_data,
         )
     except AlreadyRunning:
-        raise  # Let callers handle shutdown-complete recovery
+        from .repo_lock import read_lock
+        info = read_lock(repo_root, instance_id)
+        supervisor_data = None
+        if info:
+            supervisor_data = {
+                "pid": info.pid,
+                "port": info.http_port,
+            }
+            if info.instance_id:
+                supervisor_data["instance_id"] = info.instance_id
+        return LaunchResult(
+            doctor=doctor_result,
+            launched=False,
+            status="already_running",
+            error="Orchestrator already running",
+            supervisor=supervisor_data,
+        )
     except Exception as exc:
         logger.exception("Failed to launch orchestrator subprocess")
         return LaunchResult(

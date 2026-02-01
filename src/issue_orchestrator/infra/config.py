@@ -581,6 +581,11 @@ def _load_review_section(config: "Config", review_section: dict) -> None:
     if isinstance(probe_section, dict):
         config.review_exchange_probe_schedule = probe_section.get("schedule", "daily")
         config.review_exchange_probe_interval_days = probe_section.get("interval_days", 1)
+    loop_section = exchange_section.get("loop", {})
+    if isinstance(loop_section, dict):
+        config.review_exchange_max_rounds = loop_section.get("max_rounds", 10)
+        config.review_exchange_max_no_progress = loop_section.get("max_no_progress", 2)
+        config.review_exchange_require_validation = loop_section.get("require_validation", True)
     agent_pair = exchange_section.get("agent_pair", {})
     if isinstance(agent_pair, dict):
         config.review_exchange_coder = agent_pair.get("coder")
@@ -940,6 +945,9 @@ class Config:
     review_exchange_reviewer: Optional[str] = None  # Agent label for reviewer in exchange (optional)
     review_exchange_probe_schedule: str = "daily"  # startup, daily, interval, manual
     review_exchange_probe_interval_days: int = 1
+    review_exchange_max_rounds: int = 10
+    review_exchange_max_no_progress: int = 2
+    review_exchange_require_validation: bool = True
 
     # Dangerous options (use with caution)
     dangerous: DangerousConfig = field(default_factory=DangerousConfig)
@@ -1059,6 +1067,16 @@ class Config:
                 "schedule": self.review_exchange_probe_schedule,
                 "interval_days": self.review_exchange_probe_interval_days,
             }
+        if (
+            self.review_exchange_max_rounds != 10
+            or self.review_exchange_max_no_progress != 2
+            or self.review_exchange_require_validation is not True
+        ):
+            exchange_dict["loop"] = {
+                "max_rounds": self.review_exchange_max_rounds,
+                "max_no_progress": self.review_exchange_max_no_progress,
+                "require_validation": self.review_exchange_require_validation,
+            }
         agent_pair: dict = {}
         if self.review_exchange_coder:
             agent_pair["coder"] = self.review_exchange_coder
@@ -1073,6 +1091,11 @@ class Config:
         exchange_dict["probe"] = {
             "schedule": self.review_exchange_probe_schedule,
             "interval_days": self.review_exchange_probe_interval_days,
+        }
+        exchange_dict["loop"] = {
+            "max_rounds": self.review_exchange_max_rounds,
+            "max_no_progress": self.review_exchange_max_no_progress,
+            "require_validation": self.review_exchange_require_validation,
         }
         agent_pair: dict = {}
         if self.review_exchange_coder:

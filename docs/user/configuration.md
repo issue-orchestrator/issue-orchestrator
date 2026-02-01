@@ -459,6 +459,9 @@ _Auto-generated from settings schema._
 | `review.exchange.agent_pair.reviewer` | string (optional) | `None` | Agent label for reviewer in review exchange (optional) |
 | `review.exchange.probe.schedule` | string | `daily` | When to run MCP round-trip validation |
 | `review.exchange.probe.interval_days` | integer | `1` | Interval for MCP round-trip validation when schedule=interval |
+| `review.exchange.loop.max_rounds` | integer | `10` | Max coder/reviewer rounds before stopping the MCP loop |
+| `review.exchange.loop.max_no_progress` | integer | `2` | Max rounds where reviewer reports no progress before stopping |
+| `review.exchange.loop.require_validation` | boolean | `True` | Require a validation record before reviewer can approve |
 | `review.triage_review_agent` | string (optional) | `None` | Agent for batch reviews (optional) |
 | `review.triage_review_threshold` | integer | `0` | Trigger triage after N PRs (0 = manual only) |
 
