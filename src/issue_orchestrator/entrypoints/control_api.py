@@ -105,6 +105,16 @@ def get_orchestrator() -> "Orchestrator | None":
     return _orchestrator
 
 
+<<<<<<< HEAD
+def _with_state_lock(fn):
+    if _orchestrator is None:
+        return fn()
+    lock = getattr(_orchestrator, "state_lock", None)
+    if lock is None:
+        return fn()
+    with lock:
+        return fn()
+
 def _get_goal_pilot() -> GoalPilot:
     """Create a GoalPilot instance from the running orchestrator."""
     if _orchestrator is None:
@@ -665,11 +675,18 @@ async def resume_issue(issue_number: int) -> JSONResponse:
     # Get issue title - try cache first, then fetch
     issue_title = f"Issue #{issue_number}"  # Default fallback
     try:
-        # Check if issue is in cached queue
-        for issue in _orchestrator.state.cached_queue_issues:
-            if issue.number == issue_number:
-                issue_title = issue.title
-                break
+        orchestrator = _orchestrator
+
+        def _cached_title() -> str | None:
+            assert orchestrator is not None
+            for issue in orchestrator.state.cached_queue_issues:
+                if issue.number == issue_number:
+                    return issue.title
+            return None
+
+        cached_title = _with_state_lock(_cached_title)
+        if cached_title:
+            issue_title = cached_title
         else:
             # Fetch from GitHub
             issue_data = _orchestrator.deps.repository_host.get_issue(issue_number)
@@ -746,11 +763,16 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
         }, status_code=404)
 
     # Find the issue in cached queue to get its agent type
-    issue = None
-    for cached_issue in state.cached_queue_issues:
-        if cached_issue.number == issue_number:
-            issue = cached_issue
-            break
+    orchestrator = _orchestrator
+
+    def _cached_issue():
+        assert orchestrator is not None
+        for cached_issue in state.cached_queue_issues:
+            if cached_issue.number == issue_number:
+                return cached_issue
+        return None
+
+    issue = _with_state_lock(_cached_issue)
 
     if not issue:
         # Try to fetch from GitHub
@@ -850,22 +872,30 @@ def _update_cached_issue_labels(issue_number: int, labels_to_remove: list[str]) 
     if _orchestrator is None:
         return
 
+    orchestrator = _orchestrator
     from dataclasses import is_dataclass, replace
 
-    state = _orchestrator.state
-    for i, issue in enumerate(state.cached_queue_issues):
-        if issue.number == issue_number:
-            # Remove the specified labels from the issue
-            new_labels = tuple(
-                label for label in issue.labels
-                if label not in labels_to_remove
-            )
-            # Create updated issue with new labels (only works for dataclass implementations)
-            if is_dataclass(issue) and not isinstance(issue, type):
-                updated_issue = replace(issue, labels=new_labels)
-                state.cached_queue_issues[i] = updated_issue
-                logger.debug("[cache] Updated issue #%d labels: removed %s", issue_number, labels_to_remove)
-            break
+    def _update() -> None:
+        state = orchestrator.state
+        for i, issue in enumerate(state.cached_queue_issues):
+            if issue.number == issue_number:
+                # Remove the specified labels from the issue
+                new_labels = tuple(
+                    label for label in issue.labels
+                    if label not in labels_to_remove
+                )
+                # Create updated issue with new labels (only works for dataclass implementations)
+                if is_dataclass(issue) and not isinstance(issue, type):
+                    updated_issue = replace(issue, labels=new_labels)
+                    state.cached_queue_issues[i] = updated_issue
+                    logger.debug(
+                        "[cache] Updated issue #%d labels: removed %s",
+                        issue_number,
+                        labels_to_remove,
+                    )
+                break
+
+    _with_state_lock(_update)
 
 
 @control_app.post("/api/issues/{issue_number}/retry")
@@ -966,17 +996,23 @@ async def dismiss_issue(issue_number: int) -> JSONResponse:
             except Exception:
                 pass  # Label might not exist, that's fine
 
-        # Remove from session history if present
-        _orchestrator.state.session_history = [
-            entry for entry in _orchestrator.state.session_history
-            if entry.issue_number != issue_number
-        ]
+        orchestrator = _orchestrator
 
-        # Remove from cached queue (dismissed issues won't be picked up again)
-        _orchestrator.state.cached_queue_issues = [
-            issue for issue in _orchestrator.state.cached_queue_issues
-            if issue.number != issue_number
-        ]
+        def _prune_state() -> None:
+            assert orchestrator is not None
+            # Remove from session history if present
+            orchestrator.state.session_history = [
+                entry for entry in orchestrator.state.session_history
+                if entry.issue_number != issue_number
+            ]
+
+            # Remove from cached queue (dismissed issues won't be picked up again)
+            orchestrator.state.cached_queue_issues = [
+                issue for issue in orchestrator.state.cached_queue_issues
+                if issue.number != issue_number
+            ]
+
+        _with_state_lock(_prune_state)
 
         logger.info("[dismiss] Issue #%d dismissed, removed labels: %s", issue_number, removed)
         return JSONResponse({

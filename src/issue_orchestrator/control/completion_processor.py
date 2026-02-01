@@ -922,6 +922,9 @@ class CompletionProcessor:
                 label = self._get_label("code_reviewed")
                 self.label_adapter.add_label(pr.number, label)
                 actions_taken.append(f"Added '{label}' label to PR #{pr.number}")
+                review_label = self._get_label("code_review")
+                self.label_adapter.remove_label(pr.number, review_label)
+                actions_taken.append(f"Removed '{review_label}' label from PR #{pr.number}")
                 comment = (
                     f"✅ Review completed via {exchange_mode} loop.\n\n"
                     f"- Rounds: {exchange_result.rounds}\n"
