@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 import sqlite3
@@ -61,12 +62,36 @@ def _backup_root(config: Config) -> Path:
     return config.repo_root / ".issue-orchestrator" / "backups" / "sqlite"
 
 
+def _write_failure(backup_root: Path, db: SQLiteDatabase, error: str, now_dt: datetime) -> None:
+    path = _failure_file(backup_root, db.key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "timestamp": now_dt.isoformat(),
+        "error": error[:500],
+    }
+    path.write_text(json.dumps(payload))
+
+
+
+def _clear_failure(backup_root: Path, db: SQLiteDatabase) -> None:
+    path = _failure_file(backup_root, db.key)
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return
+
+
 def _daily_dir(root: Path, key: str) -> Path:
     return root / key / "daily"
 
 
 def _weekly_dir(root: Path, key: str) -> Path:
     return root / key / "weekly"
+
+
+
+def _failure_file(root: Path, key: str) -> Path:
+    return root / key / "last_failure.json"
 
 
 def _latest_backup_mtime(path: Path) -> float | None:
@@ -83,12 +108,28 @@ def _latest_backup_mtime(path: Path) -> float | None:
     return latest
 
 
+def _read_failure(backup_root: Path, db: SQLiteDatabase) -> tuple[float, str] | None:
+    path = _failure_file(backup_root, db.key)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text())
+        ts = data.get("timestamp")
+        message = data.get("error")
+        if not ts or not message:
+            return None
+        return datetime.fromisoformat(ts).timestamp(), str(message)
+    except Exception:
+        return None
+
+
 @dataclass(frozen=True)
 class BackupStatus:
     db: SQLiteDatabase
     latest_mtime: float | None
     due: bool
     reason: str
+    detail: str | None = None
 
 
 def _backup_due(config: Config, backup_root: Path, db: SQLiteDatabase, now: float) -> bool:
@@ -127,13 +168,21 @@ def get_backup_statuses(config: Config) -> list[BackupStatus]:
             continue
 
         latest = _latest_backup_mtime(backup_root / db.key)
+        failure = _read_failure(backup_root, db)
+
         if latest is None:
-            statuses.append(BackupStatus(db=db, latest_mtime=None, due=True, reason="none"))
+            if failure:
+                statuses.append(BackupStatus(db=db, latest_mtime=None, due=True, reason="error", detail=failure[1]))
+            else:
+                statuses.append(BackupStatus(db=db, latest_mtime=None, due=True, reason="none"))
             continue
 
         cadence_seconds = config.sqlite_backup.cadence_hours * 3600
         due = now - latest >= cadence_seconds
-        statuses.append(BackupStatus(db=db, latest_mtime=latest, due=due, reason="cadence" if due else "ok"))
+        if failure and failure[0] > latest:
+            statuses.append(BackupStatus(db=db, latest_mtime=latest, due=due, reason="error", detail=failure[1]))
+        else:
+            statuses.append(BackupStatus(db=db, latest_mtime=latest, due=due, reason="cadence" if due else "ok"))
 
     return statuses
 
@@ -254,9 +303,11 @@ def _backup_single_db(
             else:
                 daily_file = _backup_weekly_direct(src_path, weekly_dir, now_dt)
             _rotate_backups(weekly_dir, config.sqlite_backup.retention_weekly)
+        _clear_failure(backup_root, db)
         return BackupResult(db=db, path=daily_file, performed=True, reason="ok")
     except sqlite3.DatabaseError as exc:
         logger.warning("[backup] Failed to backup %s: %s", db.key, exc)
+        _write_failure(backup_root, db, str(exc), now_dt)
         return BackupResult(db=db, path=daily_file, performed=False, reason="error")
 
 
