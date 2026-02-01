@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+import threading
 
 import httpx
 
@@ -20,6 +21,7 @@ class OrchestratorHttpApi(OrchestratorApi):
         self._base_url_provider = base_url_provider
         self._refresh_base_url = refresh_base_url
         self._client = client or httpx.Client(timeout=timeout_seconds)
+        self._client_lock = threading.Lock()
 
     def close(self) -> None:
         self._client.close()
@@ -27,16 +29,18 @@ class OrchestratorHttpApi(OrchestratorApi):
     def _request(self, method: str, path: str, json_body: dict[str, Any] | None = None) -> dict[str, Any]:
         url = f"{self._base_url_provider()}{path}"
         try:
-            response = self._client.request(method, url, json=json_body)
-            response.raise_for_status()
-            return response.json()
+            with self._client_lock:
+                response = self._client.request(method, url, json=json_body)
+                response.raise_for_status()
+                return response.json()
         except httpx.RequestError:
             if not self._refresh_base_url:
                 raise
             refreshed_url = f"{self._refresh_base_url()}{path}"
-            response = self._client.request(method, refreshed_url, json=json_body)
-            response.raise_for_status()
-            return response.json()
+            with self._client_lock:
+                response = self._client.request(method, refreshed_url, json=json_body)
+                response.raise_for_status()
+                return response.json()
 
     def status(self) -> dict[str, Any]:
         return self._request("GET", "/api/status")

@@ -200,6 +200,7 @@ def _run_reviewer_round(
         exchange_dir=exchange_dir,
         round_index=round_index,
         issue_number=issue_number,
+        issue_title=issue_title,
         session_name=session_name,
         agent=reviewer_agent,
         role="reviewer",
@@ -238,6 +239,7 @@ def _run_coder_round(
         exchange_dir=exchange_dir,
         round_index=round_index,
         issue_number=issue_number,
+        issue_title=issue_title,
         session_name=session_name,
         agent=coder_agent,
         role="coder",
@@ -255,6 +257,7 @@ def _run_agent_round(
     exchange_dir: Path,
     round_index: int,
     issue_number: int,
+    issue_title: str,
     session_name: str,
     agent: AgentConfig,
     role: str,
@@ -285,8 +288,8 @@ def _run_agent_round(
     )
 
     command_str = agent_config.get_command(
-        issue_number=0,
-        issue_title="Review exchange",
+        issue_number=issue_number,
+        issue_title=issue_title,
         worktree=worktree_path,
     )
     command = shlex.split(command_str)
@@ -309,6 +312,18 @@ def _run_agent_round(
         env_overrides=env_overrides,
     )
     result = runner.run(spec)
+    if not result.succeeded:
+        stderr_snippet = result.stderr.strip().splitlines()
+        stderr_preview = "\n".join(stderr_snippet[:6]) if stderr_snippet else "No stderr captured."
+        return ReviewExchangeResponse(
+            response_type="error",
+            response_text=(
+                "Agent run failed. "
+                f"exit_code={result.exit_code} timed_out={result.timed_out}. "
+                f"stderr:\n{stderr_preview}"
+            ),
+            raw_output=f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}",
+        )
     response = _parse_exchange_response(result.stdout)
     if response is None:
         return ReviewExchangeResponse(

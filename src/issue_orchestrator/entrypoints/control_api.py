@@ -664,8 +664,15 @@ async def resume_issue(issue_number: int) -> JSONResponse:
         }, status_code=404)
 
     # Check for completion.json
-    completion_path = worktree / ".issue-orchestrator" / "completion.json"
-    if not completion_path.exists():
+    completion_path: str | None = None
+    run_dir = _orchestrator.deps.session_output.find_run_dir(worktree)
+    if run_dir:
+        manifest = _orchestrator.deps.session_output.read_manifest(run_dir)
+        if manifest and manifest.get("completion_path"):
+            completion_path = manifest["completion_path"]
+
+    completion_record = worktree / (completion_path or ".issue-orchestrator/completion.json")
+    if not completion_record.exists():
         return JSONResponse({
             "success": False,
             "error": "No completion record found",
@@ -680,6 +687,7 @@ async def resume_issue(issue_number: int) -> JSONResponse:
             worktree=worktree,
             issue_number=issue_number,
             issue_title=issue_title,
+            completion_path=completion_path,
         )
 
         return JSONResponse({
