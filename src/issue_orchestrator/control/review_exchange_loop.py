@@ -52,7 +52,8 @@ def run_review_exchange_loop(
     web_port: int | None,
 ) -> ReviewExchangeOutcome:
     """Run the coder↔reviewer exchange loop and capture round-trip logs."""
-    session_name = f"review-exchange-{issue_number}"
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    session_name = f"review-exchange-{issue_number}-{timestamp}"
     run = session_output.start_run(
         worktree_path,
         session_name,

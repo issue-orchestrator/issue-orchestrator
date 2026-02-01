@@ -101,6 +101,7 @@ class ProcessingResult:
     actions_taken: list[str] | None = None
     errors: list[str] | None = None
     diagnostic_path: str | None = None  # Path to detailed failure diagnostics
+    review_exchange_completed: bool = False
 
 
 class CompletionProcessor:
@@ -452,7 +453,7 @@ class CompletionProcessor:
                 )
 
         # Execute requested actions in order
-        branch, pr_url = self._execute_actions(
+        branch, pr_url, review_exchange_completed = self._execute_actions(
             worktree=worktree,
             record=record,
             issue_number=issue_number,
@@ -483,6 +484,7 @@ class CompletionProcessor:
             issue_title=issue_title,
             branch=branch,
             pr_url=pr_url,
+            review_exchange_completed=review_exchange_completed,
             actions_taken=actions_taken,
             errors=errors,
             error_details=error_details,
@@ -634,14 +636,15 @@ class CompletionProcessor:
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
-    ) -> tuple[str | None, str | None]:
+    ) -> tuple[str | None, str | None, bool]:
         """Execute all requested actions from completion record.
 
         Returns:
-            Tuple of (final_branch, pr_url).
+            Tuple of (final_branch, pr_url, review_exchange_completed).
         """
         pr_url: str | None = None
         halt_actions = False
+        review_exchange_completed = False
 
         for action in record.requested_actions:
             action_start = time.monotonic()
@@ -667,6 +670,8 @@ class CompletionProcessor:
                     branch = result.branch
                 if result.pr_url:
                     pr_url = result.pr_url
+                if result.review_exchange_completed:
+                    review_exchange_completed = True
                 if result.skip_remaining:
                     continue
 
@@ -699,7 +704,7 @@ class CompletionProcessor:
                 )
                 break
 
-        return branch, pr_url
+        return branch, pr_url, review_exchange_completed
 
     @dataclass
     class _ActionResult:
@@ -709,6 +714,7 @@ class CompletionProcessor:
         skip_remaining: bool = False  # Skip to next action (used by continue)
         branch: str | None = None  # Updated branch name
         pr_url: str | None = None  # PR URL if created
+        review_exchange_completed: bool = False
 
     def _execute_single_action(
         self,
@@ -918,7 +924,9 @@ class CompletionProcessor:
 
         if pr:
             self._apply_pr_labels(pr, record, actions_taken)
+            review_exchange_completed = False
             if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
+                review_exchange_completed = True
                 label = self._get_label("code_reviewed")
                 self.label_adapter.add_label(pr.number, label)
                 actions_taken.append(f"Added '{label}' label to PR #{pr.number}")
@@ -934,7 +942,11 @@ class CompletionProcessor:
                     comment += "- Validation: required and passed\n"
                 self.pr_adapter.add_comment(pr.number, comment)
                 actions_taken.append(f"Posted review completion comment to PR #{pr.number}")
-            return self._ActionResult(branch=branch, pr_url=pr.url)
+            return self._ActionResult(
+                branch=branch,
+                pr_url=pr.url,
+                review_exchange_completed=review_exchange_completed,
+            )
 
         return self._ActionResult(branch=branch)
 
@@ -979,7 +991,16 @@ class CompletionProcessor:
             return None
         mode = self._config.review_exchange_mode
         if mode in {"via-mcp", "via-local-loop"}:
-            self._require_review_exchange_agent_label(agent_label, mode)
+            agent_label = self._require_review_exchange_agent_label(agent_label, mode)
+            if mode == "via-mcp":
+                from ..infra.review_exchange_registry import supports_mcp_pair
+
+                coder_system, reviewer_system = self._resolve_exchange_systems(agent_label)
+                if not supports_mcp_pair(coder_system, reviewer_system):
+                    raise ValueError(
+                        "Review exchange via-mcp requires a supported ai_system pair: "
+                        f"{agent_label} ({coder_system}->{reviewer_system})"
+                    )
             return mode
         if mode != "auto":
             return None
@@ -1142,6 +1163,7 @@ class CompletionProcessor:
         issue_title: str,
         branch: str | None,
         pr_url: str | None,
+        review_exchange_completed: bool,
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
@@ -1218,6 +1240,7 @@ class CompletionProcessor:
             actions_taken=actions_taken if actions_taken else None,
             diagnostic_path=diagnostic_path,
             errors=errors if errors else None,
+            review_exchange_completed=review_exchange_completed,
         )
 
     def _cleanup_completion_record(

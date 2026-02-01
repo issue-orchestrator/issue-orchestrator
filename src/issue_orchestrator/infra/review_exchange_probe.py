@@ -177,7 +177,7 @@ def _probe_mcp_round_trip_from_pairs(
     ]
     supported_pairs = [pair for pair in system_pairs if pair in SUPPORTED_MCP_PAIRS]
     if not supported_pairs:
-        status = "error" if mode == "via-mcp" else "info"
+        status = "warning" if mode == "via-mcp" else "info"
         checks.append(Check(
             name="MCP Round-trip",
             status=status,

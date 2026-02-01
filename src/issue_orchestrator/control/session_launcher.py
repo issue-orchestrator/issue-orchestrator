@@ -1587,6 +1587,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     diagnostic_path: Optional[str] = None,
     validation_error: Optional[str] = None,
     validation_error_file: Optional[str] = None,
+    review_exchange_completed: bool = False,
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
 ) -> None:
@@ -1652,7 +1653,9 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         state.completed_today.append(session.issue.number)
     result = completion_handler.process_completion(
         session, status, pr_url_hint=pr_url_hint,
-        processing_errors=processing_errors, diagnostic_path=diagnostic_path
+        processing_errors=processing_errors,
+        diagnostic_path=diagnostic_path,
+        review_exchange_completed=review_exchange_completed,
     )
     if session.worktree_path:
         run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
@@ -1930,6 +1933,7 @@ def process_active_sessions(
         diagnostic_path = None
         validation_error = decision.validation_error
         validation_error_file = decision.validation_error_file
+        review_exchange_completed = False
         if decision.processing_result:
             if decision.processing_result.pr_url:
                 pr_url_hint = decision.processing_result.pr_url
@@ -1937,6 +1941,7 @@ def process_active_sessions(
                 processing_errors = decision.processing_result.errors
             if decision.processing_result.diagnostic_path:
                 diagnostic_path = decision.processing_result.diagnostic_path
+            review_exchange_completed = decision.processing_result.review_exchange_completed
         handle_session_completion(
             session, decision.status, state, completion_handler, action_applier,
             observer, worktree_manager, kill_session_fn, config,
@@ -1945,6 +1950,7 @@ def process_active_sessions(
             diagnostic_path=diagnostic_path,
             validation_error=validation_error,
             validation_error_file=str(validation_error_file) if validation_error_file else None,
+            review_exchange_completed=review_exchange_completed,
         )
         session_elapsed = time.monotonic() - session_start
         if session_elapsed > 5:

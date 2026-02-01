@@ -199,6 +199,7 @@ class CompletionHandler:
         pr_url_hint: Optional[str] = None,
         processing_errors: Optional[list[str]] = None,
         diagnostic_path: Optional[str] = None,
+        review_exchange_completed: bool = False,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
@@ -269,7 +270,13 @@ class CompletionHandler:
         )
 
         # Determine if we should queue code review
-        should_queue_review = self._should_queue_review(session, status, pr_url, pr_number)
+        should_queue_review = self._should_queue_review(
+            session,
+            status,
+            pr_url,
+            pr_number,
+            review_exchange_completed=review_exchange_completed,
+        )
 
         # Generate actions for label/comment changes (policy logic)
         completion_actions = self.generate_completion_actions(
@@ -699,6 +706,7 @@ class CompletionHandler:
         status: SessionStatus,
         pr_url: Optional[str],
         pr_number: Optional[int] = None,
+        review_exchange_completed: bool = False,
     ) -> bool:
         """Determine if session should be added to discovered_reviews.
 
@@ -706,10 +714,9 @@ class CompletionHandler:
         The actual review queuing is controlled by the planner, which skips dry-run PRs.
         """
         is_review_session = session.terminal_id.startswith("review-")
-        if self.config.review_exchange_mode in {"via-mcp", "via-local-loop", "auto"}:
+        if review_exchange_completed:
             logger.info(
-                "[REVIEW] Review exchange mode '%s' - skipping PR review queue",
-                self.config.review_exchange_mode,
+                "[REVIEW] Review exchange completed - skipping PR review queue",
             )
             return False
 

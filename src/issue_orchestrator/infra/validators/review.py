@@ -26,7 +26,7 @@ class ReviewWorkflowValidator(ConfigValidator):
         exchange_mode = config.review_exchange_mode
         self._validate_exchange_mode(exchange_mode, config, errors)
         self._validate_probe_schedule(config, errors)
-        self._validate_supported_exchange_pair(exchange_mode, config, errors)
+        # Pair validation is deferred to runtime when the actual coder agent is known.
 
         return errors
 
