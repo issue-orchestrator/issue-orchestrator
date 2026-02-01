@@ -110,6 +110,12 @@ def get_backup_statuses(config: Config) -> list[BackupStatus]:
             statuses.append(BackupStatus(db=db, latest_mtime=None, due=False, reason="disabled"))
         return statuses
 
+    keep_daily, keep_weekly = _tier_flags(config)
+    if not keep_daily and not keep_weekly:
+        for db in list_sqlite_databases(config):
+            statuses.append(BackupStatus(db=db, latest_mtime=None, due=False, reason="retention=0"))
+        return statuses
+
     for db in list_sqlite_databases(config):
         if not db.backup or not db.enabled_fn(config):
             statuses.append(BackupStatus(db=db, latest_mtime=None, due=False, reason="not enabled"))
