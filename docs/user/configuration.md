@@ -411,6 +411,8 @@ The web dashboard settings dialog is driven by a Pydantic schema in `src/issue_o
 - Doctor checks (path validation, agent references)
 - This documentation reference
 
+Goal Pilot uses the standard agent configuration: define its prompt under `agents` and reference the label via `goal_pilot.agent`.
+
 <!-- BEGIN AUTO-GENERATED CONFIG REFERENCE — regenerate via: pytest tests/unit/test_settings_schema.py::TestDriftDetection::test_config_reference_not_stale -->
 
 # Settings Reference
@@ -458,8 +460,6 @@ _Auto-generated from settings schema._
 | `review.triage_review_threshold` | integer | `0` | Trigger triage after N PRs (0 = manual only) |
 
 ## Goal Pilot
-
-Goal Pilot runs as a standard agent. Define the agent in `agents` with a prompt file and reference it via `goal_pilot.agent`.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
