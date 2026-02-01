@@ -146,9 +146,9 @@ class TestReviewWorkflowValidator:
         assert "no default reviewer" in errors[0]
 
     def test_exchange_mode_requires_ai_system(self):
-        """Verify exchange modes require ai_system on agents."""
+        """Verify exchange modes pass when ai_system is already validated elsewhere."""
         agent = MagicMock()
-        agent.ai_system = None
+        agent.ai_system = "claude-code"
         agent.command = "claude"
         config = self._make_config(
             review_enabled=True,
@@ -157,7 +157,7 @@ class TestReviewWorkflowValidator:
             agents={"agent:reviewer": agent},
         )
         errors = ReviewWorkflowValidator().validate(config)
-        assert any("ai_system" in e for e in errors)
+        assert errors == []
 
     def test_reviews_enabled_invalid_reviewer_error(self):
         """Verify error when reviewer doesn't exist in agents."""
@@ -332,6 +332,7 @@ class TestAgentValidator:
         model="sonnet",
         reviewer=None,
         prompt_exists=True,
+        ai_system="claude-code",
     ):
         """Create a mock agent config."""
         agent = MagicMock()
@@ -346,6 +347,7 @@ class TestAgentValidator:
         agent.provider = provider
         agent.model = model
         agent.reviewer = reviewer
+        agent.ai_system = ai_system
         return agent
 
     def test_no_agents_error(self):
@@ -368,6 +370,22 @@ class TestAgentValidator:
              patch("agent_runner.list_providers", return_value=["claude-code"]):
             errors = AgentValidator().validate(config)
         assert errors == []
+
+    def test_missing_ai_system_error(self, tmp_path):
+        """Verify error when ai_system is missing."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.touch()
+        agent = self._make_agent(
+            prompt_path=prompt_file,
+            provider="claude-code",
+            ai_system=None,
+        )
+        config = self._make_config(agents={"agent:dev": agent})
+
+        with patch("agent_runner.is_valid_provider", return_value=True), \
+             patch("agent_runner.list_providers", return_value=["claude-code"]):
+            errors = AgentValidator().validate(config)
+        assert any("ai_system" in e for e in errors)
 
     def test_missing_prompt_file_error(self):
         """Verify error when prompt file doesn't exist."""

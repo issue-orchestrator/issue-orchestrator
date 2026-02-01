@@ -135,6 +135,7 @@ agents:
   agent:web:
     prompt: {prompt}
     model: sonnet
+    ai_system: claude-code
 worktrees:
   base: {worktree_base}
   worktree_branch_on_recreate: nope
@@ -1063,6 +1064,7 @@ worktrees:
 agents:
   agent:frontend:
     prompt: {prompt_file}
+    ai_system: claude-code
     reviewer: agent:nonexistent-reviewer
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
@@ -1085,6 +1087,7 @@ worktrees:
 agents:
   agent:frontend:
     prompt: {prompt_file}
+    ai_system: claude-code
 
 review:
   enabled: true
@@ -1098,8 +1101,8 @@ review:
         errors = config.validate()
         assert any("no default reviewer set" in e for e in errors)
 
-    def test_review_exchange_requires_ai_system(self, tmp_path):
-        """Test that exchange modes require ai_system on agents."""
+    def test_agents_require_ai_system(self, tmp_path):
+        """Test that agents require ai_system."""
         prompt_file = tmp_path / "prompt.txt"
         prompt_file.write_text("Prompt content")
 
@@ -1110,12 +1113,6 @@ worktrees:
 agents:
   agent:reviewer:
     prompt: {prompt_file}
-
-review:
-  enabled: true
-  default: agent:reviewer
-  exchange:
-    mode: via-mcp
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -1198,6 +1195,7 @@ worktrees:
 agents:
   agent:frontend:
     prompt: {prompt_file}
+    ai_system: claude-code
 
 # No review section - defaults to enabled: false
 """
@@ -1395,6 +1393,7 @@ worktrees:
 agents:
   agent:test:
     prompt: /nonexistent/path/prompt.md
+    ai_system: claude-code
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -1416,6 +1415,7 @@ worktrees:
 agents:
   agent:test:
     prompt: {prompt_file}
+    ai_system: claude-code
 """
         # Config must be at <repo>/.issue-orchestrator/config/<name>.yaml
         # so repo_root is correctly calculated (3 levels up)
@@ -1474,6 +1474,7 @@ worktrees:
 agents:
   agent:test:
     prompt: {prompt_file}
+    ai_system: claude-code
 
 review:
   enabled: true
@@ -1505,6 +1506,7 @@ agents:
   agent:test:
     prompt: {prompt_file}
     model: haiku
+    ai_system: claude-code
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
@@ -1523,6 +1525,7 @@ worktrees:
 agents:
   agent:test:
     prompt: /nonexistent/prompt.md
+    ai_system: claude-code
 """
         config_file = tmp_path / ".issue-orchestrator.yaml"
         config_file.write_text(config_content)
