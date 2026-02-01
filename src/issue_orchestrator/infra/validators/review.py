@@ -100,7 +100,24 @@ class ReviewWorkflowValidator(ConfigValidator):
             )
             return
 
-        pairs = []
+        pairs = self._collect_exchange_pairs(config)
+        if not pairs:
+            return
+
+        unsupported_pairs = self._unsupported_exchange_pairs(
+            pairs,
+            config,
+            SUPPORTED_MCP_PAIRS,
+        )
+        if unsupported_pairs:
+            errors.append(
+                "review.exchange.mode is via-mcp but unsupported ai_system pair(s) configured: "
+                f"{unsupported_pairs}. Use via-local-loop or update the MCP allowlist."
+            )
+
+    @staticmethod
+    def _collect_exchange_pairs(config: "Config") -> list[tuple[str, str]]:
+        pairs: list[tuple[str, str]] = []
         for label, agent in config.agents.items():
             if config.triage_review_agent and label == config.triage_review_agent:
                 continue
@@ -110,20 +127,20 @@ class ReviewWorkflowValidator(ConfigValidator):
             if not reviewer_label or reviewer_label not in config.agents:
                 continue
             pairs.append((label, reviewer_label))
+        return pairs
 
-        if not pairs:
-            return
-
+    @staticmethod
+    def _unsupported_exchange_pairs(
+        pairs: list[tuple[str, str]],
+        config: "Config",
+        supported_pairs,
+    ) -> list[str]:
         unsupported_pairs = []
         for coder_label, reviewer_label in pairs:
             coder_system = config.agents[coder_label].ai_system
             reviewer_system = config.agents[reviewer_label].ai_system
-            if (coder_system, reviewer_system) not in SUPPORTED_MCP_PAIRS:
+            if (coder_system, reviewer_system) not in supported_pairs:
                 unsupported_pairs.append(
                     f"{coder_label}->{reviewer_label} ({coder_system}->{reviewer_system})"
                 )
-        if unsupported_pairs:
-            errors.append(
-                "review.exchange.mode is via-mcp but unsupported ai_system pair(s) configured: "
-                f"{unsupported_pairs}. Use via-local-loop or update the MCP allowlist."
-            )
+        return unsupported_pairs

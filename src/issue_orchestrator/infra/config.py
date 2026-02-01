@@ -727,6 +727,17 @@ def _load_retry_section(config: "Config", data: dict) -> None:
         )
 
 
+def _parse_ai_systems_allowed(value: object) -> list[str]:
+    """Normalize ai_systems.allowed values from config."""
+    if not value:
+        return []
+    if isinstance(value, str):
+        return [entry.strip() for entry in value.split(",") if entry.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return list(value)
+    return []
+
+
 def _load_agents_section(
     config: "Config",
     agents_section: dict,
@@ -1594,14 +1605,9 @@ class Config:
         config.milestone_sort = sections["milestones"].get("sort", "due_date")
         config.milestone_sort_config = sections["milestones"].get("sort_config", {})
         config.foundation_milestone = sections["milestones"].get("foundation", "M0")
-        ai_systems_allowed = sections["ai_systems"].get("allowed", [])
-        if isinstance(ai_systems_allowed, str):
-            ai_systems_allowed = [
-                entry.strip()
-                for entry in ai_systems_allowed.split(",")
-                if entry.strip()
-            ]
-        config.ai_systems_allowed = list(ai_systems_allowed)
+        config.ai_systems_allowed = _parse_ai_systems_allowed(
+            sections["ai_systems"].get("allowed", [])
+        )
 
         # Parse complex configs
         if sections["triage"]:
