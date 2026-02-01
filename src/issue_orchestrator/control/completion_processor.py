@@ -890,27 +890,17 @@ class CompletionProcessor:
                 skip_hooks=skip_hooks,
             )
 
-        try:
-            exchange_mode = self._resolve_review_exchange_mode(agent_label)
-        except ValueError as exc:
-            errors.append(f"review_exchange: {exc}")
+        exchange_mode, exchange_result, exchange_halt = self._run_review_exchange_if_needed(
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+            errors=errors,
+            actions_taken=actions_taken,
+        )
+        if exchange_halt:
             return self._ActionResult(halt=True)
-        exchange_result = None
-        if exchange_mode in {"via-mcp", "via-local-loop"}:
-            logger.info("Review exchange mode selected: %s", exchange_mode)
-            exchange_result = self._run_review_exchange_loop(
-                worktree=worktree,
-                issue_number=issue_number,
-                issue_title=issue_title,
-                session_name=session_name,
-                agent_label=agent_label,
-            )
-            if exchange_result.status != "ok":
-                errors.append(
-                    f"review_exchange: {exchange_result.status} ({exchange_result.reason})"
-                )
-                return self._ActionResult(halt=True)
-            actions_taken.append("Review exchange passed")
 
         # Create the PR
         logger.info("Creating PR for #%d: branch=%s", issue_number, branch)
@@ -944,6 +934,40 @@ class CompletionProcessor:
             return self._ActionResult(branch=branch, pr_url=pr.url)
 
         return self._ActionResult(branch=branch)
+
+    def _run_review_exchange_if_needed(
+        self,
+        *,
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
+        session_name: str | None,
+        agent_label: str | None,
+        errors: list[str],
+        actions_taken: list[str],
+    ) -> tuple[str | None, Any | None, bool]:
+        try:
+            exchange_mode = self._resolve_review_exchange_mode(agent_label)
+        except ValueError as exc:
+            errors.append(f"review_exchange: {exc}")
+            return None, None, True
+        if exchange_mode not in {"via-mcp", "via-local-loop"}:
+            return exchange_mode, None, False
+        logger.info("Review exchange mode selected: %s", exchange_mode)
+        exchange_result = self._run_review_exchange_loop(
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+        )
+        if exchange_result.status != "ok":
+            errors.append(
+                f"review_exchange: {exchange_result.status} ({exchange_result.reason})"
+            )
+            return exchange_mode, exchange_result, True
+        actions_taken.append("Review exchange passed")
+        return exchange_mode, exchange_result, False
 
     def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         if not self._config:
