@@ -160,6 +160,9 @@ hooks:
     interval_days: 7                    # Run live verification every N days (0 = disabled)
     dangerous_allow_failure: false      # If true, warn only; if false, block on failure
 
+ai_systems:
+  allowed: []                           # Extra ai_system values beyond ai_systems.yaml
+
 filtering:
   # label: "bot-ready"
   # milestone: "v1.0"

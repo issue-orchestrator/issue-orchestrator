@@ -323,6 +323,8 @@ class TestAgentValidator:
         config.agents = agents or {}
         config.default_agent = default_agent
         config.raw_agents = raw_agents or {}
+        config.ai_systems_allowed = []
+        config.repo_root = Path("/tmp")
         return config
 
     def _make_agent(
@@ -386,6 +388,23 @@ class TestAgentValidator:
              patch("agent_runner.list_providers", return_value=["claude-code"]):
             errors = AgentValidator().validate(config)
         assert any("ai_system" in e for e in errors)
+
+    def test_custom_ai_system_allowlist(self, tmp_path):
+        """Verify allowlist accepts custom ai_system values."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.touch()
+        agent = self._make_agent(
+            prompt_path=prompt_file,
+            provider="claude-code",
+            ai_system="custom-ai",
+        )
+        config = self._make_config(agents={"agent:dev": agent})
+        config.ai_systems_allowed = ["custom-ai"]
+
+        with patch("agent_runner.is_valid_provider", return_value=True), \
+             patch("agent_runner.list_providers", return_value=["claude-code"]):
+            errors = AgentValidator().validate(config)
+        assert errors == []
 
     def test_missing_prompt_file_error(self):
         """Verify error when prompt file doesn't exist."""
