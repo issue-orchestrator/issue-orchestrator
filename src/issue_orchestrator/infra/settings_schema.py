@@ -307,10 +307,10 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.keep_current_approach_label",
         },
     )
-    exchange_mode: Literal["via-draft-pr", "via-mcp", "auto"] = Field(
+    exchange_mode: Literal["via-draft-pr", "via-mcp", "via-local-loop", "auto"] = Field(
         "via-draft-pr",
         title="Review Exchange Mode",
-        description="Review exchange mode (via-mcp loop or via-draft-pr review)",
+        description="Review exchange mode (via-mcp loop, local loop, or via-draft-pr review)",
         json_schema_extra={
             "section": "Code Review Workflow",
             "config_attr": "review_exchange_mode",

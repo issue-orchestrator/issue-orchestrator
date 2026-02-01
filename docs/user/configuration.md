@@ -454,7 +454,7 @@ _Auto-generated from settings schema._
 | `review.default` | string (optional) | `None` | Agent label for code reviews (e.g., agent:reviewer) |
 | `review.max_rework_cycles` | integer | `2` | Max times to re-queue work agent before escalating |
 | `review.keep_current_approach_label` | string | `reviewer-keep-current-approach` | Label that tells reviewer to avoid alternative approaches |
-| `review.exchange.mode` | string | `via-draft-pr` | Review exchange mode (via-mcp loop or via-draft-pr review) |
+| `review.exchange.mode` | string | `via-draft-pr` | Review exchange mode (via-mcp loop, local loop, or via-draft-pr review) |
 | `review.exchange.agent_pair.coder` | string (optional) | `None` | Agent label for coder in review exchange (optional) |
 | `review.exchange.agent_pair.reviewer` | string (optional) | `None` | Agent label for reviewer in review exchange (optional) |
 | `review.exchange.probe.schedule` | string | `daily` | When to run MCP round-trip validation |

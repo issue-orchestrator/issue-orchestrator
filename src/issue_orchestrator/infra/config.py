@@ -975,7 +975,7 @@ class Config:
     # Label to tell reviewer to keep the current approach
     review_keep_current_approach_label: str = "reviewer-keep-current-approach"
 
-    # Review exchange mode (via-mcp loop vs via-draft-pr review)
+    # Review exchange mode (via-mcp, via-local-loop, or via-draft-pr review)
     review_exchange_mode: str = "via-draft-pr"
     review_exchange_coder: Optional[str] = None  # Agent label for coder in exchange (optional)
     review_exchange_reviewer: Optional[str] = None  # Agent label for reviewer in exchange (optional)
