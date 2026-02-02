@@ -84,6 +84,15 @@
                         <span aria-hidden="true">🗑</span> Clear History
                     </button>
                     <div class="settings-divider" role="separator"></div>
+                    <div class="settings-menu-item" style="display: flex; flex-direction: column; gap: 8px; padding: 12px; cursor: default;">
+                        <div style="font-size: 11px; color: var(--text-secondary); font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;">Theme</div>
+                        <div class="theme-selector" role="radiogroup" aria-label="Theme selection" style="display: flex; gap: 6px;">
+                            <button class="theme-btn" data-theme="system" role="radio" aria-checked="true" style="padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border-color); background: transparent; color: var(--text-primary); font-size: 12px; cursor: pointer; transition: all 0.2s;">System</button>
+                            <button class="theme-btn" data-theme="light" role="radio" aria-checked="false" style="padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border-color); background: transparent; color: var(--text-primary); font-size: 12px; cursor: pointer; transition: all 0.2s;">Light</button>
+                            <button class="theme-btn" data-theme="dark" role="radio" aria-checked="false" style="padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border-color); background: transparent; color: var(--text-primary); font-size: 12px; cursor: pointer; transition: all 0.2s;">Dark</button>
+                        </div>
+                    </div>
+                    <div class="settings-divider" role="separator"></div>
                     <button class="settings-menu-item" onclick="showDoctor()" role="menuitem">
                         <span aria-hidden="true">🩺</span> Run Doctor
                     </button>
@@ -790,6 +799,52 @@
     </div>
 
     <script>
+        // ============================================
+        // Theme Management
+        // ============================================
+        const themeState = {
+            current: localStorage.getItem('theme') || 'system'
+        };
+
+        function applyTheme(theme) {
+            themeState.current = theme;
+            localStorage.setItem('theme', theme);
+
+            let effectiveTheme = theme;
+            if (theme === 'system') {
+                effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            }
+
+            document.documentElement.setAttribute('data-theme', effectiveTheme);
+
+            // Update theme selector buttons
+            document.querySelectorAll('.theme-btn').forEach(btn => {
+                const isActive = btn.dataset.theme === theme;
+                btn.classList.toggle('active', isActive);
+                btn.setAttribute('aria-checked', isActive);
+            });
+        }
+
+        // Apply theme on initial load
+        document.addEventListener('DOMContentLoaded', function() {
+            applyTheme(themeState.current);
+
+            // Attach event listeners to theme buttons
+            document.querySelectorAll('.theme-btn').forEach(btn => {
+                btn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    applyTheme(this.dataset.theme);
+                });
+            });
+        });
+
+        // Listen for system theme changes
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+            if (themeState.current === 'system') {
+                applyTheme('system');
+            }
+        });
+
         // Server-side data passed to dashboard.js
         window.dashboardData = {
             startupComplete: {{ 'true' if startup_status == 'complete' else 'false' }},
