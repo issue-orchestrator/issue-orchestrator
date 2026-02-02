@@ -107,6 +107,30 @@ e2e:
 
 See [E2E Documentation](docs/user/e2e.md) for full configuration reference, API details, database schema, and troubleshooting.
 
+## Experimental: Goal Pilot
+
+> **Status:** Experimental / Opt-in
+> **Role:** Autonomous Control Plane
+
+The **Goal Pilot** is an experimental agentic layer built *on top* of the stable Issue-Orchestrator core. 
+
+While the core orchestrator provides a deterministic, Hexagonal Architecture platform for managing lifecycle events (the "engine"), the Goal Pilot acts as an autonomous driver. It reduces manual operator involvement by introducing an agentic loop that can reason about high-level goals.
+
+See [Design Document](docs/design/goal-pilot.md) and [Configuration](docs/user/configuration.md#goal-pilot) to enable.
+
+### Why this architecture?
+We explicitly separated the **Stable Core** from the **Experimental Pilot** to ensure safety and reliability.
+
+*   **The Core (Stable):** Handles the mechanics—moving tickets, running checks, syncing state. It is deterministic, strictly typed, and heavily tested.
+*   **The Pilot (Experimental):** Handles the *decisions*. It consumes the same public Ports/Adapters as the CLI. 
+
+### Key Capabilities
+*   **Goal-Oriented:** Takes high-level intent (e.g., "Implement feature X") and breaks it down into actions.
+*   **Safe by Design:** The Pilot is constrained to the safety guarantees of the underlying platform. It cannot bypass validations, merge PRs, or violate architectural boundaries.
+*   **Resumable "Brain":** The Pilot's state is persisted in a dedicated SQLite store, making the agent's reasoning process durable and auditable.
+
+**Note:** This layer is strictly opt-in. You can use `issue-orchestrator` as a standard, deterministic CLI tool without ever enabling the autonomous components.
+
 ## Guardrails & Safety Model
 
 Issue-Orchestrator is designed to assist humans, not replace trust boundaries.
