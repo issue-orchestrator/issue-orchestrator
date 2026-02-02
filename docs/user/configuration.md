@@ -300,6 +300,15 @@ filtering:
 
 `milestones` and `exclude_labels` accept a list or comma-separated string.
 
+### scheduling
+
+```yaml
+scheduling:
+  default_priority_tier: 1
+```
+
+- `scheduling.default_priority_tier`: Priority tier to use when issue titles do not include a `[P?-nnn]` prefix (0-3). Default is `1` (P1 / medium).
+
 ### milestones
 
 ```yaml
@@ -325,7 +334,7 @@ triage:
 - `triage.explicit_labels`: Labels to always add to triage issues, regardless of source.
 - `triage.milestone_strategy.inherit_from_issues`: When `true`, inherits milestone from linked issues (uses "latest" by default, can be set to "earliest").
 - `triage.milestone_strategy.explicit`: Explicit milestone name to use instead of inheriting.
-- `triage.priority`: Priority label to add to triage issues (e.g., "priority:high").
+- `triage.priority`: Priority label to add to triage issues (e.g., "priority:high"). Note: this is a label only; scheduling order is driven by `[P?-nnn]` title prefixes, not priority labels.
 
 ### e2e
 

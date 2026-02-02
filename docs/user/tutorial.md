@@ -271,13 +271,19 @@ This lets multiple agents work in parallel without conflicts.
 
 #### Priority
 
-Issues are processed in priority order:
+There are two priority signals, and they serve different purposes:
 
-| Label | Priority |
-|-------|----------|
-| `priority:high` | First |
-| `priority:medium` | Second (default) |
-| `priority:low` | Last |
+1) **Scheduling order (used by the orchestrator)**: Title prefix `[P?-nnn]`
+   - `P0` < `P1` < `P2` < `P3`
+   - `-nnn` is the sequence within that tier (lower numbers run first)
+   - If missing, the scheduler uses the configured default tier (P1 by default)
+   - Example: `[P0-005] Fix critical bug`
+
+2) **Labels (display/metadata)**: `priority:high|medium|low`
+   - Used for UI/CLI display and triage metadata
+   - **Not used by the scheduler** to order work
+
+If you want scheduling order, use the `[P?-nnn]` prefix in the title.
 
 #### Status Labels
 
@@ -520,14 +526,17 @@ Now that your system is configured, create GitHub issues for agents to work on.
 For an issue to be picked up by the orchestrator:
 
 1. **Must have an agent label** matching a key in your config (e.g., `agent:backend`)
-2. **Should have a priority label** (optional, defaults to medium)
+2. **Should include a title priority prefix** if ordering matters (defaults to P1 if missing; e.g., `[P1-010]`)
 3. **Should have a clear description** so the agent understands the task
+
+Optional but recommended:
+- **Priority label** (`priority:high|medium|low`) for display/metadata
 
 ### Example Issue
 
-**Title**: Add user profile endpoint
+**Title**: [P1-010] Add user profile endpoint
 
-**Labels**: `agent:backend`, `priority:high`
+**Labels**: `agent:backend`, `priority:high` (label is optional)
 
 **Body**:
 ```markdown
@@ -554,7 +563,7 @@ Add a GET /users/{id}/profile endpoint that returns user profile information.
 ```bash
 # Create an issue
 gh issue create \
-  --title "Add user profile endpoint" \
+  --title "[P1-010] Add user profile endpoint" \
   --body "..." \
   --label "agent:backend" \
   --label "priority:high"
@@ -654,7 +663,7 @@ Let's trace what happens when issue #42 is processed.
 ### 1. Issue Created and Labeled
 
 ```
-GitHub Issue #42: "Add user profile endpoint"
+GitHub Issue #42: "[P1-010] Add user profile endpoint"
 Labels: [agent:backend, priority:high]
 ```
 
@@ -666,9 +675,9 @@ $ issue-orchestrator start
 [Orchestrator] Fetching issues with agent labels...
 [Orchestrator] Found 3 issues
 [Orchestrator] Queue sorted by priority:
-  1. #42 (priority:high) → agent:backend
-  2. #57 (priority:medium) → agent:frontend
-  3. #63 (priority:low) → agent:backend
+  1. #42 ([P1-010]) → agent:backend
+  2. #57 ([P1-020]) → agent:frontend
+  3. #63 ([P2-005]) → agent:backend
 [Orchestrator] Starting #42...
 ```
 
@@ -806,14 +815,14 @@ $ git worktree remove ../myapp-42
 ┌──────────────────────────────────────────────────────────────┐
 │                        GITHUB                                 │
 │  Issue #42 [agent:backend, priority:high]                     │
-│  "Add user profile endpoint"                                  │
+│  "[P1-010] Add user profile endpoint"                         │
 └──────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌──────────────────────────────────────────────────────────────┐
 │                     ORCHESTRATOR                              │
 │  1. Polls GitHub for issues with agent:* labels               │
-│  2. Sorts by priority                                         │
+│  2. Sorts by [P?-nnn] priority                                │
 │  3. Creates worktree at ../myapp-42                           │
 │  4. Installs pre-push hooks                                   │
 │  5. Labels issue "in-progress"                                │

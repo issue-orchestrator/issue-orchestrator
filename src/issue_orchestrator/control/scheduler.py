@@ -401,9 +401,14 @@ class Scheduler:
             issue: Issue to extract priority from.
 
         Returns:
-            Priority tier (0-3), or 9 if no priority in title.
+            Priority tier (0-3). If no [P?-nnn] prefix, defaults to configured tier.
         """
         match = re.search(r"\[P(\d)-\d+\]", issue.title)
         if match:
             return int(match.group(1))
-        return 9  # No priority = sort last
+        default_tier = self.config.scheduling.default_priority_tier
+        if default_tier < 0:
+            return 0
+        if default_tier > 3:
+            return 3
+        return default_tier

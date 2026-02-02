@@ -350,6 +350,12 @@ class TriageConfig:
 
 
 @dataclass
+class SchedulingConfig:
+    """Scheduling configuration."""
+    default_priority_tier: int = 1  # P1 (medium) when no [P?-nnn] prefix
+
+
+@dataclass
 class E2EConfig:
     """E2E async test runner settings.
 
@@ -526,6 +532,13 @@ def _parse_triage_config(data: dict) -> TriageConfig:
     )
 
 
+def _parse_scheduling_config(data: dict) -> SchedulingConfig:
+    """Parse scheduling section from YAML data."""
+    return SchedulingConfig(
+        default_priority_tier=int(data.get("default_priority_tier", 1)),
+    )
+
+
 def _parse_filtering_config(data: dict) -> FilteringConfig:
     """Parse filtering section from YAML data."""
     # Parse milestones (list or comma-separated string)
@@ -559,6 +572,8 @@ def _apply_optional_sections(config: "Config", sections: dict) -> None:
     """Apply optional complex config sections."""
     if sections["triage"]:
         config.triage = _parse_triage_config(sections["triage"])
+    if sections["scheduling"]:
+        config.scheduling = _parse_scheduling_config(sections["scheduling"])
     if sections["e2e"]:
         config.e2e = _parse_e2e_config(sections["e2e"])
     if sections["sqlite_backup"]:
@@ -855,9 +870,9 @@ def _load_agents_section(
 _TOP_LEVEL_SECTION_KEYS = (
     "agents", "labels", "review", "cleanup", "worktrees", "execution",
     "validation", "ui", "observability", "security", "filtering",
-    "triage", "e2e", "goal_pilot", "milestones", "state", "config", "claims", "hooks",
+    "triage", "scheduling", "e2e", "goal_pilot", "milestones", "state", "config", "claims", "hooks",
     "ai_systems",
-    "triage", "e2e", "milestones", "state", "config", "claims", "hooks",
+    "triage", "scheduling", "e2e", "milestones", "state", "config", "claims", "hooks",
     "sqlite_backup",
 )
 
@@ -1039,6 +1054,9 @@ class Config:
 
     # Triage issue configuration - label/milestone inheritance
     triage: TriageConfig = field(default_factory=TriageConfig)
+
+    # Scheduling configuration
+    scheduling: SchedulingConfig = field(default_factory=SchedulingConfig)
 
     # E2E async test runner configuration
     e2e: E2EConfig = field(default_factory=E2EConfig)
@@ -1336,6 +1354,9 @@ class Config:
                 },
                 "priority": self.triage.priority,
             },
+            "scheduling": {
+                "default_priority_tier": self.scheduling.default_priority_tier,
+            },
             "e2e": {
                 "pr_labels": self.e2e_pr_labels,
                 "enabled": self.e2e.enabled,
@@ -1505,6 +1526,12 @@ class Config:
             filtering_dict["max_to_start"] = self.filtering.max_to_start
         if filtering_dict:
             result["filtering"] = filtering_dict
+
+        # Scheduling section
+        if self.scheduling.default_priority_tier != 1:
+            result["scheduling"] = {
+                "default_priority_tier": self.scheduling.default_priority_tier,
+            }
 
         # Review section
         review_dict: dict = {}

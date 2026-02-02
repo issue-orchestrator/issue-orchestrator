@@ -21,6 +21,7 @@ Usage:
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Sequence
 
@@ -539,7 +540,27 @@ Review these PRs for patterns, architectural concerns, and process improvements.
 Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` after review.
 """
         title = f"Triage Batch Review: {facts.pr_count} PRs pending"
+        priority_prefix = self._triage_priority_prefix()
+        if priority_prefix and not re.search(r"^\[P\d-\d+\]", title):
+            title = f"[{priority_prefix}-000] {title}"
         return title, body
+
+    def _triage_priority_prefix(self) -> str | None:
+        """Map triage priority label to a [P?-nnn] prefix tier."""
+        label = self.config.triage.priority
+        if not label:
+            return None
+        label = label.strip()
+        label_map = {
+            "priority:high": "P0",
+            "priority:medium": "P1",
+            "priority:low": "P2",
+        }
+        if label in label_map:
+            return label_map[label]
+        if re.fullmatch(r"P\d", label):
+            return label
+        return None
 
     def _compute_triage_labels(self, facts: "TriageFacts") -> tuple[str, ...]:
         """Compute labels for triage issue."""
@@ -1061,7 +1082,6 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         if issue.milestone:
             parts.append(f"milestone={issue.milestone}")
         # Could extract priority from title [Px-nnn] pattern
-        import re
         match = re.search(r"\[P(\d)-\d+\]", issue.title)
         if match:
             parts.append(f"P{match.group(1)}")
