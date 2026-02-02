@@ -64,3 +64,21 @@ def test_subprocess_registry_migrates_legacy_index(tmp_path):
 
     recovered = _SubprocessRegistry(repo_root).load()
     assert "issue-9" in recovered
+
+
+def test_process_alive_handles_waitpid_race(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    worktree = repo_root / "wt"
+    worktree.mkdir(parents=True)
+    monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
+
+    class _FlakyChild:
+        pid = 4242
+
+        def isalive(self) -> bool:
+            raise ChildProcessError("waitpid race")
+
+    plugin = SubprocessPlugin()
+    plugin._children["issue-1"] = _FlakyChild()
+
+    assert plugin._process_alive(4242, "issue-1") is False

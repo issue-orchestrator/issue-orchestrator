@@ -313,7 +313,12 @@ class SubprocessPlugin:
         """Check if a process is still running."""
         child = self._children.get(session_name) if session_name else None
         if child is not None:
-            return child.isalive()
+            try:
+                return child.isalive()
+            except (ChildProcessError, OSError):
+                # ptyprocess can race with waitpid() under parallel load
+                # and raise when the child has already been reaped.
+                return False
         # Fall back to kill(0) check for processes we don't track directly
         try:
             os.kill(pid, 0)
@@ -477,13 +482,19 @@ class SubprocessPlugin:
         if not self._allow_stdin:
             return False
         child = self._children.get(session_name)
-        if not child or not child.isalive():
+        if not child:
             return False
         try:
             child.sendline(text)
             return True
         except Exception:
-            return False
+            if not self._process_alive(child.pid or 0, session_name):
+                return False
+            try:
+                child.sendline(text)
+                return True
+            except Exception:
+                return False
 
     @hookimpl
     def send_to_session_by_name(self, session_name: str, text: str) -> bool | None:
