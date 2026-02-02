@@ -10,8 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from agent_runner import AgentRunner, RunSpec
-
+from ..agent_runner import AgentRunner, RunSpec
 from ..domain.models import AgentConfig
 from ..infra.env import ENV_PREFIX
 from ..ports.session_output import SessionOutput

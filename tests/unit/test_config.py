@@ -382,6 +382,39 @@ agents:
         config = Config()
         assert config.state_file == Path(".issue-orchestrator/state.json")
 
+    def test_sqlite_backup_defaults(self):
+        """Test default sqlite backup settings."""
+        config = Config()
+        assert config.sqlite_backup.enabled is True
+        assert config.sqlite_backup.cadence_hours == 24
+        assert config.sqlite_backup.check_interval_minutes == 60
+        assert config.sqlite_backup.retention_daily == 14
+        assert config.sqlite_backup.retention_weekly == 8
+        assert config.sqlite_backup.enforce_on_startup is True
+
+    def test_sqlite_backup_loaded_from_yaml(self, tmp_path):
+        """Test sqlite backup settings from YAML."""
+        config_content = """
+sqlite_backup:
+  enabled: false
+  cadence_hours: 6
+  check_interval_minutes: 15
+  retention_daily: 7
+  retention_weekly: 4
+  enforce_on_startup: false
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.sqlite_backup.enabled is False
+        assert config.sqlite_backup.cadence_hours == 6
+        assert config.sqlite_backup.check_interval_minutes == 15
+        assert config.sqlite_backup.retention_daily == 7
+        assert config.sqlite_backup.retention_weekly == 4
+        assert config.sqlite_backup.enforce_on_startup is False
+
     def test_config_multiple_agents(self, tmp_path):
         """Test loading config with multiple agents."""
         prompt1 = tmp_path / "prompt1.txt"
@@ -2209,6 +2242,46 @@ e2e:
         assert result["e2e"]["enabled"] is True
         assert result["e2e"]["auto_run_interval_minutes"] == 60
         assert result["e2e"]["stop_on_first_failure"] is True
+
+    def test_to_dict_sqlite_backup_settings(self, tmp_path):
+        """Test to_dict includes sqlite_backup settings when non-default."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("test prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+
+        config_content = f"""
+repo:
+  name: owner/repo
+
+worktrees:
+  base: {worktree_base}
+
+agents:
+  agent:test:
+    prompt: {prompt_file}
+
+sqlite_backup:
+  enabled: false
+  cadence_hours: 6
+  check_interval_minutes: 15
+  retention_daily: 7
+  retention_weekly: 4
+  enforce_on_startup: false
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        result = config.to_dict()
+
+        assert "sqlite_backup" in result
+        assert result["sqlite_backup"]["enabled"] is False
+        assert result["sqlite_backup"]["cadence_hours"] == 6
+        assert result["sqlite_backup"]["check_interval_minutes"] == 15
+        assert result["sqlite_backup"]["retention_daily"] == 7
+        assert result["sqlite_backup"]["retention_weekly"] == 4
+        assert result["sqlite_backup"]["enforce_on_startup"] is False
 
     def test_to_dict_omits_defaults(self, tmp_path):
         """Test to_dict omits default values to keep output minimal."""

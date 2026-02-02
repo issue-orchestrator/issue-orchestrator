@@ -125,6 +125,7 @@ class GoalPilot:
             order_index = _parse_order_index(payload.get("order_index", 0))
         except ValueError as exc:
             raise ValueError("order_index must be an integer") from exc
+        order_index = int(payload.get("order_index", 0))
         priority = payload.get("priority", "medium")
         status = payload.get("status", "planned")
         success_criteria = payload.get("success_criteria", "")

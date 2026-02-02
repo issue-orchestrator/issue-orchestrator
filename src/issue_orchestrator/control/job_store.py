@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Iterator, Optional
 
 from ..domain.models import PublishJob
+from ..infra.sqlite_connection import open_sqlite
 
 logger = logging.getLogger(__name__)
 
@@ -197,15 +198,12 @@ class JobStore:
     def _get_connection(self) -> sqlite3.Connection:
         """Get thread-local database connection."""
         if not hasattr(self._local, "conn") or self._local.conn is None:
-            self._local.conn = sqlite3.connect(
-                str(self._db_path),
+            self._local.conn = open_sqlite(
+                self._db_path,
                 check_same_thread=False,
                 isolation_level=None,  # Autocommit mode
+                row_factory=sqlite3.Row,
             )
-            self._local.conn.row_factory = sqlite3.Row
-            # Enable foreign keys and WAL mode for better concurrency
-            self._local.conn.execute("PRAGMA foreign_keys = ON")
-            self._local.conn.execute("PRAGMA journal_mode = WAL")
         return self._local.conn
 
     @contextmanager

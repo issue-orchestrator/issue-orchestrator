@@ -5,13 +5,15 @@ This module provides a single doctor function that both CLI and web can call.
 
 import os
 import shutil
-
+import time
 from pathlib import Path
 from typing import Optional
 
 from ..ports.command_runner import CommandRunner
 from .config import Config
 from .doctor.types import Check, DoctorResult
+from .sqlite_maintenance import BackupStatus, quick_check_db, get_backup_statuses
+from .sqlite_registry import list_sqlite_databases
 
 
 def _check_guardrails_in_worktree(
@@ -106,6 +108,8 @@ def run_doctor(
     _check_code_review(result, config)
     _check_review_exchange(result, config, runner)
     _check_e2e_runner(result, config)
+    _check_sqlite_databases(result, config)
+    _check_sqlite_backups(result, config)
     _check_guardrails(result, config, runner)
 
     return result
@@ -570,6 +574,96 @@ def _check_review_exchange(
     from .review_exchange_probe import probe_review_exchange
 
     result.checks.extend(probe_review_exchange(config, runner))
+
+def _backup_detail_for_status(status: BackupStatus, now: float) -> dict[str, str]:
+    if status.reason == "missing":
+        return {"status": "missing", "detail": "db file not found"}
+    if status.reason == "not enabled":
+        return {"status": "skipped", "detail": "not enabled"}
+    if status.reason == "disabled":
+        return {"status": "disabled", "detail": "backups disabled"}
+    if status.reason == "retention=0":
+        return {"status": "disabled", "detail": "retention set to 0"}
+    if status.reason == "error":
+        detail = status.detail or "last backup failed"
+        return {"status": "error", "detail": detail}
+    if status.latest_mtime is None:
+        return {"status": "overdue", "detail": "no backups yet"}
+    age = _format_age_hours(now - status.latest_mtime)
+    label = "overdue" if status.due else "ok"
+    return {"status": label, "detail": f"last backup {age} ago"}
+
+
+def _summarize_backup_statuses(statuses: list[BackupStatus]) -> tuple[str, str]:
+    errors = [s for s in statuses if s.reason == "error"]
+    overdue = [s for s in statuses if s.due and s.reason in {"none", "cadence"}]
+    missing = [s for s in statuses if s.reason == "missing"]
+
+    if errors:
+        return "warning", f"{len(errors)} DB(s) failed last backup. See per-DB details."
+    if overdue:
+        detail = (
+            f"{len(overdue)} DB(s) overdue. "
+            "Suggestion: keep the orchestrator running or restart it to force a backup; "
+            "adjust sqlite_backup.cadence_hours if needed."
+        )
+        return "warning", detail
+    if missing:
+        return "info", "Some DBs missing (will create on use). Backups will start after first write."
+    return "ok", "Backups are up to date"
+
+
+def _check_sqlite_databases(result: DoctorResult, config: Config) -> None:
+    """Validate SQLite databases with quick_check when present."""
+    for db in list_sqlite_databases(config):
+        path = db.path_fn(config)
+        if not path.exists():
+            status = "info"
+            detail = "Missing (will create)" if db.enabled_fn(config) else "Missing (not in use)"
+            result.checks.append(Check(name=f"SQLite: {db.label}", status=status, detail=detail))
+            continue
+
+        ok, detail = quick_check_db(path)
+        result.checks.append(Check(
+            name=f"SQLite: {db.label}",
+            status="ok" if ok else "error",
+            detail=detail,
+        ))
+
+
+def _format_age_hours(seconds: float) -> str:
+    hours = seconds / 3600
+    if hours < 1:
+        return f"{int(seconds / 60)}m"
+    return f"{hours:.1f}h"
+
+
+def _check_sqlite_backups(result: DoctorResult, config: Config) -> None:
+    """Surface backup status and suggestions for local SQLite DBs."""
+    statuses = get_backup_statuses(config)
+    if not statuses:
+        return
+
+    if not config.sqlite_backup.enabled:
+        result.checks.append(Check(
+            name="SQLite Backups",
+            status="info",
+            detail="Disabled (set sqlite_backup.enabled: true to protect local state)",
+        ))
+        return
+
+    now = time.time()
+    per_db = {status.db.label: _backup_detail_for_status(status, now) for status in statuses}
+    status, detail = _summarize_backup_statuses(statuses)
+
+    result.checks.append(Check(
+        name="SQLite Backups",
+        status=status,
+        detail=detail,
+        expandable={
+            "per_db": per_db,
+        },
+    ))
 
 
 def _check_guardrails(

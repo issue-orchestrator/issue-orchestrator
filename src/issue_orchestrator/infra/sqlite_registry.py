@@ -1,0 +1,62 @@
+"""SQLite database registry for startup checks and backups."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable
+
+from .config import Config
+from .repo_identity import state_dir
+
+
+@dataclass(frozen=True)
+class SQLiteDatabase:
+    key: str
+    label: str
+    path_fn: Callable[[Config], Path]
+    enabled_fn: Callable[[Config], bool]
+    backup: bool = True
+    enforce_pragmas: bool = True
+
+
+def _state_db(config: Config, name: str) -> Path:
+    return state_dir(config.repo_root) / name
+
+
+def list_sqlite_databases(config: Config) -> list[SQLiteDatabase]:
+    """Return the list of SQLite DBs used by the orchestrator."""
+    return [
+        SQLiteDatabase(
+            key="publish_jobs",
+            label="Publish Jobs",
+            path_fn=lambda cfg: _state_db(cfg, "publish_jobs.db"),
+            enabled_fn=lambda cfg: True,
+            backup=True,
+            enforce_pragmas=True,
+        ),
+        SQLiteDatabase(
+            key="session_registry",
+            label="Session Registry",
+            path_fn=lambda cfg: _state_db(cfg, "session_registry.sqlite"),
+            enabled_fn=lambda cfg: True,
+            backup=True,
+            enforce_pragmas=True,
+        ),
+        SQLiteDatabase(
+            key="goal_pilot",
+            label="Goal Pilot",
+            path_fn=lambda cfg: _state_db(cfg, "goal_pilot.sqlite"),
+            enabled_fn=lambda cfg: True,
+            backup=True,
+            enforce_pragmas=True,
+        ),
+        SQLiteDatabase(
+            key="e2e_results",
+            label="E2E Results",
+            path_fn=lambda cfg: cfg.repo_root / ".issue-orchestrator" / "e2e.db",
+            enabled_fn=lambda cfg: cfg.e2e.enabled,
+            backup=True,
+            enforce_pragmas=True,
+        ),
+    ]

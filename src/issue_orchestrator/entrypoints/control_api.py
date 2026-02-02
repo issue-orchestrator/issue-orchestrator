@@ -187,10 +187,8 @@ def _track_launched_pids(supervisor_data: dict) -> None:
         track_child_pid(supervisor_data["pid"])
 
 
-# =============================================================================
-# Unified Dashboard API Endpoints
-# =============================================================================
-# These endpoints support the unified dashboard entry point.
+# ======================================================================# Unified Dashboard API Endpoints
+# ======================================================================# These endpoints support the unified dashboard entry point.
 
 
 @control_app.get("/api/state")
@@ -1150,10 +1148,8 @@ async def control_center_ui() -> HTMLResponse:
     return HTMLResponse(content)
 
 
-# =============================================================================
-# Supervisor Control API - Process Management Endpoints
-# =============================================================================
-# These endpoints manage orchestrator processes via the Supervisor.
+# ======================================================================# Supervisor Control API - Process Management Endpoints
+# ======================================================================# These endpoints manage orchestrator processes via the Supervisor.
 # They work with repo_root paths rather than in-process state.
 
 
@@ -1874,10 +1870,8 @@ async def control_log_tail(
         }, status_code=500)
 
 
-# =============================================================================
-# Multi-Repo Registry API Endpoints
-# =============================================================================
-# These endpoints manage the repo registry for multi-repo supervision.
+# ======================================================================# Multi-Repo Registry API Endpoints
+# ======================================================================# These endpoints manage the repo registry for multi-repo supervision.
 
 
 def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - multi-repo status with state aggregation
@@ -2183,6 +2177,7 @@ async def goal_pilot_journey_reorder(run_id: str, request: Request) -> JSONRespo
         result = pilot.reorder_journeys(run_id, order)
     except ValueError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
+    result = pilot.reorder_journeys(run_id, order)
     return JSONResponse(result)
 
 
@@ -2193,7 +2188,7 @@ async def goal_pilot_update(run_id: str, request: Request) -> JSONResponse:
     body = await request.json()
     goals = body.get("goals")
     note = body.get("note")
-    if not goals:
+    if goals is None or not isinstance(goals, list):
         return JSONResponse({"error": "goals_required"}, status_code=400)
     pilot = _get_goal_pilot()
     result = pilot.update_goals(run_id, goals, note=note)
@@ -2670,10 +2665,8 @@ async def discover_repos_endpoint(  # noqa: C901 - recursive directory scanning 
     return JSONResponse({"discovered": discovered})
 
 
-# =============================================================================
-# Setup Wizard API Endpoints
-# =============================================================================
-# These endpoints support the GUI setup wizard for configuring new repositories.
+# ======================================================================# Setup Wizard API Endpoints
+# ======================================================================# These endpoints support the GUI setup wizard for configuring new repositories.
 
 
 def _load_config_for_repo(repo_root: str | None) -> Optional["Config"]:
@@ -3192,10 +3185,8 @@ Find PRs with `{review_label}` label and audit them for patterns, issues, and qu
 """
 
 
-# =============================================================================
-# Tools API
-# =============================================================================
-# These endpoints provide utilities accessible from the unified dashboard.
+# ======================================================================# Tools API
+# ======================================================================# These endpoints provide utilities accessible from the unified dashboard.
 
 
 @control_app.get("/control/tools/audit")
@@ -3491,10 +3482,8 @@ async def tools_worktrees_cleanup(request: Request) -> JSONResponse:
         return JSONResponse({"error": str(e)}, status_code=500)
 
 
-# =============================================================================
-# E2E Test Runner API
-# =============================================================================
-# These endpoints manage async E2E test execution per repository.
+# ======================================================================# E2E Test Runner API
+# ======================================================================# These endpoints manage async E2E test execution per repository.
 
 
 @control_app.post("/control/e2e/start")

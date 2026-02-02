@@ -27,6 +27,7 @@ from ..control.isolation import build_isolation_prefix
 if TYPE_CHECKING:
     import pexpect
 from ..infra.env import get_env
+from ..infra.sqlite_connection import open_sqlite
 from ..infra.hooks.hookspec import hookimpl
 from ..infra.repo_identity import state_dir
 from .session_output_adapter import FileSystemSessionOutput
@@ -52,15 +53,18 @@ class _SubprocessRegistry:
     def __init__(self, repo_root: Path) -> None:
         self._state_dir = state_dir(repo_root)
         self._state_dir.mkdir(parents=True, exist_ok=True)
-        self._db_path = self._state_dir / "subprocess_sessions.sqlite"
+        self._db_path = self._state_dir / "session_registry.sqlite"
+        self._legacy_db_path = self._state_dir / "subprocess_sessions.sqlite"
         self._legacy_dir = self._state_dir / "subprocess_sessions"
         self._legacy_index = self._state_dir / "subprocess_sessions.json"
         self._legacy_backup = self._legacy_index.with_suffix(".json.bak")
+        self._migrate_legacy_db_if_needed()
         self._ensure_db()
         self._migrate_legacy_if_needed()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._db_path)
+        return open_sqlite(self._db_path)
+        return open_sqlite(self._db_path)
 
     def _ensure_db(self) -> None:
         with self._connect() as conn:
@@ -79,6 +83,14 @@ class _SubprocessRegistry:
                 """
             )
             conn.commit()
+
+    def _migrate_legacy_db_if_needed(self) -> None:
+        if not self._legacy_db_path.exists() or self._db_path.exists():
+            return
+        try:
+            self._legacy_db_path.replace(self._db_path)
+        except Exception as exc:
+            logger.warning("Failed to migrate legacy session DB: %s", exc)
 
     def _migrate_legacy_if_needed(self) -> None:
         if self._db_path.exists() and self._has_rows():

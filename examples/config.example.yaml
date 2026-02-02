@@ -123,6 +123,13 @@ goal_pilot:
   approval_batch_size: 10
   approval_batch_window_minutes: 60
 
+goal_pilot:
+  enabled: false
+  # agent: "agent:goal-pilot"
+  approval_policy: "journeys_only"   # journeys_only | gatekeeper | batch
+  approval_batch_size: 10
+  approval_batch_window_minutes: 60
+
 cleanup:
   with_triage:
     close_ai_session_tabs: true
@@ -203,6 +210,14 @@ e2e:
   flake_threshold: 20                  # Flip rate percentage (0-100) to flag test as flaky
   flake_window_runs: 10               # Number of recent runs to check for flip rate
   pr_labels: ["io-e2e-test-data"]
+
+sqlite_backup:
+  enabled: true
+  cadence_hours: 24
+  check_interval_minutes: 60
+  retention_daily: 14
+  retention_weekly: 8
+  enforce_on_startup: true
 
 state:
   # file: ".issue-orchestrator/state.json"

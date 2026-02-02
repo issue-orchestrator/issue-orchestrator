@@ -336,6 +336,33 @@ e2e:
 - `e2e.flake_threshold`: Flip rate percentage (0-100) above which a test is flagged as flaky. Default `20`.
 - `e2e.flake_window_runs`: Number of recent E2E runs to check when calculating flip rate. Default `10`.
 
+### sqlite_backup
+
+```yaml
+sqlite_backup:
+  enabled: true
+  cadence_hours: 24
+  check_interval_minutes: 60
+  retention_daily: 14
+  retention_weekly: 8
+  enforce_on_startup: true
+```
+
+- `sqlite_backup.enabled`: Toggle automatic SQLite backups.
+- `sqlite_backup.cadence_hours`: Minimum hours between backups.
+- `sqlite_backup.check_interval_minutes`: How often to check whether backups are due.
+- `sqlite_backup.retention_daily`: Number of daily backups to keep (0 disables daily tier).
+- `sqlite_backup.retention_weekly`: Number of weekly backups to keep (0 disables weekly tier).
+- `sqlite_backup.retention_daily`: Number of daily backups to keep.
+- `sqlite_backup.retention_weekly`: Number of weekly backups to keep.
+- `sqlite_backup.enforce_on_startup`: If cadence elapsed, force a backup on startup.
+
+**Care & feeding**
+- Backups live under `.issue-orchestrator/backups/sqlite/<db_key>/daily/` and `weekly/`.
+- Restore: stop the orchestrator, copy the newest backup `.db` over the target DB, then restart.
+- Doctor shows backup status and will warn if backups are overdue.
+- Long-running orchestrators check for due backups every `sqlite_backup.check_interval_minutes`.
+
 ### state
 
 ```yaml
@@ -484,6 +511,12 @@ _Auto-generated from settings schema._
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `sqlite_backup.enabled` | boolean | `True` | Enable automatic backups of local SQLite state |
+| `sqlite_backup.cadence_hours` | integer | `24` | Minimum hours between backups |
+| `sqlite_backup.check_interval_minutes` | integer | `60` | How often to check whether backups are due |
+| `sqlite_backup.retention_daily` | integer | `14` | Number of daily backups to keep |
+| `sqlite_backup.retention_weekly` | integer | `8` | Number of weekly backups to keep |
+| `sqlite_backup.enforce_on_startup` | boolean | `True` | If cadence elapsed, force a backup on startup |
 | `observability.session_no_output_seconds` | integer | `120` | Emit event after this much idle time |
 | `observability.stale_escalation_ticks` | integer | `0` | Escalate after K consecutive stale ticks (0 = disabled) |
 | `ui.web_port` | integer | `8080` |  |
