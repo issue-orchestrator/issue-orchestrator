@@ -3,23 +3,23 @@
    ============================================ */
 :root {
     /* Dark theme (default) */
-    --bg-sidebar: var(--bg-card);
-    --bg-main: var(--bg-main);
-    --bg-card: var(--bg-card);
-    --bg-card-hover: var(--bg-card-hover);
-    --bg-input: var(--bg-main);
-    --border-color: var(--border-color);
-    --border-subtle: var(--border-subtle);
-    --text-primary: var(--text-primary);
-    --text-secondary: var(--text-secondary);
-    --text-muted: var(--text-muted);
+    --bg-sidebar: #161b22;
+    --bg-main: #0d1117;
+    --bg-card: #161b22;
+    --bg-card-hover: #1c2128;
+    --bg-input: #0d1117;
+    --border-color: #30363d;
+    --border-subtle: #21262d;
+    --text-primary: #e6edf3;
+    --text-secondary: #8b949e;
+    --text-muted: #6e7681;
     --accent-blue: #58a6ff;
     --accent-green: #3fb950;
     --accent-yellow: #d29922;
-    --accent-red: var(--accent-red);
-    --accent-purple: var(--accent-purple);
-    --focus-ring: var(--focus-ring);
-    --shadow: 0 8px 24px var(--shadow);
+    --accent-red: #f85149;
+    --accent-purple: #a371f7;
+    --focus-ring: rgba(88, 166, 255, 0.4);
+    --shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
 }
 
 [data-theme="light"] {
