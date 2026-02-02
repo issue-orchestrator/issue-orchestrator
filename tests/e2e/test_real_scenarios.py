@@ -21,6 +21,11 @@ import time
 from pathlib import Path
 
 import pytest
+
+# libtmux support was removed from the project, but some e2e tests still reference it
+# Skip this entire test module if libtmux is not available
+pytest.importorskip("libtmux")
+
 from libtmux import Server
 from libtmux.exc import LibTmuxException
 from libtmux._internal.query_list import ObjectDoesNotExist
