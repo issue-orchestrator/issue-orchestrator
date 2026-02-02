@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import time
 import uuid
 from dataclasses import dataclass
@@ -337,6 +338,58 @@ def install_venv_symlink(worktree_path: Path, repo_root: Path) -> bool:
         return True
     except OSError as e:
         logger.warning("Failed to symlink .venv: %s", e)
+        return False
+
+
+def install_vscode_node_modules(worktree_path: Path) -> bool:
+    """
+    Install VS Code extension dependencies in worktree via npm ci.
+
+    This ensures the worktree has node_modules for validation (make validate).
+    Uses `npm ci` for fast, reproducible installs (~1 second).
+
+    Args:
+        worktree_path: Path to the worktree
+
+    Returns:
+        True if install succeeded or node_modules already exists, False on failure
+    """
+    vscode_dir = worktree_path / "packages" / "vscode"
+    node_modules = vscode_dir / "node_modules"
+    package_lock = vscode_dir / "package-lock.json"
+
+    if not vscode_dir.exists():
+        logger.debug("No packages/vscode dir in worktree at %s, skipping npm install", vscode_dir)
+        return False
+
+    if not package_lock.exists():
+        logger.debug("No package-lock.json in %s, skipping npm install", vscode_dir)
+        return False
+
+    if node_modules.exists():
+        logger.debug("packages/vscode/node_modules already exists at %s", node_modules)
+        return True
+
+    try:
+        logger.info("Installing VS Code dependencies: npm ci in %s", vscode_dir)
+        result = subprocess.run(
+            ["npm", "ci"],
+            cwd=vscode_dir,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        if result.returncode == 0:
+            logger.info("VS Code dependencies installed successfully")
+            return True
+        else:
+            logger.warning("npm ci failed: %s", result.stderr.strip())
+            return False
+    except subprocess.TimeoutExpired:
+        logger.warning("npm ci timed out after 60s")
+        return False
+    except Exception as e:
+        logger.warning("Failed to install VS Code dependencies: %s", e)
         return False
 
 
@@ -925,12 +978,13 @@ def _finalize_worktree(
     pre_push_hook: Path | None,
     allow_no_verify_dry_run_preflight: bool,
 ) -> None:
-    """Install hooks, settings, venv, cli_tools, and identity marker on a worktree."""
+    """Install hooks, settings, venv, vscode deps, cli_tools, and identity marker on a worktree."""
     if enforce_hooks:
         install_hooks(worktree_path, pre_push_hook)
     install_claude_settings(worktree_path)
     _configure_no_verify_dry_run(worktree_path, allow_no_verify_dry_run_preflight)
     install_venv_symlink(worktree_path, repo_root)
+    install_vscode_node_modules(worktree_path)
     sync_cli_tools(worktree_path, repo_root)
     _install_worktree_identity(worktree_path)
 

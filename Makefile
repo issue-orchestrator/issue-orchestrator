@@ -110,7 +110,7 @@ worktree-setup: venv
 	@echo ""
 	@t0=$$(date +%s); \
 	echo "Installing VS Code extension dependencies..."; \
-	(cd packages/vscode && npm install --silent); \
+	(cd packages/vscode && npm ci --silent); \
 	t1=$$(date +%s); \
 	echo "Installing Playwright browsers..."; \
 	.venv/bin/playwright install chromium --with-deps 2>/dev/null || .venv/bin/playwright install chromium; \
