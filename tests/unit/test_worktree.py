@@ -315,6 +315,7 @@ class TestCreateWorktree:
         with pytest.raises(WorktreeError, match="Failed to create worktree"):
             create_worktree(repo_root, 123, "Test")
 
+    @patch("issue_orchestrator.adapters.worktree._worktree.install_vscode_node_modules")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_venv_symlink")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_hooks")
@@ -325,6 +326,7 @@ class TestCreateWorktree:
         mock_install_hooks,
         mock_install_claude_settings,
         mock_install_venv_symlink,
+        mock_install_vscode_node_modules,
         tmp_path,
         monkeypatch,
     ):
@@ -374,7 +376,9 @@ class TestCreateWorktree:
         mock_install_hooks.assert_called_once()
         mock_install_claude_settings.assert_called_once()
         mock_install_venv_symlink.assert_called_once()
+        mock_install_vscode_node_modules.assert_called_once()
 
+    @patch("issue_orchestrator.adapters.worktree._worktree.install_vscode_node_modules")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_venv_symlink")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_hooks")
@@ -385,6 +389,7 @@ class TestCreateWorktree:
         mock_install_hooks,
         mock_install_claude_settings,
         mock_install_venv_symlink,
+        mock_install_vscode_node_modules,
         tmp_path,
         monkeypatch,
     ):
@@ -420,6 +425,7 @@ class TestCreateWorktree:
         mock_install_hooks.assert_called_once()
         mock_install_claude_settings.assert_called_once()
         mock_install_venv_symlink.assert_called_once()
+        mock_install_vscode_node_modules.assert_called_once()
 
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_creates_base_directory(self, mock_run, tmp_path):
@@ -1341,6 +1347,90 @@ class TestInstallVenvSymlink:
         assert result is True
         assert worktree_venv.is_symlink()
         assert worktree_venv.resolve() == other_venv  # Still points to other_venv
+
+
+class TestInstallVscodeNodeModules:
+    """Tests for install_vscode_node_modules function."""
+
+    def test_runs_npm_ci_when_package_lock_exists(self, tmp_path):
+        """Test that npm ci is run when package-lock.json exists."""
+        from issue_orchestrator.adapters.worktree._worktree import install_vscode_node_modules
+
+        # Setup worktree with packages/vscode and package-lock.json
+        worktree = tmp_path / "worktree"
+        vscode_dir = worktree / "packages" / "vscode"
+        vscode_dir.mkdir(parents=True)
+        (vscode_dir / "package-lock.json").write_text("{}")
+
+        with patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+
+            result = install_vscode_node_modules(worktree)
+
+            assert result is True
+            mock_run.assert_called_once()
+            call_args = mock_run.call_args
+            assert call_args[0][0] == ["npm", "ci"]
+            assert call_args[1]["cwd"] == vscode_dir
+
+    def test_returns_false_when_no_vscode_dir(self, tmp_path):
+        """Test that function returns False when worktree has no packages/vscode directory."""
+        from issue_orchestrator.adapters.worktree._worktree import install_vscode_node_modules
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        result = install_vscode_node_modules(worktree)
+
+        assert result is False
+
+    def test_returns_false_when_no_package_lock(self, tmp_path):
+        """Test that function returns False when no package-lock.json exists."""
+        from issue_orchestrator.adapters.worktree._worktree import install_vscode_node_modules
+
+        worktree = tmp_path / "worktree"
+        vscode_dir = worktree / "packages" / "vscode"
+        vscode_dir.mkdir(parents=True)
+        # No package-lock.json
+
+        result = install_vscode_node_modules(worktree)
+
+        assert result is False
+
+    def test_skips_if_node_modules_already_exists(self, tmp_path):
+        """Test that npm ci is skipped if node_modules already exists."""
+        from issue_orchestrator.adapters.worktree._worktree import install_vscode_node_modules
+
+        worktree = tmp_path / "worktree"
+        vscode_dir = worktree / "packages" / "vscode"
+        vscode_dir.mkdir(parents=True)
+        (vscode_dir / "package-lock.json").write_text("{}")
+        node_modules = vscode_dir / "node_modules"
+        node_modules.mkdir()
+        (node_modules / "marker.txt").write_text("existing")
+
+        with patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run") as mock_run:
+            result = install_vscode_node_modules(worktree)
+
+            assert result is True
+            mock_run.assert_not_called()  # npm ci should not be called
+            assert (node_modules / "marker.txt").exists()  # Content preserved
+
+    def test_returns_false_on_npm_ci_failure(self, tmp_path):
+        """Test that function returns False when npm ci fails."""
+        from issue_orchestrator.adapters.worktree._worktree import install_vscode_node_modules
+
+        worktree = tmp_path / "worktree"
+        vscode_dir = worktree / "packages" / "vscode"
+        vscode_dir.mkdir(parents=True)
+        (vscode_dir / "package-lock.json").write_text("{}")
+
+        with patch("issue_orchestrator.adapters.worktree._worktree.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=1, stderr="npm ERR! something failed")
+
+            result = install_vscode_node_modules(worktree)
+
+            assert result is False
 
 
 class TestUpdateWorktreeOntoMain:
