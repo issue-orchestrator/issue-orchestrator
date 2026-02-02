@@ -65,3 +65,6 @@ Thumbs.db
 # Keep .issue-orchestrator/config/ tracked - it's project configuration
 .validate/
 .venv
+
+# Worktrees for development
+worktrees/
