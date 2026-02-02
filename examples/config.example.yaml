@@ -68,6 +68,11 @@ agents:
     timeout_minutes: 30
     ai_system: "claude-code"
 
+  "agent:goal-pilot":
+    prompt: ".prompts/goal-pilot.md"
+    model: "sonnet"
+    timeout_minutes: 30
+
 worktrees:
   base: "../"                     # Where to create worktrees (relative to repo)
   setup:
@@ -125,7 +130,7 @@ goal_pilot:
 
 goal_pilot:
   enabled: false
-  # agent: "agent:goal-pilot"
+  agent: "agent:goal-pilot"
   approval_policy: "journeys_only"   # journeys_only | gatekeeper | batch
   approval_batch_size: 10
   approval_batch_window_minutes: 60
