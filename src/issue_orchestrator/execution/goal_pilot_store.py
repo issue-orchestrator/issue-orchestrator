@@ -584,10 +584,7 @@ class SqliteGoalPilotStore:
             raise ValueError("reorder_journeys requires unique journey ids")
         if set(ordered_ids) != set(current_ids):
             raise ValueError("reorder_journeys must include all journeys for the run")
-        with self._transaction() as tx:
-            now = _now_iso()
-            for index, journey_id in enumerate(ordered_ids):
-                tx.execute(
+        now = _now_iso()
         with self._transaction() as conn:
             for index, journey_id in enumerate(ordered_ids):
                 conn.execute(
@@ -597,7 +594,6 @@ class SqliteGoalPilotStore:
                     WHERE journey_id = ? AND run_id = ?
                     """,
                     (index, now, journey_id, run_id),
-                    (index, _now_iso(), journey_id, run_id),
                 )
     def update_run_goals(self, run_id: str, goals: list[str]) -> None:
         now = _now_iso()

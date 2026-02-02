@@ -432,7 +432,6 @@ class GoalPilotSettings(BaseModel):
         },
     )
     approval_policy: Literal["journeys_only", "gatekeeper", "batch"] = Field(
-    approval_policy: str = Field(
         "journeys_only",
         title="Approval Policy",
         description="How Goal Pilot applies repo changes",

@@ -1717,9 +1717,6 @@ class Config:
 
         # Parse complex optional configs
         _apply_optional_sections(config, sections)
-        # Parse complex configs
-        _apply_complex_sections(config, sections)
-
         return config
 
     @classmethod
