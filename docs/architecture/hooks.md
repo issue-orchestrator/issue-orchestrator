@@ -53,7 +53,7 @@ These are installed automatically by issue-orchestrator when creating worktrees.
 | Hook | Type | Location | Purpose |
 |------|------|----------|---------|
 | Pre-push wrapper | Git | `.git/hooks/pre-push` | Chains project + orchestrator hooks, writes audit trail |
-| Pre-push (orchestrator) | Git | `.git/hooks/pre-push.orchestrator` | Validates Agent-Status trailers, blocks test-skipping patterns |
+| Pre-push (orchestrator) | Git | `.git/hooks/pre-push.orchestrator` | Validates Agent-Status trailers, blocks test-skipping patterns, rejects dirty tracked files (configurable) |
 | Stop hook | Claude Code | `.claude/settings.json` | Warns if session exits without `agent-done` |
 | gh wrapper | PATH script | `scripts/gh` | Blocks `gh pr create` without auth token |
 

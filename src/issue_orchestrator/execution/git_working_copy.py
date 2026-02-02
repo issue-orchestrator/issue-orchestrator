@@ -149,6 +149,21 @@ class GitWorkingCopy:
             logger.warning("Failed to check uncommitted changes in %s", worktree)
             return True  # Assume dirty on error (safer)
 
+    def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool:
+        """Check for dirty tracked files (ignores untracked/ignored)."""
+        try:
+            unstaged = self._run_git(worktree, ["diff", "--quiet"], check=False)
+            if unstaged.returncode == 1:
+                return True
+            if include_staged:
+                staged = self._run_git(worktree, ["diff", "--quiet", "--cached"], check=False)
+                if staged.returncode == 1:
+                    return True
+            return False
+        except GitError:
+            logger.warning("Failed to check tracked changes in %s", worktree)
+            return True  # Assume dirty on error (safer)
+
     def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
         """Get commits that are ahead of main branch."""
         try:

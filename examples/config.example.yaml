@@ -142,6 +142,10 @@ cleanup:
 validation:
   cmd: "make validate"
   timeout_seconds: 300
+  # tracked = block on staged + unstaged changes (default)
+  # unstaged = allow staged changes, block unstaged changes
+  # off = disable dirty-check guard
+  pre_push_dirty_check: "tracked"
 
 ui:
   mode: "web"
