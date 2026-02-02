@@ -472,6 +472,7 @@ _Auto-generated from settings schema._
 | `execution.concurrency.max_concurrent_sessions` | integer | `3` | Maximum parallel agent sessions |
 | `execution.concurrency.session_timeout_minutes` | integer | `45` | Kill sessions after this duration |
 | `ui.queue_refresh_seconds` | integer | `600` | How often to refresh the issue queue from GitHub (0 = manual only) |
+| `scheduling.default_priority_tier` | integer | `1` | Priority tier to use when issue titles have no [P?-nnn] prefix (0-3) |
 
 ## E2E Runner
 
