@@ -751,12 +751,12 @@ class TestPlanTriageIssueCreation:
         assert len(create_actions) == 1
         action = create_actions[0]
 
-        # Should have agent label, explicit labels, inherited labels, and priority
+        # Should have agent label, explicit labels, and inherited labels
         assert "agent:triage" in action.labels
         assert "needs-batch-review" in action.labels
         assert "io-e2e-test-data" in action.labels  # Inherited (was in source_labels)
         assert "team:backend" not in action.labels  # Not inherited (not in source_labels)
-        assert "P2" in action.labels  # Priority
+        assert action.title.startswith("[P2-000]")
 
     def test_triage_issue_inherits_milestone_latest(self):
         """Planner picks latest milestone from source issues."""
