@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import PurePosixPath
-from typing import Optional
+from typing import Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -31,9 +31,18 @@ class GuardrailFailure:
 
 
 @dataclass(frozen=True)
+class GuardrailDeps:
+    get_changed_files: Callable[[], list[str]]
+    get_tracked_files: Callable[[], list[str]]
+    get_coverage_map: Callable[[], dict[str, Optional[float]]]
+
+
+@dataclass(frozen=True)
 class GuardrailResult:
-    selection: GuardrailSelection
-    failures: list[GuardrailFailure]
+    status: str  # "ok", "skip", "error", "fail"
+    reason: Optional[str] = None
+    failures: list[GuardrailFailure] = field(default_factory=list)
+    candidates: list[str] = field(default_factory=list)
 
 
 def matches_any(path: str, patterns: list[str]) -> bool:
@@ -61,7 +70,7 @@ def filter_files(files: list[str], scope: list[str], exclude: list[str]) -> list
     return selected
 
 
-def select_candidates(
+def _select_candidates(
     config: GuardrailConfig,
     changed_files: list[str],
     tracked_files: list[str],
@@ -84,7 +93,7 @@ def select_candidates(
     return GuardrailSelection(candidates)
 
 
-def evaluate_coverage(
+def _evaluate_coverage(
     candidates: list[str],
     coverage_map: dict[str, Optional[float]],
     min_percent: float,
@@ -97,25 +106,33 @@ def evaluate_coverage(
     return failures
 
 
-def evaluate_guardrail(
-    config: GuardrailConfig,
-    changed_files: list[str],
-    tracked_files: list[str],
-    coverage_map: dict[str, Optional[float]],
-) -> GuardrailResult:
-    selection = select_candidates(
-        config=config,
-        changed_files=changed_files,
-        tracked_files=tracked_files,
-    )
-    if selection.error or selection.skip_reason:
-        return GuardrailResult(selection=selection, failures=[])
+def run_guardrail(config: GuardrailConfig, deps: GuardrailDeps) -> GuardrailResult:
+    if not config.enabled:
+        return GuardrailResult(status="skip", reason="disabled")
+
     if config.min_percent is None:
+        return GuardrailResult(status="error", reason="min_percent must be set when enabled")
+
+    selection = _select_candidates(
+        config=config,
+        changed_files=deps.get_changed_files(),
+        tracked_files=deps.get_tracked_files(),
+    )
+    if selection.error:
+        return GuardrailResult(status="error", reason=selection.error)
+    if selection.skip_reason:
+        return GuardrailResult(status="skip", reason=selection.skip_reason)
+
+    failures = _evaluate_coverage(
+        candidates=selection.candidates,
+        coverage_map=deps.get_coverage_map(),
+        min_percent=float(config.min_percent),
+    )
+    if failures:
         return GuardrailResult(
-            selection=GuardrailSelection([], error="min_percent must be set"),
-            failures=[],
+            status="fail",
+            failures=failures,
+            candidates=selection.candidates,
         )
-    failures = evaluate_coverage(selection.candidates, coverage_map, float(config.min_percent))
-    return GuardrailResult(selection=selection, failures=failures)
 
-
+    return GuardrailResult(status="ok", candidates=selection.candidates)
