@@ -441,10 +441,13 @@ def e2e_session_config(
     os.environ["E2E_CONTROL_API_PORT"] = str(config.control_api_port)
     os.environ["E2E_WEB_PORT"] = str(config.web_port)
 
-    # Skip actual git push unless explicitly set to "false" for live tests
-    if os.environ.get("E2E_DRY_RUN_PUSH", "1") != "false":
+    # Live by default: only use dry-run when explicitly requested.
+    dry_run_env = os.environ.get("E2E_DRY_RUN_PUSH")
+    if dry_run_env in ("1", "true", "True"):
         os.environ["E2E_DRY_RUN_PUSH"] = "1"
+        print("[E2E] Running in DRY RUN mode (E2E_DRY_RUN_PUSH=1)")
     else:
+        os.environ["E2E_DRY_RUN_PUSH"] = "false"
         print("[E2E] Running with REAL PR creation (E2E_DRY_RUN_PUSH=false)")
 
     return config

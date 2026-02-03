@@ -3542,6 +3542,7 @@ async def e2e_start(request: Request) -> JSONResponse:
             pytest_args=pytest_args,
             allow_retry_once=allow_retry,
             quarantine_file=config.e2e.quarantine_file,
+            auto_quarantine=config.e2e.auto_quarantine,
         )
 
         # Broadcast E2E started event for SSE subscribers
@@ -3678,6 +3679,7 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
                 elif run_obj.status == "failed":
                     untriaged_count = _count_untriaged_failures(db, run_obj.id)
                     needs_attention = untriaged_count > 0
+                _auto_create_e2e_issues_if_needed(config, db, run_obj, proc_status)
             signal_score = db.compute_signal_score(config.orchestrator_id)
         except Exception as e:
             logger.warning("Failed to read E2E DB: %s", e)
@@ -4756,6 +4758,67 @@ def _create_e2e_sub_issues(
         })
 
     return sub_issues
+
+
+def _auto_create_e2e_issues_if_needed(
+    config: Any,
+    db: Any,
+    run: Any,
+    proc_status: dict,
+) -> None:
+    """Auto-create E2E failure issues when enabled and not already created."""
+    if not config.e2e.auto_create_issues:
+        return
+    if run is None or run.status != "failed":
+        return
+    if proc_status.get("running"):
+        return
+    if not _orchestrator:
+        logger.warning("[e2e-auto-issues] Orchestrator not running; cannot create issues")
+        return
+
+    existing_run_issue = db.get_run_issue(run.id)
+    if existing_run_issue:
+        return
+
+    failed_results = db.get_failed_tests(run.id)
+    if not failed_results:
+        return
+
+    try:
+        from ..execution.e2e_issue_tracker_adapter import GitHubE2EIssueTracker
+
+        github_client = _orchestrator.repository_host.http_client  # type: ignore[union-attr]
+        tracker = GitHubE2EIssueTracker(github_client)
+        parent_issue = tracker.create_run_issue(
+            run=run,
+            failed_count=len(failed_results),
+            labels=["e2e:run"],
+        )
+        if parent_issue is None:
+            return
+
+        db.record_run_issue(run.id, parent_issue.issue_number)
+
+        results_by_nodeid = {r.nodeid: r for r in failed_results}
+        _create_e2e_sub_issues(
+            tracker,
+            parent_issue,
+            list(results_by_nodeid.keys()),
+            results_by_nodeid,
+            run,
+            db,
+            run.id,
+            config.e2e.issue_agent_label,
+        )
+        logger.info(
+            "[e2e-auto-issues] Created parent #%d with %d sub-issues for run #%d",
+            parent_issue.issue_number,
+            len(results_by_nodeid),
+            run.id,
+        )
+    except Exception as exc:
+        logger.exception("[e2e-auto-issues] Failed to auto-create issues: %s", exc)
 
 
 def _validate_e2e_create_request(

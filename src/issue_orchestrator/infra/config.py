@@ -376,6 +376,9 @@ class E2EConfig:
     quarantine_file: str = "tests/e2e/quarantine.txt"  # Path to quarantine list
     survive_restart: bool = True  # Let worker finish if orchestrator restarts
     stop_on_first_failure: bool = False  # If True, stop on first test failure (-x flag)
+    auto_quarantine: bool = True  # Auto-add failing tests to quarantine list
+    auto_create_issues: bool = True  # Auto-create GitHub issues for failures
+    issue_agent_label: str = "agent:backend"  # Agent label for failure issues
     flake_threshold: int = 20  # Flip rate percentage (0-100) to flag test as flaky
     flake_window_runs: int = 10  # Number of recent runs to check for flakiness
 
@@ -448,6 +451,9 @@ def _parse_e2e_config(data: dict) -> E2EConfig:
         quarantine_file=data.get("quarantine_file", "tests/e2e/quarantine.txt"),
         survive_restart=data.get("survive_restart", True),
         stop_on_first_failure=data.get("stop_on_first_failure", False),
+        auto_quarantine=data.get("auto_quarantine", True),
+        auto_create_issues=data.get("auto_create_issues", True),
+        issue_agent_label=data.get("issue_agent_label", "agent:backend"),
         flake_threshold=data.get("flake_threshold", 20),
         flake_window_runs=data.get("flake_window_runs", 10),
     )
@@ -1344,6 +1350,9 @@ class Config:
                 "allow_retry_once": self.e2e.allow_retry_once,
                 "quarantine_file": self.e2e.quarantine_file,
                 "survive_restart": self.e2e.survive_restart,
+                "auto_quarantine": self.e2e.auto_quarantine,
+                "auto_create_issues": self.e2e.auto_create_issues,
+                "issue_agent_label": self.e2e.issue_agent_label,
             },
             "sqlite_backup": {
                 "enabled": self.sqlite_backup.enabled,
@@ -1577,6 +1586,12 @@ class Config:
             e2e_dict["quarantine_file"] = self.e2e.quarantine_file
         if self.e2e.stop_on_first_failure:
             e2e_dict["stop_on_first_failure"] = True
+        if not self.e2e.auto_quarantine:
+            e2e_dict["auto_quarantine"] = False
+        if not self.e2e.auto_create_issues:
+            e2e_dict["auto_create_issues"] = False
+        if self.e2e.issue_agent_label != "agent:backend":
+            e2e_dict["issue_agent_label"] = self.e2e.issue_agent_label
         if e2e_dict:
             result["e2e"] = e2e_dict
 

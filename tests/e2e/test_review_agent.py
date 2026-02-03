@@ -12,13 +12,6 @@ review agent needs an actual PR to review.
 import logging
 import os
 
-# Enable real PR creation BEFORE any pytest fixtures run.
-# Review agent tests require actual PRs to exist on GitHub because:
-# 1. The review agent needs to fetch and review real PR content
-# 2. Labels are added to the real PR, not a fake one
-# 3. Dry-run mode creates fake PR numbers (90000-99999) that don't exist
-os.environ["E2E_DRY_RUN_PUSH"] = "false"
-
 import pytest
 
 from tests.e2e.flows import E2EFlow
@@ -31,6 +24,11 @@ logger = logging.getLogger(__name__)
 @pytest.mark.timeout(600)  # 10 minutes - dev agent + review agent
 class TestReviewAgentExecution:
     """Test the dev + review agent pipeline in smaller checkpoints."""
+
+    def _require_live(self) -> None:
+        if os.environ.get("E2E_DRY_RUN_PUSH") != "false":
+            pytest.skip("Review agent tests require real PRs (E2E_DRY_RUN_PUSH=false)")
+
 
     async def _create_issue_and_wait_for_pr(
         self,
@@ -70,6 +68,7 @@ class TestReviewAgentExecution:
         e2e_ui_mode: str,
     ):
         """Verify dev agent creates a PR and sets pr-pending."""
+        self._require_live()
         logger.info("Testing dev agent PR creation")
         flow = e2e_flow
         flow.fail_on_blocked_failed = True
@@ -94,6 +93,7 @@ class TestReviewAgentExecution:
         e2e_ui_mode: str,
     ):
         """Verify review agent applies the approval label to the PR."""
+        self._require_live()
         logger.info("Testing review agent approval")
         flow = e2e_flow
         flow.fail_on_blocked_failed = True

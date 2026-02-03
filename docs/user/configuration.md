@@ -475,6 +475,9 @@ _Auto-generated from settings schema._
 | `e2e.allow_retry_once` | boolean | `True` | Retry failing tests to reduce flakiness |
 | `e2e.stop_on_first_failure` | boolean | `False` | Add -x flag to stop test run on first failure |
 | `e2e.quarantine_file` | string | `tests/e2e/quarantine.txt` | Path to quarantine file for skipping known-flaky tests |
+| `e2e.auto_quarantine` | boolean | `True` | Automatically add failing tests to the quarantine list |
+| `e2e.auto_create_issues` | boolean | `True` | Automatically create GitHub issues for failed tests |
+| `e2e.issue_agent_label` | string | `agent:backend` | Agent label assigned to auto-created failure issues |
 
 ## Filtering
 
