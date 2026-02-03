@@ -1990,6 +1990,45 @@ scheduling:
         assert "scheduling" in result
         assert result["scheduling"]["default_priority_tier"] == 3
 
+
+
+class TestPriorityValidation:
+    """Tests for priority-related validation."""
+
+    def test_scheduling_default_priority_tier_invalid(self, tmp_path):
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+scheduling:
+  default_priority_tier: 12
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        errors = config.validate()
+        assert "scheduling.default_priority_tier must be between 0 and 9" in errors
+
+    def test_triage_priority_invalid_format(self, tmp_path):
+        config_content = """
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+
+triage:
+  priority: "priority:high"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        errors = config.validate()
+        assert "triage.priority must be a tier like 'P0'..'P9'" in errors
+
 class TestConfigSectionErrors:
     """Test clear error messages for invalid config sections."""
 

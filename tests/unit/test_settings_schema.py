@@ -41,6 +41,7 @@ class TestModelDefaults:
         assert m.max_concurrent_sessions == 3
         assert m.session_timeout_minutes == 45
         assert m.queue_refresh_seconds == 600
+        assert m.default_priority_tier == 1
 
     def test_e2e_defaults(self):
         m = E2ESettings()
@@ -111,6 +112,10 @@ class TestValidation:
     def test_filtering_fetch_limit_min(self):
         with pytest.raises(ValidationError):
             FilteringSettings(fetch_limit=0)
+
+    def test_default_priority_tier_max(self):
+        with pytest.raises(ValidationError):
+            ConcurrencySettings(default_priority_tier=10)
 
     def test_review_max_rework_max(self):
         with pytest.raises(ValidationError):

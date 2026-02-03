@@ -546,20 +546,13 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         return title, body
 
     def _triage_priority_prefix(self) -> str | None:
-        """Map triage priority label to a [P?-nnn] prefix tier."""
-        label = self.config.triage.priority
-        if not label:
+        """Return [P?-nnn] prefix tier from triage.priority if configured."""
+        priority = self.config.triage.priority
+        if not priority:
             return None
-        label = label.strip()
-        label_map = {
-            "priority:high": "P0",
-            "priority:medium": "P1",
-            "priority:low": "P2",
-        }
-        if label in label_map:
-            return label_map[label]
-        if re.fullmatch(r"P\d", label):
-            return label
+        priority = priority.strip()
+        if re.fullmatch(r"P\d", priority):
+            return priority
         return None
 
     def _compute_triage_labels(self, facts: "TriageFacts") -> tuple[str, ...]:
@@ -573,8 +566,6 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         for inherit_label in self.config.triage.inherit_labels:
             if inherit_label in facts.source_labels:
                 label_list.append(inherit_label)
-        if self.config.triage.priority:
-            label_list.append(self.config.triage.priority)
         return tuple(label_list)
 
     def _compute_triage_milestone(self, facts: "TriageFacts") -> int | None:

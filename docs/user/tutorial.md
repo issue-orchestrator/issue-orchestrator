@@ -274,7 +274,7 @@ This lets multiple agents work in parallel without conflicts.
 There are two priority signals, and they serve different purposes:
 
 1) **Scheduling order (used by the orchestrator)**: Title prefix `[P?-nnn]`
-   - `P0` < `P1` < `P2` < `P3`
+   - `P0` < `P1` < `P2` < ... < `P9`
    - `-nnn` is the sequence within that tier (lower numbers run first)
    - If missing, the scheduler uses the configured default tier (P1 by default)
    - Example: `[P0-005] Fix critical bug`

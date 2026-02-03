@@ -307,7 +307,7 @@ scheduling:
   default_priority_tier: 1
 ```
 
-- `scheduling.default_priority_tier`: Priority tier to use when issue titles do not include a `[P?-nnn]` prefix (0-3). Default is `1` (P1 / medium).
+- `scheduling.default_priority_tier`: Priority tier to use when issue titles do not include a `[P?-nnn]` prefix (0-9). Default is `1` (P1 / medium).
 
 ### milestones
 
@@ -334,7 +334,7 @@ triage:
 - `triage.explicit_labels`: Labels to always add to triage issues, regardless of source.
 - `triage.milestone_strategy.inherit_from_issues`: When `true`, inherits milestone from linked issues (uses "latest" by default, can be set to "earliest").
 - `triage.milestone_strategy.explicit`: Explicit milestone name to use instead of inheriting.
-- `triage.priority`: Priority label to add to triage issues (e.g., "priority:high"). Note: this is a label only; scheduling order is driven by `[P?-nnn]` title prefixes, not priority labels.
+- `triage.priority`: Priority tier to prefix triage issue titles (e.g., `P0`..`P9`). This controls scheduling order for triage issues via `[P?-nnn]` titles.
 
 ### e2e
 
@@ -472,7 +472,7 @@ _Auto-generated from settings schema._
 | `execution.concurrency.max_concurrent_sessions` | integer | `3` | Maximum parallel agent sessions |
 | `execution.concurrency.session_timeout_minutes` | integer | `45` | Kill sessions after this duration |
 | `ui.queue_refresh_seconds` | integer | `600` | How often to refresh the issue queue from GitHub (0 = manual only) |
-| `scheduling.default_priority_tier` | integer | `1` | Priority tier to use when issue titles have no [P?-nnn] prefix (0-3) |
+| `scheduling.default_priority_tier` | integer | `1` | Priority tier to use when issue titles have no [P?-nnn] prefix (0-9) |
 
 ## E2E Runner
 

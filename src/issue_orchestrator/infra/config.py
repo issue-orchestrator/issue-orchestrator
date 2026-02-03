@@ -1811,6 +1811,12 @@ class Config:
         errors.extend(TemplateValidator().validate(self))
         errors.extend(UnknownFieldsValidator().validate(self))
 
+        if not (0 <= self.scheduling.default_priority_tier <= 9):
+            errors.append("scheduling.default_priority_tier must be between 0 and 9")
+
+        if self.triage.priority is not None and not re.fullmatch(r"P\d", self.triage.priority.strip()):
+            errors.append("triage.priority must be a tier like 'P0'..'P9'")
+
         return errors
 
     def validate_unknown_fields(self) -> list[tuple[str, str]]:
