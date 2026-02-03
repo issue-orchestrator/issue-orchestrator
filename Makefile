@@ -127,7 +127,7 @@ venv-pip:
 	@echo "Done! Activate with: source .venv/bin/activate"
 
 # Full worktree setup - use this when setting up a new git worktree
-worktree-setup: venv
+worktree-setup: venv-fast
 	@echo ""
 	@t0=$$(date +%s); \
 	echo "Installing VS Code extension dependencies..."; \
