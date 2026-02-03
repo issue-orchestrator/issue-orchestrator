@@ -963,6 +963,42 @@ review:
         # Threshold of 0 means auto-trigger is disabled
         assert config.triage_review_threshold == 0
 
+    def test_validation_coverage_guardrail_from_yaml(self, tmp_path):
+        """Test loading coverage guardrail config."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("Prompt content")
+
+        config_content = f"""
+agents:
+  agent:test:
+    prompt: {prompt_file}
+    worktree_base: {tmp_path}
+
+validation:
+  cmd: "make validate"
+  timeout_seconds: 400
+  coverage_guardrail:
+    enabled: true
+    min_percent: 85
+    scope:
+      - "src/issue_orchestrator/**"
+    coverage_type: "branch"
+    exclude:
+      - "src/issue_orchestrator/generated/**"
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        guardrail = config.validation.coverage_guardrail
+        assert guardrail.enabled is True
+        assert guardrail.min_percent == 85
+        assert guardrail.apply_to == "changed"
+        assert guardrail.scope == ["src/issue_orchestrator/**"]
+        assert guardrail.coverage_type == "branch"
+        assert guardrail.exclude == ["src/issue_orchestrator/generated/**"]
+
     def test_per_agent_reviewer_field(self, tmp_path):
         """Test that per-agent reviewer field is parsed from YAML."""
         prompt_file = tmp_path / "prompt.txt"

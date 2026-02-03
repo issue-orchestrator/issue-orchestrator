@@ -129,6 +129,27 @@ execution:
     mode: "standard"
 ```
 
+#### initial_prompt
+
+Template variables available:
+
+| Variable | Description |
+|----------|-------------|
+| `{issue_number}` | GitHub issue number |
+| `{issue_title}` | Issue title |
+| `{prompt}` | Path to prompt file |
+| `{worktree}` | Path to worktree |
+| `{model}` | Model name |
+| `{permission_mode}` | Permission mode |
+| `{pr_number}` | PR number (review agents only) |
+
+Default for work agents:
+```
+Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report completion.
+```
+
+---
+
 ### labels
 
 ```yaml

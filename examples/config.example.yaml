@@ -145,12 +145,26 @@ cleanup:
     remove_worktrees: false
 
 validation:
-  cmd: "make validate"
+  # Validation script receives JSON context on stdin.
+  script: "extras/validate/run.sh"
+  args: []
+  env: {}
+  cmd: null  # legacy
   timeout_seconds: 300
   # tracked = block on staged + unstaged changes (default)
   # unstaged = allow staged changes, block unstaged changes
   # off = disable dirty-check guard
   pre_push_dirty_check: "tracked"
+  # Optional per-file coverage guardrail (checks only changed files)
+  # coverage_guardrail:
+  #   enabled: true
+  #   min_percent: 85
+  #   apply_to: changed
+  #   scope:
+  #     - "src/issue_orchestrator/**"
+  #   coverage_type: "branch"
+  #   exclude:
+  #     - "src/issue_orchestrator/generated/**"
 
 ui:
   mode: "web"
@@ -194,9 +208,6 @@ filtering:
   # exclude_labels: ["io-e2e-test-data", "test-data"]
   fetch_limit: 100
   max_to_start: 0
-
-scheduling:
-  default_priority_tier: 1         # P1 when title lacks [P?-nnn]
 
 milestones:
   sort: "due_date"                # due_date, number, pattern, name

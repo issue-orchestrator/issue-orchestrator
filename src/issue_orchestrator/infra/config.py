@@ -228,6 +228,17 @@ class DangerousConfig:
 
 
 @dataclass
+class CoverageGuardrailConfig:
+    """Per-file coverage guardrail for files touched in a change."""
+    enabled: bool = False
+    min_percent: Optional[float] = None
+    apply_to: str = "changed"  # "changed" or "all"
+    scope: list[str] = field(default_factory=list)
+    coverage_type: str = "line"  # "line" or "branch"
+    exclude: list[str] = field(default_factory=list)
+
+
+@dataclass
 class SafetyCheckConfig:
     """Safety check configuration for periodic hook verification.
 
@@ -245,17 +256,23 @@ class HooksConfig:
 
 @dataclass
 class ValidationConfig:
-    """Validation configuration - single command runs everywhere.
+    """Validation configuration - single validation entrypoint.
 
-    The same validation command runs:
+    The same validation entrypoint runs:
     - On agent-done: gives agent immediate feedback to fix issues
     - On pre-push: cached by SHA, instant pass if already validated
 
     This ensures agents can't "pass" a quick check only to fail later.
     """
+    # New contract: script invoked with context on stdin.
+    script: Optional[str] = None  # Path to validation script (repo-relative or absolute)
+    args: list[str] = field(default_factory=list)  # Args passed to script
+    env: dict[str, str] = field(default_factory=dict)  # Extra env vars
+    # Legacy: support a raw command string (no stdin context).
     cmd: Optional[str] = None  # Command to run (e.g., "make validate")
     timeout_seconds: int = 300  # Default 5 minutes
     pre_push_dirty_check: str = "tracked"  # "tracked" | "unstaged" | "off"
+    coverage_guardrail: CoverageGuardrailConfig = field(default_factory=CoverageGuardrailConfig)
 
 
 @dataclass
@@ -1300,9 +1317,20 @@ class Config:
             },
             "validation": {
                 "enabled": self.is_validation_enabled(),
+                "script": self.validation.script,
+                "args": list(self.validation.args),
+                "env": dict(self.validation.env),
                 "cmd": self.validation.cmd,
                 "timeout_seconds": self.validation.timeout_seconds,
                 "pre_push_dirty_check": self.validation.pre_push_dirty_check,
+                "coverage_guardrail": {
+                    "enabled": self.validation.coverage_guardrail.enabled,
+                    "min_percent": self.validation.coverage_guardrail.min_percent,
+                    "apply_to": self.validation.coverage_guardrail.apply_to,
+                    "scope": self.validation.coverage_guardrail.scope,
+                    "coverage_type": self.validation.coverage_guardrail.coverage_type,
+                    "exclude": self.validation.coverage_guardrail.exclude,
+                },
             },
             "review": {
                 "enabled": self.review_enabled,
@@ -1750,6 +1778,7 @@ class Config:
             sections["ai_systems"].get("allowed", [])
         )
 
+
         # Parse complex optional configs
         _apply_optional_sections(config, sections)
         return config
@@ -1957,21 +1986,62 @@ def load_validation_config(
             "cmd": "make validate",  # or None if not configured
             "timeout_seconds": 300,
             "pre_push_dirty_check": "tracked",
+            "coverage_guardrail": {
+                "enabled": False,
+                "min_percent": None,
+                "apply_to": "changed",
+                "scope": [],
+                "coverage_type": "line",
+                "exclude": [],
+            },
         }
     """
     config_path = find_config_file(start_path)
     if not config_path:
-        return {"cmd": None, "timeout_seconds": 300, "pre_push_dirty_check": "tracked"}
+        return {
+            "cmd": None,
+            "timeout_seconds": 300,
+            "pre_push_dirty_check": "tracked",
+            "coverage_guardrail": {
+                "enabled": False,
+                "min_percent": None,
+                "apply_to": "changed",
+                "scope": [],
+                "coverage_type": "line",
+                "exclude": [],
+            },
+        }
 
     try:
         with open(config_path) as f:
             config = yaml.safe_load(f) or {}
 
         validation = config.get("validation", {})
+        guardrail = validation.get("coverage_guardrail", {}) or {}
         return {
             "cmd": validation.get("cmd"),
             "timeout_seconds": validation.get("timeout_seconds", 300),
             "pre_push_dirty_check": validation.get("pre_push_dirty_check", "tracked"),
+            "coverage_guardrail": {
+                "enabled": guardrail.get("enabled", False),
+                "min_percent": guardrail.get("min_percent"),
+                "apply_to": guardrail.get("apply_to", "changed"),
+                "scope": guardrail.get("scope", []) or [],
+                "coverage_type": guardrail.get("coverage_type", "line"),
+                "exclude": guardrail.get("exclude", []) or [],
+            },
         }
     except Exception:
-        return {"cmd": None, "timeout_seconds": 300, "pre_push_dirty_check": "tracked"}
+        return {
+            "cmd": None,
+            "timeout_seconds": 300,
+            "pre_push_dirty_check": "tracked",
+            "coverage_guardrail": {
+                "enabled": False,
+                "min_percent": None,
+                "apply_to": "changed",
+                "scope": [],
+                "coverage_type": "line",
+                "exclude": [],
+            },
+        }
