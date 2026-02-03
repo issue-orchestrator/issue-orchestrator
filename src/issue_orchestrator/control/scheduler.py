@@ -270,7 +270,7 @@ class Scheduler:
 
         Sort order (from naming standard):
         1. Milestone order: M0, M1, M2...
-        2. Priority tier: P0 < P1 < P2 < P3
+        2. Priority tier: P0 < P1 < P2 < ... < P9
         3. Sequence: numeric part after dash in [Px-nnn]
         4. Tie-breaker: GitHub issue number ascending
 
@@ -395,15 +395,15 @@ class Scheduler:
     def _get_priority_value(self, issue: Issue) -> int:
         """Get numeric priority value from issue title [Px-nnn] pattern.
 
-        Sort order: P0 < P1 < P2 < P3 (lower value = higher priority)
+        Sort order: P0 < P1 < P2 < ... < P9 (lower value = higher priority)
 
         Args:
             issue: Issue to extract priority from.
 
         Returns:
-            Priority tier (0-3), or 9 if no priority in title.
+            Priority tier (0-9). If no [P?-nnn] prefix, defaults to configured tier.
         """
         match = re.search(r"\[P(\d)-\d+\]", issue.title)
         if match:
             return int(match.group(1))
-        return 9  # No priority = sort last
+        return self.config.scheduling.default_priority_tier

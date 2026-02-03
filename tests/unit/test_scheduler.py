@@ -54,11 +54,11 @@ class TestScheduler:
 
         sorted_issues = scheduler.sort_by_priority(issues)
 
-        # Priority order: P0 (0), P1 (1), P2 (2), none (9)
+        # Priority order: P0 (0), P1 (1), none (default P1, sequence=inf), P2 (2)
         assert sorted_issues[0].number == 2  # P0
         assert sorted_issues[1].number == 3  # P1
-        assert sorted_issues[2].number == 1  # P2
-        assert sorted_issues[3].number == 4  # No priority
+        assert sorted_issues[2].number == 4  # No priority (defaults to P1)
+        assert sorted_issues[3].number == 1  # P2
 
     def test_sort_by_priority_same_priority_by_sequence(self, sample_config):
         """Test that issues with same priority are sorted by sequence then number."""

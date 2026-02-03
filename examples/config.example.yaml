@@ -195,6 +195,9 @@ filtering:
   fetch_limit: 100
   max_to_start: 0
 
+scheduling:
+  default_priority_tier: 1         # P1 when title lacks [P?-nnn]
+
 milestones:
   sort: "due_date"                # due_date, number, pattern, name
   sort_config: {}
