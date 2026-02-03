@@ -2630,6 +2630,7 @@ class TestSettingsEndpoints:
                 "concurrency",
                 "e2e",
                 "filtering",
+                "milestones",
                 "review",
                 "hooks",
                 "advanced",
