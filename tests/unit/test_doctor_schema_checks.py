@@ -69,7 +69,10 @@ class TestRunSchemaChecks:
         cfg = Config()
         cfg.review_enabled = True
         cfg.code_review_agent = "agent:reviewer"
-        cfg.agents = {"agent:reviewer": AgentConfig(prompt_path=Path("test.md"))}
+        cfg.agents = {
+            "agent:reviewer": AgentConfig(prompt_path=Path("test.md")),
+            "agent:backend": AgentConfig(prompt_path=Path("test.md")),
+        }
 
         checks = run_schema_checks(cfg)
         agent_failures = [c for c in checks if "not in configured agents" in c.detail]
