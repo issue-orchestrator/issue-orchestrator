@@ -1,4 +1,4 @@
-.PHONY: help venv worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -10,6 +10,7 @@ GMAKE_VERSION := $(shell $(GMAKE) --version 2>/dev/null | head -1)
 help:
 	@echo "Available targets:"
 	@echo "  venv                Create/recreate .venv with Python 3.14+ and install all deps"
+	@echo "  venv-fast           Reuse .venv when possible; install/sync deps (reliable + fast)"
 	@echo "  worktree-setup      Full worktree setup: venv + vscode extensions + playwright"
 	@echo "  install             Install dev dependencies (assumes venv exists)"
 	@echo "  upgrade-deps        Update uv.lock after changing pyproject.toml"
@@ -80,6 +81,26 @@ venv: ensure-uv
 	t2=$$(date +%s); \
 	touch .venv/.deps-synced; \
 	echo "venv pid=$$$$ ts=$$(date -Iseconds) pwd=$$(pwd) uv_venv=$$((t1-t0))s uv_sync=$$((t2-t1))s total=$$((t2-t0))s" >> $(SETUP_LOG)
+	@echo ""
+	@echo "Done! Activate with: source .venv/bin/activate"
+
+# Fast, reliable venv setup: reuse if present, otherwise create
+venv-fast: ensure-uv
+	@mkdir -p $$(dirname $(SETUP_LOG))
+	@if [ ! -d .venv ]; then \
+		echo "Creating venv with $(SYSTEM_PYTHON) and installing dependencies..."; \
+		t0=$$(date +%s); \
+		$(UV) venv .venv --python $(SYSTEM_PYTHON); \
+		t1=$$(date +%s); \
+	else \
+		echo "Reusing existing .venv; syncing dependencies..."; \
+		t0=$$(date +%s); \
+		t1=$$(date +%s); \
+	fi; \
+	$(UV) sync --frozen --all-extras; \
+	t2=$$(date +%s); \
+	touch .venv/.deps-synced; \
+	echo "venv-fast pid=$$$$ ts=$$(date -Iseconds) pwd=$$(pwd) uv_venv=$$((t1-t0))s uv_sync=$$((t2-t1))s total=$$((t2-t0))s" >> $(SETUP_LOG)
 	@echo ""
 	@echo "Done! Activate with: source .venv/bin/activate"
 
