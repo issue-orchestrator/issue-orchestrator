@@ -1634,6 +1634,26 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
     prompter.print("\nApplying changes...")
     _apply_changes(file_collector, repo_name, prompter)
 
+    # Install AI agent hooks (blocks --no-verify and other bypass attempts)
+    install_hooks_now = prompter.yes_no("\nInstall AI agent hooks now? (recommended)", default=True)
+    if install_hooks_now:
+        try:
+            from ...infra.config import Config
+            from ...infra.hooks.hooks import install_hooks_for_config
+
+            temp_config = Config.load(output_path)
+            installed = install_hooks_for_config(temp_config, target_path)
+            if installed:
+                prompter.print("\nHooks installed:")
+                for agent_type, paths in installed.items():
+                    for path in paths:
+                        prompter.print(f"  ✓ {agent_type.value}: {path}")
+            else:
+                prompter.print("\nNo hooks installed (no supported agents detected).")
+        except Exception as exc:
+            prompter.print(f"\n⚠ Hook installation failed: {exc}")
+            prompter.print("  You can retry later with: issue-orchestrator setup-hooks")
+
     # AI provider key setup
     if prompter.yes_no("\nSet up AI provider API keys now?", default=True):
         setup_ai_providers(prompter)
@@ -1675,6 +1695,9 @@ def run_wizard(  # noqa: C901, PLR0912 - main wizard entry point with prerequisi
         prompter.print(f"     • {label}")
 
     prompter.print("\n  3. Run: issue-orchestrator start")
+
+    if not install_hooks_now:
+        prompter.print("\n  4. Install AI agent hooks (recommended): issue-orchestrator setup-hooks")
 
     prompter.print("\n  Advanced features (enable in config later):")
     prompter.print("     E2E Test Runner - Automatically runs your test suite when main")
