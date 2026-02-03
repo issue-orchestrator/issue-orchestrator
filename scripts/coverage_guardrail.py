@@ -13,10 +13,10 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from issue_orchestrator.validation.coverage_guardrail import (  # noqa: E402
+from issue_orchestrator.validation import (  # noqa: E402
     GuardrailConfig,
-    evaluate_coverage,
-    select_candidates,
+    GuardrailDeps,
+    run_guardrail,
 )
 
 
@@ -52,6 +52,7 @@ def _load_config(repo_root: Path) -> dict:
     return {
         "enabled": guardrail.get("enabled", False),
         "min_percent": guardrail.get("min_percent"),
+        "apply_to": guardrail.get("apply_to", "changed"),
         "scope": guardrail.get("scope", []) or [],
         "coverage_type": guardrail.get("coverage_type", "line"),
         "exclude": guardrail.get("exclude", []) or [],
@@ -181,52 +182,61 @@ def main() -> int:
         print("Coverage guardrail: min_percent must be set when enabled")
         return 2
 
+    scope = guardrail["scope"]
     config = GuardrailConfig(
         enabled=guardrail["enabled"],
         min_percent=guardrail["min_percent"],
         apply_to=guardrail.get("apply_to", "changed"),
-        scope=guardrail["scope"],
+        scope=scope,
         coverage_type=guardrail["coverage_type"],
         exclude=guardrail["exclude"],
     )
 
-    selection = select_candidates(
-        config=config,
-        changed_files=_changed_files(repo_root),
-        tracked_files=_tracked_files(repo_root),
-    )
-    if selection.error:
-        print(f"Coverage guardrail: {selection.error}")
-        return 2
-    if selection.skip_reason:
-        print(f"Coverage guardrail: {selection.skip_reason}")
-        return _run_pytest_no_coverage(repo_root)
+    class CoverageRunError(RuntimeError):
+        def __init__(self, exit_code: int, message: str) -> None:
+            super().__init__(message)
+            self.exit_code = exit_code
 
     coverage_dir = repo_root / ".issue-orchestrator" / "coverage"
     coverage_dir.mkdir(parents=True, exist_ok=True)
     coverage_path = coverage_dir / "coverage.json"
 
-    exit_code = _run_pytest_with_coverage(repo_root, coverage_type, scope, coverage_path)
-    if exit_code != 0:
-        return exit_code
+    def load_coverage_map() -> dict[str, float | None]:
+        exit_code = _run_pytest_with_coverage(repo_root, coverage_type, scope, coverage_path)
+        if exit_code != 0:
+            raise CoverageRunError(exit_code, "pytest failed")
+        if not coverage_path.exists():
+            raise CoverageRunError(2, "coverage report not found")
 
-    if not coverage_path.exists():
-        print("Coverage guardrail: coverage report not found")
+        coverage = _load_coverage(coverage_path, repo_root)
+        coverage_map: dict[str, float | None] = {}
+        for path, info in coverage.items():
+            if not info:
+                coverage_map[path] = None
+                continue
+            coverage_map[path] = info.get("summary", {}).get("percent_covered")
+        return coverage_map
+
+    deps = GuardrailDeps(
+        get_changed_files=lambda: _changed_files(repo_root),
+        get_tracked_files=lambda: _tracked_files(repo_root),
+        get_coverage_map=load_coverage_map,
+    )
+
+    try:
+        result = run_guardrail(config, deps)
+    except CoverageRunError as exc:
+        print(f"Coverage guardrail: {exc}")
+        return exc.exit_code
+    if result.status == "error":
+        print(f"Coverage guardrail: {result.reason}")
         return 2
-
-    coverage = _load_coverage(coverage_path, repo_root)
-    coverage_map: dict[str, float | None] = {}
-    for path, info in coverage.items():
-        if not info:
-            coverage_map[path] = None
-            continue
-        coverage_map[path] = info.get("summary", {}).get("percent_covered")
-
-    failures = evaluate_coverage(selection.candidates, coverage_map, float(min_percent))
-
-    if failures:
+    if result.status == "skip":
+        print(f"Coverage guardrail: {result.reason}")
+        return _run_pytest_no_coverage(repo_root)
+    if result.status == "fail":
         print("Coverage guardrail: per-file coverage below threshold")
-        for failure in failures:
+        for failure in result.failures:
             if failure.percent is None:
                 print(f"  {failure.path}: no coverage data")
             else:
