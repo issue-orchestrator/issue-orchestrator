@@ -463,7 +463,6 @@ _Auto-generated from settings schema._
 | `execution.concurrency.max_concurrent_sessions` | integer | `3` | Maximum parallel agent sessions |
 | `execution.concurrency.session_timeout_minutes` | integer | `45` | Kill sessions after this duration |
 | `ui.queue_refresh_seconds` | integer | `600` | How often to refresh the issue queue from GitHub (0 = manual only) |
-| `scheduling.default_priority_tier` | integer | `1` | Priority tier to use when issue titles have no [P?-nnn] prefix (0-9) |
 
 ## E2E Runner
 
@@ -476,6 +475,9 @@ _Auto-generated from settings schema._
 | `e2e.allow_retry_once` | boolean | `True` | Retry failing tests to reduce flakiness |
 | `e2e.stop_on_first_failure` | boolean | `False` | Add -x flag to stop test run on first failure |
 | `e2e.quarantine_file` | string | `tests/e2e/quarantine.txt` | Path to quarantine file for skipping known-flaky tests |
+| `e2e.auto_quarantine` | boolean | `True` | Automatically add failing tests to the quarantine list |
+| `e2e.auto_create_issues` | boolean | `True` | Automatically create GitHub issues for failed tests |
+| `e2e.issue_agent_label` | string | `agent:backend` | Agent label assigned to auto-created failure issues |
 
 ## Filtering
 
@@ -486,6 +488,12 @@ _Auto-generated from settings schema._
 | `filtering.exclude_labels` | string | `` | Comma-separated labels to exclude |
 | `filtering.fetch_limit` | integer | `100` | Max issues to fetch per API call |
 | `filtering.max_to_start` | integer | `0` | Stop after starting N issues (0 = unlimited) |
+
+## Milestones
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `milestones.order` | string | `` | Explicit ordered list of milestone titles. Does not filter; unlisted milestones are appended using the milestone sort strategy. |
 
 ## Review
 
