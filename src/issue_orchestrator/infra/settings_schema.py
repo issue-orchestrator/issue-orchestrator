@@ -293,6 +293,25 @@ class FilteringSettings(BaseModel):
     )
 
 
+class MilestonesSettings(BaseModel):
+    """Settings for the Milestones tab."""
+
+    order: str = Field(
+        "",
+        title="Milestone Order",
+        description=(
+            "Explicit ordered list of milestone titles. Does not filter; "
+            "unlisted milestones are appended using the milestone sort strategy."
+        ),
+        json_schema_extra={
+            "section": "Ordering",
+            "config_attr": "milestone_order",
+            "yaml_path": "milestones.order",
+            "ui_transform": "comma_separated_list",
+        },
+    )
+
+
 class ReviewSettings(BaseModel):
     """Settings for the Review tab."""
 
@@ -727,6 +746,7 @@ TAB_DEFINITIONS: list[dict[str, Any]] = [
     {"key": "concurrency", "label": "Concurrency", "model": ConcurrencySettings},
     {"key": "e2e", "label": "E2E Runner", "model": E2ESettings},
     {"key": "filtering", "label": "Filtering", "model": FilteringSettings},
+    {"key": "milestones", "label": "Milestones", "model": MilestonesSettings},
     {"key": "review", "label": "Review", "model": ReviewSettings},
     {"key": "goal_pilot", "label": "Goal Pilot", "model": GoalPilotSettings},
     {"key": "hooks", "label": "Hooks", "model": HooksSettings},

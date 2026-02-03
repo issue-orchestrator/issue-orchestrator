@@ -483,6 +483,22 @@ agents:
         assert config.filtering.milestones == ["M1", "M2"]
         assert config.get_filter_milestones() == ["M1", "M2"]
 
+    def test_config_with_milestone_order(self, tmp_path):
+        """Test config with milestones.order specified."""
+        config_content = """
+milestones:
+  order: ["M2", "M1"]
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.milestone_order == ["M2", "M1"]
+
     def test_config_filter_milestone_default(self):
         """Test default filtering.milestone is None."""
         config = Config()

@@ -486,6 +486,12 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
         pattern = prompter.input("  Pattern", r"M(\d+)")
         milestones_config["sort_config"] = {"pattern": pattern}
 
+    order_raw = prompter.input(
+        "Optional milestone order (comma-separated, blank for none)", ""
+    )
+    if order_raw.strip():
+        milestones_config["order"] = [m.strip() for m in order_raw.split(",") if m.strip()]
+
     # Foundation milestone for dependency scope
     prompter.print("\n  Dependencies must be within the same milestone OR in the foundation milestone.")
     prompter.print("  Example: Issues in M2 can depend on M2 issues or M0 (foundation) issues.")
@@ -811,6 +817,14 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
             prompter.print("    Sprint (\\d+) → matches 'Sprint 5' → 5")
             pattern = prompter.input("  Pattern", r"M(\d+)")
             milestones_config["sort_config"] = {"pattern": pattern}
+
+    if "milestones" not in config or "order" not in config.get("milestones", {}):
+        order_raw = prompter.input(
+            "Optional milestone order (comma-separated, blank for none)", ""
+        )
+        if order_raw.strip():
+            milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
+            milestones_config["order"] = [m.strip() for m in order_raw.split(",") if m.strip()]
 
     # Foundation milestone for dependency scope - only ask if not already configured
     if "milestones" not in config or "foundation" not in config.get("milestones", {}):

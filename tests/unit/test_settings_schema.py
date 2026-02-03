@@ -15,6 +15,7 @@ from issue_orchestrator.infra.settings_schema import (
     ConcurrencySettings,
     E2ESettings,
     FilteringSettings,
+    MilestonesSettings,
     GoalPilotSettings,
     ReviewSettings,
     apply_to,
@@ -167,6 +168,7 @@ class TestFromConfig:
             fetch_limit=50,
             max_to_start=10,
         )
+        cfg.milestone_order = ["M1", "M2"]
         cfg.review_enabled = True
         cfg.code_review_agent = "agent:reviewer"
         cfg.max_rework_cycles = 3
@@ -211,6 +213,12 @@ class TestFromConfig:
         assert filt.fetch_limit == 50
         assert filt.max_to_start == 10
 
+    def test_milestones_tab(self):
+        tabs = from_config(self._make_config())
+        milestones = tabs["milestones"]
+        assert isinstance(milestones, MilestonesSettings)
+        assert milestones.order == "M1, M2"
+
     def test_review_tab(self):
         tabs = from_config(self._make_config())
         rev = tabs["review"]
@@ -236,7 +244,7 @@ class TestFromConfig:
         """Default Config() should produce valid schema models."""
         cfg = Config()
         tabs = from_config(cfg)
-        assert len(tabs) == 7  # concurrency, e2e, filtering, review, goal_pilot, hooks, advanced
+        assert len(tabs) == 8  # concurrency, e2e, filtering, milestones, review, goal_pilot, hooks, advanced
         for key, model in tabs.items():
             assert model is not None
 
@@ -255,6 +263,7 @@ class TestApplyTo:
         cfg.session_timeout_minutes = 90
         cfg.e2e = E2EConfig(enabled=True, pytest_args=["tests/e2e", "-v"])
         cfg.filtering = FilteringConfig(milestones=["M1"], exclude_labels=["skip"])
+        cfg.milestone_order = ["M2"]
         cfg.review_enabled = True
         cfg.code_review_agent = "agent:rev"
 
@@ -268,6 +277,7 @@ class TestApplyTo:
         assert cfg2.e2e.pytest_args == ["tests/e2e", "-v"]
         assert cfg2.filtering.milestones == ["M1"]
         assert cfg2.filtering.exclude_labels == ["skip"]
+        assert cfg2.milestone_order == ["M2"]
         assert cfg2.review_enabled is True
         assert cfg2.code_review_agent == "agent:rev"
 
@@ -303,9 +313,11 @@ class TestApplyTo:
             milestones="M1, M2, M3",
             exclude_labels="skip, test",
         )
+        tabs["milestones"] = MilestonesSettings(order="M2, M3")
         apply_to(tabs, cfg)
         assert cfg.filtering.milestones == ["M1", "M2", "M3"]
         assert cfg.filtering.exclude_labels == ["skip", "test"]
+        assert cfg.milestone_order == ["M2", "M3"]
 
     def test_space_separated_list_transform(self):
         """Space-separated string should be split into list."""
@@ -320,10 +332,12 @@ class TestApplyTo:
         cfg = Config()
         tabs = from_config(cfg)
         tabs["filtering"] = FilteringSettings(milestones="", exclude_labels="")
+        tabs["milestones"] = MilestonesSettings(order="")
         tabs["e2e"] = E2ESettings(pytest_args="")
         apply_to(tabs, cfg)
         assert cfg.filtering.milestones == []
         assert cfg.filtering.exclude_labels == []
+        assert cfg.milestone_order == []
         assert cfg.e2e.pytest_args == []
 
     def test_optional_string_none(self):

@@ -94,6 +94,24 @@ class TestScheduler:
         assert sorted_issues[1].number == 2  # M7
         assert sorted_issues[2].number == 3  # No milestone
 
+    def test_sort_by_priority_with_milestone_order(self, sample_config):
+        """Explicit milestone order should override sort strategy for listed milestones."""
+        sample_config.milestone_order = ["A", "B", "D"]
+        sample_config.milestone_sort = "name"
+        scheduler = Scheduler(config=sample_config)
+
+        issues = [
+            Issue(number=1, title="Issue C", labels=[], milestone="C"),
+            Issue(number=2, title="Issue A", labels=[], milestone="A"),
+            Issue(number=3, title="Issue D", labels=[], milestone="D"),
+            Issue(number=4, title="Issue B", labels=[], milestone="B"),
+            Issue(number=5, title="Issue E", labels=[], milestone="E"),
+        ]
+
+        sorted_issues = scheduler.sort_by_priority(issues)
+
+        assert [i.milestone for i in sorted_issues] == ["A", "B", "D", "C", "E"]
+
     def test_sort_by_priority_with_title_format(self, sample_config):
         """Test sorting with new [Mx-nnn][Px-nnn] title format."""
         scheduler = Scheduler(config=sample_config)

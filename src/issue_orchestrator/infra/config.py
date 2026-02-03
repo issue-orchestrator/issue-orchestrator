@@ -561,6 +561,16 @@ def _parse_filtering_config(data: dict) -> FilteringConfig:
     )
 
 
+def _parse_milestone_order(value: object) -> list[str]:
+    """Parse milestones.order from YAML (list or comma-separated string)."""
+    raw = value or []
+    if isinstance(raw, str):
+        raw = [m.strip() for m in raw.split(",") if m.strip()]
+    if not isinstance(raw, list):
+        raise ValueError("milestones.order must be a list or comma-separated string")
+    return [str(m).strip() for m in raw if str(m).strip()]
+
+
 def _apply_optional_sections(config: "Config", sections: dict) -> None:
     """Apply optional complex config sections."""
     if sections["triage"]:
@@ -979,6 +989,8 @@ class Config:
     milestone_sort: str = "due_date"
     # Config passed to strategy via **kwargs (e.g., pattern="M(\\d+)" for PatternStrategy)
     milestone_sort_config: dict = field(default_factory=dict)
+    # Optional explicit order for milestones (titles). Unlisted milestones follow milestone_sort.
+    milestone_order: list[str] = field(default_factory=list)
     # Foundation milestone - dependencies must be same milestone OR in foundation
     foundation_milestone: str = "M0"
 
@@ -1322,6 +1334,7 @@ class Config:
             "milestones": {
                 "sort": self.milestone_sort,
                 "sort_config": self.milestone_sort_config,
+                "order": list(self.milestone_order),
                 "foundation": self.foundation_milestone,
             },
             "filtering": {
@@ -1733,6 +1746,7 @@ class Config:
         config.filtering = _parse_filtering_config(sections["filtering"])
         config.milestone_sort = sections["milestones"].get("sort", "due_date")
         config.milestone_sort_config = sections["milestones"].get("sort_config", {})
+        config.milestone_order = _parse_milestone_order(sections["milestones"].get("order", []))
         config.foundation_milestone = sections["milestones"].get("foundation", "M0")
         config.ai_systems_allowed = _parse_ai_systems_allowed(
             sections["ai_systems"].get("allowed", [])

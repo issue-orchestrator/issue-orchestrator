@@ -9,7 +9,18 @@ from typing import Optional
 from ..config import Config
 from ...ports.command_runner import CommandRunner
 from .types import DoctorResult
-from .checks import ai, config as config_checks, e2e, github, guardrails, hooks, review, schema as schema_checks, workspace
+from .checks import (
+    ai,
+    config as config_checks,
+    e2e,
+    github,
+    guardrails,
+    hooks,
+    milestones as milestone_checks,
+    review,
+    schema as schema_checks,
+    workspace,
+)
 
 
 def run_doctor(
@@ -44,6 +55,7 @@ def run_doctor(
     result.checks.extend(config_checks.check_template_variables(config))
     result.checks.extend(config_checks.check_repository_config(config))
     result.checks.extend(config_checks.check_worktree_remediation(config))
+    result.checks.extend(milestone_checks.check_milestone_order(config))
 
     result.checks.extend(workspace.check_working_directory(runner))
     result.checks.extend(workspace.check_hook_dependencies(Path.cwd()))
