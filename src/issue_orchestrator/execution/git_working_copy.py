@@ -272,6 +272,10 @@ class GitWorkingCopy:
         except GitError:
             return None
 
+    def default_branch(self, repo_root: Path, remote: str = "origin") -> str:
+        """Determine the default branch for a repository."""
+        return self._git.default_branch(repo_root, remote=remote)
+
     def get_commits_ahead_count(
         self,
         repo_root: Path,

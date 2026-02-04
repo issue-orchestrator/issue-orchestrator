@@ -89,6 +89,7 @@ class GitAdapter(Protocol):
     def list_branch_names(self, worktree: Path) -> list[str]: ...
     def get_current_branch(self, worktree: Path) -> str | None: ...
     def has_uncommitted_changes(self, worktree: Path) -> bool: ...
+    def default_branch(self, repo_root: Path, remote: str = "origin") -> str: ...
 
 
 @dataclass
@@ -190,8 +191,7 @@ class CompletionProcessor:
             return "main"
         if self._config.worktree_default_branch:
             return self._config.worktree_default_branch
-        from ..adapters.worktree._worktree import get_default_branch
-        return get_default_branch(self._config.repo_root)
+        return self.git_adapter.default_branch(self._config.repo_root)
 
     def read_completion_record(
         self, worktree: Path, completion_path: str | None = None
