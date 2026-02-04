@@ -69,6 +69,7 @@ if TYPE_CHECKING:
     from ..control.publish_executor import PublishJobExecutor
     from ..control.session_controller import SessionController
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
+    from ..ports.e2e_issue_tracker import E2EIssueTracker
 
 logger = logging.getLogger(__name__)
 
@@ -353,6 +354,7 @@ def _validate_required_deps(
     completion_processor: "CompletionProcessor | None",
     session_controller_instance: "SessionController | None",
     fresh_issue_reader: "GitHubFreshIssueReader | None",
+    e2e_issue_tracker: "E2EIssueTracker | None",
 ) -> None:
     """Validate all required dependencies are present."""
     # GitHub requires special error message
@@ -380,6 +382,7 @@ def _validate_required_deps(
         (completion_processor, "CompletionProcessor"),
         (session_controller_instance, "SessionController"),
         (fresh_issue_reader, "FreshIssueReader"),
+        (e2e_issue_tracker, "E2EIssueTracker"),
     ]
     for dep, name in deps_to_check:
         if dep is None:
@@ -428,6 +431,7 @@ def build_orchestrator(
     from ..control.state_machine_manager import StateMachineManager
     from ..adapters.github.fresh_issue_reader import GitHubFreshIssueReader
     from ..execution.triage_downloader import TriageDownloader
+    from ..execution.e2e_issue_tracker_adapter import GitHubE2EIssueTracker
 
     install_gh_guard()
 
@@ -484,6 +488,8 @@ def build_orchestrator(
     # Create cache-bypassing reader
     fresh_issue_reader = GitHubFreshIssueReader(repo=config.repo, config=config) if github else None
 
+    e2e_issue_tracker = GitHubE2EIssueTracker(github.http_client) if github else None
+
     # Create action applier (IO boundary)
     action_applier = ActionApplier(
         labels=github,
@@ -532,6 +538,7 @@ def build_orchestrator(
         github, event_hub, planner, session_manager, label_sync,
         action_applier, fact_gatherer, pr_scanner, session_restorer,
         completion_processor, session_controller_instance, fresh_issue_reader,
+        e2e_issue_tracker,
     )
 
     # Type assertions after validation (validation raises if any are None)
@@ -550,6 +557,7 @@ def build_orchestrator(
     assert completion_observer is not None
     assert publish_executor is not None
     assert manifest_downloader is not None
+    assert e2e_issue_tracker is not None
 
     # Wire up worktree removal callback for async completion job tracking
     # When a worktree is removed, mark associated jobs as WORKTREE_GONE
@@ -560,6 +568,7 @@ def build_orchestrator(
         events=events,
         runner=runner,
         repository_host=github,
+        e2e_issue_tracker=e2e_issue_tracker,
         fresh_issue_reader=fresh_issue_reader,
         event_hub=event_hub,
         planner=planner,
@@ -671,6 +680,7 @@ def build_orchestrator_for_testing(
     goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
 
     from ..execution.triage_downloader import TriageDownloader
+    from unittest.mock import MagicMock
     manifest_downloader = TriageDownloader(
         repository_host=github,
         command_runner=command_runner,
@@ -686,6 +696,7 @@ def build_orchestrator_for_testing(
             return self._issue_tracker.get_issue_labels(issue_number)
 
     fresh_issue_reader = _TestFreshIssueReader(github)
+    e2e_issue_tracker = MagicMock()
 
     # Create default action applier
     if action_applier is None:
@@ -797,6 +808,7 @@ def build_orchestrator_for_testing(
         events=events,
         runner=runner,
         repository_host=github,
+        e2e_issue_tracker=e2e_issue_tracker,
         fresh_issue_reader=fresh_issue_reader,
         event_hub=event_hub,
         planner=planner,

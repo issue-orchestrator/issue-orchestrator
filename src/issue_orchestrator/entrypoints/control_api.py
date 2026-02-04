@@ -4786,10 +4786,7 @@ def _auto_create_e2e_issues_if_needed(
         return
 
     try:
-        from ..execution.e2e_issue_tracker_adapter import GitHubE2EIssueTracker
-
-        github_client = _orchestrator.repository_host.http_client  # type: ignore[union-attr]
-        tracker = GitHubE2EIssueTracker(github_client)
+        tracker = _orchestrator.deps.e2e_issue_tracker
         parent_issue = tracker.create_run_issue(
             run=run,
             failed_count=len(failed_results),
@@ -4872,7 +4869,6 @@ async def e2e_create_issues(
         }
     """
     from ..infra.e2e_db import E2EDB
-    from ..execution.e2e_issue_tracker_adapter import GitHubE2EIssueTracker
 
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -4903,9 +4899,7 @@ async def e2e_create_issues(
                  "parent_issue_number": existing_run_issue.github_issue_number},
                 status_code=409)
 
-        # Get the GitHub client via the public http_client property
-        github_client = _orchestrator.repository_host.http_client  # type: ignore[union-attr]
-        tracker = GitHubE2EIssueTracker(github_client)
+        tracker = _orchestrator.deps.e2e_issue_tracker
 
         parent_issue = tracker.create_run_issue(run=run, failed_count=len(nodeids), labels=["e2e:run"])
         if parent_issue is None:
@@ -5001,7 +4995,6 @@ async def e2e_sync_issues(
         }
     """
     from ..infra.e2e_db import E2EDB
-    from ..execution.e2e_issue_tracker_adapter import GitHubE2EIssueTracker
 
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -5025,8 +5018,7 @@ async def e2e_sync_issues(
         passing_nodeids.update(t["nodeid"] for t in summary["passed_on_retry"])
 
         open_issues = db.get_all_open_failure_issues()
-        github_client = _orchestrator.repository_host.http_client  # type: ignore[union-attr]
-        tracker = GitHubE2EIssueTracker(github_client)
+        tracker = _orchestrator.deps.e2e_issue_tracker
 
         commit_sha = run.commit_sha or "unknown"
         closed_issues, parent_issues_to_check = _sync_close_passing_issues(
