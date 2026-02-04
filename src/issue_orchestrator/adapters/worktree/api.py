@@ -12,6 +12,11 @@ from ._worktree import (
     generate_branch_name,
     get_worktree_branch,
     next_branch_name,
+    find_worktree_for_branch,
+    HOOKS_DIR,
+    install_claude_settings,
+    install_venv_symlink,
+    sync_cli_tools,
 )
 
 
@@ -27,4 +32,9 @@ __all__ = [
     "generate_branch_name",
     "get_worktree_branch",
     "next_branch_name",
+    "find_worktree_for_branch",
+    "HOOKS_DIR",
+    "install_claude_settings",
+    "install_venv_symlink",
+    "sync_cli_tools",
 ]

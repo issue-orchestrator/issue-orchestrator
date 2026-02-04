@@ -469,6 +469,20 @@ class TestClaudeCodeAdapter:
 
         blocked = run_hook_test(
             hook_script,
+            "gh api repos/acme/repo/pulls/1/merge",
+            env=env,
+        )
+        assert blocked
+
+        blocked = run_hook_test(
+            hook_script,
+            "git commit -n -m 'test'",
+            env=env,
+        )
+        assert blocked
+
+        blocked = run_hook_test(
+            hook_script,
             "git -c core.hooksPath=/dev/null push",
             env=env,
         )

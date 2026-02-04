@@ -28,6 +28,12 @@ fallback_block_no_verify() {
     if [[ "$payload" == *"gh pr merge"* ]]; then
         return 0
     fi
+    if [[ "$payload" == *"gh api"* && "$payload" == *"/merge"* ]]; then
+        return 0
+    fi
+    if [[ "$payload" == *"git commit -n"* ]]; then
+        return 0
+    fi
     if [[ "$payload" == *"core.hooksPath=/dev/null"* ]]; then
         return 0
     fi

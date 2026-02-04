@@ -17,6 +17,9 @@ from issue_orchestrator.adapters.worktree.api import (
     get_worktree_branch,
     next_branch_name,
     install_hooks,
+    find_worktree_for_branch,
+    install_claude_settings,
+    install_venv_symlink,
     WorktreeError,
 )
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
@@ -617,7 +620,6 @@ class TestFindWorktreeForBranch:
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_find_worktree_for_branch_found(self, mock_run, tmp_path):
         """Test finding an existing worktree for a branch."""
-        from issue_orchestrator.adapters.worktree._worktree import find_worktree_for_branch
 
         mock_output = """worktree /path/to/main
 HEAD abc123
@@ -636,7 +638,6 @@ branch refs/heads/128-m9-ios-styling
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_find_worktree_for_branch_not_found(self, mock_run, tmp_path):
         """Test when branch is not checked out in any worktree."""
-        from issue_orchestrator.adapters.worktree._worktree import find_worktree_for_branch
 
         mock_output = """worktree /path/to/main
 HEAD abc123
@@ -651,7 +652,6 @@ branch refs/heads/main
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_find_worktree_for_branch_git_fails(self, mock_run, tmp_path):
         """Test when git command fails."""
-        from issue_orchestrator.adapters.worktree._worktree import find_worktree_for_branch
 
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="error")
 
@@ -1064,7 +1064,6 @@ class TestInstallHooks:
         (worktree_path / ".git").write_text(f"gitdir: {worktrees_dir}")
         
         # Create a fake orchestrator hook
-        from issue_orchestrator.adapters.worktree._worktree import HOOKS_DIR
         
         install_hooks(worktree_path)
         
@@ -1193,7 +1192,6 @@ class TestInstallClaudeSettings:
 
     def test_install_claude_settings_creates_file(self, tmp_path):
         """Test that install_claude_settings creates .claude/settings.json."""
-        from issue_orchestrator.adapters.worktree._worktree import install_claude_settings
 
         install_claude_settings(tmp_path)
 
@@ -1203,7 +1201,6 @@ class TestInstallClaudeSettings:
     def test_install_claude_settings_has_stop_hook(self, tmp_path):
         """Test that the settings contain a Stop hook."""
         import json
-        from issue_orchestrator.adapters.worktree._worktree import install_claude_settings
 
         install_claude_settings(tmp_path)
 
@@ -1217,7 +1214,6 @@ class TestInstallClaudeSettings:
     def test_install_claude_settings_merges_with_existing(self, tmp_path):
         """Test that install_claude_settings merges with existing settings."""
         import json
-        from issue_orchestrator.adapters.worktree._worktree import install_claude_settings
 
         # Create existing settings
         claude_dir = tmp_path / ".claude"
@@ -1242,7 +1238,6 @@ class TestInstallVenvSymlink:
 
     def test_creates_symlink_when_venv_exists(self, tmp_path):
         """Test that symlink is created when main repo has .venv."""
-        from issue_orchestrator.adapters.worktree._worktree import install_venv_symlink
 
         # Setup main repo with .venv
         main_repo = tmp_path / "main_repo"
@@ -1265,7 +1260,6 @@ class TestInstallVenvSymlink:
 
     def test_returns_false_when_no_main_venv(self, tmp_path):
         """Test that function returns False when main repo has no .venv."""
-        from issue_orchestrator.adapters.worktree._worktree import install_venv_symlink
 
         # Setup main repo without .venv
         main_repo = tmp_path / "main_repo"
@@ -1284,7 +1278,6 @@ class TestInstallVenvSymlink:
 
     def test_skips_if_venv_already_exists(self, tmp_path):
         """Test that existing .venv in worktree is not overwritten."""
-        from issue_orchestrator.adapters.worktree._worktree import install_venv_symlink
 
         # Setup main repo with .venv
         main_repo = tmp_path / "main_repo"
@@ -1309,7 +1302,6 @@ class TestInstallVenvSymlink:
 
     def test_skips_if_symlink_already_exists(self, tmp_path):
         """Test that existing symlink is not replaced."""
-        from issue_orchestrator.adapters.worktree._worktree import install_venv_symlink
 
         # Setup main repo with .venv
         main_repo = tmp_path / "main_repo"
