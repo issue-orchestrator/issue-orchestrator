@@ -19,10 +19,8 @@ set -euo pipefail
 input="$(< /dev/stdin)"
 
 fallback_block_no_verify() {
-    if echo "$1" | grep -q -- "--no-verify" && echo "$1" | grep -q -- "git"; then
-        return 0
-    fi
-    return 1
+    local payload="$1"
+    [[ "$payload" == *"--no-verify"* && "$payload" == *"git"* ]]
 }
 
 python_bin="$(command -v python3 || true)"
