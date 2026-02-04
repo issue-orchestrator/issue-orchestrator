@@ -157,7 +157,7 @@ def main() -> None:
 
     config_path = find_config_file(worktree)
     if not config_path:
-        print("ERROR: No config found for validation.", file=sys.stderr)
+        print("ERROR: No validation command configured.", file=sys.stderr)
         sys.exit(2)
 
     config = Config.load(config_path)
