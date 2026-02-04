@@ -20,6 +20,7 @@ def _check_guardrails_in_worktree(
     repo_root: Path,
     runner: CommandRunner,
     worktree_base: str = "../",
+    base_branch: str = "main",
 ) -> list[Check]:
     """Create a test worktree and verify guardrails work.
 
@@ -48,6 +49,7 @@ def _check_guardrails_in_worktree(
             issue_number=0,
             issue_title="doctor-guardrail-test",
             worktree_base=Path(worktree_base),
+            base_branch=base_branch,
         )
 
         checks.append(Check(
@@ -686,5 +688,10 @@ def _check_guardrails(
     repo_root = Path.cwd()
     worktree_base = str(config.worktree_base) if config.worktree_base else "../"
 
-    guardrail_checks = _check_guardrails_in_worktree(repo_root, runner, worktree_base)
+    guardrail_checks = _check_guardrails_in_worktree(
+        repo_root,
+        runner,
+        worktree_base,
+        base_branch=config.worktree_default_branch,
+    )
     result.checks.extend(guardrail_checks)

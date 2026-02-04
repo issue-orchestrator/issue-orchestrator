@@ -51,6 +51,7 @@ class WorktreeManager(Protocol):
         enforce_hooks: bool = True,
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
+        base_branch: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
     ) -> WorktreeInfo:
         """Create a new git worktree for an issue.
@@ -63,6 +64,7 @@ class WorktreeManager(Protocol):
             enforce_hooks: Whether to install pre-push hooks
             pre_push_hook: Custom pre-push hook path
             branch_name: Specific branch to checkout (for reviews)
+            base_branch: Branch to use for new worktree bases (defaults to default branch)
             reuse_options: Options controlling reuse behavior
 
         Returns:

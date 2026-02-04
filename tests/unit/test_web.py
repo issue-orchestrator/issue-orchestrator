@@ -1901,8 +1901,9 @@ class TestPortUtilityFunctions:
 
         try:
             with patch("issue_orchestrator.entrypoints.web._kill_process_on_port", return_value=False):
-                with pytest.raises(RuntimeError, match="Port .* is already in use"):
-                    ensure_port_available(port)
+                with patch("time.sleep", return_value=None):
+                    with pytest.raises(RuntimeError, match="Port .* is already in use"):
+                        ensure_port_available(port)
         finally:
             sock.close()
 
@@ -2205,8 +2206,8 @@ class TestRunWebDashboard:
                     # Start the task
                     task = asyncio.create_task(run_web_dashboard(mock_orch, port=8080))
 
-                    # Give it a moment to set up
-                    await asyncio.sleep(0.1)
+                    # Give it a loop turn to set up
+                    await asyncio.sleep(0)
 
                     # Check orchestrator was set
                     assert get_orchestrator() is mock_orch
@@ -2234,26 +2235,32 @@ class TestRunWebDashboard:
 
         mock_server = MagicMock()
         mock_server.serve = AsyncMock()
+        opened = asyncio.Event()
 
         with patch("issue_orchestrator.entrypoints.web.ensure_port_available"):
             with patch("uvicorn.Server", return_value=mock_server):
-                with patch("issue_orchestrator.entrypoints.web.webbrowser.open") as mock_open:
-                    task = asyncio.create_task(run_web_dashboard(mock_orch, port=8080))
+                def _open(url):
+                    opened.set()
+                    return True
 
-                    # Wait for browser open
-                    await asyncio.sleep(0.5)
+                with patch("issue_orchestrator.entrypoints.web.webbrowser.open", side_effect=_open) as mock_open:
+                    with patch("issue_orchestrator.entrypoints.web.asyncio.sleep", new=AsyncMock()):
+                        task = asyncio.create_task(run_web_dashboard(mock_orch, port=8080))
 
-                    # Should have opened browser
-                    mock_open.assert_called_once_with("http://127.0.0.1:8080")
+                        # Wait for browser open
+                        await asyncio.wait_for(opened.wait(), timeout=0.1)
 
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
+                        # Should have opened browser
+                        mock_open.assert_called_once_with("http://127.0.0.1:8080")
 
-                    set_orchestrator(None)
-                    set_server(None)
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+
+                        set_orchestrator(None)
+                        set_server(None)
 
 
 class TestRunWithWebDashboard:
@@ -2279,8 +2286,8 @@ class TestRunWithWebDashboard:
                 with patch("issue_orchestrator.entrypoints.web.webbrowser.open"):
                     task = asyncio.create_task(run_with_web_dashboard(mock_orch, port=8080))
 
-                    # Give it time to start
-                    await asyncio.sleep(0.7)
+                    # Give it a loop turn to start
+                    await asyncio.sleep(0)
 
                     # Startup should have been called
                     assert mock_orch.startup.called or True  # May be in thread

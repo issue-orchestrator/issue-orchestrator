@@ -760,6 +760,7 @@ def sample_config(sample_agent_config, tmp_path):
     config.max_concurrent_sessions = 3
     config.session_timeout_minutes = 45
     config.ui_mode = "tmux"
+    config.setup_worktree = []
     # Use temp directory for state file to isolate tests
     config.state_file = tmp_path / ".issue-orchestrator" / "state.json"
     # Tests are not exercising hook enforcement.

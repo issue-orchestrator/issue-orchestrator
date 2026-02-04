@@ -71,5 +71,10 @@ e2e:
   quarantine_file: tests/e2e/quarantine.txt
   survive_restart: true
 
+hooks:
+  ai_gate:
+    interval_days: 7
+    dangerous_allow_failure: false
+
 config:
   strict: true

@@ -108,9 +108,11 @@ repo:
 ```yaml
 worktrees:
   base: "../"
-  setup: []
+  setup:
+    - "make install-vscode-extensions"
   reuse_push_preflight: true
   allow_no_verify_dry_run_preflight: true
+  default_branch: "main"
   worktree_branch_on_recreate: "delete"
   remediation:
     pr_collision: "new_branch"
@@ -278,12 +280,12 @@ security:
 
 ```yaml
 hooks:
-  safety_check:
-    interval_days: 7                    # Run live verification every N days (0 = disabled)
+  ai_gate:
+    interval_days: 7                    # Run AI gate tests every N days (0 = disabled)
     dangerous_allow_failure: false      # If true, warn only; if false, block on failure
 ```
 
-The safety check spawns actual AI agents to verify that hooks correctly block dangerous commands like `git push --no-verify`. This runs on first setup and periodically to ensure hooks remain effective.
+AI gate tests exercise hook/execpolicy enforcement to verify that dangerous commands like `git push --no-verify` are blocked. This runs on first setup and periodically to ensure hooks remain effective.
 
 ### filtering
 
@@ -527,8 +529,8 @@ _Auto-generated from settings schema._
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `hooks.safety_check.interval_days` | integer | `7` | Run live hook verification every N days (0 = disabled) |
-| `hooks.safety_check.dangerous_allow_failure` | boolean | `False` | If true, warn only on safety check failure; if false, block orchestrator start |
+| `hooks.ai_gate.interval_days` | integer | `7` | Run AI gate tests every N days (0 = disabled) |
+| `hooks.ai_gate.dangerous_allow_failure` | boolean | `False` | If true, warn only on AI gate test failure; if false, block orchestrator start |
 
 ## Advanced
 
@@ -546,5 +548,6 @@ _Auto-generated from settings schema._
 | `ui.control_api_port` | integer | `19080` | 0 = disabled |
 | `ai_systems.allowed` | string | `` | Additional ai_system values allowed in config (comma-separated) |
 | `worktrees.base` | string | `../` | Directory where git worktrees are created |
+| `worktrees.default_branch` | string | `main` | Branch to base new worktrees and PRs on (must exist on origin) |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch |
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->
