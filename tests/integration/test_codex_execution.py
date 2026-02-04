@@ -13,6 +13,12 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.live,
+    pytest.mark.xdist_group("codex"),
+]
+
 from issue_orchestrator.infra.env import ENV_PREFIX
 
 

@@ -155,66 +155,75 @@ class TestCreateWorktree:
 
         worktree_base = tmp_path / "worktrees"
 
-        # Mock: prune, find existing worktree, check if branch exists, fetch,
-        # get_default_branch (symbolic-ref fails, rev-parse main succeeds), create worktree
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stderr=""),  # prune succeeds
-            MagicMock(returncode=0, stdout="", stderr=""),  # find_worktree_for_branch (no match)
-            MagicMock(returncode=1, stderr=""),  # branch doesn't exist
-            MagicMock(returncode=1, stderr=""),  # fetch fails (branch not on remote)
-            MagicMock(returncode=1, stderr=""),  # symbolic-ref fails (get_default_branch)
-            MagicMock(returncode=0, stderr=""),  # rev-parse main succeeds (get_default_branch)
-            MagicMock(returncode=0, stderr=""),  # worktree create succeeds
-        ]
+        def mock_subprocess(command, **_kwargs):
+            cmd = command
+            if "worktree" in cmd and "prune" in cmd:
+                return MagicMock(returncode=0, stderr="")
+            if "worktree" in cmd and "list" in cmd:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if (
+                "rev-parse" in cmd
+                and "--verify" in cmd
+                and any(
+                    part == "123-add-user-auth" or part.endswith("/123-add-user-auth")
+                    for part in cmd
+                )
+            ):
+                return MagicMock(returncode=1, stderr="")
+            if cmd[3:5] == ["fetch", "origin"] and "123-add-user-auth" in cmd:
+                return MagicMock(returncode=1, stderr="")
+            if cmd[3:5] == ["fetch", "origin"] and "main" in cmd:
+                return MagicMock(returncode=0, stderr="")
+            if cmd[3:6] == ["rev-parse", "--verify", "origin/main"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if "worktree" in cmd and "add" in cmd:
+                return MagicMock(returncode=0, stderr="")
+            return MagicMock(returncode=0, stderr="", stdout="")
+
+        mock_run.side_effect = mock_subprocess
 
         # Execute
         worktree_path, branch_name, *_ = create_worktree(
-            repo_root, 123, "Add user auth", worktree_base
+            repo_root, 123, "Add user auth", worktree_base, base_branch="main"
         )
 
         # Verify
         assert branch_name == "123-add-user-auth"
         assert worktree_path == worktree_base / "repo-123"
 
-        # Check git commands were called correctly
-        assert mock_run.call_count == 7
-
-        # First call: prune stale worktrees
-        prune_cmd = mock_run.call_args_list[0][0][0]
+        # Prune stale worktrees
+        prune_cmd = next(
+            call_args[0][0]
+            for call_args in mock_run.call_args_list
+            if "worktree" in call_args[0][0] and "prune" in call_args[0][0]
+        )
         assert prune_cmd[:3] == ["git", "-C", str(repo_root)]
         assert "prune" in prune_cmd
 
-        # Second call: find worktree for branch
-        find_cmd = mock_run.call_args_list[1][0][0]
+        # Find worktree for branch
+        find_cmd = next(
+            call_args[0][0]
+            for call_args in mock_run.call_args_list
+            if "worktree" in call_args[0][0] and "list" in call_args[0][0]
+        )
         assert "worktree" in find_cmd and "list" in find_cmd
 
-        # Third call: check if branch exists
-        branch_check_cmd = mock_run.call_args_list[2][0][0]
+        # Check if branch exists
+        branch_check_cmd = next(
+            call_args[0][0]
+            for call_args in mock_run.call_args_list
+            if call_args[0][0][3:6] == ["rev-parse", "--verify", "123-add-user-auth"]
+        )
         assert branch_check_cmd[:3] == ["git", "-C", str(repo_root)]
-        assert "rev-parse" in branch_check_cmd
 
-        # Fourth call: fetch remote branch (fails, so create local)
-        fetch_cmd = mock_run.call_args_list[3][0][0]
-        assert fetch_cmd[:3] == ["git", "-C", str(repo_root)]
-        assert fetch_cmd[3] == "fetch"
-
-        # Fifth call: get_default_branch symbolic-ref (fails)
-        symbolic_ref_cmd = mock_run.call_args_list[4][0][0]
-        assert "symbolic-ref" in symbolic_ref_cmd
-
-        # Sixth call: get_default_branch rev-parse main (succeeds)
-        main_check_cmd = mock_run.call_args_list[5][0][0]
-        assert "rev-parse" in main_check_cmd
-        assert "main" in main_check_cmd
-
-        # Seventh call: create worktree with new branch (-b flag) from default branch
-        worktree_cmd = mock_run.call_args_list[6][0][0]
+        # Final call: create worktree with new branch (-b flag) from default branch
+        worktree_cmd = [call_args[0][0] for call_args in mock_run.call_args_list if "worktree" in call_args[0][0] and "add" in call_args[0][0]][-1]
         assert worktree_cmd[0] == "git"
         assert worktree_cmd[3] == "worktree"
         assert worktree_cmd[4] == "add"
         assert "-b" in worktree_cmd  # New branch flag
         assert "123-add-user-auth" in worktree_cmd
-        assert "main" in worktree_cmd  # Should branch from main
+        assert "origin/main" in worktree_cmd  # Should branch from origin/main
 
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_default_base(self, mock_run, tmp_path):
@@ -312,7 +321,7 @@ class TestCreateWorktree:
         )
 
         # Execute & Verify
-        with pytest.raises(WorktreeError, match="Failed to create worktree"):
+        with pytest.raises(WorktreeError, match="Failed to fetch origin/main"):
             create_worktree(repo_root, 123, "Test")
 
     @patch("issue_orchestrator.adapters.worktree._worktree.install_vscode_node_modules")
@@ -405,13 +414,15 @@ class TestCreateWorktree:
         monkeypatch.setenv("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", "1")
 
         mock_run.side_effect = [
+            MagicMock(returncode=1, stderr=""),  # symbolic-ref fails (get_default_branch)
+            MagicMock(returncode=0, stderr=""),  # rev-parse main succeeds (get_default_branch)
             MagicMock(returncode=0, stderr=""),  # prune succeeds
             MagicMock(returncode=0, stderr=""),  # worktree remove --force
             MagicMock(returncode=0, stdout="", stderr=""),  # find_worktree_for_branch
             MagicMock(returncode=1, stderr=""),  # branch doesn't exist
             MagicMock(returncode=1, stderr=""),  # fetch origin fails
-            MagicMock(returncode=1, stderr=""),  # symbolic-ref fails (get_default_branch)
-            MagicMock(returncode=0, stderr=""),  # rev-parse main succeeds (get_default_branch)
+            MagicMock(returncode=0, stderr=""),  # fetch origin main (ensure origin ref)
+            MagicMock(returncode=0, stdout="", stderr=""),  # rev-parse origin/main
             MagicMock(returncode=0, stderr=""),  # worktree add
         ]
 
@@ -475,6 +486,8 @@ class TestCreateWorktree:
 
         # Mock: prune succeeds, find worktree (no match), then exception on branch check
         mock_run.side_effect = [
+            MagicMock(returncode=1, stderr=""),  # symbolic-ref fails (get_default_branch)
+            MagicMock(returncode=0, stderr=""),  # rev-parse main succeeds (get_default_branch)
             MagicMock(returncode=0, stderr=""),  # prune succeeds
             MagicMock(returncode=0, stdout="", stderr=""),  # find_worktree_for_branch (no match)
             OSError("Command not found"),  # exception on branch check
@@ -1449,13 +1462,15 @@ class TestUpdateWorktreeOntoMain:
         with patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run:
             # Mock all git commands in the rebase flow:
             # 1. fetch origin main
-            # 2. rev-parse --abbrev-ref HEAD (get current branch)
-            # 3. status --porcelain (check for uncommitted changes)
-            # 4. reset --hard HEAD
-            # 5. clean -fd
-            # 6. rebase origin/main
+            # 2. rev-parse origin/main
+            # 3. rev-parse --abbrev-ref HEAD (get current branch)
+            # 4. status --porcelain (check for uncommitted changes)
+            # 5. reset --hard HEAD
+            # 6. clean -fd
+            # 7. rebase origin/main
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
+                MagicMock(returncode=0, stdout="", stderr=""),  # rev-parse origin/main
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
                 MagicMock(returncode=0, stdout="", stderr=""),  # status --porcelain (no changes)
                 MagicMock(returncode=0, stdout="", stderr=""),  # reset --hard HEAD
@@ -1463,12 +1478,12 @@ class TestUpdateWorktreeOntoMain:
                 MagicMock(returncode=0, stdout="", stderr=""),  # rebase origin/main
             ]
 
-            result = _update_worktree_onto_main(worktree, repo_root)
+            result = _update_worktree_onto_main(worktree, repo_root, "main")
 
             assert result == ResetInfo(success=True, uncommitted_discarded=0, commits_discarded=0)
             # Verify rebase was called
-            assert mock_run.call_count == 6
-            rebase_call = mock_run.call_args_list[5]
+            assert mock_run.call_count == 7
+            rebase_call = mock_run.call_args_list[6]
             assert "rebase" in rebase_call[0][0]
             assert "origin/main" in rebase_call[0][0]
 
@@ -1482,10 +1497,11 @@ class TestUpdateWorktreeOntoMain:
         repo_root.mkdir()
 
         with patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run:
-            # Flow: fetch, rev-parse, status, reset, clean, rebase(fail),
+            # Flow: fetch, rev-parse origin/main, rev-parse, status, reset, clean, rebase(fail),
             #       rebase --abort, rev-list --count, reset --hard origin/main
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
+                MagicMock(returncode=0, stdout="", stderr=""),  # rev-parse origin/main
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
                 MagicMock(returncode=0, stdout="", stderr=""),  # status --porcelain
                 MagicMock(returncode=0, stdout="", stderr=""),  # reset --hard HEAD
@@ -1496,12 +1512,12 @@ class TestUpdateWorktreeOntoMain:
                 MagicMock(returncode=0, stdout="", stderr=""),  # reset --hard origin/main
             ]
 
-            result = _update_worktree_onto_main(worktree, repo_root)
+            result = _update_worktree_onto_main(worktree, repo_root, "main")
 
             # Rebase conflict now returns success=True but with commits_discarded
             assert result == ResetInfo(success=True, uncommitted_discarded=0, commits_discarded=2)
             # Verify rebase --abort was called
-            abort_call = mock_run.call_args_list[6]
+            abort_call = mock_run.call_args_list[7]
             assert "rebase" in abort_call[0][0]
             assert "--abort" in abort_call[0][0]
 
@@ -1517,15 +1533,16 @@ class TestUpdateWorktreeOntoMain:
         with patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run:
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch
+                MagicMock(returncode=0, stdout="", stderr=""),  # rev-parse origin/main
                 MagicMock(returncode=0, stdout="main\n", stderr=""),  # rev-parse returns main
                 MagicMock(returncode=0, stdout="", stderr=""),  # pull --ff-only
             ]
 
-            result = _update_worktree_onto_main(worktree, repo_root)
+            result = _update_worktree_onto_main(worktree, repo_root, "main")
 
             assert result == ResetInfo(success=True)
             # Verify pull was called instead of rebase
-            pull_call = mock_run.call_args_list[2]
+            pull_call = mock_run.call_args_list[3]
             assert "pull" in pull_call[0][0]
             assert "--ff-only" in pull_call[0][0]
 
@@ -1539,9 +1556,10 @@ class TestUpdateWorktreeOntoMain:
         repo_root.mkdir()
 
         with patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run:
-            # Flow: fetch, rev-parse, status (has changes), reset, clean, rebase
+            # Flow: fetch, rev-parse origin/main, rev-parse, status (has changes), reset, clean, rebase
             mock_run.side_effect = [
                 MagicMock(returncode=0, stdout="", stderr=""),  # fetch origin main
+                MagicMock(returncode=0, stdout="", stderr=""),  # rev-parse origin/main
                 MagicMock(returncode=0, stdout="feature-branch\n", stderr=""),  # rev-parse
                 MagicMock(returncode=0, stdout="M file1.txt\nM file2.txt\n", stderr=""),  # status (2 changes)
                 MagicMock(returncode=0, stdout="", stderr=""),  # reset --hard HEAD
@@ -1549,11 +1567,11 @@ class TestUpdateWorktreeOntoMain:
                 MagicMock(returncode=0, stdout="", stderr=""),  # rebase origin/main
             ]
 
-            result = _update_worktree_onto_main(worktree, repo_root)
+            result = _update_worktree_onto_main(worktree, repo_root, "main")
 
             assert result == ResetInfo(success=True, uncommitted_discarded=2, commits_discarded=0)
             # Verify rebase WAS called
-            rebase_call = mock_run.call_args_list[5]
+            rebase_call = mock_run.call_args_list[6]
             assert "rebase" in rebase_call[0][0]
 
 

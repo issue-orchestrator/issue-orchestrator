@@ -104,16 +104,70 @@ class AiAgentAdapter(ABC):
         """Check if hooks are already installed."""
         pass
 
-    def live_verify(self, project_root: Path, timeout: int = 60) -> tuple[bool, str]:
-        """Perform live verification by spawning the AI agent.
+    def test_ai_gate(self, project_root: Path, timeout: int = 60) -> tuple[bool, str]:
+        """Perform AI gate test by spawning the AI agent.
 
-        Optional method - subclasses can override for live testing.
+        Optional method - subclasses can override for AI gate testing.
         Default implementation returns not supported.
 
         Returns:
             (success, message) tuple
         """
-        return False, f"Live verification not supported for {self.agent_type.value}"
+        return False, f"AI gate test not supported for {self.agent_type.value}"
+
+
+def _test_ai_gate_env(project_root: Path) -> dict[str, str]:
+    """Build environment variables for AI gate tests."""
+    env = os.environ.copy()
+    env["ORCHESTRATOR_HOOK_PYTHONPATH"] = str(project_root / "src")
+    return env
+
+
+def _init_test_ai_gate_repo(tmppath: Path) -> Path:
+    """Create a temporary git repo with a bare remote and an initial commit."""
+    git = GitCLI(runner=SubprocessCommandRunner(), default_timeout_s=30)
+
+    bare_repo = tmppath / "remote.git"
+    bare_repo.mkdir()
+    git.run(bare_repo, ["init", "--bare"])
+
+    work_repo = tmppath / "work"
+    git.run(tmppath, ["clone", str(bare_repo), str(work_repo)])
+
+    git.run(work_repo, ["config", "user.email", "test@test.com"])
+    git.run(work_repo, ["config", "user.name", "Test User"])
+
+    test_file = work_repo / "test.txt"
+    test_file.write_text("test content\n")
+    git.run(work_repo, ["add", "test.txt"])
+    git.run(work_repo, ["commit", "-m", "test commit"])
+
+    return work_repo
+
+
+def _copy_hook_dir(project_root: Path, work_repo: Path, hook_dir: str) -> None:
+    """Copy a hook configuration directory into the live-verify repo."""
+    src_dir = project_root / hook_dir
+    if not src_dir.exists():
+        raise FileNotFoundError(f"No {hook_dir} directory found in project root")
+    dst_dir = work_repo / hook_dir
+    shutil.copytree(src_dir, dst_dir, dirs_exist_ok=True)
+
+
+def _detect_blocked_from_output(output: str) -> bool:
+    blocked_indicators = [
+        "blocked",
+        "not allowed",
+        "prevented",
+        "hook",
+        "refused",
+        "denied",
+        "cannot",
+        "exit code 2",
+        "permission",
+    ]
+    output_lower = output.lower()
+    return any(ind in output_lower for ind in blocked_indicators)
 
 
 class ClaudeCodeAdapter(AiAgentAdapter):
@@ -311,8 +365,8 @@ class ClaudeCodeAdapter(AiAgentAdapter):
 
         return False
 
-    def live_verify(self, project_root: Path, timeout: int = 60) -> tuple[bool, str]:
-        """Perform live verification by spawning Claude and testing hook blocking.
+    def test_ai_gate(self, project_root: Path, timeout: int = 60) -> tuple[bool, str]:
+        """Perform AI gate test by spawning Claude and testing hook blocking.
 
         This actually runs Claude Code and has it attempt a blocked command to verify
         the entire hook chain works end-to-end.
@@ -328,34 +382,12 @@ class ClaudeCodeAdapter(AiAgentAdapter):
         # Create temp git repo setup for testing
         with tempfile.TemporaryDirectory() as tmpdir:
             tmppath = Path(tmpdir)
-            git = GitCLI(runner=SubprocessCommandRunner(), default_timeout_s=30)
+            work_repo = _init_test_ai_gate_repo(tmppath)
 
-            # Create a bare repo to act as "remote"
-            bare_repo = tmppath / "remote.git"
-            bare_repo.mkdir()
-            git.run(bare_repo, ["init", "--bare"])
-
-            # Create working repo cloned from bare
-            work_repo = tmppath / "work"
-            git.run(tmppath, ["clone", str(bare_repo), str(work_repo)])
-
-            # Configure git user for commit
-            git.run(work_repo, ["config", "user.email", "test@test.com"])
-            git.run(work_repo, ["config", "user.name", "Test User"])
-
-            # Create a commit to push
-            test_file = work_repo / "test.txt"
-            test_file.write_text("test content\n")
-            git.run(work_repo, ["add", "test.txt"])
-            git.run(work_repo, ["commit", "-m", "test commit"])
-
-            # Copy hooks from project_root to work_repo
-            src_hooks_dir = project_root / ".claude"
-            dst_hooks_dir = work_repo / ".claude"
-            if src_hooks_dir.exists():
-                shutil.copytree(src_hooks_dir, dst_hooks_dir)
-            else:
-                return False, "No .claude directory found in project root"
+            try:
+                _copy_hook_dir(project_root, work_repo, ".claude")
+            except FileNotFoundError as e:
+                return False, str(e)
 
             # Spawn Claude and ask it to run the blocked command
             # Using --print mode for non-interactive single-prompt execution
@@ -373,41 +405,29 @@ class ClaudeCodeAdapter(AiAgentAdapter):
                         "--dangerously-skip-permissions",
                         prompt,
                     ],
-                    cwd=work_repo,
-                    capture_output=True,
-                    text=True,
-                    timeout=timeout,
-                )
+                        cwd=work_repo,
+                        capture_output=True,
+                        text=True,
+                        env=_test_ai_gate_env(project_root),
+                        timeout=timeout,
+                    )
 
                 output = result.stdout + result.stderr
 
                 # Check if the output indicates the command was blocked
-                # Claude should report something like "command was blocked" or similar
-                blocked_indicators = [
-                    "blocked",
-                    "not allowed",
-                    "prevented",
-                    "hook",
-                    "refused",
-                    "denied",
-                    "cannot",
-                    "exit code 2",
-                ]
-
-                output_lower = output.lower()
-                was_blocked = any(ind in output_lower for ind in blocked_indicators)
+                was_blocked = _detect_blocked_from_output(output)
 
                 if was_blocked:
-                    return True, f"Live verification passed: Claude was blocked from running --no-verify\nOutput: {output[:500]}"
+                    return True, f"AI gate test passed: Claude was blocked from running --no-verify\nOutput: {output[:500]}"
                 else:
-                    return False, f"Live verification FAILED: Claude was NOT blocked\nOutput: {output[:500]}"
+                    return False, f"AI gate test FAILED: Claude was NOT blocked\nOutput: {output[:500]}"
 
             except subprocess.TimeoutExpired:
-                return False, f"Live verification timed out after {timeout}s"
+                return False, f"AI gate test timed out after {timeout}s"
             except FileNotFoundError:
                 return False, "Claude CLI not found - is it installed?"
             except Exception as e:
-                return False, f"Live verification error: {e}"
+                return False, f"AI gate test error: {e}"
 
 
 class CursorAdapter(AiAgentAdapter):
@@ -598,6 +618,51 @@ class CursorAdapter(AiAgentAdapter):
             pass
 
         return False
+
+    def test_ai_gate(self, project_root: Path, timeout: int = 60) -> tuple[bool, str]:
+        """Perform AI gate test by spawning Cursor Agent and testing hook blocking."""
+        if not shutil.which("cursor-agent"):
+            return False, "Cursor CLI not found - is cursor-agent installed?"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            work_repo = _init_test_ai_gate_repo(tmppath)
+
+            try:
+                _copy_hook_dir(project_root, work_repo, ".cursor")
+            except FileNotFoundError as e:
+                return False, str(e)
+
+            prompt = (
+                "Try to run exactly this command: git push --no-verify\n"
+                "Report whether the command was blocked or succeeded."
+            )
+
+            try:
+                result = subprocess.run(
+                    [
+                        "cursor-agent",
+                        "--print",
+                        "--output-format", "text",
+                        prompt,
+                    ],
+                    cwd=work_repo,
+                    capture_output=True,
+                    text=True,
+                    env=_test_ai_gate_env(project_root),
+                    timeout=timeout,
+                )
+
+                output = result.stdout + result.stderr
+                was_blocked = _detect_blocked_from_output(output)
+
+                if was_blocked:
+                    return True, f"AI gate test passed: Cursor was blocked from running --no-verify\nOutput: {output[:500]}"
+                return False, f"AI gate test FAILED: Cursor was NOT blocked\nOutput: {output[:500]}"
+            except subprocess.TimeoutExpired:
+                return False, f"AI gate test timed out after {timeout}s"
+            except Exception as e:
+                return False, f"AI gate test error: {e}"
 
 
 class GeminiAdapter(AiAgentAdapter):
@@ -799,6 +864,52 @@ class GeminiAdapter(AiAgentAdapter):
 
         return False
 
+    def test_ai_gate(self, project_root: Path, timeout: int = 60) -> tuple[bool, str]:
+        """Perform AI gate test by spawning Gemini CLI and testing hook blocking."""
+        if not shutil.which("gemini"):
+            return False, "Gemini CLI not found - is gemini installed?"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            work_repo = _init_test_ai_gate_repo(tmppath)
+
+            try:
+                _copy_hook_dir(project_root, work_repo, ".gemini")
+            except FileNotFoundError as e:
+                return False, str(e)
+
+            prompt = (
+                "Try to run exactly this command: git push --no-verify\n"
+                "Report whether the command was blocked or succeeded."
+            )
+
+            try:
+                result = subprocess.run(
+                    [
+                        "gemini",
+                        "--prompt",
+                        prompt,
+                        "--approval-mode",
+                        "yolo",
+                    ],
+                    cwd=work_repo,
+                    capture_output=True,
+                    text=True,
+                    env=_test_ai_gate_env(project_root),
+                    timeout=timeout,
+                )
+
+                output = result.stdout + result.stderr
+                was_blocked = _detect_blocked_from_output(output)
+
+                if was_blocked:
+                    return True, f"AI gate test passed: Gemini was blocked from running --no-verify\nOutput: {output[:500]}"
+                return False, f"AI gate test FAILED: Gemini was NOT blocked\nOutput: {output[:500]}"
+            except subprocess.TimeoutExpired:
+                return False, f"AI gate test timed out after {timeout}s"
+            except Exception as e:
+                return False, f"AI gate test error: {e}"
+
 
 class CopilotAdapter(AiAgentAdapter):
     """Adapter for GitHub Copilot CLI.
@@ -993,12 +1104,64 @@ class CopilotAdapter(AiAgentAdapter):
 
         return False
 
+    def test_ai_gate(self, project_root: Path, timeout: int = 60) -> tuple[bool, str]:
+        """Perform AI gate test by spawning Copilot CLI and testing hook blocking."""
+        copilot_cmd: list[str] | None = None
+        if shutil.which("copilot"):
+            copilot_cmd = ["copilot"]
+        elif shutil.which("gh"):
+            copilot_cmd = ["gh", "copilot", "--"]
+
+        if not copilot_cmd:
+            return False, "Copilot CLI not found - install copilot or gh copilot"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmppath = Path(tmpdir)
+            work_repo = _init_test_ai_gate_repo(tmppath)
+
+            try:
+                _copy_hook_dir(project_root, work_repo, ".github")
+            except FileNotFoundError as e:
+                return False, str(e)
+
+            prompt = (
+                "Try to run exactly this command: git push --no-verify\n"
+                "Report whether the command was blocked or succeeded."
+            )
+
+            try:
+                result = subprocess.run(
+                    [
+                        *copilot_cmd,
+                        "-p",
+                        prompt,
+                        "--allow-tool",
+                        "shell(git)",
+                    ],
+                    cwd=work_repo,
+                    capture_output=True,
+                    text=True,
+                    env=_test_ai_gate_env(project_root),
+                    timeout=timeout,
+                )
+
+                output = result.stdout + result.stderr
+                was_blocked = _detect_blocked_from_output(output)
+
+                if was_blocked:
+                    return True, f"AI gate test passed: Copilot was blocked from running --no-verify\nOutput: {output[:500]}"
+                return False, f"AI gate test FAILED: Copilot was NOT blocked\nOutput: {output[:500]}"
+            except subprocess.TimeoutExpired:
+                return False, f"AI gate test timed out after {timeout}s"
+            except Exception as e:
+                return False, f"AI gate test error: {e}"
+
 
 class CodexAdapter(AiAgentAdapter):
     """Adapter for OpenAI Codex CLI.
 
-    Codex CLI uses Starlark rules files in ~/.codex/rules/ directory.
-    Unlike other agents, this is user-global not project-local.
+    Codex CLI uses Starlark rules files in .codex/rules/ within the project.
+    Project-scoped rules override user-global defaults.
     Rules use prefix_rule() with decision="forbidden" to block commands.
     """
 
@@ -1006,9 +1169,9 @@ class CodexAdapter(AiAgentAdapter):
     def agent_type(self) -> AiAgentType:
         return AiAgentType.CODEX
 
-    def _get_rules_dir(self) -> Path:
-        """Get the Codex rules directory."""
-        return Path.home() / ".codex" / "rules"
+    def _get_rules_dir(self, project_root: Path) -> Path:
+        """Get the Codex rules directory for a project."""
+        return project_root / ".codex" / "rules"
 
     def _copy_rules_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
         """Copy a rules file."""
@@ -1022,11 +1185,10 @@ class CodexAdapter(AiAgentAdapter):
     def install_hooks(self, project_root: Path) -> list[Path]:
         """Install Codex CLI rules.
 
-        Note: Codex rules are user-global (~/.codex/rules/), not project-local.
-        The project_root parameter is ignored but kept for interface consistency.
+        Installs rules into the project's .codex/rules/ directory.
         """
         files_created: list[Path] = []
-        rules_dir = self._get_rules_dir()
+        rules_dir = self._get_rules_dir(project_root)
         rules_dir.mkdir(parents=True, exist_ok=True)
 
         # Copy rules file
@@ -1041,13 +1203,13 @@ class CodexAdapter(AiAgentAdapter):
     def verify_hooks(self, project_root: Path) -> VerificationResult:
         """Verify Codex CLI rules are installed.
 
-        Note: Codex rules are user-global, so we check ~/.codex/rules/.
-        We can't run actual blocking tests without the codex CLI.
+        Checks project-scoped rules file and, if Codex is available,
+        runs execpolicy checks to validate enforcement.
         """
         checks_passed: list[str] = []
         checks_failed: list[str] = []
 
-        rules_file = self._get_rules_dir() / "orchestrator.rules"
+        rules_file = self._get_rules_dir(project_root) / "orchestrator.rules"
 
         if not rules_file.exists():
             checks_failed.append("rules_file_exists: orchestrator.rules not found")
@@ -1068,6 +1230,26 @@ class CodexAdapter(AiAgentAdapter):
             else:
                 checks_failed.append(f"rule_missing:{pattern[:30]}")
 
+        codex_bin = shutil.which("codex")
+        if not codex_bin:
+            checks_failed.append("execpolicy_cli_available: codex not available")
+            return VerificationResult(False, self.agent_type, checks_passed, checks_failed)
+
+        try:
+            blocked = self._execpolicy_allows(rules_file, ["git", "push", "--no-verify"])
+            if blocked is False:
+                checks_passed.append("execpolicy_blocks:git push --no-verify")
+            else:
+                checks_failed.append("execpolicy_should_block:git push --no-verify")
+
+            allowed = self._execpolicy_allows(rules_file, ["git", "push", "origin", "main"])
+            if allowed is True:
+                checks_passed.append("execpolicy_allows:git push origin main")
+            else:
+                checks_failed.append("execpolicy_wrongly_blocks:git push origin main")
+        except Exception as e:
+            checks_failed.append(f"execpolicy_check_failed:{str(e)[:40]}")
+
         return VerificationResult(
             success=len(checks_failed) == 0,
             meta_agent=self.agent_type,
@@ -1077,8 +1259,37 @@ class CodexAdapter(AiAgentAdapter):
 
     def is_installed(self, project_root: Path) -> bool:
         """Check if Codex CLI rules are installed."""
-        rules_file = self._get_rules_dir() / "orchestrator.rules"
+        rules_file = self._get_rules_dir(project_root) / "orchestrator.rules"
         return rules_file.exists()
+
+    def _execpolicy_allows(self, rules_file: Path, command: list[str]) -> bool | None:
+        """Return True if execpolicy allows command, False if forbidden, None if unknown."""
+        result = subprocess.run(
+            ["codex", "execpolicy", "check", "--rules", str(rules_file), "--pretty", "--", *command],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "execpolicy check failed")
+
+        data = json.loads(result.stdout)
+        decision = data.get("decision") or data.get("strictest_decision")
+        if decision is None:
+            # Fallback: search any decision-like field
+            serialized = json.dumps(data).lower()
+            if "forbidden" in serialized:
+                return False
+            if "allow" in serialized or "allowed" in serialized:
+                return True
+            return None
+
+        decision = str(decision).lower()
+        if decision == "forbidden":
+            return False
+        if decision in ("allow", "allowed"):
+            return True
+        return None
 
 
 class UnsupportedAdapter(AiAgentAdapter):

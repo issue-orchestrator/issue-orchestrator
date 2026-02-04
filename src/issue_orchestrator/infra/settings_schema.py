@@ -696,6 +696,22 @@ class AdvancedSettings(BaseModel):
             },
         },
     )
+    worktree_default_branch: str = Field(
+        "main",
+        title="Default Worktree Branch",
+        description="Branch to base new worktrees and PRs on (must exist on origin)",
+        json_schema_extra={
+            "section": "Worktrees",
+            "restart_required": True,
+            "config_attr": "worktree_default_branch",
+            "yaml_path": "worktrees.default_branch",
+            "setup": {
+                "enabled": True,
+                "section": "worktrees",
+                "order": 15,
+            },
+        },
+    )
     worktree_branch_on_recreate: Literal["delete", "create_new_branch"] = Field(
         "delete",
         title="Branch on Recreate",
@@ -712,33 +728,33 @@ class AdvancedSettings(BaseModel):
 class HooksSettings(BaseModel):
     """Settings for the Hooks tab."""
 
-    safety_check_interval_days: int = Field(
+    ai_gate_interval_days: int = Field(
         7,
-        title="Safety Check Interval (days)",
-        description="Run live hook verification every N days (0 = disabled)",
+        title="AI Gate Test Interval (days)",
+        description="Run AI gate tests every N days (0 = disabled)",
         ge=0,
         le=365,
         json_schema_extra={
-            "section": "Safety Check",
-            "config_attr": "hooks.safety_check.interval_days",
-            "yaml_path": "hooks.safety_check.interval_days",
+            "section": "AI Gate",
+            "config_attr": "hooks.ai_gate.interval_days",
+            "yaml_path": "hooks.ai_gate.interval_days",
             "summary": {
                 "section": "hooks",
                 "format": SUMMARY_INTERVAL,
-                "label": "safety check",
+                "label": "ai gate",
                 "zero_label": "disabled",
                 "unit": "d",
             },
         },
     )
-    safety_check_dangerous_allow_failure: bool = Field(
+    ai_gate_dangerous_allow_failure: bool = Field(
         False,
-        title="Allow Safety Check Failure",
-        description="If true, warn only on safety check failure; if false, block orchestrator start",
+        title="Allow AI Gate Failure",
+        description="If true, warn only on AI gate failure; if false, block orchestrator start",
         json_schema_extra={
-            "section": "Safety Check",
-            "config_attr": "hooks.safety_check.dangerous_allow_failure",
-            "yaml_path": "hooks.safety_check.dangerous_allow_failure",
+            "section": "AI Gate",
+            "config_attr": "hooks.ai_gate.dangerous_allow_failure",
+            "yaml_path": "hooks.ai_gate.dangerous_allow_failure",
             "summary": {
                 "section": "hooks",
                 "format": SUMMARY_BOOLEAN_FLAG,

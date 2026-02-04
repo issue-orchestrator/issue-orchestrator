@@ -9,6 +9,7 @@ from unittest.mock import patch, MagicMock
 import subprocess
 
 from issue_orchestrator.execution import GitWorkingCopy, LocalCommandRunner
+from issue_orchestrator.ports.command_runner import CommandResult
 
 from issue_orchestrator.control.validation import (
     ValidationRecord,
@@ -159,6 +160,10 @@ class TestValidationRecordStore:
 class TestValidationRunner:
     """Tests for ValidationRunner."""
 
+    class _TimeoutRunner:
+        def run(self, *args, **kwargs):
+            return CommandResult(returncode=-1, stdout="", stderr="", timed_out=True)
+
     @pytest.fixture
     def temp_worktree(self):
         """Create a temporary worktree directory."""
@@ -214,7 +219,8 @@ class TestValidationRunner:
 
     def test_run_timeout(self, runner, session_output_dir):
         """Test command timeout."""
-        record = runner.run(
+        fast_runner = ValidationRunner(runner.store, self._TimeoutRunner())
+        record = fast_runner.run(
             suite="publish_gate",
             head_sha="abc123",
             command="sleep 10",
@@ -524,9 +530,13 @@ class TestPublishGate:
 
     def test_gate_fails_when_timeout(self, temp_worktree, session_output_dir):
         """Test gate fails when command times out."""
+        class TimeoutRunner:
+            def run(self, *args, **kwargs):
+                return CommandResult(returncode=-1, stdout="", stderr="", timed_out=True)
+
         gate = PublishGate(
             temp_worktree,
-            command_runner=LocalCommandRunner(),
+            command_runner=TimeoutRunner(),
             working_copy=GitWorkingCopy(),
             command="sleep 10",
             timeout_seconds=1,
@@ -678,9 +688,13 @@ class TestAgentGate:
 
     def test_gate_fails_when_timeout(self, temp_worktree, session_output_dir):
         """Test gate fails when command times out."""
+        class TimeoutRunner:
+            def run(self, *args, **kwargs):
+                return CommandResult(returncode=-1, stdout="", stderr="", timed_out=True)
+
         gate = AgentGate(
             temp_worktree,
-            command_runner=LocalCommandRunner(),
+            command_runner=TimeoutRunner(),
             working_copy=GitWorkingCopy(),
             command="sleep 10",
             timeout_seconds=1,

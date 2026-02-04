@@ -140,6 +140,7 @@ class MockWorktreeManager:
         enforce_hooks: bool = True,
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
+        base_branch: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
     ) -> WorktreeInfo:
         self.create_calls.append({
@@ -147,6 +148,7 @@ class MockWorktreeManager:
             "issue_number": issue_number,
             "issue_title": issue_title,
             "branch_name": branch_name,
+            "base_branch": base_branch,
             "reuse_options": reuse_options,
         })
         worktree_path = self.tmp_path / f"worktree-{issue_number}"
@@ -281,6 +283,7 @@ def sample_config(tmp_path):
         timeout_minutes=30,
     )
     config.code_review_agent = "agent:reviewer"
+    config.setup_worktree = []
     return config
 
 
@@ -856,6 +859,13 @@ class TestLaunchReviewSession:
 class TestLaunchReworkSession:
     """Tests for launch_rework_session method (lines 585, 597-599, 604-605, 611-765)."""
 
+    @pytest.fixture(autouse=True)
+    def _no_feedback_sleep(self, monkeypatch):
+        monkeypatch.setattr(
+            "issue_orchestrator.control.session_launcher.time.sleep",
+            lambda _: None,
+        )
+
     def test_successful_launch_with_pr(self, session_launcher, mock_repo_host):
         """Verify successful rework session launch when PR exists."""
         mock_repo_host.prs[123] = [
@@ -1304,6 +1314,13 @@ class TestOrchestratorLaunchReviewSession:
 
 class TestOrchestratorLaunchReworkSession:
     """Tests for orchestrator_launch_rework_session function."""
+
+    @pytest.fixture(autouse=True)
+    def _no_feedback_sleep(self, monkeypatch):
+        monkeypatch.setattr(
+            "issue_orchestrator.control.session_launcher.time.sleep",
+            lambda _: None,
+        )
 
     def test_removes_from_pending_and_adds_to_active(self, session_launcher):
         """Verify rework is removed from pending and added to active."""
@@ -1762,6 +1779,13 @@ class TestEnvironmentIsolation:
 
 class TestValidationOutputDir:
     """Test that sessions export VALIDATION_OUTPUT_DIR for output capture."""
+
+    @pytest.fixture(autouse=True)
+    def _no_feedback_sleep(self, monkeypatch):
+        monkeypatch.setattr(
+            "issue_orchestrator.control.session_launcher.time.sleep",
+            lambda _: None,
+        )
 
     def test_issue_session_exports_validation_output_dir(self, launcher_bundle, sample_issue):
         """Test that issue sessions export VALIDATION_OUTPUT_DIR pointing to run_dir."""

@@ -76,9 +76,11 @@ agents:
 worktrees:
   base: "../"                     # Where to create worktrees (relative to repo)
   setup:
+    - "make install-vscode-extensions"
     # - "npm install"
     # - "pip install -e '.[dev]'"
   reuse_push_preflight: true
+  default_branch: "main"          # Base branch for new worktrees/PRs (must exist on origin)
   remediation:
     pr_collision: "new_branch"    # fail | reuse_open | new_branch
     push_rebase_retry: true
@@ -185,8 +187,8 @@ security:
     allow_unsupported_agents: false
 
 hooks:
-  safety_check:
-    interval_days: 7                    # Run live verification every N days (0 = disabled)
+  ai_gate:
+    interval_days: 7                    # Run AI gate tests every N days (0 = disabled)
     dangerous_allow_failure: false      # If true, warn only; if false, block on failure
 
 ai_systems:

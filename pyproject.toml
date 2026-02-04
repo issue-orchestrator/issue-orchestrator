@@ -84,6 +84,7 @@ markers = [
     "e2e: End-to-end tests with real GitHub (requires gh auth and E2E_TEST_REPO)",
     "integration: Integration tests that may exercise external adapters",
     "live: Tests that require network access and external services",
+    "xdist_group(name): Group tests to run serially under pytest-xdist --dist=loadgroup",
     "gh_activity_limit: Enforce GH API activity limits per test (test_gh_activity_limit, system_gh_activity_limit)",
     "requires_infra: Tests requiring external infrastructure (GitHub token, running services). Run in CI, excluded from pre-push.",
 ]

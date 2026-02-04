@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-guardrail test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed test-vscode install-vscode-extensions playwright-install validate validate-quick validate-full _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full verify-hooks-all _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -18,7 +18,6 @@ help:
 	@echo "  lint-arch           Run import-linter + AST guardrails"
 	@echo "  lint-complexity     Check cyclomatic complexity (C901) and branch count (PLR0912)"
 	@echo "  test-unit           Run unit tests"
-	@echo "  test-unit-guardrail Run unit tests + optional coverage guardrail"
 	@echo "  test-unit-cov       Run unit tests with coverage report"
 	@echo "  test-unit-cov-html  Run unit tests with HTML coverage (open htmlcov/index.html)"
 	@echo "  test-integration    Run integration tests"
@@ -40,6 +39,7 @@ help:
 	@echo "  validate            Parallel validation (~40s): typecheck + lint-arch + unit + integration + web-ui"
 	@echo "  validate-quick      Quick validation (typecheck + unit tests only)"
 	@echo "  validate-full       Full parallel validation: validate + e2e tests"
+	@echo "  verify-hooks-all    Install + live-verify hooks for all supported CLIs"
 	@echo "  demo                Run demo showing orchestrator features"
 	@echo "  issues-validate     Check issue naming conventions"
 	@echo "  issues-fix          Apply issue name fixes"
@@ -219,11 +219,8 @@ test-unit: sync-deps
 ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short
 else
-	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short -n $(PARALLEL)
+	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short -n $(PARALLEL) --dist=loadgroup
 endif
-
-test-unit-guardrail:
-	$(PYTHON) scripts/coverage_guardrail.py
 
 test-unit-cov:
 	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=term-missing -x -q --tb=short
@@ -236,7 +233,7 @@ test-integration: sync-deps
 ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/integration -x -q --tb=short
 else
-	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL)
+	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL) --dist=loadgroup
 endif
 
 # Integration tests excluding those that require external infrastructure (GitHub token, etc.)
@@ -245,7 +242,7 @@ test-integration-no-infra: sync-deps
 ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra"
 else
-	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" -n $(PARALLEL)
+	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" -n $(PARALLEL) --dist=loadgroup
 endif
 
 # Full integration tests including infrastructure-dependent ones (run in CI)
@@ -253,7 +250,7 @@ test-integration-full: sync-deps
 ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/integration -x -q --tb=short
 else
-	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL)
+	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL) --dist=loadgroup
 endif
 
 # E2E tests stop on first failure by default. Use NOFAST=1 to run all tests.
@@ -273,8 +270,8 @@ endif
 test-real-claude-dev:
 	@echo "Testing agent-done invocation from Claude..."
 	$(PYTEST) tests/integration/test_claude_execution.py::TestAgentDoneInvocation -v -s --tb=short -x
-	@echo "Testing real Claude execution in subprocess mode..."
-	E2E_TERMINAL_ADAPTER=subprocess E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_terminal_adapter_subprocess.py::TestTerminalAdapterSubprocess -v -s --tb=short -x
+	@echo "Testing real Claude execution in tmux mode..."
+	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_terminal_adapter.py::TestTerminalAdapterExecution -v -s --tb=short -x
 	@echo "✓ Dev agent tests passed!"
 
 test-real-claude-review:
@@ -366,7 +363,7 @@ validate-raw:
 	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-impl
 
 # Internal target for parallel execution
-_validate-impl: typecheck lint-arch lint-complexity test-unit-guardrail test-integration test-web test-vscode
+_validate-impl: typecheck lint-arch lint-complexity test-unit test-integration test-web test-vscode
 	@echo "✓ All validations passed!"
 
 # Full validation including e2e tests
@@ -374,8 +371,11 @@ validate-full:
 	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-full-impl
 
 # Internal target for parallel execution
-_validate-full-impl: typecheck lint-arch lint-complexity test-unit-guardrail test-integration test-web test-e2e
+_validate-full-impl: typecheck lint-arch lint-complexity test-unit test-integration test-web test-e2e
 	@echo "✓ All validations passed (including e2e)!"
+
+verify-hooks-all:
+	@.venv/bin/issue-orchestrator setup-hooks --config .issue-orchestrator/config/hooks-validate.yaml
 
 # Demo - show orchestrator features with mock data
 demo:

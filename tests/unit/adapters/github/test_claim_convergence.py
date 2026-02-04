@@ -301,6 +301,10 @@ priority: {higher_priority}
 class TestTieBreakingIntegration:
     """Integration tests for tie-breaking in convergence context."""
 
+    @pytest.fixture(autouse=True)
+    def _no_convergence_sleep(self, monkeypatch):
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
     def test_higher_priority_claim_wins_convergence(self, mock_client, mock_labels):
         """When competing, higher priority claim wins during convergence."""
         config = LeaseConfig.for_testing()

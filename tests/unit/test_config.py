@@ -102,6 +102,26 @@ worktrees:
 
         assert config.worktree_branch_on_recreate == "delete"
 
+    def test_worktree_default_branch_default(self, tmp_path):
+        """Default worktree_default_branch should be main."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+worktrees:
+  base: {worktree_base}
+""")
+
+        config = Config.load(config_file)
+
+        assert config.worktree_default_branch == "main"
+
     def test_worktree_branch_on_recreate_configured(self, tmp_path):
         """Config can set worktree_branch_on_recreate."""
         prompt = tmp_path / "prompt.md"
@@ -122,6 +142,27 @@ worktrees:
         config = Config.load(config_file)
 
         assert config.worktree_branch_on_recreate == "create_new_branch"
+
+    def test_worktree_default_branch_configured(self, tmp_path):
+        """Config can set worktree_default_branch."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+worktrees:
+  base: {worktree_base}
+  default_branch: master
+""")
+
+        config = Config.load(config_file)
+
+        assert config.worktree_default_branch == "master"
 
     def test_worktree_branch_on_recreate_invalid(self, tmp_path):
         """Invalid worktree_branch_on_recreate value should fail validation."""
@@ -145,6 +186,27 @@ worktrees:
 
         errors = config.validate()
         assert any("worktree_branch_on_recreate" in err for err in errors)
+
+    def test_worktree_default_branch_invalid(self, tmp_path):
+        """Invalid worktree_default_branch values should fail validation."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+worktrees:
+  base: {worktree_base}
+  default_branch: origin/main
+""")
+
+        config = Config.load(config_file)
+        errors = config.validate()
+        assert any("worktrees.default_branch" in err for err in errors)
 
     def test_allow_no_verify_dry_run_preflight_default(self, tmp_path):
         """Default allow_no_verify_dry_run_preflight should be True."""
@@ -2629,17 +2691,17 @@ agents:
         config = Config.load(config_file)
 
         # Default values
-        assert config.hooks.safety_check.interval_days == 7
-        assert config.hooks.safety_check.dangerous_allow_failure is False
+        assert config.hooks.ai_gate.interval_days == 7
+        assert config.hooks.ai_gate.dangerous_allow_failure is False
 
     def test_hooks_config_custom_interval(self, tmp_path):
-        """Test custom safety check interval."""
+        """Test custom AI gate test interval."""
         config_content = """
 worktrees:
   base: /tmp
 
 hooks:
-  safety_check:
+  ai_gate:
     interval_days: 14
 
 agents:
@@ -2651,17 +2713,17 @@ agents:
 
         config = Config.load(config_file)
 
-        assert config.hooks.safety_check.interval_days == 14
-        assert config.hooks.safety_check.dangerous_allow_failure is False
+        assert config.hooks.ai_gate.interval_days == 14
+        assert config.hooks.ai_gate.dangerous_allow_failure is False
 
     def test_hooks_config_disabled(self, tmp_path):
-        """Test safety check disabled with interval_days=0."""
+        """Test AI gate test disabled with interval_days=0."""
         config_content = """
 worktrees:
   base: /tmp
 
 hooks:
-  safety_check:
+  ai_gate:
     interval_days: 0
 
 agents:
@@ -2673,7 +2735,7 @@ agents:
 
         config = Config.load(config_file)
 
-        assert config.hooks.safety_check.interval_days == 0
+        assert config.hooks.ai_gate.interval_days == 0
 
     def test_hooks_config_dangerous_allow_failure(self, tmp_path):
         """Test dangerous_allow_failure setting."""
@@ -2682,7 +2744,7 @@ worktrees:
   base: /tmp
 
 hooks:
-  safety_check:
+  ai_gate:
     dangerous_allow_failure: true
 
 agents:
@@ -2694,7 +2756,7 @@ agents:
 
         config = Config.load(config_file)
 
-        assert config.hooks.safety_check.dangerous_allow_failure is True
+        assert config.hooks.ai_gate.dangerous_allow_failure is True
 
     def test_hooks_config_in_to_event_dict(self, tmp_path):
         """Test hooks config is included in to_event_dict()."""
@@ -2703,7 +2765,7 @@ worktrees:
   base: /tmp
 
 hooks:
-  safety_check:
+  ai_gate:
     interval_days: 30
     dangerous_allow_failure: true
 
@@ -2718,8 +2780,8 @@ agents:
         event_dict = config.to_event_dict()
 
         assert "hooks" in event_dict
-        assert event_dict["hooks"]["safety_check"]["interval_days"] == 30
-        assert event_dict["hooks"]["safety_check"]["dangerous_allow_failure"] is True
+        assert event_dict["hooks"]["ai_gate"]["interval_days"] == 30
+        assert event_dict["hooks"]["ai_gate"]["dangerous_allow_failure"] is True
 
     def test_hooks_config_to_dict_non_default(self, tmp_path):
         """Test to_dict() includes hooks when non-default."""
@@ -2728,7 +2790,7 @@ worktrees:
   base: /tmp
 
 hooks:
-  safety_check:
+  ai_gate:
     interval_days: 14
     dangerous_allow_failure: true
 
@@ -2743,8 +2805,8 @@ agents:
         result = config.to_dict()
 
         assert "hooks" in result
-        assert result["hooks"]["safety_check"]["interval_days"] == 14
-        assert result["hooks"]["safety_check"]["dangerous_allow_failure"] is True
+        assert result["hooks"]["ai_gate"]["interval_days"] == 14
+        assert result["hooks"]["ai_gate"]["dangerous_allow_failure"] is True
 
     def test_hooks_config_to_dict_default_values(self, tmp_path):
         """Test to_dict() omits hooks when all values are default."""

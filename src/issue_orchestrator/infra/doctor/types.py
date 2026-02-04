@@ -9,7 +9,7 @@ class Check:
     """A single diagnostic check result.
 
     The optional expandable dict supports UI expansion with detailed results.
-    Example for safety check:
+    Example for AI gate test:
         expandable = {
             "ran": True,
             "triggered_by": "interval exceeded",

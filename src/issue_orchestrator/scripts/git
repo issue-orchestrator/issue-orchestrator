@@ -78,6 +78,9 @@ fi
 # === PASS THROUGH TO REAL GIT ===
 
 # Find and exec real git (search common locations)
+if [[ -n "${ORCHESTRATOR_REAL_GIT:-}" && -x "${ORCHESTRATOR_REAL_GIT}" ]]; then
+    exec "${ORCHESTRATOR_REAL_GIT}" "$@"
+fi
 for git_path in /opt/homebrew/bin/git /usr/local/bin/git /usr/bin/git; do
     if [[ -x "$git_path" ]]; then
         exec "$git_path" "$@"

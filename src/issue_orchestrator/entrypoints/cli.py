@@ -1170,18 +1170,18 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
                     if block_checks:
                         console.print(f"    [dim]Verified blocking: {len(block_checks)} patterns[/dim]")
 
-                    # Live verification if requested
-                    if getattr(args, 'live', False):
-                        console.print(f"\n  [cyan]🔄[/cyan] Running live verification (spawning Claude)...")
-                        timeout = getattr(args, 'live_timeout', 60)
-                        live_success, live_msg = adapter.live_verify(config.repo_root, timeout=timeout)
+                    # AI gate test if requested
+                    if getattr(args, 'test_ai_gate', False):
+                        console.print(f"\n  [cyan]🔄[/cyan] Running AI gate test...[/cyan]")
+                        timeout = getattr(args, 'ai_gate_timeout', 60)
+                        live_success, live_msg = adapter.test_ai_gate(config.repo_root, timeout=timeout)
                         if live_success:
-                            console.print(f"  [green]✓[/green] Live verification passed")
+                            console.print(f"  [green]✓[/green] AI gate test passed")
                             console.print(f"    [dim]{live_msg.split(chr(10))[0]}[/dim]")
                         else:
-                            console.print(f"  [red]✗[/red] Live verification failed")
+                            console.print(f"  [red]✗[/red] AI gate test failed")
                             console.print(f"    {live_msg}")
-                            errors.append(f"{agent_type.value}: live verification failed")
+                            errors.append(f"{agent_type.value}: ai gate test failed")
                 else:
                     console.print(f"  [red]✗[/red] {agent_type.value}: verification failed")
                     for failure in result.checks_failed:
@@ -1214,14 +1214,14 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
         return 0
 
 
-def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-step setup with per-agent install, verify, and safety check
+def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-step setup with per-agent install, verify, and AI gate tests
     """Install AI agent hooks for the target project."""
     from ..infra.hooks.hooks import (
         detect_agents_from_config,
         get_adapter,
         UnsupportedAiAgentError,
     )
-    from ..infra.safety_state import load_safety_state, save_safety_state
+    from ..infra.ai_gate_state import load_ai_gate_state, save_ai_gate_state
 
     console.print("[bold cyan]Installing AI Agent Hooks[/bold cyan]\n")
 
@@ -1292,17 +1292,17 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
     else:
         console.print(f"[green]✓[/green] Static verification passed")
 
-    # Run safety check (live verification)
+    # Run AI gate tests (verification with state persistence)
     if supported_adapters:
-        console.print("\n[cyan]Running safety check (spawns agent briefly)...[/cyan]")
-        safety_results: dict[str, tuple[bool, str]] = {}
-        safety_failures = []
+        console.print("\n[cyan]Running AI gate tests...[/cyan]")
+        gate_results: dict[str, tuple[bool, str]] = {}
+        gate_failures = []
 
         for agent_type, adapter in supported_adapters:
             agent_name = agent_type.value
             try:
-                success, message = adapter.live_verify(target_root)
-                safety_results[agent_name] = (success, message)
+                success, message = adapter.test_ai_gate(target_root)
+                gate_results[agent_name] = (success, message)
 
                 if success:
                     # Extract the blocked command from the message if available
@@ -1310,27 +1310,27 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
                     console.print(f"[green]✓[/green] {agent_name}: correctly {detail[:60]}")
                 else:
                     console.print(f"[red]✗[/red] {agent_name}: {message[:60]}")
-                    safety_failures.append(agent_name)
+                    gate_failures.append(agent_name)
             except Exception as e:
                 error_msg = str(e)
-                safety_results[agent_name] = (False, error_msg)
+                gate_results[agent_name] = (False, error_msg)
                 console.print(f"[red]✗[/red] {agent_name}: Error - {error_msg[:50]}")
-                safety_failures.append(agent_name)
+                gate_failures.append(agent_name)
 
-        # Save safety state
-        state = load_safety_state(target_root)
-        state.mark_checked(safety_results)
-        save_safety_state(target_root, state)
+        # Save AI gate state
+        state = load_ai_gate_state(target_root)
+        state.mark_checked(gate_results)
+        save_ai_gate_state(target_root, state)
 
-        if safety_failures:
+        if gate_failures:
             console.print()
-            if config.hooks.safety_check.dangerous_allow_failure:
-                console.print(f"[bold yellow]⚠ Safety check failed for: {', '.join(safety_failures)}[/bold yellow]")
+            if config.hooks.ai_gate.dangerous_allow_failure:
+                console.print(f"[bold yellow]⚠ AI gate test failed for: {', '.join(gate_failures)}[/bold yellow]")
                 console.print("[dim]Continuing because dangerous_allow_failure is enabled[/dim]")
             else:
-                console.print(f"[bold red]Safety check failed for: {', '.join(safety_failures)}[/bold red]")
-                console.print("\n[yellow]Hooks installed but safety check failed.[/yellow]")
-                console.print("[dim]Set hooks.safety_check.dangerous_allow_failure: true to bypass[/dim]")
+                console.print(f"[bold red]AI gate test failed for: {', '.join(gate_failures)}[/bold red]")
+                console.print("\n[yellow]Hooks installed but AI gate test failed.[/yellow]")
+                console.print("[dim]Set hooks.ai_gate.dangerous_allow_failure: true to bypass[/dim]")
                 return 1
 
     console.print()
@@ -2197,15 +2197,15 @@ def main() -> int:
         "--config", type=Path, help="Path to config file (default: auto-detect)"
     )
     verify_parser.add_argument(
-        "--live",
+        "--test-ai-gate",
         action="store_true",
-        help="Perform live verification by spawning Claude and testing hook blocking"
+        help="Test AI gating (hooks/execpolicy) for configured agents"
     )
     verify_parser.add_argument(
-        "--live-timeout",
+        "--ai-gate-timeout",
         type=int,
         default=60,
-        help="Timeout in seconds for live verification (default: 60)"
+        help="Timeout in seconds for AI gate tests (default: 60)"
     )
     verify_parser.set_defaults(func=cmd_verify)
 

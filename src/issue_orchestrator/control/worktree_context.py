@@ -137,6 +137,7 @@ class WorktreeContext:
             reuse_options=reuse_options or WorktreeReuseOptions(),
             branch_name=branch_name,
             pre_push_hook=pre_push_hook,
+            base_branch=config.worktree_default_branch,
         )
         worktree_path = worktree_info.path
         actual_branch = worktree_info.branch_name
