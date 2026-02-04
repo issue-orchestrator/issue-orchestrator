@@ -56,6 +56,16 @@ review:
 validation:
   cmd: make validate
   timeout_seconds: 300
+  coverage_guardrail:
+    enabled: true
+    min_percent: 85
+    apply_to: changed
+    scope:
+      - "src/issue_orchestrator/**"
+      - "packages/agent_runner/src/**"
+    coverage_type: line
+    exclude:
+      - "src/issue_orchestrator/generated/**"
 
 filtering:
   exclude_labels: ["io-e2e-test-data", "test-data"]
