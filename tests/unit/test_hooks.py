@@ -436,7 +436,8 @@ class TestClaudeCodeAdapter:
         assert isinstance(result, tuple)
         blocked, stderr = result
         assert blocked
-        assert "python3 is required" in stderr.lower()
+        assert "python3" in stderr.lower()
+        assert "no-verify" in stderr.lower()
 
     def test_hook_blocks_when_input_malformed(self, adapter, temp_project):
         """Hook must fail closed when input is non-empty but command extraction returns empty."""
