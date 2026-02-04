@@ -137,7 +137,6 @@ class MockWorktreeManager:
         issue_number: int,
         issue_title: str,
         worktree_base: Path | None = None,
-        base_branch: str | None = None,
         enforce_hooks: bool = True,
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
@@ -150,7 +149,6 @@ class MockWorktreeManager:
             "issue_title": issue_title,
             "base_branch": base_branch,
             "branch_name": branch_name,
-            "base_branch": base_branch,
             "reuse_options": reuse_options,
         })
         worktree_path = self.tmp_path / f"worktree-{issue_number}"
