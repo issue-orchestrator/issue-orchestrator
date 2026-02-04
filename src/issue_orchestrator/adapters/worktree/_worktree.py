@@ -1320,34 +1320,9 @@ def create_worktree(
         prune_result = _git_run(ctx.repo_root, ["worktree", "prune"], check=False)
         logger.debug("Worktree prune: returncode=%s", prune_result.returncode)
 
-        recreated_reason: str | None = None
-        if ctx.disable_reuse:
-            recreated_reason = _handle_reuse_disabled(
-                ctx.repo_root, ctx.worktree_path, ctx.branch_name, ctx.issue_number
-            )
-
-        # Try reuse strategies
-        if not ctx.disable_reuse:
-            reuse_result, reuse_recreated_reason = _try_reuse_by_branch(
-                ctx.repo_root, ctx.branch_name, ctx.issue_number, ctx.policy,
-                ctx.reuse_options, ctx.enforce_hooks, ctx.pre_push_hook, ctx.base_branch,
-            )
-            if reuse_result is not None:
-                return reuse_result
-            # Capture recreated_reason from failed reuse (validation/sync/reset/preflight)
-            if reuse_recreated_reason:
-                recreated_reason = reuse_recreated_reason
-
-            if ctx.worktree_path.exists():
-                reuse_result, reuse_recreated_reason = _try_reuse_by_path(
-                    ctx.worktree_path, ctx.repo_root, ctx.issue_number, ctx.policy,
-                    ctx.reuse_options, ctx.enforce_hooks, ctx.pre_push_hook, ctx.base_branch,
-                )
-                if reuse_result is not None:
-                    return reuse_result
-                # Capture recreated_reason from failed reuse (validation/sync/reset/preflight)
-                if reuse_recreated_reason and not recreated_reason:
-                    recreated_reason = reuse_recreated_reason
+        reuse_result, recreated_reason = _attempt_reuse(ctx)
+        if reuse_result is not None:
+            return reuse_result
 
         # Handle branch on recreate
         final_branch = ctx.branch_name
@@ -1365,6 +1340,39 @@ def create_worktree(
         raise
     except Exception as e:
         raise WorktreeError(f"Error creating worktree: {e}")
+
+
+def _attempt_reuse(
+    ctx: _WorktreeCreateContext,
+) -> tuple[tuple[Path, str, str, str | None, bool, int, int] | None, str | None]:
+    """Attempt to reuse an existing worktree, returning (result, recreated_reason)."""
+    recreated_reason: str | None = None
+    if ctx.disable_reuse:
+        recreated_reason = _handle_reuse_disabled(
+            ctx.repo_root, ctx.worktree_path, ctx.branch_name, ctx.issue_number
+        )
+        return None, recreated_reason
+
+    reuse_result, reuse_recreated_reason = _try_reuse_by_branch(
+        ctx.repo_root, ctx.branch_name, ctx.issue_number, ctx.policy,
+        ctx.reuse_options, ctx.enforce_hooks, ctx.pre_push_hook, ctx.base_branch,
+    )
+    if reuse_result is not None:
+        return reuse_result, None
+    if reuse_recreated_reason:
+        recreated_reason = reuse_recreated_reason
+
+    if ctx.worktree_path.exists():
+        reuse_result, reuse_recreated_reason = _try_reuse_by_path(
+            ctx.worktree_path, ctx.repo_root, ctx.issue_number, ctx.policy,
+            ctx.reuse_options, ctx.enforce_hooks, ctx.pre_push_hook, ctx.base_branch,
+        )
+        if reuse_result is not None:
+            return reuse_result, None
+        if reuse_recreated_reason and not recreated_reason:
+            recreated_reason = reuse_recreated_reason
+
+    return None, recreated_reason
 
 
 def _handle_reuse_disabled(
