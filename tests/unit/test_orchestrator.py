@@ -2,6 +2,7 @@
 
 import asyncio
 import pytest
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call, AsyncMock, PropertyMock
@@ -29,7 +30,7 @@ class MockWorktreeManager:
     """Mock implementation of WorktreeManager for testing."""
 
     def __init__(self, worktree_path: Path = None, branch_name: str = None):
-        self.worktree_path = worktree_path or Path("/tmp/worktree")
+        self.worktree_path = worktree_path or Path(tempfile.mkdtemp(prefix="io-worktree-"))
         self.branch_name = branch_name or "feature/issue-1"
         self.create_calls = []
         self.remove_calls = []
@@ -149,8 +150,10 @@ def create_issue(number, title="Test Issue", labels=None, milestone=None):
     )
 
 
-def create_session(issue, worktree_path="/tmp/worktree", branch_name="feature/test", task=TaskKind.CODE):
+def create_session(issue, worktree_path=None, branch_name="feature/test", task=TaskKind.CODE):
     """Helper to create Session objects for testing."""
+    if worktree_path is None:
+        worktree_path = tempfile.mkdtemp(prefix="io-worktree-")
     agent_config = AgentConfig(
         prompt_path=Path("/tmp/prompt.txt"),
         model="sonnet",
@@ -414,7 +417,7 @@ class TestLaunchSession:
         call = orchestrator.deps.runner.plugin.create_session_calls[0]
         assert call["session_id"] == 1  # issue number
         assert isinstance(call["command"], str)
-        assert call["working_dir"] == "/tmp/worktree"
+        assert call["working_dir"] == str(mock_worktree_manager.worktree_path)
 
     def test_launch_session_adds_to_active_sessions(
         self,
@@ -454,7 +457,7 @@ class TestLaunchSession:
         assert isinstance(session, Session)
         assert session.issue == issue
         assert session.terminal_id == "issue-1"
-        assert session.worktree_path == Path("/tmp/worktree")
+        assert session.worktree_path == mock_worktree_manager.worktree_path
         assert session.branch_name == "feature/issue-1"
 
     def test_launch_session_returns_none_if_session_already_exists(
@@ -571,7 +574,7 @@ class TestHandleSessionCompletion:
     ):
         """Test that completed sessions record immediate cleanup for planner."""
         issue = create_issue(1)
-        session = create_session(issue, worktree_path="/tmp/worktree")
+        session = create_session(issue, worktree_path=mock_worktree_manager.worktree_path)
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager)
         orchestrator.state.active_sessions.append(session)
