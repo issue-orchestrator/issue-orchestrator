@@ -196,11 +196,18 @@ class FileSystemSessionOutput:
         if not base_dir.exists():
             return []
 
-        runs = sorted(
-            [d for d in base_dir.iterdir() if d.is_dir() and not d.is_symlink()],
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
+        runs: list[Path] = []
+        for candidate in base_dir.iterdir():
+            try:
+                if not candidate.is_dir() or candidate.is_symlink():
+                    continue
+                candidate.stat()
+            except FileNotFoundError:
+                # Another process removed the directory between iterdir/stat.
+                continue
+            runs.append(candidate)
+
+        runs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
 
         removed: list[Path] = []
         for run_dir in runs[keep:]:

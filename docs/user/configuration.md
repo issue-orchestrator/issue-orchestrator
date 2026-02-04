@@ -611,7 +611,7 @@ _Auto-generated from settings schema._
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `hooks.ai_gate.interval_days` | integer | `7` | Run AI gate tests every N days (0 = disabled) |
-| `hooks.ai_gate.dangerous_allow_failure` | boolean | `False` | If true, warn only on AI gate test failure; if false, block orchestrator start |
+| `hooks.ai_gate.dangerous_allow_failure` | boolean | `False` | If true, warn only on AI gate failure; if false, block orchestrator start |
 
 ## Advanced
 
