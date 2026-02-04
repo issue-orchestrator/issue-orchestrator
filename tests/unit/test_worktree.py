@@ -6,7 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch, call
 import subprocess
 
-from issue_orchestrator.adapters.worktree._worktree import (
+from issue_orchestrator.adapters.worktree.api import (
     slugify,
     generate_branch_name,
     create_worktree,
@@ -14,8 +14,8 @@ from issue_orchestrator.adapters.worktree._worktree import (
     list_worktrees,
     worktree_exists,
     has_uncommitted_changes,
-    _get_worktree_branch,
-    _next_branch_name,
+    get_worktree_branch,
+    next_branch_name,
     install_hooks,
     WorktreeError,
 )
@@ -132,7 +132,7 @@ class TestBranchSuffix:
             "issue_orchestrator.adapters.worktree._worktree._list_branch_names",
             lambda _repo: ["123-fix", "123-fix-r1", "123-fix-r3"],
         )
-        assert _next_branch_name(tmp_path, "123-fix") == "123-fix-r4"
+        assert next_branch_name(tmp_path, "123-fix") == "123-fix-r4"
 
     def test_next_branch_name_strips_existing_suffix(self, monkeypatch, tmp_path):
         """Avoid stacking suffixes when branch already has -rN."""
@@ -140,7 +140,7 @@ class TestBranchSuffix:
             "issue_orchestrator.adapters.worktree._worktree._list_branch_names",
             lambda _repo: ["123-fix", "123-fix-r1"],
         )
-        assert _next_branch_name(tmp_path, "123-fix-r1") == "123-fix-r2"
+        assert next_branch_name(tmp_path, "123-fix-r1") == "123-fix-r2"
 
 
 class TestCreateWorktree:
@@ -475,7 +475,7 @@ class TestCreateWorktree:
 class TestRemoveWorktree:
     """Test the remove_worktree function."""
 
-    @patch("issue_orchestrator.adapters.worktree._worktree._get_worktree_branch")
+    @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_success(self, mock_run, mock_get_branch, tmp_path):
         """Test successful worktree removal."""
@@ -532,7 +532,7 @@ class TestRemoveWorktree:
         # Git should not have been called
         mock_run.assert_not_called()
 
-    @patch("issue_orchestrator.adapters.worktree._worktree._get_worktree_branch")
+    @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_git_fails(self, mock_run, mock_get_branch, tmp_path):
         """Test error when git worktree remove fails."""
@@ -555,7 +555,7 @@ class TestRemoveWorktree:
         with pytest.raises(WorktreeError, match="Failed to remove worktree"):
             remove_worktree(worktree_path)
 
-    @patch("issue_orchestrator.adapters.worktree._worktree._get_worktree_branch")
+    @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_branch_deletion_fails_silently(
         self, mock_run, mock_get_branch, tmp_path
@@ -585,7 +585,7 @@ class TestRemoveWorktree:
         # Verify both commands were attempted
         assert mock_run.call_count == 2
 
-    @patch("issue_orchestrator.adapters.worktree._worktree._get_worktree_branch")
+    @patch("issue_orchestrator.adapters.worktree._worktree.get_worktree_branch")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_remove_worktree_no_branch_name(self, mock_run, mock_get_branch, tmp_path):
         """Test removal when branch name cannot be determined."""
@@ -870,7 +870,7 @@ class TestHasUncommittedChanges:
 
 
 class TestGetWorktreeBranch:
-    """Test the _get_worktree_branch helper function."""
+    """Test the get_worktree_branch helper function."""
 
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_get_worktree_branch_success(self, mock_run, tmp_path):
@@ -884,7 +884,7 @@ class TestGetWorktreeBranch:
         )
 
         # Execute
-        branch_name = _get_worktree_branch(worktree_path)
+        branch_name = get_worktree_branch(worktree_path)
 
         # Verify
         assert branch_name == "123-feature-branch"
@@ -910,7 +910,7 @@ class TestGetWorktreeBranch:
         )
 
         # Execute
-        branch_name = _get_worktree_branch(worktree_path)
+        branch_name = get_worktree_branch(worktree_path)
 
         # Verify - should return None on failure
         assert branch_name is None
@@ -925,7 +925,7 @@ class TestGetWorktreeBranch:
         mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
         # Execute
-        branch_name = _get_worktree_branch(worktree_path)
+        branch_name = get_worktree_branch(worktree_path)
 
         # Verify
         assert branch_name is None
@@ -940,7 +940,7 @@ class TestGetWorktreeBranch:
         mock_run.side_effect = OSError("Command not found")
 
         # Execute
-        branch_name = _get_worktree_branch(worktree_path)
+        branch_name = get_worktree_branch(worktree_path)
 
         # Verify - should return None on exception
         assert branch_name is None

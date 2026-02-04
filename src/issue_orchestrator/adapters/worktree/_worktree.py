@@ -773,7 +773,7 @@ def _list_branch_names(repo_root: Path) -> list[str]:
     return names
 
 
-def _next_branch_name(repo_root: Path, branch_name: str) -> str:
+def next_branch_name(repo_root: Path, branch_name: str) -> str:
     base = re.sub(r"-r\d+$", "", branch_name)
     existing = _list_branch_names(repo_root)
     pattern = re.compile(rf"^{re.escape(base)}-r(\d+)$")
@@ -1091,7 +1091,7 @@ def _handle_branch_on_recreate(
         else:
             logger.warning(issue_log(issue_number, "Failed to delete remote branch before recreate: %s"), branch_name)
     elif worktree_branch_on_recreate == "create_new_branch":
-        new_branch = _next_branch_name(repo_root, branch_name)
+        new_branch = next_branch_name(repo_root, branch_name)
         logger.info(
             issue_log(issue_number, "Creating new branch for recreated worktree: %s -> %s"),
             branch_name,
@@ -1563,7 +1563,7 @@ def remove_worktree(worktree_path: Path) -> None:
             )
 
         # Get the branch name from the worktree
-        branch_name = _get_worktree_branch(worktree_path)
+        branch_name = get_worktree_branch(worktree_path)
         if branch_name:
             # Delete the branch
             cmd = ["branch", "-D", branch_name]
@@ -1685,7 +1685,7 @@ def has_uncommitted_changes(worktree_path: Path) -> bool:
         raise WorktreeError(f"Error checking uncommitted changes: {e}")
 
 
-def _get_worktree_branch(worktree_path: Path) -> str | None:
+def get_worktree_branch(worktree_path: Path) -> str | None:
     """
     Get the branch name for a worktree.
 
