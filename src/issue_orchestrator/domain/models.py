@@ -358,6 +358,15 @@ class Issue:
 
 
 @dataclass
+class ValidationOverride:
+    """Optional per-agent validation override (script/args/env)."""
+
+    script: Optional[str] = None
+    args: Optional[list[str]] = None
+    env: Optional[dict[str, str]] = None
+
+
+@dataclass
 class AgentConfig:
     """Configuration for an agent type."""
     prompt_path: Path
@@ -392,6 +401,8 @@ class AgentConfig:
     # Template variables: {original_task}, {validation_cmd}, {error_file}, {error_summary},
     #                     {retry_count}, {max_retries}
     retry_prompt_template: Optional[str] = None
+    # Optional per-agent validation override (script/args/env)
+    validation: ValidationOverride | None = None
 
     def get_command(
         self,

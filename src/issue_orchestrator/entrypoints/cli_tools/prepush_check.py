@@ -13,6 +13,7 @@ Exit codes:
 """
 
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -20,6 +21,8 @@ from typing import Optional
 
 from ...control.validation import PublishGate
 from ...execution import GitWorkingCopy, LocalCommandRunner
+from ...infra.config import Config, find_config_file, load_validation_config
+from ...infra.validation_invocation import ValidationInvocation, ValidationInvocationError, ValidationResolver
 
 logger = logging.getLogger(__name__)
 
@@ -36,30 +39,19 @@ def find_worktree_root() -> Path:
 DIRTY_CHECK_MODES = {"tracked", "unstaged", "off"}
 
 
-def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
-    """Load validation configuration from the worktree's config file.
-
-    Reads from .issue-orchestrator/config/ in the worktree.
-    This ensures tests are deterministic - no env var leakage from parent processes.
-
-    Args:
-        worktree: Path to the worktree root
+def load_validation_resolver(worktree: Path) -> tuple[Optional[ValidationResolver], str]:
+    """Load validation resolver and dirty check setting for the worktree.
 
     Returns:
-        Tuple of (command, timeout_seconds, pre_push_dirty_check)
+        Tuple of (resolver or None, pre_push_dirty_check)
     """
-    from ...infra.config import load_validation_config
+    config_path = find_config_file(worktree)
+    if not config_path:
+        validation_config = load_validation_config(worktree)
+        return None, validation_config.get("pre_push_dirty_check", "tracked")
 
-    # Read validation config from the worktree's config file
-    validation_config = load_validation_config(worktree)
-
-    cmd = validation_config.get("cmd")
-    timeout = validation_config.get("timeout_seconds", 300)
-    dirty_check = validation_config.get("pre_push_dirty_check", "tracked")
-    if cmd:
-        return cmd, timeout, dirty_check
-
-    return None, 0, dirty_check
+    config = Config.load(config_path)
+    return ValidationResolver(config), config.validation.pre_push_dirty_check
 
 
 def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
@@ -89,20 +81,22 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
 
 def _run_validation_gate(
     worktree: Path,
-    cmd: str,
-    timeout: int,
+    invocation: ValidationInvocation,
     verbose: bool,
 ) -> int:
     """Run the publish gate and return exit code."""
     if verbose:
-        print(f"Validation configured: {cmd}")
+        print(f"Validation configured: {invocation.command_display}")
 
     gate = PublishGate(
         worktree,
         command_runner=LocalCommandRunner(),
         working_copy=GitWorkingCopy(),
-        command=cmd,
-        timeout_seconds=timeout,
+        command=invocation.command,
+        command_display=invocation.command_display,
+        env=invocation.env,
+        input_text=invocation.input_text,
+        timeout_seconds=invocation.timeout_seconds,
     )
     start = time.monotonic()
     # Create a temp directory for validation output (prepush runs outside orchestrator sessions)
@@ -150,18 +144,36 @@ def run_prepush_check(verbose: bool = False) -> int:
         Exit code (0 = passed, 1 = failed, 2 = error)
     """
     worktree = find_worktree_root()
-    cmd, timeout, dirty_check = load_validation_cmd(worktree)
+    resolver, dirty_check = load_validation_resolver(worktree)
 
     dirty_result = _run_dirty_guard(worktree, dirty_check, verbose)
     if dirty_result is not None:
         return dirty_result
 
-    if not cmd:
+    if resolver is None:
         if verbose:
             print("No validation configured - allowing push")
         return 0
 
-    return _run_validation_gate(worktree, cmd, timeout, verbose)
+    agent_label = os.environ.get("ISSUE_ORCHESTRATOR_AGENT_LABEL")
+    try:
+        invocation = resolver.resolve(
+            worktree=worktree,
+            run_dir=worktree / ".issue-orchestrator" / "diagnostics",
+            agent_label=agent_label,
+            mode="prepush",
+        )
+    except ValidationInvocationError as exc:
+        if verbose:
+            print(f"Validation configuration error: {exc}")
+        return 2
+
+    if not invocation:
+        if verbose:
+            print("No validation configured - allowing push")
+        return 0
+
+    return _run_validation_gate(worktree, invocation, verbose)
 
 
 def main() -> None:

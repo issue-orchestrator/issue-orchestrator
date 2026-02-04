@@ -17,6 +17,7 @@ from issue_orchestrator.observation.observation import SessionObservation, Sessi
 from issue_orchestrator.domain.models import SessionStatus, CompletionRecord, CompletionOutcome, RequestedAction
 from issue_orchestrator.ports import NullEventSink
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from issue_orchestrator.infra.validation_invocation import ValidationInvocation
 
 
 class StubWorkingCopy:
@@ -59,6 +60,17 @@ def make_record(outcome: CompletionOutcome, **kwargs) -> CompletionRecord:
         comment_body=kwargs.get("comment_body"),
         validation_record_path=kwargs.get("validation_record_path"),
     )
+
+def make_invocation(command: str, timeout_seconds: int = 60) -> ValidationInvocation:
+    """Helper to create a ValidationInvocation for tests."""
+    return ValidationInvocation(
+        command=command,
+        command_display=command,
+        env={},
+        input_text=None,
+        timeout_seconds=timeout_seconds,
+    )
+
 
 
 class MockCompletionProcessor:
@@ -385,13 +397,14 @@ class MockCommandRunner:
         self.timed_out = timed_out
         self.run_calls: list[dict] = []
 
-    def run(self, command, *, cwd=None, env=None, timeout_seconds=None, shell=False):
+    def run(self, command, *, cwd=None, env=None, timeout_seconds=None, shell=False, input_text=None):
         """Record the call and return configured result."""
         self.run_calls.append({
             "command": command,
             "cwd": cwd,
             "timeout_seconds": timeout_seconds,
             "shell": shell,
+            "input_text": input_text,
         })
         # Return a result-like object
         from types import SimpleNamespace
@@ -401,6 +414,16 @@ class MockCommandRunner:
             stderr=self.stderr,
             timed_out=self.timed_out,
         )
+
+
+class StaticValidationResolver:
+    """Resolver that always returns the same invocation."""
+
+    def __init__(self, invocation: ValidationInvocation | None):
+        self.invocation = invocation
+
+    def resolve(self, *, worktree, run_dir, agent_label, mode):
+        return self.invocation
 
 
 class MockWorkingCopy:
@@ -439,8 +462,7 @@ class TestSessionControllerValidationCaching:
             session_output=FileSystemSessionOutput(),
             working_copy=working_copy,
             command_runner=command_runner,
-            validation_cmd="make test",
-            validation_timeout_seconds=60,
+            validation_resolver=StaticValidationResolver(make_invocation("make test", 60)),
         )
 
         # Create worktree with git repo so PublishGate can read SHA
@@ -486,8 +508,7 @@ class TestSessionControllerValidationCaching:
             session_output=FileSystemSessionOutput(),
             working_copy=working_copy,
             command_runner=command_runner,
-            validation_cmd="make test",
-            validation_timeout_seconds=60,
+            validation_resolver=StaticValidationResolver(make_invocation("make test", 60)),
         )
 
         worktree = tmp_path / "worktree"
@@ -509,7 +530,7 @@ class TestSessionControllerValidationCaching:
         assert decision.validation_error is not None
 
     def test_no_validation_when_no_command_configured(self):
-        """No validation runs when validation_cmd is not configured."""
+        """No validation runs when validation_resolver is not configured."""
         processor = MockCompletionProcessor()
         processor.completion_record = make_record(
             CompletionOutcome.COMPLETED,
@@ -520,14 +541,14 @@ class TestSessionControllerValidationCaching:
         command_runner = MockCommandRunner(returncode=0)
         working_copy = MockWorkingCopy()
 
-        # No validation_cmd
+        # No validation_resolver
         controller = SessionController(
             completion_processor=processor,
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
             working_copy=working_copy,
             command_runner=command_runner,
-            # validation_cmd not set
+            # validation_resolver not set
         )
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)

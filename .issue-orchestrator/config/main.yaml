@@ -54,7 +54,9 @@ review:
   max_rework_cycles: 2
 
 validation:
-  cmd: make validate
+  script: extras/validate/run.sh
+  args: []
+  env: {}
   timeout_seconds: 300
 
 filtering:

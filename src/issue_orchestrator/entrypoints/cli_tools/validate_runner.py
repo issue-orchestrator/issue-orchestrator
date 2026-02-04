@@ -22,7 +22,9 @@ import sys
 import time
 from pathlib import Path
 
+from ...infra.config import Config, find_config_file
 from ...infra.env import get_env
+from ...infra.validation_invocation import ValidationInvocationError, ValidationResolver
 
 
 def find_worktree_root() -> Path:
@@ -53,28 +55,22 @@ def get_output_dir(worktree: Path) -> Path:
     return worktree / ".issue-orchestrator" / "diagnostics"
 
 
-def load_validation_cmd(worktree: Path) -> str | None:
-    """Load validation command from config.
-
-    Args:
-        worktree: Path to the worktree root
-
-    Returns:
-        Validation command string, or None if not configured
-    """
-    from ...infra.config import load_validation_config
-
-    validation_config = load_validation_config(worktree)
-    return validation_config.get("cmd")
-
-
-def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
+def run_validation(
+    command: str | list[str],
+    output_dir: Path,
+    worktree: Path,
+    *,
+    env: dict[str, str] | None = None,
+    input_text: str | None = None,
+) -> int:
     """Run validation command and capture output.
 
     Args:
         command: Command to run
         output_dir: Directory to write output to
         worktree: Working directory for command
+        env: Environment variables for command
+        input_text: Optional stdin payload
 
     Returns:
         Exit code from the command
@@ -89,17 +85,23 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
     start = time.monotonic()
 
     # Run command, capturing output while also displaying it
-    # Use line buffering (buffering=1) to ensure output is written immediately
     with open(output_file, "w", buffering=1) as f:
         process = subprocess.Popen(
             command,
-            shell=True,
+            shell=isinstance(command, str),
             cwd=worktree,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,  # Line buffered
+            env=env,
+            stdin=subprocess.PIPE if input_text is not None else None,
         )
+
+        # Send input if provided
+        if input_text is not None and process.stdin is not None:
+            process.stdin.write(input_text)
+            process.stdin.close()
 
         # Stream output to both file and terminal
         assert process.stdout is not None  # For type checker
@@ -140,7 +142,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--command", "-c",
-        help="Validation command to run (default: from config)",
+        help="Validation command to run (overrides config)",
     )
 
     args = parser.parse_args()
@@ -149,18 +151,41 @@ def main() -> None:
     output_dir = get_output_dir(worktree)
 
     # Determine command to run
-    command = args.command
-    if not command:
-        command = load_validation_cmd(worktree)
-    if not command:
-        print("ERROR: No validation command configured.", file=sys.stderr)
-        print("", file=sys.stderr)
-        print("Either:", file=sys.stderr)
-        print("  1. Pass --command 'your command here'", file=sys.stderr)
-        print("  2. Configure validation.cmd in .issue-orchestrator/config/*.yaml", file=sys.stderr)
+    if args.command:
+        exit_code = run_validation(args.command, output_dir, worktree)
+        sys.exit(exit_code)
+
+    config_path = find_config_file(worktree)
+    if not config_path:
+        print("ERROR: No config found for validation.", file=sys.stderr)
         sys.exit(2)
 
-    exit_code = run_validation(command, output_dir, worktree)
+    config = Config.load(config_path)
+    resolver = ValidationResolver(config)
+    agent_label = get_env("AGENT_LABEL")
+    try:
+        invocation = resolver.resolve(
+            worktree=worktree,
+            run_dir=output_dir,
+            agent_label=agent_label,
+            mode="manual",
+        )
+    except ValidationInvocationError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(2)
+
+    if not invocation:
+        print("ERROR: No validation configured.", file=sys.stderr)
+        print("Configure validation.script (or legacy validation.cmd) in .issue-orchestrator/config/*.yaml", file=sys.stderr)
+        sys.exit(2)
+
+    exit_code = run_validation(
+        invocation.command,
+        output_dir,
+        worktree,
+        env=invocation.env,
+        input_text=invocation.input_text,
+    )
     sys.exit(exit_code)
 
 

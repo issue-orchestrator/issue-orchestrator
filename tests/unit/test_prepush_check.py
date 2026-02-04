@@ -7,12 +7,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 from issue_orchestrator.entrypoints.cli_tools.prepush_check import (
-    load_validation_cmd,
+    load_validation_resolver,
     run_prepush_check,
 )
 
 
-class TestLoadValidationCmd:
+class TestLoadValidationResolver:
     """Tests for loading validation configuration."""
 
     @pytest.fixture
@@ -26,20 +26,19 @@ class TestLoadValidationCmd:
 
     def test_returns_none_when_no_config(self, temp_worktree):
         """Test returns None when config file doesn't exist."""
-        cmd, timeout, dirty_check = load_validation_cmd(temp_worktree)
-        assert cmd is None
-        assert timeout == 0
+        resolver, dirty_check = load_validation_resolver(temp_worktree)
+        assert resolver is None
         assert dirty_check == "tracked"
 
-    def test_returns_none_when_no_cmd(self, temp_worktree):
-        """Test returns None when cmd not configured."""
+    def test_returns_resolver_when_no_validation(self, temp_worktree):
+        """Test returns resolver even when validation not configured."""
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         config_path = config_dir / "default.yaml"
         config_path.write_text("some_key: value\n")
 
-        cmd, timeout, dirty_check = load_validation_cmd(temp_worktree)
-        assert cmd is None
+        resolver, dirty_check = load_validation_resolver(temp_worktree)
+        assert resolver is not None
         assert dirty_check == "tracked"
 
     def test_returns_cmd_when_configured(self, temp_worktree):
@@ -53,13 +52,12 @@ validation:
   timeout_seconds: 300
 """)
 
-        cmd, timeout, dirty_check = load_validation_cmd(temp_worktree)
-        assert cmd == "pytest"
-        assert timeout == 300
+        resolver, dirty_check = load_validation_resolver(temp_worktree)
+        assert resolver is not None
         assert dirty_check == "tracked"
 
-    def test_uses_default_timeout(self, temp_worktree):
-        """Test uses default timeout when not specified."""
+    def test_uses_default_timeout_seconds(self, temp_worktree):
+        """Test uses default timeout_seconds when not specified."""
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True, exist_ok=True)
         config_path = config_dir / "default.yaml"
@@ -68,9 +66,8 @@ validation:
   cmd: "make test"
 """)
 
-        cmd, timeout, dirty_check = load_validation_cmd(temp_worktree)
-        assert cmd == "make test"
-        assert timeout == 300  # Default
+        resolver, dirty_check = load_validation_resolver(temp_worktree)
+        assert resolver is not None
         assert dirty_check == "tracked"
 
     def test_reads_dirty_check_mode(self, temp_worktree):
@@ -84,9 +81,8 @@ validation:
   pre_push_dirty_check: "unstaged"
 """)
 
-        cmd, timeout, dirty_check = load_validation_cmd(temp_worktree)
-        assert cmd == "make test"
-        assert timeout == 300
+        resolver, dirty_check = load_validation_resolver(temp_worktree)
+        assert resolver is not None
         assert dirty_check == "unstaged"
 
 

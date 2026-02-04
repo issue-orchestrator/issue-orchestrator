@@ -11,7 +11,7 @@ import yaml
 if TYPE_CHECKING:
     from ..domain.issue_filter import IssueLabelFilter
 
-from ..domain.models import AgentConfig, CommentHeadings
+from ..domain.models import AgentConfig, CommentHeadings, ValidationOverride
 
 # Config directory structure
 CONFIG_DIR = ".issue-orchestrator/config"
@@ -27,6 +27,7 @@ ALLOWED_AGENT_FIELDS = {
     'prompt', 'provider', 'model', 'timeout_minutes',
     'permission_mode', 'skip_review', 'reviewer', 'command',
     'meta_agent', 'initial_prompt', 'ai_system', 'provider_args', 'retry_prompt_template',
+    'validation',
 }
 
 # Pattern for ${VAR} environment variable references
@@ -806,6 +807,9 @@ def _load_validation_section(config: "Config", validation_section: dict) -> None
     """Load validation configuration."""
     if validation_section:
         config.validation = ValidationConfig(
+            script=validation_section.get("script"),
+            args=validation_section.get("args", []) or [],
+            env=validation_section.get("env", {}) or {},
             cmd=validation_section.get("cmd"),
             timeout_seconds=validation_section.get("timeout_seconds", 300),
             pre_push_dirty_check=validation_section.get("pre_push_dirty_check", "tracked"),
@@ -877,6 +881,13 @@ def _load_agents_section(
             "ai_system": agent_data.get("ai_system"),
             "retry_prompt_template": agent_data.get("retry_prompt_template"),
         }
+        validation_override = agent_data.get("validation")
+        if validation_override:
+            agent_kwargs["validation"] = ValidationOverride(
+                script=validation_override.get("script"),
+                args=validation_override.get("args"),
+                env=validation_override.get("env"),
+            )
         if "command" in agent_data:
             agent_kwargs["command"] = agent_data["command"]
         if "initial_prompt" in agent_data:
@@ -1147,8 +1158,8 @@ class Config:
         return self.prefixed_label(self.label_validation_failed)
 
     def is_validation_enabled(self) -> bool:
-        """Check if validation is enabled (cmd is set)."""
-        return self.validation.cmd is not None
+        """Check if validation is enabled (script or cmd is set)."""
+        return self.validation.script is not None or self.validation.cmd is not None
 
     def get_filter_milestones(self) -> list[str]:
         """Return a list of milestone filters."""
@@ -1461,6 +1472,16 @@ class Config:
                 agent_dict["ai_system"] = agent.ai_system
             if agent.retry_prompt_template:
                 agent_dict["retry_prompt_template"] = agent.retry_prompt_template
+            if agent.validation:
+                agent_validation: dict[str, object] = {}
+                if agent.validation.script is not None:
+                    agent_validation["script"] = agent.validation.script
+                if agent.validation.args is not None:
+                    agent_validation["args"] = list(agent.validation.args)
+                if agent.validation.env is not None:
+                    agent_validation["env"] = dict(agent.validation.env)
+                if agent_validation:
+                    agent_dict["validation"] = agent_validation
             agents_dict[label] = agent_dict
 
         result: dict = {
@@ -1647,12 +1668,24 @@ class Config:
             }
 
         # Validation section
-        if self.validation.cmd or self.validation.pre_push_dirty_check != "tracked":
+        if (
+            self.validation.script
+            or self.validation.args
+            or self.validation.env
+            or self.validation.cmd
+            or self.validation.pre_push_dirty_check != "tracked"
+        ):
             validation_dict: dict = {}
+            if self.validation.script:
+                validation_dict["script"] = self.validation.script
+            if self.validation.args:
+                validation_dict["args"] = list(self.validation.args)
+            if self.validation.env:
+                validation_dict["env"] = dict(self.validation.env)
             if self.validation.cmd:
                 validation_dict["cmd"] = self.validation.cmd
-                if self.validation.timeout_seconds != 300:
-                    validation_dict["timeout_seconds"] = self.validation.timeout_seconds
+            if self.validation.timeout_seconds != 300:
+                validation_dict["timeout_seconds"] = self.validation.timeout_seconds
             if self.validation.pre_push_dirty_check != "tracked":
                 validation_dict["pre_push_dirty_check"] = self.validation.pre_push_dirty_check
             if validation_dict:

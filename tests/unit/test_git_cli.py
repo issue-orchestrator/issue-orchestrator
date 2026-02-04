@@ -12,8 +12,8 @@ class FakeRunner:
         self.next_result = (0, "OK\n", "")
         self.timed_out = False
 
-    def run(self, command, *, cwd=None, env=None, timeout_seconds=None, shell=False):
-        self.calls.append((command, cwd, env, timeout_seconds, shell))
+    def run(self, command, *, cwd=None, env=None, timeout_seconds=None, shell=False, input_text=None):
+        self.calls.append((command, cwd, env, timeout_seconds, shell, input_text))
         return type(
             "Result",
             (),
@@ -30,12 +30,13 @@ def test_git_cli_builds_git_c_command():
     runner = FakeRunner()
     git = GitCLI(runner=runner)
     git.status_porcelain(Path("/tmp/repo"))
-    command, cwd, env, timeout_seconds, shell = runner.calls[0]
+    command, cwd, env, timeout_seconds, shell, input_text = runner.calls[0]
     assert command[:3] == ["git", "-C", "/tmp/repo"]
     assert command[3:] == ["status", "--porcelain"]
     assert cwd is None
     assert shell is False
     assert timeout_seconds == git.default_timeout_s
+    assert input_text is None
     assert "GIT_DIR" not in env
 
 

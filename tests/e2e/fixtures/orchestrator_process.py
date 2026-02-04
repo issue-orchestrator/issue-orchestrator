@@ -123,6 +123,9 @@ class OrchestratorProcess:
                 for label, cfg in self.config.agents.items()
             },
             "validation": {
+                "script": self.config.validation.script,
+                "args": list(self.config.validation.args),
+                "env": dict(self.config.validation.env),
                 "cmd": self.config.validation.cmd,
                 "timeout_seconds": self.config.validation.timeout_seconds,
             },

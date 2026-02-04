@@ -27,7 +27,9 @@ from typing import NoReturn, Optional
 import os
 
 from ...infra.logging_config import issue_log
+from ...infra.config import Config, find_config_file
 from ...infra.env import get_env
+from ...infra.validation_invocation import ValidationInvocationError, ValidationResolver
 
 logger = logging.getLogger(__name__)
 
@@ -409,28 +411,17 @@ def find_worktree_root() -> Path:
     return cwd
 
 
-def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
-    """Load validation configuration from the worktree's config file.
+def load_validation_invocation(worktree: Path) -> tuple[ValidationResolver | None, Config | None]:
+    """Load validation resolver and config for the worktree.
 
-    Reads from .issue-orchestrator/config/ in the worktree.
-    This ensures tests are deterministic - no env var leakage from parent processes.
-
-    Args:
-        worktree: Path to the worktree root
-
-    Returns:
-        Tuple of (command, timeout_seconds) or (None, 0) if not configured
+    Returns a tuple of (resolver, config_dict) where resolver may be None if
+    no config is found.
     """
-    from ...infra.config import load_validation_config
-
-    # Read validation config from the worktree's config file
-    validation_config = load_validation_config(worktree)
-
-    cmd = validation_config.get("cmd")
-    if cmd:
-        return cmd, validation_config.get("timeout_seconds", 300)
-
-    return None, 0
+    config_path = find_config_file(worktree)
+    if not config_path:
+        return None, None
+    config = Config.load(config_path)
+    return ValidationResolver(config), config
 
 
 def run_validation(
@@ -448,12 +439,28 @@ def run_validation(
     Returns:
         AgentGateResult if validation was run, None if not configured
     """
-    cmd, timeout = load_validation_cmd(worktree)
-    if not cmd:
+    resolver, _ = load_validation_invocation(worktree)
+    if not resolver:
+        return None
+
+    agent_label = os.environ.get("ISSUE_ORCHESTRATOR_AGENT_LABEL")
+    try:
+        invocation = resolver.resolve(
+            worktree=worktree,
+            run_dir=session_output_dir,
+            agent_label=agent_label,
+            mode="agent_done",
+        )
+    except ValidationInvocationError as exc:
+        if verbose:
+            print(f"Validation configuration error: {exc}")
+        return AgentGateResult(passed=False, reason=str(exc))
+
+    if not invocation:
         return None
 
     if verbose:
-        print(f"Running validation: {cmd}")
+        print(f"Running validation: {invocation.command_display}")
 
     from ...execution import LocalCommandRunner, GitWorkingCopy
 
@@ -461,8 +468,11 @@ def run_validation(
         worktree,
         command_runner=LocalCommandRunner(),
         working_copy=GitWorkingCopy(),
-        command=cmd,
-        timeout_seconds=timeout,
+        command=invocation.command,
+        command_display=invocation.command_display,
+        env=invocation.env,
+        input_text=invocation.input_text,
+        timeout_seconds=invocation.timeout_seconds,
     )
     result = gate.run(session_output_dir=session_output_dir)
 
@@ -729,8 +739,8 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
 
     if should_validate:
         # Check if validation is configured before requiring session output
-        validation_cmd, _ = load_validation_cmd(worktree_root)
-        if validation_cmd:
+        resolver, config = load_validation_invocation(worktree_root)
+        if resolver and config and config.is_validation_enabled():
             # Get session output dir for validation to write directly there
             if not record.session_id:
                 logger.error("[agent-done] Validation requires session_id but none found")

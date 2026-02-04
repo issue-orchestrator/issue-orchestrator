@@ -198,11 +198,19 @@ cleanup:
 
 ```yaml
 validation:
-  cmd: null
+  script: null
+  args: []
+  env: {}
+  cmd: null  # legacy
   timeout_seconds: 300
   pre_push_dirty_check: "tracked"
 ```
 
+- `validation.script`: Path to a validation script (repo-relative or absolute). The script receives JSON context on stdin.
+- `validation.args`: Extra args passed to the script.
+- `validation.env`: Extra environment variables passed to the script.
+- `validation.cmd`: Legacy validation command (no stdin context). Prefer `validation.script`.
+- Per-agent override: `agents.<label>.validation` with `script`, `args`, and `env` replaces the global validation settings for that agent.
 - `validation.pre_push_dirty_check`: Controls pre-push dirty checks for tracked files. Values:
   - `"tracked"`: block on staged + unstaged changes (default)
   - `"unstaged"`: allow staged changes, block unstaged changes

@@ -22,17 +22,19 @@ Full test suites (including e2e) can take minutes. Slow validation means:
 ### Single Validation Gate
 ```yaml
 validation:
-  cmd: "make validate-fast"
+  script: "extras/validate/run.sh"
+  args: []
+  env: {}
   timeout_seconds: 300
 ```
 
-Legacy configs used `validation.agent_gate`/`validation.publish_gate`; those keys are removed in favor of `validation.cmd`.
+Legacy configs used `validation.agent_gate`/`validation.publish_gate`; those keys are removed in favor of `validation.script` (or legacy `validation.cmd`).
 
 ### What the Single Gate Runs
 
 | Gate | Includes | Excludes | When |
 |------|----------|----------|------|
-| `validation.cmd` | Unit tests, linting, type checks | E2e, integration | Every `agent-done` and pre-push |
+| `validation.script` | Unit tests, linting, type checks | E2e, integration | Every `agent-done` and pre-push |
 
 ### Why Single Command (not orchestrator-managed)
 
@@ -47,7 +49,7 @@ When should e2e tests run? Options:
 
 | Option | Pros | Cons |
 |--------|------|------|
-| **In validation.cmd** | Catches issues before merge | Slow, blocks PR |
+| **In validation.script** | Catches issues before merge | Slow, blocks PR |
 | **Post-merge CI** | Fast PR flow | Issues found late |
 | **Nightly/scheduled** | No PR blocking | Very late feedback |
 | **On-demand** | Explicit control | May be forgotten |

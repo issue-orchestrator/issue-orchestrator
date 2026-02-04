@@ -10,6 +10,7 @@ Storage location: .issue-orchestrator/validation/<suite>/<HEAD_SHA>.json
 """
 
 import json
+import shlex
 import logging
 from dataclasses import dataclass
 from datetime import datetime
@@ -143,10 +144,13 @@ class ValidationRunner:
         self,
         suite: str,
         head_sha: str,
-        command: str,
+        command: str | list[str],
+        command_display: str | None = None,
         timeout_seconds: int = 1800,
         cwd: Optional[Path] = None,
         session_output_dir: Optional[Path] = None,
+        env: Optional[dict[str, str]] = None,
+        input_text: Optional[str] = None,
     ) -> ValidationRecord:
         """Run a validation command and return a record.
 
@@ -168,23 +172,27 @@ class ValidationRunner:
             raise ValueError("session_output_dir is required")
         cwd = cwd or self.store.worktree
         started_at = datetime.now()
+        if command_display is None:
+            command_display = command if isinstance(command, str) else shlex.join(command)
 
-        logger.info("Running validation suite '%s': %s", suite, command)
+        logger.info("Running validation suite '%s': %s", suite, command_display)
 
         # Emit validation started event
         emit_event("validation.started", {
             "suite": suite,
             "sha": head_sha,
-            "command": command,
+            "command": command_display,
             "timeout_seconds": timeout_seconds,
         })
 
         try:
             result = self.command_runner.run(
                 command,
-                shell=True,
+                shell=isinstance(command, str),
                 cwd=cwd,
                 timeout_seconds=timeout_seconds,
+                env=env,
+                input_text=input_text,
             )
         except Exception as exc:
             logger.exception("Validation command runner failed")
@@ -230,7 +238,7 @@ class ValidationRunner:
             head_sha=head_sha,
             passed=passed,
             exit_code=exit_code,
-            command=command,
+            command=command_display,
             started_at=started_at.isoformat(),
             ended_at=ended_at.isoformat(),
             timed_out=timed_out,
@@ -371,7 +379,10 @@ class PublishGate:
         worktree: Path,
         command_runner: CommandRunner,
         working_copy: WorkingCopy,
-        command: Optional[str] = None,
+        command: Optional[str | list[str]] = None,
+        command_display: Optional[str] = None,
+        env: dict[str, str] | None = None,
+        input_text: str | None = None,
         timeout_seconds: int = 1800,
     ):
         """Initialize publish gate for a worktree.
@@ -385,6 +396,11 @@ class PublishGate:
         self.command_runner = command_runner
         self.working_copy = working_copy
         self.command = command
+        if command_display is None and command is not None:
+            command_display = command if isinstance(command, str) else shlex.join(command)
+        self.command_display = command_display
+        self.env = env
+        self.input_text = input_text
         self.timeout_seconds = timeout_seconds
         self.store = ValidationRecordStore(worktree)
         self.cache = ValidationCache(self.store)
@@ -415,7 +431,7 @@ class PublishGate:
             PublishGateResult with allowed status and reason
         """
         # Gate disabled if no command
-        if not self.command:
+        if not self.command or not self.command_display:
             logger.debug("Publish gate disabled (no command configured)")
             return PublishGateResult(
                 allowed=True,
@@ -432,7 +448,7 @@ class PublishGate:
 
         # Check cache - only trust cached passes, not failures
         # Failures might be due to flaky tests or transient issues, so always re-run
-        cached = self.cache.lookup(head_sha, self.command)
+        cached = self.cache.lookup(head_sha, self.command_display)
         if cached is not None and cached.passed:
             logger.info("Publish gate: cache hit (passed) for %s", head_sha[:8])
             return PublishGateResult(
@@ -451,8 +467,11 @@ class PublishGate:
             suite=self.SUITE_NAME,
             head_sha=head_sha,
             command=self.command,
+            command_display=self.command_display,
             timeout_seconds=self.timeout_seconds,
             session_output_dir=session_output_dir,
+            env=self.env,
+            input_text=self.input_text,
         )
 
         if record.passed:
@@ -498,7 +517,10 @@ class AgentGate:
         worktree: Path,
         command_runner: CommandRunner,
         working_copy: WorkingCopy,
-        command: Optional[str] = None,
+        command: Optional[str | list[str]] = None,
+        command_display: Optional[str] = None,
+        env: dict[str, str] | None = None,
+        input_text: str | None = None,
         timeout_seconds: int = 1800,
     ):
         """Initialize agent gate for a worktree.
@@ -512,6 +534,11 @@ class AgentGate:
         self.command_runner = command_runner
         self.working_copy = working_copy
         self.command = command
+        if command_display is None and command is not None:
+            command_display = command if isinstance(command, str) else shlex.join(command)
+        self.command_display = command_display
+        self.env = env
+        self.input_text = input_text
         self.timeout_seconds = timeout_seconds
         self.store = ValidationRecordStore(worktree)
         self.runner = ValidationRunner(self.store, command_runner)
@@ -537,7 +564,7 @@ class AgentGate:
             AgentGateResult with validation status
         """
         # Gate disabled if no command
-        if not self.command:
+        if not self.command or not self.command_display:
             logger.debug("Agent gate disabled (no command configured)")
             return AgentGateResult(
                 passed=True,
@@ -558,8 +585,11 @@ class AgentGate:
             suite=self.SUITE_NAME,
             head_sha=head_sha,
             command=self.command,
+            command_display=self.command_display,
             timeout_seconds=self.timeout_seconds,
             session_output_dir=session_output_dir,
+            env=self.env,
+            input_text=self.input_text,
         )
 
         # Get the path where the record was written

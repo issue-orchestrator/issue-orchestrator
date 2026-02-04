@@ -22,6 +22,7 @@ class LocalCommandRunner:
         env: dict[str, str] | None = None,
         timeout_seconds: int | None = None,
         shell: bool = False,
+        input_text: str | None = None,
     ) -> CommandResult:
         logger.debug("Running command: %s", command)
         try:
@@ -33,6 +34,7 @@ class LocalCommandRunner:
                 timeout=timeout_seconds,
                 env=env,
                 shell=shell,
+                input=input_text,
             )
             return CommandResult(
                 returncode=result.returncode,

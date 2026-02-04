@@ -30,6 +30,7 @@ class SubprocessCommandRunner:
         env: dict[str, str] | None = None,
         timeout_seconds: int | None = None,
         shell: bool = False,
+        input_text: str | None = None,
     ) -> CommandResult:
         try:
             result = subprocess.run(
@@ -40,6 +41,7 @@ class SubprocessCommandRunner:
                 timeout=timeout_seconds,
                 env=env,
                 shell=shell,
+                input=input_text,
             )
             return CommandResult(
                 returncode=result.returncode,

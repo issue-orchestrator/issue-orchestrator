@@ -35,6 +35,11 @@ from ..infra.validation_state import (
     DEFAULT_RETRY_TEMPLATE,
     _truncate_with_tail,
 )
+from ..infra.validation_invocation import (
+    ValidationInvocation,
+    ValidationInvocationError,
+    ValidationResolver,
+)
 from ..observation.observation import SessionObservation, SessionObservationResult
 from ..ports import EventSink, TraceEvent
 from ..ports.session_output import SessionOutput, ValidationState
@@ -92,8 +97,7 @@ class SessionController:
         session_output: SessionOutput,
         working_copy: "WorkingCopy",
         command_runner: Optional["CommandRunner"] = None,
-        validation_cmd: Optional[str] = None,
-        validation_timeout_seconds: int = 300,
+        validation_resolver: Optional[ValidationResolver] = None,
         max_validation_retries: int = 0,
     ):
         """Initialize the controller.
@@ -104,8 +108,7 @@ class SessionController:
             session_output: For session artifact storage
             working_copy: For git operations (required for validation cache)
             command_runner: For running validation commands (optional)
-            validation_cmd: Validation command to run after completion (optional)
-            validation_timeout_seconds: Timeout for validation command
+            validation_resolver: Resolver for validation commands (optional)
             max_validation_retries: Maximum number of validation retries (0 = no retries)
         """
         self.completion_processor = completion_processor
@@ -114,8 +117,7 @@ class SessionController:
         self._working_copy = working_copy
         self._command_runner = command_runner
         self._max_validation_retries = max_validation_retries
-        self._validation_cmd = validation_cmd
-        self._validation_timeout = validation_timeout_seconds
+        self._validation_resolver = validation_resolver
 
     def decide_outcome(
         self,
@@ -128,6 +130,7 @@ class SessionController:
         validation_retry_count: int = 0,
         original_prompt: str | None = None,
         retry_prompt_template: str | None = None,
+        agent_label: str | None = None,
         repo_root: Path | None = None,
     ) -> SessionDecision:
         """Decide the outcome of a session based on observation + completion.json.
@@ -167,10 +170,10 @@ class SessionController:
 
         # Run validation if configured
         validation_passed, validation_error, validation_error_file = None, None, None
-        if status == SessionStatus.COMPLETED and self._validation_cmd and self._command_runner:
+        if status == SessionStatus.COMPLETED and self._validation_resolver and self._command_runner:
             status, validation_passed, validation_error, validation_error_file = self._run_validation_gate(
                 worktree_path, session_name, issue_number, issue_title, validation_retry_count,
-                original_prompt, retry_prompt_template, repo_root,
+                original_prompt, retry_prompt_template, agent_label, repo_root,
             )
 
         # Log completion summary
@@ -297,17 +300,52 @@ class SessionController:
         validation_retry_count: int,
         original_prompt: str | None,
         retry_prompt_template: str | None,
+        agent_label: str | None,
         repo_root: Path | None,
     ) -> tuple[SessionStatus, Optional[bool], Optional[str], Optional[Path]]:
         """Run validation gate and return updated status."""
-        logger.info(issue_log(issue_number, "Running validation gate: cmd=%s timeout=%ds"), self._validation_cmd, self._validation_timeout)
-        validation_passed, validation_error, validation_error_file = self._run_validation(worktree_path, session_name, issue_number)
         run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
+        try:
+            invocation = self._validation_resolver.resolve(
+                worktree=worktree_path,
+                run_dir=run_dir,
+                agent_label=agent_label,
+                mode="agent_gate",
+            ) if self._validation_resolver else None
+        except ValidationInvocationError as exc:
+            error = str(exc)
+            error_file = self.session_output.write_validation_errors(
+                run_dir,
+                validation_cmd=error,
+                stdout="",
+                stderr=error,
+                exit_code=2,
+            )
+            return SessionStatus.VALIDATION_FAILED, False, error, error_file
+
+        if not invocation or not self._command_runner:
+            return SessionStatus.COMPLETED, None, None, None
+
+        logger.info(
+            issue_log(issue_number, "Running validation gate: cmd=%s timeout=%ds"),
+            invocation.command_display,
+            invocation.timeout_seconds,
+        )
+        validation_passed, validation_error, validation_error_file = self._run_validation(
+            worktree_path,
+            session_name,
+            issue_number,
+            invocation,
+        )
 
         if validation_passed:
             logger.info(issue_log(issue_number, "Validation gate PASSED"))
             self.session_output.clear_retry_state(run_dir)
-            self._emit_event(EventName.SESSION_VALIDATION_PASSED, {"issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd})
+            self._emit_event(EventName.SESSION_VALIDATION_PASSED, {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "validation_cmd": invocation.command_display,
+            })
             return SessionStatus.COMPLETED, validation_passed, validation_error, validation_error_file
 
         # Validation failed - validation_passed is False in both retry and exhausted cases
@@ -316,12 +354,12 @@ class SessionController:
             return self._handle_validation_retry(
                 worktree_path, run_dir, session_name, issue_number, issue_title,
                 validation_retry_count, validation_error, validation_error_file,
-                original_prompt, retry_prompt_template, repo_root,
+                original_prompt, retry_prompt_template, invocation.command_display, repo_root,
             ), False, validation_error, validation_error_file
 
         # Max retries exhausted
         return self._handle_validation_exhausted(
-            run_dir, session_name, issue_number, validation_retry_count, validation_error, validation_error_file,
+            run_dir, session_name, issue_number, validation_retry_count, validation_error, validation_error_file, invocation.command_display,
         ), False, validation_error, validation_error_file
 
     def _handle_validation_retry(
@@ -336,6 +374,7 @@ class SessionController:
         validation_error_file: Optional[Path],
         original_prompt: str | None,
         retry_prompt_template: str | None,
+        validation_cmd: str,
         repo_root: Path | None,
     ) -> SessionStatus:
         """Handle validation failure with retries remaining."""
@@ -346,7 +385,7 @@ class SessionController:
         )
         state = ValidationState(
             retry_count=validation_retry_count + 1, max_retries=self._max_validation_retries,
-            validation_cmd=self._validation_cmd,
+            validation_cmd=validation_cmd,
             last_error=validation_error[:2000] if validation_error else None,
             last_error_file=str(validation_error_file) if validation_error_file else None,
         )
@@ -357,11 +396,12 @@ class SessionController:
             task_prompt=task_prompt, validation_error=validation_error or "Unknown error",
             validation_error_file=validation_error_file, retry_count=validation_retry_count,
             max_retries=self._max_validation_retries, template_path=retry_prompt_template, repo_root=repo_root,
+            validation_cmd=validation_cmd,
         )
         self.session_output.write_retry_prompt(run_dir, retry_prompt_content)
 
         self._emit_event(EventName.SESSION_VALIDATION_RETRY_NEEDED, {
-            "issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd,
+            "issue_number": issue_number, "session_name": session_name, "validation_cmd": validation_cmd,
             "error_file": str(validation_error_file) if validation_error_file else None,
             "retry_count": validation_retry_count, "max_retries": self._max_validation_retries,
         })
@@ -375,6 +415,7 @@ class SessionController:
         validation_retry_count: int,
         validation_error: Optional[str],
         validation_error_file: Optional[Path],
+        validation_cmd: str,
     ) -> SessionStatus:
         """Handle validation failure with max retries exhausted."""
         logger.warning(
@@ -383,7 +424,7 @@ class SessionController:
         )
         self.session_output.clear_retry_state(run_dir)
         self._emit_event(EventName.SESSION_VALIDATION_FAILED, {
-            "issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd,
+            "issue_number": issue_number, "session_name": session_name, "validation_cmd": validation_cmd,
             "error_file": str(validation_error_file) if validation_error_file else None,
             "retry_count": validation_retry_count,
         })
@@ -416,6 +457,7 @@ class SessionController:
         worktree_path: Path,
         session_name: str,
         issue_number: int,
+        invocation: ValidationInvocation,
     ) -> tuple[bool, Optional[str], Optional[Path]]:
         """Run validation command (with SHA-based caching) and return result.
 
@@ -432,19 +474,22 @@ class SessionController:
         Returns:
             Tuple of (passed, error_message, error_file_path)
         """
-        if not self._command_runner or not self._validation_cmd:
-            return True, None, None
-
         # Get session output directory for validation artifacts
         run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
 
         # Use PublishGate for SHA-based caching
+        if self._command_runner is None:
+            raise RuntimeError("Validation command runner not configured")
+
         gate = PublishGate(
             worktree=worktree_path,
             command_runner=self._command_runner,
             working_copy=self._working_copy,
-            command=self._validation_cmd,
-            timeout_seconds=self._validation_timeout,
+            command=invocation.command,
+            command_display=invocation.command_display,
+            env=invocation.env,
+            input_text=invocation.input_text,
+            timeout_seconds=invocation.timeout_seconds,
         )
 
         # Get HEAD SHA for logging
@@ -453,7 +498,7 @@ class SessionController:
 
         logger.info(
             issue_log(issue_number, "Running validation: cmd=%s worktree=%s sha=%s"),
-            self._validation_cmd,
+            invocation.command_display,
             worktree_path,
             sha_display,
         )
@@ -510,6 +555,7 @@ class SessionController:
         max_retries: int,
         template_path: Optional[str] = None,
         repo_root: Optional[Path] = None,
+        validation_cmd: str = "",
     ) -> str:
         """Render the retry prompt content.
 
@@ -542,7 +588,7 @@ class SessionController:
         # Note: retry_count is 0-based internally, display as 1-based
         return template.format(
             original_task=task_prompt,
-            validation_cmd=self._validation_cmd or "",
+            validation_cmd=validation_cmd,
             error_file=str(validation_error_file) if validation_error_file else "unknown",
             error_summary=_truncate_with_tail(validation_error),
             retry_count=retry_count + 1,

@@ -251,6 +251,7 @@ def _create_completion_components(
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
     from ..control.session_controller import SessionController
+    from ..infra.validation_invocation import ValidationResolver
 
     completion_processor = CompletionProcessor(
         label_adapter=github,
@@ -269,14 +270,14 @@ def _create_completion_components(
         config=config,
     ) if github else None
 
+    validation_resolver = ValidationResolver(config)
     session_controller_instance = SessionController(
         completion_processor=completion_processor,
         events=events,
         session_output=session_output,
         working_copy=working_copy,
-        command_runner=command_runner if config.validation and config.validation.cmd else None,
-        validation_cmd=config.validation.cmd if config.validation else None,
-        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        command_runner=command_runner if config.is_validation_enabled() else None,
+        validation_resolver=validation_resolver if config.is_validation_enabled() else None,
     ) if completion_processor else None
 
     return completion_processor, session_controller_instance
@@ -317,8 +318,8 @@ def _create_async_completion_components(
     executor_config = ExecutorConfig(
         max_workers=2,  # Max concurrent publish jobs
         job_timeout_seconds=600,  # 10 minutes max per job
-        enable_validation=config.validation.cmd is not None if config.validation else False,
-        validation_cmd=config.validation.cmd if config.validation else None,
+        enable_validation=config.is_validation_enabled(),
+        validation_cmd=(config.validation.script or config.validation.cmd) if config.validation else None,
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
     )
 
@@ -333,7 +334,7 @@ def _create_async_completion_components(
         completion_processor=completion_processor,
         events=events,
         config=executor_config,
-        command_runner=command_runner if config.validation and config.validation.cmd else None,
+        command_runner=command_runner if config.is_validation_enabled() else None,
         job_store=job_store,
     )
 
@@ -757,14 +758,15 @@ def build_orchestrator_for_testing(
 
     # Create SessionController for testing (with optional validation gate)
     from ..control.session_controller import SessionController
+    from ..infra.validation_invocation import ValidationResolver
+    validation_resolver = ValidationResolver(config)
     session_controller = SessionController(
         completion_processor=completion_processor,
         events=events,
         session_output=session_output,
         working_copy=working_copy,
-        command_runner=command_runner if config.validation and config.validation.cmd else None,
-        validation_cmd=config.validation.cmd if config.validation else None,
-        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        command_runner=command_runner if config.is_validation_enabled() else None,
+        validation_resolver=validation_resolver if config.is_validation_enabled() else None,
     )
 
     # Create LabelSync for testing

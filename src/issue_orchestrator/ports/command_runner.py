@@ -29,6 +29,7 @@ class CommandRunner(Protocol):
         env: dict[str, str] | None = None,
         timeout_seconds: int | None = None,
         shell: bool = False,
+        input_text: str | None = None,
     ) -> CommandResult:
         """Run a command and return the result."""
         ...
@@ -45,6 +46,7 @@ class NullCommandRunner:
         env: dict[str, str] | None = None,
         timeout_seconds: int | None = None,
         shell: bool = False,
+        input_text: str | None = None,
     ) -> CommandResult:
         return CommandResult(
             returncode=1,
