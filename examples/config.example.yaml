@@ -75,12 +75,12 @@ agents:
 
 worktrees:
   base: "../"                     # Where to create worktrees (relative to repo)
+  # default_branch: "main"         # Optional: override base branch (must exist on origin)
   setup:
     - "make install-vscode-extensions"
     # - "npm install"
     # - "pip install -e '.[dev]'"
   reuse_push_preflight: true
-  default_branch: "main"          # Base branch for new worktrees/PRs (must exist on origin)
   remediation:
     pr_collision: "new_branch"    # fail | reuse_open | new_branch
     push_rebase_retry: true
@@ -196,9 +196,6 @@ filtering:
   # exclude_labels: ["io-e2e-test-data", "test-data"]
   fetch_limit: 100
   max_to_start: 0
-
-scheduling:
-  default_priority_tier: 1         # P1 when title lacks [P?-nnn]
 
 milestones:
   sort: "due_date"                # due_date, number, pattern, name

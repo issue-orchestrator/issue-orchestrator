@@ -144,7 +144,12 @@ def _run_ai_gate_tests(
 
         adapter = get_adapter(agent_type)
         try:
+            if not adapter.supports_ai_gate():
+                results[agent_name] = (True, "skipped (not supported)")
+                expandable["results"][agent_name] = {"success": True, "message": "skipped (not supported)"}
+                continue
             success, message = adapter.test_ai_gate(repo_root)
+
             results[agent_name] = (success, message)
             expandable["results"][agent_name] = {"success": success, "message": message}
 

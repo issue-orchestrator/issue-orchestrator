@@ -20,7 +20,7 @@ def _check_guardrails_in_worktree(
     repo_root: Path,
     runner: CommandRunner,
     worktree_base: str = "../",
-    base_branch: str = "main",
+    base_branch: str | None = None,
 ) -> list[Check]:
     """Create a test worktree and verify guardrails work.
 

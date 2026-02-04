@@ -185,6 +185,7 @@ class TestAiGate:
 
         # Mock get_adapter to return an adapter with successful test_ai_gate
         mock_adapter = MagicMock()
+        mock_adapter.supports_ai_gate.return_value = True
         mock_adapter.test_ai_gate.return_value = (True, "Blocked git push --no-verify")
         monkeypatch.setattr(
             "issue_orchestrator.infra.doctor.checks.hooks.get_adapter",
@@ -225,6 +226,7 @@ class TestAiGate:
 
         # Mock adapter that fails AI gate test
         mock_adapter = MagicMock()
+        mock_adapter.supports_ai_gate.return_value = True
         mock_adapter.test_ai_gate.return_value = (False, "Did not block dangerous command")
         monkeypatch.setattr(
             "issue_orchestrator.infra.doctor.checks.hooks.get_adapter",
@@ -262,6 +264,7 @@ class TestAiGate:
 
         # Mock adapter that fails AI gate test
         mock_adapter = MagicMock()
+        mock_adapter.supports_ai_gate.return_value = True
         mock_adapter.test_ai_gate.return_value = (False, "Did not block")
         monkeypatch.setattr(
             "issue_orchestrator.infra.doctor.checks.hooks.get_adapter",
@@ -298,6 +301,7 @@ class TestAiGate:
 
         # Mock successful adapter
         mock_adapter = MagicMock()
+        mock_adapter.supports_ai_gate.return_value = True
         mock_adapter.test_ai_gate.return_value = (True, "Blocked")
         monkeypatch.setattr(
             "issue_orchestrator.infra.doctor.checks.hooks.get_adapter",
@@ -332,6 +336,7 @@ class TestAiGate:
         )
 
         mock_adapter = MagicMock()
+        mock_adapter.supports_ai_gate.return_value = True
         mock_adapter.test_ai_gate.return_value = (True, "Blocked git push --no-verify")
         monkeypatch.setattr(
             "issue_orchestrator.infra.doctor.checks.hooks.get_adapter",

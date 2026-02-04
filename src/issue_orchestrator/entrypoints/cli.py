@@ -1172,16 +1172,20 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
 
                     # AI gate test if requested
                     if getattr(args, 'test_ai_gate', False):
-                        console.print(f"\n  [cyan]🔄[/cyan] Running AI gate test...[/cyan]")
-                        timeout = getattr(args, 'ai_gate_timeout', 60)
-                        live_success, live_msg = adapter.test_ai_gate(config.repo_root, timeout=timeout)
-                        if live_success:
-                            console.print(f"  [green]✓[/green] AI gate test passed")
-                            console.print(f"    [dim]{live_msg.split(chr(10))[0]}[/dim]")
+                        if adapter.supports_ai_gate():
+                            console.print("  [cyan]🔄[/cyan] Running AI gate test...")
+                            timeout = getattr(args, 'ai_gate_timeout', 60)
+                            ai_success, ai_msg = adapter.test_ai_gate(config.repo_root, timeout=timeout)
+                            if ai_success:
+                                console.print(f"  [green]✓[/green] AI gate test passed")
+                                console.print(f"    [dim]{ai_msg.split(chr(10))[0]}[/dim]")
+                            else:
+                                console.print(f"  [red]✗[/red] AI gate test failed")
+                                console.print(f"    {ai_msg}")
+                                errors.append(f"{agent_type.value}: ai gate test failed")
                         else:
-                            console.print(f"  [red]✗[/red] AI gate test failed")
-                            console.print(f"    {live_msg}")
-                            errors.append(f"{agent_type.value}: ai gate test failed")
+                            console.print(f"  [yellow]![/yellow] {agent_type.value}: ai gate test not supported (skipping)")
+
                 else:
                     console.print(f"  [red]✗[/red] {agent_type.value}: verification failed")
                     for failure in result.checks_failed:
@@ -1301,8 +1305,13 @@ def cmd_setup_hooks(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - m
         for agent_type, adapter in supported_adapters:
             agent_name = agent_type.value
             try:
+                if not adapter.supports_ai_gate():
+                    gate_results[agent_name] = (True, "skipped (not supported)")
+                    console.print(f"[yellow]![/yellow] {agent_name}: ai gate test not supported (skipping)")
+                    continue
                 success, message = adapter.test_ai_gate(target_root)
                 gate_results[agent_name] = (success, message)
+
 
                 if success:
                     # Extract the blocked command from the message if available

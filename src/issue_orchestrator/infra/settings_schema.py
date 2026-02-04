@@ -88,18 +88,6 @@ class ConcurrencySettings(BaseModel):
             "yaml_path": "ui.queue_refresh_seconds",
         },
     )
-    default_priority_tier: int = Field(
-        1,
-        title="Default Priority Tier",
-        description="Priority tier to use when issue titles have no [P?-nnn] prefix (0-9)",
-        ge=0,
-        le=9,
-        json_schema_extra={
-            "section": "Queue",
-            "config_attr": "scheduling.default_priority_tier",
-            "yaml_path": "scheduling.default_priority_tier",
-        },
-    )
 
 
 class E2ESettings(BaseModel):
@@ -633,20 +621,15 @@ class AdvancedSettings(BaseModel):
             },
         },
     )
-    worktree_default_branch: str = Field(
-        "main",
-        title="Default Worktree Branch",
-        description="Branch to base new worktrees and PRs on (must exist on origin)",
+    worktree_default_branch: str | None = Field(
+        None,
+        title="Worktree Base Branch Override",
+        description="Override the base branch for worktree creation (auto-detect if unset)",
         json_schema_extra={
             "section": "Worktrees",
             "restart_required": True,
             "config_attr": "worktree_default_branch",
             "yaml_path": "worktrees.default_branch",
-            "setup": {
-                "enabled": True,
-                "section": "worktrees",
-                "order": 15,
-            },
         },
     )
     worktree_branch_on_recreate: Literal["delete", "create_new_branch"] = Field(

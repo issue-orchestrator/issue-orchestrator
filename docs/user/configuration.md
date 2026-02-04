@@ -474,7 +474,6 @@ _Auto-generated from settings schema._
 | `execution.concurrency.max_concurrent_sessions` | integer | `3` | Maximum parallel agent sessions |
 | `execution.concurrency.session_timeout_minutes` | integer | `45` | Kill sessions after this duration |
 | `ui.queue_refresh_seconds` | integer | `600` | How often to refresh the issue queue from GitHub (0 = manual only) |
-| `scheduling.default_priority_tier` | integer | `1` | Priority tier to use when issue titles have no [P?-nnn] prefix (0-9) |
 
 ## E2E Runner
 
@@ -548,6 +547,6 @@ _Auto-generated from settings schema._
 | `ui.control_api_port` | integer | `19080` | 0 = disabled |
 | `ai_systems.allowed` | string | `` | Additional ai_system values allowed in config (comma-separated) |
 | `worktrees.base` | string | `../` | Directory where git worktrees are created |
-| `worktrees.default_branch` | string | `main` | Branch to base new worktrees and PRs on (must exist on origin) |
+| `worktrees.default_branch` | string (optional) | `None` | Override the base branch for worktree creation (auto-detect if unset) |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch |
-<!-- END AUTO-GENERATED CONFIG REFERENCE -->
+
