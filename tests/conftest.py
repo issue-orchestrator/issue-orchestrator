@@ -583,6 +583,7 @@ def build_test_orchestrator_deps(
     )
     fresh_reader = MagicMock()
     fresh_reader.read_issue_labels.return_value = []
+    e2e_issue_tracker = MagicMock()
 
     _action_applier = action_applier or ActionApplier(
         labels=repo_host,
@@ -649,6 +650,7 @@ def build_test_orchestrator_deps(
         events=events,
         runner=runner,
         repository_host=repo_host,
+        e2e_issue_tracker=e2e_issue_tracker,
         fresh_issue_reader=fresh_reader,
         event_hub=event_hub,
         planner=_planner,

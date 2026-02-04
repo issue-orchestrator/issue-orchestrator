@@ -6,6 +6,8 @@ The Issue Orchestrator includes a built-in facility for running end-to-end tests
 
 The E2E runner executes pytest-based tests in a background worker process, storing results in SQLite for persistence across restarts. It's designed for test suites that take minutes to hours, with features specifically aimed at reducing flakiness and providing visibility into test execution.
 
+**Live by default:** E2E runs create real PRs and hit real GitHub APIs. If you need a dry-run (no PRs), set `E2E_DRY_RUN_PUSH=1` before starting the run.
+
 ## Quick Start
 
 ### 1. Enable in config
@@ -18,6 +20,9 @@ e2e:
   pytest_args: ["tests/e2e", "-v"]
   allow_retry_once: true
   quarantine_file: "tests/e2e/quarantine.txt"
+  auto_quarantine: true
+  auto_create_issues: true
+  issue_agent_label: "agent:backend"
   survive_restart: true
 ```
 
@@ -49,6 +54,9 @@ The E2E panel shows:
 | `pytest_args` | list | `["tests/e2e", "-v"]` | Arguments passed to pytest |
 | `allow_retry_once` | bool | `true` | Automatically retry failed tests once |
 | `quarantine_file` | string | `"tests/e2e/quarantine.txt"` | Path to quarantine list (relative to repo root) |
+| `auto_quarantine` | bool | `true` | Auto-add failing tests to quarantine list |
+| `auto_create_issues` | bool | `true` | Auto-create GitHub issues for failed tests |
+| `issue_agent_label` | string | `"agent:backend"` | Agent label assigned to failure issues |
 | `survive_restart` | bool | `true` | Let E2E worker continue if orchestrator restarts |
 
 ## Features
@@ -112,6 +120,13 @@ tests/e2e/test_race_condition.py::test_concurrent_updates
 ```
 
 Quarantined tests:
+
+### Auto-Quarantine + Failure Issues
+
+When `auto_quarantine: true`, failing tests are automatically appended to the quarantine list after a run.
+
+When `auto_create_issues: true`, the orchestrator automatically creates a parent issue for the run and sub-issues for each failing test. The sub-issues are labeled with `e2e:test-failure` and the configured `issue_agent_label`.
+
 - Still execute (so you know if they start passing)
 - Are marked with `is_quarantined=1` in the database
 - Don't affect the overall pass/fail status

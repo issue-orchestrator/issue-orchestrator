@@ -194,6 +194,10 @@ class Scheduler:
         """
         self.config = config
         self.milestone_strategy = milestone_strategy or get_milestone_strategy(config)
+        self.milestone_order = [m for m in config.milestone_order if m]
+        self.milestone_order_map = {
+            milestone: index for index, milestone in enumerate(self.milestone_order)
+        }
         self.dependency_evaluator = dependency_evaluator
 
     def get_available_issues(
@@ -282,7 +286,10 @@ class Scheduler:
         """
         def sort_key(issue: Issue) -> SortKey:
             # Get milestone sort key from strategy
-            milestone_key = self.milestone_strategy.get_sort_key(issue)
+            if self.milestone_order_map and issue.milestone in self.milestone_order_map:
+                milestone_key = (0, self.milestone_order_map[issue.milestone])
+            else:
+                milestone_key = (1,) + self.milestone_strategy.get_sort_key(issue)
 
             # Extract priority tier and sequence from title [Px-nnn]
             priority_value = self._get_priority_value(issue)

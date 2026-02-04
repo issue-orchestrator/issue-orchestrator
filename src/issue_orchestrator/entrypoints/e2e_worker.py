@@ -194,6 +194,11 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
         help="Path to quarantine file (relative to repo root)",
     )
     parser.add_argument(
+        "--auto-quarantine",
+        action="store_true",
+        help="Automatically add failing tests to the quarantine list",
+    )
+    parser.add_argument(
         "--allow-retry-once",
         action="store_true",
         help="Retry failed tests once",
@@ -237,7 +242,12 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
 
     # Import E2EDB after we're in the right directory
     # This ensures any local imports work correctly
-    from issue_orchestrator.infra.e2e_db import E2EDB, AlreadyRunning, load_quarantine_list
+    from issue_orchestrator.infra.e2e_db import (
+        E2EDB,
+        AlreadyRunning,
+        load_quarantine_list,
+        save_quarantine_list,
+    )
 
     # Load quarantine list
     quarantine_path = repo_root / args.quarantine_file
@@ -320,6 +330,24 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
             duration_seconds=duration,
             log_path=log_path_for_db,
         )
+
+        if args.auto_quarantine and status == "failed":
+            failed_results = db.get_failed_tests(run_id)
+            if failed_results:
+                existing = load_quarantine_list(quarantine_path)
+                failing = {r.nodeid for r in failed_results}
+                updated = existing | failing
+                if updated != existing:
+                    save_quarantine_list(quarantine_path, updated)
+                    added = len(updated) - len(existing)
+                    logger.warning(
+                        "Auto-quarantined %d test(s) (total=%d) -> %s",
+                        added,
+                        len(updated),
+                        quarantine_path,
+                    )
+                else:
+                    logger.info("Auto-quarantine: no new tests added")
 
         logger.info(
             "Finished run %d: status=%s, exit_code=%d, duration=%.1fs",

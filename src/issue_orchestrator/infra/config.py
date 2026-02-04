@@ -382,6 +382,9 @@ class E2EConfig:
     quarantine_file: str = "tests/e2e/quarantine.txt"  # Path to quarantine list
     survive_restart: bool = True  # Let worker finish if orchestrator restarts
     stop_on_first_failure: bool = False  # If True, stop on first test failure (-x flag)
+    auto_quarantine: bool = True  # Auto-add failing tests to quarantine list
+    auto_create_issues: bool = True  # Auto-create GitHub issues for failures
+    issue_agent_label: str = "agent:backend"  # Agent label for failure issues
     flake_threshold: int = 20  # Flip rate percentage (0-100) to flag test as flaky
     flake_window_runs: int = 10  # Number of recent runs to check for flakiness
 
@@ -454,6 +457,9 @@ def _parse_e2e_config(data: dict) -> E2EConfig:
         quarantine_file=data.get("quarantine_file", "tests/e2e/quarantine.txt"),
         survive_restart=data.get("survive_restart", True),
         stop_on_first_failure=data.get("stop_on_first_failure", False),
+        auto_quarantine=data.get("auto_quarantine", True),
+        auto_create_issues=data.get("auto_create_issues", True),
+        issue_agent_label=data.get("issue_agent_label", "agent:backend"),
         flake_threshold=data.get("flake_threshold", 20),
         flake_window_runs=data.get("flake_window_runs", 10),
     )
@@ -566,6 +572,16 @@ def _parse_filtering_config(data: dict) -> FilteringConfig:
         fetch_limit=data.get("fetch_limit", 100),
         max_to_start=data.get("max_to_start", 0),
     )
+
+
+def _parse_milestone_order(value: object) -> list[str]:
+    """Parse milestones.order from YAML (list or comma-separated string)."""
+    raw = value or []
+    if isinstance(raw, str):
+        raw = [m.strip() for m in raw.split(",") if m.strip()]
+    if not isinstance(raw, list):
+        raise ValueError("milestones.order must be a list or comma-separated string")
+    return [str(m).strip() for m in raw if str(m).strip()]
 
 
 def _apply_optional_sections(config: "Config", sections: dict) -> None:
@@ -988,6 +1004,8 @@ class Config:
     milestone_sort: str = "due_date"
     # Config passed to strategy via **kwargs (e.g., pattern="M(\\d+)" for PatternStrategy)
     milestone_sort_config: dict = field(default_factory=dict)
+    # Optional explicit order for milestones (titles). Unlisted milestones follow milestone_sort.
+    milestone_order: list[str] = field(default_factory=list)
     # Foundation milestone - dependencies must be same milestone OR in foundation
     foundation_milestone: str = "M0"
 
@@ -1334,6 +1352,7 @@ class Config:
             "milestones": {
                 "sort": self.milestone_sort,
                 "sort_config": self.milestone_sort_config,
+                "order": list(self.milestone_order),
                 "foundation": self.foundation_milestone,
             },
             "filtering": {
@@ -1365,6 +1384,9 @@ class Config:
                 "allow_retry_once": self.e2e.allow_retry_once,
                 "quarantine_file": self.e2e.quarantine_file,
                 "survive_restart": self.e2e.survive_restart,
+                "auto_quarantine": self.e2e.auto_quarantine,
+                "auto_create_issues": self.e2e.auto_create_issues,
+                "issue_agent_label": self.e2e.issue_agent_label,
             },
             "sqlite_backup": {
                 "enabled": self.sqlite_backup.enabled,
@@ -1604,6 +1626,12 @@ class Config:
             e2e_dict["quarantine_file"] = self.e2e.quarantine_file
         if self.e2e.stop_on_first_failure:
             e2e_dict["stop_on_first_failure"] = True
+        if not self.e2e.auto_quarantine:
+            e2e_dict["auto_quarantine"] = False
+        if not self.e2e.auto_create_issues:
+            e2e_dict["auto_create_issues"] = False
+        if self.e2e.issue_agent_label != "agent:backend":
+            e2e_dict["issue_agent_label"] = self.e2e.issue_agent_label
         if e2e_dict:
             result["e2e"] = e2e_dict
 
@@ -1745,6 +1773,7 @@ class Config:
         config.filtering = _parse_filtering_config(sections["filtering"])
         config.milestone_sort = sections["milestones"].get("sort", "due_date")
         config.milestone_sort_config = sections["milestones"].get("sort_config", {})
+        config.milestone_order = _parse_milestone_order(sections["milestones"].get("order", []))
         config.foundation_milestone = sections["milestones"].get("foundation", "M0")
         config.ai_systems_allowed = _parse_ai_systems_allowed(
             sections["ai_systems"].get("allowed", [])

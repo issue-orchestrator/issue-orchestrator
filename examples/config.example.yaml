@@ -199,8 +199,9 @@ scheduling:
   default_priority_tier: 1         # P1 when title lacks [P?-nnn]
 
 milestones:
-  sort: "due_date"                # due_date, number, pattern, name
+  sort: "due_date"                # due_date, milestone_number, pattern, name
   sort_config: {}
+  # order: ["M1", "M2"]            # Explicit order; does not filter (unlisted milestones follow sort)
   foundation: "M0"
 
 triage:
@@ -217,6 +218,9 @@ e2e:
   pytest_args: ["tests/e2e", "-v"]
   allow_retry_once: true
   quarantine_file: "tests/e2e/quarantine.txt"
+  auto_quarantine: true               # Auto-add failing tests to quarantine list
+  auto_create_issues: true            # Auto-create GitHub issues for failures
+  issue_agent_label: "agent:backend"  # Agent label for failure issues
   survive_restart: true
   stop_on_first_failure: false        # If true, stop on first test failure (-x flag)
   flake_threshold: 20                  # Flip rate percentage (0-100) to flag test as flaky

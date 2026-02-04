@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         SessionOutput,
         ManifestDownloader,
     )
+    from ..ports.e2e_issue_tracker import E2EIssueTracker
     from ..ports.goal_pilot_store import GoalPilotStore
     from ..ports.fresh_issue_reader import FreshIssueReader
     from ..ports.worktree_manager import WorktreeManager
@@ -59,6 +60,7 @@ class OrchestratorDeps:
         events: Event sink for publishing trace events
         runner: Session runner for terminal operations
         repository_host: GitHub adapter for issue/PR operations
+        e2e_issue_tracker: E2E issue tracker for failure issue operations
         fresh_issue_reader: FreshIssueReader for correctness-critical reads
         event_hub: Event hub for internal event distribution
         planner: Planning engine for action generation
@@ -91,6 +93,7 @@ class OrchestratorDeps:
 
     # Repository adapter
     repository_host: "RepositoryHost"
+    e2e_issue_tracker: "E2EIssueTracker"
     fresh_issue_reader: "FreshIssueReader"
 
     # Event distribution

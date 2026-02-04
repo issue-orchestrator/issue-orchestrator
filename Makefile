@@ -269,8 +269,8 @@ endif
 test-real-claude-dev:
 	@echo "Testing agent-done invocation from Claude..."
 	$(PYTEST) tests/integration/test_claude_execution.py::TestAgentDoneInvocation -v -s --tb=short -x
-	@echo "Testing real Claude execution in tmux mode..."
-	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_terminal_adapter.py::TestTerminalAdapterExecution -v -s --tb=short -x
+	@echo "Testing real Claude execution in subprocess mode..."
+	E2E_TERMINAL_ADAPTER=subprocess E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_terminal_adapter_subprocess.py::TestTerminalAdapterSubprocess -v -s --tb=short -x
 	@echo "✓ Dev agent tests passed!"
 
 test-real-claude-review:

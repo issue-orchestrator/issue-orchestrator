@@ -202,6 +202,50 @@ class E2ESettings(BaseModel):
             "doctor_severity": DOCTOR_SEVERITY_WARNING,
         },
     )
+    auto_quarantine: bool = Field(
+        True,
+        title="Auto-quarantine failing tests",
+        description="Automatically add failing tests to the quarantine list",
+        json_schema_extra={
+            "config_attr": "e2e.auto_quarantine",
+            "yaml_path": "e2e.auto_quarantine",
+            "summary": {
+                "section": "e2e",
+                "format": SUMMARY_BOOLEAN_FLAG,
+                "label": "quarantine",
+                "true_value": "auto",
+                "false_value": "manual",
+            },
+        },
+    )
+    auto_create_issues: bool = Field(
+        True,
+        title="Auto-create failure issues",
+        description="Automatically create GitHub issues for failed tests",
+        json_schema_extra={
+            "config_attr": "e2e.auto_create_issues",
+            "yaml_path": "e2e.auto_create_issues",
+            "summary": {
+                "section": "e2e",
+                "format": SUMMARY_BOOLEAN_FLAG,
+                "label": "issues",
+                "true_value": "auto",
+                "false_value": "manual",
+            },
+        },
+    )
+    issue_agent_label: str = Field(
+        "agent:backend",
+        title="Failure issue agent label",
+        description="Agent label assigned to auto-created failure issues",
+        json_schema_extra={
+            "config_attr": "e2e.issue_agent_label",
+            "yaml_path": "e2e.issue_agent_label",
+            "doctor_check": DOCTOR_CHECK_REFERENCES_AGENT,
+            "doctor_check_condition": "e2e.auto_create_issues",
+            "doctor_severity": DOCTOR_SEVERITY_WARNING,
+        },
+    )
 
 
 class FilteringSettings(BaseModel):
@@ -257,6 +301,25 @@ class FilteringSettings(BaseModel):
         json_schema_extra={
             "config_attr": "filtering.max_to_start",
             "yaml_path": "filtering.max_to_start",
+        },
+    )
+
+
+class MilestonesSettings(BaseModel):
+    """Settings for the Milestones tab."""
+
+    order: str = Field(
+        "",
+        title="Milestone Order",
+        description=(
+            "Explicit ordered list of milestone titles. Does not filter; "
+            "unlisted milestones are appended using the milestone sort strategy."
+        ),
+        json_schema_extra={
+            "section": "Ordering",
+            "config_attr": "milestone_order",
+            "yaml_path": "milestones.order",
+            "ui_transform": "comma_separated_list",
         },
     )
 
@@ -695,6 +758,7 @@ TAB_DEFINITIONS: list[dict[str, Any]] = [
     {"key": "concurrency", "label": "Concurrency", "model": ConcurrencySettings},
     {"key": "e2e", "label": "E2E Runner", "model": E2ESettings},
     {"key": "filtering", "label": "Filtering", "model": FilteringSettings},
+    {"key": "milestones", "label": "Milestones", "model": MilestonesSettings},
     {"key": "review", "label": "Review", "model": ReviewSettings},
     {"key": "goal_pilot", "label": "Goal Pilot", "model": GoalPilotSettings},
     {"key": "hooks", "label": "Hooks", "model": HooksSettings},

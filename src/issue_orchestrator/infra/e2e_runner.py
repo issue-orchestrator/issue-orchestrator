@@ -81,6 +81,7 @@ class E2ERunnerManager:
         allow_retry_once: bool = True,
         quarantine_file: str = "tests/e2e/quarantine.txt",
         stop_on_first_failure: bool = False,
+        auto_quarantine: bool = False,
     ) -> dict:
         """Start an E2E worker subprocess.
 
@@ -91,6 +92,7 @@ class E2ERunnerManager:
             allow_retry_once: Whether to retry failed tests once
             quarantine_file: Path to quarantine file (relative to repo root)
             stop_on_first_failure: If True, add -x flag to stop on first failure
+            auto_quarantine: If True, auto-add failing tests to quarantine list
 
         Returns:
             Dict with 'pid' and 'log_path'
@@ -138,6 +140,8 @@ class E2ERunnerManager:
 
         if allow_retry_once:
             cmd.append("--allow-retry-once")
+        if auto_quarantine:
+            cmd.append("--auto-quarantine")
 
         logger.info(
             "Starting E2E worker for %s: %s",
@@ -183,6 +187,7 @@ class E2ERunnerManager:
         allow_retry_once: bool = True,
         quarantine_file: str = "tests/e2e/quarantine.txt",
         stop_on_first_failure: bool = False,
+        auto_quarantine: bool = False,
     ) -> dict:
         """Start a new E2E run, or resume an interrupted one.
 
@@ -195,6 +200,7 @@ class E2ERunnerManager:
             allow_retry_once: Whether to retry failed tests once
             quarantine_file: Path to quarantine file (relative to repo root)
             stop_on_first_failure: If True, add -x flag to stop on first failure
+            auto_quarantine: If True, auto-add failing tests to quarantine list
 
         Returns:
             Dict with 'pid', 'log_path', 'resumed', 'run_id', 'skipped_tests'
@@ -229,6 +235,7 @@ class E2ERunnerManager:
                     allow_retry_once=allow_retry_once,
                     quarantine_file=quarantine_file,
                     stop_on_first_failure=stop_on_first_failure,
+                    auto_quarantine=auto_quarantine,
                     db=db,
                 )
             else:
@@ -247,6 +254,7 @@ class E2ERunnerManager:
             allow_retry_once=allow_retry_once,
             quarantine_file=quarantine_file,
             stop_on_first_failure=stop_on_first_failure,
+            auto_quarantine=auto_quarantine,
         )
         result["resumed"] = False
         result["run_id"] = None
@@ -263,6 +271,7 @@ class E2ERunnerManager:
         allow_retry_once: bool,
         quarantine_file: str,
         stop_on_first_failure: bool,
+        auto_quarantine: bool,
         db: E2EDB,
     ) -> dict:
         """Resume an interrupted run by starting worker with --deselect for passed tests."""
@@ -304,6 +313,8 @@ class E2ERunnerManager:
 
         if allow_retry_once:
             cmd.append("--allow-retry-once")
+        if auto_quarantine:
+            cmd.append("--auto-quarantine")
 
         logger.info(
             "Resuming E2E run %d for %s (skipping %d passed tests)",
@@ -560,6 +571,7 @@ def maybe_trigger_e2e(
             allow_retry_once=config.e2e.allow_retry_once,
             quarantine_file=config.e2e.quarantine_file,
             stop_on_first_failure=config.e2e.stop_on_first_failure,
+            auto_quarantine=config.e2e.auto_quarantine,
         )
         if result.get("resumed"):
             logger.info(

@@ -485,6 +485,9 @@ _Auto-generated from settings schema._
 | `e2e.allow_retry_once` | boolean | `True` | Retry failing tests to reduce flakiness |
 | `e2e.stop_on_first_failure` | boolean | `False` | Add -x flag to stop test run on first failure |
 | `e2e.quarantine_file` | string | `tests/e2e/quarantine.txt` | Path to quarantine file for skipping known-flaky tests |
+| `e2e.auto_quarantine` | boolean | `True` | Automatically add failing tests to the quarantine list |
+| `e2e.auto_create_issues` | boolean | `True` | Automatically create GitHub issues for failed tests |
+| `e2e.issue_agent_label` | string | `agent:backend` | Agent label assigned to auto-created failure issues |
 
 ## Filtering
 
@@ -495,6 +498,12 @@ _Auto-generated from settings schema._
 | `filtering.exclude_labels` | string | `` | Comma-separated labels to exclude |
 | `filtering.fetch_limit` | integer | `100` | Max issues to fetch per API call |
 | `filtering.max_to_start` | integer | `0` | Stop after starting N issues (0 = unlimited) |
+
+## Milestones
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `milestones.order` | string | `` | Explicit ordered list of milestone titles. Does not filter; unlisted milestones are appended using the milestone sort strategy. |
 
 ## Review
 

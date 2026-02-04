@@ -440,6 +440,7 @@ class TestWizardNewProject:
             "",                     # empty to finish agents
             "3",                    # max concurrent sessions
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",                  # worktree base
             "web",                  # ui mode
@@ -482,6 +483,7 @@ class TestWizardNewProject:
             "",                     # finish agents
             "3",
             "due_date",
+            "",                     # milestone order (optional)
             "M0",
             "../",
             "web",
@@ -518,6 +520,7 @@ class TestWizardNewProject:
             "",                     # finish agents
             "2",                    # max concurrent
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
             "tmux",                 # ui mode (tmux doesn't need port)
@@ -560,6 +563,7 @@ class TestWizardNewProject:
             "",
             "5",                    # max concurrent
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
             "web",
@@ -595,6 +599,7 @@ class TestWizardNewProject:
             "",                     # finish agents
             "3",
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
             "web",
@@ -631,6 +636,7 @@ class TestWizardNewProject:
             "",                     # finish agents
             "3",
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
             "web",
@@ -680,6 +686,7 @@ class TestWizardNewProject:
             "",                     # finish
             "3",
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
             "web",
@@ -724,6 +731,7 @@ class TestWizardExistingProject:
             False,                  # is this a review agent?
             "3",                    # max concurrent
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",                  # worktree base
             "web",                  # ui mode
@@ -779,6 +787,7 @@ class TestWizardExistingProject:
             # Concurrency already configured - won't ask
             # Milestone sort not configured - will ask
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             # Worktrees needed for backend
             "../",
@@ -826,6 +835,7 @@ class TestWizardExistingProject:
             # No unconfigured agents
             # Milestone sort missing
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             # Worktree missing
             "../",
@@ -876,6 +886,7 @@ class TestWizardExistingProject:
             "2",
             # Milestone sort (fresh config needs this)
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             # Worktree
             "../",
@@ -913,6 +924,7 @@ class TestWizardExistingProject:
             # No agents to configure, so no worktree prompt
             "3",                    # concurrency
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",                  # worktree base (now top-level config)
             "web",                  # ui mode
@@ -959,6 +971,7 @@ class TestRunWizard:
             "",                     # finish agents
             "3",
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
             "web",
@@ -969,6 +982,7 @@ class TestRunWizard:
             # Post-wizard (new flow)
             ".issue-orchestrator.yaml",  # config filename
             True,                   # Apply these changes?
+            False,                  # Install AI agent hooks now?
             False,                  # Set up AI provider API keys now?
         ])
 
@@ -1004,6 +1018,7 @@ class TestRunWizard:
             "",
             "3",
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
             "web",
@@ -1076,6 +1091,7 @@ class TestRunWizard:
             "",
             "3",
             "due_date",             # milestone sort strategy
+            "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
             "web",
@@ -1221,6 +1237,7 @@ class TestDryRunMode:
             "",  # finish agents
             "3",
             "due_date",
+            "",                     # milestone order (optional)
             "M0",  # foundation milestone
             "../",
             "web",
@@ -1263,6 +1280,7 @@ class TestDryRunMode:
             "",     # finish agents
             "3",
             "due_date",
+            "",                     # milestone order (optional)
             "M0",  # foundation milestone
             "../",
             "web",

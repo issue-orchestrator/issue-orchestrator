@@ -16,7 +16,7 @@ pytest tests/e2e/ -k "test_name" -v     # Specific test
 pytest tests/ --ignore=tests/e2e/       # Skip e2e tests
 
 # Run terminal adapter e2e with subprocess backend
-E2E_TERMINAL_ADAPTER=subprocess pytest tests/e2e/test_terminal_adapter.py -v
+E2E_TERMINAL_ADAPTER=subprocess pytest tests/e2e/test_terminal_adapter_subprocess.py -v
 
 # Run VS Code extension e2e (requires VS Code deps installed)
 pytest tests/e2e/test_vscode_integration.py -v

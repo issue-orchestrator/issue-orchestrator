@@ -483,6 +483,22 @@ agents:
         assert config.filtering.milestones == ["M1", "M2"]
         assert config.get_filter_milestones() == ["M1", "M2"]
 
+    def test_config_with_milestone_order(self, tmp_path):
+        """Test config with milestones.order specified."""
+        config_content = """
+milestones:
+  order: ["M2", "M1"]
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.milestone_order == ["M2", "M1"]
+
     def test_config_filter_milestone_default(self):
         """Test default filtering.milestone is None."""
         config = Config()
@@ -1807,6 +1823,44 @@ e2e:
 
         assert config.e2e.stop_on_first_failure is False
 
+
+
+class TestE2EAutoSettings:
+    """Tests for e2e auto quarantine/issue settings."""
+
+    def test_auto_settings_defaults(self):
+        """Auto settings should default to enabled with backend agent label."""
+        config = Config()
+        assert config.e2e.auto_quarantine is True
+        assert config.e2e.auto_create_issues is True
+        assert config.e2e.issue_agent_label == "agent:backend"
+
+    def test_auto_settings_from_yaml(self, tmp_path):
+        """Auto settings should load from YAML."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("prompt")
+
+        config_content = f"""
+worktrees:
+  base: /tmp
+
+agents:
+  agent:backend:
+    prompt: {prompt_file}
+
+e2e:
+  auto_quarantine: false
+  auto_create_issues: false
+  issue_agent_label: agent:backend
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.e2e.auto_quarantine is False
+        assert config.e2e.auto_create_issues is False
+        assert config.e2e.issue_agent_label == "agent:backend"
 
 class TestE2EFlakeConfig:
     """Tests for e2e flake detection configuration."""
