@@ -806,6 +806,7 @@ def _load_security_section(config: "Config", security_section: dict, repo_root: 
 def _load_validation_section(config: "Config", validation_section: dict) -> None:
     """Load validation configuration."""
     if validation_section:
+        coverage_data = validation_section.get("coverage_guardrail", {}) or {}
         config.validation = ValidationConfig(
             script=validation_section.get("script"),
             args=validation_section.get("args", []) or [],
@@ -813,6 +814,14 @@ def _load_validation_section(config: "Config", validation_section: dict) -> None
             cmd=validation_section.get("cmd"),
             timeout_seconds=validation_section.get("timeout_seconds", 300),
             pre_push_dirty_check=validation_section.get("pre_push_dirty_check", "tracked"),
+            coverage_guardrail=CoverageGuardrailConfig(
+                enabled=coverage_data.get("enabled", False),
+                min_percent=coverage_data.get("min_percent"),
+                apply_to=coverage_data.get("apply_to", "changed"),
+                scope=coverage_data.get("scope", []) or [],
+                coverage_type=coverage_data.get("coverage_type", "line"),
+                exclude=coverage_data.get("exclude", []) or [],
+            ),
         )
 
 
