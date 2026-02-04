@@ -244,6 +244,17 @@ class HooksConfig:
 
 
 @dataclass
+class CoverageGuardrailConfig:
+    """Per-file coverage guardrail for files touched in a change."""
+    enabled: bool = False
+    min_percent: Optional[float] = None
+    apply_to: str = "changed"  # "changed" or "all"
+    scope: list[str] = field(default_factory=list)
+    coverage_type: str = "line"  # "line" or "branch"
+    exclude: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ValidationConfig:
     """Validation configuration - single command runs everywhere.
 
@@ -256,6 +267,7 @@ class ValidationConfig:
     cmd: Optional[str] = None  # Command to run (e.g., "make validate")
     timeout_seconds: int = 300  # Default 5 minutes
     pre_push_dirty_check: str = "tracked"  # "tracked" | "unstaged" | "off"
+    coverage_guardrail: CoverageGuardrailConfig = field(default_factory=CoverageGuardrailConfig)
 
 
 @dataclass
@@ -804,10 +816,19 @@ def _load_security_section(config: "Config", security_section: dict, repo_root: 
 def _load_validation_section(config: "Config", validation_section: dict) -> None:
     """Load validation configuration."""
     if validation_section:
+        coverage_data = validation_section.get("coverage_guardrail", {}) or {}
         config.validation = ValidationConfig(
             cmd=validation_section.get("cmd"),
             timeout_seconds=validation_section.get("timeout_seconds", 300),
             pre_push_dirty_check=validation_section.get("pre_push_dirty_check", "tracked"),
+            coverage_guardrail=CoverageGuardrailConfig(
+                enabled=coverage_data.get("enabled", False),
+                min_percent=coverage_data.get("min_percent"),
+                apply_to=coverage_data.get("apply_to", "changed"),
+                scope=coverage_data.get("scope", []) or [],
+                coverage_type=coverage_data.get("coverage_type", "line"),
+                exclude=coverage_data.get("exclude", []) or [],
+            ),
         )
 
 
@@ -1321,6 +1342,14 @@ class Config:
                 "cmd": self.validation.cmd,
                 "timeout_seconds": self.validation.timeout_seconds,
                 "pre_push_dirty_check": self.validation.pre_push_dirty_check,
+                "coverage_guardrail": {
+                    "enabled": self.validation.coverage_guardrail.enabled,
+                    "min_percent": self.validation.coverage_guardrail.min_percent,
+                    "apply_to": self.validation.coverage_guardrail.apply_to,
+                    "scope": self.validation.coverage_guardrail.scope,
+                    "coverage_type": self.validation.coverage_guardrail.coverage_type,
+                    "exclude": self.validation.coverage_guardrail.exclude,
+                },
             },
             "review": {
                 "enabled": self.review_enabled,
@@ -1647,16 +1676,24 @@ class Config:
             }
 
         # Validation section
-        if self.validation.cmd or self.validation.pre_push_dirty_check != "tracked":
-            validation_dict: dict = {}
-            if self.validation.cmd:
-                validation_dict["cmd"] = self.validation.cmd
-                if self.validation.timeout_seconds != 300:
-                    validation_dict["timeout_seconds"] = self.validation.timeout_seconds
-            if self.validation.pre_push_dirty_check != "tracked":
-                validation_dict["pre_push_dirty_check"] = self.validation.pre_push_dirty_check
-            if validation_dict:
-                result["validation"] = validation_dict
+        validation_dict: dict = {}
+        if self.validation.cmd:
+            validation_dict["cmd"] = self.validation.cmd
+            if self.validation.timeout_seconds != 300:
+                validation_dict["timeout_seconds"] = self.validation.timeout_seconds
+        if self.validation.pre_push_dirty_check != "tracked":
+            validation_dict["pre_push_dirty_check"] = self.validation.pre_push_dirty_check
+        if self.validation.coverage_guardrail != CoverageGuardrailConfig():
+            validation_dict["coverage_guardrail"] = {
+                "enabled": self.validation.coverage_guardrail.enabled,
+                "min_percent": self.validation.coverage_guardrail.min_percent,
+                "apply_to": self.validation.coverage_guardrail.apply_to,
+                "scope": list(self.validation.coverage_guardrail.scope),
+                "coverage_type": self.validation.coverage_guardrail.coverage_type,
+                "exclude": list(self.validation.coverage_guardrail.exclude),
+            }
+        if validation_dict:
+            result["validation"] = validation_dict
 
         # Security section
         security_dict: dict = {}
@@ -1778,6 +1815,7 @@ class Config:
         config.ai_systems_allowed = _parse_ai_systems_allowed(
             sections["ai_systems"].get("allowed", [])
         )
+
 
         # Parse complex optional configs
         _apply_optional_sections(config, sections)
@@ -1986,21 +2024,63 @@ def load_validation_config(
             "cmd": "make validate",  # or None if not configured
             "timeout_seconds": 300,
             "pre_push_dirty_check": "tracked",
+            "coverage_guardrail": {
+                "enabled": False,
+                "min_percent": None,
+                "apply_to": "changed",
+                "scope": [],
+                "coverage_type": "line",
+                "exclude": [],
+            },
         }
     """
     config_path = find_config_file(start_path)
     if not config_path:
-        return {"cmd": None, "timeout_seconds": 300, "pre_push_dirty_check": "tracked"}
+        return {
+            "cmd": None,
+            "timeout_seconds": 300,
+            "pre_push_dirty_check": "tracked",
+            "coverage_guardrail": {
+                "enabled": False,
+                "min_percent": None,
+                "apply_to": "changed",
+                "scope": [],
+                "coverage_type": "line",
+                "exclude": [],
+            },
+        }
 
     try:
         with open(config_path) as f:
             config = yaml.safe_load(f) or {}
 
         validation = config.get("validation", {})
+        guardrail = validation.get("coverage_guardrail", {}) or {}
         return {
             "cmd": validation.get("cmd"),
             "timeout_seconds": validation.get("timeout_seconds", 300),
             "pre_push_dirty_check": validation.get("pre_push_dirty_check", "tracked"),
+            "coverage_guardrail": {
+                "enabled": guardrail.get("enabled", False),
+                "min_percent": guardrail.get("min_percent"),
+                "apply_to": guardrail.get("apply_to", "changed"),
+                "scope": guardrail.get("scope", []) or [],
+                "coverage_type": guardrail.get("coverage_type", "line"),
+                "exclude": guardrail.get("exclude", []) or [],
+            },
         }
     except Exception:
-        return {"cmd": None, "timeout_seconds": 300, "pre_push_dirty_check": "tracked"}
+        return {
+            "cmd": None,
+            "timeout_seconds": 300,
+            "pre_push_dirty_check": "tracked",
+            "coverage_guardrail": {
+                "enabled": False,
+                "min_percent": None,
+                "apply_to": "changed",
+                "scope": [],
+                "coverage_type": "line",
+                "exclude": [],
+            },
+        }
+

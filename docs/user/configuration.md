@@ -129,7 +129,79 @@ execution:
     mode: "standard"
 ```
 
-### labels
+### initial_prompt
+
+Template variables available:
+
+| Variable | Description |
+|----------|-------------|
+| `{issue_number}` | GitHub issue number |
+| `{issue_title}` | Issue title |
+| `{prompt}` | Path to prompt file |
+| `{worktree}` | Path to worktree |
+| `{model}` | Model name |
+| `{permission_mode}` | Permission mode |
+| `{pr_number}` | PR number (review agents only) |
+
+Default for work agents:
+```
+Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report completion.
+```
+
+---
+
+### Validation
+
+Single validation command that runs on agent-done and pre-push:
+
+```yaml
+validation:
+  cmd: null                 # (default) Validation command (e.g., "make validate")
+  timeout_seconds: 300      # (default) 5 minutes
+  # tracked = block on staged + unstaged changes (default)
+  # unstaged = allow staged changes, block unstaged changes
+  # off = disable dirty-check guard
+  pre_push_dirty_check: "tracked"
+  coverage_guardrail:
+    enabled: false          # (default) Enforce per-file coverage on changed files
+    min_percent: null       # Required when enabled (e.g., 85)
+    apply_to: changed       # (default) "changed" or "all"
+    scope: []               # File globs to check (e.g., ["src/issue_orchestrator/**"])
+    coverage_type: line     # "line" or "branch"
+    exclude: []             # File globs to exclude
+```
+
+When `cmd` is set:
+- Runs after agent calls `agent-done` - gives immediate feedback
+- Runs on `git push` - cached by SHA, instant pass if already validated
+
+---
+
+### Code Review
+
+```yaml
+review:
+  enabled: false                              # (default)
+  default: null                               # (default) Default reviewer agent label
+  code_review_label: "needs-code-review"      # (default)
+  code_reviewed_label: "code-reviewed"        # (default)
+  max_rework_cycles: 2                        # (default) Before escalating to needs-human
+```
+
+#### Triage Review (Batch)
+
+```yaml
+review:
+  triage_review_agent: null                   # (default) Agent for batch reviews
+  triage_reviewed_label: "triage-reviewed"    # (default)
+  triage_review_threshold: 0                  # (default) Auto-trigger after N PRs (0 = manual)
+  triage_review_on_failure: true              # (default) Trigger triage on session failures
+```
+
+---
+
+### Labels
+
 
 ```yaml
 labels:
