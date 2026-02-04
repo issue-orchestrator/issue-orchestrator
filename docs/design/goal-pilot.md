@@ -18,6 +18,7 @@ This is intentionally **not** a new UI. The Pilot is an AI control capability th
 
 ## Key Concepts
 - **Goal**: A desired outcome (e.g., "UI should be clear and easy to navigate").
+- **Goal Interview**: A structured, adaptive Q&A used to refine goals before execution.
 - **Milestone Set**: One or more milestones used as inputs, not a fixed waterfall.
 - **Milestone**: Issue grouping from tracker (GitHub milestone or label set).
 - **Pilot Run**: The persistent state of a goal execution loop.
@@ -68,6 +69,106 @@ Emit trace events so UIs and sidecars stay decoupled from logs:
 3. **Act**: execute one action (idempotent, small scope).
 4. **Verify**: confirm state transition; update pilot state.
 5. **Repeat**: until done or blocked.
+
+## Goal Interview (Refinement Before Execution)
+Goal Pilot supports an adaptive interview phase to refine and validate goals before execution.
+This prevents ambiguity from cascading into downstream work and provides an auditable record
+of how goals evolved.
+
+### Interview Shape (Dynamic Script)
+The interview behaves like an interviewer rather than a fixed form. It starts with a
+small set of foundational questions, then branches based on detected ambiguity, risk,
+or contradiction.
+
+**Core topics**
+- Intent + vision
+- Stakeholders + users
+- Constraints (hard/soft)
+- Success criteria (quantitative + qualitative)
+- Risks + unknowns
+- Priority + phasing
+- User-active prompt ("anything else to discuss?")
+
+**Branch triggers**
+- Vague terms (e.g., "fast", "intuitive") -> clarification branch
+- Conflict (constraints vs goals) -> tradeoff branch
+- High-impact risk -> risk deep dive
+- Uncertainty -> discovery branch
+
+### Goal Revision Protocol
+The interview explicitly allows **merge**, **split**, or **drop** decisions for goals.
+Changes are never automatic; they are presented with rationale for user confirmation.
+
+**Merge**
+- Same user outcome or success metric
+- Shared constraints/stack
+- No conflicting priorities
+
+**Split**
+- Multiple success metrics or conflicting constraints
+- Distinct user groups
+
+**Drop**
+- No measurable success criteria after clarification
+- Out of scope under constraints
+- Low impact relative to cost/risk
+
+### Scoring Rubric (Lightweight)
+Each goal gets a 0–3 score for each axis (total 0–12).
+
+- **Impact**: user or business value
+- **Feasibility**: fit within current constraints
+- **Clarity**: how well success is defined
+- **Risk**: degree of uncertainty (inverse)
+
+**Use**
+- Merge candidates: similar outcomes + scores
+- Drop candidates: total ≤ 4 or clarity = 0 after interview
+- Split candidates: high impact but low clarity or conflicting feasibility
+- Phase-later: high impact but feasibility ≤ 1
+
+### Recommendation + Confirmation
+All changes are explained and must be confirmed.
+
+**Example recommendation block**
+```
+Recommendation: Drop G-006
+Why: Clarity = 0, Impact = 1, Feasibility = 2, Risk = 1 (Total 4)
+Rule: Drop if total <= 4 or clarity = 0
+Notes: No measurable success criteria defined
+```
+
+### Revision Record (Suggested Schema)
+```
+{
+  "revision_id": "R-2026-02-04-001",
+  "timestamp": "2026-02-04T00:00:00Z",
+  "actions": [
+    {"type": "merge", "from": ["G-002", "G-005"], "to": "G-002a", "reason": "..."},
+    {"type": "split", "from": ["G-004"], "to": ["G-004a", "G-004b"], "reason": "..."},
+    {"type": "drop", "from": ["G-006"], "reason": "..."}
+  ],
+  "justifications": ["..."],
+  "review_status": "pending_user_confirmation"
+}
+```
+
+## Assist Mode (Outcome Suggestions)
+Assist mode operates at the **goal/outcome level**, not the implementation level. It offers
+optional outcome prompts from similar systems so users can decide what should exist. The
+system translates accepted outcomes into lower-level work automatically.
+
+**Example prompts**
+- "Should users be able to restore data if they make mistakes?"
+- "Do you want a clear audit trail for critical actions?"
+- "Should users be able to export their data?"
+
+Assist recommendations must be explicitly confirmed or rejected and recorded as notes.
+
+## Reuse Over Reinvent
+Goal Pilot should favor reuse over bespoke solutions whenever possible. When considering
+execution plans, it should explicitly check for existing software (open source or paid)
+that can cover non-differentiating needs, and focus custom work on what is unique.
 
 ## Context Limits and External Memory
 Goal Pilot must assume bounded agent context. The design therefore relies on durable, external memory rather than in-session prompts.

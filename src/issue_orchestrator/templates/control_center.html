@@ -1137,6 +1137,112 @@
             color: var(--text-muted);
         }
 
+        .goal-pilot-flow-card {
+            grid-column: 1 / -1;
+        }
+
+        .goal-pilot-flow {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        }
+
+        .goal-pilot-step {
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 12px;
+            background: var(--bg-input);
+            display: grid;
+            gap: 6px;
+        }
+
+        .goal-pilot-step-number {
+            width: 24px;
+            height: 24px;
+            border-radius: 999px;
+            background: rgba(88, 166, 255, 0.15);
+            color: var(--accent-blue);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .goal-pilot-step-title {
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .goal-pilot-step-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .goal-pilot-step-link {
+            font-size: 12px;
+            color: var(--accent-blue);
+            text-decoration: none;
+        }
+
+        .goal-pilot-step-link:hover {
+            text-decoration: underline;
+        }
+
+        .goal-pilot-active-run {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .goal-pilot-active-run span {
+            color: var(--text-primary);
+            font-weight: 600;
+        }
+
+        .goal-pilot-step-panel {
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            background: var(--bg-card);
+        }
+
+        .goal-pilot-step-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 16px;
+            cursor: pointer;
+        }
+
+        .goal-pilot-step-header h3 {
+            margin: 0;
+        }
+
+        .goal-pilot-step-body {
+            padding: 0 16px 16px;
+            display: none;
+        }
+
+        .goal-pilot-step-panel[data-active="true"] .goal-pilot-step-body {
+            display: block;
+        }
+
+        .goal-pilot-step-panel[data-active="true"] .goal-pilot-step-toggle {
+            transform: rotate(90deg);
+        }
+
+        .goal-pilot-step-toggle {
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--bg-input);
+            color: var(--text-secondary);
+            padding: 4px 8px;
+            font-size: 12px;
+        }
+
         /* ============================================
            Settings View
            ============================================ */
@@ -1632,6 +1738,36 @@
                         </div>
                         <div class="goal-pilot-alert-meta" id="goalPilotConfigDetails"></div>
                     </div>
+                    <div class="goal-pilot-card goal-pilot-flow-card">
+                        <h3>Goal Pilot Flow</h3>
+                        <div class="goal-pilot-hint">Define → Interview/Refine → Assist → Execute. Repeat as needed.</div>
+                        <div class="goal-pilot-flow">
+                            <div class="goal-pilot-step">
+                                <div class="goal-pilot-step-number">1</div>
+                                <div class="goal-pilot-step-title">Define</div>
+                                <div class="goal-pilot-step-desc">Create a run and capture initial goals.</div>
+                                <a class="goal-pilot-step-link" href="#goalPilotDefine">Go to Define</a>
+                            </div>
+                            <div class="goal-pilot-step">
+                                <div class="goal-pilot-step-number">2</div>
+                                <div class="goal-pilot-step-title">Interview/Refine</div>
+                                <div class="goal-pilot-step-desc">Clarify outcomes, then refine goals with a summary.</div>
+                                <a class="goal-pilot-step-link" href="#goalPilotInterview">Go to Interview</a>
+                            </div>
+                            <div class="goal-pilot-step">
+                                <div class="goal-pilot-step-number">3</div>
+                                <div class="goal-pilot-step-title">Assist</div>
+                                <div class="goal-pilot-step-desc">Optional outcome suggestions from similar projects.</div>
+                                <a class="goal-pilot-step-link" href="#goalPilotAssist">Go to Assist</a>
+                            </div>
+                            <div class="goal-pilot-step">
+                                <div class="goal-pilot-step-number">4</div>
+                                <div class="goal-pilot-step-title">Execute</div>
+                                <div class="goal-pilot-step-desc">Define journeys, set phase, and review suggested changes.</div>
+                                <a class="goal-pilot-step-link" href="#goalPilotExecute">Go to Execute</a>
+                            </div>
+                        </div>
+                    </div>
                     <div class="goal-pilot-column">
                         <div class="goal-pilot-card">
                             <h3>Runs</h3>
@@ -1642,56 +1778,140 @@
                             </div>
                         </div>
 
-                        <div class="goal-pilot-card">
-                            <h3>Create Run</h3>
-                            <div class="goal-pilot-field">
-                                <label for="goalPilotRunName">Run Name</label>
-                                <input id="goalPilotRunName" type="text" placeholder="Unified UI clarity sprint" required>
+                        <div class="goal-pilot-step-panel" id="goalPilotDefine" data-step="define" data-active="true">
+                            <div class="goal-pilot-step-header" data-step-toggle="define">
+                                <h3>Step 1: Define Goals</h3>
+                                <span class="goal-pilot-step-toggle">›</span>
                             </div>
-                            <div class="goal-pilot-field">
-                                <label for="goalPilotGoals">Goals</label>
-                                <textarea id="goalPilotGoals" rows="5" placeholder="UI should be clear and easy to navigate&#10;Single UI to rule them all"></textarea>
-                            </div>
-                            <div class="goal-pilot-field">
-                                <label>Done Criteria (guided)</label>
-                                <div class="goal-pilot-checklist">
-                                    <label><input type="checkbox" id="goalPilotDoneJourneys"> Critical journeys mapped</label>
-                                    <label><input type="checkbox" id="goalPilotDoneMilestones"> Journeys mapped to milestones</label>
-                                    <label><input type="checkbox" id="goalPilotDoneTests"> Test layers planned</label>
-                                    <label><input type="checkbox" id="goalPilotDoneGuardrails"> Guardrails captured</label>
+                            <div class="goal-pilot-step-body">
+                                <div class="goal-pilot-field">
+                                    <label for="goalPilotRunName">Run Name</label>
+                                    <input id="goalPilotRunName" type="text" placeholder="Unified UI clarity sprint" required>
                                 </div>
+                                <div class="goal-pilot-field">
+                                    <label for="goalPilotGoals">Goals</label>
+                                    <textarea id="goalPilotGoals" rows="5" placeholder="UI should be clear and easy to navigate&#10;Single UI to rule them all"></textarea>
+                                </div>
+                                <div class="goal-pilot-field">
+                                    <label>Done Criteria (guided)</label>
+                                    <div class="goal-pilot-checklist">
+                                        <label><input type="checkbox" id="goalPilotDoneJourneys"> Critical journeys mapped</label>
+                                        <label><input type="checkbox" id="goalPilotDoneMilestones"> Journeys mapped to milestones</label>
+                                        <label><input type="checkbox" id="goalPilotDoneTests"> Test layers planned</label>
+                                        <label><input type="checkbox" id="goalPilotDoneGuardrails"> Guardrails captured</label>
+                                    </div>
+                                </div>
+                                <div class="goal-pilot-field">
+                                    <label for="goalPilotDoneNotes">Custom Done Criteria</label>
+                                    <textarea id="goalPilotDoneNotes" rows="2" placeholder="Any extra conditions that mean done"></textarea>
+                                </div>
+                                <div class="goal-pilot-actions">
+                                    <button class="btn btn-primary btn-sm" id="goalPilotCreateBtn">Create Run</button>
+                                    <button class="btn btn-sm" data-step-next="interview">Continue to Interview</button>
+                                </div>
+                                <div class="goal-pilot-output" id="goalPilotCreateOutput"></div>
                             </div>
-                            <div class="goal-pilot-field">
-                                <label for="goalPilotDoneNotes">Custom Done Criteria</label>
-                                <textarea id="goalPilotDoneNotes" rows="2" placeholder="Any extra conditions that mean done"></textarea>
-                            </div>
-                            <div class="goal-pilot-actions">
-                                <button class="btn btn-primary btn-sm" id="goalPilotCreateBtn">Create Run</button>
-                            </div>
-                            <div class="goal-pilot-output" id="goalPilotCreateOutput"></div>
                         </div>
 
-                        <div class="goal-pilot-card">
-                            <h3>Current Phase</h3>
-                            <div class="goal-pilot-hint">Phases are a loop. Record pivots with a reason.</div>
-                            <div class="goal-pilot-field">
-                                <label for="goalPilotPhaseSelect">Phase</label>
-                                <select id="goalPilotPhaseSelect">
-                                    <option value="outcomes_opportunities">Outcomes &amp; Opportunities</option>
-                                    <option value="critical_journeys">Critical Journeys</option>
-                                    <option value="structure_betting">Structure &amp; Betting</option>
-                                    <option value="delivery_track">Delivery Track</option>
-                                    <option value="fill_cracks">Fill the Cracks</option>
-                                </select>
+                        <div class="goal-pilot-step-panel" id="goalPilotInterview" data-step="interview" data-active="false">
+                            <div class="goal-pilot-step-header" data-step-toggle="interview">
+                                <h3>Step 2: Interview/Refine</h3>
+                                <span class="goal-pilot-step-toggle">›</span>
                             </div>
-                            <div class="goal-pilot-field">
-                                <label for="goalPilotPhaseReason">Reason</label>
-                                <input id="goalPilotPhaseReason" type="text" placeholder="Pivoting due to discovery...">
+                            <div class="goal-pilot-step-body">
+                                <div class="goal-pilot-hint">Clarify intent, then record refined goals and interview summary.</div>
+                                <div class="goal-pilot-field">
+                                    <label>Active Run</label>
+                                    <div class="goal-pilot-active-run">Selected: <span id="goalPilotActiveRun">None</span></div>
+                                </div>
+                                <div class="goal-pilot-field">
+                                    <label for="goalPilotRefineGoals">Refined Goals</label>
+                                    <textarea id="goalPilotRefineGoals" rows="4" placeholder="Clarified goals (one per line)"></textarea>
+                                    <div class="form-hint">Paste updated goals or keep current goals if unchanged.</div>
+                                </div>
+                                <div class="goal-pilot-field">
+                                    <label for="goalPilotRefineNote">Interview Summary / Recommendations</label>
+                                    <textarea id="goalPilotRefineNote" rows="3" placeholder="Key clarifications, merges/splits/drops, or open questions."></textarea>
+                                </div>
+                                <details class="goal-pilot-field">
+                                    <summary style="cursor: pointer; font-size: 12px; color: var(--text-secondary);">Interview prompts</summary>
+                                    <div class="goal-pilot-hint" style="margin-top: 8px;">
+                                        Intent, users, constraints, success criteria, risks, priorities, and anything else worth clarifying.
+                                    </div>
+                                </details>
+                                <div class="goal-pilot-actions">
+                                    <button class="btn btn-sm" id="goalPilotRefineSyncBtn">Load Current Goals</button>
+                                    <button class="btn btn-primary btn-sm" id="goalPilotRefineBtn">Save Interview Results</button>
+                                    <button class="btn btn-sm" data-step-next="assist">Continue to Assist</button>
+                                </div>
+                                <div class="goal-pilot-output" id="goalPilotRefineOutput"></div>
                             </div>
-                            <div class="goal-pilot-actions">
-                                <button class="btn btn-sm" id="goalPilotPhaseBtn">Record Phase Change</button>
+                        </div>
+
+                        <div class="goal-pilot-step-panel" id="goalPilotAssist" data-step="assist" data-active="false">
+                            <div class="goal-pilot-step-header" data-step-toggle="assist">
+                                <h3>Step 3: Assist (Outcomes)</h3>
+                                <span class="goal-pilot-step-toggle">›</span>
                             </div>
-                            <div class="goal-pilot-output" id="goalPilotPhaseHistory"></div>
+                            <div class="goal-pilot-step-body">
+                                <div class="goal-pilot-hint">Optional prompts to help you decide on higher-level outcomes seen in similar systems.</div>
+                                <div class="goal-pilot-field">
+                                    <label>Examples</label>
+                                    <div class="goal-pilot-hint">
+                                        Would you like users to restore data if they make mistakes?<br>
+                                        Should users be able to export their data?<br>
+                                        Do you want a clear audit trail for critical actions?
+                                    </div>
+                                </div>
+                                <div class="goal-pilot-field">
+                                    <label>Research Permission</label>
+                                    <label style="font-size: 12px; color: var(--text-secondary); display: flex; gap: 6px; align-items: center;">
+                                        <input type="checkbox" id="goalPilotAssistResearch">
+                                        Allow web research for reuse options when needed
+                                    </label>
+                                </div>
+                                <div class="goal-pilot-field">
+                                    <label for="goalPilotAssistNotes">Assist Notes / Decisions</label>
+                                    <textarea id="goalPilotAssistNotes" rows="3" placeholder="Capture accepted/rejected outcomes and rationale."></textarea>
+                                </div>
+                                <div class="goal-pilot-actions">
+                                    <button class="btn btn-sm" id="goalPilotAssistSaveBtn">Save Assist Notes</button>
+                                    <button class="btn btn-sm" data-step-next="execute">Continue to Execute</button>
+                                </div>
+                                <div class="goal-pilot-output" id="goalPilotAssistOutput"></div>
+                            </div>
+                        </div>
+
+                        <div class="goal-pilot-step-panel" id="goalPilotExecute" data-step="execute" data-active="false">
+                            <div class="goal-pilot-step-header" data-step-toggle="execute">
+                                <h3>Step 4: Execute</h3>
+                                <span class="goal-pilot-step-toggle">›</span>
+                            </div>
+                            <div class="goal-pilot-step-body">
+                                <div class="goal-pilot-hint">Define journeys, set phase, and review suggested changes.</div>
+                                <div class="goal-pilot-actions">
+                                    <button class="btn btn-sm" id="goalPilotRefreshStatusBtn">Refresh Selected Run</button>
+                                </div>
+                                <div style="height: 8px;"></div>
+                                <div class="goal-pilot-field">
+                                    <label for="goalPilotPhaseSelect">Phase</label>
+                                    <select id="goalPilotPhaseSelect">
+                                        <option value="outcomes_opportunities">Outcomes &amp; Opportunities</option>
+                                        <option value="critical_journeys">Critical Journeys</option>
+                                        <option value="structure_betting">Structure &amp; Betting</option>
+                                        <option value="delivery_track">Delivery Track</option>
+                                        <option value="fill_cracks">Fill the Cracks</option>
+                                    </select>
+                                </div>
+                                <div class="goal-pilot-field">
+                                    <label for="goalPilotPhaseReason">Reason</label>
+                                    <input id="goalPilotPhaseReason" type="text" placeholder="Pivoting due to discovery...">
+                                </div>
+                                <div class="goal-pilot-actions">
+                                    <button class="btn btn-sm" id="goalPilotPhaseBtn">Record Phase Change</button>
+                                </div>
+                                <div class="goal-pilot-output" id="goalPilotPhaseHistory"></div>
+                            </div>
                         </div>
                     </div>
 
@@ -3208,7 +3428,8 @@
                 runId: null,
                 runs: [],
                 journeys: [],
-                actions: []
+                actions: [],
+                run: null
             };
 
             function parseGoalsInput(raw) {
@@ -3329,15 +3550,29 @@
                     const statusData = await statusResponse.json();
                     if (statusData.error) throw new Error(statusData.error);
                     const status = statusData.status || statusData;
+                    goalPilotState.run = status.run || null;
                     goalPilotState.journeys = status.journeys || [];
                     goalPilotState.actions = status.actions || [];
                     renderGoalPilotJourneys();
                     renderGoalPilotPhaseHistory(status.phase_history || [], status.run);
                     renderGoalPilotSuggestedChanges(goalPilotState.actions);
                     renderGoalPilotRuns();
+                    syncGoalPilotRefineForm();
                 } catch (error) {
                     showToast(`Goal Pilot status failed: ${error.message}`, 'error');
                 }
+            }
+
+            function syncGoalPilotRefineForm() {
+                const run = goalPilotState.run;
+                const activeLabel = document.getElementById('goalPilotActiveRun');
+                if (activeLabel) {
+                    activeLabel.textContent = run ? (run.name || run.run_id || 'Selected') : 'None';
+                }
+                const goalsField = document.getElementById('goalPilotRefineGoals');
+                if (!goalsField || !run) return;
+                const goals = Array.isArray(run.goals) ? run.goals : [];
+                goalsField.value = goals.join('\n');
             }
 
             function renderGoalPilotPhaseHistory(history, run) {
@@ -3480,6 +3715,81 @@
                 } catch (error) {
                     showToast(`Goal Pilot journey failed: ${error.message}`, 'error');
                 }
+            }
+
+            async function goalPilotRefineGoals() {
+                try {
+                    const runId = goalPilotState.runId;
+                    if (!runId) throw new Error('Select a run first');
+                    const goals = parseGoalsInput(document.getElementById('goalPilotRefineGoals').value);
+                    if (!goals.length) throw new Error('Refined goals required');
+                    const note = document.getElementById('goalPilotRefineNote').value.trim();
+                    const response = await fetch(`/control/goal_pilot/runs/${encodeURIComponent(runId)}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ goals, note: note || null })
+                    });
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    setOutput('goalPilotRefineOutput', data);
+                    await goalPilotStatus();
+                } catch (error) {
+                    showToast(`Goal Pilot refine failed: ${error.message}`, 'error');
+                }
+            }
+
+            async function goalPilotAssistSave() {
+                try {
+                    const runId = goalPilotState.runId;
+                    if (!runId) throw new Error('Select a run first');
+                    if (!goalPilotState.run) {
+                        await goalPilotStatus();
+                    }
+                    const note = document.getElementById('goalPilotAssistNotes').value.trim();
+                    if (!note) throw new Error('Assist notes required');
+                    const researchAllowed = document.getElementById('goalPilotAssistResearch').checked;
+                    const researchLine = `Research permission: ${researchAllowed ? 'allowed' : 'not allowed'}`;
+                    const combinedNote = `${note}\n${researchLine}`;
+                    const response = await fetch(`/control/goal_pilot/runs/${encodeURIComponent(runId)}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ goals: goalPilotState.run?.goals || [], note: combinedNote })
+                    });
+                    const data = await response.json();
+                    if (data.error) throw new Error(data.error);
+                    setOutput('goalPilotAssistOutput', data);
+                    await goalPilotStatus();
+                } catch (error) {
+                    showToast(`Goal Pilot assist failed: ${error.message}`, 'error');
+                }
+            }
+
+            function setGoalPilotStep(step) {
+                document.querySelectorAll('.goal-pilot-step-panel[data-step]').forEach(panel => {
+                    panel.dataset.active = panel.dataset.step === step ? 'true' : 'false';
+                });
+            }
+
+            document.querySelectorAll('[data-step-toggle]').forEach(toggle => {
+                toggle.addEventListener('click', () => {
+                    const step = toggle.dataset.stepToggle;
+                    if (step) setGoalPilotStep(step);
+                });
+            });
+
+            document.querySelectorAll('[data-step-next]').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const step = btn.dataset.stepNext;
+                    if (step) setGoalPilotStep(step);
+                });
+            });
+
+            function goalPilotRefineSync() {
+                if (!goalPilotState.run) {
+                    showToast('Select a run first', 'warning');
+                    return;
+                }
+                syncGoalPilotRefineForm();
             }
 
             function renderGoalPilotSuggestedChanges(actions) {
@@ -3638,6 +3948,10 @@
             document.getElementById('goalPilotSkillsBtn').addEventListener('click', goalPilotSkills);
             document.getElementById('goalPilotSkillUpsertBtn').addEventListener('click', goalPilotUpsertSkill);
             document.getElementById('goalPilotSkillsExportBtn').addEventListener('click', goalPilotExportSkills);
+            document.getElementById('goalPilotRefineBtn').addEventListener('click', goalPilotRefineGoals);
+            document.getElementById('goalPilotRefineSyncBtn').addEventListener('click', goalPilotRefineSync);
+            document.getElementById('goalPilotRefreshStatusBtn').addEventListener('click', goalPilotStatus);
+            document.getElementById('goalPilotAssistSaveBtn').addEventListener('click', goalPilotAssistSave);
 
             // Audit Tool
             document.getElementById('auditTool').addEventListener('click', () => {

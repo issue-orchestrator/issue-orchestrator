@@ -63,15 +63,76 @@
  
  ---
  
- ## How to Use (Minimal)
+## How to Use (Minimal)
  
- 1. **Create a run**: give it a name, goals, and done criteria.
- 2. **Define journeys**: capture critical user journeys and their ordering.
- 3. **Set phase**: record which stage you are in (mapping, architecture, execution).
- 4. **Review suggested changes**: approve or revise, per policy.
+1. **Create a run**: give it a name, goals, and done criteria.
+2. **Define journeys**: capture critical user journeys and their ordering.
+3. **Set phase**: record which stage you are in (mapping, architecture, execution).
+4. **Review suggested changes**: approve or revise, per policy.
  
- ---
- 
+---
+
+## Goal Interview (Recommended Before Creating a Run)
+
+For projects with high stakes or ambiguity, run a **goal interview** first. This is a guided,
+adaptive Q&A that clarifies outcomes, constraints, and success criteria before execution.
+
+**Why**: It reduces rework and gives you a durable record of how goals evolved.
+
+**What it covers**
+- Intent + vision
+- Users + stakeholders
+- Constraints (hard/soft)
+- Success criteria (metrics + qualitative)
+- Risks + unknowns
+- Priority + phasing
+- User-active prompt for anything else to discuss
+
+**What it can change**
+- Merge goals with the same outcome
+- Split goals with conflicting success criteria
+- Drop goals that are out of scope or unclear
+
+**Confirmation step**
+Goal Pilot should present a short recommendation list with score breakdowns and ask
+for explicit confirmation before changes are applied.
+
+```
+Recommendation: Drop G-006
+Why: Clarity = 0, Impact = 1, Feasibility = 2, Risk = 1 (Total 4)
+Rule: Drop if total <= 4 or clarity = 0
+Notes: No measurable success criteria defined
+```
+
+---
+
+## Assist Mode (Outcome Suggestions)
+
+Assist mode offers optional **outcome-level** prompts based on patterns from similar systems.
+It does not propose implementation details. Accepted outcomes become inputs for the system
+to translate into lower-level work automatically.
+
+**Example prompts**
+- Should users be able to restore data if they make mistakes?
+- Do you want a clear audit trail for critical actions?
+- Should users be able to export their data?
+
+Record accepted or rejected outcomes as notes, then proceed to execution.
+
+**Research permission**
+If identifying reuse options requires current market knowledge, Goal Pilot should ask
+for permission before performing web research.
+
+---
+
+## Reuse Over Reinvent
+
+Goal Pilot should strongly prefer reuse over bespoke solutions. When planning actions,
+it should check for existing software (open source or paid) that covers non-differentiating
+needs, and focus custom work on what is unique.
+
+---
+
 ## Short-Cycle AI Pattern (Recommended)
 
 Goal Pilot is meant to be run like a “thinking loop” with minimal context retention:
