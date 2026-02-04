@@ -20,10 +20,20 @@ set -euo pipefail
 
 input="$(< /dev/stdin)"
 
+fallback_block_no_verify() {
+    if echo "$1" | grep -q -- "--no-verify" && echo "$1" | grep -q -- "git"; then
+        return 0
+    fi
+    return 1
+}
+
 python_bin="$(command -v python3 || true)"
 if [[ -z "$python_bin" ]]; then
-    echo "BLOCKED: python3 is required for orchestrator hooks. Fix PATH or install python3." >&2
-    exit 2
+    if fallback_block_no_verify "$input"; then
+        echo "BLOCKED: python3 missing; blocked --no-verify." >&2
+        exit 2
+    fi
+    exit 0
 fi
 
 hook_pythonpath="${ORCHESTRATOR_HOOK_PYTHONPATH:-}"
@@ -35,6 +45,7 @@ if [[ -z "$hook_pythonpath" ]]; then
     fi
 fi
 
+set +e
 if [[ -n "$hook_pythonpath" ]]; then
     PYTHONPATH="$hook_pythonpath${PYTHONPATH:+:$PYTHONPATH}" \
         "$python_bin" -m issue_orchestrator.infra.hooks.block_no_verify --mode gemini <<< "$input"
@@ -42,9 +53,13 @@ else
     "$python_bin" -m issue_orchestrator.infra.hooks.block_no_verify --mode gemini <<< "$input"
 fi
 status=$?
+set -e
 if [[ $status -eq 0 || $status -eq 2 ]]; then
     exit $status
 fi
 
-echo "BLOCKED: hook evaluation failed." >&2
-exit 2
+if fallback_block_no_verify "$input"; then
+    echo "BLOCKED: hook evaluation failed; blocked --no-verify." >&2
+    exit 2
+fi
+exit 0

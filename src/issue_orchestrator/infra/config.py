@@ -727,6 +727,13 @@ def _load_worktrees_section(
     else:
         config.worktree_base = resolve_relative_path(worktree_base_raw, repo_root)
 
+    default_branch_raw = worktrees_section.get("default_branch")
+    if default_branch_raw is None:
+        config.worktree_default_branch = None
+    else:
+        default_branch = str(default_branch_raw).strip()
+        config.worktree_default_branch = default_branch or None
+
     # Validate worktree_base is usable
     try:
         config.worktree_base.mkdir(parents=True, exist_ok=True)
@@ -741,9 +748,6 @@ def _load_worktrees_section(
     config.reuse_push_preflight = worktrees_section.get("reuse_push_preflight", True)
     config.allow_no_verify_dry_run_preflight = worktrees_section.get(
         "allow_no_verify_dry_run_preflight", True
-    )
-    config.worktree_default_branch = worktrees_section.get(
-        "default_branch", config.worktree_default_branch
     )
     config.worktree_branch_on_recreate = worktrees_section.get(
         "worktree_branch_on_recreate", "delete"
@@ -958,7 +962,7 @@ class Config:
     repo_root: Path = field(default_factory=Path.cwd)  # Root of the git repository
     repo_root_from_yaml: bool = False  # Internal: YAML explicitly set repo_root
     worktree_base: Path = Path(".issue-orchestrator/worktrees")  # Base directory for worktrees
-    worktree_default_branch: str = "main"  # Default branch for worktree bases and PRs
+    worktree_default_branch: Optional[str] = None  # Override base branch for worktree creation
     worktree_branch_on_recreate: str = "delete"  # delete or create_new_branch
 
     # Config validation
@@ -1288,6 +1292,7 @@ class Config:
             },
             "worktrees": {
                 "base": str(self.worktree_base),
+                "default_branch": self.worktree_default_branch,
                 "setup": list(self.setup_worktree),
                 "reuse_push_preflight": self.reuse_push_preflight,
                 "allow_no_verify_dry_run_preflight": self.allow_no_verify_dry_run_preflight,
@@ -1640,10 +1645,10 @@ class Config:
         # Only include worktree_base if it was explicitly set (not the default)
         if self.worktree_base != self.repo_root.parent:
             worktrees_dict["base"] = str(self.worktree_base)
+        if self.worktree_default_branch:
+            worktrees_dict["default_branch"] = self.worktree_default_branch
         if self.setup_worktree:
             worktrees_dict["setup"] = list(self.setup_worktree)
-        if self.worktree_default_branch != "main":
-            worktrees_dict["default_branch"] = self.worktree_default_branch
         if self.worktree_branch_on_recreate != "delete":
             worktrees_dict["worktree_branch_on_recreate"] = self.worktree_branch_on_recreate
         if worktrees_dict:

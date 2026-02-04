@@ -101,9 +101,31 @@ worktrees:
         config = Config.load(config_file)
 
         assert config.worktree_branch_on_recreate == "delete"
+        assert config.worktree_default_branch is None
+
+    def test_worktree_default_branch_configured_main(self, tmp_path):
+        """Config can set worktrees.default_branch."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+worktrees:
+  base: {worktree_base}
+  default_branch: main
+""")
+
+        config = Config.load(config_file)
+
+        assert config.worktree_default_branch == "main"
 
     def test_worktree_default_branch_default(self, tmp_path):
-        """Default worktree_default_branch should be main."""
+        """Default worktree_default_branch should be unset."""
         prompt = tmp_path / "prompt.md"
         prompt.write_text("Prompt")
         worktree_base = tmp_path / "worktrees"
@@ -120,7 +142,7 @@ worktrees:
 
         config = Config.load(config_file)
 
-        assert config.worktree_default_branch == "main"
+        assert config.worktree_default_branch is None
 
     def test_worktree_branch_on_recreate_configured(self, tmp_path):
         """Config can set worktree_branch_on_recreate."""
@@ -143,7 +165,7 @@ worktrees:
 
         assert config.worktree_branch_on_recreate == "create_new_branch"
 
-    def test_worktree_default_branch_configured(self, tmp_path):
+    def test_worktree_default_branch_configured_master(self, tmp_path):
         """Config can set worktree_default_branch."""
         prompt = tmp_path / "prompt.md"
         prompt.write_text("Prompt")

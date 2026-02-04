@@ -37,10 +37,10 @@ class GitWorktreeManager:
             issue_number=issue_number,
             issue_title=issue_title,
             worktree_base=worktree_base,
+            base_branch=base_branch,
             enforce_hooks=enforce_hooks,
             pre_push_hook=pre_push_hook,
             branch_name=branch_name,
-            base_branch=base_branch,
             reuse_options=reuse_options,
         )
         return WorktreeInfo(

@@ -188,7 +188,10 @@ class CompletionProcessor:
     def _base_branch(self) -> str:
         if self._config is None:
             return "main"
-        return self._config.worktree_default_branch
+        if self._config.worktree_default_branch:
+            return self._config.worktree_default_branch
+        from ..adapters.worktree._worktree import get_default_branch
+        return get_default_branch(self._config.repo_root)
 
     def read_completion_record(
         self, worktree: Path, completion_path: str | None = None

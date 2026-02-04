@@ -133,11 +133,11 @@ class WorktreeContext:
             issue_number=issue_number,
             issue_title=issue_title,
             worktree_base=worktree_base,
+            base_branch=config.worktree_default_branch,
             enforce_hooks=enforce_hooks,
             reuse_options=reuse_options or WorktreeReuseOptions(),
             branch_name=branch_name,
             pre_push_hook=pre_push_hook,
-            base_branch=config.worktree_default_branch,
         )
         worktree_path = worktree_info.path
         actual_branch = worktree_info.branch_name

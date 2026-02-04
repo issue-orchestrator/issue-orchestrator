@@ -21,9 +21,20 @@ set -euo pipefail
 
 input="$(< /dev/stdin)"
 
+fallback_block_no_verify() {
+    if echo "$1" | grep -q -- "--no-verify" && echo "$1" | grep -q -- "git"; then
+        return 0
+    fi
+    return 1
+}
+
 python_bin="$(command -v python3 || true)"
 if [[ -z "$python_bin" ]]; then
-    echo '{"permissionDecision": "deny", "permissionDecisionReason": "BLOCKED: python3 is required for orchestrator hooks."}'
+    if fallback_block_no_verify "$input"; then
+        echo '{"permissionDecision": "deny", "permissionDecisionReason": "BLOCKED: python3 missing; blocked --no-verify."}'
+    else
+        echo '{"permissionDecision": "allow"}'
+    fi
     exit 0
 fi
 
@@ -36,6 +47,7 @@ if [[ -z "$hook_pythonpath" ]]; then
     fi
 fi
 
+set +e
 if [[ -n "$hook_pythonpath" ]]; then
     output=$(PYTHONPATH="$hook_pythonpath${PYTHONPATH:+:$PYTHONPATH}" \
         "$python_bin" -m issue_orchestrator.infra.hooks.block_no_verify --mode copilot <<< "$input" 2>/dev/null)
@@ -43,8 +55,13 @@ else
     output=$("$python_bin" -m issue_orchestrator.infra.hooks.block_no_verify --mode copilot <<< "$input" 2>/dev/null)
 fi
 status=$?
+set -e
 if [[ $status -ne 0 ]]; then
-    echo '{"permissionDecision": "deny", "permissionDecisionReason": "BLOCKED: hook evaluation failed."}'
+    if fallback_block_no_verify "$input"; then
+        echo '{"permissionDecision": "deny", "permissionDecisionReason": "BLOCKED: hook evaluation failed; blocked --no-verify."}'
+    else
+        echo '{"permissionDecision": "allow"}'
+    fi
     exit 0
 fi
 

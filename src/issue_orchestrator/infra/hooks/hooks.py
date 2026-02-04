@@ -104,6 +104,10 @@ class AiAgentAdapter(ABC):
         """Check if hooks are already installed."""
         pass
 
+    def supports_ai_gate(self) -> bool:
+        """Return True if this adapter supports AI gate testing."""
+        return False
+
     def test_ai_gate(self, project_root: Path, timeout: int = 60) -> tuple[bool, str]:
         """Perform AI gate test by spawning the AI agent.
 
@@ -146,7 +150,7 @@ def _init_test_ai_gate_repo(tmppath: Path) -> Path:
 
 
 def _copy_hook_dir(project_root: Path, work_repo: Path, hook_dir: str) -> None:
-    """Copy a hook configuration directory into the live-verify repo."""
+    """Copy a hook configuration directory into the AI gate test repo."""
     src_dir = project_root / hook_dir
     if not src_dir.exists():
         raise FileNotFoundError(f"No {hook_dir} directory found in project root")
@@ -176,6 +180,9 @@ class ClaudeCodeAdapter(AiAgentAdapter):
     @property
     def agent_type(self) -> AiAgentType:
         return AiAgentType.CLAUDE_CODE
+
+    def supports_ai_gate(self) -> bool:
+        return True
 
     def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
         """Copy a hook file and make it executable."""
@@ -441,6 +448,9 @@ class CursorAdapter(AiAgentAdapter):
     def agent_type(self) -> AiAgentType:
         return AiAgentType.CURSOR
 
+    def supports_ai_gate(self) -> bool:
+        return True
+
     def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
         """Copy a hook file and make it executable."""
         if not src.exists():
@@ -675,6 +685,9 @@ class GeminiAdapter(AiAgentAdapter):
     @property
     def agent_type(self) -> AiAgentType:
         return AiAgentType.GEMINI
+
+    def supports_ai_gate(self) -> bool:
+        return True
 
     def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
         """Copy a hook file and make it executable."""
@@ -921,6 +934,9 @@ class CopilotAdapter(AiAgentAdapter):
     @property
     def agent_type(self) -> AiAgentType:
         return AiAgentType.COPILOT
+
+    def supports_ai_gate(self) -> bool:
+        return True
 
     def _copy_hook_file(self, src: Path, target: Path, files_created: list[Path]) -> None:
         """Copy a hook file and make it executable."""
