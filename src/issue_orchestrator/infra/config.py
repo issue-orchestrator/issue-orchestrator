@@ -647,7 +647,7 @@ def _load_review_section(config: "Config", review_section: dict) -> None:
     config.triage_failed_label = review_section.get("triage_failed_label", "triage-failed")
     config.triage_review_threshold = review_section.get("triage_review_threshold", 0)
     config.triage_review_on_failure = review_section.get("triage_review_on_failure", True)
-    config.max_rework_cycles = review_section.get("max_rework_cycles", 2)
+    config.max_rework_cycles = review_section.get("max_rework_cycles", 10)
     config.reviewer_feedback_cache_minutes = review_section.get("reviewer_feedback_cache_minutes", 5)
     config.review_keep_current_approach_label = review_section.get(
         "keep_current_approach_label",
@@ -1023,7 +1023,7 @@ class Config:
     triage_review_on_failure: bool = True  # Trigger triage to investigate when sessions fail
 
     # Rework cycle limit (when reviewer requests changes)
-    max_rework_cycles: int = 2  # Max times to re-queue work agent before escalating to needs-human
+    max_rework_cycles: int = 10  # Max times to re-queue work agent before escalating to needs-human
 
     # Reviewer feedback cache: write feedback locally on review completion and use it
     # for rework sessions within this time window (avoids GitHub eventual consistency issues)
@@ -1551,7 +1551,7 @@ class Config:
             review_dict["triage_reviewed_label"] = self.triage_reviewed_label
         if self.triage_review_threshold != 0:
             review_dict["triage_review_threshold"] = self.triage_review_threshold
-        if self.max_rework_cycles != 2:
+        if self.max_rework_cycles != 10:
             review_dict["max_rework_cycles"] = self.max_rework_cycles
         if self.review_keep_current_approach_label != "reviewer-keep-current-approach":
             review_dict["keep_current_approach_label"] = self.review_keep_current_approach_label
