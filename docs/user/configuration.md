@@ -154,7 +154,7 @@ review:
   triage_reviewed_label: "triage-reviewed"
   triage_review_threshold: 0
   triage_review_on_failure: true
-  max_rework_cycles: 2
+  max_rework_cycles: 10
   reviewer_feedback_cache_minutes: 5
 ```
 
@@ -451,7 +451,6 @@ The web dashboard settings dialog is driven by a Pydantic schema in `src/issue_o
 
 Goal Pilot uses the standard agent configuration: define its prompt under `agents` and reference the label via `goal_pilot.agent`.
 
-<!-- BEGIN AUTO-GENERATED CONFIG REFERENCE — regenerate via: pytest tests/unit/test_settings_schema.py::TestDriftDetection::test_config_reference_not_stale -->
 # Settings Reference
 
 _Auto-generated from settings schema._
@@ -492,7 +491,7 @@ _Auto-generated from settings schema._
 |-------|------|---------|-------------|
 | `review.enabled` | boolean | `False` | Enable automated code review workflow |
 | `review.default` | string (optional) | `None` | Agent label for code reviews (e.g., agent:reviewer) |
-| `review.max_rework_cycles` | integer | `2` | Max times to re-queue work agent before escalating |
+| `review.max_rework_cycles` | integer | `10` | Max times to re-queue work agent before escalating |
 | `review.keep_current_approach_label` | string | `reviewer-keep-current-approach` | Label that tells reviewer to avoid alternative approaches |
 | `review.exchange.mode` | string | `via-draft-pr` | Review exchange mode (via-mcp loop, local loop, or via-draft-pr review) |
 | `review.exchange.probe.schedule` | string | `daily` | When to run MCP round-trip validation |
@@ -537,4 +536,3 @@ _Auto-generated from settings schema._
 | `ai_systems.allowed` | string | `` | Additional ai_system values allowed in config (comma-separated) |
 | `worktrees.base` | string | `../` | Directory where git worktrees are created |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch |
-<!-- END AUTO-GENERATED CONFIG REFERENCE -->

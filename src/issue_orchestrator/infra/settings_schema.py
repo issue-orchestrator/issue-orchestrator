@@ -286,7 +286,7 @@ class ReviewSettings(BaseModel):
         },
     )
     max_rework_cycles: int = Field(
-        2,
+        10,
         title="Max Rework Cycles",
         description="Max times to re-queue work agent before escalating",
         ge=0,

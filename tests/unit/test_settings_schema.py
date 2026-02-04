@@ -62,7 +62,7 @@ class TestModelDefaults:
         m = ReviewSettings()
         assert m.enabled is False
         assert m.default_reviewer is None
-        assert m.max_rework_cycles == 2
+        assert m.max_rework_cycles == 10
 
     def test_goal_pilot_defaults(self):
         m = GoalPilotSettings()
