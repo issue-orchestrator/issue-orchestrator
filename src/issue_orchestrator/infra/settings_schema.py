@@ -88,6 +88,18 @@ class ConcurrencySettings(BaseModel):
             "yaml_path": "ui.queue_refresh_seconds",
         },
     )
+    default_priority_tier: int = Field(
+        1,
+        title="Default Priority Tier",
+        description="Default priority tier when none is specified (0-9)",
+        ge=0,
+        le=9,
+        json_schema_extra={
+            "section": "Scheduling",
+            "config_attr": "scheduling.default_priority_tier",
+            "yaml_path": "scheduling.default_priority_tier",
+        },
+    )
 
 
 class E2ESettings(BaseModel):
