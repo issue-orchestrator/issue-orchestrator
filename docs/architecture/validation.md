@@ -8,13 +8,19 @@ Validation is a **publish gate**, not a CI system.
 - Cache results by worktree + commit SHA
 - Reuse across feedback/publish/hooks
 - Observe GitHub CI rather than reproducing it locally
+- Validation scripts are owned by the **target repo**. The orchestrator only invokes
+  `validation.script` and passes context on stdin.
 
 ## Configuration (YAML)
 
 ```yaml
 validation:
-  cmd: "make validate"
+  script: "repo-guardrails/validate/run.sh"
+  args: []
+  env: {}
+  cmd: null  # legacy
   timeout_seconds: 1800
+  pre_push_dirty_check: "tracked"
 
 execution:
   isolation:

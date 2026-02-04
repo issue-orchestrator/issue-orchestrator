@@ -204,6 +204,13 @@ validation:
   cmd: null  # legacy
   timeout_seconds: 300
   pre_push_dirty_check: "tracked"
+  coverage_guardrail:
+    enabled: false
+    min_percent: null
+    apply_to: changed
+    scope: []
+    coverage_type: line
+    exclude: []
 ```
 
 - `validation.script`: Path to a validation script (repo-relative or absolute). The script receives JSON context on stdin.
@@ -220,6 +227,16 @@ This guard prevents “validated one commit, pushed another” mistakes by requi
 the working tree (tracked files only) to be clean before validation and push.
 Ignored/untracked files are not considered, so build caches and logs won’t block
 you. Adjust the strictness with `validation.pre_push_dirty_check` if needed.
+
+- Validation scripts are **owned by the target repo**. Put them wherever you want
+  in your repo and point `validation.script` at that path.
+
+- `validation.coverage_guardrail.enabled`: When true, run unit tests with coverage and enforce per-file minimums.
+- `validation.coverage_guardrail.min_percent`: Required when enabled (e.g., 85).
+- `validation.coverage_guardrail.apply_to`: "changed" or "all".
+- `validation.coverage_guardrail.scope`: File globs to check (e.g., ["src/issue_orchestrator/**"]).
+- `validation.coverage_guardrail.coverage_type`: "line" or "branch".
+- `validation.coverage_guardrail.exclude`: File globs to exclude.
 
 ### retry
 

@@ -146,7 +146,7 @@ cleanup:
 
 validation:
   # Validation script receives JSON context on stdin.
-  script: "extras/validate/run.sh"
+  script: "repo-guardrails/validate/run.sh"
   args: []
   env: {}
   cmd: null  # legacy

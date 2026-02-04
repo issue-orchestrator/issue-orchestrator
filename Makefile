@@ -223,7 +223,7 @@ else
 endif
 
 test-unit-guardrail:
-	$(PYTHON) scripts/coverage_guardrail.py
+	$(PYTHON) repo-guardrails/coverage/coverage_guardrail.py
 
 test-unit-cov:
 	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=term-missing -x -q --tb=short

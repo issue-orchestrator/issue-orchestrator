@@ -22,7 +22,7 @@ Full test suites (including e2e) can take minutes. Slow validation means:
 ### Single Validation Gate
 ```yaml
 validation:
-  script: "extras/validate/run.sh"
+  script: "repo-guardrails/validate/run.sh"
   args: []
   env: {}
   timeout_seconds: 300
