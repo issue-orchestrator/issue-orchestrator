@@ -439,6 +439,41 @@ class TestClaudeCodeAdapter:
         assert "python3" in stderr.lower()
         assert "no-verify" in stderr.lower()
 
+    def test_hook_fallback_blocks_other_guardrails_on_python_error(self, adapter, temp_project):
+        adapter.install_hooks(temp_project)
+        hook_script = temp_project / ".claude" / "hooks" / "block-no-verify.sh"
+
+        dirname_path = shutil.which("dirname")
+        if not dirname_path:
+            pytest.skip("Required binary (dirname) not available to run hook test")
+        dirname_bin = Path(dirname_path)
+        bin_dir = temp_project / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "dirname").symlink_to(dirname_bin)
+
+        python_shim = bin_dir / "python3"
+        python_shim.write_text("#!/bin/sh\nexit 1\n")
+        python_shim.chmod(0o755)
+
+        env = {
+            "PATH": str(bin_dir),
+            "ORCHESTRATOR_HOOK_PYTHONPATH": "",
+        }
+
+        blocked = run_hook_test(
+            hook_script,
+            "gh pr merge 123",
+            env=env,
+        )
+        assert blocked
+
+        blocked = run_hook_test(
+            hook_script,
+            "git -c core.hooksPath=/dev/null push",
+            env=env,
+        )
+        assert blocked
+
     def test_hook_blocks_when_input_malformed(self, adapter, temp_project):
         """Hook must fail closed when input is non-empty but command extraction returns empty."""
         decision = evaluate_raw_input('{"unexpected_key": "value"}')
