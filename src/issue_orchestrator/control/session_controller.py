@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 
 from ..events import EventName
 from ..domain.models import SessionStatus
-from ..agent_runner.ports import ProviderErrorType
+from ..ports.provider_resilience import ProviderErrorType
 from ..infra.provider_resilience import ProviderStatus, read_provider_status
 from ..infra.logging_config import issue_log
 from ..infra.validation_state import (

@@ -38,7 +38,7 @@ from ..domain.models import (
 )
 from ..infra.logging_config import issue_log
 from ..infra.provider_resilience import ProviderStatus, read_provider_status, now_iso
-from ..agent_runner.ports import ProviderErrorType
+from ..ports.provider_resilience import ProviderErrorType
 from ..observation.observation import SessionObservation, SessionObservationResult
 
 if TYPE_CHECKING:

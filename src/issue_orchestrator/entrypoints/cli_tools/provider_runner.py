@@ -10,6 +10,7 @@ from pathlib import Path
 from issue_orchestrator.agent_runner import AgentRunner, RunSpec, RetryPolicy
 from issue_orchestrator.infra.env import ENV_PREFIX
 from issue_orchestrator.infra.provider_resilience import ProviderStatus, now_iso, write_provider_status
+from issue_orchestrator.ports.provider_resilience import ProviderErrorType
 from issue_orchestrator.ports.session_log import detect_ai_system_from_command
 
 
@@ -73,9 +74,13 @@ def main(argv: list[str] | None = None) -> int:
         retry_policy=retry_policy,
     ))
 
+    error_type = None
+    if result.provider_error_type:
+        error_type = ProviderErrorType(result.provider_error_type.value)
+
     status = ProviderStatus(
         provider=provider,
-        error_type=result.provider_error_type,
+        error_type=error_type,
         attempts=result.attempts,
         succeeded=result.succeeded,
         exit_code=result.exit_code,

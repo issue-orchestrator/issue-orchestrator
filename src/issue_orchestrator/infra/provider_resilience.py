@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from ..agent_runner.ports import ProviderErrorType
+from ..ports.provider_resilience import ProviderErrorType
 
 
 PROVIDER_STATUS_FILE = "provider-status.json"
@@ -43,9 +43,15 @@ class ProviderStatus:
     @classmethod
     def from_dict(cls, data: dict) -> "ProviderStatus":
         error_type = data.get("error_type")
+        parsed_error_type = None
+        if error_type:
+            try:
+                parsed_error_type = ProviderErrorType(str(error_type))
+            except ValueError:
+                parsed_error_type = None
         return cls(
             provider=data.get("provider"),
-            error_type=ProviderErrorType(error_type) if error_type else None,
+            error_type=parsed_error_type,
             attempts=int(data.get("attempts", 1)),
             succeeded=bool(data.get("succeeded", False)),
             exit_code=data.get("exit_code"),

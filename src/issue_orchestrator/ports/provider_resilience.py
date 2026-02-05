@@ -4,7 +4,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import Protocol
+
+
+class ProviderErrorType(str, Enum):
+    TRANSIENT = "transient"
+    RATE_LIMIT = "rate_limit"
+    AUTH = "auth"
+    FATAL = "fatal"
 
 
 @dataclass(frozen=True)
