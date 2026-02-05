@@ -767,7 +767,24 @@ class TestRunLoop:
             # Mock observe to return TERMINATED (session exited)
             mock_observe.return_value = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-            await run_loop_one_tick(orchestrator)
+            # Run one iteration
+            async def run_one_iteration():
+                tick_complete = asyncio.Event()
+                original_tick = orchestrator.tick
+
+                def _tick_once():
+                    result = original_tick()
+                    tick_complete.set()
+                    orchestrator.request_shutdown()
+                    return result
+
+                with patch.object(orchestrator, "tick", side_effect=_tick_once):
+                    await tick_complete.wait()
+
+            await asyncio.gather(
+                orchestrator.run_loop(),
+                run_one_iteration(),
+            )
 
             # Verify session was removed from active_sessions after completion
             assert session not in orchestrator.state.active_sessions
@@ -900,16 +917,21 @@ class TestRunLoop:
         with patch.object(orchestrator, "launch_session") as mock_launch:
             call_count = 0
 
-            def launch_side_effect(issue):
-                nonlocal call_count
-                call_count += 1
-                if call_count >= 2:
-                    orchestrator.request_shutdown()
-                return None if call_count == 1 else create_session(issue2)
+            tick_complete = asyncio.Event()
+            original_tick = orchestrator.tick
 
-            mock_launch.side_effect = launch_side_effect
+            def _tick_once():
+                result = original_tick()
+                tick_complete.set()
+                orchestrator.request_shutdown()
+                return result
 
-            await orchestrator.run_loop()
+            # Run one iteration without timing sleeps
+            with patch.object(orchestrator, "tick", side_effect=_tick_once):
+                await asyncio.gather(
+                    orchestrator.run_loop(),
+                    tick_complete.wait(),
+                )
 
             # Should try to launch both (loop may run multiple iterations)
             assert mock_launch.call_count >= 2
