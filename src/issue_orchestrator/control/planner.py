@@ -224,6 +224,41 @@ class Plan:
         return False
 
 
+@dataclass
+class PlanContext:
+    issue_labels_by_number: dict[int, tuple[str, ...]]
+    planned_adds_by_issue: dict[int, set[str]] = field(default_factory=dict)
+    planned_removes_by_issue: dict[int, set[str]] = field(default_factory=dict)
+
+    def issue_labels(self, issue_number: int) -> tuple[str, ...]:
+        return self.issue_labels_by_number.get(issue_number, ())
+
+    def planned_adds(self, issue_number: int) -> set[str]:
+        return self.planned_adds_by_issue.setdefault(issue_number, set())
+
+    def planned_removes(self, issue_number: int) -> set[str]:
+        return self.planned_removes_by_issue.setdefault(issue_number, set())
+
+    def should_add_label(self, issue_number: int, label: str) -> bool:
+        return (
+            label not in self.issue_labels(issue_number)
+            and label not in self.planned_adds(issue_number)
+        )
+
+    def should_remove_label(self, issue_number: int, label: str) -> bool:
+        return (
+            label in self.issue_labels(issue_number)
+            and label not in self.planned_removes(issue_number)
+            and label not in self.planned_adds(issue_number)
+        )
+
+    def record_add(self, issue_number: int, label: str) -> None:
+        self.planned_adds(issue_number).add(label)
+
+    def record_remove(self, issue_number: int, label: str) -> None:
+        self.planned_removes(issue_number).add(label)
+
+
 class Planner:
     """Pure policy decisions - no side effects.
 
@@ -289,8 +324,9 @@ class Planner:
             logger.debug("Planner: orchestrator is paused, returning empty plan")
             return Plan.empty()
 
-        # Track planned labels across phases to avoid duplicate label actions
-        planned_labels_by_issue: dict[int, set[str]] = {}
+        plan_context = PlanContext(issue_labels_by_number={
+            issue.number: tuple(issue.labels) for issue in snapshot.issues
+        })
 
         # === PHASE 1: Queue population actions (don't consume capacity) ===
 
@@ -303,12 +339,12 @@ class Planner:
         actions.extend(stale_claim_actions)
 
         # 1a-2b. Apply provider resilience labels (provider unavailable/available)
-        provider_label_actions = self._plan_provider_resilience_labels(snapshot, planned_labels_by_issue)
+        provider_label_actions = self._plan_provider_resilience_labels(snapshot, plan_context)
         actions.extend(provider_label_actions)
 
         # 1a-3. Immediate label projection for observed completions (async processing)
         # This runs BEFORE discovered_reviews so labels are applied immediately
-        completion_label_actions = self._plan_observed_completion_labels(snapshot)
+        completion_label_actions = self._plan_observed_completion_labels(snapshot, plan_context)
         actions.extend(completion_label_actions)
 
         # 1b. Queue discovered reviews from session completions/scans
@@ -351,21 +387,21 @@ class Planner:
 
         # 2. Plan review launches (highest priority)
         if capacity > 0 and self.review_workflow:
-            review_actions, review_skipped = self._plan_reviews(snapshot, capacity, planned_labels_by_issue)
+            review_actions, review_skipped = self._plan_reviews(snapshot, capacity, plan_context)
             actions.extend(review_actions)
             skipped.extend(review_skipped)
             capacity -= len(review_actions)
 
         # 3. Plan rework launches
         if capacity > 0 and self.rework_workflow:
-            rework_actions, rework_skipped = self._plan_reworks(snapshot, capacity, planned_labels_by_issue)
+            rework_actions, rework_skipped = self._plan_reworks(snapshot, capacity, plan_context)
             actions.extend(rework_actions)
             skipped.extend(rework_skipped)
             capacity -= len(rework_actions)
 
         # 4. Plan triage launches
         if capacity > 0 and self.triage_workflow:
-            triage_actions, triage_skipped = self._plan_triage(snapshot, capacity, planned_labels_by_issue)
+            triage_actions, triage_skipped = self._plan_triage(snapshot, capacity, plan_context)
             actions.extend(triage_actions)
             skipped.extend(triage_skipped)
             capacity -= len(triage_actions)
@@ -448,8 +484,7 @@ class Planner:
         provider: str,
         actions: list[Action],
         skipped: list[SkippedItem],
-        issue_labels: list[str],
-        planned_labels: set[str],
+        plan_context: PlanContext,
     ) -> None:
         skipped.append(SkippedItem(
             item_type=item_type,
@@ -459,6 +494,8 @@ class Planner:
         logger.info(issue_log(issue_number, "Skipped: reason=provider_unavailable provider=%s"), provider)
         if not self.provider_policy:
             return
+        issue_labels = plan_context.issue_labels(issue_number)
+        planned_labels = plan_context.planned_adds(issue_number)
         if self.provider_policy.should_add_blocked_label(issue_labels, planned_labels):
             actions.append(AddLabelAction(
                 issue_number=issue_number,
@@ -466,12 +503,12 @@ class Planner:
                 reason=f"provider unavailable: {provider}",
                 expected=build_expected_for_mutation(),
             ))
-            planned_labels.add(self.provider_policy.blocked_label())
+            plan_context.record_add(issue_number, self.provider_policy.blocked_label())
 
     def _plan_provider_resilience_labels(
         self,
         snapshot: OrchestratorSnapshot,
-        planned_labels_by_issue: dict[int, set[str]],
+        plan_context: PlanContext,
     ) -> list[Action]:
         if not self.provider_policy:
             return []
@@ -483,25 +520,35 @@ class Planner:
             if not providers:
                 continue
             any_open = self.provider_policy.any_open(providers)
-            planned_labels = planned_labels_by_issue.setdefault(issue.number, set())
-            if any_open and self.provider_policy.should_add_blocked_label(issue.labels, planned_labels):
+            issue_labels = plan_context.issue_labels(issue.number)
+            planned_labels = plan_context.planned_adds(issue.number)
+            if any_open and self.provider_policy.should_add_blocked_label(issue_labels, planned_labels):
                 actions.append(AddLabelAction(
                     issue_number=issue.number,
                     label=label,
                     reason=f"provider unavailable: {', '.join(sorted(providers))}",
                     expected=build_expected_for_mutation(),
                 ))
-                planned_labels.add(label)
-            if not any_open and self.provider_policy.should_remove_blocked_label(issue.labels, planned_labels):
+                plan_context.record_add(issue.number, label)
+            if (
+                not any_open
+                and self.provider_policy.should_remove_blocked_label(issue_labels, planned_labels)
+                and plan_context.should_remove_label(issue.number, label)
+            ):
                 actions.append(RemoveLabelAction(
                     issue_number=issue.number,
                     label=label,
                     reason=f"provider available: {', '.join(sorted(providers))}",
                     expected=build_expected_for_mutation(),
                 ))
+                plan_context.record_remove(issue.number, label)
         return actions
 
-    def _plan_observed_completion_labels(self, snapshot: OrchestratorSnapshot) -> list[Action]:
+    def _plan_observed_completion_labels(
+        self,
+        snapshot: OrchestratorSnapshot,
+        plan_context: PlanContext,
+    ) -> list[Action]:
         """Plan immediate label updates for observed completions.
 
         This is the "immediate label projection" phase of async completion processing.
@@ -551,22 +598,26 @@ class Planner:
             elif observed.outcome == CompletionOutcome.BLOCKED:
                 # Session blocked - add blocked label
                 blocked_label = self._blocked_label_for_record(observed)
-                actions.append(AddLabelAction(
-                    issue_number=issue_number,
-                    label=blocked_label,
-                    reason=f"session blocked: {observed.blocked_reason or 'unknown'}",
-                    expected=build_expected_for_mutation(),
-                ))
-                logger.debug("Planner: adding blocked label for issue #%d", issue_number)
+                if plan_context.should_add_label(issue_number, blocked_label):
+                    actions.append(AddLabelAction(
+                        issue_number=issue_number,
+                        label=blocked_label,
+                        reason=f"session blocked: {observed.blocked_reason or 'unknown'}",
+                        expected=build_expected_for_mutation(),
+                    ))
+                    plan_context.record_add(issue_number, blocked_label)
+                    logger.debug("Planner: adding blocked label for issue #%d", issue_number)
             elif observed.outcome == CompletionOutcome.NEEDS_HUMAN:
                 # Session needs human intervention - use BLOCKED_NEEDS_HUMAN
-                actions.append(AddLabelAction(
-                    issue_number=issue_number,
-                    label=labels.BLOCKED_NEEDS_HUMAN,
-                    reason="session needs human intervention",
-                    expected=build_expected_for_mutation(),
-                ))
-                logger.debug("Planner: adding blocked-needs-human label for issue #%d", issue_number)
+                if plan_context.should_add_label(issue_number, labels.BLOCKED_NEEDS_HUMAN):
+                    actions.append(AddLabelAction(
+                        issue_number=issue_number,
+                        label=labels.BLOCKED_NEEDS_HUMAN,
+                        reason="session needs human intervention",
+                        expected=build_expected_for_mutation(),
+                    ))
+                    plan_context.record_add(issue_number, labels.BLOCKED_NEEDS_HUMAN)
+                    logger.debug("Planner: adding blocked-needs-human label for issue #%d", issue_number)
             elif observed.outcome in (CompletionOutcome.REVIEW_APPROVED, CompletionOutcome.REVIEW_CHANGES_REQUESTED):
                 # Review session completed - labels handled by review workflow
                 logger.debug(
@@ -1005,13 +1056,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
-        planned_labels_by_issue: dict[int, set[str]],
+        plan_context: PlanContext,
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which reviews to launch."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
-        issue_labels_by_number = {issue.number: list(issue.labels) for issue in snapshot.issues}
-
         if not self.review_workflow or not self.review_workflow.is_configured():
             return actions, skipped
 
@@ -1046,8 +1095,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         provider=provider,
                         actions=actions,
                         skipped=skipped,
-                        issue_labels=issue_labels_by_number.get(review.issue_number, []),
-                        planned_labels=planned_labels_by_issue.setdefault(review.issue_number, set()),
+                        plan_context=plan_context,
                     )
                     continue
                 logger.info(
@@ -1068,13 +1116,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
-        planned_labels_by_issue: dict[int, set[str]],
+        plan_context: PlanContext,
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which reworks to launch."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
-        issue_labels_by_number = {issue.number: list(issue.labels) for issue in snapshot.issues}
-
         if not self.rework_workflow:
             return actions, skipped
 
@@ -1116,8 +1162,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         provider=provider,
                         actions=actions,
                         skipped=skipped,
-                        issue_labels=issue_labels_by_number.get(issue_num, []),
-                        planned_labels=planned_labels_by_issue.setdefault(issue_num, set()),
+                        plan_context=plan_context,
                     )
                     continue
                 # Check for escalation
@@ -1157,13 +1202,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
-        planned_labels_by_issue: dict[int, set[str]],
+        plan_context: PlanContext,
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which triage reviews to launch."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
-        issue_labels_by_number = {issue.number: list(issue.labels) for issue in snapshot.issues}
-
         if not self.triage_workflow or not self.triage_workflow.is_configured():
             return actions, skipped
 
@@ -1193,8 +1236,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         provider=provider,
                         actions=actions,
                         skipped=skipped,
-                        issue_labels=issue_labels_by_number.get(triage.issue_number, []),
-                        planned_labels=planned_labels_by_issue.setdefault(triage.issue_number, set()),
+                        plan_context=plan_context,
                     )
                     continue
                 actions.append(LaunchSessionAction(
