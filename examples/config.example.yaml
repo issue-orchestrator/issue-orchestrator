@@ -75,7 +75,7 @@ agents:
 
 worktrees:
   base: "../"                     # Where to create worktrees (relative to repo)
-  # default_branch: "main"         # Optional: override base branch (must exist on origin)
+  # base_branch_override: "main"         # Optional: override base branch (must exist on origin)
   setup:
     - "make install-vscode-extensions"
     # - "npm install"

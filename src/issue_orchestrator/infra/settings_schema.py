@@ -696,15 +696,15 @@ class AdvancedSettings(BaseModel):
             },
         },
     )
-    worktree_default_branch: str | None = Field(
+    worktree_base_branch_override: str | None = Field(
         None,
         title="Worktree Base Branch Override",
         description="Override the base branch for worktree creation (auto-detect if unset)",
         json_schema_extra={
             "section": "Worktrees",
             "restart_required": True,
-            "config_attr": "worktree_default_branch",
-            "yaml_path": "worktrees.default_branch",
+            "config_attr": "worktree_base_branch_override",
+            "yaml_path": "worktrees.base_branch_override",
         },
     )
     worktree_branch_on_recreate: Literal["delete", "create_new_branch"] = Field(

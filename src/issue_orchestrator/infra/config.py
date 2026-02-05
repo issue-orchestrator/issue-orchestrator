@@ -727,12 +727,12 @@ def _load_worktrees_section(
     else:
         config.worktree_base = resolve_relative_path(worktree_base_raw, repo_root)
 
-    default_branch_raw = worktrees_section.get("default_branch")
-    if default_branch_raw is None:
-        config.worktree_default_branch = None
+    base_branch_override_raw = worktrees_section.get("base_branch_override")
+    if base_branch_override_raw is None:
+        config.worktree_base_branch_override = None
     else:
-        default_branch = str(default_branch_raw).strip()
-        config.worktree_default_branch = default_branch or None
+        base_branch_override = str(base_branch_override_raw).strip()
+        config.worktree_base_branch_override = base_branch_override or None
 
     # Validate worktree_base is usable
     try:
@@ -962,7 +962,7 @@ class Config:
     repo_root: Path = field(default_factory=Path.cwd)  # Root of the git repository
     repo_root_from_yaml: bool = False  # Internal: YAML explicitly set repo_root
     worktree_base: Path = Path(".issue-orchestrator/worktrees")  # Base directory for worktrees
-    worktree_default_branch: Optional[str] = None  # Override base branch for worktree creation
+    worktree_base_branch_override: Optional[str] = None  # Override base branch for worktree creation
     worktree_branch_on_recreate: str = "delete"  # delete or create_new_branch
 
     # Config validation
@@ -1292,11 +1292,10 @@ class Config:
             },
             "worktrees": {
                 "base": str(self.worktree_base),
-                "default_branch": self.worktree_default_branch,
+                "base_branch_override": self.worktree_base_branch_override,
                 "setup": list(self.setup_worktree),
                 "reuse_push_preflight": self.reuse_push_preflight,
                 "allow_no_verify_dry_run_preflight": self.allow_no_verify_dry_run_preflight,
-                "default_branch": self.worktree_default_branch,
                 "worktree_branch_on_recreate": self.worktree_branch_on_recreate,
                 "remediation": {
                     "pr_collision": self.worktree_remediation_pr_collision,
@@ -1645,8 +1644,8 @@ class Config:
         # Only include worktree_base if it was explicitly set (not the default)
         if self.worktree_base != self.repo_root.parent:
             worktrees_dict["base"] = str(self.worktree_base)
-        if self.worktree_default_branch:
-            worktrees_dict["default_branch"] = self.worktree_default_branch
+        if self.worktree_base_branch_override:
+            worktrees_dict["base_branch_override"] = self.worktree_base_branch_override
         if self.setup_worktree:
             worktrees_dict["setup"] = list(self.setup_worktree)
         if self.worktree_branch_on_recreate != "delete":

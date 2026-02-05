@@ -63,7 +63,7 @@ class TestWorktreeContextCreate:
         config = MagicMock()
         config.repo_root = tmp_path
         config.worktree_base = None
-        config.worktree_default_branch = None
+        config.worktree_base_branch_override = None
         config.session_output_retention_runs = 5
         config.terminal_adapter = "subprocess"
         return config

@@ -112,7 +112,7 @@ worktrees:
     - "make install-vscode-extensions"
   reuse_push_preflight: true
   allow_no_verify_dry_run_preflight: true
-  default_branch: "main"
+  base_branch_override: "main"
   worktree_branch_on_recreate: "delete"
   remediation:
     pr_collision: "new_branch"
@@ -629,7 +629,7 @@ _Auto-generated from settings schema._
 | `ui.control_api_port` | integer | `19080` | 0 = disabled |
 | `ai_systems.allowed` | string | `` | Additional ai_system values allowed in config (comma-separated) |
 | `worktrees.base` | string | `../` | Directory where git worktrees are created |
-| `worktrees.default_branch` | string (optional) | `None` | Override the base branch for worktree creation (auto-detect if unset) |
+| `worktrees.base_branch_override` | string (optional) | `None` | Override the base branch for worktree creation (auto-detect if unset) |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch |
 
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->

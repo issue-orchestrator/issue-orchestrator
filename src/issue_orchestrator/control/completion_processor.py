@@ -189,9 +189,13 @@ class CompletionProcessor:
     def _base_branch(self) -> str:
         if self._config is None:
             return "main"
-        if self._config.worktree_default_branch:
-            return self._config.worktree_default_branch
-        return self.git_adapter.default_branch(self._config.repo_root)
+        resolved = resolve_base_branch(
+            self._config.repo_root,
+            config_override=self._config.worktree_base_branch_override,
+            default_branch_resolver=self.git_adapter.default_branch,
+            log=logger,
+        )
+        return resolved.branch
 
     def read_completion_record(
         self, worktree: Path, completion_path: str | None = None

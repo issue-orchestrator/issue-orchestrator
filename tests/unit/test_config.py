@@ -101,10 +101,10 @@ worktrees:
         config = Config.load(config_file)
 
         assert config.worktree_branch_on_recreate == "delete"
-        assert config.worktree_default_branch is None
+        assert config.worktree_base_branch_override is None
 
-    def test_worktree_default_branch_configured_main(self, tmp_path):
-        """Config can set worktrees.default_branch."""
+    def test_worktree_base_branch_override_configured_main(self, tmp_path):
+        """Config can set worktrees.base_branch_override."""
         prompt = tmp_path / "prompt.md"
         prompt.write_text("Prompt")
         worktree_base = tmp_path / "worktrees"
@@ -117,15 +117,15 @@ agents:
     model: sonnet
 worktrees:
   base: {worktree_base}
-  default_branch: main
+  base_branch_override: main
 """)
 
         config = Config.load(config_file)
 
-        assert config.worktree_default_branch == "main"
+        assert config.worktree_base_branch_override == "main"
 
-    def test_worktree_default_branch_default(self, tmp_path):
-        """Default worktree_default_branch should be unset."""
+    def test_worktree_base_branch_override_default(self, tmp_path):
+        """Default worktree_base_branch_override should be unset."""
         prompt = tmp_path / "prompt.md"
         prompt.write_text("Prompt")
         worktree_base = tmp_path / "worktrees"
@@ -142,7 +142,7 @@ worktrees:
 
         config = Config.load(config_file)
 
-        assert config.worktree_default_branch is None
+        assert config.worktree_base_branch_override is None
 
     def test_worktree_branch_on_recreate_configured(self, tmp_path):
         """Config can set worktree_branch_on_recreate."""
@@ -165,8 +165,8 @@ worktrees:
 
         assert config.worktree_branch_on_recreate == "create_new_branch"
 
-    def test_worktree_default_branch_configured_master(self, tmp_path):
-        """Config can set worktree_default_branch."""
+    def test_worktree_base_branch_override_configured_master(self, tmp_path):
+        """Config can set worktree_base_branch_override."""
         prompt = tmp_path / "prompt.md"
         prompt.write_text("Prompt")
         worktree_base = tmp_path / "worktrees"
@@ -179,12 +179,12 @@ agents:
     model: sonnet
 worktrees:
   base: {worktree_base}
-  default_branch: master
+  base_branch_override: master
 """)
 
         config = Config.load(config_file)
 
-        assert config.worktree_default_branch == "master"
+        assert config.worktree_base_branch_override == "master"
 
     def test_worktree_branch_on_recreate_invalid(self, tmp_path):
         """Invalid worktree_branch_on_recreate value should fail validation."""
@@ -209,8 +209,8 @@ worktrees:
         errors = config.validate()
         assert any("worktree_branch_on_recreate" in err for err in errors)
 
-    def test_worktree_default_branch_invalid(self, tmp_path):
-        """Invalid worktree_default_branch values should fail validation."""
+    def test_worktree_base_branch_override_invalid(self, tmp_path):
+        """Invalid worktree_base_branch_override values should fail validation."""
         prompt = tmp_path / "prompt.md"
         prompt.write_text("Prompt")
         worktree_base = tmp_path / "worktrees"
@@ -223,12 +223,12 @@ agents:
     model: sonnet
 worktrees:
   base: {worktree_base}
-  default_branch: origin/main
+  base_branch_override: origin/main
 """)
 
         config = Config.load(config_file)
         errors = config.validate()
-        assert any("worktrees.default_branch" in err for err in errors)
+        assert any("worktrees.base_branch_override" in err for err in errors)
 
     def test_allow_no_verify_dry_run_preflight_default(self, tmp_path):
         """Default allow_no_verify_dry_run_preflight should be True."""

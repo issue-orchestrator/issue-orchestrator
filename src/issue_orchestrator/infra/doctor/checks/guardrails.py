@@ -328,7 +328,7 @@ def check_guardrails(config: Config, runner: CommandRunner | None) -> list[Check
         repo_root,
         runner,
         worktree_base,
-        base_branch=config.worktree_default_branch,
+        base_branch=config.worktree_base_branch_override,
     )
 
 

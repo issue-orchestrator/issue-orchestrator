@@ -15,6 +15,7 @@ from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
 from ...ports.worktree_manager import WorktreeReuseOptions
+from ...infra.worktree_base import resolve_base_branch
 from ..git.git_cli import GitCLI, SubprocessCommandRunner
 
 # Marker file name for worktree identity (must match job_store.py)
@@ -148,14 +149,15 @@ def get_default_branch(repo_root: Path) -> str:
     return branch
 
 
-def _resolve_base_branch(repo_root: Path, base_branch: str | None) -> str:
+def _resolve_base_branch(repo_root: Path, base_branch_override: str | None) -> str:
     """Resolve the base branch used for worktree creation/reset."""
-    if base_branch:
-        return base_branch
-    env_branch = os.environ.get("ORCHESTRATOR_WORKTREE_BASE_BRANCH")
-    if env_branch:
-        return env_branch
-    return get_default_branch(repo_root)
+    resolved = resolve_base_branch(
+        repo_root,
+        config_override=base_branch_override,
+        default_branch_resolver=_git.default_branch,
+        log=logger,
+    )
+    return resolved.branch
 
 
 def _update_worktree_onto_main(
@@ -1196,8 +1198,7 @@ def _init_worktree_context(
     branch_name = branch_name or generate_branch_name(issue_number, issue_title)
     worktree_path = worktree_base / f"{repo_root.name}-{issue_number}"
     disable_reuse = os.environ.get("ORCHESTRATOR_DISABLE_WORKTREE_REUSE") == "1"
-    base_branch_override = os.environ.get("ORCHESTRATOR_WORKTREE_BASE_BRANCH")
-    base_branch = base_branch or base_branch_override or get_default_branch(repo_root)
+    base_branch = _resolve_base_branch(repo_root, base_branch)
 
     logger.info(
         issue_log(issue_number, "Create worktree requested: branch=%s base=%s"),

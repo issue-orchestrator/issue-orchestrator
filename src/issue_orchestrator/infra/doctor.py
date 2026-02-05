@@ -692,6 +692,6 @@ def _check_guardrails(
         repo_root,
         runner,
         worktree_base,
-        base_branch=config.worktree_default_branch,
+        base_branch=config.worktree_base_branch_override,
     )
     result.checks.extend(guardrail_checks)
