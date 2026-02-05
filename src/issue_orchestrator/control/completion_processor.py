@@ -33,8 +33,6 @@ from ..domain.models import (
     sanitize_agent_label,
 )
 from ..domain.events import EventBus, SessionEvent
-from ..events import EventContext
-from ..ports import EventSink
 from ..infra.issue_diagnostics import write_issue_diagnostic
 from ..infra.worktree_base import resolve_base_branch
 from ..ports.session_output import SessionOutput, ValidationRecord
@@ -127,8 +125,6 @@ class CompletionProcessor:
         git_adapter: GitAdapter,
         session_output: SessionOutput,
         event_bus: EventBus | None = None,
-        event_sink: EventSink | None = None,
-        event_context: EventContext | None = None,
         label_config: dict[str, str] | None = None,
         publish_gate: PublishGate | None = None,
         config: "Config | None" = None,
@@ -149,8 +145,6 @@ class CompletionProcessor:
         self.git_adapter = git_adapter
         self.session_output = session_output
         self.event_bus = event_bus
-        self._event_sink = event_sink
-        self._event_context = event_context
         self.label_config = label_config or {}
         self.publish_gate = publish_gate
         self._config = config
@@ -164,11 +158,6 @@ class CompletionProcessor:
             if config is not None
             else True
         )
-
-    def set_event_emitter(self, event_sink: EventSink, event_context: EventContext) -> None:
-        """Attach a TraceEvent emitter for review exchange and completion events."""
-        self._event_sink = event_sink
-        self._event_context = event_context
 
     def _emit(
         self,
@@ -563,6 +552,23 @@ class CompletionProcessor:
         """
         if not self._requires_publish_gate(record):
             return None
+
+        # Block if agent skipped validation - this is a policy violation
+        if record.validation_skipped:
+            logger.warning(
+                "Blocking publish for issue #%d: agent used --skip-validation",
+                issue_number,
+            )
+            return ProcessingResult(
+                success=False,
+                message="Agent skipped validation - cannot publish without passing tests",
+                errors=[
+                    "agent-done was called with --skip-validation flag",
+                    "Tests must pass before code can be pushed",
+                    "Fix the failing tests and run agent-done again without --skip-validation",
+                ],
+            )
+
         # Get session output dir for validation to write directly there
         if not session_name:
             return ProcessingResult(
@@ -1193,8 +1199,6 @@ class CompletionProcessor:
             max_no_progress=max_no_progress,
             require_validation=require_validation,
             web_port=web_port,
-            events=self._event_sink,
-            event_context=self._event_context,
         )
 
     def _create_pr_with_collision_handling(
