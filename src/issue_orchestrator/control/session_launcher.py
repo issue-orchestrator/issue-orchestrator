@@ -1055,25 +1055,12 @@ class SessionLauncher:
         if result := self._check_provider_circuit(agent_config.provider, issue_number):
             return result
 
-        # Try to find PR details
-        prs = self.repository_host.get_prs_for_issue(issue_number)
-        if not prs:
-            branch_name = f"{issue_number}-rework"
-            pr_number = issue_number
-        else:
-            pr = prs[0]
-            branch_name = pr.branch
-            pr_number = pr.number
+        pr_number, branch_name = self._resolve_rework_pr_details(issue_number)
 
         # Check for conflicts
         session_name = f"rework-{issue_number}"
-        if any(s.terminal_id == session_name for s in active_sessions):
-            log_transition("rework", issue_number, "QUEUED", "SKIP", "already in active_sessions")
-            return LaunchResult(None, False, "Already in active sessions")
-
-        if self._session_exists(session_name):
-            log_transition("rework", issue_number, "QUEUED", "SKIP", "terminal session already running")
-            return LaunchResult(None, False, "Terminal session already running", keep_queued=True)
+        if result := self._check_rework_conflicts(session_name, active_sessions, issue_number):
+            return result
 
         log_transition("rework", issue_number, "QUEUED", "LAUNCHING", f"no conflicts, cycle={rework.rework_cycle}")
         logger.info(
@@ -1577,6 +1564,27 @@ class SessionLauncher:
             ),
         ], context="provider_unavailable")
         return LaunchResult(None, False, f"Provider unavailable: {provider}")
+
+    def _check_rework_conflicts(
+        self,
+        session_name: str,
+        active_sessions: list[Session],
+        issue_number: int,
+    ) -> Optional["LaunchResult"]:
+        if any(s.terminal_id == session_name for s in active_sessions):
+            log_transition("rework", issue_number, "QUEUED", "SKIP", "already in active_sessions")
+            return LaunchResult(None, False, "Already in active sessions")
+        if self._session_exists(session_name):
+            log_transition("rework", issue_number, "QUEUED", "SKIP", "terminal session already running")
+            return LaunchResult(None, False, "Terminal session already running", keep_queued=True)
+        return None
+
+    def _resolve_rework_pr_details(self, issue_number: int) -> tuple[int, str]:
+        prs = self.repository_host.get_prs_for_issue(issue_number)
+        if not prs:
+            return issue_number, f"{issue_number}-rework"
+        pr = prs[0]
+        return pr.number, pr.branch
 
     def _trigger_issue_session_state_transitions(
         self,
