@@ -73,6 +73,15 @@ grep -r "keyword" src/
 find . -name "*.py" | head -20
 ```
 
+### 2a. Cross-Cutting Policy Heuristic (Do This Early)
+
+If you are adding or touching logic that:
+- Blocks/guards behavior (e.g., "if X, don't launch")
+- Applies labels, claims, or other workflow state
+- Must be called from multiple entrypoints (issue/review/rework/triage)
+
+Then default to **centralizing the policy** in a shared helper/module and reuse it. Do not rely on remembering to reapply the check in every call site. If you decide not to centralize, explicitly justify why.
+
 ### 3. Implement the Solution (Test-Driven Development)
 
 Choose your approach based on the task:
