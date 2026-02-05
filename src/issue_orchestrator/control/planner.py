@@ -444,6 +444,36 @@ class Planner:
             return None
         return agent_config.provider
 
+    def _provider_for_agent_label(self, agent_label: str | None) -> str | None:
+        if not agent_label:
+            return None
+        agent_config = self.config.agents.get(agent_label)
+        if not agent_config:
+            return None
+        return agent_config.provider
+
+    def _record_provider_skip(
+        self,
+        issue_number: int,
+        item_type: str,
+        item_number: int,
+        provider: str,
+        actions: list[Action],
+        skipped: list[SkippedItem],
+    ) -> None:
+        skipped.append(SkippedItem(
+            item_type=item_type,
+            number=item_number,
+            reason=f"provider unavailable: {provider}",
+        ))
+        logger.info(issue_log(issue_number, "Skipped: reason=provider_unavailable provider=%s"), provider)
+        actions.append(AddLabelAction(
+            issue_number=issue_number,
+            label=self.config.get_label_provider_unavailable(),
+            reason=f"provider unavailable: {provider}",
+            expected=build_expected_for_mutation(),
+        ))
+
     def _plan_provider_resilience_labels(self, snapshot: OrchestratorSnapshot) -> list[Action]:
         if not self.provider_resilience:
             return []
@@ -1003,6 +1033,18 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         if decision.should_launch:
             for review in decision.reviews_to_launch[:capacity]:
+                reviewer_label = self.config.get_reviewer_for_agent(review.agent_label) if review.agent_label else self.config.code_review_agent
+                provider = self._provider_for_agent_label(reviewer_label)
+                if provider and self.provider_resilience and self.provider_resilience.is_open(provider):
+                    self._record_provider_skip(
+                        issue_number=review.issue_number,
+                        item_type="review",
+                        item_number=review.pr_number,
+                        provider=provider,
+                        actions=actions,
+                        skipped=skipped,
+                    )
+                    continue
                 logger.info(
                     issue_log(review.issue_number, "Selected for session: type=review pr=#%d slots_available=%d"),
                     review.pr_number, capacity
@@ -1057,6 +1099,17 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 issue_num = rework.resolve_issue_number()
                 if issue_num is None:
                     logger.warning("Planner: skipping rework with unresolved issue number: %s", rework.issue_key)
+                    continue
+                provider = self._provider_for_agent_label(rework.agent_type)
+                if provider and self.provider_resilience and self.provider_resilience.is_open(provider):
+                    self._record_provider_skip(
+                        issue_number=issue_num,
+                        item_type="rework",
+                        item_number=issue_num,
+                        provider=provider,
+                        actions=actions,
+                        skipped=skipped,
+                    )
                     continue
                 # Check for escalation
                 escalation = self.rework_workflow.should_escalate(rework.rework_cycle)
@@ -1119,7 +1172,18 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             return actions, skipped
 
         if decision.should_launch:
+            provider = self._provider_for_agent_label(self.config.triage_review_agent)
             for triage in decision.triage_to_launch[:capacity]:
+                if provider and self.provider_resilience and self.provider_resilience.is_open(provider):
+                    self._record_provider_skip(
+                        issue_number=triage.issue_number,
+                        item_type="triage",
+                        item_number=triage.issue_number,
+                        provider=provider,
+                        actions=actions,
+                        skipped=skipped,
+                    )
+                    continue
                 actions.append(LaunchSessionAction(
                     session_type=SessionType.TRIAGE,
                     number=triage.issue_number,

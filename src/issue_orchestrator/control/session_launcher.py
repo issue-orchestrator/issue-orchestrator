@@ -517,17 +517,8 @@ class SessionLauncher:
             return result
 
         # Provider circuit breaker check
-        if self._provider_resilience and agent_config.provider:
-            if self._provider_resilience.is_open(agent_config.provider):
-                blocked_label = self.config.get_label_provider_unavailable()
-                self._apply_actions([
-                    AddLabelAction(
-                        issue_number=issue.number,
-                        label=blocked_label,
-                        reason=f"provider unavailable: {agent_config.provider}",
-                    ),
-                ], context="provider_unavailable")
-                return LaunchResult(None, False, f"Provider unavailable: {agent_config.provider}")
+        if result := self._check_provider_circuit(agent_config.provider, issue.number):
+            return result
 
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
 
@@ -803,6 +794,9 @@ class SessionLauncher:
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {agent_label}")
 
+        if result := self._check_provider_circuit(agent_config.provider, review.issue_number):
+            return result
+
         # Check for conflicts
         session_name = f"review-{review.pr_number}"
         if any(s.terminal_id == session_name for s in active_sessions):
@@ -1057,6 +1051,9 @@ class SessionLauncher:
         issue_number = rework.resolve_issue_number()
         if issue_number is None:
             return LaunchResult(None, False, f"Unresolved issue number for rework {issue_key}")
+
+        if result := self._check_provider_circuit(agent_config.provider, issue_number):
+            return result
 
         # Try to find PR details
         prs = self.repository_host.get_prs_for_issue(issue_number)
@@ -1565,6 +1562,21 @@ class SessionLauncher:
         if provider:
             cmd.extend(["--provider", provider])
         return shlex.join(cmd)
+
+    def _check_provider_circuit(self, provider: str | None, issue_number: int) -> Optional["LaunchResult"]:
+        if not provider or not self._provider_resilience:
+            return None
+        if not self._provider_resilience.is_open(provider):
+            return None
+        blocked_label = self.config.get_label_provider_unavailable()
+        self._apply_actions([
+            AddLabelAction(
+                issue_number=issue_number,
+                label=blocked_label,
+                reason=f"provider unavailable: {provider}",
+            ),
+        ], context="provider_unavailable")
+        return LaunchResult(None, False, f"Provider unavailable: {provider}")
 
     def _trigger_issue_session_state_transitions(
         self,
