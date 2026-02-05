@@ -874,7 +874,20 @@ class TestRunLoop:
         with patch.object(orchestrator, "launch_session") as mock_launch:
             mock_launch.return_value = create_session(issue1)
 
-            await run_loop_one_tick(orchestrator)
+            tick_complete = asyncio.Event()
+            original_tick = orchestrator.tick
+
+            def _tick_once():
+                result = original_tick()
+                tick_complete.set()
+                orchestrator.request_shutdown()
+                return result
+
+            with patch.object(orchestrator, "tick", side_effect=_tick_once):
+                await asyncio.gather(
+                    orchestrator.run_loop(),
+                    tick_complete.wait(),
+                )
 
             # Should launch session since we have capacity
             mock_launch.assert_called()
@@ -895,7 +908,21 @@ class TestRunLoop:
         with patch.object(orchestrator, "launch_session") as mock_launch:
             mock_launch.side_effect = Exception("Launch failed")
 
-            await run_loop_one_tick(orchestrator)
+            # Run one iteration - should not crash
+            tick_complete = asyncio.Event()
+            original_tick = orchestrator.tick
+
+            def _tick_once():
+                result = original_tick()
+                tick_complete.set()
+                orchestrator.request_shutdown()
+                return result
+
+            with patch.object(orchestrator, "tick", side_effect=_tick_once):
+                await asyncio.gather(
+                    orchestrator.run_loop(),
+                    tick_complete.wait(),
+                )
 
             # Should have attempted launch
             mock_launch.assert_called()
@@ -972,20 +999,21 @@ class TestMaxIssuesToStart:
         with patch.object(orchestrator, "launch_session") as mock_launch:
             call_count = 0
 
-            def launch_side_effect(issue):
-                nonlocal call_count
-                call_count += 1
-                if call_count >= 2:
-                    orchestrator.request_shutdown()
-                if call_count == 1:
-                    return create_session(issue1)
-                if call_count == 2:
-                    return create_session(issue2)
-                return create_session(issue3)
+            # Run one iteration
+            tick_complete = asyncio.Event()
+            original_tick = orchestrator.tick
 
-            mock_launch.side_effect = launch_side_effect
+            def _tick_once():
+                result = original_tick()
+                tick_complete.set()
+                orchestrator.request_shutdown()
+                return result
 
-            await orchestrator.run_loop()
+            with patch.object(orchestrator, "tick", side_effect=_tick_once):
+                await asyncio.gather(
+                    orchestrator.run_loop(),
+                    tick_complete.wait(),
+                )
 
             # Should only launch 2 issues (max_issues_to_start limit)
             assert mock_launch.call_count == 2
