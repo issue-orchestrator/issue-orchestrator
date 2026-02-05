@@ -164,6 +164,9 @@ endif
 
 PYRIGHT ?= .venv/bin/pyright --pythonpath .venv/bin/python
 PYTEST ?= .venv/bin/pytest
+PYTEST_DURATIONS ?= 10
+PYTEST_DURATIONS_MIN ?= 1.0
+PYTEST_TIMINGS ?= --durations=$(PYTEST_DURATIONS) --durations-min=$(PYTEST_DURATIONS_MIN)
 
 # Two-pass typecheck: strict for core (domain/ports/control), standard for rest
 # --warnings ensures 0 warnings required (exit code 1 if warnings reported)
@@ -216,40 +219,40 @@ sync-deps:
 
 test-unit: sync-deps
 ifeq ($(PARALLEL),0)
-	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short
+	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short -n $(PARALLEL)
+	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short -n $(PARALLEL) $(PYTEST_TIMINGS)
 endif
 
 test-unit-cov:
-	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=term-missing -x -q --tb=short
+	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=term-missing -x -q --tb=short $(PYTEST_TIMINGS)
 
 test-unit-cov-html:
-	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=html -x -q --tb=short
+	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=html -x -q --tb=short $(PYTEST_TIMINGS)
 	@echo "Coverage report: open htmlcov/index.html"
 
 test-integration: sync-deps
 ifeq ($(PARALLEL),0)
-	$(PYTEST) tests/integration -x -q --tb=short
+	$(PYTEST) tests/integration -x -q --tb=short $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL)
+	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL) $(PYTEST_TIMINGS)
 endif
 
 # Integration tests excluding those that require external infrastructure (GitHub token, etc.)
 # Used in pre-push validation where full infra may not be available
 test-integration-no-infra: sync-deps
 ifeq ($(PARALLEL),0)
-	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra"
+	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" -n $(PARALLEL)
+	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" -n $(PARALLEL) $(PYTEST_TIMINGS)
 endif
 
 # Full integration tests including infrastructure-dependent ones (run in CI)
 test-integration-full: sync-deps
 ifeq ($(PARALLEL),0)
-	$(PYTEST) tests/integration -x -q --tb=short
+	$(PYTEST) tests/integration -x -q --tb=short $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL)
+	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL) $(PYTEST_TIMINGS)
 endif
 
 # E2E tests stop on first failure by default. Use NOFAST=1 to run all tests.
@@ -257,9 +260,9 @@ endif
 #        make test-e2e NOFAST=1  (runs all tests even if some fail)
 test-e2e:
 ifdef NOFAST
-	$(PYTEST) tests/e2e -v -s --tb=short
+	$(PYTEST) tests/e2e -v -s --tb=short $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/e2e -v -s --tb=short -x
+	$(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 endif
 
 # Real Claude tests - layered for incremental debugging
@@ -268,20 +271,20 @@ endif
 
 test-real-claude-dev:
 	@echo "Testing agent-done invocation from Claude..."
-	$(PYTEST) tests/integration/test_claude_execution.py::TestAgentDoneInvocation -v -s --tb=short -x
+	$(PYTEST) tests/integration/test_claude_execution.py::TestAgentDoneInvocation -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "Testing real Claude execution in subprocess mode..."
-	E2E_TERMINAL_ADAPTER=subprocess E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_terminal_adapter_subprocess.py::TestTerminalAdapterSubprocess -v -s --tb=short -x
+	E2E_TERMINAL_ADAPTER=subprocess E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_terminal_adapter_subprocess.py::TestTerminalAdapterSubprocess -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "✓ Dev agent tests passed!"
 
 test-real-claude-review:
 	@echo "Testing full pipeline: dev agent -> review agent..."
 	@echo "Note: This test creates REAL PRs (not dry-run)"
-	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_review_agent.py::TestReviewAgentExecution -v -s --tb=short -x
+	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_review_agent.py::TestReviewAgentExecution -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "✓ Review agent tests passed!"
 
 test-real-gh-labels:
 	@echo "Testing label write verification against real GitHub..."
-	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_label_write_verification.py::TestLabelWriteVerification -v -s --tb=short -x
+	E2E_DRY_RUN_PUSH=false $(PYTEST) tests/e2e/test_label_write_verification.py::TestLabelWriteVerification -v -s --tb=short -x $(PYTEST_TIMINGS)
 	@echo "✓ Label write verification passed!"
 
 test-real-gh: test-real-claude-dev test-real-claude-review test-real-gh-labels
@@ -300,9 +303,9 @@ test-real-gh-plus-e2e-subprocess:
 # E2E tests stop on first failure by default
 test-e2e-one:
 ifdef NOFAST
-	$(PYTEST) tests/e2e -v -s --tb=short -k "$(TEST)"
+	$(PYTEST) tests/e2e -v -s --tb=short -k "$(TEST)" $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)"
+	$(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)" $(PYTEST_TIMINGS)
 endif
 
 # Run e2e tests with REAL PR creation on GitHub (no dry run)
@@ -313,20 +316,20 @@ test-e2e-live:
 	@echo "   This will create actual PRs and branches on GitHub."
 	@echo ""
 ifdef TEST
-	E2E_DRY_RUN_PUSH= $(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)"
+	E2E_DRY_RUN_PUSH= $(PYTEST) tests/e2e -v -s --tb=short -x -k "$(TEST)" $(PYTEST_TIMINGS)
 else
-	E2E_DRY_RUN_PUSH= $(PYTEST) tests/e2e -v -s --tb=short -x
+	E2E_DRY_RUN_PUSH= $(PYTEST) tests/e2e -v -s --tb=short -x $(PYTEST_TIMINGS)
 endif
 
 test:
-	$(PYTEST) tests/ -x -q --tb=short
+	$(PYTEST) tests/ -x -q --tb=short $(PYTEST_TIMINGS)
 
 # Playwright browser tests for web UI
 test-web:
-	$(PYTEST) tests/e2e_web -v --tb=short
+	$(PYTEST) tests/e2e_web -v --tb=short $(PYTEST_TIMINGS)
 
 test-web-headed:
-	$(PYTEST) tests/e2e_web -v --tb=short --headed
+	$(PYTEST) tests/e2e_web -v --tb=short --headed $(PYTEST_TIMINGS)
 
 # VS Code extension tests (local only). Skipped in GitHub Actions.
 test-vscode:
