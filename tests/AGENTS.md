@@ -1,5 +1,17 @@
 # Testing Principles
 
+## Determinism Required
+
+**Deterministic tests only.** Any timing-based coordination is forbidden.
+
+- Do **not** use `sleep` (including `asyncio.sleep`) to “wait for” work.
+- Do **not** rely on “eventually” semantics, background timing, or real clocks.
+- Do use deterministic control points: explicit callbacks, single-tick helpers, mocked time, or injected schedulers.
+- If a test can flake under load or on CI, it’s wrong—fix the test, not the timeout.
+- Exception: tests that must wait on **real external systems** may use bounded waits, but should still prefer explicit readiness/ack signals over sleeps.
+
+---
+
 ## Test Behavior, Not Implementation
 
 **The cardinal rule**: Tests should verify WHAT the code does, not HOW it does it.

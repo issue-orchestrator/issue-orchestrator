@@ -29,6 +29,7 @@ import asyncio
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
+from tests.unit.threading_helpers import wait_for_async_event
 from issue_orchestrator.entrypoints.dashboard import (
     StatusBar,
     SessionsTable,
@@ -745,22 +746,20 @@ class TestRunWithDashboard:
     async def test_run_with_dashboard_starts_orchestrator(self):
         """Test that run_with_dashboard starts the orchestrator."""
         orchestrator = create_orchestrator()
-        run_loop_called = False
+        run_loop_started = asyncio.Event()
 
         async def mock_run_loop():
-            nonlocal run_loop_called
-            run_loop_called = True
+            run_loop_started.set()
 
         orchestrator.run_loop = mock_run_loop
 
         async def mock_dashboard_run():
-            # Give the orchestrator task a chance to start
-            await asyncio.sleep(0.01)
+            await wait_for_async_event(run_loop_started, timeout=1.0, label="run_loop_started")
 
         with patch('issue_orchestrator.entrypoints.dashboard.Dashboard.run', new_callable=AsyncMock, side_effect=mock_dashboard_run):
             await run_with_dashboard(orchestrator, ui_mode="tmux")
 
-            assert run_loop_called is True
+            assert run_loop_started.is_set() is True
 
     @pytest.mark.asyncio
     async def test_run_with_dashboard_sets_shutdown_on_exit(self):
@@ -795,11 +794,13 @@ class TestRunWithDashboard:
         """Test that orchestrator task is cancelled when dashboard exits."""
         orchestrator = create_orchestrator()
         orchestrator.run_loop = AsyncMock()
+        run_loop_started = asyncio.Event()
 
         # Mock run_loop to run indefinitely
         async def mock_run_loop():
             try:
-                await asyncio.sleep(100)
+                run_loop_started.set()
+                await asyncio.Event().wait()
             except asyncio.CancelledError:
                 raise
 

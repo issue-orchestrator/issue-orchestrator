@@ -2193,11 +2193,18 @@ class TestRunWebDashboard:
         from issue_orchestrator.entrypoints import web
         import uvicorn
         import asyncio
+        from tests.unit.threading_helpers import wait_for_async_event
 
         mock_orch = create_mock_orchestrator()
 
         mock_server = MagicMock()
-        mock_server.serve = AsyncMock()
+        serve_started = asyncio.Event()
+
+        async def serve():
+            serve_started.set()
+            await asyncio.Event().wait()
+
+        mock_server.serve = AsyncMock(side_effect=serve)
 
         with patch("issue_orchestrator.entrypoints.web.ensure_port_available"):
             with patch("uvicorn.Server", return_value=mock_server):
@@ -2205,8 +2212,7 @@ class TestRunWebDashboard:
                     # Start the task
                     task = asyncio.create_task(run_web_dashboard(mock_orch, port=8080))
 
-                    # Give it a moment to set up
-                    await asyncio.sleep(0.1)
+                    await wait_for_async_event(serve_started, timeout=1.0, label="serve_started")
 
                     # Check orchestrator was set
                     assert get_orchestrator() is mock_orch
@@ -2229,31 +2235,41 @@ class TestRunWebDashboard:
         from issue_orchestrator.entrypoints import web
         import uvicorn
         import asyncio
+        from tests.unit.threading_helpers import wait_for_async_event
 
         mock_orch = create_mock_orchestrator()
 
         mock_server = MagicMock()
-        mock_server.serve = AsyncMock()
+        serve_started = asyncio.Event()
+        browser_opened = asyncio.Event()
+
+        async def serve():
+            serve_started.set()
+            await asyncio.Event().wait()
+
+        mock_server.serve = AsyncMock(side_effect=serve)
 
         with patch("issue_orchestrator.entrypoints.web.ensure_port_available"):
             with patch("uvicorn.Server", return_value=mock_server):
-                with patch("issue_orchestrator.entrypoints.web.webbrowser.open") as mock_open:
-                    task = asyncio.create_task(run_web_dashboard(mock_orch, port=8080))
+                with patch("issue_orchestrator.entrypoints.web.asyncio.sleep", new=AsyncMock()):
+                    with patch("issue_orchestrator.entrypoints.web.webbrowser.open") as mock_open:
+                        mock_open.side_effect = lambda url: browser_opened.set()
+                        task = asyncio.create_task(run_web_dashboard(mock_orch, port=8080))
 
-                    # Wait for browser open
-                    await asyncio.sleep(0.5)
+                        await wait_for_async_event(serve_started, timeout=1.0, label="serve_started")
+                        await wait_for_async_event(browser_opened, timeout=1.0, label="browser_opened")
 
-                    # Should have opened browser
-                    mock_open.assert_called_once_with("http://127.0.0.1:8080")
+                        # Should have opened browser
+                        mock_open.assert_called_once_with("http://127.0.0.1:8080")
 
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
 
-                    set_orchestrator(None)
-                    set_server(None)
+                        set_orchestrator(None)
+                        set_server(None)
 
 
 class TestRunWithWebDashboard:
@@ -2266,33 +2282,51 @@ class TestRunWithWebDashboard:
         from issue_orchestrator.entrypoints import web
         import uvicorn
         import asyncio
+        from tests.unit.threading_helpers import wait_for_async_event
 
         mock_orch = create_mock_orchestrator()
-        mock_orch.startup = AsyncMock()
-        mock_orch.run_loop = AsyncMock()
+        startup_called = asyncio.Event()
+        run_loop_called = asyncio.Event()
+
+        async def startup():
+            startup_called.set()
+
+        async def run_loop():
+            run_loop_called.set()
+            await asyncio.Event().wait()
+
+        mock_orch.startup = AsyncMock(side_effect=startup)
+        mock_orch.run_loop = AsyncMock(side_effect=run_loop)
 
         mock_server = MagicMock()
-        mock_server.serve = AsyncMock()
+        serve_started = asyncio.Event()
+
+        async def serve():
+            serve_started.set()
+            await asyncio.Event().wait()
+
+        mock_server.serve = AsyncMock(side_effect=serve)
 
         with patch("issue_orchestrator.entrypoints.web.ensure_port_available"):
             with patch("uvicorn.Server", return_value=mock_server):
                 with patch("issue_orchestrator.entrypoints.web.webbrowser.open"):
-                    task = asyncio.create_task(run_with_web_dashboard(mock_orch, port=8080))
+                    with patch("issue_orchestrator.entrypoints.web.asyncio.sleep", new=AsyncMock()):
+                        task = asyncio.create_task(run_with_web_dashboard(mock_orch, port=8080))
 
-                    # Give it time to start
-                    await asyncio.sleep(0.7)
+                        await wait_for_async_event(serve_started, timeout=1.0, label="serve_started")
+                        await wait_for_async_event(startup_called, timeout=1.0, label="startup_called")
 
-                    # Startup should have been called
-                    assert mock_orch.startup.called or True  # May be in thread
+                        # Startup should have been called
+                        assert mock_orch.startup.called or True  # May be in thread
 
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
 
-                    set_orchestrator(None)
-                    set_server(None)
+                        set_orchestrator(None)
+                        set_server(None)
 
 
 class TestStripAnsiCodes:
