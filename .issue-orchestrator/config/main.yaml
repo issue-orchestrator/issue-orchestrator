@@ -39,6 +39,14 @@ agents:
     permission_mode: bypassPermissions
     command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
     initial_prompt: "Triage review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report completion."
+  agent:goal-pilot:
+    prompt: .prompts/goal-pilot.md
+    provider: codex
+    model: gpt-5-codex
+    ai_system: codex
+    provider_args:
+      approval_mode: full-auto
+      sandbox: workspace-write
 
 execution:
   concurrency:
@@ -62,6 +70,10 @@ filtering:
 
 triage:
   inherit_labels: ["io-e2e-test-data", "test-data"]
+
+goal_pilot:
+  enabled: true
+  agent: agent:goal-pilot
 
 e2e:
   enabled: true
