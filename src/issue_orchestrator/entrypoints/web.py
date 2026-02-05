@@ -749,6 +749,8 @@ async def refresh(request: Request) -> JSONResponse:
 @app.post("/api/kill/{issue_number}")
 async def kill_session(issue_number: int) -> JSONResponse:
     """Force kill a specific session."""
+    from ..infra import labels
+
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -773,6 +775,15 @@ async def kill_session(issue_number: int) -> JSONResponse:
         s for s in _orchestrator.state.active_sessions
         if s.issue.number != issue_number
     ]
+
+    # Apply blocked:user-force-killed label to prevent re-queueing
+    try:
+        _orchestrator.deps.repository_host.add_label(
+            issue_number,
+            labels.BLOCKED_USER_FORCE_KILLED
+        )
+    except Exception as e:
+        logger.warning("Failed to apply blocked:user-force-killed label: %s", e)
 
     return JSONResponse({
         "status": "killed",
