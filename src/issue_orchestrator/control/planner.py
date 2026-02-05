@@ -474,28 +474,58 @@ class Planner:
             expected=build_expected_for_mutation(),
         ))
 
+    def _provider_sources_for_snapshot(self, snapshot: OrchestratorSnapshot) -> dict[int, set[str]]:
+        providers_by_issue: dict[int, set[str]] = {}
+
+        for issue in snapshot.issues:
+            provider = self._provider_for_issue(issue)
+            if provider:
+                providers_by_issue.setdefault(issue.number, set()).add(provider)
+
+        for review in snapshot.pending_reviews:
+            reviewer_label = self.config.get_reviewer_for_agent(review.agent_label) if review.agent_label else self.config.code_review_agent
+            provider = self._provider_for_agent_label(reviewer_label)
+            if provider:
+                providers_by_issue.setdefault(review.issue_number, set()).add(provider)
+
+        for rework in snapshot.pending_reworks:
+            issue_num = rework.resolve_issue_number()
+            if issue_num is None:
+                continue
+            provider = self._provider_for_agent_label(rework.agent_type)
+            if provider:
+                providers_by_issue.setdefault(issue_num, set()).add(provider)
+
+        triage_provider = self._provider_for_agent_label(self.config.triage_review_agent)
+        if triage_provider:
+            for triage in snapshot.pending_triage:
+                providers_by_issue.setdefault(triage.issue_number, set()).add(triage_provider)
+
+        return providers_by_issue
+
     def _plan_provider_resilience_labels(self, snapshot: OrchestratorSnapshot) -> list[Action]:
         if not self.provider_resilience:
             return []
         actions: list[Action] = []
         label = self.config.get_label_provider_unavailable()
+        providers_by_issue = self._provider_sources_for_snapshot(snapshot)
         for issue in snapshot.issues:
-            provider = self._provider_for_issue(issue)
-            if not provider:
+            providers = providers_by_issue.get(issue.number, set())
+            if not providers:
                 continue
-            is_open = self.provider_resilience.is_open(provider)
-            if is_open and label not in issue.labels:
+            any_open = any(self.provider_resilience.is_open(provider) for provider in providers)
+            if any_open and label not in issue.labels:
                 actions.append(AddLabelAction(
                     issue_number=issue.number,
                     label=label,
-                    reason=f"provider unavailable: {provider}",
+                    reason=f"provider unavailable: {', '.join(sorted(providers))}",
                     expected=build_expected_for_mutation(),
                 ))
-            if not is_open and label in issue.labels:
+            if not any_open and label in issue.labels:
                 actions.append(RemoveLabelAction(
                     issue_number=issue.number,
                     label=label,
-                    reason=f"provider available: {provider}",
+                    reason=f"provider available: {', '.join(sorted(providers))}",
                     expected=build_expected_for_mutation(),
                 ))
         return actions
