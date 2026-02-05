@@ -1,7 +1,8 @@
 #!/bin/bash
 # export_source.sh - Create a clean zip of the project for external review
 #
-# Excludes: caches, virtualenvs, secrets, git history, build artifacts, IDE files
+# Excludes: caches, virtualenvs, secrets, git history, build artifacts, IDE files,
+#           node_modules (recursive), .vscode-test, macOS .app bundles
 # Output: Creates zip as sibling of project directory (../issue-orchestrator-source-*.zip)
 
 set -e
@@ -53,6 +54,10 @@ zip -r "${OUTPUT_PATH}" . \
     -x ".DS_Store" \
     -x "Thumbs.db" \
     -x "node_modules/*" \
+    -x "*/node_modules/*" \
+    -x ".vscode-test/*" \
+    -x "*/.vscode-test/*" \
+    -x "*.app/*" \
     -x "*.log" \
     -x "*.zip" \
     -x ".issue-orchestrator/*" \
