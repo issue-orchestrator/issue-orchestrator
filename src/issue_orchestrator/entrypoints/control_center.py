@@ -117,6 +117,12 @@ def main() -> int:
     # Suppress httpx INFO logging (polls orchestrator status every 3s)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
+    # Clean up stale repos from registry (e.g., deleted directories, old test paths)
+    from ..infra.repo_registry import cleanup_stale_repos
+    stale_count = cleanup_stale_repos()
+    if stale_count > 0:
+        logger.info("Cleaned up %d stale repo(s) from registry", stale_count)
+
     url = f"http://{args.host}:{args.port}/"
     print(f"Starting Issue Orchestrator Dashboard on {url}")
     print("Press Ctrl+C to stop")

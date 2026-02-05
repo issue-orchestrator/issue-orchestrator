@@ -12,6 +12,7 @@ from issue_orchestrator.infra.repo_registry import (
     RegisteredRepo,
     RepoRegistry,
     add_repo,
+    cleanup_stale_repos,
     list_repos,
     load_registry,
     remove_repo,
@@ -332,3 +333,96 @@ class TestConvenienceFunctions:
             result = list_repos()
 
         assert len(result) == 2
+
+
+class TestCleanupStaleRepos:
+    """Tests for cleanup_stale_repos function."""
+
+    def test_removes_nonexistent_paths(self, tmp_path: Path) -> None:
+        """Removes repos whose paths no longer exist."""
+        repos_file = tmp_path / "repos.json"
+        existing_repo = tmp_path / "exists"
+        existing_repo.mkdir()
+
+        with patch(
+            "issue_orchestrator.infra.repo_registry._repos_file",
+            return_value=repos_file,
+        ):
+            # Add both existing and non-existing repos
+            add_repo(existing_repo)
+
+            # Manually add a repo with a path that doesn't exist
+            registry = load_registry()
+            registry.repos.append(RegisteredRepo(
+                path="/nonexistent/path/to/repo",
+                name="gone-repo",
+            ))
+            save_registry(registry)
+
+            # Verify we have 2 repos before cleanup
+            assert len(list_repos()) == 2
+
+            # Cleanup
+            removed = cleanup_stale_repos()
+
+            # Should have removed 1 stale repo
+            assert removed == 1
+
+            # Only existing repo should remain
+            repos = list_repos()
+            assert len(repos) == 1
+            assert repos[0].path == str(existing_repo.resolve())
+
+    def test_no_change_when_all_exist(self, tmp_path: Path) -> None:
+        """Does nothing when all repos exist."""
+        repos_file = tmp_path / "repos.json"
+        repo1 = tmp_path / "repo1"
+        repo2 = tmp_path / "repo2"
+        repo1.mkdir()
+        repo2.mkdir()
+
+        with patch(
+            "issue_orchestrator.infra.repo_registry._repos_file",
+            return_value=repos_file,
+        ):
+            add_repo(repo1)
+            add_repo(repo2)
+
+            removed = cleanup_stale_repos()
+
+            assert removed == 0
+            assert len(list_repos()) == 2
+
+    def test_removes_multiple_stale_repos(self, tmp_path: Path) -> None:
+        """Can remove multiple stale repos at once."""
+        repos_file = tmp_path / "repos.json"
+
+        with patch(
+            "issue_orchestrator.infra.repo_registry._repos_file",
+            return_value=repos_file,
+        ):
+            # Add repos with non-existing paths directly
+            registry = RepoRegistry()
+            registry.repos.append(RegisteredRepo(path="/fake/path1", name="repo1"))
+            registry.repos.append(RegisteredRepo(path="/fake/path2", name="repo2"))
+            registry.repos.append(RegisteredRepo(path="/fake/path3", name="repo3"))
+            save_registry(registry)
+
+            assert len(list_repos()) == 3
+
+            removed = cleanup_stale_repos()
+
+            assert removed == 3
+            assert len(list_repos()) == 0
+
+    def test_empty_registry(self, tmp_path: Path) -> None:
+        """Does nothing on empty registry."""
+        repos_file = tmp_path / "repos.json"
+
+        with patch(
+            "issue_orchestrator.infra.repo_registry._repos_file",
+            return_value=repos_file,
+        ):
+            removed = cleanup_stale_repos()
+
+            assert removed == 0

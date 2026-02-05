@@ -18,10 +18,8 @@ Note: These tests require a valid GitHub token because the orchestrator
 subprocess needs to create a GitHubAdapter during startup.
 """
 
-import json
 import logging
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -79,32 +77,7 @@ def require_github_token():
 # --- Fixtures ---
 
 
-@pytest.fixture(autouse=True)
-def isolated_registry(tmp_path: Path) -> Generator[Path, None, None]:
-    """Isolate tests from production registry.
-
-    Sets ISSUE_ORCHESTRATOR_CONFIG_DIR to a temp directory so tests
-    don't pollute the user's real registry at ~/.config/issue-orchestrator/.
-    Also skips doctor checks since test repos have no hooks installed.
-    The env var is necessary here because the control center runs as a
-    subprocess — monkeypatch cannot reach across process boundaries.
-    """
-    config_dir = tmp_path / "test-config"
-    config_dir.mkdir()
-    old_config = os.environ.get("ISSUE_ORCHESTRATOR_CONFIG_DIR")
-    old_skip = os.environ.get("ISSUE_ORCHESTRATOR_SKIP_DOCTOR")
-    os.environ["ISSUE_ORCHESTRATOR_CONFIG_DIR"] = str(config_dir)
-    os.environ["ISSUE_ORCHESTRATOR_SKIP_DOCTOR"] = "1"
-    yield config_dir
-    # Restore original values
-    if old_config is None:
-        os.environ.pop("ISSUE_ORCHESTRATOR_CONFIG_DIR", None)
-    else:
-        os.environ["ISSUE_ORCHESTRATOR_CONFIG_DIR"] = old_config
-    if old_skip is None:
-        os.environ.pop("ISSUE_ORCHESTRATOR_SKIP_DOCTOR", None)
-    else:
-        os.environ["ISSUE_ORCHESTRATOR_SKIP_DOCTOR"] = old_skip
+# NOTE: isolated_registry fixture is now in conftest.py and applies to all integration tests
 
 
 @pytest.fixture
@@ -307,17 +280,6 @@ def _wait_for_status(
             pass
         time.sleep(0.2)
     return None
-
-
-def _kill_process_tree(pid: int) -> None:
-    """Kill a process and all its children."""
-    try:
-        os.killpg(pid, signal.SIGKILL)
-    except (OSError, ProcessLookupError):
-        try:
-            os.kill(pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            pass
 
 
 # --- Tests ---
