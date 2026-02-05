@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -37,5 +38,13 @@ def open_sqlite(
 def _apply_pragmas(conn: sqlite3.Connection) -> None:
     """Apply durability pragmas."""
     conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA busy_timeout = 5000")
+    for attempt in range(5):
+        try:
+            conn.execute("PRAGMA journal_mode = WAL")
+            break
+        except sqlite3.OperationalError as exc:
+            if "locked" not in str(exc).lower() or attempt == 4:
+                raise
+            time.sleep(0.1 * (2 ** attempt))
     conn.execute("PRAGMA synchronous = FULL")

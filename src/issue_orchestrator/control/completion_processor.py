@@ -34,6 +34,7 @@ from ..domain.models import (
 )
 from ..domain.events import EventBus, SessionEvent
 from ..infra.issue_diagnostics import write_issue_diagnostic
+from ..infra.worktree_base import resolve_base_branch
 from ..ports.session_output import SessionOutput, ValidationRecord
 from .validation import PublishGate, ValidationRecordStore
 
