@@ -13,6 +13,7 @@ import logging
 import re
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING, Any, Optional, Callable
 
 if TYPE_CHECKING:
@@ -437,6 +438,7 @@ class CompletionHandler:
             pr_url=pr_url,
             status_reason=status_reason,
             worktree_path=session.worktree_path,
+            completed_at=datetime.now(),
         )
 
     def _emit_trace_events(

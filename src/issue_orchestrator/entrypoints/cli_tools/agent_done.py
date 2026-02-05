@@ -820,6 +820,10 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     if validation_result and validation_result.record_path:
         record.validation_record_path = validation_result.record_path
 
+    # Track if validation was explicitly skipped (for orchestrator to flag)
+    if args.skip_validation and status in statuses_requiring_validation:
+        record.validation_skipped = True
+
     # Run preflight push check for statuses that will push
     # This catches issues like branch divergence while the agent can still fix them
     statuses_that_push = {AgentStatus.COMPLETED, AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}

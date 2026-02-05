@@ -694,6 +694,11 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
             # Get worktree path from entry if available
             worktree_path = str(entry.worktree_path) if entry.worktree_path else ""
 
+            # Format completed_at timestamp for display
+            completed_at_str = ""
+            if getattr(entry, 'completed_at', None):
+                completed_at_str = entry.completed_at.strftime("%H:%M:%S")
+
             item = {
                 "issue_number": entry.issue_number,
                 "title": entry.title,
@@ -703,6 +708,7 @@ async def dashboard(  # noqa: C901, PLR0912 - dashboard renders multiple data se
                 "detail_label": status_labels.get(entry.status, entry.status),
                 "detail_reason": status_reason,
                 "time": f"{entry.runtime_minutes} min",
+                "completed_at": completed_at_str,  # Timestamp for sequence visibility
                 "action": "open",
                 "action_icon": "↗",
                 "action_hint": action_hint,

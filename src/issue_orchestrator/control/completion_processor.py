@@ -553,6 +553,22 @@ class CompletionProcessor:
         if not self._requires_publish_gate(record):
             return None
 
+        # Block if agent skipped validation - this is a policy violation
+        if record.validation_skipped:
+            logger.warning(
+                "Blocking publish for issue #%d: agent used --skip-validation",
+                issue_number,
+            )
+            return ProcessingResult(
+                success=False,
+                message="Agent skipped validation - cannot publish without passing tests",
+                errors=[
+                    "agent-done was called with --skip-validation flag",
+                    "Tests must pass before code can be pushed",
+                    "Fix the failing tests and run agent-done again without --skip-validation",
+                ],
+            )
+
         # Get session output dir for validation to write directly there
         if not session_name:
             return ProcessingResult(

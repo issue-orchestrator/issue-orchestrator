@@ -1886,7 +1886,9 @@ function getEntryPreview(entry) {
         return `Tool: ${entry.name}`;
     }
     if (entry.message) {
-        return entry.message.substring(0, 150);
+        // Handle message being either a string or an object
+        const msg = typeof entry.message === 'string' ? entry.message : JSON.stringify(entry.message);
+        return msg.substring(0, 150);
     }
     return JSON.stringify(entry).substring(0, 100);
 }
