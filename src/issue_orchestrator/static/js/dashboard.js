@@ -1886,7 +1886,11 @@ function getEntryPreview(entry) {
         return `Tool: ${entry.name}`;
     }
     if (entry.message) {
-        return entry.message.substring(0, 150);
+        if (typeof entry.message === 'string') {
+            return entry.message.substring(0, 150);
+        }
+        // Handle non-string message (e.g., object, array)
+        return JSON.stringify(entry.message).substring(0, 150);
     }
     return JSON.stringify(entry).substring(0, 100);
 }

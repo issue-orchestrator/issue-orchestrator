@@ -60,6 +60,8 @@ Thumbs.db
 .issue-orchestrator/sessions/
 .issue-orchestrator/diagnostics/
 .issue-orchestrator/safety-state.json
+.issue-orchestrator/session-latest.json
+.issue-orchestrator/worktree-id
 .agent-done-marker
 
 # Keep .issue-orchestrator/config/ tracked - it's project configuration
