@@ -45,6 +45,7 @@ from ..domain.models import (
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
+    from .provider_resilience import ProviderResilienceManager
 from .scheduler import Scheduler
 from .dependency_evaluator import DependencyEvaluator
 from .workflows import (
@@ -246,6 +247,7 @@ class Planner:
         review_workflow: Optional[ReviewWorkflow] = None,
         rework_workflow: Optional[ReworkWorkflow] = None,
         triage_workflow: Optional[TriageWorkflow] = None,
+        provider_resilience: Optional["ProviderResilienceManager"] = None,
     ):
         """Initialize planner with its dependencies.
 
@@ -263,6 +265,7 @@ class Planner:
         self.review_workflow = review_workflow
         self.rework_workflow = rework_workflow
         self.triage_workflow = triage_workflow
+        self.provider_resilience = provider_resilience
 
     def plan(self, snapshot: OrchestratorSnapshot) -> Plan:
         """Create a plan for the current state.
@@ -293,6 +296,10 @@ class Planner:
         # 1a-2. Clean up stale claims (io:claimed but claim expired)
         stale_claim_actions = self._plan_stale_claim_cleanup(snapshot)
         actions.extend(stale_claim_actions)
+
+        # 1a-2b. Apply provider resilience labels (provider unavailable/available)
+        provider_label_actions = self._plan_provider_resilience_labels(snapshot)
+        actions.extend(provider_label_actions)
 
         # 1a-3. Immediate label projection for observed completions (async processing)
         # This runs BEFORE discovered_reviews so labels are applied immediately
@@ -423,6 +430,46 @@ class Planner:
 
         return actions
 
+    def _blocked_label_for_record(self, observed: ObservedCompletion) -> str:
+        if observed.blocked_reason == "provider_unavailable":
+            return self.config.get_label_provider_unavailable()
+        return labels.BLOCKED
+
+    def _provider_for_issue(self, issue: Issue) -> str | None:
+        agent_type = issue.agent_type
+        if not agent_type:
+            return None
+        agent_config = self.config.agents.get(agent_type)
+        if not agent_config:
+            return None
+        return agent_config.provider
+
+    def _plan_provider_resilience_labels(self, snapshot: OrchestratorSnapshot) -> list[Action]:
+        if not self.provider_resilience:
+            return []
+        actions: list[Action] = []
+        label = self.config.get_label_provider_unavailable()
+        for issue in snapshot.issues:
+            provider = self._provider_for_issue(issue)
+            if not provider:
+                continue
+            is_open = self.provider_resilience.is_open(provider)
+            if is_open and label not in issue.labels:
+                actions.append(AddLabelAction(
+                    issue_number=issue.number,
+                    label=label,
+                    reason=f"provider unavailable: {provider}",
+                    expected=build_expected_for_mutation(),
+                ))
+            if not is_open and label in issue.labels:
+                actions.append(RemoveLabelAction(
+                    issue_number=issue.number,
+                    label=label,
+                    reason=f"provider available: {provider}",
+                    expected=build_expected_for_mutation(),
+                ))
+        return actions
+
     def _plan_observed_completion_labels(self, snapshot: OrchestratorSnapshot) -> list[Action]:
         """Plan immediate label updates for observed completions.
 
@@ -472,9 +519,10 @@ class Planner:
                     )
             elif observed.outcome == CompletionOutcome.BLOCKED:
                 # Session blocked - add blocked label
+                blocked_label = self._blocked_label_for_record(observed)
                 actions.append(AddLabelAction(
                     issue_number=issue_number,
-                    label=labels.BLOCKED,
+                    label=blocked_label,
                     reason=f"session blocked: {observed.blocked_reason or 'unknown'}",
                     expected=build_expected_for_mutation(),
                 ))
@@ -856,6 +904,22 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     reason=f"dependency violates milestone scope: {reason}",
                     expected=build_expected_for_mutation(),
                 ))
+
+        # Filter out providers with open circuit
+        if self.provider_resilience:
+            filtered: list[Issue] = []
+            for issue in available:
+                provider = self._provider_for_issue(issue)
+                if provider and self.provider_resilience.is_open(provider):
+                    skipped.append(SkippedItem(
+                        item_type="issue",
+                        number=issue.number,
+                        reason=f"provider unavailable: {provider}",
+                    ))
+                    logger.info(issue_log(issue.number, "Skipped: reason=provider_unavailable provider=%s"), provider)
+                    continue
+                filtered.append(issue)
+            available = filtered
 
         # Filter out issues already being worked on, just completed, or failed this cycle
         issues_with_pending_reviews = {r.issue_number for r in snapshot.discovered_reviews}

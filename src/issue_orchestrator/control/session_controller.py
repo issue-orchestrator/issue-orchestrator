@@ -27,9 +27,12 @@ if TYPE_CHECKING:
     from ..ports.command_runner import CommandRunner
     from ..ports.working_copy import WorkingCopy
     from ..domain.models import CompletionRecord
+    from .provider_resilience import ProviderResilienceManager
 
 from ..events import EventName
 from ..domain.models import SessionStatus
+from ..agent_runner.ports import ProviderErrorType
+from ..infra.provider_resilience import ProviderStatus, read_provider_status
 from ..infra.logging_config import issue_log
 from ..infra.validation_state import (
     DEFAULT_RETRY_TEMPLATE,
@@ -71,6 +74,9 @@ class SessionDecision:
     validation_error: Optional[str] = None
     validation_error_file: Optional[Path] = None
 
+    # Optional blocked label override (e.g., provider unavailable)
+    blocked_label: Optional[str] = None
+
 
 class SessionController:
     """Controller that decides session outcomes.
@@ -95,6 +101,8 @@ class SessionController:
         validation_cmd: Optional[str] = None,
         validation_timeout_seconds: int = 300,
         max_validation_retries: int = 0,
+        provider_resilience: Optional["ProviderResilienceManager"] = None,
+        provider_blocked_label: Optional[str] = None,
     ):
         """Initialize the controller.
 
@@ -116,6 +124,8 @@ class SessionController:
         self._max_validation_retries = max_validation_retries
         self._validation_cmd = validation_cmd
         self._validation_timeout = validation_timeout_seconds
+        self._provider_resilience = provider_resilience
+        self._provider_blocked_label = provider_blocked_label
 
     def decide_outcome(
         self,
@@ -139,6 +149,10 @@ class SessionController:
         if observation.observation == SessionObservation.RUNNING:
             logger.debug(issue_log(issue_number, "Session still running: session=%s"), session_name)
             return SessionDecision(status=SessionStatus.RUNNING, reason="Session still running")
+
+        provider_status = self._read_provider_status(worktree_path, session_name)
+        if provider_status and provider_status.succeeded and self._provider_resilience:
+            self._provider_resilience.record_success(provider_status.provider)
 
         # Log and look up completion record
         self._log_completion_lookup(worktree_path, issue_number, session_name, completion_path)
@@ -218,12 +232,26 @@ class SessionController:
     ) -> SessionDecision:
         """Handle case where no completion record exists."""
         session_log = self._get_session_log_tail(worktree_path, session_name)
+        provider_status = self._read_provider_status(worktree_path, session_name)
 
         self._emit_event(EventName.SESSION_NO_COMPLETION_RECORD, {
             "issue_number": issue_number, "session_name": session_name,
             "observation": observation.observation.value,
             "last_output": session_log[-500:] if session_log else "",
         })
+
+        if provider_status and provider_status.error_type == ProviderErrorType.TRANSIENT and not provider_status.succeeded:
+            if self._provider_resilience:
+                self._provider_resilience.record_transient_failure(
+                    provider_status.provider,
+                    error_summary=provider_status.last_error_summary,
+                    attempts=provider_status.attempts,
+                )
+            return SessionDecision(
+                status=SessionStatus.BLOCKED,
+                reason="Provider unavailable",
+                blocked_label=self._provider_blocked_label,
+            )
 
         if observation.observation == SessionObservation.TIMED_OUT:
             logger.warning(issue_log(issue_number, "SESSION COMPLETE: status=TIMED_OUT outcome=none reason=no_completion_record session=%s"), session_name)
@@ -235,6 +263,12 @@ class SessionController:
         if session_log:
             logger.error(issue_log(issue_number, "LAST OUTPUT:\n%s"), session_log)
         return SessionDecision(status=SessionStatus.FAILED, reason="Terminated without completion record")
+
+    def _read_provider_status(self, worktree_path: Path, session_name: str) -> ProviderStatus | None:
+        run_dir = self.session_output.find_run_dir(worktree_path, session_name)
+        if not run_dir:
+            return None
+        return read_provider_status(run_dir)
 
     def _get_session_log_tail(self, worktree_path: Path, session_name: str) -> str:
         """Get last 50 lines of session log for diagnostics."""

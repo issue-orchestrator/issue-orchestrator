@@ -614,6 +614,87 @@ class AdvancedSettings(BaseModel):
         },
     )
 
+    provider_short_retry_max_attempts: int = Field(
+        4,
+        title="Provider Retry Attempts",
+        description="Max attempts for transient provider failures",
+        ge=1,
+        le=10,
+        json_schema_extra={
+            "section": "Provider Resilience",
+            "config_attr": "provider_resilience.short_retry.max_attempts",
+            "yaml_path": "provider_resilience.short_retry.max_attempts",
+        },
+    )
+    provider_short_retry_initial_backoff_seconds: int = Field(
+        5,
+        title="Provider Retry Backoff (seconds)",
+        description="Initial backoff for transient provider retries",
+        ge=1,
+        le=300,
+        json_schema_extra={
+            "section": "Provider Resilience",
+            "config_attr": "provider_resilience.short_retry.initial_backoff_seconds",
+            "yaml_path": "provider_resilience.short_retry.initial_backoff_seconds",
+        },
+    )
+    provider_short_retry_max_backoff_seconds: int = Field(
+        60,
+        title="Provider Retry Max Backoff (seconds)",
+        description="Maximum backoff for transient provider retries",
+        ge=1,
+        le=3600,
+        json_schema_extra={
+            "section": "Provider Resilience",
+            "config_attr": "provider_resilience.short_retry.max_backoff_seconds",
+            "yaml_path": "provider_resilience.short_retry.max_backoff_seconds",
+        },
+    )
+    provider_short_retry_jitter: bool = Field(
+        True,
+        title="Provider Retry Jitter",
+        description="Apply full jitter to provider retry backoff",
+        json_schema_extra={
+            "section": "Provider Resilience",
+            "config_attr": "provider_resilience.short_retry.jitter",
+            "yaml_path": "provider_resilience.short_retry.jitter",
+        },
+    )
+    provider_circuit_cooldown_seconds: int = Field(
+        1800,
+        title="Provider Cooldown (seconds)",
+        description="Cooldown window before retrying provider after outage",
+        ge=60,
+        le=86400,
+        json_schema_extra={
+            "section": "Provider Resilience",
+            "config_attr": "provider_resilience.circuit_breaker.cooldown_seconds",
+            "yaml_path": "provider_resilience.circuit_breaker.cooldown_seconds",
+        },
+    )
+    provider_circuit_max_cooldowns: int = Field(
+        6,
+        title="Provider Max Cooldowns",
+        description="Maximum cooldown escalation steps",
+        ge=1,
+        le=12,
+        json_schema_extra={
+            "section": "Provider Resilience",
+            "config_attr": "provider_resilience.circuit_breaker.max_cooldowns",
+            "yaml_path": "provider_resilience.circuit_breaker.max_cooldowns",
+        },
+    )
+    provider_circuit_label: str = Field(
+        "blocked:provider-unavailable",
+        title="Provider Blocked Label",
+        description="Label applied when provider is unavailable",
+        json_schema_extra={
+            "section": "Provider Resilience",
+            "config_attr": "provider_resilience.circuit_breaker.label",
+            "yaml_path": "provider_resilience.circuit_breaker.label",
+        },
+    )
+
     session_no_output_seconds: int = Field(
         120,
         title="No-Output Threshold (seconds)",

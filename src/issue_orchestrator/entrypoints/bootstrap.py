@@ -22,8 +22,9 @@ from typing import TYPE_CHECKING
 from ..infra.config import Config
 from ..infra.env import ENV_PREFIX
 from ..adapters.github.repo import get_repo_from_git, GitRepoError
-from ..ports import EventSink, SessionRunner, NullEventSink, NullSessionRunner, IssueTracker
+from ..ports import EventSink, SessionRunner, NullEventSink, NullSessionRunner, IssueTracker, InMemoryProviderCircuitStore
 from ..control.orchestrator_deps import OrchestratorDeps
+from ..control.provider_resilience import ProviderResilienceManager
 from ..execution import (
     create_plugin_manager,
     PluggyEventSink,
@@ -32,6 +33,7 @@ from ..execution import (
     GitHubAdapter,
     CompositeEventSink,
     SqliteGoalPilotStore,
+    SQLiteProviderCircuitStore,
 )
 from ..execution.gh_guard import install_gh_guard
 from ..events import EventHub, SequencedEventSink
@@ -57,6 +59,7 @@ from ..control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
 from ..control.claim_gate import ClaimGate
 from ..control.lease_renewer import LeaseRenewer
 from ..infra import gh_audit
+from ..infra.repo_identity import state_dir
 from ..ports.claim_manager import NullClaimManager
 from ..domain.lease_config import LeaseConfig
 
@@ -189,6 +192,7 @@ def _create_planner(
     config: Config,
     github: GitHubAdapter | None,
     events: EventSink,
+    provider_resilience: ProviderResilienceManager | None = None,
 ) -> tuple[Planner, Scheduler, DependencyEvaluator | None, LabelSync | None]:
     """Create planner and supporting control plane components."""
     scheduler = Scheduler(config=config)
@@ -222,6 +226,7 @@ def _create_planner(
         review_workflow=review_workflow,
         rework_workflow=rework_workflow,
         triage_workflow=triage_workflow,
+        provider_resilience=provider_resilience,
     )
     return planner, scheduler, dependency_evaluator, label_sync
 
@@ -248,6 +253,7 @@ def _create_completion_components(
     working_copy: GitWorkingCopy,
     session_output: FileSystemSessionOutput,
     command_runner: LocalCommandRunner,
+    provider_resilience: ProviderResilienceManager | None = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
@@ -278,6 +284,8 @@ def _create_completion_components(
         command_runner=command_runner if config.validation and config.validation.cmd else None,
         validation_cmd=config.validation.cmd if config.validation else None,
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        provider_resilience=provider_resilience,
+        provider_blocked_label=config.get_label_provider_unavailable(),
     ) if completion_processor else None
 
     return completion_processor, session_controller_instance
@@ -471,8 +479,17 @@ def build_orchestrator(
         config, github, events
     )
 
+    provider_circuit_store = SQLiteProviderCircuitStore(
+        state_dir(config.repo_root) / "provider_circuit.sqlite"
+    )
+    provider_resilience = ProviderResilienceManager(
+        config.provider_resilience,
+        store=provider_circuit_store,
+        events=events,
+    )
+
     # Create planner and control plane components
-    planner, _scheduler, _dependency_evaluator, label_sync = _create_planner(config, github, events)
+    planner, _scheduler, _dependency_evaluator, label_sync = _create_planner(config, github, events, provider_resilience)
     session_manager = SessionManager(runner=runner, events=events, config=config)
 
     # Create IO adapters
@@ -519,7 +536,7 @@ def build_orchestrator(
 
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
-        config, github, events, working_copy, session_output, command_runner
+        config, github, events, working_copy, session_output, command_runner, provider_resilience
     )
 
     # Create async completion components (observer + executor)
@@ -593,6 +610,7 @@ def build_orchestrator(
         completion_observer=completion_observer,
         publish_executor=publish_executor,
         goal_pilot_store=goal_pilot_store,
+        provider_resilience=provider_resilience,
     )
 
     return Orchestrator(config=config, deps=deps)
@@ -660,12 +678,19 @@ def build_orchestrator_for_testing(
     runner = runner or NullSessionRunner()
     events = SequencedEventSink(events)
 
+    provider_resilience = ProviderResilienceManager(
+        config.provider_resilience,
+        store=InMemoryProviderCircuitStore(),
+        events=events,
+    )
+
     # Create default planner if not provided
     if planner is None:
         scheduler = Scheduler(config=config)
         planner = Planner(
             config=config,
             scheduler=scheduler,
+            provider_resilience=provider_resilience,
         )
 
     # Create default session manager if not provided
@@ -776,6 +801,8 @@ def build_orchestrator_for_testing(
         command_runner=command_runner if config.validation and config.validation.cmd else None,
         validation_cmd=config.validation.cmd if config.validation else None,
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        provider_resilience=provider_resilience,
+        provider_blocked_label=config.get_label_provider_unavailable(),
     )
 
     # Create LabelSync for testing
@@ -833,6 +860,7 @@ def build_orchestrator_for_testing(
         completion_observer=completion_observer,
         publish_executor=publish_executor,
         goal_pilot_store=goal_pilot_store,
+        provider_resilience=provider_resilience,
     )
 
     return Orchestrator(config=config, deps=deps)

@@ -59,4 +59,12 @@ def list_sqlite_databases(config: Config) -> list[SQLiteDatabase]:
             backup=True,
             enforce_pragmas=True,
         ),
+        SQLiteDatabase(
+            key="provider_circuit",
+            label="Provider Circuit",
+            path_fn=lambda cfg: _state_db(cfg, "provider_circuit.sqlite"),
+            enabled_fn=lambda cfg: True,
+            backup=True,
+            enforce_pragmas=True,
+        ),
     ]

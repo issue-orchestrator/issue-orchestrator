@@ -57,6 +57,11 @@ from issue_orchestrator.ports.session_output import (
 )
 from issue_orchestrator.ports.manifest_downloader import ManifestDownloader, NullManifestDownloader
 from issue_orchestrator.ports.goal_pilot_store import GoalPilotStore
+from issue_orchestrator.ports.provider_resilience import (
+    ProviderCircuitState,
+    ProviderCircuitStore,
+    InMemoryProviderCircuitStore,
+)
 
 __all__ = [
     # Issue Protocol (abstract work item)
@@ -116,4 +121,8 @@ __all__ = [
     "NullManifestDownloader",
     # Goal pilot store
     "GoalPilotStore",
+    # Provider resilience
+    "ProviderCircuitState",
+    "ProviderCircuitStore",
+    "InMemoryProviderCircuitStore",
 ]

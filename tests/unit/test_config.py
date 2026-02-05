@@ -1467,6 +1467,48 @@ agents:
         assert not any("reviewer" in e.lower() for e in errors)
 
 
+class TestProviderResilienceConfig:
+    """Tests for provider resilience config parsing."""
+
+    def test_defaults(self):
+        config = Config()
+        assert config.provider_resilience.short_retry.max_attempts == 4
+        assert config.provider_resilience.short_retry.initial_backoff_seconds == 5
+        assert config.provider_resilience.short_retry.max_backoff_seconds == 60
+        assert config.provider_resilience.short_retry.jitter is True
+        assert config.provider_resilience.circuit_breaker.cooldown_seconds == 1800
+        assert config.provider_resilience.circuit_breaker.max_cooldowns == 6
+        assert config.provider_resilience.circuit_breaker.label == "blocked:provider-unavailable"
+
+    def test_parsing(self, tmp_path):
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:backend:
+    prompt: {prompt}
+    provider: claude-code
+provider_resilience:
+  short_retry:
+    max_attempts: 2
+    initial_backoff_seconds: 7
+    max_backoff_seconds: 20
+    jitter: false
+  circuit_breaker:
+    cooldown_seconds: 900
+    max_cooldowns: 3
+    label: "blocked:provider-unavailable"
+""")
+        config = Config.load(config_file)
+        assert config.provider_resilience.short_retry.max_attempts == 2
+        assert config.provider_resilience.short_retry.initial_backoff_seconds == 7
+        assert config.provider_resilience.short_retry.max_backoff_seconds == 20
+        assert config.provider_resilience.short_retry.jitter is False
+        assert config.provider_resilience.circuit_breaker.cooldown_seconds == 900
+        assert config.provider_resilience.circuit_breaker.max_cooldowns == 3
+
+
 class TestCleanupConfig:
     """Tests for cleanup configuration."""
 

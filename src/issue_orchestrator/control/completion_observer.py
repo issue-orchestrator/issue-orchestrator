@@ -37,6 +37,8 @@ from ..domain.models import (
     COMPLETION_RECORD_PATH,
 )
 from ..infra.logging_config import issue_log
+from ..infra.provider_resilience import ProviderStatus, read_provider_status, now_iso
+from ..agent_runner.ports import ProviderErrorType
 from ..observation.observation import SessionObservation, SessionObservationResult
 
 if TYPE_CHECKING:
@@ -67,6 +69,9 @@ class ObservationDecision:
 
     # Session log tail (for failed/timeout sessions without completion.json)
     session_log_tail: str = ""
+
+    # Provider status (if available)
+    provider_status: ProviderStatus | None = None
 
 
 class CompletionObserver:
@@ -223,6 +228,23 @@ class CompletionObserver:
         session_log = self._get_session_log_tail(
             session.worktree_path, session.terminal_id
         )
+        provider_status = self._read_provider_status(session)
+
+        if provider_status and provider_status.error_type == ProviderErrorType.TRANSIENT and not provider_status.succeeded:
+            record = CompletionRecord(
+                session_id=session.terminal_id,
+                timestamp=now_iso(),
+                outcome=CompletionOutcome.BLOCKED,
+                summary="Provider unavailable after retries",
+                blocked_reason="provider_unavailable",
+            )
+            observed = self._build_observed_completion(session, record)
+            return ObservationDecision(
+                status=SessionStatus.BLOCKED,
+                observed=observed,
+                reason="Provider unavailable",
+                provider_status=provider_status,
+            )
 
         if observation.observation == SessionObservation.TIMED_OUT:
             logger.warning(
@@ -240,6 +262,7 @@ class CompletionObserver:
                 status=SessionStatus.TIMED_OUT,
                 reason="Timed out without completion record",
                 session_log_tail=session_log,
+                provider_status=provider_status,
             )
 
         # Session terminated without completion record = failed
@@ -256,7 +279,14 @@ class CompletionObserver:
             status=SessionStatus.FAILED,
             reason="Terminated without completion record",
             session_log_tail=session_log,
+            provider_status=provider_status,
         )
+
+    def _read_provider_status(self, session: Session) -> ProviderStatus | None:
+        run_dir = self.session_output.find_run_dir(session.worktree_path, session.terminal_id)
+        if not run_dir:
+            return None
+        return read_provider_status(run_dir)
 
     def _get_session_log_tail(self, worktree_path: Path, session_name: str) -> str:
         """Get last 50 lines of session log for diagnostics."""

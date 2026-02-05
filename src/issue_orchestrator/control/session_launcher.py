@@ -15,6 +15,8 @@ the orchestrator focused on coordination and main loop logic.
 
 import json
 import logging
+import shlex
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -37,12 +39,13 @@ if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
     from ..ports.session_runner import DiscoveredSession
     from ..ports.claim_manager import ClaimManager
+    from .provider_resilience import ProviderResilienceManager
 
 from ..infra.config import Config
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import issue_log, log_context
 from ..events import EventName
-from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
+from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind, AgentConfig
 from .worktree import WorktreePreparationError
 from .worktree_context import WorktreeContext
 from ..domain.triage_manifest import TriageManifest
@@ -59,6 +62,8 @@ from ..ports import (
 )
 from ..ports.session_output import SessionOutput
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions, WorktreeInfo
+from ..ports.session_log import detect_ai_system_from_command
+from ..agent_runner.ports import ProviderErrorType
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .session_manager import SessionManager
@@ -206,6 +211,7 @@ class SessionLauncher:
         refresh_issue_fn: Optional[Callable[[int], Optional["IssueProtocol"]]] = None,
         dependency_evaluator: Optional["DependencyEvaluator"] = None,
         claim_manager: Optional["ClaimManager"] = None,
+        provider_resilience: Optional["ProviderResilienceManager"] = None,
     ):
         self.config = config
         self.events = events
@@ -225,6 +231,7 @@ class SessionLauncher:
         self._refresh_issue = refresh_issue_fn
         self._dependency_evaluator = dependency_evaluator
         self._claim_manager = claim_manager
+        self._provider_resilience = provider_resilience
 
     def _worktree_reuse_options(self, *, allow_remote_branch_delete: bool = True) -> WorktreeReuseOptions:
         return WorktreeReuseOptions(
@@ -509,6 +516,19 @@ class SessionLauncher:
         if result := self._verify_dependencies_fresh(issue):
             return result
 
+        # Provider circuit breaker check
+        if self._provider_resilience and agent_config.provider:
+            if self._provider_resilience.is_open(agent_config.provider):
+                blocked_label = self.config.get_label_provider_unavailable()
+                self._apply_actions([
+                    AddLabelAction(
+                        issue_number=issue.number,
+                        label=blocked_label,
+                        reason=f"provider unavailable: {agent_config.provider}",
+                    ),
+                ], context="provider_unavailable")
+                return LaunchResult(None, False, f"Provider unavailable: {agent_config.provider}")
+
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
 
         # Phase 3: Acquire distributed claim
@@ -675,6 +695,7 @@ class SessionLauncher:
             worktree=worktree_path,
             existing_work=existing_work,
         )
+        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(issue.agent_type, session_name=session_name)
         self._session_output.update_manifest(
             run.run_dir,
@@ -686,6 +707,7 @@ class SessionLauncher:
         env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{issue.number}'"
         env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
         env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run.run_dir}'"
+        env_exports += f" {ENV_PREFIX}RUN_DIR='{run.run_dir}'"
         # NOTE: Validation config is NOT passed via env var.
         # agent-done reads validation config from the worktree's config file.
         # This ensures tests are deterministic (no env var leakage).
@@ -914,6 +936,7 @@ class SessionLauncher:
             pr_number=review.pr_number,
             existing_work=existing_work,
         )
+        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(agent_label, session_name=session_name)
         self._session_output.update_manifest(
             run.run_dir,
@@ -925,6 +948,7 @@ class SessionLauncher:
         env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{review.issue_number}'"
         env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
         env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run.run_dir}'"
+        env_exports += f" {ENV_PREFIX}RUN_DIR='{run.run_dir}'"
         # NOTE: Validation config is NOT passed via env var.
         # agent-done reads validation config from the worktree's config file.
         # This ensures tests are deterministic (no env var leakage).
@@ -1197,6 +1221,7 @@ class SessionLauncher:
             pr_number=pr_number,
             existing_work=existing_work,
         )
+        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(rework.agent_type, session_name=session_name)
         self._session_output.update_manifest(
             run.run_dir,
@@ -1208,6 +1233,7 @@ class SessionLauncher:
         env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
         env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
         env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run.run_dir}'"
+        env_exports += f" {ENV_PREFIX}RUN_DIR='{run.run_dir}'"
         # NOTE: Validation config is NOT passed via env var.
         # agent-done reads validation config from the worktree's config file.
         # This ensures tests are deterministic (no env var leakage).
@@ -1511,6 +1537,35 @@ class SessionLauncher:
         setup_time = time.time() - step_start
         logger.info("[launch] Setup completed in %.1fs", setup_time)
 
+    def _wrap_provider_command(self, base_command: str, agent_config: "AgentConfig", run_dir: Path) -> str:
+        """Wrap provider command with retry/circuit reporting."""
+        retry_cfg = self.config.provider_resilience.short_retry
+        provider = agent_config.provider or detect_ai_system_from_command(base_command)
+        cmd = [
+            sys.executable,
+            "-m",
+            "issue_orchestrator.entrypoints.cli_tools.provider_runner",
+            "--command",
+            base_command,
+            "--timeout-seconds",
+            str(agent_config.timeout_minutes * 60),
+            "--max-attempts",
+            str(retry_cfg.max_attempts),
+            "--initial-backoff-seconds",
+            str(retry_cfg.initial_backoff_seconds),
+            "--max-backoff-seconds",
+            str(retry_cfg.max_backoff_seconds),
+            "--run-dir",
+            str(run_dir),
+        ]
+        if retry_cfg.jitter:
+            cmd.append("--jitter")
+        else:
+            cmd.append("--no-jitter")
+        if provider:
+            cmd.extend(["--provider", provider])
+        return shlex.join(cmd)
+
     def _trigger_issue_session_state_transitions(
         self,
         issue: "IssueProtocol",
@@ -1588,6 +1643,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     validation_error: Optional[str] = None,
     validation_error_file: Optional[str] = None,
     review_exchange_completed: bool = False,
+    blocked_label: Optional[str] = None,
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
 ) -> None:
@@ -1656,6 +1712,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         processing_errors=processing_errors,
         diagnostic_path=diagnostic_path,
         review_exchange_completed=review_exchange_completed,
+        blocked_label=blocked_label,
     )
     if session.worktree_path:
         run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
@@ -1951,6 +2008,7 @@ def process_active_sessions(
             validation_error=validation_error,
             validation_error_file=str(validation_error_file) if validation_error_file else None,
             review_exchange_completed=review_exchange_completed,
+            blocked_label=decision.blocked_label,
         )
         session_elapsed = time.monotonic() - session_start
         if session_elapsed > 5:
@@ -1970,6 +2028,7 @@ def observe_active_sessions(
     kill_session_fn: Callable[[str], None],
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
+    provider_resilience: Optional["ProviderResilienceManager"] = None,
 ) -> None:
     """Observe active sessions and collect completion facts (fast, no I/O-heavy operations).
 
@@ -2056,6 +2115,18 @@ def observe_active_sessions(
                     "[OBSERVE] Failed to release claim for issue #%d: %s",
                     session.issue.number,
                     e,
+                )
+
+        # Update provider resilience based on observed provider status
+        if provider_resilience and decision.provider_status:
+            provider = decision.provider_status.provider
+            if decision.provider_status.succeeded:
+                provider_resilience.record_success(provider)
+            elif decision.provider_status.error_type == ProviderErrorType.TRANSIENT:
+                provider_resilience.record_transient_failure(
+                    provider,
+                    error_summary=decision.provider_status.last_error_summary,
+                    attempts=decision.provider_status.attempts,
                 )
 
         # Collect observed completion for planner

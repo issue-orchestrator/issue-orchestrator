@@ -44,6 +44,7 @@ from ..adapters.github.issue_resolver import GitHubIssueResolver
 from .command_runner import LocalCommandRunner
 from .session_output_adapter import FileSystemSessionOutput
 from .goal_pilot_store import SqliteGoalPilotStore
+from .provider_circuit_store import SQLiteProviderCircuitStore
 
 __all__ = [
     # Main interface (internal, used by composition root)
@@ -75,4 +76,6 @@ __all__ = [
     "FileSystemSessionOutput",
     # Goal pilot store
     "SqliteGoalPilotStore",
+    # Provider circuit store
+    "SQLiteProviderCircuitStore",
 ]

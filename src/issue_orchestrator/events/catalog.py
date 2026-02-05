@@ -180,6 +180,15 @@ class EventName(str, Enum):
     VALIDATION_COMPLETED = "validation.completed"
 
     # =========================================================================
+    # Provider resilience
+    # =========================================================================
+    PROVIDER_TRANSIENT_ERROR = "provider.transient_error"
+    PROVIDER_OUTAGE_ENTERED = "provider.outage_entered"
+    PROVIDER_RETRY_SCHEDULED = "provider.retry_scheduled"
+    PROVIDER_RETRY_ATTEMPTED = "provider.retry_attempted"
+    PROVIDER_OUTAGE_EXITED = "provider.outage_exited"
+
+    # =========================================================================
     # Configuration
     # =========================================================================
     CONFIG_MERGED = "config.merged"

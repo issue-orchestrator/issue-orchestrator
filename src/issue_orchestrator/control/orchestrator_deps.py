@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from .health_gate import HealthGate
     from .claim_gate import ClaimGate
     from .lease_renewer import LeaseRenewer
+    from .provider_resilience import ProviderResilienceManager
 
 
 @dataclass(frozen=True)
@@ -85,6 +86,7 @@ class OrchestratorDeps:
         completion_observer: Observes session completions (fast, no execution)
         publish_executor: Executes publish jobs in background threads
         goal_pilot_store: Durable Goal Pilot state store
+        provider_resilience: Provider circuit breaker manager
     """
 
     # Core event/runtime ports
@@ -130,3 +132,6 @@ class OrchestratorDeps:
 
     # Goal Pilot external memory
     goal_pilot_store: "GoalPilotStore"
+
+    # Provider resilience
+    provider_resilience: "ProviderResilienceManager"
