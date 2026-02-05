@@ -228,7 +228,7 @@ This checks:
 - Git repository is valid
 - Hooks are installed and working
 
-If you see `--live` option, you can run `issue-orchestrator verify --live` to spawn Claude and actually test that blocking works.
+If you see `--test-ai-gate` option, you can run `issue-orchestrator verify --test-ai-gate` to test AI gating (hooks/execpolicy).
 
 ---
 
@@ -491,11 +491,11 @@ exit 0
 # Quick verification (tests hook script logic)
 issue-orchestrator verify
 
-# Live verification (actually spawns Claude to test blocking)
-issue-orchestrator verify --live
+# AI gate test (spawns agent where supported)
+issue-orchestrator verify --test-ai-gate
 ```
 
-The live verification:
+The AI gate test:
 1. Creates a temp git repo
 2. Spawns Claude with a prompt to run `git push --no-verify`
 3. Verifies Claude reports being blocked

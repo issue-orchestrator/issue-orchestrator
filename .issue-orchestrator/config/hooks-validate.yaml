@@ -1,0 +1,36 @@
+# Hook validation config: exercises AI gate tests for supported CLIs.
+# Not intended for issue execution.
+# Codex is excluded because live verification is not yet supported.
+
+agents:
+  hook:claude:
+    prompt: .prompts/simple-fix.md
+    meta_agent: claude-code
+    ai_system: claude-code
+    model: haiku
+    permission_mode: bypassPermissions
+    command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
+
+  hook:cursor:
+    prompt: .prompts/simple-fix.md
+    meta_agent: cursor
+    ai_system: cursor
+    command: "cursor-agent --print --output-format text '{initial_prompt}'"
+
+  hook:gemini:
+    prompt: .prompts/simple-fix.md
+    meta_agent: gemini
+    ai_system: gemini
+    command: "gemini --prompt '{initial_prompt}' --approval-mode yolo"
+
+  hook:copilot:
+    prompt: .prompts/simple-fix.md
+    meta_agent: copilot
+    ai_system: copilot
+    command: "copilot -p '{initial_prompt}' --allow-tool shell(git)"
+
+execution:
+  terminal_adapter: subprocess
+
+config:
+  strict: true

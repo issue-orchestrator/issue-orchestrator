@@ -6,6 +6,12 @@ and that the command escaping works correctly in real shells.
 
 import os
 import pytest
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.live,
+    pytest.mark.xdist_group("claude"),
+]
 import subprocess
 import shutil
 from pathlib import Path

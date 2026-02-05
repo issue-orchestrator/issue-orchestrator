@@ -1901,8 +1901,9 @@ class TestPortUtilityFunctions:
 
         try:
             with patch("issue_orchestrator.entrypoints.web._kill_process_on_port", return_value=False):
-                with pytest.raises(RuntimeError, match="Port .* is already in use"):
-                    ensure_port_available(port)
+                with patch("time.sleep", return_value=None):
+                    with pytest.raises(RuntimeError, match="Port .* is already in use"):
+                        ensure_port_available(port)
         finally:
             sock.close()
 

@@ -1,7 +1,7 @@
-"""Safety state persistence for hook verification.
+"""AI gate state persistence for hook verification.
 
-Tracks when safety checks were last run and their results to avoid
-running expensive live verification on every startup.
+Tracks when AI gate tests were last run and their results to avoid
+running expensive checks on every startup.
 """
 
 import json
@@ -14,29 +14,29 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Location within the orchestrator state directory
-SAFETY_STATE_FILE = ".issue-orchestrator/safety-state.json"
+AI_GATE_STATE_FILE = ".issue-orchestrator/ai-gate-state.json"
 
 
 @dataclass
-class SafetyCheckResult:
-    """Result of a single agent's safety check."""
+class AiGateResult:
+    """Result of a single agent's AI gate test."""
     success: bool
     message: str
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 @dataclass
-class SafetyState:
-    """Persisted state for safety checks.
+class AiGateState:
+    """Persisted state for AI gate tests.
 
-    Tracks when the last safety check was performed and results
+    Tracks when the last AI gate test was performed and results
     for each agent type that was tested.
     """
     last_check: datetime | None = None
-    last_results: dict[str, SafetyCheckResult] = field(default_factory=dict)
+    last_results: dict[str, AiGateResult] = field(default_factory=dict)
 
     def is_stale(self, interval_days: int) -> bool:
-        """Check if safety check needs to be run.
+        """Check if AI gate test needs to be run.
 
         Args:
             interval_days: Maximum days between checks. 0 means disabled.
@@ -55,7 +55,7 @@ class SafetyState:
         self,
         results: dict[str, tuple[bool, str]],
     ) -> None:
-        """Update state after running safety checks.
+        """Update state after running AI gate tests.
 
         Args:
             results: Dict mapping agent_type to (success, message) tuple.
@@ -63,7 +63,7 @@ class SafetyState:
         now = datetime.now(timezone.utc)
         self.last_check = now
         self.last_results = {
-            agent_type: SafetyCheckResult(
+            agent_type: AiGateResult(
                 success=success,
                 message=message,
                 timestamp=now,
@@ -86,7 +86,7 @@ class SafetyState:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "SafetyState":
+    def from_dict(cls, data: dict[str, Any]) -> "AiGateState":
         """Create from dict loaded from JSON.
 
         Raises:
@@ -102,7 +102,7 @@ class SafetyState:
             if not isinstance(result_data, dict):
                 raise TypeError(f"Expected dict for result_data, got {type(result_data)}")
             timestamp = datetime.fromisoformat(result_data["timestamp"])
-            last_results[agent_type] = SafetyCheckResult(
+            last_results[agent_type] = AiGateResult(
                 success=result_data["success"],
                 message=result_data["message"],
                 timestamp=timestamp,
@@ -111,41 +111,41 @@ class SafetyState:
         return cls(last_check=last_check, last_results=last_results)
 
 
-def get_safety_state_path(repo_root: Path) -> Path:
-    """Get the path to the safety state file."""
-    return repo_root / SAFETY_STATE_FILE
+def get_ai_gate_state_path(repo_root: Path) -> Path:
+    """Get the path to the AI gate state file."""
+    return repo_root / AI_GATE_STATE_FILE
 
 
-def load_safety_state(repo_root: Path) -> SafetyState:
-    """Load safety state from disk.
+def load_ai_gate_state(repo_root: Path) -> AiGateState:
+    """Load AI gate state from disk.
 
     Args:
         repo_root: Root of the repository.
 
     Returns:
-        SafetyState instance (empty defaults if file doesn't exist).
+        AiGateState instance (empty defaults if file doesn't exist).
     """
-    state_path = get_safety_state_path(repo_root)
+    state_path = get_ai_gate_state_path(repo_root)
     if not state_path.exists():
-        return SafetyState()
+        return AiGateState()
 
     try:
         with open(state_path) as f:
             data = json.load(f)
-        return SafetyState.from_dict(data)
+        return AiGateState.from_dict(data)
     except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-        logger.warning("Failed to load safety state from %s: %s", state_path, e)
-        return SafetyState()
+        logger.warning("Failed to load AI gate state from %s: %s", state_path, e)
+        return AiGateState()
 
 
-def save_safety_state(repo_root: Path, state: SafetyState) -> None:
-    """Save safety state to disk.
+def save_ai_gate_state(repo_root: Path, state: AiGateState) -> None:
+    """Save AI gate state to disk.
 
     Args:
         repo_root: Root of the repository.
-        state: SafetyState to persist.
+        state: AiGateState to persist.
     """
-    state_path = get_safety_state_path(repo_root)
+    state_path = get_ai_gate_state_path(repo_root)
     state_path.parent.mkdir(parents=True, exist_ok=True)
 
     with open(state_path, "w") as f:

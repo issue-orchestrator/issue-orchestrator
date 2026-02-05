@@ -18,7 +18,7 @@ Without hooks, agents will find ways around conventions and the system breaks.
 │   Claude Code: PreToolUse in .claude/settings.json          │
 │   Cursor: beforeShellExecution in .cursor/hooks.json        │
 │   Copilot CLI: --deny-tool flags                            │
-│   Codex CLI: Execpolicy in ~/.codex/config.toml             │
+│   Codex CLI: Execpolicy rules in .codex/rules/              │
 └─────────────────────────────────────────────────────────────┘
                            ↓ if bypassed
 ┌─────────────────────────────────────────────────────────────┐
@@ -66,6 +66,7 @@ These must be set up in the target project. The orchestrator helps install them 
 | PreToolUse (Claude) | Claude Code | `.claude/hooks/block-no-verify.sh` | Blocks `git push --no-verify` at AI level | **YES** |
 | beforeShellExecution (Cursor) | Cursor | `.cursor/hooks.json` | Blocks `git push --no-verify` at AI level | **YES** |
 | Pre-push | Git | `.githooks/pre-push` | Runs project tests/linters before push | **YES** |
+| Execpolicy rules (Codex) | Codex CLI | `.codex/rules/orchestrator.rules` | Blocks dangerous commands outside sandbox | **YES** |
 | CLAUDE.md | Policy | `CLAUDE.md` | Documents prohibited actions | Advisory |
 
 ## Meta-Agent Support Matrix
@@ -75,7 +76,7 @@ These must be set up in the target project. The orchestrator helps install them 
 | Claude Code | `PreToolUse` in `.claude/settings.json` | ✅ Yes (exit 2) | ✅ |
 | Cursor (1.7+) | `beforeShellExecution` in `.cursor/hooks.json` | ✅ Yes (`"permission": "deny"`) | ✅ |
 | GitHub Copilot CLI | `--deny-tool` flags | ✅ Yes (glob patterns) | ✅ |
-| OpenAI Codex CLI | `Execpolicy`, `/approvals` | ✅ Yes | ✅ |
+| OpenAI Codex CLI | `Execpolicy` rules | ✅ Yes | ✅ |
 | Gemini CLI | In development | ⚠️ Not yet | ❌ |
 | Aider | None (lint only) | ❌ No | ❌ |
 
@@ -182,6 +183,35 @@ $ issue-orchestrator verify
 ✅ VERIFIED - Guardrails effective
    Wrote: .issue-orchestrator-verified
 ```
+
+## Hook Verification By Agent
+
+Verification is split into two phases:
+
+- Install/verify (always required): ensure hooks/rules are installed and behaviorally block `--no-verify`.
+- AI gate test (interval-based): spawn the agent where supported and confirm the end-to-end block works.
+
+If an agent is configured in YAML, missing its CLI or hook wiring is a **failure**, not a skip.
+
+| Agent | Install/verify (required) | AI gate test (interval) |
+| --- | --- | --- |
+| Claude Code | `.claude/hooks` + `.claude/settings.json` + script tests | ✅ Supported (spawns Claude) |
+| Gemini | `.gemini/hooks` + `.gemini/settings.json` + script tests | ✅ Supported (spawns Gemini) |
+| Cursor | `.cursor/hooks` + `.cursor/hooks.json` + script tests | ✅ Supported (spawns Cursor Agent) |
+| Copilot | `.github/hooks` + `.github/hooks.json` + script tests | ✅ Supported (spawns Copilot CLI) |
+| Codex CLI | `.codex/rules/orchestrator.rules` + `codex execpolicy check` | ❌ Not supported |
+
+### Hook Validation Config
+
+To exercise AI gate tests for all supported CLIs without changing your main config, use:
+
+```bash
+make verify-hooks-all
+```
+
+This runs `issue-orchestrator setup-hooks` with `.issue-orchestrator/config/hooks-validate.yaml`,
+which installs hooks and executes AI gate tests for the configured agents.
+Codex is intentionally excluded because AI gate tests are not yet supported.
 
 ### Verification Marker
 

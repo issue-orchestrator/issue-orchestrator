@@ -100,6 +100,15 @@ class TestDiagnosticBundle:
 class TestCreateDiagnosticBundle:
     """Tests for create_diagnostic_bundle function."""
 
+    @pytest.fixture(autouse=True)
+    def _fast_doctor(self, monkeypatch):
+        from issue_orchestrator.infra.doctor.types import DoctorResult
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.doctor.run_doctor",
+            lambda **_: DoctorResult(),
+        )
+
     def test_creates_bundle_directory(self, tmp_path: Path) -> None:
         """Bundle directory is created."""
         bundle = create_diagnostic_bundle(tmp_path)

@@ -1,7 +1,7 @@
-"""Unit tests for safety check CLI integration.
+"""Unit tests for AI gate test CLI integration.
 
 These tests verify the setup-hooks and doctor commands properly integrate
-with the safety check feature. They mock adapters to avoid spawning
+with the AI gate test feature. They mock adapters to avoid spawning
 actual AI agents, making them fast and reliable for CI.
 
 Moved from integration tests since they mock adapter methods.
@@ -13,8 +13,8 @@ from datetime import datetime, timezone
 import pytest
 
 
-class TestSafetyCheckCLI:
-    """Unit tests for safety check in CLI commands."""
+class TestAiGateCLI:
+    """Unit tests for AI gate test in CLI commands."""
 
     @pytest.fixture
     def repo_with_config(self, tmp_path):
@@ -39,7 +39,7 @@ agents:
     model: sonnet
 
 hooks:
-  safety_check:
+  ai_gate:
     interval_days: 7
 """)
 
@@ -49,8 +49,8 @@ hooks:
 
         return tmp_path, config_file
 
-    def test_setup_hooks_runs_safety_check(self, repo_with_config, monkeypatch):
-        """Test that setup-hooks command runs live verification and shows results."""
+    def test_setup_hooks_runs_ai_gate(self, repo_with_config, monkeypatch):
+        """Test that setup-hooks command runs AI gate tests and shows results."""
         from issue_orchestrator.infra.hooks.hooks import (
             ClaudeCodeAdapter,
             VerificationResult,
@@ -79,7 +79,7 @@ hooks:
         )
         monkeypatch.setattr(
             ClaudeCodeAdapter,
-            "live_verify",
+            "test_ai_gate",
             lambda self, path, timeout=30: (True, "blocked git push --no-verify"),
         )
 
@@ -94,18 +94,18 @@ hooks:
 
         assert exit_code == 0
 
-        # Verify safety state was saved
-        from issue_orchestrator.infra.safety_state import load_safety_state
+        # Verify AI gate state was saved
+        from issue_orchestrator.infra.ai_gate_state import load_ai_gate_state
 
-        state = load_safety_state(repo_path)
+        state = load_ai_gate_state(repo_path)
         assert state.last_check is not None
         assert "claude-code" in state.last_results
         assert state.last_results["claude-code"].success is True
 
-    def test_setup_hooks_fails_on_safety_check_failure(
+    def test_setup_hooks_fails_on_ai_gate_failure(
         self, repo_with_config, monkeypatch
     ):
-        """Test that setup-hooks returns non-zero when safety check fails."""
+        """Test that setup-hooks returns non-zero when AI gate test fails."""
         from issue_orchestrator.infra.hooks.hooks import (
             ClaudeCodeAdapter,
             VerificationResult,
@@ -115,7 +115,7 @@ hooks:
 
         repo_path, config_file = repo_with_config
 
-        # Mock adapter methods - safety check fails
+        # Mock adapter methods - AI gate test fails
         monkeypatch.setattr(
             ClaudeCodeAdapter, "is_installed", lambda self, path: True
         )
@@ -134,7 +134,7 @@ hooks:
         )
         monkeypatch.setattr(
             ClaudeCodeAdapter,
-            "live_verify",
+            "test_ai_gate",
             lambda self, path, timeout=30: (False, "command was not blocked"),
         )
 
@@ -145,19 +145,19 @@ hooks:
 
         exit_code = cmd_setup_hooks(args)
 
-        # Should fail because safety check failed
+        # Should fail because AI gate test failed
         assert exit_code == 1
 
-    def test_doctor_shows_safety_check_with_cached_results(
+    def test_doctor_shows_ai_gate_with_cached_results(
         self, repo_with_config, monkeypatch
     ):
-        """Test that doctor shows Safety Check with cached results."""
+        """Test that doctor shows AI Gate with cached results."""
         from unittest.mock import MagicMock
 
-        from issue_orchestrator.infra.safety_state import (
-            SafetyState,
-            SafetyCheckResult,
-            save_safety_state,
+        from issue_orchestrator.infra.ai_gate_state import (
+            AiGateState,
+            AiGateResult,
+            save_ai_gate_state,
         )
         from issue_orchestrator.infra.doctor.checks.hooks import check_hook_verification
         from issue_orchestrator.infra.doctor.checks import hooks as hook_checks
@@ -177,40 +177,40 @@ hooks:
         )
         monkeypatch.setattr(hook_checks, "get_adapter", lambda _: mock_adapter)
 
-        # Pre-populate safety state with a recent successful check
-        state = SafetyState(
+        # Pre-populate AI gate state with a recent successful check
+        state = AiGateState(
             last_check=datetime.now(timezone.utc),
             last_results={
-                "claude-code": SafetyCheckResult(
+                "claude-code": AiGateResult(
                     success=True,
                     message="blocked git push --no-verify",
                     timestamp=datetime.now(timezone.utc),
                 ),
             },
         )
-        save_safety_state(repo_path, state)
+        save_ai_gate_state(repo_path, state)
 
         # Load config and run doctor hook checks
         config = Config.load(config_file)
         checks = check_hook_verification(config)
 
-        # Find the Safety Check
-        safety_check = next((c for c in checks if c.name == "Safety Check"), None)
+        # Find the AI Gate
+        ai_gate = next((c for c in checks if c.name == "AI Gate"), None)
 
-        assert safety_check is not None, "Safety Check should be in doctor output"
-        assert safety_check.status == "ok"
-        assert "Passed" in safety_check.detail
-        assert safety_check.expandable is not None
-        assert safety_check.expandable["ran"] is False  # Used cached results
+        assert ai_gate is not None, "AI Gate should be in doctor output"
+        assert ai_gate.status == "ok"
+        assert "Passed" in ai_gate.detail
+        assert ai_gate.expandable is not None
+        assert ai_gate.expandable["ran"] is False  # Used cached results
 
     def test_doctor_shows_cached_failure_as_error(self, repo_with_config, monkeypatch):
         """Test that doctor shows cached failure as error status."""
         from unittest.mock import MagicMock
 
-        from issue_orchestrator.infra.safety_state import (
-            SafetyState,
-            SafetyCheckResult,
-            save_safety_state,
+        from issue_orchestrator.infra.ai_gate_state import (
+            AiGateState,
+            AiGateResult,
+            save_ai_gate_state,
         )
         from issue_orchestrator.infra.doctor.checks.hooks import check_hook_verification
         from issue_orchestrator.infra.doctor.checks import hooks as hook_checks
@@ -230,24 +230,24 @@ hooks:
         )
         monkeypatch.setattr(hook_checks, "get_adapter", lambda _: mock_adapter)
 
-        # Pre-populate safety state with a recent FAILED check
-        state = SafetyState(
+        # Pre-populate AI gate state with a recent FAILED check
+        state = AiGateState(
             last_check=datetime.now(timezone.utc),
             last_results={
-                "claude-code": SafetyCheckResult(
+                "claude-code": AiGateResult(
                     success=False,
                     message="command was not blocked",
                     timestamp=datetime.now(timezone.utc),
                 ),
             },
         )
-        save_safety_state(repo_path, state)
+        save_ai_gate_state(repo_path, state)
 
         config = Config.load(config_file)
         checks = check_hook_verification(config)
 
-        safety_check = next((c for c in checks if c.name == "Safety Check"), None)
+        ai_gate = next((c for c in checks if c.name == "AI Gate"), None)
 
-        assert safety_check is not None
-        assert safety_check.status == "error"
-        assert "Failed" in safety_check.detail
+        assert ai_gate is not None
+        assert ai_gate.status == "error"
+        assert "Failed" in ai_gate.detail

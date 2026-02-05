@@ -1,4 +1,4 @@
-"""Integration tests for live hook verification.
+"""Integration tests for AI gate verification.
 
 These tests verify that the hook enforcement system works end-to-end by
 actually spawning Claude and testing that --no-verify commands are blocked
@@ -17,8 +17,21 @@ import pytest
 # Mark all tests in this module as integration tests that spawn Claude
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.live,  # These tests actually spawn Claude
+    pytest.mark.live,  # These tests actually spawn Claude (AI gate)
+    pytest.mark.xdist_group("claude"),
 ]
+
+@pytest.fixture(autouse=True, scope="module")
+def _hook_pythonpath() -> None:
+    """Ensure hook scripts can import issue_orchestrator when running in temp repos."""
+    repo_root = Path(__file__).resolve().parents[2]
+    prior = os.environ.get("ORCHESTRATOR_HOOK_PYTHONPATH")
+    os.environ["ORCHESTRATOR_HOOK_PYTHONPATH"] = str(repo_root / "src")
+    yield
+    if prior is None:
+        os.environ.pop("ORCHESTRATOR_HOOK_PYTHONPATH", None)
+    else:
+        os.environ["ORCHESTRATOR_HOOK_PYTHONPATH"] = prior
 
 
 @pytest.fixture
@@ -287,8 +300,8 @@ class TestHookBlocking:
         assert result.returncode == 0, f"Expected exit code 0 (allowed), got {result.returncode}"
 
 
-class TestLiveVerification:
-    """Tests that spawn Claude to verify end-to-end hook enforcement.
+class TestAiGate:
+    """Tests that spawn Claude to verify end-to-end AI gate enforcement.
 
     These tests are slower and require Claude CLI to be installed.
     They verify the ENTIRE chain works, not just the hook script.
@@ -304,29 +317,26 @@ class TestLiveVerification:
         if result.returncode != 0:
             pytest.skip("Claude CLI not installed")
 
-    def test_live_verify_blocks_no_verify(
+    def test_ai_gate_blocks_no_verify(
         self,
         test_repo_with_hooks: Path,
         skip_if_no_claude,
     ):
-        """Test that Claude is actually blocked from running --no-verify.
-
-        This spawns Claude and has it try to run the blocked command.
-        """
+        """Test that Claude is actually blocked from running --no-verify."""
         from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
         adapter = ClaudeCodeAdapter()
-        success, message = adapter.live_verify(test_repo_with_hooks, timeout=60)
+        success, message = adapter.test_ai_gate(test_repo_with_hooks, timeout=60)
 
-        assert success, f"Live verification should pass (hooks installed): {message}"
+        assert success, f"AI gate test should pass (hooks installed): {message}"
         assert "blocked" in message.lower()
 
-    def test_live_verify_detects_missing_hooks(
+    def test_ai_gate_detects_missing_hooks(
         self,
         test_repo_without_hooks: Path,
         skip_if_no_claude,
     ):
-        """Test that live verification correctly detects when hooks are missing.
+        """Test that AI gate test correctly detects when hooks are missing.
 
         This is the critical failure-detection test - we need to verify that
         when hooks are NOT installed, the verification reports FAILURE.
@@ -334,18 +344,18 @@ class TestLiveVerification:
         from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
         adapter = ClaudeCodeAdapter()
-        success, message = adapter.live_verify(test_repo_without_hooks, timeout=60)
+        success, message = adapter.test_ai_gate(test_repo_without_hooks, timeout=60)
 
         # This should FAIL because hooks are not installed
         # Claude should be able to run --no-verify without being blocked
         assert not success, (
-            f"Live verification should FAIL (no hooks): {message}\n"
+            f"AI gate test should FAIL (no hooks): {message}\n"
             "If this passes, our failure detection is broken!"
         )
 
 
 class TestVerificationResult:
-    """Tests for the static (non-live) verification."""
+    """Tests for the static (non-spawn) verification."""
 
     def test_verify_hooks_passes_with_hooks(self, test_repo_with_hooks: Path):
         """Test that verify_hooks passes when hooks are properly installed."""
@@ -755,7 +765,7 @@ class TestCursorHooksInWorktree:
 
 
 class TestCursorVerificationResult:
-    """Tests for Cursor static (non-live) verification."""
+    """Tests for Cursor static (non-spawn) verification."""
 
     @pytest.fixture
     def test_repo_with_cursor_hooks(self, tmp_path: Path) -> Path:

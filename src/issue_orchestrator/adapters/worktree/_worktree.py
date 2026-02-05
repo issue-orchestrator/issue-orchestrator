@@ -7,7 +7,6 @@ import logging
 import os
 import re
 import shutil
-import subprocess
 import time
 import uuid
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ from ...infra.logging_config import issue_log
 from ...ports.git import GitResult
 from ...ports.worktree_policy import WorktreePolicy
 from ...ports.worktree_manager import WorktreeReuseOptions
+from ...infra.worktree_base import resolve_base_branch
 from ..git.git_cli import GitCLI, SubprocessCommandRunner
 
 # Marker file name for worktree identity (must match job_store.py)
@@ -32,6 +32,7 @@ class ResetInfo:
     success: bool
     uncommitted_discarded: int = 0  # Count of uncommitted changes discarded
     commits_discarded: int = 0  # Count of commits discarded (on rebase failure)
+    reason: str | None = None
 
 
 @dataclass
@@ -67,6 +68,26 @@ def _git_env_no_prompt() -> dict[str, str]:
     env = _git.clean_env()
     env["GIT_TERMINAL_PROMPT"] = "0"
     return env
+
+
+def _ensure_origin_branch(repo_root: Path, branch: str) -> None:
+    fetch_result = _git_run(
+        repo_root,
+        ["fetch", "origin", branch],
+        check=False,
+        env=_git_env_no_prompt(),
+    )
+    if fetch_result.returncode != 0:
+        raise WorktreeError(
+            f"Failed to fetch origin/{branch}: {fetch_result.stderr.strip()}"
+        )
+    ref_result = _git_run(
+        repo_root,
+        ["rev-parse", "--verify", f"origin/{branch}"],
+        check=False,
+    )
+    if ref_result.returncode != 0:
+        raise WorktreeError(f"origin/{branch} does not exist after fetch")
 
 
 # Path to bundled hooks (in issue_orchestrator/hooks/, 3 levels up from this module)
@@ -128,26 +149,42 @@ def get_default_branch(repo_root: Path) -> str:
     return branch
 
 
-def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> ResetInfo:
-    """
-    Update a worktree's branch onto the latest main.
+def _resolve_base_branch(repo_root: Path, base_branch_override: str | None) -> str:
+    """Resolve the base branch used for worktree creation/reset."""
+    resolved = resolve_base_branch(
+        repo_root,
+        config_override=base_branch_override,
+        default_branch_resolver=_git.default_branch,
+        log=logger,
+    )
+    return resolved.branch
 
-    This is crucial for reruns - branches created from old main need to be
-    rebased onto current main to get the latest code changes.
+
+def _update_worktree_onto_main(
+    worktree_path: Path,
+    repo_root: Path,
+    base_branch: str | None = None,
+) -> ResetInfo:
+    """
+    Update a worktree's branch onto the latest base branch.
+
+    This is crucial for reruns - branches created from old base need to be
+    rebased onto current base to get the latest code changes.
 
     Strategy: Success > preserving agent work. If rebase fails for any reason
     (conflicts, stale branch, etc.), discard all local work and reset to main.
     This ensures agents always work with the latest code.
 
     The sequence:
-    1. Fetch origin to get latest main
+    1. Fetch origin to get latest base branch
     2. Discard any uncommitted changes
-    3. Try to rebase current branch onto origin/main
-    4. If rebase fails, hard reset to origin/main (discards all local commits)
+    3. Try to rebase current branch onto origin/<base>
+    4. If rebase fails, hard reset to origin/<base> (discards all local commits)
 
     Args:
         worktree_path: Path to the worktree to update
         repo_root: Path to the main repository
+        base_branch: Branch name to rebase onto (e.g., main, master)
 
     Returns:
         ResetInfo with success status and counts of discarded work
@@ -155,19 +192,31 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> ResetInf
     uncommitted_discarded = 0
     commits_discarded = 0
     try:
-        # Step 1: Fetch origin to get latest main
+        base = _resolve_base_branch(repo_root, base_branch)
+
+        # Step 1: Fetch origin to get latest base branch
         fetch_result = _git_run(
             worktree_path,
-            ["fetch", "origin", "main"],
+            ["fetch", "origin", base],
             check=False,
+            env=_git_env_no_prompt(),
         )
         if fetch_result.returncode != 0:
-            logger.warning(
-                "Failed to fetch origin main in worktree %s: %s",
-                worktree_path,
-                fetch_result.stderr.strip(),
+            return ResetInfo(
+                success=False,
+                reason=f"fetch_failed: {fetch_result.stderr.strip()}",
             )
-            # Non-fatal - try to continue with whatever main we have
+
+        ref_result = _git_run(
+            worktree_path,
+            ["rev-parse", "--verify", f"origin/{base}"],
+            check=False,
+        )
+        if ref_result.returncode != 0:
+            return ResetInfo(
+                success=False,
+                reason=f"origin_ref_missing: origin/{base}",
+            )
 
         # Step 2: Get current branch
         branch_result = _git_run(
@@ -177,11 +226,11 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> ResetInf
         )
         if branch_result.returncode != 0:
             logger.warning("Could not determine current branch in %s", worktree_path)
-            return ResetInfo(success=False)
+            return ResetInfo(success=False, reason="branch_unknown")
 
         current_branch = branch_result.stdout.strip()
-        if current_branch in ("main", "master"):
-            # Already on main, just pull
+        if current_branch == base:
+            # Already on base branch, just pull
             _git_run(
                 worktree_path,
                 ["pull", "--ff-only"],
@@ -215,15 +264,16 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> ResetInf
             check=False,
         )
 
-        # Step 4: Try to rebase onto origin/main
+        # Step 4: Try to rebase onto origin/<base>
         logger.info(
-            "Rebasing branch %s onto origin/main in %s",
+            "Rebasing branch %s onto origin/%s in %s",
             current_branch,
+            base,
             worktree_path,
         )
         rebase_result = _git_run(
             worktree_path,
-            ["rebase", "origin/main"],
+            ["rebase", f"origin/{base}"],
             check=False,
         )
 
@@ -239,7 +289,7 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> ResetInf
             # Count how many commits we're discarding
             commits_result = _git_run(
                 worktree_path,
-                ["rev-list", "--count", "origin/main..HEAD"],
+                ["rev-list", "--count", f"origin/{base}..HEAD"],
                 check=False,
             )
             if commits_result.returncode == 0 and commits_result.stdout.strip():
@@ -249,18 +299,19 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> ResetInf
                     pass
 
             logger.warning(
-                "[WORKTREE_RESET] Rebase failed, discarding %d commits and resetting to main "
+                "[WORKTREE_RESET] Rebase failed, discarding %d commits and resetting to %s "
                 "(branch: %s, path: %s, error: %s)",
                 commits_discarded,
+                base,
                 current_branch,
                 worktree_path,
                 rebase_result.stderr.strip(),
             )
 
-            # Hard reset to origin/main - discards all local commits
+            # Hard reset to origin/<base> - discards all local commits
             _git_run(
                 worktree_path,
-                ["reset", "--hard", "origin/main"],
+                ["reset", "--hard", f"origin/{base}"],
                 check=False,
             )
             return ResetInfo(
@@ -270,15 +321,16 @@ def _update_worktree_onto_main(worktree_path: Path, repo_root: Path) -> ResetInf
             )
 
         logger.info(
-            "Successfully rebased branch %s onto origin/main in %s",
+            "Successfully rebased branch %s onto origin/%s in %s",
             current_branch,
+            base,
             worktree_path,
         )
         return ResetInfo(success=True, uncommitted_discarded=uncommitted_discarded)
 
     except Exception as e:
         logger.exception("Error updating worktree onto main: %s", e)
-        return ResetInfo(success=False)
+        return ResetInfo(success=False, reason=str(e))
 
 
 def _push_dry_run_preflight(
@@ -338,58 +390,6 @@ def install_venv_symlink(worktree_path: Path, repo_root: Path) -> bool:
         return True
     except OSError as e:
         logger.warning("Failed to symlink .venv: %s", e)
-        return False
-
-
-def install_vscode_node_modules(worktree_path: Path) -> bool:
-    """
-    Install VS Code extension dependencies in worktree via npm ci.
-
-    This ensures the worktree has node_modules for validation (make validate).
-    Uses `npm ci` for fast, reproducible installs (~1 second).
-
-    Args:
-        worktree_path: Path to the worktree
-
-    Returns:
-        True if install succeeded or node_modules already exists, False on failure
-    """
-    vscode_dir = worktree_path / "packages" / "vscode"
-    node_modules = vscode_dir / "node_modules"
-    package_lock = vscode_dir / "package-lock.json"
-
-    if not vscode_dir.exists():
-        logger.debug("No packages/vscode dir in worktree at %s, skipping npm install", vscode_dir)
-        return False
-
-    if not package_lock.exists():
-        logger.debug("No package-lock.json in %s, skipping npm install", vscode_dir)
-        return False
-
-    if node_modules.exists():
-        logger.debug("packages/vscode/node_modules already exists at %s", node_modules)
-        return True
-
-    try:
-        logger.info("Installing VS Code dependencies: npm ci in %s", vscode_dir)
-        result = subprocess.run(
-            ["npm", "ci"],
-            cwd=vscode_dir,
-            capture_output=True,
-            text=True,
-            timeout=60,
-        )
-        if result.returncode == 0:
-            logger.info("VS Code dependencies installed successfully")
-            return True
-        else:
-            logger.warning("npm ci failed: %s", result.stderr.strip())
-            return False
-    except subprocess.TimeoutExpired:
-        logger.warning("npm ci timed out after 60s")
-        return False
-    except Exception as e:
-        logger.warning("Failed to install VS Code dependencies: %s", e)
         return False
 
 
@@ -775,7 +775,7 @@ def _list_branch_names(repo_root: Path) -> list[str]:
     return names
 
 
-def _next_branch_name(repo_root: Path, branch_name: str) -> str:
+def next_branch_name(repo_root: Path, branch_name: str) -> str:
     base = re.sub(r"-r\d+$", "", branch_name)
     existing = _list_branch_names(repo_root)
     pattern = re.compile(rf"^{re.escape(base)}-r(\d+)$")
@@ -978,13 +978,12 @@ def _finalize_worktree(
     pre_push_hook: Path | None,
     allow_no_verify_dry_run_preflight: bool,
 ) -> None:
-    """Install hooks, settings, venv, vscode deps, cli_tools, and identity marker on a worktree."""
+    """Install hooks, settings, venv, cli_tools, and identity marker on a worktree."""
     if enforce_hooks:
         install_hooks(worktree_path, pre_push_hook)
     install_claude_settings(worktree_path)
     _configure_no_verify_dry_run(worktree_path, allow_no_verify_dry_run_preflight)
     install_venv_symlink(worktree_path, repo_root)
-    install_vscode_node_modules(worktree_path)
     sync_cli_tools(worktree_path, repo_root)
     _install_worktree_identity(worktree_path)
 
@@ -997,6 +996,7 @@ def _try_reuse_worktree(
     policy: WorktreePolicy,
     reuse_push_preflight: bool,
     allow_no_verify_dry_run_preflight: bool,
+    base_branch: str | None,
 ) -> _WorktreeReuseResult:
     """Try to reuse an existing worktree, validating and preparing it.
 
@@ -1016,8 +1016,8 @@ def _try_reuse_worktree(
             recreated_reason=f"validation_failed: {validation.reason}",
         )
 
-    # Rebase onto latest main (critical for reruns with stale branches)
-    reset_info = _update_worktree_onto_main(worktree_path, repo_root)
+    # Rebase onto latest base branch (critical for reruns with stale branches)
+    reset_info = _update_worktree_onto_main(worktree_path, repo_root, base_branch)
 
     # Policy: sync remote refs to prevent stale-info push failures
     sync_result = policy.sync_remote_refs(worktree_path, branch_name)
@@ -1033,11 +1033,14 @@ def _try_reuse_worktree(
         )
 
     if not reset_info.success:
-        logger.warning(issue_log(issue_number, "Reset to main failed, deleting worktree"))
+        logger.warning(
+            issue_log(issue_number, "Reset to base branch failed, deleting worktree: %s"),
+            reset_info.reason or "unknown",
+        )
         policy.delete_worktree(worktree_path, repo_root)
         return _WorktreeReuseResult(
             success=False,
-            recreated_reason="reset_failed: rebase onto main failed",
+            recreated_reason=f"reset_failed: {reset_info.reason or 'rebase failed'}",
         )
 
     # Optional push preflight check
@@ -1090,7 +1093,7 @@ def _handle_branch_on_recreate(
         else:
             logger.warning(issue_log(issue_number, "Failed to delete remote branch before recreate: %s"), branch_name)
     elif worktree_branch_on_recreate == "create_new_branch":
-        new_branch = _next_branch_name(repo_root, branch_name)
+        new_branch = next_branch_name(repo_root, branch_name)
         logger.info(
             issue_log(issue_number, "Creating new branch for recreated worktree: %s -> %s"),
             branch_name,
@@ -1104,6 +1107,7 @@ def _build_worktree_add_command(
     repo_root: Path,
     worktree_path: Path,
     branch_name: str,
+    base_branch: str | None,
 ) -> list[str]:
     """Build the git worktree add command.
 
@@ -1140,19 +1144,14 @@ def _build_worktree_add_command(
             str(worktree_path), "-b", branch_name, f"origin/{branch_name}"
         ]
 
-    # Create new branch from default branch (main), NOT from HEAD
+    # Create new branch from default branch, NOT from HEAD
     # This ensures agent worktrees don't inherit commits from user's feature branch
-    # Unless ORCHESTRATOR_WORKTREE_BASE_BRANCH is set (e.g., for e2e tests)
-    base_branch_override = os.environ.get("ORCHESTRATOR_WORKTREE_BASE_BRANCH")
-    if base_branch_override:
-        default_branch = base_branch_override
-        logger.info("Using override base branch: %s (from ORCHESTRATOR_WORKTREE_BASE_BRANCH)", default_branch)
-    else:
-        default_branch = get_default_branch(repo_root)
-        logger.info("Creating new branch from default branch: %s", default_branch)
+    default_branch = _resolve_base_branch(repo_root, base_branch)
+    logger.info("Creating new branch from default branch: %s", default_branch)
+    _ensure_origin_branch(repo_root, default_branch)
     return [
         "worktree", "add",
-        str(worktree_path), "-b", branch_name, default_branch
+        str(worktree_path), "-b", branch_name, f"origin/{default_branch}"
     ]
 
 
@@ -1162,6 +1161,7 @@ class _WorktreeCreateContext:
     repo_root: Path
     worktree_path: Path
     branch_name: str
+    base_branch: str | None
     issue_number: int
     policy: WorktreePolicy
     reuse_options: WorktreeReuseOptions
@@ -1175,6 +1175,7 @@ def _init_worktree_context(
     issue_number: int,
     issue_title: str,
     worktree_base: Path | None,
+    base_branch: str | None,
     branch_name: str | None,
     reuse_options: WorktreeReuseOptions | None,
     policy: WorktreePolicy | None,
@@ -1197,6 +1198,7 @@ def _init_worktree_context(
     branch_name = branch_name or generate_branch_name(issue_number, issue_title)
     worktree_path = worktree_base / f"{repo_root.name}-{issue_number}"
     disable_reuse = os.environ.get("ORCHESTRATOR_DISABLE_WORKTREE_REUSE") == "1"
+    base_branch = _resolve_base_branch(repo_root, base_branch)
 
     logger.info(
         issue_log(issue_number, "Create worktree requested: branch=%s base=%s"),
@@ -1208,6 +1210,7 @@ def _init_worktree_context(
         repo_root=repo_root,
         worktree_path=worktree_path,
         branch_name=branch_name,
+        base_branch=base_branch,
         issue_number=issue_number,
         policy=policy,
         reuse_options=reuse_options,
@@ -1222,6 +1225,7 @@ def create_worktree(
     issue_number: int,
     issue_title: str,
     worktree_base: Path | None = None,
+    base_branch: str | None = None,
     enforce_hooks: bool = True,
     pre_push_hook: Path | None = None,
     branch_name: str | None = None,
@@ -1239,6 +1243,7 @@ def create_worktree(
         issue_number: GitHub issue number
         issue_title: GitHub issue title (used to generate branch name if not provided)
         worktree_base: Base directory for worktrees. Defaults to parent of repo_root.
+        base_branch: Base branch override (e.g., "main" or "master")
         enforce_hooks: Whether to install pre-push hooks
         pre_push_hook: Custom pre-push hook path
         branch_name: Specific branch to use (for checking out existing branches like PR reviews)
@@ -1255,55 +1260,68 @@ def create_worktree(
     Raises:
         WorktreeError: If worktree creation fails
     """
-    ctx = _init_worktree_context(
-        repo_root, issue_number, issue_title, worktree_base, branch_name,
-        reuse_options, policy, enforce_hooks, pre_push_hook,
-    )
+    try:
+        ctx = _init_worktree_context(
+            repo_root, issue_number, issue_title, worktree_base, base_branch, branch_name,
+            reuse_options, policy, enforce_hooks, pre_push_hook,
+        )
 
-    # Prune stale worktrees
-    prune_result = _git_run(ctx.repo_root, ["worktree", "prune"], check=False)
-    logger.debug("Worktree prune: returncode=%s", prune_result.returncode)
+        # Prune stale worktrees
+        prune_result = _git_run(ctx.repo_root, ["worktree", "prune"], check=False)
+        logger.debug("Worktree prune: returncode=%s", prune_result.returncode)
 
+        reuse_result, recreated_reason = _attempt_reuse(ctx)
+        if reuse_result is not None:
+            return reuse_result
+
+        # Handle branch on recreate
+        final_branch = ctx.branch_name
+        if recreated_reason and _branch_matches_issue(ctx.branch_name, ctx.issue_number):
+            final_branch = _handle_branch_on_recreate(
+                ctx.repo_root, ctx.branch_name, ctx.issue_number, ctx.reuse_options
+            )
+
+        return _create_fresh_worktree(
+            ctx.repo_root, ctx.worktree_path, final_branch, ctx.base_branch, ctx.issue_number,
+            ctx.enforce_hooks, ctx.pre_push_hook, ctx.reuse_options, recreated_reason,
+        )
+    except WorktreeError:
+        raise
+    except Exception as e:
+        raise WorktreeError(f"Error creating worktree: {e}")
+
+
+def _attempt_reuse(
+    ctx: _WorktreeCreateContext,
+) -> tuple[tuple[Path, str, str, str | None, bool, int, int] | None, str | None]:
+    """Attempt to reuse an existing worktree, returning (result, recreated_reason)."""
     recreated_reason: str | None = None
     if ctx.disable_reuse:
         recreated_reason = _handle_reuse_disabled(
             ctx.repo_root, ctx.worktree_path, ctx.branch_name, ctx.issue_number
         )
+        return None, recreated_reason
 
-    # Try reuse strategies
-    if not ctx.disable_reuse:
-        reuse_result, reuse_recreated_reason = _try_reuse_by_branch(
-            ctx.repo_root, ctx.branch_name, ctx.issue_number, ctx.policy,
-            ctx.reuse_options, ctx.enforce_hooks, ctx.pre_push_hook,
+    reuse_result, reuse_recreated_reason = _try_reuse_by_branch(
+        ctx.repo_root, ctx.branch_name, ctx.issue_number, ctx.policy,
+        ctx.reuse_options, ctx.enforce_hooks, ctx.pre_push_hook, ctx.base_branch,
+    )
+    if reuse_result is not None:
+        return reuse_result, None
+    if reuse_recreated_reason:
+        recreated_reason = reuse_recreated_reason
+
+    if ctx.worktree_path.exists():
+        reuse_result, reuse_recreated_reason = _try_reuse_by_path(
+            ctx.worktree_path, ctx.repo_root, ctx.issue_number, ctx.policy,
+            ctx.reuse_options, ctx.enforce_hooks, ctx.pre_push_hook, ctx.base_branch,
         )
         if reuse_result is not None:
-            return reuse_result
-        # Capture recreated_reason from failed reuse (validation/sync/reset/preflight)
-        if reuse_recreated_reason:
+            return reuse_result, None
+        if reuse_recreated_reason and not recreated_reason:
             recreated_reason = reuse_recreated_reason
 
-        if ctx.worktree_path.exists():
-            reuse_result, reuse_recreated_reason = _try_reuse_by_path(
-                ctx.worktree_path, ctx.repo_root, ctx.issue_number, ctx.policy,
-                ctx.reuse_options, ctx.enforce_hooks, ctx.pre_push_hook,
-            )
-            if reuse_result is not None:
-                return reuse_result
-            # Capture recreated_reason from failed reuse (validation/sync/reset/preflight)
-            if reuse_recreated_reason and not recreated_reason:
-                recreated_reason = reuse_recreated_reason
-
-    # Handle branch on recreate
-    final_branch = ctx.branch_name
-    if recreated_reason and _branch_matches_issue(ctx.branch_name, ctx.issue_number):
-        final_branch = _handle_branch_on_recreate(
-            ctx.repo_root, ctx.branch_name, ctx.issue_number, ctx.reuse_options
-        )
-
-    return _create_fresh_worktree(
-        ctx.repo_root, ctx.worktree_path, final_branch, ctx.issue_number,
-        ctx.enforce_hooks, ctx.pre_push_hook, ctx.reuse_options, recreated_reason,
-    )
+    return None, recreated_reason
 
 
 def _handle_reuse_disabled(
@@ -1334,6 +1352,7 @@ def _try_reuse_by_branch(
     reuse_options: WorktreeReuseOptions,
     enforce_hooks: bool,
     pre_push_hook: Path | None,
+    base_branch: str | None,
 ) -> tuple[tuple[Path, str, str, str | None, bool, int, int] | None, str | None]:
     """Try to reuse an existing worktree by branch name.
 
@@ -1356,6 +1375,7 @@ def _try_reuse_by_branch(
         policy,
         reuse_options.reuse_push_preflight,
         reuse_options.allow_no_verify_dry_run_preflight,
+        base_branch,
     )
 
     if not result.success:
@@ -1391,6 +1411,7 @@ def _try_reuse_by_path(
     reuse_options: WorktreeReuseOptions,
     enforce_hooks: bool,
     pre_push_hook: Path | None,
+    base_branch: str | None,
 ) -> tuple[tuple[Path, str, str, str | None, bool, int, int] | None, str | None]:
     """Try to reuse an existing worktree by path.
 
@@ -1433,6 +1454,7 @@ def _try_reuse_by_path(
         policy,
         reuse_options.reuse_push_preflight,
         reuse_options.allow_no_verify_dry_run_preflight,
+        base_branch,
     )
 
     if not result.success:
@@ -1464,6 +1486,7 @@ def _create_fresh_worktree(
     repo_root: Path,
     worktree_path: Path,
     branch_name: str,
+    base_branch: str | None,
     issue_number: int,
     enforce_hooks: bool,
     pre_push_hook: Path | None,
@@ -1472,7 +1495,7 @@ def _create_fresh_worktree(
 ) -> tuple[Path, str, str, str | None, bool, int, int]:
     """Create a fresh worktree."""
     try:
-        cmd = _build_worktree_add_command(repo_root, worktree_path, branch_name)
+        cmd = _build_worktree_add_command(repo_root, worktree_path, branch_name, base_branch)
 
         logger.info(issue_log(issue_number, "Creating worktree: branch=%s path=%s"), branch_name, worktree_path)
         result = _git_run(repo_root, cmd, check=False)
@@ -1541,7 +1564,7 @@ def remove_worktree(worktree_path: Path) -> None:
             )
 
         # Get the branch name from the worktree
-        branch_name = _get_worktree_branch(worktree_path)
+        branch_name = get_worktree_branch(worktree_path)
         if branch_name:
             # Delete the branch
             cmd = ["branch", "-D", branch_name]
@@ -1663,7 +1686,7 @@ def has_uncommitted_changes(worktree_path: Path) -> bool:
         raise WorktreeError(f"Error checking uncommitted changes: {e}")
 
 
-def _get_worktree_branch(worktree_path: Path) -> str | None:
+def get_worktree_branch(worktree_path: Path) -> str | None:
     """
     Get the branch name for a worktree.
 
