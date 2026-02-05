@@ -387,6 +387,16 @@ class TestRunValidationCommand:
         tmp_path: Path,
     ) -> None:
         """Test validation timeout."""
+        from issue_orchestrator.ports.command_runner import CommandResult
+
+        controller._command_runner = MagicMock()  # noqa: SLF001
+        controller._command_runner.run.return_value = CommandResult(  # noqa: SLF001
+            returncode=-1,
+            stdout="",
+            stderr="",
+            timed_out=True,
+        )
+
         exit_code, stdout, stderr = controller.run_validation_command(
             working_dir=tmp_path,
             validation_cmd=f"{sys.executable} -c \"import time; time.sleep(10)\"",

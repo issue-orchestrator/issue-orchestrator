@@ -1332,9 +1332,13 @@ class TestCmdRestart:
         with patch('httpx.get') as mock_get:
             with patch('httpx.post') as mock_post:
                 with patch('issue_orchestrator.entrypoints.cli._start_fresh') as mock_start:
+                    import httpx
                     mock_status_response = Mock()
                     mock_status_response.status_code = 200
-                    mock_get.return_value = mock_status_response
+                    mock_get.side_effect = [
+                        mock_status_response,  # initial status check
+                        httpx.ConnectError("Stopped"),  # exit wait loop quickly
+                    ]
 
                     mock_shutdown_response = Mock()
                     mock_shutdown_response.status_code = 200

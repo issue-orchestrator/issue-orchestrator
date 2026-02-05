@@ -12,6 +12,14 @@ from pathlib import Path
 import pytest
 
 
+def _with_repo_on_pythonpath(env: dict[str, str]) -> dict[str, str]:
+    repo_root = Path(__file__).resolve().parents[2]
+    pythonpath = env.get("PYTHONPATH")
+    env = dict(env)
+    env["PYTHONPATH"] = str(repo_root / "src") + (os.pathsep + pythonpath if pythonpath else "")
+    return env
+
+
 class TestValidateRunner:
     """Test the validate_runner CLI."""
 
@@ -37,10 +45,10 @@ class TestValidateRunner:
             cwd=fake_git_repo,
             capture_output=True,
             text=True,
-            env={
+            env=_with_repo_on_pythonpath({
                 **os.environ,
                 "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR": str(output_dir),
-            },
+            }),
         )
 
         assert result.returncode == 0
@@ -59,7 +67,9 @@ class TestValidateRunner:
             cwd=fake_git_repo,
             capture_output=True,
             text=True,
-            env={k: v for k, v in os.environ.items() if not k.startswith("ISSUE_ORCHESTRATOR")},
+            env=_with_repo_on_pythonpath({
+                k: v for k, v in os.environ.items() if not k.startswith("ISSUE_ORCHESTRATOR")
+            }),
         )
 
         assert result.returncode == 0
@@ -81,10 +91,10 @@ class TestValidateRunner:
             cwd=fake_git_repo,
             capture_output=True,
             text=True,
-            env={
+            env=_with_repo_on_pythonpath({
                 **os.environ,
                 "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR": str(output_dir),
-            },
+            }),
         )
 
         assert result.returncode == 1
@@ -106,10 +116,10 @@ class TestValidateRunner:
             cwd=fake_git_repo,
             capture_output=True,
             text=True,
-            env={
+            env=_with_repo_on_pythonpath({
                 **os.environ,
                 "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR": str(output_dir),
-            },
+            }),
         )
         assert result.returncode == 0
 
@@ -123,10 +133,10 @@ class TestValidateRunner:
             cwd=fake_git_repo,
             capture_output=True,
             text=True,
-            env={
+            env=_with_repo_on_pythonpath({
                 **os.environ,
                 "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR": str(output_dir),
-            },
+            }),
         )
         assert result.returncode == 42
 
@@ -144,10 +154,10 @@ class TestValidateRunner:
             cwd=fake_git_repo,
             capture_output=True,
             text=True,
-            env={
+            env=_with_repo_on_pythonpath({
                 **os.environ,
                 "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR": str(output_dir),
-            },
+            }),
         )
 
         output_file = output_dir / "validation-output.log"
@@ -167,10 +177,10 @@ class TestValidateRunner:
             cwd=fake_git_repo,
             capture_output=True,
             text=True,
-            env={
+            env=_with_repo_on_pythonpath({
                 **os.environ,
                 "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR": str(output_dir),
-            },
+            }),
         )
 
         assert result.returncode == 2
@@ -190,10 +200,10 @@ class TestValidateRunner:
             cwd=fake_git_repo,
             capture_output=True,
             text=True,
-            env={
+            env=_with_repo_on_pythonpath({
                 **os.environ,
                 "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR": str(output_dir),
-            },
+            }),
         )
 
         # Output should appear in terminal (stdout)

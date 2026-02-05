@@ -44,5 +44,10 @@ class WorktreeValidator(ConfigValidator):
                 "worktrees.remediation.pr_collision must be one of "
                 f"{sorted(self.VALID_PR_COLLISION_MODES)}, got: '{config.worktree_remediation_pr_collision}'"
             )
+        if config.worktree_base_branch_override is not None:
+            if not config.worktree_base_branch_override.strip():
+                errors.append("worktrees.base_branch_override must be a non-empty string when set")
+            if config.worktree_base_branch_override.startswith("origin/"):
+                errors.append("worktrees.base_branch_override must not include 'origin/' prefix")
 
         return errors

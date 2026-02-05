@@ -133,6 +133,7 @@ class WorktreeContext:
             issue_number=issue_number,
             issue_title=issue_title,
             worktree_base=worktree_base,
+            base_branch=config.worktree_base_branch_override,
             enforce_hooks=enforce_hooks,
             reuse_options=reuse_options or WorktreeReuseOptions(),
             branch_name=branch_name,

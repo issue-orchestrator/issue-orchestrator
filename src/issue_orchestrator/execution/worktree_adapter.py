@@ -28,6 +28,7 @@ class GitWorktreeManager:
         enforce_hooks: bool = True,
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
+        base_branch: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
     ) -> WorktreeInfo:
         """Create a new git worktree for an issue."""
@@ -36,6 +37,7 @@ class GitWorktreeManager:
             issue_number=issue_number,
             issue_title=issue_title,
             worktree_base=worktree_base,
+            base_branch=base_branch,
             enforce_hooks=enforce_hooks,
             pre_push_hook=pre_push_hook,
             branch_name=branch_name,

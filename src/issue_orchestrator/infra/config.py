@@ -228,19 +228,19 @@ class DangerousConfig:
 
 
 @dataclass
-class SafetyCheckConfig:
-    """Safety check configuration for periodic hook verification.
+class AiGateConfig:
+    """AI gate configuration for periodic hook enforcement testing.
 
-    Spawns actual AI agents to verify hooks block dangerous commands.
+    Exercises AI-level hooks/execpolicy to verify blocking works.
     """
-    interval_days: int = 7  # Run safety check every N days (0 = disabled)
+    interval_days: int = 7  # Run AI gate test every N days (0 = disabled)
     dangerous_allow_failure: bool = False  # If True, warn only; if False, block on failure
 
 
 @dataclass
 class HooksConfig:
     """Hook management configuration."""
-    safety_check: SafetyCheckConfig = field(default_factory=SafetyCheckConfig)
+    ai_gate: AiGateConfig = field(default_factory=AiGateConfig)
 
 
 @dataclass
@@ -516,12 +516,12 @@ def _parse_goal_pilot_config(data: dict) -> GoalPilotConfig:
 
 def _parse_hooks_config(data: dict) -> HooksConfig:
     """Parse hooks section from YAML data."""
-    safety_check_data = data.get("safety_check", {})
-    safety_check = SafetyCheckConfig(
-        interval_days=safety_check_data.get("interval_days", 7),
-        dangerous_allow_failure=safety_check_data.get("dangerous_allow_failure", False),
+    ai_gate_data = data.get("ai_gate", {})
+    ai_gate = AiGateConfig(
+        interval_days=ai_gate_data.get("interval_days", 7),
+        dangerous_allow_failure=ai_gate_data.get("dangerous_allow_failure", False),
     )
-    return HooksConfig(safety_check=safety_check)
+    return HooksConfig(ai_gate=ai_gate)
 
 
 def _parse_triage_config(data: dict) -> TriageConfig:
@@ -727,6 +727,13 @@ def _load_worktrees_section(
     else:
         config.worktree_base = resolve_relative_path(worktree_base_raw, repo_root)
 
+    base_branch_override_raw = worktrees_section.get("base_branch_override")
+    if base_branch_override_raw is None:
+        config.worktree_base_branch_override = None
+    else:
+        base_branch_override = str(base_branch_override_raw).strip()
+        config.worktree_base_branch_override = base_branch_override or None
+
     # Validate worktree_base is usable
     try:
         config.worktree_base.mkdir(parents=True, exist_ok=True)
@@ -736,7 +743,8 @@ def _load_worktrees_section(
             "Specify an absolute path in your config under worktrees.base"
         )
 
-    config.setup_worktree = worktrees_section.get("setup", [])
+    if "setup" in worktrees_section:
+        config.setup_worktree = worktrees_section.get("setup", [])
     config.reuse_push_preflight = worktrees_section.get("reuse_push_preflight", True)
     config.allow_no_verify_dry_run_preflight = worktrees_section.get(
         "allow_no_verify_dry_run_preflight", True
@@ -954,6 +962,7 @@ class Config:
     repo_root: Path = field(default_factory=Path.cwd)  # Root of the git repository
     repo_root_from_yaml: bool = False  # Internal: YAML explicitly set repo_root
     worktree_base: Path = Path(".issue-orchestrator/worktrees")  # Base directory for worktrees
+    worktree_base_branch_override: Optional[str] = None  # Override base branch for worktree creation
     worktree_branch_on_recreate: str = "delete"  # delete or create_new_branch
 
     # Config validation
@@ -1038,7 +1047,9 @@ class Config:
     pre_push_hook: Optional[Path] = None  # Custom pre-push hook path (uses bundled if None)
 
     # Worktree setup commands (run after worktree creation, e.g., npm install)
-    setup_worktree: list[str] = field(default_factory=list)
+    setup_worktree: list[str] = field(
+        default_factory=lambda: ["make install-vscode-extensions"]
+    )
     # Preflight a dry-run push when reusing worktrees to catch stale refs early.
     reuse_push_preflight: bool = True
     # Allow git push --dry-run --no-verify for reuse preflight (default on).
@@ -1111,7 +1122,7 @@ class Config:
     # Claims/lease configuration for multi-orchestrator coordination
     claims: ClaimsConfig = field(default_factory=ClaimsConfig)
 
-    # Hooks configuration - safety checks for AI agent hooks
+    # Hooks configuration - AI gate tests for agent hooks/execpolicy
     hooks: HooksConfig = field(default_factory=HooksConfig)
 
     # Stale in-progress escalation threshold (0 = disabled)
@@ -1281,6 +1292,7 @@ class Config:
             },
             "worktrees": {
                 "base": str(self.worktree_base),
+                "base_branch_override": self.worktree_base_branch_override,
                 "setup": list(self.setup_worktree),
                 "reuse_push_preflight": self.reuse_push_preflight,
                 "allow_no_verify_dry_run_preflight": self.allow_no_verify_dry_run_preflight,
@@ -1436,10 +1448,10 @@ class Config:
                 "convergence_required_wins": self.claims.convergence_required_wins,
             },
             "hooks": {
-                "safety_check": {
-                    "interval_days": self.hooks.safety_check.interval_days,
-                    "dangerous_allow_failure": self.hooks.safety_check.dangerous_allow_failure,
-                },
+                    "ai_gate": {
+                        "interval_days": self.hooks.ai_gate.interval_days,
+                        "dangerous_allow_failure": self.hooks.ai_gate.dangerous_allow_failure,
+                    },
             },
             "agents": {
                 label: {
@@ -1632,6 +1644,8 @@ class Config:
         # Only include worktree_base if it was explicitly set (not the default)
         if self.worktree_base != self.repo_root.parent:
             worktrees_dict["base"] = str(self.worktree_base)
+        if self.worktree_base_branch_override:
+            worktrees_dict["base_branch_override"] = self.worktree_base_branch_override
         if self.setup_worktree:
             worktrees_dict["setup"] = list(self.setup_worktree)
         if self.worktree_branch_on_recreate != "delete":
@@ -1706,10 +1720,10 @@ class Config:
 
         # Hooks section (only include if non-default)
         hooks_dict: dict = {}
-        if self.hooks.safety_check.interval_days != 7:
-            hooks_dict.setdefault("safety_check", {})["interval_days"] = self.hooks.safety_check.interval_days
-        if self.hooks.safety_check.dangerous_allow_failure:
-            hooks_dict.setdefault("safety_check", {})["dangerous_allow_failure"] = True
+        if self.hooks.ai_gate.interval_days != 7:
+            hooks_dict.setdefault("ai_gate", {})["interval_days"] = self.hooks.ai_gate.interval_days
+        if self.hooks.ai_gate.dangerous_allow_failure:
+            hooks_dict.setdefault("ai_gate", {})["dangerous_allow_failure"] = True
         if hooks_dict:
             result["hooks"] = hooks_dict
 

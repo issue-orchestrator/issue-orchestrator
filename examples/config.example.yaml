@@ -75,7 +75,9 @@ agents:
 
 worktrees:
   base: "../"                     # Where to create worktrees (relative to repo)
+  # base_branch_override: "main"         # Optional: override base branch (must exist on origin)
   setup:
+    - "make install-vscode-extensions"
     # - "npm install"
     # - "pip install -e '.[dev]'"
   reuse_push_preflight: true
@@ -185,8 +187,8 @@ security:
     allow_unsupported_agents: false
 
 hooks:
-  safety_check:
-    interval_days: 7                    # Run live verification every N days (0 = disabled)
+  ai_gate:
+    interval_days: 7                    # Run AI gate tests every N days (0 = disabled)
     dangerous_allow_failure: false      # If true, warn only; if false, block on failure
 
 ai_systems:
@@ -200,9 +202,6 @@ filtering:
   # exclude_labels: ["io-e2e-test-data", "test-data"]
   fetch_limit: 100
   max_to_start: 0
-
-scheduling:
-  default_priority_tier: 1         # P1 when title lacks [P?-nnn]
 
 milestones:
   sort: "due_date"                # due_date, milestone_number, pattern, name

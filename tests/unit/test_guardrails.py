@@ -18,10 +18,14 @@ class TestGhWrapper:
     """Test the gh CLI wrapper guardrails."""
 
     @pytest.fixture
-    def wrapper_env(self):
+    def wrapper_env(self, tmp_path):
         """Environment with wrapper directory prepended to PATH."""
+        fake_gh = tmp_path / "gh"
+        fake_gh.write_text("#!/bin/sh\nexit 0\n")
+        fake_gh.chmod(0o755)
         env = os.environ.copy()
         env["PATH"] = f"{SCRIPTS_DIR}:{env.get('PATH', '')}"
+        env["ORCHESTRATOR_REAL_GH"] = str(fake_gh)
         env.pop("ORCHESTRATOR_GH_AUTH", None)  # Ensure not authorized
         return env
 

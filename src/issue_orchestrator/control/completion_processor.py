@@ -34,6 +34,7 @@ from ..domain.models import (
 )
 from ..domain.events import EventBus, SessionEvent
 from ..infra.issue_diagnostics import write_issue_diagnostic
+from ..infra.worktree_base import resolve_base_branch
 from ..ports.session_output import SessionOutput, ValidationRecord
 from .validation import PublishGate, ValidationRecordStore
 
@@ -89,6 +90,7 @@ class GitAdapter(Protocol):
     def list_branch_names(self, worktree: Path) -> list[str]: ...
     def get_current_branch(self, worktree: Path) -> str | None: ...
     def has_uncommitted_changes(self, worktree: Path) -> bool: ...
+    def default_branch(self, repo_root: Path, remote: str = "origin") -> str: ...
 
 
 @dataclass
@@ -184,6 +186,17 @@ class CompletionProcessor:
             "validation_failed": "validation-failed",
         }
         return self.label_config.get(key, defaults.get(key, key))
+
+    def _base_branch(self) -> str:
+        if self._config is None:
+            return "main"
+        resolved = resolve_base_branch(
+            self._config.repo_root,
+            config_override=self._config.worktree_base_branch_override,
+            default_branch_resolver=self.git_adapter.default_branch,
+            log=logger,
+        )
+        return resolved.branch
 
     def read_completion_record(
         self, worktree: Path, completion_path: str | None = None
@@ -835,7 +848,10 @@ class CompletionProcessor:
             )
             return None
 
-        rebase_result = self.git_adapter.rebase_on_branch(worktree, "origin/main")
+        rebase_result = self.git_adapter.rebase_on_branch(
+            worktree,
+            f"origin/{self._base_branch()}",
+        )
         if rebase_result.success:
             actions_taken.append("Rebased onto origin/main")
             return self.git_adapter.push(worktree, skip_hooks=skip_hooks)
@@ -1171,13 +1187,13 @@ class CompletionProcessor:
     ) -> PRInfo | None:
         """Create PR with collision handling."""
         try:
-            return self.pr_adapter.create_pr(
-                title=pr_title,
-                body=pr_body,
-                head=branch,
-                base="main",
-                draft=draft,
-            )
+                return self.pr_adapter.create_pr(
+                    title=pr_title,
+                    body=pr_body,
+                    head=branch,
+                    base=self._base_branch(),
+                    draft=draft,
+                )
         except Exception as e:
             if self._pr_collision_strategy == "new_branch" and self._is_pr_collision_error(e):
                 new_branch = self._switch_to_suffixed_branch(
@@ -1191,12 +1207,12 @@ class CompletionProcessor:
                     title=pr_title,
                     body=pr_body,
                     head=new_branch,
-                    base="main",
+                    base=self._base_branch(),
                     draft=draft,
                 )
             elif self._is_no_commits_error(e):
                 raise RuntimeError(
-                    f"Cannot create PR: no commits between main and {branch}. "
+                    f"Cannot create PR: no commits between {self._base_branch()} and {branch}. "
                     f"Possible causes: (1) agent didn't make any changes, "
                     f"(2) work already merged via another PR, "
                     f"(3) commits lost during rebase. "
@@ -1386,7 +1402,7 @@ class CompletionProcessor:
         return "pull request" in message and "already exists" in message
 
     def _is_no_commits_error(self, error: Exception) -> bool:
-        """Detect GitHub 422 'No commits between main and branch' error.
+        """Detect GitHub 422 'No commits between base and branch' error.
 
         This happens when the branch is identical to main, meaning the work
         was already merged (possibly from a previous session or other PR).

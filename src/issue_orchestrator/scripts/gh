@@ -70,6 +70,9 @@ is_allowed_command() {
 
 # If authorized by agent-done, allow everything
 if [[ "${ORCHESTRATOR_GH_AUTH:-}" == "agent-done-authorized" ]]; then
+    if [[ -n "${ORCHESTRATOR_REAL_GH:-}" && -x "${ORCHESTRATOR_REAL_GH}" ]]; then
+        exec "${ORCHESTRATOR_REAL_GH}" "$@"
+    fi
     # Find and exec real gh
     for gh_path in /opt/homebrew/bin/gh /usr/local/bin/gh /usr/bin/gh; do
         if [[ -x "$gh_path" ]]; then
@@ -93,6 +96,9 @@ cmd="${1:-}"
 subcmd="${2:-}"
 
 if is_allowed_command "$cmd" "$subcmd"; then
+    if [[ -n "${ORCHESTRATOR_REAL_GH:-}" && -x "${ORCHESTRATOR_REAL_GH}" ]]; then
+        exec "${ORCHESTRATOR_REAL_GH}" "$@"
+    fi
     # Allowed - pass through to real gh
     for gh_path in /opt/homebrew/bin/gh /usr/local/bin/gh /usr/bin/gh; do
         if [[ -x "$gh_path" ]]; then
