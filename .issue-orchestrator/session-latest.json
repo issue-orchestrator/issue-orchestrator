@@ -1,8 +1,8 @@
 {
-  "issue_number": null,
-  "log_path": "/Users/brucegordon/dev/issue-orchestrator-4038/.issue-orchestrator/sessions/20260205-221943Z__rework-4038/session.log",
-  "run_dir": "/Users/brucegordon/dev/issue-orchestrator-4038/.issue-orchestrator/sessions/20260205-221943Z__rework-4038",
-  "run_id": "20260205-221943Z",
-  "session_name": "rework-4038",
-  "started_at": "2026-02-05T22:19:43.354921+00:00"
+  "issue_number": 4038,
+  "log_path": "/Users/brucegordon/dev/issue-orchestrator-4038/.issue-orchestrator/sessions/20260205-223844Z__coding-2/session.log",
+  "run_dir": "/Users/brucegordon/dev/issue-orchestrator-4038/.issue-orchestrator/sessions/20260205-223844Z__coding-2",
+  "run_id": "20260205-223844Z",
+  "session_name": "coding-2",
+  "started_at": "2026-02-05T22:38:44.106144+00:00"
 }
