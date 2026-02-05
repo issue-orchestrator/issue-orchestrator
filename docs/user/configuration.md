@@ -623,6 +623,13 @@ _Auto-generated from settings schema._
 | `sqlite_backup.retention_daily` | integer | `14` | Number of daily backups to keep |
 | `sqlite_backup.retention_weekly` | integer | `8` | Number of weekly backups to keep |
 | `sqlite_backup.enforce_on_startup` | boolean | `True` | If cadence elapsed, force a backup on startup |
+| `provider_resilience.short_retry.max_attempts` | integer | `4` | Max attempts for transient provider failures |
+| `provider_resilience.short_retry.initial_backoff_seconds` | integer | `5` | Initial backoff for transient provider retries |
+| `provider_resilience.short_retry.max_backoff_seconds` | integer | `60` | Maximum backoff for transient provider retries |
+| `provider_resilience.short_retry.jitter` | boolean | `True` | Apply full jitter to provider retry backoff |
+| `provider_resilience.circuit_breaker.cooldown_seconds` | integer | `1800` | Cooldown window before retrying provider after outage |
+| `provider_resilience.circuit_breaker.max_cooldowns` | integer | `6` | Maximum cooldown escalation steps |
+| `provider_resilience.circuit_breaker.label` | string | `blocked:provider-unavailable` | Label applied when provider is unavailable |
 | `observability.session_no_output_seconds` | integer | `120` | Emit event after this much idle time |
 | `observability.stale_escalation_ticks` | integer | `0` | Escalate after K consecutive stale ticks (0 = disabled) |
 | `ui.web_port` | integer | `8080` |  |
