@@ -289,6 +289,9 @@ class Planner:
             logger.debug("Planner: orchestrator is paused, returning empty plan")
             return Plan.empty()
 
+        # Track planned labels across phases to avoid duplicate label actions
+        planned_labels_by_issue: dict[int, set[str]] = {}
+
         # === PHASE 1: Queue population actions (don't consume capacity) ===
 
         # 1a. Clean up stale in-progress labels (no session running)
@@ -300,7 +303,7 @@ class Planner:
         actions.extend(stale_claim_actions)
 
         # 1a-2b. Apply provider resilience labels (provider unavailable/available)
-        provider_label_actions = self._plan_provider_resilience_labels(snapshot)
+        provider_label_actions = self._plan_provider_resilience_labels(snapshot, planned_labels_by_issue)
         actions.extend(provider_label_actions)
 
         # 1a-3. Immediate label projection for observed completions (async processing)
@@ -348,21 +351,21 @@ class Planner:
 
         # 2. Plan review launches (highest priority)
         if capacity > 0 and self.review_workflow:
-            review_actions, review_skipped = self._plan_reviews(snapshot, capacity)
+            review_actions, review_skipped = self._plan_reviews(snapshot, capacity, planned_labels_by_issue)
             actions.extend(review_actions)
             skipped.extend(review_skipped)
             capacity -= len(review_actions)
 
         # 3. Plan rework launches
         if capacity > 0 and self.rework_workflow:
-            rework_actions, rework_skipped = self._plan_reworks(snapshot, capacity)
+            rework_actions, rework_skipped = self._plan_reworks(snapshot, capacity, planned_labels_by_issue)
             actions.extend(rework_actions)
             skipped.extend(rework_skipped)
             capacity -= len(rework_actions)
 
         # 4. Plan triage launches
         if capacity > 0 and self.triage_workflow:
-            triage_actions, triage_skipped = self._plan_triage(snapshot, capacity)
+            triage_actions, triage_skipped = self._plan_triage(snapshot, capacity, planned_labels_by_issue)
             actions.extend(triage_actions)
             skipped.extend(triage_skipped)
             capacity -= len(triage_actions)
@@ -465,13 +468,16 @@ class Planner:
             ))
             planned_labels.add(self.provider_policy.blocked_label())
 
-    def _plan_provider_resilience_labels(self, snapshot: OrchestratorSnapshot) -> list[Action]:
+    def _plan_provider_resilience_labels(
+        self,
+        snapshot: OrchestratorSnapshot,
+        planned_labels_by_issue: dict[int, set[str]],
+    ) -> list[Action]:
         if not self.provider_policy:
             return []
         actions: list[Action] = []
         label = self.provider_policy.blocked_label()
         providers_by_issue = self.provider_policy.providers_for_snapshot(snapshot)
-        planned_labels_by_issue: dict[int, set[str]] = {}
         for issue in snapshot.issues:
             providers = providers_by_issue.get(issue.number, set())
             if not providers:
@@ -999,12 +1005,12 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        planned_labels_by_issue: dict[int, set[str]],
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which reviews to launch."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
         issue_labels_by_number = {issue.number: list(issue.labels) for issue in snapshot.issues}
-        planned_labels_by_issue: dict[int, set[str]] = {}
 
         if not self.review_workflow or not self.review_workflow.is_configured():
             return actions, skipped
@@ -1062,12 +1068,12 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        planned_labels_by_issue: dict[int, set[str]],
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which reworks to launch."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
         issue_labels_by_number = {issue.number: list(issue.labels) for issue in snapshot.issues}
-        planned_labels_by_issue: dict[int, set[str]] = {}
 
         if not self.rework_workflow:
             return actions, skipped
@@ -1151,12 +1157,12 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        planned_labels_by_issue: dict[int, set[str]],
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which triage reviews to launch."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
         issue_labels_by_number = {issue.number: list(issue.labels) for issue in snapshot.issues}
-        planned_labels_by_issue: dict[int, set[str]] = {}
 
         if not self.triage_workflow or not self.triage_workflow.is_configured():
             return actions, skipped
