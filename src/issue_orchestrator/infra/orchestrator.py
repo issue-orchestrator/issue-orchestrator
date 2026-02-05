@@ -180,6 +180,7 @@ class Orchestrator:
             self._create_session, self._get_issue_machine, self._get_session_machine,
             self._get_review_machine, self._refresh_issue, getattr(self.scheduler, "dependency_evaluator", None),
             claim_manager=self.deps.claim_manager,
+            provider_resilience=self.deps.provider_resilience,
         )
 
     @cached_property
@@ -235,6 +236,7 @@ class Orchestrator:
     def tick(self) -> bool:
         with self._state_lock:
             self._last_tick_time = time.time()
+            self.deps.provider_resilience.close_expired()
             self._loop_iteration, cont = _run_tick_impl(
                 self._loop_iteration,
                 self._event_context,
@@ -348,6 +350,7 @@ class Orchestrator:
             self._kill_session,
             claim_manager=self.deps.claim_manager,
             events=self.deps.events,
+            provider_resilience=self.deps.provider_resilience,
         )
         # Check lease renewals for active sessions
         self._check_lease_renewals()

@@ -15,6 +15,8 @@ the orchestrator focused on coordination and main loop logic.
 
 import json
 import logging
+import shlex
+import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -27,7 +29,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.review_machine import ReviewStateMachine
     from .dependency_evaluator import DependencyEvaluator
     from .completion_handler import CompletionHandler
-    from .completion_observer import CompletionObserver
+    from .completion_observer import CompletionObserver, ObservationDecision
     from .action_applier import ActionApplier
     from .session_manager import SessionType
     from .session_controller import SessionController
@@ -37,12 +39,13 @@ if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
     from ..ports.session_runner import DiscoveredSession
     from ..ports.claim_manager import ClaimManager
+    from .provider_resilience import ProviderResilienceManager
 
 from ..infra.config import Config
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import issue_log, log_context
 from ..events import EventName
-from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind
+from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind, AgentConfig
 from .worktree import WorktreePreparationError
 from .worktree_context import WorktreeContext
 from ..domain.triage_manifest import TriageManifest
@@ -59,6 +62,9 @@ from ..ports import (
 )
 from ..ports.session_output import SessionOutput
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions, WorktreeInfo
+from ..ports.session_log import detect_ai_system_from_command
+from ..ports.provider_resilience import ProviderErrorType
+from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .session_manager import SessionManager
@@ -206,6 +212,7 @@ class SessionLauncher:
         refresh_issue_fn: Optional[Callable[[int], Optional["IssueProtocol"]]] = None,
         dependency_evaluator: Optional["DependencyEvaluator"] = None,
         claim_manager: Optional["ClaimManager"] = None,
+        provider_resilience: Optional["ProviderResilienceManager"] = None,
     ):
         self.config = config
         self.events = events
@@ -225,6 +232,8 @@ class SessionLauncher:
         self._refresh_issue = refresh_issue_fn
         self._dependency_evaluator = dependency_evaluator
         self._claim_manager = claim_manager
+        self._provider_resilience = provider_resilience
+        self._provider_policy = ProviderAvailabilityPolicy(config, provider_resilience) if provider_resilience else None
 
     def _worktree_reuse_options(self, *, allow_remote_branch_delete: bool = True) -> WorktreeReuseOptions:
         return WorktreeReuseOptions(
@@ -509,6 +518,10 @@ class SessionLauncher:
         if result := self._verify_dependencies_fresh(issue):
             return result
 
+        # Provider circuit breaker check
+        if result := self._check_provider_circuit(agent_config.provider, issue.number):
+            return result
+
         log_transition("issue", issue.number, "AVAILABLE", "LAUNCHING", "no conflicts")
 
         # Phase 3: Acquire distributed claim
@@ -675,6 +688,7 @@ class SessionLauncher:
             worktree=worktree_path,
             existing_work=existing_work,
         )
+        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(issue.agent_type, session_name=session_name)
         self._session_output.update_manifest(
             run.run_dir,
@@ -686,6 +700,7 @@ class SessionLauncher:
         env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{issue.number}'"
         env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
         env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run.run_dir}'"
+        env_exports += f" {ENV_PREFIX}RUN_DIR='{run.run_dir}'"
         # NOTE: Validation config is NOT passed via env var.
         # agent-done reads validation config from the worktree's config file.
         # This ensures tests are deterministic (no env var leakage).
@@ -780,6 +795,9 @@ class SessionLauncher:
         agent_config = self.config.agents.get(agent_label)
         if not agent_config:
             return LaunchResult(None, False, f"No agent config for {agent_label}")
+
+        if result := self._check_provider_circuit(agent_config.provider, review.issue_number):
+            return result
 
         # Check for conflicts
         session_name = f"review-{review.pr_number}"
@@ -914,6 +932,7 @@ class SessionLauncher:
             pr_number=review.pr_number,
             existing_work=existing_work,
         )
+        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(agent_label, session_name=session_name)
         self._session_output.update_manifest(
             run.run_dir,
@@ -925,6 +944,7 @@ class SessionLauncher:
         env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{review.issue_number}'"
         env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
         env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run.run_dir}'"
+        env_exports += f" {ENV_PREFIX}RUN_DIR='{run.run_dir}'"
         # NOTE: Validation config is NOT passed via env var.
         # agent-done reads validation config from the worktree's config file.
         # This ensures tests are deterministic (no env var leakage).
@@ -1034,25 +1054,15 @@ class SessionLauncher:
         if issue_number is None:
             return LaunchResult(None, False, f"Unresolved issue number for rework {issue_key}")
 
-        # Try to find PR details
-        prs = self.repository_host.get_prs_for_issue(issue_number)
-        if not prs:
-            branch_name = f"{issue_number}-rework"
-            pr_number = issue_number
-        else:
-            pr = prs[0]
-            branch_name = pr.branch
-            pr_number = pr.number
+        if result := self._check_provider_circuit(agent_config.provider, issue_number):
+            return result
+
+        pr_number, branch_name = self._resolve_rework_pr_details(issue_number)
 
         # Check for conflicts
         session_name = f"rework-{issue_number}"
-        if any(s.terminal_id == session_name for s in active_sessions):
-            log_transition("rework", issue_number, "QUEUED", "SKIP", "already in active_sessions")
-            return LaunchResult(None, False, "Already in active sessions")
-
-        if self._session_exists(session_name):
-            log_transition("rework", issue_number, "QUEUED", "SKIP", "terminal session already running")
-            return LaunchResult(None, False, "Terminal session already running", keep_queued=True)
+        if result := self._check_rework_conflicts(session_name, active_sessions, issue_number):
+            return result
 
         log_transition("rework", issue_number, "QUEUED", "LAUNCHING", f"no conflicts, cycle={rework.rework_cycle}")
         logger.info(
@@ -1197,6 +1207,7 @@ class SessionLauncher:
             pr_number=pr_number,
             existing_work=existing_work,
         )
+        base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(rework.agent_type, session_name=session_name)
         self._session_output.update_manifest(
             run.run_dir,
@@ -1208,6 +1219,7 @@ class SessionLauncher:
         env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
         env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
         env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run.run_dir}'"
+        env_exports += f" {ENV_PREFIX}RUN_DIR='{run.run_dir}'"
         # NOTE: Validation config is NOT passed via env var.
         # agent-done reads validation config from the worktree's config file.
         # This ensures tests are deterministic (no env var leakage).
@@ -1511,6 +1523,71 @@ class SessionLauncher:
         setup_time = time.time() - step_start
         logger.info("[launch] Setup completed in %.1fs", setup_time)
 
+    def _wrap_provider_command(self, base_command: str, agent_config: "AgentConfig", run_dir: Path) -> str:
+        """Wrap provider command with retry/circuit reporting."""
+        retry_cfg = self.config.provider_resilience.short_retry
+        provider = agent_config.provider or detect_ai_system_from_command(base_command)
+        cmd = [
+            sys.executable,
+            "-m",
+            "issue_orchestrator.entrypoints.cli_tools.provider_runner",
+            "--command",
+            base_command,
+            "--timeout-seconds",
+            str(agent_config.timeout_minutes * 60),
+            "--max-attempts",
+            str(retry_cfg.max_attempts),
+            "--initial-backoff-seconds",
+            str(retry_cfg.initial_backoff_seconds),
+            "--max-backoff-seconds",
+            str(retry_cfg.max_backoff_seconds),
+            "--run-dir",
+            str(run_dir),
+        ]
+        if retry_cfg.jitter:
+            cmd.append("--jitter")
+        else:
+            cmd.append("--no-jitter")
+        if provider:
+            cmd.extend(["--provider", provider])
+        return shlex.join(cmd)
+
+    def _check_provider_circuit(self, provider: str | None, issue_number: int) -> Optional["LaunchResult"]:
+        if not provider or not self._provider_policy:
+            return None
+        if not self._provider_policy.is_open(provider):
+            return None
+        blocked_label = self._provider_policy.blocked_label()
+        self._apply_actions([
+            AddLabelAction(
+                issue_number=issue_number,
+                label=blocked_label,
+                reason=f"provider unavailable: {provider}",
+            ),
+        ], context="provider_unavailable")
+        return LaunchResult(None, False, f"Provider unavailable: {provider}")
+
+    def _check_rework_conflicts(
+        self,
+        session_name: str,
+        active_sessions: list[Session],
+        issue_number: int,
+    ) -> Optional["LaunchResult"]:
+        if any(s.terminal_id == session_name for s in active_sessions):
+            log_transition("rework", issue_number, "QUEUED", "SKIP", "already in active_sessions")
+            return LaunchResult(None, False, "Already in active sessions")
+        if self._session_exists(session_name):
+            log_transition("rework", issue_number, "QUEUED", "SKIP", "terminal session already running")
+            return LaunchResult(None, False, "Terminal session already running", keep_queued=True)
+        return None
+
+    def _resolve_rework_pr_details(self, issue_number: int) -> tuple[int, str]:
+        prs = self.repository_host.get_prs_for_issue(issue_number)
+        if not prs:
+            return issue_number, f"{issue_number}-rework"
+        pr = prs[0]
+        return pr.number, pr.branch
+
     def _trigger_issue_session_state_transitions(
         self,
         issue: "IssueProtocol",
@@ -1588,6 +1665,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     validation_error: Optional[str] = None,
     validation_error_file: Optional[str] = None,
     review_exchange_completed: bool = False,
+    blocked_label: Optional[str] = None,
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
 ) -> None:
@@ -1656,6 +1734,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         processing_errors=processing_errors,
         diagnostic_path=diagnostic_path,
         review_exchange_completed=review_exchange_completed,
+        blocked_label=blocked_label,
     )
     if session.worktree_path:
         run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
@@ -1951,6 +2030,7 @@ def process_active_sessions(
             validation_error=validation_error,
             validation_error_file=str(validation_error_file) if validation_error_file else None,
             review_exchange_completed=review_exchange_completed,
+            blocked_label=decision.blocked_label,
         )
         session_elapsed = time.monotonic() - session_start
         if session_elapsed > 5:
@@ -1963,6 +2043,165 @@ def process_active_sessions(
             )
 
 
+def _log_observation(session: Session, decision: "ObservationDecision") -> None:
+    logger.info(
+        "[OBSERVE] Session completed: session=%s issue=%d status=%s has_completion=%s",
+        session.terminal_id,
+        session.issue.number,
+        decision.status.value,
+        decision.observed is not None,
+    )
+
+
+def _publish_observation_event(
+    session: Session,
+    decision: "ObservationDecision",
+    events: Optional[EventSink],
+) -> None:
+    if not events:
+        return
+    events.publish(TraceEvent(EventName.OBSERVATION_RESULT, {
+        "issue_number": session.issue.number,
+        "session_name": session.terminal_id,
+        "status": decision.status.value,
+        "has_completion": decision.observed is not None,
+        "recovered_from_timeout": decision.recovered_from_timeout,
+    }))
+
+
+def _remove_active_session(state: "OrchestratorState", session: Session) -> None:
+    state.active_sessions = [s for s in state.active_sessions if s.terminal_id != session.terminal_id]
+
+
+def _kill_session(kill_session_fn: Callable[[str], None], session: Session) -> None:
+    try:
+        kill_session_fn(session.terminal_id)
+        logger.debug("[OBSERVE] Killed terminal: %s", session.terminal_id)
+    except Exception as exc:
+        logger.warning("[OBSERVE] Failed to kill terminal %s: %s", session.terminal_id, exc)
+
+
+def _release_claim_if_needed(
+    session: Session,
+    decision: "ObservationDecision",
+    claim_manager: Optional["ClaimManager"],
+    events: Optional[EventSink],
+) -> None:
+    if not claim_manager or not session.lease_id:
+        return
+    try:
+        claim_manager.release_claim(session.issue.number, session.lease_id)
+        logger.info(
+            "[OBSERVE] Released claim for issue #%d: lease_id=%s",
+            session.issue.number,
+            session.lease_id,
+        )
+        if events:
+            events.publish(TraceEvent(
+                EventName.CLAIM_RELEASED,
+                {
+                    "issue_number": session.issue.number,
+                    "lease_id": session.lease_id,
+                    "status": decision.status.value,
+                },
+            ))
+    except Exception as exc:
+        logger.warning(
+            "[OBSERVE] Failed to release claim for issue #%d: %s",
+            session.issue.number,
+            exc,
+        )
+
+
+def _update_provider_resilience(
+    decision: "ObservationDecision",
+    provider_resilience: Optional["ProviderResilienceManager"],
+) -> None:
+    if not provider_resilience or not decision.provider_status:
+        return
+    provider = decision.provider_status.provider
+    if decision.provider_status.succeeded:
+        provider_resilience.record_success(provider)
+        return
+    if decision.provider_status.error_type == ProviderErrorType.TRANSIENT:
+        provider_resilience.record_transient_failure(
+            provider,
+            error_summary=decision.provider_status.last_error_summary,
+            attempts=decision.provider_status.attempts,
+        )
+
+
+def _record_observed_completion(
+    state: "OrchestratorState",
+    session: Session,
+    decision: "ObservationDecision",
+) -> None:
+    if decision.observed:
+        state.observed_completions.append(decision.observed)
+        logger.info(
+            "[OBSERVE] Collected completion: issue=%d outcome=%s needs_publish=%s",
+            session.issue.number,
+            decision.observed.outcome,
+            decision.observed.needs_publish,
+        )
+        return
+    from ..domain.models import DiscoveredFailure
+    state.discovered_failures.append(DiscoveredFailure(
+        session.issue.number,
+        session.issue.title,
+        decision.status.value,
+    ))
+    state.failed_this_cycle.add(session.issue.number)
+    logger.warning(
+        "[OBSERVE] No completion record for issue #%d, status=%s",
+        session.issue.number,
+        decision.status.value,
+    )
+
+
+def _warn_if_slow(obs_elapsed: float, session: Session) -> None:
+    if obs_elapsed <= 1.0:
+        return
+    logger.warning(
+        "[OBSERVE] Session observation took %.1fs (session=%s issue=%s) - should be <1s",
+        obs_elapsed,
+        session.terminal_id,
+        session.issue.number,
+    )
+
+
+def _observe_active_session(
+    state: "OrchestratorState",
+    session: Session,
+    observer: "SessionObserver",
+    completion_observer: "CompletionObserver",
+    kill_session_fn: Callable[[str], None],
+    claim_manager: Optional["ClaimManager"],
+    events: Optional[EventSink],
+    provider_resilience: Optional["ProviderResilienceManager"],
+) -> None:
+    import time
+    from ..observation.observation import SessionObservation
+
+    obs_start = time.monotonic()
+    obs = observer.observe_session(session)
+    if obs.observation == SessionObservation.RUNNING:
+        return
+
+    decision = completion_observer.observe_completion(session, obs)
+
+    _log_observation(session, decision)
+    _publish_observation_event(session, decision, events)
+    _remove_active_session(state, session)
+    _kill_session(kill_session_fn, session)
+    _release_claim_if_needed(session, decision, claim_manager, events)
+    _update_provider_resilience(decision, provider_resilience)
+    _record_observed_completion(state, session, decision)
+
+    obs_elapsed = time.monotonic() - obs_start
+    _warn_if_slow(obs_elapsed, session)
+
+
 def observe_active_sessions(
     state: "OrchestratorState",
     observer: "SessionObserver",
@@ -1970,6 +2209,7 @@ def observe_active_sessions(
     kill_session_fn: Callable[[str], None],
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
+    provider_resilience: Optional["ProviderResilienceManager"] = None,
 ) -> None:
     """Observe active sessions and collect completion facts (fast, no I/O-heavy operations).
 
@@ -1991,105 +2231,17 @@ def observe_active_sessions(
         claim_manager: Optional ClaimManager for releasing claims
         events: Optional EventSink for emitting events
     """
-    import time
-    from ..observation.observation import SessionObservation
-
     for session in list(state.active_sessions):
-        obs_start = time.monotonic()
-
-        # Check if session is still running
-        obs = observer.observe_session(session)
-        if obs.observation == SessionObservation.RUNNING:
-            continue
-
-        # Session has terminated - observe completion (fast, no execution)
-        decision = completion_observer.observe_completion(session, obs)
-
-        logger.info(
-            "[OBSERVE] Session completed: session=%s issue=%d status=%s has_completion=%s",
-            session.terminal_id,
-            session.issue.number,
-            decision.status.value,
-            decision.observed is not None,
+        _observe_active_session(
+            state=state,
+            session=session,
+            observer=observer,
+            completion_observer=completion_observer,
+            kill_session_fn=kill_session_fn,
+            claim_manager=claim_manager,
+            events=events,
+            provider_resilience=provider_resilience,
         )
-
-        # Emit observation event
-        if events:
-            events.publish(TraceEvent(EventName.OBSERVATION_RESULT, {
-                "issue_number": session.issue.number,
-                "session_name": session.terminal_id,
-                "status": decision.status.value,
-                "has_completion": decision.observed is not None,
-                "recovered_from_timeout": decision.recovered_from_timeout,
-            }))
-
-        # Remove from active sessions immediately
-        state.active_sessions = [s for s in state.active_sessions if s.terminal_id != session.terminal_id]
-
-        # Kill terminal session immediately (free resources)
-        try:
-            kill_session_fn(session.terminal_id)
-            logger.debug("[OBSERVE] Killed terminal: %s", session.terminal_id)
-        except Exception as e:
-            logger.warning("[OBSERVE] Failed to kill terminal %s: %s", session.terminal_id, e)
-
-        # Release claim immediately if session had one
-        if claim_manager and session.lease_id:
-            try:
-                claim_manager.release_claim(session.issue.number, session.lease_id)
-                logger.info(
-                    "[OBSERVE] Released claim for issue #%d: lease_id=%s",
-                    session.issue.number,
-                    session.lease_id,
-                )
-                if events:
-                    events.publish(TraceEvent(
-                        EventName.CLAIM_RELEASED,
-                        {
-                            "issue_number": session.issue.number,
-                            "lease_id": session.lease_id,
-                            "status": decision.status.value,
-                        },
-                    ))
-            except Exception as e:
-                logger.warning(
-                    "[OBSERVE] Failed to release claim for issue #%d: %s",
-                    session.issue.number,
-                    e,
-                )
-
-        # Collect observed completion for planner
-        if decision.observed:
-            state.observed_completions.append(decision.observed)
-            logger.info(
-                "[OBSERVE] Collected completion: issue=%d outcome=%s needs_publish=%s",
-                session.issue.number,
-                decision.observed.outcome,
-                decision.observed.needs_publish,
-            )
-        else:
-            # No completion.json - track as failure
-            from ..domain.models import DiscoveredFailure
-            state.discovered_failures.append(DiscoveredFailure(
-                session.issue.number,
-                session.issue.title,
-                decision.status.value,
-            ))
-            state.failed_this_cycle.add(session.issue.number)
-            logger.warning(
-                "[OBSERVE] No completion record for issue #%d, status=%s",
-                session.issue.number,
-                decision.status.value,
-            )
-
-        obs_elapsed = time.monotonic() - obs_start
-        if obs_elapsed > 1.0:  # Warn if observation takes more than 1s (should be fast)
-            logger.warning(
-                "[OBSERVE] Session observation took %.1fs (session=%s issue=%s) - should be <1s",
-                obs_elapsed,
-                session.terminal_id,
-                session.issue.number,
-            )
 
 
 def launch_triage_session(

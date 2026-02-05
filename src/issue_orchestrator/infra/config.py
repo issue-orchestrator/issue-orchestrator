@@ -286,6 +286,33 @@ class RetryConfig:
 
 
 @dataclass
+class ProviderShortRetryConfig:
+    """Short retry settings for provider resilience."""
+
+    max_attempts: int = 4
+    initial_backoff_seconds: int = 5
+    max_backoff_seconds: int = 60
+    jitter: bool = True
+
+
+@dataclass
+class ProviderCircuitBreakerConfig:
+    """Circuit breaker settings for provider resilience."""
+
+    cooldown_seconds: int = 1800
+    max_cooldowns: int = 6
+    label: str = "blocked:provider-unavailable"
+
+
+@dataclass
+class ProviderResilienceConfig:
+    """Provider resilience configuration."""
+
+    short_retry: ProviderShortRetryConfig = field(default_factory=ProviderShortRetryConfig)
+    circuit_breaker: ProviderCircuitBreakerConfig = field(default_factory=ProviderCircuitBreakerConfig)
+
+
+@dataclass
 class DefaultAgentConfig:
     """Default agent configuration inherited by all agents.
 
@@ -586,6 +613,28 @@ def _parse_filtering_config(data: dict) -> FilteringConfig:
     )
 
 
+def _parse_provider_resilience_config(data: dict) -> ProviderResilienceConfig:
+    """Parse provider resilience section from YAML data."""
+    short_data = data.get("short_retry", {}) or {}
+    circuit_data = data.get("circuit_breaker", {}) or {}
+
+    short_retry = ProviderShortRetryConfig(
+        max_attempts=int(short_data.get("max_attempts", 4)),
+        initial_backoff_seconds=int(short_data.get("initial_backoff_seconds", 5)),
+        max_backoff_seconds=int(short_data.get("max_backoff_seconds", 60)),
+        jitter=bool(short_data.get("jitter", True)),
+    )
+    circuit_breaker = ProviderCircuitBreakerConfig(
+        cooldown_seconds=int(circuit_data.get("cooldown_seconds", 1800)),
+        max_cooldowns=int(circuit_data.get("max_cooldowns", 6)),
+        label=str(circuit_data.get("label", "blocked:provider-unavailable")),
+    )
+    return ProviderResilienceConfig(
+        short_retry=short_retry,
+        circuit_breaker=circuit_breaker,
+    )
+
+
 def _parse_milestone_order(value: object) -> list[str]:
     """Parse milestones.order from YAML (list or comma-separated string)."""
     raw = value or []
@@ -612,6 +661,8 @@ def _apply_optional_sections(config: "Config", sections: dict) -> None:
         config.claims = _parse_claims_config(sections["claims"])
     if sections["hooks"]:
         config.hooks = _parse_hooks_config(sections["hooks"])
+    if sections["provider_resilience"]:
+        config.provider_resilience = _parse_provider_resilience_config(sections["provider_resilience"])
 
 
 def _load_repo_section(config: "Config", repo_section: dict, github_section: dict) -> None:
@@ -914,7 +965,7 @@ def _load_agents_section(
 
 _TOP_LEVEL_SECTION_KEYS = (
     "agents", "labels", "review", "cleanup", "worktrees", "execution",
-    "validation", "ui", "observability", "security", "filtering",
+    "validation", "provider_resilience", "ui", "observability", "security", "filtering",
     "triage", "scheduling", "e2e", "goal_pilot", "milestones", "state", "config", "claims", "hooks",
     "ai_systems",
     "triage", "scheduling", "e2e", "milestones", "state", "config", "claims", "hooks",
@@ -1099,6 +1150,9 @@ class Config:
     # Retry configuration - validation retry with error injection
     retry: RetryConfig = field(default_factory=RetryConfig)
 
+    # Provider resilience configuration (retries + circuit breaker)
+    provider_resilience: ProviderResilienceConfig = field(default_factory=ProviderResilienceConfig)
+
     # Isolation configuration - how agents are sandboxed
     isolation: IsolationConfig = field(default_factory=IsolationConfig)
 
@@ -1166,6 +1220,10 @@ class Config:
     def get_label_blocked(self) -> str:
         """Get the blocked label with prefix if configured."""
         return self.prefixed_label(self.label_blocked)
+
+    def get_label_provider_unavailable(self) -> str:
+        """Get the provider-unavailable blocked label with prefix if configured."""
+        return self.prefixed_label(self.provider_resilience.circuit_breaker.label)
 
     def get_label_needs_human(self) -> str:
         """Get the needs-human label with prefix if configured."""
@@ -1546,6 +1604,35 @@ class Config:
         if self.isolation.mode != "standard":
             execution_dict["isolation"] = {"mode": self.isolation.mode}
         result["execution"] = execution_dict
+
+        # Provider resilience section
+        provider_dict: dict = {}
+        short_dict: dict = {}
+        short = self.provider_resilience.short_retry
+        if short.max_attempts != 4:
+            short_dict["max_attempts"] = short.max_attempts
+        if short.initial_backoff_seconds != 5:
+            short_dict["initial_backoff_seconds"] = short.initial_backoff_seconds
+        if short.max_backoff_seconds != 60:
+            short_dict["max_backoff_seconds"] = short.max_backoff_seconds
+        if short.jitter is not True:
+            short_dict["jitter"] = short.jitter
+        if short_dict:
+            provider_dict["short_retry"] = short_dict
+
+        circuit = self.provider_resilience.circuit_breaker
+        circuit_dict: dict = {}
+        if circuit.cooldown_seconds != 1800:
+            circuit_dict["cooldown_seconds"] = circuit.cooldown_seconds
+        if circuit.max_cooldowns != 6:
+            circuit_dict["max_cooldowns"] = circuit.max_cooldowns
+        if circuit.label != "blocked:provider-unavailable":
+            circuit_dict["label"] = circuit.label
+        if circuit_dict:
+            provider_dict["circuit_breaker"] = circuit_dict
+
+        if provider_dict:
+            result["provider_resilience"] = provider_dict
 
         # UI section
         ui_dict: dict = {}
@@ -2097,4 +2184,3 @@ def load_validation_config(
                 "exclude": [],
             },
         }
-

@@ -9,9 +9,11 @@ It handles:
 """
 
 import logging
+import random
 import subprocess
 import time
 from .env_filter import build_filtered_env
+from .errors import ProviderErrorType, classify_provider_error
 from .ports import RunResult, RunSpec
 
 logger = logging.getLogger(__name__)
@@ -60,6 +62,66 @@ class AgentRunner:
         Returns:
             RunResult with exit code, output, timing, and timeout status
         """
+        attempts = 0
+        last_result: RunResult | None = None
+        last_error_type: ProviderErrorType | None = None
+
+        max_attempts = spec.retry_policy.max_attempts if spec.retry_policy else 1
+
+        while True:
+            attempts += 1
+            last_result = self._run_once(spec, attempts=attempts, max_attempts=max_attempts)
+            last_error_type = classify_provider_error(
+                stdout=last_result.stdout,
+                stderr=last_result.stderr,
+                exit_code=last_result.exit_code,
+                timed_out=last_result.timed_out,
+            )
+
+            if last_result.succeeded:
+                break
+            if spec.retry_policy is None:
+                break
+            if last_error_type != ProviderErrorType.TRANSIENT:
+                break
+            if attempts >= spec.retry_policy.max_attempts:
+                break
+
+            backoff = self._compute_backoff(spec, attempts)
+            logger.warning(
+                "Transient provider error, retrying in %.1fs (attempt %d/%d)",
+                backoff,
+                attempts + 1,
+                spec.retry_policy.max_attempts,
+            )
+            time.sleep(backoff)
+
+        assert last_result is not None
+        return RunResult(
+            exit_code=last_result.exit_code,
+            stdout=last_result.stdout,
+            stderr=last_result.stderr,
+            stdout_path=last_result.stdout_path,
+            stderr_path=last_result.stderr_path,
+            duration_seconds=last_result.duration_seconds,
+            timed_out=last_result.timed_out,
+            command=last_result.command,
+            provider_error_type=last_error_type,
+            attempts=attempts,
+        )
+
+    def _compute_backoff(self, spec: RunSpec, attempts: int) -> float:
+        """Compute backoff delay for the next retry."""
+        if spec.retry_policy is None:
+            return 0.0
+        base = spec.retry_policy.initial_backoff_seconds * (2 ** max(0, attempts - 1))
+        delay = min(base, spec.retry_policy.max_backoff_seconds)
+        if spec.retry_policy.jitter:
+            return random.uniform(0, delay)
+        return delay
+
+    def _run_once(self, spec: RunSpec, *, attempts: int, max_attempts: int) -> RunResult:
+        """Execute a single attempt of the agent command."""
         # Ensure output directory exists
         spec.output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -74,10 +136,12 @@ class AgentRunner:
         )
 
         logger.info(
-            "Starting agent: %s in %s (timeout: %ds)",
+            "Starting agent: %s in %s (timeout: %ds) attempt=%d/%d",
             spec.command[0],
             spec.working_dir,
             spec.timeout_seconds,
+            attempts,
+            max_attempts,
         )
 
         start_time = time.monotonic()

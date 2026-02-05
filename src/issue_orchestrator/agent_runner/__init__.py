@@ -12,6 +12,8 @@ _EXPORTS = {
     "AIProvider",
     "RunSpec",
     "RunResult",
+    "RetryPolicy",
+    "ProviderErrorType",
     "list_providers",
     "get_provider",
     "is_valid_provider",

@@ -38,7 +38,8 @@ Example usage:
         print("Agent completed successfully")
 """
 
-from .ports import AIProvider, RunSpec, RunResult
+from .ports import AIProvider, RunSpec, RunResult, RetryPolicy
+from .errors import ProviderErrorType
 from .providers import get_provider, is_valid_provider, list_providers
 from .runner import AgentRunner
 
@@ -48,6 +49,8 @@ __all__ = [
     "AIProvider",
     "RunSpec",
     "RunResult",
+    "RetryPolicy",
+    "ProviderErrorType",
     # Provider registry
     "list_providers",
     "get_provider",

@@ -200,6 +200,7 @@ class CompletionHandler:
         processing_errors: Optional[list[str]] = None,
         diagnostic_path: Optional[str] = None,
         review_exchange_completed: bool = False,
+        blocked_label: Optional[str] = None,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
@@ -281,7 +282,8 @@ class CompletionHandler:
         # Generate actions for label/comment changes (policy logic)
         completion_actions = list(self.generate_completion_actions(
             session, status, processing_errors=processing_errors,
-            diagnostic_path=diagnostic_path
+            diagnostic_path=diagnostic_path,
+            blocked_label=blocked_label,
         ))
         if review_exchange_completed and pr_url:
             completion_actions.append(AddLabelAction(
@@ -908,15 +910,17 @@ class CompletionHandler:
         self,
         session: Session,
         expected: ExpectedState,
+        blocked_label: Optional[str] = None,
     ) -> list[Action]:
         """Generate actions when agent explicitly reported blocked."""
         is_issue_session = session.terminal_id.startswith("issue-")
+        label = blocked_label or labels.BLOCKED
 
         if is_issue_session:
             return [
                 AddLabelAction(
                     issue_number=session.issue.number,
-                    label=labels.BLOCKED,
+                    label=label,
                     reason="Agent reported issue as blocked",
                     expected=expected,
                 ),
@@ -935,6 +939,7 @@ class CompletionHandler:
         status: SessionStatus,
         processing_errors: Optional[list[str]] = None,
         diagnostic_path: Optional[str] = None,
+        blocked_label: Optional[str] = None,
     ) -> tuple[Action, ...]:
         """Generate label/comment actions for session completion.
 
@@ -976,7 +981,7 @@ class CompletionHandler:
             return tuple(self._generate_failure_actions(session, expected))
 
         if status == SessionStatus.BLOCKED:
-            return tuple(self._generate_blocked_actions(session, expected))
+            return tuple(self._generate_blocked_actions(session, expected, blocked_label=blocked_label))
 
         if status == SessionStatus.COMPLETED:
             # POLICY: Completion → release in-progress (claim maintained via pr-pending)

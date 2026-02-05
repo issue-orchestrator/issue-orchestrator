@@ -32,8 +32,9 @@ BLOCKED_CROSS_MILESTONE = "blocked-cross-milestone"  # dependency violates miles
 LEGACY_NEEDS_HUMAN = "needs-human"
 LEGACY_FAILED = "failed"
 
-# The magic prefix that indicates blocking
+# The magic prefixes that indicate blocking
 BLOCKING_PREFIX = "blocked-"
+BLOCKING_COLON_PREFIX = "blocked:"
 
 # =============================================================================
 # Claim/Lease Labels - for multi-orchestrator coordination
@@ -62,11 +63,12 @@ def is_blocking(label: str) -> bool:
     A label blocks if it:
     - Is exactly 'blocked', OR
     - Starts with 'blocked-' prefix, OR
+    - Starts with 'blocked:' prefix, OR
     - Is a legacy blocking label (needs-human, failed)
     """
     if label == BLOCKED:
         return True
-    if label.startswith(BLOCKING_PREFIX):
+    if label.startswith(BLOCKING_PREFIX) or label.startswith(BLOCKING_COLON_PREFIX):
         return True
     # Legacy support - remove after migration
     if label in (LEGACY_NEEDS_HUMAN, LEGACY_FAILED):

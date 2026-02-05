@@ -164,6 +164,17 @@ validation:
   #   exclude:
   #     - "src/issue_orchestrator/generated/**"
 
+provider_resilience:
+  short_retry:
+    max_attempts: 4
+    initial_backoff_seconds: 5
+    max_backoff_seconds: 60
+    jitter: true
+  circuit_breaker:
+    cooldown_seconds: 1800
+    max_cooldowns: 6
+    label: "blocked:provider-unavailable"
+
 ui:
 
 observability:

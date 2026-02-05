@@ -45,8 +45,10 @@ from ..domain.models import (
 
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
+    from .provider_resilience import ProviderResilienceManager
 from .scheduler import Scheduler
 from .dependency_evaluator import DependencyEvaluator
+from .provider_availability import ProviderAvailabilityPolicy
 from .workflows import (
     ReviewWorkflow,
     ReviewDecision,
@@ -222,6 +224,41 @@ class Plan:
         return False
 
 
+@dataclass
+class PlanContext:
+    issue_labels_by_number: dict[int, tuple[str, ...]]
+    planned_adds_by_issue: dict[int, set[str]] = field(default_factory=dict)
+    planned_removes_by_issue: dict[int, set[str]] = field(default_factory=dict)
+
+    def issue_labels(self, issue_number: int) -> tuple[str, ...]:
+        return self.issue_labels_by_number.get(issue_number, ())
+
+    def planned_adds(self, issue_number: int) -> set[str]:
+        return self.planned_adds_by_issue.setdefault(issue_number, set())
+
+    def planned_removes(self, issue_number: int) -> set[str]:
+        return self.planned_removes_by_issue.setdefault(issue_number, set())
+
+    def should_add_label(self, issue_number: int, label: str) -> bool:
+        return (
+            label not in self.issue_labels(issue_number)
+            and label not in self.planned_adds(issue_number)
+        )
+
+    def should_remove_label(self, issue_number: int, label: str) -> bool:
+        return (
+            label in self.issue_labels(issue_number)
+            and label not in self.planned_removes(issue_number)
+            and label not in self.planned_adds(issue_number)
+        )
+
+    def record_add(self, issue_number: int, label: str) -> None:
+        self.planned_adds(issue_number).add(label)
+
+    def record_remove(self, issue_number: int, label: str) -> None:
+        self.planned_removes(issue_number).add(label)
+
+
 class Planner:
     """Pure policy decisions - no side effects.
 
@@ -246,6 +283,7 @@ class Planner:
         review_workflow: Optional[ReviewWorkflow] = None,
         rework_workflow: Optional[ReworkWorkflow] = None,
         triage_workflow: Optional[TriageWorkflow] = None,
+        provider_resilience: Optional["ProviderResilienceManager"] = None,
     ):
         """Initialize planner with its dependencies.
 
@@ -263,6 +301,8 @@ class Planner:
         self.review_workflow = review_workflow
         self.rework_workflow = rework_workflow
         self.triage_workflow = triage_workflow
+        self.provider_resilience = provider_resilience
+        self.provider_policy = ProviderAvailabilityPolicy(config, provider_resilience) if provider_resilience else None
 
     def plan(self, snapshot: OrchestratorSnapshot) -> Plan:
         """Create a plan for the current state.
@@ -284,6 +324,10 @@ class Planner:
             logger.debug("Planner: orchestrator is paused, returning empty plan")
             return Plan.empty()
 
+        plan_context = PlanContext(issue_labels_by_number={
+            issue.number: tuple(issue.labels) for issue in snapshot.issues
+        })
+
         # === PHASE 1: Queue population actions (don't consume capacity) ===
 
         # 1a. Clean up stale in-progress labels (no session running)
@@ -294,9 +338,13 @@ class Planner:
         stale_claim_actions = self._plan_stale_claim_cleanup(snapshot)
         actions.extend(stale_claim_actions)
 
+        # 1a-2b. Apply provider resilience labels (provider unavailable/available)
+        provider_label_actions = self._plan_provider_resilience_labels(snapshot, plan_context)
+        actions.extend(provider_label_actions)
+
         # 1a-3. Immediate label projection for observed completions (async processing)
         # This runs BEFORE discovered_reviews so labels are applied immediately
-        completion_label_actions = self._plan_observed_completion_labels(snapshot)
+        completion_label_actions = self._plan_observed_completion_labels(snapshot, plan_context)
         actions.extend(completion_label_actions)
 
         # 1b. Queue discovered reviews from session completions/scans
@@ -339,21 +387,21 @@ class Planner:
 
         # 2. Plan review launches (highest priority)
         if capacity > 0 and self.review_workflow:
-            review_actions, review_skipped = self._plan_reviews(snapshot, capacity)
+            review_actions, review_skipped = self._plan_reviews(snapshot, capacity, plan_context)
             actions.extend(review_actions)
             skipped.extend(review_skipped)
             capacity -= len(review_actions)
 
         # 3. Plan rework launches
         if capacity > 0 and self.rework_workflow:
-            rework_actions, rework_skipped = self._plan_reworks(snapshot, capacity)
+            rework_actions, rework_skipped = self._plan_reworks(snapshot, capacity, plan_context)
             actions.extend(rework_actions)
             skipped.extend(rework_skipped)
             capacity -= len(rework_actions)
 
         # 4. Plan triage launches
         if capacity > 0 and self.triage_workflow:
-            triage_actions, triage_skipped = self._plan_triage(snapshot, capacity)
+            triage_actions, triage_skipped = self._plan_triage(snapshot, capacity, plan_context)
             actions.extend(triage_actions)
             skipped.extend(triage_skipped)
             capacity -= len(triage_actions)
@@ -423,7 +471,84 @@ class Planner:
 
         return actions
 
-    def _plan_observed_completion_labels(self, snapshot: OrchestratorSnapshot) -> list[Action]:
+    def _blocked_label_for_record(self, observed: ObservedCompletion) -> str:
+        if observed.blocked_reason == "provider_unavailable":
+            return self.config.get_label_provider_unavailable()
+        return labels.BLOCKED
+
+    def _record_provider_skip(
+        self,
+        issue_number: int,
+        item_type: str,
+        item_number: int,
+        provider: str,
+        actions: list[Action],
+        skipped: list[SkippedItem],
+        plan_context: PlanContext,
+    ) -> None:
+        skipped.append(SkippedItem(
+            item_type=item_type,
+            number=item_number,
+            reason=f"provider unavailable: {provider}",
+        ))
+        logger.info(issue_log(issue_number, "Skipped: reason=provider_unavailable provider=%s"), provider)
+        if not self.provider_policy:
+            return
+        issue_labels = plan_context.issue_labels(issue_number)
+        planned_labels = plan_context.planned_adds(issue_number)
+        if self.provider_policy.should_add_blocked_label(issue_labels, planned_labels):
+            actions.append(AddLabelAction(
+                issue_number=issue_number,
+                label=self.provider_policy.blocked_label(),
+                reason=f"provider unavailable: {provider}",
+                expected=build_expected_for_mutation(),
+            ))
+            plan_context.record_add(issue_number, self.provider_policy.blocked_label())
+
+    def _plan_provider_resilience_labels(
+        self,
+        snapshot: OrchestratorSnapshot,
+        plan_context: PlanContext,
+    ) -> list[Action]:
+        if not self.provider_policy:
+            return []
+        actions: list[Action] = []
+        label = self.provider_policy.blocked_label()
+        providers_by_issue = self.provider_policy.providers_for_snapshot(snapshot)
+        for issue in snapshot.issues:
+            providers = providers_by_issue.get(issue.number, set())
+            if not providers:
+                continue
+            any_open = self.provider_policy.any_open(providers)
+            issue_labels = plan_context.issue_labels(issue.number)
+            planned_labels = plan_context.planned_adds(issue.number)
+            if any_open and self.provider_policy.should_add_blocked_label(issue_labels, planned_labels):
+                actions.append(AddLabelAction(
+                    issue_number=issue.number,
+                    label=label,
+                    reason=f"provider unavailable: {', '.join(sorted(providers))}",
+                    expected=build_expected_for_mutation(),
+                ))
+                plan_context.record_add(issue.number, label)
+            if (
+                not any_open
+                and self.provider_policy.should_remove_blocked_label(issue_labels, planned_labels)
+                and plan_context.should_remove_label(issue.number, label)
+            ):
+                actions.append(RemoveLabelAction(
+                    issue_number=issue.number,
+                    label=label,
+                    reason=f"provider available: {', '.join(sorted(providers))}",
+                    expected=build_expected_for_mutation(),
+                ))
+                plan_context.record_remove(issue.number, label)
+        return actions
+
+    def _plan_observed_completion_labels(
+        self,
+        snapshot: OrchestratorSnapshot,
+        plan_context: PlanContext,
+    ) -> list[Action]:
         """Plan immediate label updates for observed completions.
 
         This is the "immediate label projection" phase of async completion processing.
@@ -472,22 +597,27 @@ class Planner:
                     )
             elif observed.outcome == CompletionOutcome.BLOCKED:
                 # Session blocked - add blocked label
-                actions.append(AddLabelAction(
-                    issue_number=issue_number,
-                    label=labels.BLOCKED,
-                    reason=f"session blocked: {observed.blocked_reason or 'unknown'}",
-                    expected=build_expected_for_mutation(),
-                ))
-                logger.debug("Planner: adding blocked label for issue #%d", issue_number)
+                blocked_label = self._blocked_label_for_record(observed)
+                if plan_context.should_add_label(issue_number, blocked_label):
+                    actions.append(AddLabelAction(
+                        issue_number=issue_number,
+                        label=blocked_label,
+                        reason=f"session blocked: {observed.blocked_reason or 'unknown'}",
+                        expected=build_expected_for_mutation(),
+                    ))
+                    plan_context.record_add(issue_number, blocked_label)
+                    logger.debug("Planner: adding blocked label for issue #%d", issue_number)
             elif observed.outcome == CompletionOutcome.NEEDS_HUMAN:
                 # Session needs human intervention - use BLOCKED_NEEDS_HUMAN
-                actions.append(AddLabelAction(
-                    issue_number=issue_number,
-                    label=labels.BLOCKED_NEEDS_HUMAN,
-                    reason="session needs human intervention",
-                    expected=build_expected_for_mutation(),
-                ))
-                logger.debug("Planner: adding blocked-needs-human label for issue #%d", issue_number)
+                if plan_context.should_add_label(issue_number, labels.BLOCKED_NEEDS_HUMAN):
+                    actions.append(AddLabelAction(
+                        issue_number=issue_number,
+                        label=labels.BLOCKED_NEEDS_HUMAN,
+                        reason="session needs human intervention",
+                        expected=build_expected_for_mutation(),
+                    ))
+                    plan_context.record_add(issue_number, labels.BLOCKED_NEEDS_HUMAN)
+                    logger.debug("Planner: adding blocked-needs-human label for issue #%d", issue_number)
             elif observed.outcome in (CompletionOutcome.REVIEW_APPROVED, CompletionOutcome.REVIEW_CHANGES_REQUESTED):
                 # Review session completed - labels handled by review workflow
                 logger.debug(
@@ -857,6 +987,22 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     expected=build_expected_for_mutation(),
                 ))
 
+        # Filter out providers with open circuit
+        if self.provider_policy:
+            filtered: list[Issue] = []
+            for issue in available:
+                provider = self.provider_policy.provider_for_issue(issue)
+                if provider and self.provider_policy.is_open(provider):
+                    skipped.append(SkippedItem(
+                        item_type="issue",
+                        number=issue.number,
+                        reason=f"provider unavailable: {provider}",
+                    ))
+                    logger.info(issue_log(issue.number, "Skipped: reason=provider_unavailable provider=%s"), provider)
+                    continue
+                filtered.append(issue)
+            available = filtered
+
         # Filter out issues already being worked on, just completed, or failed this cycle
         issues_with_pending_reviews = {r.issue_number for r in snapshot.discovered_reviews}
         issues_with_pending_reworks = {r.issue_number for r in snapshot.discovered_reworks}
@@ -910,11 +1056,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        plan_context: PlanContext,
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which reviews to launch."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
-
         if not self.review_workflow or not self.review_workflow.is_configured():
             return actions, skipped
 
@@ -939,6 +1085,19 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         if decision.should_launch:
             for review in decision.reviews_to_launch[:capacity]:
+                reviewer_label = self.config.get_reviewer_for_agent(review.agent_label) if review.agent_label else self.config.code_review_agent
+                provider = self.provider_policy.provider_for_agent_label(reviewer_label) if self.provider_policy else None
+                if provider and self.provider_policy and self.provider_policy.is_open(provider):
+                    self._record_provider_skip(
+                        issue_number=review.issue_number,
+                        item_type="review",
+                        item_number=review.pr_number,
+                        provider=provider,
+                        actions=actions,
+                        skipped=skipped,
+                        plan_context=plan_context,
+                    )
+                    continue
                 logger.info(
                     issue_log(review.issue_number, "Selected for session: type=review pr=#%d slots_available=%d"),
                     review.pr_number, capacity
@@ -957,11 +1116,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        plan_context: PlanContext,
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which reworks to launch."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
-
         if not self.rework_workflow:
             return actions, skipped
 
@@ -993,6 +1152,18 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 issue_num = rework.resolve_issue_number()
                 if issue_num is None:
                     logger.warning("Planner: skipping rework with unresolved issue number: %s", rework.issue_key)
+                    continue
+                provider = self.provider_policy.provider_for_agent_label(rework.agent_type) if self.provider_policy else None
+                if provider and self.provider_policy and self.provider_policy.is_open(provider):
+                    self._record_provider_skip(
+                        issue_number=issue_num,
+                        item_type="rework",
+                        item_number=issue_num,
+                        provider=provider,
+                        actions=actions,
+                        skipped=skipped,
+                        plan_context=plan_context,
+                    )
                     continue
                 # Check for escalation
                 escalation = self.rework_workflow.should_escalate(rework.rework_cycle)
@@ -1031,11 +1202,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
+        plan_context: PlanContext,
     ) -> tuple[list[Action], list[SkippedItem]]:
         """Plan which triage reviews to launch."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
-
         if not self.triage_workflow or not self.triage_workflow.is_configured():
             return actions, skipped
 
@@ -1055,7 +1226,19 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             return actions, skipped
 
         if decision.should_launch:
+            provider = self.provider_policy.provider_for_agent_label(self.config.triage_review_agent) if self.provider_policy else None
             for triage in decision.triage_to_launch[:capacity]:
+                if provider and self.provider_policy and self.provider_policy.is_open(provider):
+                    self._record_provider_skip(
+                        issue_number=triage.issue_number,
+                        item_type="triage",
+                        item_number=triage.issue_number,
+                        provider=provider,
+                        actions=actions,
+                        skipped=skipped,
+                        plan_context=plan_context,
+                    )
+                    continue
                 actions.append(LaunchSessionAction(
                     session_type=SessionType.TRIAGE,
                     number=triage.issue_number,

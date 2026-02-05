@@ -11,6 +11,7 @@ from issue_orchestrator.infra.labels import (
     LEGACY_NEEDS_HUMAN,
     LEGACY_FAILED,
     BLOCKING_PREFIX,
+    BLOCKING_COLON_PREFIX,
     # Functions
     is_blocking,
     is_blocking_any,
@@ -31,6 +32,7 @@ class TestIsBlocking:
         assert is_blocking(BLOCKED_FAILED)
         assert is_blocking(BLOCKED_NEEDS_HUMAN)
         assert is_blocking("blocked-custom-reason")
+        assert is_blocking(f"{BLOCKING_COLON_PREFIX}provider-unavailable")
 
     def test_legacy_labels_are_blocking(self):
         """Legacy labels should still block for backwards compat."""

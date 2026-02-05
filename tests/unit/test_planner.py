@@ -5,6 +5,7 @@ The planner decides "should we?" - no mocks for tmux/GitHub needed.
 """
 
 import pytest
+from pathlib import Path
 from unittest.mock import Mock, MagicMock
 
 from issue_orchestrator.infra.config import Config
@@ -34,6 +35,8 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.infra import labels
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+from issue_orchestrator.ports import InMemoryProviderCircuitStore
 
 
 def make_config(**kwargs) -> Config:
@@ -123,6 +126,58 @@ class TestPlanEmpty:
 
         assert plan.action_count == 0
         assert len(plan.skipped) == 0
+
+
+class TestProviderResilienceLabels:
+    def test_removes_label_when_review_rework_triage_providers_recover(self):
+        config = make_config()
+        config.code_review_agent = "agent:reviewer"
+        config.triage_review_agent = "agent:triage"
+        config.agents["agent:web"] = AgentConfig(prompt_path=Path("/tmp/web.md"), provider=None)
+        config.agents["agent:reviewer"] = AgentConfig(prompt_path=Path("/tmp/review.md"), provider="review-provider")
+        config.agents["agent:fixer"] = AgentConfig(prompt_path=Path("/tmp/fix.md"), provider="rework-provider")
+        config.agents["agent:triage"] = AgentConfig(prompt_path=Path("/tmp/triage.md"), provider="triage-provider")
+
+        scheduler = Scheduler(config)
+        provider_resilience = ProviderResilienceManager(
+            config.provider_resilience,
+            store=InMemoryProviderCircuitStore(),
+            events=MagicMock(),
+        )
+        planner = Planner(config=config, scheduler=scheduler, provider_resilience=provider_resilience)
+
+        issue1 = make_issue(1, labels=["agent:web", config.get_label_provider_unavailable()])
+        issue2 = make_issue(2, labels=["agent:web", config.get_label_provider_unavailable()])
+        issue3 = make_issue(3, labels=["agent:web", config.get_label_provider_unavailable()])
+
+        pending_review = PendingReview(
+            issue_key=FakeIssueKey(name="1"),
+            pr_number=101,
+            pr_url="https://example.com/pr/101",
+            branch_name="branch-101",
+            _issue_number=1,
+            agent_label=None,
+        )
+        pending_rework = PendingRework(
+            issue_key=FakeIssueKey(name="2"),
+            agent_type="agent:fixer",
+            rework_cycle=1,
+            issue_number=2,
+        )
+        pending_triage = PendingTriageReview(issue_number=3, title="Triage 3")
+
+        snapshot = make_snapshot(
+            issues=[issue1, issue2, issue3],
+            pending_reviews=[pending_review],
+            pending_reworks=[pending_rework],
+            pending_triage=[pending_triage],
+        )
+
+        plan = planner.plan(snapshot)
+
+        removed = [a for a in plan.actions if getattr(a, "action_type", None) == ActionType.REMOVE_LABEL]
+        removed_numbers = {a.issue_number for a in removed}
+        assert removed_numbers == {1, 2, 3}
 
     def test_empty_plan_when_at_capacity(self):
         """Planner returns empty plan when at max capacity."""

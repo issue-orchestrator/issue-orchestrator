@@ -20,6 +20,16 @@ This skill provides context for the multi-stage review pipeline.
 Read this file for context:
 - [docs/development/REVIEW_WORKFLOW.md](docs/development/REVIEW_WORKFLOW.md) - Full workflow documentation
 
+## Review Checklist: Cross-Cutting Policy
+
+When reviewing changes that touch review/rework/triage/session launch paths, scan for:
+- **Duplicated policy checks** spread across planner/launcher/execution (claims, provider availability, labels, gating).
+- **Split responsibility** where correctness relies on multiple call sites remembering to call a check.
+- **Label lifecycle consistency**: add/remove paths should be symmetric and account for all session types.
+- **New entrypoints** that bypass existing gates or helpers.
+
+If any of the above appear, recommend centralizing the policy into a shared helper/module and reusing it.
+
 ## Review Pipeline
 
 ```
