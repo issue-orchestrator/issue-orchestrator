@@ -267,6 +267,32 @@ def list_repos() -> list[RegisteredRepo]:
     return load_registry().list_all()
 
 
+def cleanup_stale_repos() -> int:
+    """Remove repos whose paths no longer exist on disk.
+
+    This cleans up the registry when repo directories have been deleted
+    (e.g., old pytest temp directories, moved projects).
+
+    Returns:
+        Number of repos removed
+    """
+    registry = load_registry()
+    stale_paths = []
+
+    for repo in registry.repos:
+        if not Path(repo.path).exists():
+            stale_paths.append(repo.path)
+
+    if not stale_paths:
+        return 0
+
+    for path in stale_paths:
+        registry.remove(path)
+
+    save_registry(registry)
+    return len(stale_paths)
+
+
 def check_repo_health(repo_path: str | Path, config_name: str = "default.yaml") -> RepoHealth:
     """Run doctor checks for a repository and return health status.
 
