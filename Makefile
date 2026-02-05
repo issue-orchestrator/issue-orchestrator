@@ -363,18 +363,20 @@ validate:
 VALIDATE_JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 5)
 validate-raw:
 	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-impl
-
-# Internal target for parallel execution
-_validate-impl: typecheck lint-arch lint-complexity test-unit test-integration test-web test-vscode
+	@$(GMAKE) --output-sync=target test-vscode
 	@echo "✓ All validations passed!"
+
+# Internal target for parallel execution (excludes test-vscode to avoid VS Code runner flakiness under -j)
+_validate-impl: typecheck lint-arch lint-complexity test-unit test-integration test-web
 
 # Full validation including e2e tests
 validate-full:
 	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-full-impl
-
-# Internal target for parallel execution
-_validate-full-impl: typecheck lint-arch lint-complexity test-unit test-integration test-web test-e2e
+	@$(GMAKE) --output-sync=target test-vscode
 	@echo "✓ All validations passed (including e2e)!"
+
+# Internal target for parallel execution (excludes test-vscode to avoid VS Code runner flakiness under -j)
+_validate-full-impl: typecheck lint-arch lint-complexity test-unit test-integration test-web test-e2e
 
 # Demo - show orchestrator features with mock data
 demo:
