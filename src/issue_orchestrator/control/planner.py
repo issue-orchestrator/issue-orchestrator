@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from .provider_resilience import ProviderResilienceManager
 from .scheduler import Scheduler
 from .dependency_evaluator import DependencyEvaluator
+from .provider_availability import ProviderAvailabilityPolicy
 from .workflows import (
     ReviewWorkflow,
     ReviewDecision,
@@ -266,6 +267,7 @@ class Planner:
         self.rework_workflow = rework_workflow
         self.triage_workflow = triage_workflow
         self.provider_resilience = provider_resilience
+        self.provider_policy = ProviderAvailabilityPolicy(config, provider_resilience) if provider_resilience else None
 
     def plan(self, snapshot: OrchestratorSnapshot) -> Plan:
         """Create a plan for the current state.
@@ -435,23 +437,6 @@ class Planner:
             return self.config.get_label_provider_unavailable()
         return labels.BLOCKED
 
-    def _provider_for_issue(self, issue: Issue) -> str | None:
-        agent_type = issue.agent_type
-        if not agent_type:
-            return None
-        agent_config = self.config.agents.get(agent_type)
-        if not agent_config:
-            return None
-        return agent_config.provider
-
-    def _provider_for_agent_label(self, agent_label: str | None) -> str | None:
-        if not agent_label:
-            return None
-        agent_config = self.config.agents.get(agent_label)
-        if not agent_config:
-            return None
-        return agent_config.provider
-
     def _record_provider_skip(
         self,
         issue_number: int,
@@ -460,6 +445,8 @@ class Planner:
         provider: str,
         actions: list[Action],
         skipped: list[SkippedItem],
+        issue_labels: list[str],
+        planned_labels: set[str],
     ) -> None:
         skipped.append(SkippedItem(
             item_type=item_type,
@@ -467,61 +454,39 @@ class Planner:
             reason=f"provider unavailable: {provider}",
         ))
         logger.info(issue_log(issue_number, "Skipped: reason=provider_unavailable provider=%s"), provider)
-        actions.append(AddLabelAction(
-            issue_number=issue_number,
-            label=self.config.get_label_provider_unavailable(),
-            reason=f"provider unavailable: {provider}",
-            expected=build_expected_for_mutation(),
-        ))
-
-    def _provider_sources_for_snapshot(self, snapshot: OrchestratorSnapshot) -> dict[int, set[str]]:
-        providers_by_issue: dict[int, set[str]] = {}
-
-        for issue in snapshot.issues:
-            provider = self._provider_for_issue(issue)
-            if provider:
-                providers_by_issue.setdefault(issue.number, set()).add(provider)
-
-        for review in snapshot.pending_reviews:
-            reviewer_label = self.config.get_reviewer_for_agent(review.agent_label) if review.agent_label else self.config.code_review_agent
-            provider = self._provider_for_agent_label(reviewer_label)
-            if provider:
-                providers_by_issue.setdefault(review.issue_number, set()).add(provider)
-
-        for rework in snapshot.pending_reworks:
-            issue_num = rework.resolve_issue_number()
-            if issue_num is None:
-                continue
-            provider = self._provider_for_agent_label(rework.agent_type)
-            if provider:
-                providers_by_issue.setdefault(issue_num, set()).add(provider)
-
-        triage_provider = self._provider_for_agent_label(self.config.triage_review_agent)
-        if triage_provider:
-            for triage in snapshot.pending_triage:
-                providers_by_issue.setdefault(triage.issue_number, set()).add(triage_provider)
-
-        return providers_by_issue
+        if not self.provider_policy:
+            return
+        if self.provider_policy.should_add_blocked_label(issue_labels, planned_labels):
+            actions.append(AddLabelAction(
+                issue_number=issue_number,
+                label=self.provider_policy.blocked_label(),
+                reason=f"provider unavailable: {provider}",
+                expected=build_expected_for_mutation(),
+            ))
+            planned_labels.add(self.provider_policy.blocked_label())
 
     def _plan_provider_resilience_labels(self, snapshot: OrchestratorSnapshot) -> list[Action]:
-        if not self.provider_resilience:
+        if not self.provider_policy:
             return []
         actions: list[Action] = []
-        label = self.config.get_label_provider_unavailable()
-        providers_by_issue = self._provider_sources_for_snapshot(snapshot)
+        label = self.provider_policy.blocked_label()
+        providers_by_issue = self.provider_policy.providers_for_snapshot(snapshot)
+        planned_labels_by_issue: dict[int, set[str]] = {}
         for issue in snapshot.issues:
             providers = providers_by_issue.get(issue.number, set())
             if not providers:
                 continue
-            any_open = any(self.provider_resilience.is_open(provider) for provider in providers)
-            if any_open and label not in issue.labels:
+            any_open = self.provider_policy.any_open(providers)
+            planned_labels = planned_labels_by_issue.setdefault(issue.number, set())
+            if any_open and self.provider_policy.should_add_blocked_label(issue.labels, planned_labels):
                 actions.append(AddLabelAction(
                     issue_number=issue.number,
                     label=label,
                     reason=f"provider unavailable: {', '.join(sorted(providers))}",
                     expected=build_expected_for_mutation(),
                 ))
-            if not any_open and label in issue.labels:
+                planned_labels.add(label)
+            if not any_open and self.provider_policy.should_remove_blocked_label(issue.labels, planned_labels):
                 actions.append(RemoveLabelAction(
                     issue_number=issue.number,
                     label=label,
@@ -966,11 +931,11 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 ))
 
         # Filter out providers with open circuit
-        if self.provider_resilience:
+        if self.provider_policy:
             filtered: list[Issue] = []
             for issue in available:
-                provider = self._provider_for_issue(issue)
-                if provider and self.provider_resilience.is_open(provider):
+                provider = self.provider_policy.provider_for_issue(issue)
+                if provider and self.provider_policy.is_open(provider):
                     skipped.append(SkippedItem(
                         item_type="issue",
                         number=issue.number,
@@ -1038,6 +1003,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         """Plan which reviews to launch."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
+        issue_labels_by_number = {issue.number: list(issue.labels) for issue in snapshot.issues}
+        planned_labels_by_issue: dict[int, set[str]] = {}
 
         if not self.review_workflow or not self.review_workflow.is_configured():
             return actions, skipped
@@ -1064,8 +1031,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         if decision.should_launch:
             for review in decision.reviews_to_launch[:capacity]:
                 reviewer_label = self.config.get_reviewer_for_agent(review.agent_label) if review.agent_label else self.config.code_review_agent
-                provider = self._provider_for_agent_label(reviewer_label)
-                if provider and self.provider_resilience and self.provider_resilience.is_open(provider):
+                provider = self.provider_policy.provider_for_agent_label(reviewer_label) if self.provider_policy else None
+                if provider and self.provider_policy and self.provider_policy.is_open(provider):
                     self._record_provider_skip(
                         issue_number=review.issue_number,
                         item_type="review",
@@ -1073,6 +1040,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         provider=provider,
                         actions=actions,
                         skipped=skipped,
+                        issue_labels=issue_labels_by_number.get(review.issue_number, []),
+                        planned_labels=planned_labels_by_issue.setdefault(review.issue_number, set()),
                     )
                     continue
                 logger.info(
@@ -1097,6 +1066,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         """Plan which reworks to launch."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
+        issue_labels_by_number = {issue.number: list(issue.labels) for issue in snapshot.issues}
+        planned_labels_by_issue: dict[int, set[str]] = {}
 
         if not self.rework_workflow:
             return actions, skipped
@@ -1130,8 +1101,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 if issue_num is None:
                     logger.warning("Planner: skipping rework with unresolved issue number: %s", rework.issue_key)
                     continue
-                provider = self._provider_for_agent_label(rework.agent_type)
-                if provider and self.provider_resilience and self.provider_resilience.is_open(provider):
+                provider = self.provider_policy.provider_for_agent_label(rework.agent_type) if self.provider_policy else None
+                if provider and self.provider_policy and self.provider_policy.is_open(provider):
                     self._record_provider_skip(
                         issue_number=issue_num,
                         item_type="rework",
@@ -1139,6 +1110,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         provider=provider,
                         actions=actions,
                         skipped=skipped,
+                        issue_labels=issue_labels_by_number.get(issue_num, []),
+                        planned_labels=planned_labels_by_issue.setdefault(issue_num, set()),
                     )
                     continue
                 # Check for escalation
@@ -1182,6 +1155,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         """Plan which triage reviews to launch."""
         actions: list[Action] = []
         skipped: list[SkippedItem] = []
+        issue_labels_by_number = {issue.number: list(issue.labels) for issue in snapshot.issues}
+        planned_labels_by_issue: dict[int, set[str]] = {}
 
         if not self.triage_workflow or not self.triage_workflow.is_configured():
             return actions, skipped
@@ -1202,9 +1177,9 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             return actions, skipped
 
         if decision.should_launch:
-            provider = self._provider_for_agent_label(self.config.triage_review_agent)
+            provider = self.provider_policy.provider_for_agent_label(self.config.triage_review_agent) if self.provider_policy else None
             for triage in decision.triage_to_launch[:capacity]:
-                if provider and self.provider_resilience and self.provider_resilience.is_open(provider):
+                if provider and self.provider_policy and self.provider_policy.is_open(provider):
                     self._record_provider_skip(
                         issue_number=triage.issue_number,
                         item_type="triage",
@@ -1212,6 +1187,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         provider=provider,
                         actions=actions,
                         skipped=skipped,
+                        issue_labels=issue_labels_by_number.get(triage.issue_number, []),
+                        planned_labels=planned_labels_by_issue.setdefault(triage.issue_number, set()),
                     )
                     continue
                 actions.append(LaunchSessionAction(

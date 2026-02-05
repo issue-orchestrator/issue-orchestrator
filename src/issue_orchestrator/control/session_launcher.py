@@ -64,6 +64,7 @@ from ..ports.session_output import SessionOutput
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions, WorktreeInfo
 from ..ports.session_log import detect_ai_system_from_command
 from ..ports.provider_resilience import ProviderErrorType
+from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .session_manager import SessionManager
@@ -232,6 +233,7 @@ class SessionLauncher:
         self._dependency_evaluator = dependency_evaluator
         self._claim_manager = claim_manager
         self._provider_resilience = provider_resilience
+        self._provider_policy = ProviderAvailabilityPolicy(config, provider_resilience) if provider_resilience else None
 
     def _worktree_reuse_options(self, *, allow_remote_branch_delete: bool = True) -> WorktreeReuseOptions:
         return WorktreeReuseOptions(
@@ -1551,11 +1553,11 @@ class SessionLauncher:
         return shlex.join(cmd)
 
     def _check_provider_circuit(self, provider: str | None, issue_number: int) -> Optional["LaunchResult"]:
-        if not provider or not self._provider_resilience:
+        if not provider or not self._provider_policy:
             return None
-        if not self._provider_resilience.is_open(provider):
+        if not self._provider_policy.is_open(provider):
             return None
-        blocked_label = self.config.get_label_provider_unavailable()
+        blocked_label = self._provider_policy.blocked_label()
         self._apply_actions([
             AddLabelAction(
                 issue_number=issue_number,
