@@ -137,6 +137,19 @@ def create_test_orchestrator(
     return Orchestrator(config=config, deps=deps)
 
 
+async def run_loop_one_tick(orchestrator: Orchestrator) -> None:
+    """Run exactly one orchestrator tick deterministically."""
+    original_tick = orchestrator.tick
+
+    def tick_and_shutdown():
+        result = original_tick()
+        orchestrator.request_shutdown()
+        return result
+
+    with patch.object(orchestrator, "tick", side_effect=tick_and_shutdown):
+        await orchestrator.run_loop()
+
+
 # Helper functions
 def create_issue(number, title="Test Issue", labels=None, milestone=None):
     """Helper to create Issue objects for testing."""
@@ -716,15 +729,7 @@ class TestRunLoop:
             # Mock observe to return TERMINATED (session exited)
             mock_observe.return_value = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-            # Run one iteration
-            async def run_one_iteration():
-                await asyncio.sleep(0.01)  # Let loop run once
-                orchestrator.request_shutdown()
-
-            await asyncio.gather(
-                orchestrator.run_loop(),
-                run_one_iteration(),
-            )
+            await run_loop_one_tick(orchestrator)
 
             mock_observe.assert_called()
 
@@ -762,15 +767,7 @@ class TestRunLoop:
             # Mock observe to return TERMINATED (session exited)
             mock_observe.return_value = SessionObservationResult.terminated(runtime_minutes=10.0)
 
-            # Run one iteration
-            async def run_one_iteration():
-                await asyncio.sleep(0.01)
-                orchestrator.request_shutdown()
-
-            await asyncio.gather(
-                orchestrator.run_loop(),
-                run_one_iteration(),
-            )
+            await run_loop_one_tick(orchestrator)
 
             # Verify session was removed from active_sessions after completion
             assert session not in orchestrator.state.active_sessions
@@ -788,15 +785,7 @@ class TestRunLoop:
 
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
-        # Run one iteration
-        async def run_one_iteration():
-            await asyncio.sleep(0.01)
-            orchestrator.request_shutdown()
-
-        await asyncio.gather(
-            orchestrator.run_loop(),
-            run_one_iteration(),
-        )
+        await run_loop_one_tick(orchestrator)
 
         assert len(mock_repository_host.list_issues_calls) > 0
 
@@ -812,15 +801,7 @@ class TestRunLoop:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
         orchestrator.state.paused = True
 
-        # Run one iteration
-        async def run_one_iteration():
-            await asyncio.sleep(0.01)
-            orchestrator.request_shutdown()
-
-        await asyncio.gather(
-            orchestrator.run_loop(),
-            run_one_iteration(),
-        )
+        await run_loop_one_tick(orchestrator)
 
         # Should not fetch issues when paused
         assert len(mock_repository_host.list_issues_calls) == 0
@@ -853,15 +834,7 @@ class TestRunLoop:
             mock_observe.return_value = SessionObservationResult.running(runtime_minutes=5.0)
 
             with patch.object(orchestrator, "launch_session") as mock_launch:
-                # Run one iteration
-                async def run_one_iteration():
-                    await asyncio.sleep(0.01)
-                    orchestrator.request_shutdown()
-
-                await asyncio.gather(
-                    orchestrator.run_loop(),
-                    run_one_iteration(),
-                )
+                await run_loop_one_tick(orchestrator)
 
                 # Should not launch new sessions when at capacity
                 mock_launch.assert_not_called()
@@ -884,15 +857,7 @@ class TestRunLoop:
         with patch.object(orchestrator, "launch_session") as mock_launch:
             mock_launch.return_value = create_session(issue1)
 
-            # Run one iteration
-            async def run_one_iteration():
-                await asyncio.sleep(0.01)
-                orchestrator.request_shutdown()
-
-            await asyncio.gather(
-                orchestrator.run_loop(),
-                run_one_iteration(),
-            )
+            await run_loop_one_tick(orchestrator)
 
             # Should launch session since we have capacity
             mock_launch.assert_called()
@@ -913,15 +878,7 @@ class TestRunLoop:
         with patch.object(orchestrator, "launch_session") as mock_launch:
             mock_launch.side_effect = Exception("Launch failed")
 
-            # Run one iteration - should not crash
-            async def run_one_iteration():
-                await asyncio.sleep(0.01)
-                orchestrator.request_shutdown()
-
-            await asyncio.gather(
-                orchestrator.run_loop(),
-                run_one_iteration(),
-            )
+            await run_loop_one_tick(orchestrator)
 
             # Should have attempted launch
             mock_launch.assert_called()
@@ -941,18 +898,18 @@ class TestRunLoop:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
-            # First issue already claimed, second succeeds
-            mock_launch.side_effect = [None, create_session(issue2)]
+            call_count = 0
 
-            # Run one iteration
-            async def run_one_iteration():
-                await asyncio.sleep(0.01)
-                orchestrator.request_shutdown()
+            def launch_side_effect(issue):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 2:
+                    orchestrator.request_shutdown()
+                return None if call_count == 1 else create_session(issue2)
 
-            await asyncio.gather(
-                orchestrator.run_loop(),
-                run_one_iteration(),
-            )
+            mock_launch.side_effect = launch_side_effect
+
+            await orchestrator.run_loop()
 
             # Should try to launch both (loop may run multiple iterations)
             assert mock_launch.call_count >= 2
@@ -991,22 +948,22 @@ class TestMaxIssuesToStart:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
-            # Simulate successful launches
-            mock_launch.side_effect = [
-                create_session(issue1),
-                create_session(issue2),
-                create_session(issue3),  # Should not be called
-            ]
+            call_count = 0
 
-            # Run one iteration
-            async def run_one_iteration():
-                await asyncio.sleep(0.01)
-                orchestrator.request_shutdown()
+            def launch_side_effect(issue):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 2:
+                    orchestrator.request_shutdown()
+                if call_count == 1:
+                    return create_session(issue1)
+                if call_count == 2:
+                    return create_session(issue2)
+                return create_session(issue3)
 
-            await asyncio.gather(
-                orchestrator.run_loop(),
-                run_one_iteration(),
-            )
+            mock_launch.side_effect = launch_side_effect
+
+            await orchestrator.run_loop()
 
             # Should only launch 2 issues (max_issues_to_start limit)
             assert mock_launch.call_count == 2
@@ -1031,20 +988,22 @@ class TestMaxIssuesToStart:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
-            mock_launch.side_effect = [
-                create_session(issue1),
-                create_session(issue2),
-                create_session(issue3),
-            ]
+            call_count = 0
 
-            async def run_one_iteration():
-                await asyncio.sleep(0.01)
-                orchestrator.request_shutdown()
+            def launch_side_effect(issue):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 3:
+                    orchestrator.request_shutdown()
+                if call_count == 1:
+                    return create_session(issue1)
+                if call_count == 2:
+                    return create_session(issue2)
+                return create_session(issue3)
 
-            await asyncio.gather(
-                orchestrator.run_loop(),
-                run_one_iteration(),
-            )
+            mock_launch.side_effect = launch_side_effect
+
+            await orchestrator.run_loop()
 
             # Should launch all 3 issues (no limit); loop may run multiple iterations
             assert mock_launch.call_count >= 3
@@ -1069,14 +1028,7 @@ class TestMaxIssuesToStart:
         orchestrator.state.issues_started_count = 2
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
-            async def run_one_iteration():
-                await asyncio.sleep(0.01)
-                orchestrator.request_shutdown()
-
-            await asyncio.gather(
-                orchestrator.run_loop(),
-                run_one_iteration(),
-            )
+            await run_loop_one_tick(orchestrator)
 
             # Should not launch any new issues
             mock_launch.assert_not_called()
@@ -1121,14 +1073,11 @@ class TestMaxIssuesToStart:
         with patch.object(orchestrator, "launch_session") as mock_launch:
             mock_launch.return_value = create_session(issue1)
 
-            async def run_one_iteration():
-                await asyncio.sleep(0.01)
-                orchestrator.request_shutdown()
-
-            await asyncio.gather(
-                orchestrator.run_loop(),
-                run_one_iteration(),
+            mock_launch.side_effect = lambda issue: (
+                orchestrator.request_shutdown() or create_session(issue1)
             )
+
+            await orchestrator.run_loop()
 
             # Should only launch 1 issue even though 2 are available
             assert mock_launch.call_count == 1
@@ -1166,20 +1115,18 @@ class TestMaxIssuesToStart:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
-            # First issue already claimed (returns None), second succeeds
-            mock_launch.side_effect = [
-                None,  # Already claimed
-                create_session(issue2),
-            ]
+            call_count = 0
 
-            async def run_one_iteration():
-                await asyncio.sleep(0.01)
-                orchestrator.request_shutdown()
+            def launch_side_effect(issue):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 2:
+                    orchestrator.request_shutdown()
+                return None if call_count == 1 else create_session(issue2)
 
-            await asyncio.gather(
-                orchestrator.run_loop(),
-                run_one_iteration(),
-            )
+            mock_launch.side_effect = launch_side_effect
+
+            await orchestrator.run_loop()
 
             # Planner generates 2 actions based on max_issues_to_start=2
             # (it doesn't know issue1 will fail to launch)
@@ -2015,17 +1962,11 @@ class TestPauseBehavior:
             # Pause after first launch
             if launch_count == 1:
                 orchestrator.state.paused = True
+                orchestrator.request_shutdown()
             return create_session(issue)
 
         with patch.object(orchestrator, "launch_session", side_effect=launch_side_effect) as mock_launch:
-            async def run_one_iteration():
-                await asyncio.sleep(0.01)
-                orchestrator.request_shutdown()
-
-            await asyncio.gather(
-                orchestrator.run_loop(),
-                run_one_iteration(),
-            )
+            await orchestrator.run_loop()
 
             # Should only launch 1 issue (paused after first)
             assert mock_launch.call_count == 1

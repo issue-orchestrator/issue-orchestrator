@@ -610,6 +610,7 @@ class TestObserveSession:
         If the session log was modified recently, the session is clearly active
         and shouldn't be terminated just because terminal session detection failed.
         """
+        import os
         import time
         from datetime import datetime, timedelta
         from issue_orchestrator.observation.observation import SessionObservation
@@ -1082,6 +1083,7 @@ class TestEmitNoOutputIfStale:
         self, mock_config, mock_session_runner, mock_repository_host, sample_session, tmp_path
     ):
         """Test that no event is emitted when log file changes."""
+        import os
         import time
 
         mock_events = MagicMock()
@@ -1110,8 +1112,9 @@ class TestEmitNoOutputIfStale:
         monitor._emit_no_output_if_stale(sample_session)  # noqa: SLF001
 
         # Change the log file
-        time.sleep(0.01)  # Ensure different mtime
+        now = time.time()
         log_file.write_text("Initial content\nNew content\n")
+        os.utime(log_file, (now + 10, now + 10))
 
         # Second call - should NOT emit because log changed
         monitor._emit_no_output_if_stale(sample_session)  # noqa: SLF001

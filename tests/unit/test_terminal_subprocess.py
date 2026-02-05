@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import json
-import time
+import threading
 
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin, _SessionRecord, _SubprocessRegistry
 from issue_orchestrator.infra.env import ENV_PREFIX
+from tests.unit.threading_helpers import join_or_fail, wait_for_event
 
 
 def test_subprocess_session_writes_log(tmp_path, monkeypatch):
@@ -29,14 +30,18 @@ def test_subprocess_session_writes_log(tmp_path, monkeypatch):
     )
     assert created is True
 
-    # Wait for session to complete. session_exists() returns False once the
-    # process exits AND the copier thread finishes draining output.
-    for _ in range(100):  # Up to 2 seconds
-        if not plugin.session_exists(123, "issue-123"):
-            break
-        time.sleep(0.02)
-    else:
-        raise AssertionError("Session did not complete within timeout")
+    completion = threading.Event()
+
+    def wait_for_exit() -> None:
+        while plugin.session_exists(123, "issue-123"):
+            pass
+        completion.set()
+
+    watcher = threading.Thread(target=wait_for_exit)
+    watcher.start()
+    wait_for_event(completion, timeout=2.0, label="subprocess_completion")
+    join_or_fail(watcher, timeout=1.0, label="subprocess_watcher")
+    assert plugin.session_exists(123, "issue-123") is False
 
     log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "session.log"
     assert log_path.exists(), f"Log file not created at {log_path}"

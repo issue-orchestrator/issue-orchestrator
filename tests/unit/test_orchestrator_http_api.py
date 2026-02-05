@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 
 import httpx
 
@@ -14,6 +13,7 @@ from issue_orchestrator.execution.orchestrator_http_api import (
     OrchestratorHttpApi,
     OrchestratorAsyncHttpApi,
 )
+from tests.unit.threading_helpers import join_or_fail, wait_for_event, wait_for_async_event
 
 
 class DummyResponse:
@@ -60,13 +60,16 @@ def test_client_requests_are_serialized():
             self.active = 0
             self.concurrent = 0
             self.lock = threading.Lock()
+            self.start_event = threading.Event()
+            self.release_event = threading.Event()
 
         def request(self, method, url, json=None):
             with self.lock:
                 self.active += 1
                 if self.active > 1:
                     self.concurrent += 1
-            time.sleep(0.05)
+            self.start_event.set()
+            wait_for_event(self.release_event, timeout=1.0, label="release_event")
             with self.lock:
                 self.active -= 1
             return DummyResponse({"ok": True})
@@ -80,17 +83,16 @@ def test_client_requests_are_serialized():
         client=client,
     )
 
-    barrier = threading.Barrier(2)
-
     def worker():
-        barrier.wait(timeout=1)
         api.status()
 
     threads = [threading.Thread(target=worker) for _ in range(2)]
     for thread in threads:
         thread.start()
-    for thread in threads:
-        thread.join(timeout=2)
+    wait_for_event(client.start_event, timeout=1.0, label="start_event")
+    client.release_event.set()
+    for index, thread in enumerate(threads, start=1):
+        join_or_fail(thread, timeout=2, label=f"worker-{index}")
 
     assert client.concurrent == 0
 
@@ -130,13 +132,16 @@ async def test_async_client_allows_concurrent_requests():
             self.active = 0
             self.concurrent = 0
             self.lock = threading.Lock()
+            self.start_event = asyncio.Event()
+            self.release_event = asyncio.Event()
 
         async def request(self, method, url, json=None):
             with self.lock:
                 self.active += 1
                 if self.active > 1:
                     self.concurrent += 1
-            await asyncio.sleep(0.05)
+            self.start_event.set()
+            await wait_for_async_event(self.release_event, timeout=1.0, label="release_event")
             with self.lock:
                 self.active -= 1
             return DummyResponse({"ok": True})
@@ -150,6 +155,10 @@ async def test_async_client_allows_concurrent_requests():
         client=client,
     )
 
-    await asyncio.gather(api.status(), api.status())
+    task1 = asyncio.create_task(api.status())
+    task2 = asyncio.create_task(api.status())
+    await wait_for_async_event(client.start_event, timeout=1.0, label="start_event")
+    client.release_event.set()
+    await asyncio.gather(task1, task2)
 
     assert client.concurrent >= 1

@@ -239,13 +239,15 @@ class TestGetLogPath:
         self, temp_log_dir, mock_systems_config
     ):
         """get_log_path returns the most recently modified file."""
+        import os
         import time
 
         log1 = temp_log_dir / "test1.log"
         log2 = temp_log_dir / "test2.log"
         log1.write_text("old")
-        time.sleep(0.01)  # Ensure different mtime
         log2.write_text("new")
+        now = time.time()
+        os.utime(log2, (now + 10, now + 10))
 
         config = AISystemConfig(
             name="test",

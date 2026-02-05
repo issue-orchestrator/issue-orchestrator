@@ -1,6 +1,5 @@
 """Unit tests for GitHub cache implementation."""
 
-import time
 from unittest.mock import MagicMock
 
 import pytest
@@ -10,6 +9,7 @@ from issue_orchestrator.adapters.github.cache import (
     CacheStats,
     GitHubCache,
 )
+import time
 
 
 class TestCacheEntry:
@@ -41,9 +41,8 @@ class TestCacheEntry:
 
     def test_is_stale_expired_entry(self):
         """Test is_stale returns True for expired entry."""
-        # Create entry with cached_at in the past
         entry = CacheEntry(value={"data": "test"}, ttl_seconds=0.001)
-        time.sleep(0.002)  # Wait for TTL to expire
+        entry.cached_at = time.monotonic() - 1.0
         assert entry.is_stale()
 
     def test_is_stale_exactly_at_ttl(self):
@@ -140,9 +139,7 @@ class TestGitHubCacheIssues:
         """Test getting stale issue evicts entry and returns None."""
         issue_data = {"number": 123, "title": "Test"}
         cache.set_issue(123, issue_data, ttl=0.001)
-
-        # Wait for entry to become stale
-        time.sleep(0.002)
+        cache._issues[123].cached_at = time.monotonic() - 1.0  # noqa: SLF001
 
         result = cache.get_issue(123)
         assert result is None
@@ -217,8 +214,7 @@ class TestGitHubCacheIssueLabels:
         """Test getting stale labels evicts entry."""
         labels = ["bug"]
         cache.set_issue_labels(123, labels, ttl=0.001)
-
-        time.sleep(0.002)
+        cache._issue_labels[123].cached_at = time.monotonic() - 1.0  # noqa: SLF001
 
         result = cache.get_issue_labels(123)
         assert result is None
@@ -292,8 +288,7 @@ class TestGitHubCachePRs:
         """Test getting stale PR evicts entry."""
         pr_data = {"number": 10, "title": "Test PR"}
         cache.set_pr(10, pr_data, ttl=0.001)
-
-        time.sleep(0.002)
+        cache._prs_by_number[10].cached_at = time.monotonic() - 1.0  # noqa: SLF001
 
         result = cache.get_pr(10)
         assert result is None
@@ -371,8 +366,7 @@ class TestGitHubCachePRByIssue:
         """Test getting stale PR by issue evicts entry."""
         pr_data = {"number": 10, "issue_number": 123}
         cache.set_pr_by_issue(123, pr_data, ttl=0.001)
-
-        time.sleep(0.002)
+        cache._prs_by_issue[123].cached_at = time.monotonic() - 1.0  # noqa: SLF001
 
         result = cache.get_pr_by_issue(123)
         assert result is None
@@ -450,8 +444,7 @@ class TestGitHubCachePRByBranch:
         """Test getting stale PR by branch evicts entry."""
         pr_data = {"number": 10, "branch": "feature"}
         cache.set_pr_by_branch("feature", pr_data, ttl=0.001)
-
-        time.sleep(0.002)
+        cache._prs_by_branch["feature"].cached_at = time.monotonic() - 1.0  # noqa: SLF001
 
         result = cache.get_pr_by_branch("feature")
         assert result is None
@@ -493,8 +486,7 @@ class TestGitHubCacheBranches:
         """Test getting stale branches evicts entry."""
         branches = ["main"]
         cache.set_branches(branches, ttl=0.001)
-
-        time.sleep(0.002)
+        cache._branches.cached_at = time.monotonic() - 1.0  # noqa: SLF001
 
         result = cache.get_branches()
         assert result is None
@@ -632,7 +624,7 @@ class TestGitHubCacheEviction:
         # Add entries with small delays to ensure ordering
         for i in range(5):
             cache.set_issue(i, {"number": i})
-            time.sleep(0.001)
+            cache._issues[i].cached_at = time.monotonic() + i  # noqa: SLF001
 
         # Add new entry - should evict oldest
         cache.set_issue(5, {"number": 5})
@@ -783,10 +775,10 @@ class TestGitHubCacheStatistics:
 
         assert small_cache.stats.evictions >= 1
 
-    def test_stats_track_stale_evictions(self, cache):
+    def test_stats_track_stale_evictions(self, cache, monkeypatch):
         """Test stats track evictions from stale entries."""
         cache.set_issue(1, {"number": 1}, ttl=0.001)
-        time.sleep(0.002)
+        cache._issues[1].cached_at = time.monotonic() - 1.0  # noqa: SLF001
 
         cache.get_issue(1)  # Should evict stale entry
 
@@ -909,9 +901,7 @@ class TestGitHubCacheEdgeCases:
     def test_cache_with_very_short_ttl(self, cache):
         """Test cache with very short TTL expires quickly."""
         cache.set_issue(1, {"number": 1}, ttl=0.001)
-
-        # Wait for TTL to expire
-        time.sleep(0.002)
+        cache._issues[1].cached_at = time.monotonic() - 1.0  # noqa: SLF001
 
         # Should be stale
         result = cache.get_issue(1)

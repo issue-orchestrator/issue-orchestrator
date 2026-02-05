@@ -16,9 +16,10 @@ async def test_system_watch_event_matches_payload() -> None:
     notify = asyncio.Event()
     cfg = WatcherConfig()
     watch = SystemWatch(view=view, cfg=cfg, _notify=notify)
+    start = asyncio.Event()
 
     async def emit() -> None:
-        await asyncio.sleep(0.01)
+        await start.wait()
         view.apply_event({
             "event_id": 1,
             "type": EventName.GH_SEARCH_ITEM_MALFORMED.value,
@@ -27,11 +28,15 @@ async def test_system_watch_event_matches_payload() -> None:
         notify.set()
 
     task = asyncio.create_task(emit())
-    await watch.event(
-        EventName.GH_SEARCH_ITEM_MALFORMED,
-        predicate=lambda e: e.get("payload", {}).get("label") == "test-label",
-        timeout_s=1.0,
+    watch_task = asyncio.create_task(
+        watch.event(
+            EventName.GH_SEARCH_ITEM_MALFORMED,
+            predicate=lambda e: e.get("payload", {}).get("label") == "test-label",
+            timeout_s=1.0,
+        )
     )
+    start.set()
+    await watch_task
     await task
 
 
@@ -41,9 +46,10 @@ async def test_issue_watch_event_matches_issue_key() -> None:
     notify = asyncio.Event()
     cfg = WatcherConfig()
     watch = IssueWatch(issue_key="123", view=view, cfg=cfg, _notify=notify)
+    start = asyncio.Event()
 
     async def emit() -> None:
-        await asyncio.sleep(0.01)
+        await start.wait()
         view.apply_event({
             "event_id": 1,
             "type": EventName.ISSUE_LABELS_CHANGED.value,
@@ -53,9 +59,13 @@ async def test_issue_watch_event_matches_issue_key() -> None:
         notify.set()
 
     task = asyncio.create_task(emit())
-    await watch.event(
-        EventName.ISSUE_LABELS_CHANGED,
-        predicate=lambda e: "in-progress" in e.get("payload", {}).get("labels", []),
-        timeout_s=1.0,
+    watch_task = asyncio.create_task(
+        watch.event(
+            EventName.ISSUE_LABELS_CHANGED,
+            predicate=lambda e: "in-progress" in e.get("payload", {}).get("labels", []),
+            timeout_s=1.0,
+        )
     )
+    start.set()
+    await watch_task
     await task

@@ -291,19 +291,21 @@ class TestTimingRaceConditions:
         but run_with_web_dashboard exits directly. Both should be safe.
         """
         exit_count = []
+        start_timer = threading.Event()
 
         with patch("os._exit") as mock_exit:
             mock_exit.side_effect = lambda code: exit_count.append(code)
 
             # Simulate timer scheduling exit
             def timer_exit():
-                time.sleep(0.05)  # Small delay like the real timer
+                start_timer.wait(timeout=1)
                 fresh_manager.exit(0)
 
             timer_thread = threading.Thread(target=timer_exit)
             timer_thread.start()
 
             # Simulate direct exit (should win the race)
+            start_timer.set()
             fresh_manager.exit(0)
 
             timer_thread.join(timeout=1)
