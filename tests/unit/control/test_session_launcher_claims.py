@@ -135,6 +135,7 @@ class TestSessionLauncherClaimAcquisition:
                 mock_config.agents = {"test-agent": MagicMock(
                     timeout_minutes=30,
                     get_command=lambda **kwargs: "test-command",
+                    provider=None,
                 )}
                 mock_config.setup_worktree = []
                 mock_config.get_label_in_progress.return_value = "in-progress"
@@ -145,6 +146,12 @@ class TestSessionLauncherClaimAcquisition:
                 mock_config.allow_no_verify_dry_run_preflight = False
                 mock_config.web_port = 8080
                 mock_config.e2e_pr_labels = []
+                mock_config.provider_resilience = MagicMock(short_retry=MagicMock(
+                    max_attempts=1,
+                    initial_backoff_seconds=1,
+                    max_backoff_seconds=1,
+                    jitter=False,
+                ))
 
                 launcher = SessionLauncher(
                     config=mock_config,
@@ -189,7 +196,13 @@ class TestSessionLauncherClaimAcquisition:
 
         mock_config = MagicMock(spec=Config)
         mock_config.repo = "test/repo"
-        mock_config.agents = {"test-agent": MagicMock()}
+        mock_config.agents = {"test-agent": MagicMock(provider=None)}
+        mock_config.provider_resilience = MagicMock(short_retry=MagicMock(
+            max_attempts=1,
+            initial_backoff_seconds=1,
+            max_backoff_seconds=1,
+            jitter=False,
+        ))
 
         launcher = SessionLauncher(
             config=mock_config,
@@ -227,7 +240,13 @@ class TestSessionLauncherClaimAcquisition:
 
         mock_config = MagicMock(spec=Config)
         mock_config.repo = "test/repo"
-        mock_config.agents = {"test-agent": MagicMock()}
+        mock_config.agents = {"test-agent": MagicMock(provider=None)}
+        mock_config.provider_resilience = MagicMock(short_retry=MagicMock(
+            max_attempts=1,
+            initial_backoff_seconds=1,
+            max_backoff_seconds=1,
+            jitter=False,
+        ))
 
         launcher = SessionLauncher(
             config=mock_config,
