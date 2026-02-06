@@ -11,6 +11,8 @@ def test_local_loop_happy_path_creates_non_draft_pr(scenario_repo: Path):
         .reviewer(script("reviewer_ok.sh", prompt=True)) \
         .validation(cmd=script("validate_pass.sh")) \
         .review_exchange(mode="via-local-loop", require_validation=False) \
+        .expect_validation_status("passed") \
+        .expect_validation_artifacts(True) \
         .expect_pr(created=True, draft=False) \
         .expect_event(EventName.REVIEW_EXCHANGE_STARTED) \
         .expect_event(EventName.REVIEW_EXCHANGE_COMPLETED) \
@@ -52,7 +54,9 @@ def test_validation_failure_queues_retry(scenario_repo: Path):
         .reviewer(script("reviewer_ok.sh", prompt=True)) \
         .validation(cmd=script("validate_fail.sh"), max_retries=1) \
         .review_exchange(mode="via-local-loop", require_validation=False) \
-        .wait_for(lambda orch: len(orch.state.pending_validation_retries) > 0, max_ticks=6) \
+        .wait_for_event(EventName.SESSION_VALIDATION_RETRY_NEEDED) \
+        .expect_validation_status("retry") \
+        .expect_validation_artifacts(False) \
         .expect_pending_validation_retries(1) \
         .run()
 
@@ -81,9 +85,72 @@ def test_validation_failure_exhausts_retries(scenario_repo: Path):
         .reviewer(script("reviewer_ok.sh", prompt=True)) \
         .validation(cmd=script("validate_fail.sh"), max_retries=0) \
         .review_exchange(mode="via-local-loop", require_validation=False) \
+        .expect_validation_status("failed") \
+        .expect_validation_artifacts(False) \
         .expect_pending_validation_retries(0) \
         .expect_session_history_status({"validation_failed"}) \
         .run()
+
+
+def test_completion_outcome_blocked_sets_label_and_event(scenario_repo: Path):
+    scenario("completion_blocked", scenario_repo) \
+        .coder(script("coder_blocked.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .expect_issue_label("blocked") \
+        .expect_latest_event(
+            EventName.ISSUE_BLOCKED,
+            predicate=lambda data: data.get("issue_number") == 1,
+        ) \
+        .run()
+
+
+def test_completion_outcome_needs_human_sets_label_and_event(scenario_repo: Path):
+    scenario("completion_needs_human", scenario_repo) \
+        .coder(script("coder_needs_human.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .expect_issue_label("needs-human") \
+        .expect_latest_event(
+            EventName.ISSUE_NEEDS_HUMAN,
+            predicate=lambda data: data.get("issue_number") == 1,
+        ) \
+        .run()
+
+
+def test_reconciliation_drift_pauses_issue(scenario_repo: Path):
+    pause_label = "io:needs-reconcile"
+    scenario("reconciliation_drift", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .issue(labels=["simulated-scenario", "agent:coder", "in-progress"]) \
+        .reconciliation(enabled=True, fresh_labels={1: {pause_label}}) \
+        .expect_issue_label(pause_label) \
+        .expect_latest_event(
+            EventName.RECONCILIATION_REQUIRED,
+            predicate=lambda data: data.get("issue_number") == 1 and pause_label in set(data.get("actual_labels", [])),
+        ) \
+        .expect_latest_event(
+            EventName.ISSUE_PAUSED_RECONCILE,
+            predicate=lambda data: data.get("issue_number") == 1 and data.get("pause_label") == pause_label,
+        ) \
+        .run()
+
+
+def test_restart_recovery_uses_labels_not_memory(scenario_repo: Path):
+    ctx = scenario("restart_recovery", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .expect_event(EventName.REVIEW_EXCHANGE_COMPLETED) \
+        .run()
+
+    restarted = ctx.restart()
+    from .conftest import run_until_pending_reviews
+    run_until_pending_reviews(restarted.orch, 1, max_ticks=8)
+
+    assert len(restarted.orch.state.pending_reviews) == 1
 
 
 def test_review_exchange_stops_on_no_progress(scenario_repo: Path):

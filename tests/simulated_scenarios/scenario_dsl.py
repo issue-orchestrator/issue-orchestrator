@@ -23,13 +23,45 @@ class ScenarioContext:
     orch: object
     repo_host: object
     events: object
+    config: object
+    repo_root: Path
+    issue_number: int
+    event_baseline: int
 
     @property
     def worktree(self) -> Path | None:
         history = getattr(self.orch.state, "session_history", [])
         if not history:
+            active = getattr(self.orch.state, "active_sessions", [])
+            if active:
+                worktree = getattr(active[0], "worktree_path", None)
+                if worktree:
+                    return Path(worktree)
+            pending = getattr(self.orch.state, "pending_validation_retries", [])
+            if pending:
+                return Path(pending[0].worktree_path)
             return None
         return history[0].worktree_path
+
+    def events_since_baseline(self) -> list:
+        return list(self.events.events[self.event_baseline:])
+
+    def restart(self) -> "ScenarioContext":
+        orch, repo_host, events = build_orchestrator(
+            self.repo_root,
+            list(self.repo_host.issues),
+            self.config,
+            repo_host=self.repo_host,
+        )
+        return ScenarioContext(
+            orch=orch,
+            repo_host=repo_host,
+            events=events,
+            config=self.config,
+            repo_root=self.repo_root,
+            issue_number=self.issue_number,
+            event_baseline=len(events.events),
+        )
 
 
 Expectation = Callable[[ScenarioContext], None]
@@ -52,9 +84,12 @@ class Scenario:
     review_exchange_max_no_progress: int = 2
     max_validation_retries: int = 0
     max_ticks: int = 6
+    reconcile: bool = False
+    fresh_labels: dict[int, set[str]] | None = None
 
     _expectations: list[Expectation] = field(default_factory=list, init=False)
     _run_predicate: Callable[[object], bool] | None = field(default=None, init=False)
+    _wait_for_events: set[EventName] = field(default_factory=set, init=False)
 
     def issue(self, *, number: int | None = None, title: str | None = None, labels: list[str] | None = None) -> Scenario:
         if number is not None:
@@ -77,6 +112,12 @@ class Scenario:
         self.validation_cmd = cmd
         if max_retries is not None:
             self.max_validation_retries = max_retries
+        return self
+
+    def reconciliation(self, *, enabled: bool = True, fresh_labels: dict[int, set[str]] | None = None) -> Scenario:
+        self.reconcile = enabled
+        if fresh_labels is not None:
+            self.fresh_labels = fresh_labels
         return self
 
     def review_exchange(
@@ -103,6 +144,10 @@ class Scenario:
             self.max_ticks = max_ticks
         return self
 
+    def wait_for_event(self, name: EventName) -> Scenario:
+        self._wait_for_events.add(name)
+        return self
+
     def expect_pr(self, *, created: bool = True, draft: bool | None = None, number: int = 100) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
             pr = ctx.repo_host.get_pr(number)
@@ -116,17 +161,31 @@ class Scenario:
 
     def expect_event(self, name: EventName) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            assert any(e.name == name for e in ctx.events.events)
+            assert any(e.name == name for e in ctx.events_since_baseline())
         return self._add_expectation(_assert)
 
     def expect_no_event(self, name: EventName) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            assert all(e.name != name for e in ctx.events.events)
+            assert all(e.name != name for e in ctx.events_since_baseline())
+        return self._add_expectation(_assert)
+
+    def expect_latest_event(
+        self,
+        name: EventName,
+        *,
+        predicate: Callable[[dict], bool] | None = None,
+    ) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            latest = _latest_event(ctx.events_since_baseline(), {name})
+            assert latest is not None, f"Expected latest event {name} not found"
+            assert latest.name == name
+            if predicate is not None:
+                assert predicate(latest.data)
         return self._add_expectation(_assert)
 
     def expect_review_exchange_reason(self, reason: str) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            payload = _latest_event_payload(ctx.events, EventName.REVIEW_EXCHANGE_COMPLETED)
+            payload = _latest_event_payload(ctx.events_since_baseline(), EventName.REVIEW_EXCHANGE_COMPLETED)
             assert payload is not None
             assert payload.get("reason") == reason
         return self._add_expectation(_assert)
@@ -138,7 +197,7 @@ class Scenario:
         coder_response_type: str | None = None,
     ) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            payloads = _event_payloads(ctx.events, EventName.REVIEW_EXCHANGE_ROUND_COMPLETED)
+            payloads = _event_payloads(ctx.events_since_baseline(), EventName.REVIEW_EXCHANGE_ROUND_COMPLETED)
             assert payloads
             latest = payloads[-1]
             if reviewer_response_type is not None:
@@ -156,6 +215,69 @@ class Scenario:
             assert max(rounds) == expected_max
         return self._add_expectation(_assert)
 
+    def expect_validation_status(self, status: str) -> Scenario:
+        status_map = {
+            "passed": EventName.SESSION_VALIDATION_PASSED,
+            "failed": EventName.SESSION_VALIDATION_FAILED,
+            "retry": EventName.SESSION_VALIDATION_RETRY_NEEDED,
+        }
+        if status not in status_map:
+            raise AssertionError(f"Unknown validation status: {status}")
+
+        def _assert(ctx: ScenarioContext) -> None:
+            last = _latest_event(
+                ctx.events_since_baseline(),
+                {
+                    EventName.SESSION_VALIDATION_PASSED,
+                    EventName.SESSION_VALIDATION_FAILED,
+                    EventName.SESSION_VALIDATION_RETRY_NEEDED,
+                },
+            )
+            assert last is not None, "validation result event not emitted"
+            assert last.name == status_map[status]
+        return self._add_expectation(_assert)
+
+    def expect_validation_result(self, passed: bool) -> Scenario:
+        return self.expect_validation_status("passed" if passed else "failed")
+
+    def expect_validation_artifacts(self, passed: bool, *, exit_code: int | None = None, timed_out: bool | None = None) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            worktree = ctx.worktree
+            assert worktree is not None
+            record_path = _latest_validation_record(worktree)
+            assert record_path is not None, "validation-record.json not found"
+            record = json.loads(record_path.read_text())
+            assert record.get("passed") is passed
+            if exit_code is not None:
+                assert record.get("exit_code") == exit_code
+            else:
+                if passed:
+                    assert record.get("exit_code") == 0
+                else:
+                    assert record.get("exit_code") != 0 or record.get("timed_out") is True
+            if timed_out is not None:
+                assert record.get("timed_out") is timed_out
+            stdout_path = record.get("stdout_path")
+            stderr_path = record.get("stderr_path")
+            assert stdout_path, "validation stdout_path missing"
+            assert stderr_path, "validation stderr_path missing"
+            stdout_file = (worktree / stdout_path).resolve() if not Path(stdout_path).is_absolute() else Path(stdout_path)
+            stderr_file = (worktree / stderr_path).resolve() if not Path(stderr_path).is_absolute() else Path(stderr_path)
+            assert stdout_file.exists(), "validation stdout file missing"
+            assert stderr_file.exists(), "validation stderr file missing"
+        return self._add_expectation(_assert)
+
+    def expect_issue_label(self, label: str) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            labels = ctx.repo_host.get_issue_labels(ctx.issue_number)
+            assert label in labels
+        return self._add_expectation(_assert)
+
+    def expect_issue_lacks_label(self, label: str) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            labels = ctx.repo_host.get_issue_labels(ctx.issue_number)
+            assert label not in labels
+        return self._add_expectation(_assert)
     def expect_pending_validation_retries(self, count: int) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
             assert len(ctx.orch.state.pending_validation_retries) == count
@@ -188,10 +310,37 @@ class Scenario:
             title=self.issue_title,
             labels=self.issue_labels,
         )
-        orch, repo_host, events = build_orchestrator(self.repo_root, [issue], config)
-        predicate = self._run_predicate or (lambda o: not o.state.active_sessions)
-        run_until(orch, lambda: predicate(orch), max_ticks=self.max_ticks)
-        ctx = ScenarioContext(orch=orch, repo_host=repo_host, events=events)
+        orch, repo_host, events = build_orchestrator(
+            self.repo_root,
+            [issue],
+            config,
+            reconcile=self.reconcile,
+            fresh_labels=self.fresh_labels,
+        )
+        baseline = len(events.events)
+        def _predicate() -> bool:
+            if self._run_predicate is not None:
+                base = self._run_predicate(orch)
+            elif self._wait_for_events:
+                base = True
+            else:
+                base = not orch.state.active_sessions
+            if not self._wait_for_events:
+                return base
+            events_since = events.events[baseline:]
+            have_events = all(any(e.name == name for e in events_since) for name in self._wait_for_events)
+            return base and have_events
+
+        run_until(orch, _predicate, max_ticks=self.max_ticks)
+        ctx = ScenarioContext(
+            orch=orch,
+            repo_host=repo_host,
+            events=events,
+            config=config,
+            repo_root=self.repo_root,
+            issue_number=self.issue_number,
+            event_baseline=baseline,
+        )
         for expectation in self._expectations:
             expectation(ctx)
         return ctx
@@ -206,12 +355,17 @@ def scenario(name: str, repo_root: Path) -> Scenario:
 
 
 def _event_payloads(events, name: EventName) -> list[dict]:
-    return [e.data for e in events.events if e.name == name]
+    return [e.data for e in events if e.name == name]
 
 
 def _latest_event_payload(events, name: EventName) -> dict | None:
     payloads = _event_payloads(events, name)
     return payloads[-1] if payloads else None
+
+
+def _latest_event(events, names: set[EventName]):
+    matches = [e for e in events if e.name in names]
+    return matches[-1] if matches else None
 
 
 def _summary_rounds(worktree: Path) -> list[int]:

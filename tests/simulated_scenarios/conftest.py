@@ -180,18 +180,34 @@ def build_config(
     return config
 
 
+class FreshIssueReader:
+    def __init__(self, labels_by_issue: dict[int, set[str]]) -> None:
+        self._labels_by_issue = labels_by_issue
+
+    def read_issue_labels(self, issue_number: int) -> list[str]:
+        return sorted(self._labels_by_issue.get(issue_number, set()))
+
+
 def build_orchestrator(
     repo_root: Path,
     issues: list[Issue],
     config: Config,
+    *,
+    repo_host: MockGitHubAdapter | None = None,
+    events: MockEventSink | None = None,
+    runner: ScriptSessionRunner | None = None,
+    worktree_manager: TempWorktreeManager | None = None,
+    working_copy: StubWorkingCopy | None = None,
+    reconcile: bool = False,
+    fresh_labels: dict[int, set[str]] | None = None,
 ) -> tuple[Orchestrator, MockGitHubAdapter, MockEventSink]:
-    repo_host = MockGitHubAdapter()
+    repo_host = repo_host or MockGitHubAdapter()
     repo_host.issues = issues
 
-    events = MockEventSink()
-    runner = ScriptSessionRunner()
-    worktree_manager = TempWorktreeManager(base=repo_root)
-    working_copy = StubWorkingCopy()
+    events = events or MockEventSink()
+    runner = runner or ScriptSessionRunner()
+    worktree_manager = worktree_manager or TempWorktreeManager(base=repo_root)
+    working_copy = working_copy or StubWorkingCopy()
 
     deps = build_test_orchestrator_deps(
         config,
@@ -201,6 +217,12 @@ def build_orchestrator(
         worktree_manager,
         working_copy=working_copy,
     )
+
+    if reconcile:
+        deps.action_applier.reconcile = True
+        labels_by_issue = fresh_labels or {}
+        deps.action_applier.fresh_issue_reader = FreshIssueReader(labels_by_issue)
+
     orchestrator = Orchestrator(config=config, deps=deps)
     return orchestrator, repo_host, events
 
@@ -211,3 +233,15 @@ def run_until(orchestrator: Orchestrator, predicate, max_ticks: int = 10) -> Non
         if predicate():
             return
     raise AssertionError("predicate not satisfied before max_ticks")
+
+
+def run_until_event(orchestrator: Orchestrator, events: MockEventSink, name, max_ticks: int = 10) -> None:
+    def _predicate() -> bool:
+        return any(e.name == name for e in events.events)
+    run_until(orchestrator, _predicate, max_ticks=max_ticks)
+
+
+def run_until_pending_reviews(orchestrator: Orchestrator, expected: int, max_ticks: int = 10) -> None:
+    def _predicate() -> bool:
+        return len(orchestrator.state.pending_reviews) >= expected
+    run_until(orchestrator, _predicate, max_ticks=max_ticks)
