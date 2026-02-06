@@ -226,6 +226,46 @@ def test_review_exchange_cache_skips_agent_run(scenario_repo: Path):
     assert ctx2 is not None
 
 
+def test_review_exchange_cache_requires_validation(scenario_repo: Path):
+    ctx1 = scenario("cache_validation_first", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok_with_validation.sh", prompt=True)) \
+        .validation(cmd=script("validate_pass.sh")) \
+        .review_exchange(mode="via-local-loop", require_validation=True) \
+        .expect_event(EventName.REVIEW_EXCHANGE_STARTED) \
+        .expect_validation_status("passed") \
+        .run()
+    assert ctx1 is not None
+
+    ctx2 = scenario("cache_validation_second", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok_with_validation.sh", prompt=True)) \
+        .validation(cmd=script("validate_pass.sh")) \
+        .review_exchange(mode="via-local-loop", require_validation=True) \
+        .expect_no_event(EventName.REVIEW_EXCHANGE_STARTED) \
+        .run()
+    assert ctx2 is not None
+
+
+def test_review_exchange_cache_invalid_validation_reruns(scenario_repo: Path):
+    ctx1 = scenario("cache_invalid_first", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .expect_event(EventName.REVIEW_EXCHANGE_STARTED) \
+        .run()
+    assert ctx1 is not None
+
+    ctx2 = scenario("cache_invalid_second", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok_with_validation.sh", prompt=True)) \
+        .validation(cmd=script("validate_pass.sh")) \
+        .review_exchange(mode="via-local-loop", require_validation=True) \
+        .expect_event(EventName.REVIEW_EXCHANGE_STARTED) \
+        .run()
+    assert ctx2 is not None
+
+
 def test_validation_failure_exhausts_retries(scenario_repo: Path):
     scenario("validation_exhausted", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -236,6 +276,50 @@ def test_validation_failure_exhausts_retries(scenario_repo: Path):
         .expect_validation_artifacts(False) \
         .expect_pending_validation_retries(0) \
         .expect_session_history_status({"validation_failed"}) \
+        .run()
+
+
+def test_validation_timeout_marks_failed(scenario_repo: Path):
+    def _short_timeout(config) -> None:
+        config.validation.timeout_seconds = 1
+
+    scenario("validation_timeout", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_timeout.sh"), max_retries=0) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .configure(_short_timeout) \
+        .expect_validation_status("failed") \
+        .expect_validation_artifacts(False, timed_out=True) \
+        .run()
+
+
+def test_review_exchange_auto_uses_local_loop_when_mcp_unsupported(scenario_repo: Path):
+    def _configure_auto_mode(config) -> None:
+        config.review_exchange_mode = "auto"
+        config.agents["agent:coder"].ai_system = "unsupported"
+        config.agents["agent:reviewer"].ai_system = "unsupported"
+
+    scenario("auto_mode_local_loop", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .configure(_configure_auto_mode) \
+        .expect_pr(created=True, draft=False) \
+        .expect_event(EventName.REVIEW_EXCHANGE_COMPLETED) \
+        .run()
+
+
+def test_reconciliation_no_drift_allows_progress(scenario_repo: Path):
+    matching_labels = {"simulated-scenario", "agent:coder"}
+    scenario("reconciliation_ok", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .issue(labels=sorted(matching_labels)) \
+        .reconciliation(enabled=True, fresh_labels={1: matching_labels}) \
+        .expect_event(EventName.REVIEW_EXCHANGE_COMPLETED) \
+        .expect_no_event(EventName.RECONCILIATION_REQUIRED) \
         .run()
 
 
