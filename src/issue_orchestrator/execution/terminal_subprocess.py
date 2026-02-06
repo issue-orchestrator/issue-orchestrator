@@ -287,13 +287,12 @@ class SubprocessPlugin:
     def _start_process(self, command: str, working_dir: Path, session_name: str) -> "pexpect.spawn":
         """Start a subprocess with pexpect, capturing output to log file.
 
-        Uses pexpect.spawn which creates a PTY. This is needed for interactive
+        Uses pexpect.spawn which creates a PTY. This is required for interactive
         programs like Claude that behave differently without a TTY.
 
-        Note: In Python 3.14+, pty.fork() can warn about multi-threaded deadlocks.
-        In practice, we start sessions sequentially and the warning is rare. If it
-        becomes an issue, consider serializing session starts or using PopenSpawn
-        for non-interactive commands only.
+        Note: Python 3.14+ warns about forkpty() in multi-threaded processes.
+        Tests using this code are grouped in xdist_group("pty") to run sequentially,
+        and the warning is suppressed in pyproject.toml filterwarnings.
         """
         import pexpect
 
