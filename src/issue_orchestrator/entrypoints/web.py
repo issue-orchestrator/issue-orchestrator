@@ -1,6 +1,7 @@
 """Web dashboard for the orchestrator."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -10,6 +11,7 @@ import socket
 import subprocess
 import webbrowser
 from pathlib import Path
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any
 
 from fastapi import Depends, FastAPI, Request
@@ -229,6 +231,38 @@ async def broadcast_event(event_type: str, data: dict | None = None) -> None:
     # Clean up dead subscribers
     for queue in dead_subscribers:
         _event_subscribers.discard(queue)
+
+
+def add_event_subscriber(queue: asyncio.Queue) -> None:
+    """Register an SSE subscriber queue."""
+    _event_subscribers.add(queue)
+
+
+def remove_event_subscriber(queue: asyncio.Queue) -> None:
+    """Remove an SSE subscriber queue."""
+    _event_subscribers.discard(queue)
+
+
+def event_subscribers_snapshot() -> set[asyncio.Queue]:
+    """Return a snapshot of current SSE subscribers."""
+    return set(_event_subscribers)
+
+
+def get_main_loop() -> asyncio.AbstractEventLoop | None:
+    """Return the main event loop reference for SSE scheduling."""
+    return _main_loop
+
+
+@contextlib.contextmanager
+def swapped_event_subscribers(subscribers: set[asyncio.Queue]) -> Iterator[None]:
+    """Temporarily replace the SSE subscriber set (for tests)."""
+    global _event_subscribers
+    original = _event_subscribers
+    _event_subscribers = subscribers
+    try:
+        yield
+    finally:
+        _event_subscribers = original
 
 
 def get_orchestrator():

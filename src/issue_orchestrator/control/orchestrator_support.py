@@ -671,6 +671,11 @@ def _filter_queue(config: "Config", state: "OrchestratorState", all_issues: list
     return [i for i in filtered if i.number == config.filtering.issue] if config.filtering.issue else filtered
 
 
+def emit_queue_changes(events: EventSink, state: "OrchestratorState", new_queue: list["Issue"]) -> None:
+    """Detect and emit queue changes."""
+    _emit_queue_changes(events, state, new_queue)
+
+
 def _emit_queue_changes(events: EventSink, state: "OrchestratorState", new_queue: list["Issue"]) -> None:
     """Detect and emit queue changes."""
     old_numbers = {i.number for i in state.cached_queue_issues}
@@ -682,6 +687,16 @@ def _emit_queue_changes(events: EventSink, state: "OrchestratorState", new_queue
         removed = [{"number": n} for n in removed_numbers]
         events.publish(TraceEvent(EventName.QUEUE_CHANGED, {"added": added, "removed": removed, "total": len(new_queue)}))
         logger.info("Queue changed: %d added, %d removed, %d total", len(added), len(removed), len(new_queue))
+
+
+def detect_stale_in_progress(
+    observer: object | None,
+    state: "OrchestratorState",
+    events: EventSink,
+    event_context: EventContext,
+) -> list["Issue"]:
+    """Detect stale in-progress issues."""
+    return _detect_stale_in_progress(observer, state, events, event_context)
 
 
 def _detect_stale_in_progress(observer: object | None, state: "OrchestratorState", events: EventSink, event_context: EventContext) -> list["Issue"]:
@@ -709,6 +724,17 @@ def _emit_facts_gathered(events: EventSink, event_context: EventContext, state: 
 def _emit_plan_computed(events: EventSink, event_context: EventContext, plan: "Plan") -> None:
     """Emit plan computed event."""
     events.publish(TraceEvent(EventName.PLAN_COMPUTED, event_context.enrich({"steps": plan.action_count, "actions": [a.action_type.value for a in plan.actions]})))
+
+
+def track_stale_ticks(
+    config: "Config",
+    events: EventSink,
+    event_context: EventContext,
+    state: "OrchestratorState",
+    stale_issues: list["Issue"],
+) -> None:
+    """Track stale ticks and emit escalation events."""
+    _track_stale_ticks(config, events, event_context, state, stale_issues)
 
 
 def _track_stale_ticks(

@@ -6,9 +6,9 @@ from unittest.mock import MagicMock
 
 from issue_orchestrator.control.github_workflow import GitHubWorkflow
 from issue_orchestrator.control.orchestrator_support import (
-    _detect_stale_in_progress,
-    _emit_queue_changes,
-    _track_stale_ticks,
+    detect_stale_in_progress,
+    emit_queue_changes,
+    track_stale_ticks,
 )
 from issue_orchestrator.contracts.public import (
     DependencyBlockedPayload,
@@ -34,7 +34,7 @@ def test_queue_changed_event_payload_shape():
         Issue(number=2, title="New", labels=[]),
     ]
 
-    _emit_queue_changes(events, state, new_queue)
+    emit_queue_changes(events, state, new_queue)
 
     matches = events.get_events_by_name(EventName.QUEUE_CHANGED)
     assert len(matches) == 1
@@ -112,7 +112,7 @@ def test_stale_in_progress_events_payload_shape():
         def detect_stale_in_progress(self, cached_queue_issues, active_sessions):
             return cached_queue_issues
 
-    stale = _detect_stale_in_progress(_Observer(), state, events, context)
+    stale = detect_stale_in_progress(_Observer(), state, events, context)
     assert stale
     detected = events.get_events_by_name(EventName.STALE_IN_PROGRESS_DETECTED)
     assert len(detected) == 1
@@ -125,7 +125,7 @@ def test_stale_in_progress_events_payload_shape():
     events.clear()
     state.stale_issue_ticks = {7: 2}
     config = Config()
-    _track_stale_ticks(config, events, context, state, stale_issues=[])
+    track_stale_ticks(config, events, context, state, stale_issues=[])
 
     cleared = events.get_events_by_name(EventName.STALE_IN_PROGRESS_CLEARED)
     assert len(cleared) == 1
@@ -145,7 +145,7 @@ def test_stale_persistent_detected_payload_shape():
     config.stale_escalation_ticks = 2
     stale_issues = [Issue(number=7, title="Stale", labels=["in-progress"])]
 
-    _track_stale_ticks(config, events, context, state, stale_issues=stale_issues)
+    track_stale_ticks(config, events, context, state, stale_issues=stale_issues)
 
     persistent = events.get_events_by_name(EventName.PERSISTENT_STALE_DETECTED)
     assert len(persistent) == 1

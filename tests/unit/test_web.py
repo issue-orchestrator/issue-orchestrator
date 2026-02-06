@@ -969,11 +969,11 @@ class TestSSEFunctionality:
     async def test_broadcast_event_to_subscribers(self):
         """Test broadcasting events to subscribers."""
         import asyncio
-        from issue_orchestrator.entrypoints.web import broadcast_event, _event_subscribers
+        from issue_orchestrator.entrypoints.web import add_event_subscriber, broadcast_event, remove_event_subscriber
 
         # Create a test queue and add it as a subscriber
         test_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-        _event_subscribers.add(test_queue)
+        add_event_subscriber(test_queue)
 
         try:
             # Broadcast an event
@@ -985,16 +985,16 @@ class TestSSEFunctionality:
             assert event["type"] == "test_event"
             assert event["data"] == {"key": "value"}
         finally:
-            _event_subscribers.discard(test_queue)
+            remove_event_subscriber(test_queue)
 
     @pytest.mark.asyncio
     async def test_broadcast_event_handles_empty_data(self):
         """Test broadcasting events with no data."""
         import asyncio
-        from issue_orchestrator.entrypoints.web import broadcast_event, _event_subscribers
+        from issue_orchestrator.entrypoints.web import add_event_subscriber, broadcast_event, remove_event_subscriber
 
         test_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-        _event_subscribers.add(test_queue)
+        add_event_subscriber(test_queue)
 
         try:
             await broadcast_event("empty_event")
@@ -1003,45 +1003,41 @@ class TestSSEFunctionality:
             assert event["type"] == "empty_event"
             assert event["data"] == {}
         finally:
-            _event_subscribers.discard(test_queue)
+            remove_event_subscriber(test_queue)
 
     @pytest.mark.asyncio
     async def test_broadcast_event_removes_full_queues(self):
         """Test that full queues are removed from subscribers."""
         import asyncio
-        from issue_orchestrator.entrypoints.web import broadcast_event, _event_subscribers
+        from issue_orchestrator.entrypoints.web import add_event_subscriber, broadcast_event, event_subscribers_snapshot, remove_event_subscriber
 
         # Create a queue with size 1 and fill it
         full_queue: asyncio.Queue = asyncio.Queue(maxsize=1)
         full_queue.put_nowait({"dummy": "event"})
 
-        _event_subscribers.add(full_queue)
-        assert full_queue in _event_subscribers
+        add_event_subscriber(full_queue)
+        assert full_queue in event_subscribers_snapshot()
 
         try:
             # This should fail silently and remove the full queue
             await broadcast_event("overflow_event")
 
             # Queue should be removed from subscribers
-            assert full_queue not in _event_subscribers
+            assert full_queue not in event_subscribers_snapshot()
         finally:
-            _event_subscribers.discard(full_queue)
+            remove_event_subscriber(full_queue)
 
     @pytest.mark.asyncio
     async def test_broadcast_event_no_subscribers(self):
         """Test broadcasting when there are no subscribers."""
-        from issue_orchestrator.entrypoints.web import broadcast_event, _event_subscribers
+        from issue_orchestrator.entrypoints.web import broadcast_event, event_subscribers_snapshot, swapped_event_subscribers
 
         # Ensure no subscribers
-        original_subscribers = _event_subscribers.copy()
-        _event_subscribers.clear()
-
-        try:
+        original_subscribers = event_subscribers_snapshot()
+        with swapped_event_subscribers(set()):
             # Should not raise any errors
             await broadcast_event("no_listeners", {"data": "test"})
-        finally:
-            # Restore original subscribers
-            _event_subscribers.update(original_subscribers)
+        assert event_subscribers_snapshot() == original_subscribers
 
     def test_events_endpoint_exists(self):
         """Test that /api/events endpoint is registered."""
@@ -1072,7 +1068,7 @@ class TestSSEFunctionality:
         set_orchestrator(orchestrator)
 
         queue: asyncio.Queue = asyncio.Queue(maxsize=10)
-        web._event_subscribers.add(queue)
+        web.add_event_subscriber(queue)
 
         monkeypatch.setattr(web, "trigger_server_shutdown", lambda: None)
         monkeypatch.setattr(web.shutdown_manager, "request_shutdown", lambda reason: None)
@@ -1087,7 +1083,7 @@ class TestSSEFunctionality:
             assert orchestrator.shutdown_called is True
             ShutdownRequestedPayload.model_validate(event["data"])
         finally:
-            web._event_subscribers.discard(queue)
+            web.remove_event_subscriber(queue)
             set_orchestrator(original)
 
     @pytest.mark.asyncio
@@ -1187,9 +1183,8 @@ class TestSSEEventStreamFormat:
                 super().add(item)
                 self._event.set()
 
-        original_subscribers = web._event_subscribers
+        from issue_orchestrator.entrypoints.web import swapped_event_subscribers
         ready = asyncio.Event()
-        web._event_subscribers = NotifyingSet(ready)
 
         class DummyRequest:
             def __init__(self):
@@ -1198,7 +1193,7 @@ class TestSSEEventStreamFormat:
             async def is_disconnected(self):
                 return not self.connected
 
-        try:
+        with swapped_event_subscribers(NotifyingSet(ready)):
             request = DummyRequest()
             response = await web.events(request)
             iterator = response.body_iterator
@@ -1216,8 +1211,6 @@ class TestSSEEventStreamFormat:
             assert chunk["event"] == "session.started"
             payload = json.loads(chunk["data"])
             assert payload == {"issue_number": 123, "status": "active"}
-        finally:
-            web._event_subscribers = original_subscribers
 
 
 class TestIssueRowsEndpoint:
