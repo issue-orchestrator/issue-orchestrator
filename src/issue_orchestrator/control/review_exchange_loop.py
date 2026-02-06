@@ -14,6 +14,8 @@ from ..agent_runner import AgentRunner, RunSpec
 from ..domain.models import AgentConfig
 from ..infra.env import ENV_PREFIX
 from ..ports.session_output import SessionOutput
+from ..ports import EventSink, TraceEvent
+from ..events import EventName, EventContext
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +53,15 @@ def run_review_exchange_loop(
     max_no_progress: int,
     require_validation: bool,
     web_port: int | None,
+    events: EventSink | None = None,
+    event_context: EventContext | None = None,
 ) -> ReviewExchangeOutcome:
     """Run the coder↔reviewer exchange loop and capture round-trip logs."""
+    def _emit(event_name: EventName, payload: dict[str, Any]) -> None:
+        if events is None or event_context is None:
+            return
+        events.publish(TraceEvent(event_name, event_context.enrich(payload)))
+
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     session_name = f"review-exchange-{issue_number}-{timestamp}"
     run = session_output.start_run(
@@ -66,12 +75,29 @@ def run_review_exchange_loop(
     exchange_dir.mkdir(parents=True, exist_ok=True)
     session_output.update_manifest(run_dir, {"review_exchange_dir": str(exchange_dir)})
 
+    _emit(EventName.REVIEW_EXCHANGE_STARTED, {
+        "issue_number": issue_number,
+        "issue_title": issue_title,
+        "session_name": session_name,
+        "coder_label": coder_label,
+        "reviewer_label": reviewer_label,
+        "max_rounds": max_rounds,
+        "max_no_progress": max_no_progress,
+        "require_validation": require_validation,
+        "exchange_dir": str(exchange_dir),
+    })
+
     runner = AgentRunner()
     no_progress_count = 0
     last_reviewer_text: str | None = None
     last_coder_text: str | None = None
 
     for round_index in range(1, max_rounds + 1):
+        _emit(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": round_index,
+        })
         reviewer_response = _run_reviewer_round(
             runner=runner,
             worktree_path=worktree_path,
@@ -109,6 +135,20 @@ def run_review_exchange_loop(
                     response=reviewer_response,
                 )
                 summary = _write_summary(exchange_dir, round_index, reviewer_response)
+                _emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "round_index": round_index,
+                    "reviewer_response_type": reviewer_response.response_type,
+                    "coder_response_type": None,
+                })
+                _emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "rounds": round_index,
+                    "status": "ok",
+                    "reason": "reviewer_ok",
+                })
                 return ReviewExchangeOutcome(
                     status="ok",
                     rounds=round_index,
@@ -131,6 +171,20 @@ def run_review_exchange_loop(
 
         if max_no_progress > 0 and no_progress_count >= max_no_progress:
             summary = _write_summary(exchange_dir, round_index, reviewer_response)
+            _emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "round_index": round_index,
+                "reviewer_response_type": reviewer_response.response_type,
+                "coder_response_type": None,
+            })
+            _emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "rounds": round_index,
+                "status": "stopped",
+                "reason": "reviewer_reports_no_progress",
+            })
             return ReviewExchangeOutcome(
                 status="stopped",
                 rounds=round_index,
@@ -162,9 +216,23 @@ def run_review_exchange_loop(
             role="coder",
             response=coder_response,
         )
+        _emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": round_index,
+            "reviewer_response_type": reviewer_response.response_type,
+            "coder_response_type": coder_response.response_type,
+        })
         last_coder_text = coder_response.response_text
 
     summary = _write_summary(exchange_dir, max_rounds, reviewer_response=None)
+    _emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+        "issue_number": issue_number,
+        "session_name": session_name,
+        "rounds": max_rounds,
+        "status": "stopped",
+        "reason": "max_rounds_exceeded",
+    })
     return ReviewExchangeOutcome(
         status="stopped",
         rounds=max_rounds,

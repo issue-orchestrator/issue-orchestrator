@@ -18,6 +18,7 @@ help:
 	@echo "  lint-arch           Run import-linter + AST guardrails"
 	@echo "  lint-complexity     Check cyclomatic complexity (C901) and branch count (PLR0912)"
 	@echo "  test-unit           Run unit tests"
+	@echo "  test-simulated      Run simulated scenario tests (fast, local)"
 	@echo "  test-unit-cov       Run unit tests with coverage report"
 	@echo "  test-unit-cov-html  Run unit tests with HTML coverage (open htmlcov/index.html)"
 	@echo "  test-integration    Run integration tests"
@@ -225,6 +226,13 @@ else
 	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short -n $(PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
 endif
 
+test-simulated: sync-deps
+ifeq ($(PARALLEL),0)
+	$(PYTEST) tests/simulated_scenarios -x -q --tb=short $(PYTEST_TIMINGS)
+else
+	$(PYTEST) tests/simulated_scenarios -x -q --tb=short -n $(PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
+endif
+
 test-unit-cov:
 	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=term-missing -x -q --tb=short $(PYTEST_TIMINGS)
 
@@ -368,7 +376,7 @@ validate-raw:
 	@echo "✓ All validations passed!"
 
 # Internal target for parallel execution (excludes test-vscode to avoid VS Code runner flakiness under -j)
-_validate-impl: typecheck lint-arch lint-complexity test-unit test-integration test-web
+_validate-impl: typecheck lint-arch lint-complexity test-unit test-simulated test-integration test-web
 
 # Full validation including e2e tests
 validate-full:

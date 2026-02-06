@@ -64,6 +64,13 @@ def init_orchestrator_components(orch: "Orchestrator", dep_eval: "DependencyEval
     )
     orch.observer.session_machines = orch.deps.state_machine_manager.session_machines
 
+    # Attach TraceEvent emitter to completion processor (for review exchange events)
+    if getattr(orch.deps, "completion_processor", None) is not None:
+        orch.deps.completion_processor.set_event_emitter(
+            orch.deps.events,
+            orch.event_context,
+        )
+
 
 @dataclass
 class OrchestratorSupport:

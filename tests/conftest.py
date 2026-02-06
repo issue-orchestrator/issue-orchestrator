@@ -162,7 +162,7 @@ class MockGitHubAdapter:
                     return pr
         return None
 
-    def create_pr(self, title: str, body: str, head: str, base: str = "main") -> PRInfo:
+    def create_pr(self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None) -> PRInfo:
         """Create a new PR (mock)."""
         pr = PRInfo(
             number=100,
@@ -172,6 +172,7 @@ class MockGitHubAdapter:
             body=body,
             state="open",
             labels=[],
+            draft=draft,
         )
         self.prs.setdefault(head, []).append(pr)
         return pr
@@ -545,6 +546,7 @@ def build_test_orchestrator_deps(
 
     if working_copy is None:
         working_copy = GitWorkingCopy()
+    command_runner = LocalCommandRunner()
 
     # Create control components with injected mocks
     # Use provided overrides or create defaults
@@ -569,12 +571,17 @@ def build_test_orchestrator_deps(
             "code_review": config.code_review_label or "needs-code-review",
             "in_progress": config.get_label_in_progress(),
         },
+        config=config,
     )
     _session_controller = session_controller or SessionController(
         completion_processor=completion_processor,
         events=events,
         session_output=session_output,
         working_copy=working_copy,
+        command_runner=command_runner if config.validation and config.validation.cmd else None,
+        validation_cmd=config.validation.cmd if config.validation else None,
+        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        max_validation_retries=config.retry.max_validation_retries,
     )
     pr_scanner = PRScanner(
         config=config,
@@ -608,8 +615,6 @@ def build_test_orchestrator_deps(
 
     _label_sync = label_sync or LabelSync(labels=repo_host, events=events, pr_tracker=repo_host)
     event_hub = EventHub()
-    command_runner = LocalCommandRunner()
-
     # Create manifest downloader for triage sessions
     from issue_orchestrator.execution.triage_downloader import TriageDownloader
     manifest_downloader = TriageDownloader(

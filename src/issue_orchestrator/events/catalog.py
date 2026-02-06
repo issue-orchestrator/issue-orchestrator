@@ -151,6 +151,11 @@ class EventName(str, Enum):
     REVIEW_TRIAGE_APPROVED = "review.triage_approved"
     REVIEW_MERGED = "review.merged"
     REVIEW_CLOSED = "review.closed"
+    REVIEW_EXCHANGE_STARTED = "review_exchange.started"
+    REVIEW_EXCHANGE_ROUND_STARTED = "review_exchange.round_started"
+    REVIEW_EXCHANGE_ROUND_COMPLETED = "review_exchange.round_completed"
+    REVIEW_EXCHANGE_COMPLETED = "review_exchange.completed"
+    REVIEW_EXCHANGE_FAILED = "review_exchange.failed"
 
     # =========================================================================
     # Rework cycle

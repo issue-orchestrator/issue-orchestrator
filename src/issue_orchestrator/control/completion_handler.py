@@ -149,6 +149,24 @@ class CompletionHandler:
         # Check if the session's agent type matches triage agent
         return session.issue.agent_type == self.config.triage_review_agent
 
+    def mark_session_retry(self, session: Session, reason: str) -> None:
+        """Mark a session terminal when it will be retried.
+
+        Validation retries re-launch a session with the same name. Ensure the
+        existing session state machine reaches a terminal state so the next
+        launch can create a fresh machine without invalid transitions.
+        """
+        session_machine = self._get_session_machine(session.terminal_id)
+        if not session_machine:
+            return
+        if session_machine.can_transition("fail"):
+            logger.info(
+                "[STATE_MACHINE] Session %s: RUNNING -> FAILED (reason: %s)",
+                session.terminal_id,
+                reason,
+            )
+            session_machine.fail(data={'reason': reason})  # type: ignore[attr-defined]
+
     def _generate_triage_actions(
         self,
         session: Session,

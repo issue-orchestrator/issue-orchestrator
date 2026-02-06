@@ -1704,6 +1704,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             session.issue.number,
             session.validation_retry_count + 1,
         )
+        completion_handler.mark_session_retry(session, reason="validation_retry")
         state.pending_validation_retries.append(PendingValidationRetry(
             issue_number=session.issue.number,
             issue_title=session.issue.title,
