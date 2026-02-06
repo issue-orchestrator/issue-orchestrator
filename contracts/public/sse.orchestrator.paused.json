@@ -1,0 +1,6 @@
+{
+  "additionalProperties": true,
+  "properties": {},
+  "title": "OrchestratorPausedPayload",
+  "type": "object"
+}

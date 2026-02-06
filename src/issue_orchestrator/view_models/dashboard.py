@@ -1,0 +1,813 @@
+"""Dashboard view model builder."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+import json
+from typing import Any, Callable
+
+from ..domain.session_key import TaskKind
+from ..infra import labels as label_module
+from ..infra.audit import get_issue_dependencies
+from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
+
+QUEUE_PAGE_SIZE = 20
+E2E_PAGE_SIZE = 15
+
+
+@dataclass(frozen=True)
+class DashboardViewModel:
+    """View model for the web dashboard."""
+
+    issues: list[dict[str, Any]]
+    active_items: list[dict[str, Any]]
+    queue_items: list[dict[str, Any]]
+    blocked_items: list[dict[str, Any]]
+    history_items: list[dict[str, Any]]
+    e2e_items: list[dict[str, Any]]
+
+    active_count: int
+    queue_count: int
+    blocked_count: int
+    history_count: int
+    e2e_count: int
+
+    active_tab: str
+    paused: bool
+    shutdown_requested: bool
+    active_session_count: int
+    startup_status: str
+    startup_message: str
+
+    repo: str
+    repo_root: str
+    github_owner: str
+    github_repo: str
+
+    queue_page: int
+    queue_total_pages: int
+    queue_total: int
+    queue_refresh_seconds: int
+
+    e2e_status: dict[str, Any]
+    e2e_page: int
+    e2e_total_pages: int
+    e2e_total: int
+
+    agents: dict[str, Any]
+    agent_names: list[str]
+
+    def template_context(self) -> dict[str, Any]:
+        return {
+            "issues": self.issues,
+            "active_items": self.active_items,
+            "queue_items": self.queue_items,
+            "blocked_items": self.blocked_items,
+            "history_items": self.history_items,
+            "e2e_items": self.e2e_items,
+            "active_count": self.active_count,
+            "queue_count": self.queue_count,
+            "blocked_count": self.blocked_count,
+            "history_count": self.history_count,
+            "e2e_count": self.e2e_count,
+            "active_tab": self.active_tab,
+            "paused": self.paused,
+            "shutdown_requested": self.shutdown_requested,
+            "active_session_count": self.active_session_count,
+            "startup_status": self.startup_status,
+            "startup_message": self.startup_message,
+            "repo": self.repo,
+            "repo_root": self.repo_root,
+            "github_owner": self.github_owner,
+            "github_repo": self.github_repo,
+            "queue_page": self.queue_page,
+            "queue_total_pages": self.queue_total_pages,
+            "queue_total": self.queue_total,
+            "queue_refresh_seconds": self.queue_refresh_seconds,
+            "agents": self.agents,
+            "e2e_status": self.e2e_status,
+            "e2e_page": self.e2e_page,
+            "e2e_total_pages": self.e2e_total_pages,
+            "e2e_total": self.e2e_total,
+            "dashboard_data": self.dashboard_data(),
+        }
+
+    def dashboard_data(self) -> dict[str, Any]:
+        return {
+            "startupComplete": self.startup_status == "complete",
+            "paused": self.paused,
+            "e2eRunning": bool(self.e2e_status.get("running")),
+            "queueRefreshSeconds": self.queue_refresh_seconds,
+            "repo": self.repo,
+            "repoRoot": self.repo_root,
+            "githubOwner": self.github_owner,
+            "githubRepo": self.github_repo,
+            "e2eLastRun": self.e2e_status.get("last_run"),
+            "agents": self.agent_names,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "issues": self.issues,
+            "active_items": self.active_items,
+            "queue_items": self.queue_items,
+            "blocked_items": self.blocked_items,
+            "history_items": self.history_items,
+            "e2e_items": self.e2e_items,
+            "active_count": self.active_count,
+            "queue_count": self.queue_count,
+            "blocked_count": self.blocked_count,
+            "history_count": self.history_count,
+            "e2e_count": self.e2e_count,
+            "active_tab": self.active_tab,
+            "paused": self.paused,
+            "shutdown_requested": self.shutdown_requested,
+            "active_session_count": self.active_session_count,
+            "startup_status": self.startup_status,
+            "startup_message": self.startup_message,
+            "repo": self.repo,
+            "repo_root": self.repo_root,
+            "github_owner": self.github_owner,
+            "github_repo": self.github_repo,
+            "queue_page": self.queue_page,
+            "queue_total_pages": self.queue_total_pages,
+            "queue_total": self.queue_total,
+            "queue_refresh_seconds": self.queue_refresh_seconds,
+            "agents": self.agent_names,
+            "e2e_status": self.e2e_status,
+            "e2e_page": self.e2e_page,
+            "e2e_total_pages": self.e2e_total_pages,
+            "e2e_total": self.e2e_total,
+            "dashboard_data": self.dashboard_data(),
+        }
+
+
+def issue_url_for(config, issue_number: int) -> str:
+    if config and config.repo:
+        return f"https://github.com/{config.repo}/issues/{issue_number}"
+    return ""
+
+
+def flow_steps_for(stage: str) -> list[dict[str, str]]:
+    if stage == "not_eligible":
+        return [
+            {"key": "not_eligible", "label": "Not Eligible"},
+            {"key": "queued", "label": "Queued"},
+            {"key": "in_progress", "label": "In Progress"},
+            {"key": "review", "label": "Review"},
+            {"key": "done", "label": "Done"},
+        ]
+    if stage == "rework":
+        return [
+            {"key": "queued", "label": "Queued"},
+            {"key": "in_progress", "label": "In Progress"},
+            {"key": "review", "label": "Review"},
+            {"key": "rework", "label": "Rework"},
+            {"key": "done", "label": "Done"},
+        ]
+    if stage == "triage":
+        return [
+            {"key": "queued", "label": "Queued"},
+            {"key": "in_progress", "label": "In Progress"},
+            {"key": "review", "label": "Review"},
+            {"key": "triage", "label": "Triage"},
+            {"key": "done", "label": "Done"},
+        ]
+    return [
+        {"key": "queued", "label": "Queued"},
+        {"key": "in_progress", "label": "In Progress"},
+        {"key": "review", "label": "Review"},
+        {"key": "done", "label": "Done"},
+    ]
+
+
+def flow_stage_label(steps: list[dict[str, str]], stage: str) -> str:
+    for step in steps:
+        if step["key"] == stage:
+            return step["label"]
+    return stage.replace("_", " ").title()
+
+
+def describe_blocking_label(label: str) -> str:
+    if label == "blocked-needs-human":
+        return "needs human"
+    if label == "blocked-failed":
+        return "failed run"
+    if label == "blocked-cross-milestone":
+        return "dependency cross-milestone"
+    if label == "blocked":
+        return "blocked"
+    return label.replace("blocked-", "blocked: ")
+
+
+def blocked_summary(labels: list[str], dependency_summary: str | None = None) -> str | None:
+    reasons: list[str] = []
+    blocking = label_module.get_blocking_labels(labels)
+    if blocking:
+        reasons.append(describe_blocking_label(blocking[0]))
+    if dependency_summary:
+        reasons.append(dependency_summary)
+    return " • ".join(reasons) if reasons else None
+
+
+def _relative_time(dt_str: str) -> str:
+    """Convert ISO timestamp to relative time like '2h ago'."""
+    try:
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        delta = now - dt
+
+        if delta.days > 0:
+            return f"{delta.days}d ago"
+        hours = delta.seconds // 3600
+        if hours > 0:
+            return f"{hours}h ago"
+        minutes = delta.seconds // 60
+        return f"{minutes}m ago" if minutes > 0 else "just now"
+    except (ValueError, TypeError):
+        return ""
+
+
+def _pending_issue_numbers(state) -> dict[str, set[int]]:
+    pending_review_numbers = {r.issue_number for r in state.pending_reviews} | {
+        r.issue_number for r in state.discovered_reviews
+    }
+    pending_rework_numbers = {r.issue_number for r in state.pending_reworks} | {
+        r.issue_number for r in state.discovered_reworks
+    }
+    pending_triage_numbers = {r.issue_number for r in state.pending_triage_reviews}
+    return {
+        "review": pending_review_numbers,
+        "rework": pending_rework_numbers,
+        "triage": pending_triage_numbers,
+    }
+
+
+def _build_active_items(state, config, queue_page: int, seen_issues: set[int]) -> tuple[list[dict[str, Any]], set[int]]:
+    if queue_page != 1:
+        return [], seen_issues
+
+    items: list[dict[str, Any]] = []
+    for session in state.active_sessions:
+        runtime = session.runtime_minutes
+        timeout = session.agent_config.timeout_minutes
+        tmux_name = session.terminal_id or ""
+        is_review = tmux_name.startswith("review-")
+        phase = "Reviewing" if is_review else "Coding"
+
+        agent_label = (session.issue.agent_type or "unknown").replace("agent:", "")
+        if runtime >= timeout:
+            status = "slow"
+            status_reason = f"Over timeout ({runtime} min / {timeout} min)"
+        else:
+            status = "active"
+            status_reason = f"Running for {runtime} min"
+
+        seen_issues.add(session.issue.number)
+        if session.key.task == TaskKind.REVIEW:
+            flow_stage = "review"
+        elif session.key.task == TaskKind.REWORK:
+            flow_stage = "rework"
+        elif session.key.task == TaskKind.TRIAGE:
+            flow_stage = "triage"
+        else:
+            flow_stage = "in_progress"
+        flow_steps = flow_steps_for(flow_stage)
+        flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
+
+        blocked = blocked_summary(
+            list(session.issue.labels),
+            state.dependency_problems.get(session.issue.number).summary
+            if session.issue.number in state.dependency_problems
+            else None,
+        )
+
+        terminal_hint = "Click to focus terminal session"
+        if config and config.terminal_adapter == "subprocess":
+            terminal_hint = "Click to view agent UI log"
+
+        items.append({
+            "issue_number": session.issue.number,
+            "title": session.issue.title,
+            "agent_type": agent_label,
+            "status": status,
+            "status_reason": status_reason,
+            "detail_label": f"agent: {agent_label}",
+            "detail_reason": status_reason,
+            "phase": phase,
+            "time": f"{runtime} min",
+            "action": "focus",
+            "action_icon": "→",
+            "action_hint": terminal_hint,
+            "url": "",
+            "issue_url": issue_url_for(config, session.issue.number),
+            "pr_url": "",
+            "has_terminal": True,
+            "worktree_path": str(session.worktree_path) if session.worktree_path else "",
+            "flow_stage": flow_stage,
+            "flow_stage_label": flow_stage_label_value,
+            "flow_steps": flow_steps,
+            "blocked_summary": blocked,
+        })
+
+    return items, seen_issues
+
+
+def _build_queue_items(
+    state,
+    config,
+    queue_page: int,
+    seen_issues: set[int],
+    pending_numbers: dict[str, set[int]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, set[int]]:
+    queue_items: list[dict[str, Any]] = []
+    blocked_items: list[dict[str, Any]] = []
+    queue_total = 0
+
+    if state.startup_status != "complete":
+        return queue_items, blocked_items, queue_total, seen_issues
+
+    queue_issues = state.cached_queue_issues
+    queue_total = len(queue_issues)
+    dependency_info = get_issue_dependencies(queue_issues, config)
+
+    start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
+    end_idx = start_idx + QUEUE_PAGE_SIZE
+    for issue in queue_issues[start_idx:end_idx]:
+        if issue.number in seen_issues:
+            continue
+        seen_issues.add(issue.number)
+
+        dep_info = dependency_info.get(issue.number)
+        has_deps = dep_info.has_dependencies if dep_info else False
+        deps_json = json.dumps([
+            {"number": d[0], "title": d[1]}
+            for d in (dep_info.dependencies if dep_info else [])
+        ])
+        dep_summary = dep_info.summary if dep_info else ""
+
+        dep_problem = state.dependency_problems.get(issue.number)
+        blocked = blocked_summary(
+            list(issue.labels),
+            dep_problem.summary if dep_problem else None,
+        )
+        is_blocked = issue.is_blocked or dep_problem is not None
+        agent_label = (issue.agent_type or "unknown").replace("agent:", "")
+        if is_blocked:
+            status = "blocked"
+            status_reason = dep_summary or "blocked"
+            detail_label = blocked or "blocked"
+        else:
+            status = "queue"
+            status_reason = dep_summary
+            detail_label = f"agent: {agent_label}"
+
+        if issue.number in pending_numbers["rework"]:
+            flow_stage = "rework"
+        elif issue.number in pending_numbers["triage"]:
+            flow_stage = "triage"
+        elif issue.number in pending_numbers["review"] or label_module.is_pr_pending(issue.labels):
+            flow_stage = "review"
+        elif label_module.is_in_progress(issue.labels):
+            flow_stage = "in_progress"
+        else:
+            flow_stage = "queued"
+        flow_steps = flow_steps_for(flow_stage)
+        flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
+
+        item = {
+            "issue_number": issue.number,
+            "title": issue.title,
+            "agent_type": agent_label,
+            "status": status,
+            "status_reason": status_reason,
+            "detail_label": detail_label,
+            "detail_reason": status_reason,
+            "time": "",
+            "action": "open",
+            "action_icon": "↗",
+            "action_hint": "Click to open issue on GitHub",
+            "url": issue_url_for(config, issue.number),
+            "issue_url": issue_url_for(config, issue.number),
+            "pr_url": "",
+            "has_terminal": False,
+            "worktree_path": "",
+            "has_dependencies": has_deps,
+            "dependencies": deps_json,
+            "dependency_summary": dep_summary,
+            "flow_stage": flow_stage,
+            "flow_stage_label": flow_stage_label_value,
+            "flow_steps": flow_steps,
+            "blocked_summary": blocked,
+        }
+        if is_blocked:
+            blocked_items.append(item)
+        else:
+            queue_items.append(item)
+
+    return queue_items, blocked_items, queue_total, seen_issues
+
+
+def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    status_labels = {
+        "completed": "Completed",
+        "failed": "Failed",
+        "blocked": "Blocked",
+        "needs_human": "Needs Human",
+        "timed_out": "Timed Out",
+    }
+    history_items: list[dict[str, Any]] = []
+    blocked_items: list[dict[str, Any]] = []
+    for entry in reversed(state.session_history[-50:]):
+        url = entry.pr_url if entry.pr_url else issue_url_for(config, entry.issue_number)
+        action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
+        status_reason = getattr(entry, "status_reason", None) or status_labels.get(entry.status, entry.status)
+
+        flow_stage = "done" if entry.status == "completed" else "in_progress"
+        flow_steps = flow_steps_for(flow_stage)
+        flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
+
+        worktree_path = str(entry.worktree_path) if entry.worktree_path else ""
+
+        item = {
+            "issue_number": entry.issue_number,
+            "title": entry.title,
+            "agent_type": entry.agent_type.replace("agent:", ""),
+            "status": entry.status,
+            "status_reason": status_reason,
+            "detail_label": status_labels.get(entry.status, entry.status),
+            "detail_reason": status_reason,
+            "time": _format_history_time(entry),
+            "action": "open",
+            "action_icon": "↗",
+            "action_hint": action_hint,
+            "url": url,
+            "issue_url": issue_url_for(config, entry.issue_number),
+            "pr_url": entry.pr_url or "",
+            "has_terminal": False,
+            "worktree_path": worktree_path,
+            "flow_stage": flow_stage,
+            "flow_stage_label": flow_stage_label_value,
+            "flow_steps": flow_steps,
+            "blocked_summary": status_reason if entry.status != "completed" else None,
+        }
+        if entry.status in ("blocked", "needs_human"):
+            blocked_items.append(item)
+        else:
+            history_items.append(item)
+
+    return history_items, blocked_items
+
+
+def _build_e2e_running_items(e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
+    if not e2e_status.get("running"):
+        return []
+    return [{
+        "issue_number": "E2E-running",
+        "title": "E2E Run in Progress",
+        "status": "running",
+        "detail_label": "Tests are executing...",
+        "action": "stop",
+        "action_hint": "Click to stop E2E run",
+        "is_e2e": True,
+        "e2e_running": True,
+        "time": "now",
+    }]
+
+
+def _build_e2e_attention_items(e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
+    if not (e2e_status.get("needs_attention") and e2e_status.get("untriaged_count", 0) > 0):
+        return []
+    untriaged = e2e_status["untriaged_count"]
+    last_run = e2e_status.get("last_run", {})
+    run_id = last_run.get("id", "?")
+    failed_tests_data = []
+    failed_tests = e2e_status.get("failed_tests", [])
+    for ft in failed_tests:
+        nodeid = ft.get("nodeid", "")
+        short_name = nodeid.split("::")[-1] if "::" in nodeid else nodeid
+        failed_tests_data.append({
+            "nodeid": nodeid,
+            "short_name": short_name,
+            "outcome": ft.get("outcome", "failed"),
+            "duration": ft.get("duration_seconds"),
+        })
+    return [{
+        "issue_number": f"E2E-{run_id}",
+        "title": f"{untriaged} failure{'s' if untriaged != 1 else ''} need{'s' if untriaged == 1 else ''} triage",
+        "status": "needs_attention",
+        "detail_label": f"{untriaged} test{'s' if untriaged != 1 else ''} failed without issues",
+        "action": "triage",
+        "action_hint": "Click to open triage modal",
+        "is_e2e": True,
+        "e2e_failed_tests": failed_tests_data,
+        "e2e_run_id": run_id,
+        "relative_time": last_run.get("relative_time", ""),
+        "time": last_run.get("relative_time", ""),
+    }]
+
+
+def _build_e2e_open_run_issue_items(db) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for run_issue in db.get_open_run_issues():
+        sub_issues = db.get_failure_issues_for_parent(run_issue.github_issue_number)
+        if not sub_issues:
+            continue
+        resolved = sum(1 for s in sub_issues if s.resolved_at)
+        total = len(sub_issues)
+        pct = int((resolved / total * 100)) if total > 0 else 0
+        sub_issues_data = []
+        for si in sub_issues:
+            short_name = si.nodeid.split("::")[-1] if "::" in si.nodeid else si.nodeid
+            sub_issues_data.append({
+                "issue_number": si.github_issue_number,
+                "nodeid": si.nodeid,
+                "short_name": short_name,
+                "status": "resolved" if si.resolved_at else "open",
+                "resolved_at": si.resolved_at,
+            })
+        run_issue_number = getattr(run_issue, "github_issue_number", None)
+        run_issue_title = getattr(run_issue, "title", "") or ""
+        run_issue_url = getattr(run_issue, "github_issue_url", "") or ""
+        items.append({
+            "issue_number": run_issue_number,
+            "title": run_issue_title,
+            "status": "triage",
+            "detail_label": f"{resolved}/{total} resolved",
+            "action": "open",
+            "action_hint": f"View issue #{run_issue_number} on GitHub" if run_issue_number else "View issue on GitHub",
+            "url": run_issue_url,
+            "is_e2e": True,
+            "e2e_progress": {"resolved": resolved, "total": total, "percent": pct},
+            "e2e_sub_issues": sub_issues_data,
+            "flow_steps": [
+                {"key": "triage", "label": "Triage"},
+                {"key": "fixing", "label": "Fixing"},
+                {"key": "done", "label": "Done"},
+            ],
+            "flow_stage": "fixing" if resolved < total else "done",
+        })
+    return items
+
+
+def _build_e2e_recent_run_items(db, config, e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    recent_runs = db.list_runs(orchestrator_id=config.orchestrator_id, limit=100)
+    for run in recent_runs:
+        if e2e_status.get("running") and run.status == "running":
+            continue
+        if e2e_status.get("last_run", {}).get("id") == run.id and e2e_status.get("needs_attention"):
+            continue
+        run_issue = db.get_run_issue(run.id)
+        if run_issue and not run_issue.closed_at:
+            continue
+
+        relative_time = _relative_time(run.started_at) if run.started_at else ""
+        items.append({
+            "issue_number": f"E2E-{run.id}",
+            "title": run.commit_sha[:7] if run.commit_sha else "no commit",
+            "status": run.status,
+            "detail_label": "",
+            "action": "details",
+            "action_hint": "View run details",
+            "is_e2e": True,
+            "e2e_run_id": run.id,
+            "relative_time": relative_time,
+            "time": relative_time,
+            "commit_sha": run.commit_sha[:7] if run.commit_sha else "",
+        })
+    return items
+
+
+def _build_e2e_db_items(config, e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
+    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db" if config else None
+    if not (db_path and db_path.exists() and config):
+        return []
+    try:
+        from ..infra.e2e_db import E2EDB
+
+        db = E2EDB(db_path)
+        items = _build_e2e_open_run_issue_items(db)
+        items.extend(_build_e2e_recent_run_items(db, config, e2e_status))
+        return items
+    except Exception:
+        return []
+
+
+def _build_e2e_items(config, e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    items.extend(_build_e2e_running_items(e2e_status))
+    items.extend(_build_e2e_attention_items(e2e_status))
+    items.extend(_build_e2e_db_items(config, e2e_status))
+    return items
+
+
+def _select_issues_for_tab(
+    active_tab: str,
+    active_items: list[dict[str, Any]],
+    queue_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    e2e_items: list[dict[str, Any]],
+    history_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if active_tab == "active":
+        return active_items
+    if active_tab == "queue":
+        return queue_items
+    if active_tab == "blocked":
+        return blocked_items
+    if active_tab == "e2e":
+        return e2e_items
+    if active_tab == "history":
+        return history_items
+    return active_items
+
+
+def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> tuple[list[dict[str, Any]], int, int]:
+    total = len(items)
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+    if page > total_pages:
+        page = total_pages
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    return items[start_idx:end_idx], total_pages, page
+
+
+def _format_history_time(entry) -> str:
+    completed_at = getattr(entry, "completed_at", None)
+    runtime = entry.runtime_minutes
+    if runtime and completed_at:
+        return f"{runtime} min @ {completed_at}"
+    if runtime:
+        return f"{runtime} min"
+    if completed_at:
+        return str(completed_at)
+    return "-"
+
+
+def _count_untriaged_failures(db, run_obj) -> int:
+    count = 0
+    for result in db.get_failed_tests(run_obj.id):
+        if not db.find_open_failure_issue(result.nodeid):
+            count += 1
+    return count
+
+
+def _get_e2e_status(config) -> dict[str, Any]:
+    if not config or not config.e2e.enabled:
+        return {"enabled": False, "running": False}
+
+    from ..infra.e2e_db import E2EDB
+
+    orchestrator_id = config.orchestrator_id
+    runner = get_e2e_runner_manager()
+    proc_status = runner.status(orchestrator_id)
+
+    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
+    last_run = None
+    run_obj = None
+    failed_tests = []
+    signal_score = None
+    untriaged_count = 0
+    low_stability = False
+
+    if db_path.exists():
+        try:
+            db = E2EDB(db_path)
+            run_obj = db.latest_run(orchestrator_id)
+            if run_obj:
+                last_run = run_obj.to_dict()
+                failed_tests = [t.to_dict() for t in db.get_failed_tests(run_obj.id)]
+                if last_run.get("started_at"):
+                    last_run["relative_time"] = _relative_time(last_run["started_at"])
+                if run_obj.status == "failed" and failed_tests:
+                    untriaged_count = _count_untriaged_failures(db, run_obj)
+            signal_score = db.compute_signal_score(orchestrator_id)
+            if signal_score and signal_score.get("pass_rate") is not None:
+                low_stability = signal_score["pass_rate"] < 0.5
+        except Exception:
+            # UI should still render even if DB read fails
+            pass
+
+    next_run = get_next_run_info(config, config.repo_root, run_obj)
+
+    return {
+        "enabled": True,
+        "running": proc_status["running"],
+        "pid": proc_status.get("pid"),
+        "last_run": last_run,
+        "failed_tests": failed_tests,
+        "signal_score": signal_score,
+        "next_run": next_run,
+        "needs_attention": untriaged_count > 0,
+        "untriaged_count": untriaged_count,
+        "low_stability": low_stability,
+    }
+
+
+def _normalize_tab(active_tab: str) -> str:
+    if active_tab == "work":
+        return "active"
+    if active_tab == "attention":
+        return "blocked"
+    return active_tab
+
+
+def build_dashboard_view_model(
+    orchestrator,
+    queue_page: int = 1,
+    active_tab: str = "active",
+    e2e_page: int = 1,
+    e2e_status_provider: Callable[[Any], dict[str, Any]] | None = None,
+) -> DashboardViewModel:
+    """Build dashboard view model for templates and APIs."""
+    active_tab = _normalize_tab(active_tab)
+    queue_page = max(queue_page, 1)
+    e2e_page = max(e2e_page, 1)
+
+    state = orchestrator.state if orchestrator else None
+    config = orchestrator.config if orchestrator else None
+
+    active_items: list[dict[str, Any]] = []
+    queue_items: list[dict[str, Any]] = []
+    blocked_items: list[dict[str, Any]] = []
+    history_items: list[dict[str, Any]] = []
+    e2e_items: list[dict[str, Any]] = []
+    seen_issues: set[int] = set()
+
+    queue_total = 0
+
+    if state and config:
+        active_numbers = {s.issue.number for s in state.active_sessions}
+        seen_issues.update(active_numbers)
+
+        pending_numbers = _pending_issue_numbers(state)
+        active_items, seen_issues = _build_active_items(state, config, queue_page, seen_issues)
+        queue_items, queue_blocked, queue_total, seen_issues = _build_queue_items(
+            state, config, queue_page, seen_issues, pending_numbers
+        )
+        blocked_items.extend(queue_blocked)
+        history_items, history_blocked = _build_history_items(state, config)
+        blocked_items.extend(history_blocked)
+
+    e2e_status_provider = e2e_status_provider or _get_e2e_status
+    e2e_status = e2e_status_provider(config)
+
+    e2e_items = _build_e2e_items(config, e2e_status)
+    e2e_total = len(e2e_items)
+
+    e2e_items_paginated, e2e_total_pages, e2e_page = _paginate(e2e_items, e2e_page, E2E_PAGE_SIZE)
+    issues = _select_issues_for_tab(
+        active_tab, active_items, queue_items, blocked_items, e2e_items_paginated, history_items
+    )
+
+    queue_total_pages = (queue_total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE if queue_total > 0 else 1
+    if queue_page > queue_total_pages:
+        queue_page = queue_total_pages
+
+    active_count = len(state.active_sessions) if state else 0
+    shutdown_requested = orchestrator.shutdown_requested if orchestrator else False
+
+    agents = config.agents if config else {}
+
+    repo = config.repo if config else ""
+    repo_root = str(config.repo_root) if config and config.repo_root else ""
+    github_owner = repo.split("/")[0] if repo and "/" in repo else ""
+    github_repo = repo.split("/")[1] if repo and "/" in repo else ""
+
+    queue_refresh_seconds = config.queue_refresh_seconds if config else 600
+
+    return DashboardViewModel(
+        issues=issues,
+        active_items=active_items,
+        queue_items=queue_items,
+        blocked_items=blocked_items,
+        history_items=history_items,
+        e2e_items=e2e_items_paginated,
+        active_count=len(active_items),
+        queue_count=len(queue_items),
+        blocked_count=len(blocked_items),
+        history_count=len(history_items),
+        e2e_count=e2e_total,
+        active_tab=active_tab,
+        paused=state.paused if state else False,
+        shutdown_requested=shutdown_requested,
+        active_session_count=active_count,
+        startup_status=state.startup_status if state else "pending",
+        startup_message=state.startup_message if state else "",
+        repo=repo,
+        repo_root=repo_root,
+        github_owner=github_owner,
+        github_repo=github_repo,
+        queue_page=queue_page,
+        queue_total_pages=queue_total_pages,
+        queue_total=queue_total,
+        queue_refresh_seconds=queue_refresh_seconds,
+        e2e_status=e2e_status,
+        e2e_page=e2e_page,
+        e2e_total_pages=e2e_total_pages,
+        e2e_total=e2e_total,
+        agents=agents,
+        agent_names=list(agents.keys()) if agents else [],
+    )

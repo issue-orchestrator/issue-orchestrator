@@ -6,6 +6,7 @@ function hideSettingsMenu() {
 
 let terminalBackend = 'tmux';
 let currentCommitSha = null;
+let viewModel = null;
 fetch('/api/info')
     .then(res => res.json())
     .then(data => {
@@ -52,8 +53,171 @@ function copyCommitSha() {
         .catch(() => showToast('Failed to copy commit SHA', 'error'));
 }
 
+function cssEscape(value) {
+    if (window.CSS && typeof window.CSS.escape === 'function') {
+        return window.CSS.escape(value);
+    }
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+}
+
+function updateStatusBadgeFromViewModel(vm) {
+    const badge = document.querySelector('.status-badge');
+    if (!badge || !vm) return;
+
+    const startupComplete = vm.startup_status === 'complete';
+    const shutdownRequested = vm.shutdown_requested;
+    const paused = vm.paused;
+    const activeCount = vm.active_session_count || 0;
+
+    let text = 'Running';
+    let className = 'status-badge status-running';
+
+    if (!startupComplete) {
+        text = 'Starting...';
+        className = 'status-badge status-starting';
+    } else if (shutdownRequested && activeCount > 0) {
+        text = `Shutting down... (${activeCount})`;
+        className = 'status-badge status-paused';
+    } else if (shutdownRequested) {
+        text = 'Stopped';
+        className = 'status-badge status-paused';
+    } else if (paused && activeCount > 0) {
+        text = `Pausing... (${activeCount})`;
+        className = 'status-badge status-paused';
+    } else if (paused) {
+        text = 'Paused';
+        className = 'status-badge status-paused';
+    }
+
+    badge.textContent = text;
+    badge.className = className;
+}
+
+function updatePauseMenuFromViewModel(vm) {
+    const menuItem = document.getElementById('pauseResumeItem');
+    if (!menuItem || !vm) return;
+    if (vm.paused) {
+        menuItem.innerHTML = '<span aria-hidden="true">▶</span> Resume';
+    } else {
+        menuItem.innerHTML = '<span aria-hidden="true">⏸</span> Pause';
+    }
+}
+
+function buildEmptyStateHtml(vm) {
+    if (!vm) {
+        return 'No issues in queue';
+    }
+    if (vm.active_tab === 'history') {
+        return 'No session history yet';
+    }
+    if (vm.active_tab === 'blocked') {
+        return 'Nothing needs attention - all systems running smoothly!';
+    }
+    if (vm.active_tab === 'e2e') {
+        return '<div class=\"e2e-empty-state\">' +
+            '<p>No E2E test activity</p>' +
+            '<button class=\"issue-action-btn start-btn\" onclick=\"startE2E()\">' +
+            '<span aria-hidden=\"true\">▶</span> Start E2E Tests' +
+            '</button>' +
+            '</div>';
+    }
+    return 'No issues in queue';
+}
+
+function ensureEmptyState(vm, hasRows) {
+    const list = document.getElementById('issueList');
+    if (!list) return;
+
+    let emptyState = list.querySelector('.empty-state');
+    if (!emptyState) {
+        emptyState = document.createElement('div');
+        emptyState.className = 'empty-state';
+        list.appendChild(emptyState);
+    }
+
+    if (hasRows) {
+        emptyState.style.display = 'none';
+        return;
+    }
+
+    emptyState.style.display = 'block';
+    emptyState.innerHTML = buildEmptyStateHtml(vm);
+}
+
+async function refreshIssueRows(vm) {
+    const list = document.getElementById('issueList');
+    if (!list) return;
+
+    const url = new URL('/api/issue-rows', window.location.origin);
+    const params = new URL(window.location.href).searchParams;
+    if (params.get('tab')) url.searchParams.set('tab', params.get('tab'));
+    if (params.get('page')) url.searchParams.set('page', params.get('page'));
+    if (params.get('e2e_page')) url.searchParams.set('e2e_page', params.get('e2e_page'));
+
+    const res = await fetch(url.toString());
+    if (!res.ok) return;
+    const data = await res.json();
+    const rows = data.rows || [];
+
+    const nextIds = new Set(rows.map(row => String(row.issue_number)));
+    const existingGroups = Array.from(list.querySelectorAll('.issue-row-group[data-issue]'));
+    existingGroups.forEach(group => {
+        if (!nextIds.has(group.dataset.issue)) {
+            group.remove();
+        }
+    });
+
+    const header = list.querySelector('.issue-header');
+    let insertAfter = header;
+    rows.forEach(row => {
+        const id = String(row.issue_number);
+        const selector = `.issue-row-group[data-issue=\"${cssEscape(id)}\"]`;
+        const existing = list.querySelector(selector);
+        const wrapper = document.createElement('div');
+        wrapper.innerHTML = row.html.trim();
+        const newNode = wrapper.firstElementChild;
+        if (!newNode) {
+            return;
+        }
+        if (existing) {
+            existing.replaceWith(newNode);
+        } else {
+            insertAfter.after(newNode);
+        }
+        insertAfter = newNode;
+    });
+
+    ensureEmptyState(vm, rows.length > 0);
+    updateActionHints();
+}
+
+async function refreshViewModel({ reloadOnListChange = true } = {}) {
+    try {
+        const url = new URL('/api/view-model', window.location.origin);
+        const params = new URL(window.location.href).searchParams;
+        if (params.get('tab')) url.searchParams.set('tab', params.get('tab'));
+        if (params.get('page')) url.searchParams.set('page', params.get('page'));
+        if (params.get('e2e_page')) url.searchParams.set('e2e_page', params.get('e2e_page'));
+
+        const res = await fetch(url.toString());
+        if (!res.ok) return;
+        viewModel = await res.json();
+        window.dashboardData = viewModel.dashboard_data || window.dashboardData;
+        isPaused = !!viewModel.paused;
+        updateStatusBadgeFromViewModel(viewModel);
+        updatePauseMenuFromViewModel(viewModel);
+
+        if (reloadOnListChange && viewModel.startup_status === 'complete') {
+            await refreshIssueRows(viewModel);
+        }
+    } catch (e) {
+        console.error('Failed to refresh view-model:', e);
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     updateActionHints();
+    refreshViewModel({ reloadOnListChange: false });
     const nextRun = document.getElementById('e2eNextRun');
     if (nextRun && nextRun.dataset.nextRunReason) {
         const nextInfo = {
@@ -142,62 +306,46 @@ async function openAgentLog(issueNumber) {
 }
 
 async function openSessionManifest(issueNumber) {
-    const res = await fetch(`/api/session/manifest/${issueNumber}`);
+    const res = await fetch(`/api/dialog/session-diagnostics/${issueNumber}`);
     const data = await res.json();
     if (data.error) {
         showToast(data.error, 'error');
         return;
     }
 
-    const manifest = data.manifest || {};
-    const worktree = manifest.worktree || '';
-    const runDir = manifest.run_dir || data.run_dir || '';
-    const diagnosticRel = manifest.diagnostic_path || '';
-    const diagnosticPath = diagnosticRel && worktree ? `${worktree}/${diagnosticRel}` : '';
-
-    const rows = [
-        ['Session', manifest.session_name || data.session_name || '-'],
-        ['Started', manifest.started_at || '-'],
-        ['Run ID', manifest.run_id || '-'],
-        ['Backend', manifest.backend || '-'],
-        ['Agent', manifest.agent_label || '-'],
-        ['Claude Session', manifest.claude_session_id || '-'],
-        ['Worktree', worktree || '-'],
-    ];
-
     let html = '<div class="info-grid">';
-    for (const [label, value] of rows) {
-        html += `<div class="info-row"><span class="info-label">${escapeHtml(label)}</span><span class="info-value">${escapeHtml(String(value))}</span></div>`;
+    for (const row of data.rows || []) {
+        html += `<div class="info-row"><span class="info-label">${escapeHtml(row.label)}</span><span class="info-value">${escapeHtml(String(row.value))}</span></div>`;
     }
     html += '</div>';
 
-    html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">';
-    if (runDir) {
-        html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(runDir)}')">Open Session Dir</button>`;
+    if (data.actions && data.actions.length > 0) {
+        html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">';
+        for (const action of data.actions) {
+            html += renderDialogAction(action);
+        }
+        html += '</div>';
     }
-    // Session log - view in sanitized viewer (removes ANSI codes, spinner garbage, etc.)
-    html += `<button class="btn-secondary" onclick="openAgentLog(${issueNumber})">View Session Log</button>`;
-    if (manifest.claude_log_path) {
-        html += `<button class="btn-secondary" onclick="viewClaudeLog(${issueNumber})">View Claude Log</button>`;
-        html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.claude_log_path)}')">Open Claude Log File</button>`;
-    }
-    if (manifest.claude_log_dir) {
-        html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.claude_log_dir)}')">Open Claude Log Dir</button>`;
-    }
-    // Orchestrator log buttons - filtered (issue-specific) and full
-    html += `<button class="btn-secondary" onclick="openFilteredOrchestratorLog(${issueNumber})">Open Orchestrator Log</button>`;
-    if (manifest.orchestrator_log) {
-        html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(manifest.orchestrator_log)}')">Open Full Log</button>`;
-    }
-    if (diagnosticPath) {
-        html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(diagnosticPath)}')">Open Diagnostic</button>`;
-    }
-    if (manifest.validation_record_path && worktree) {
-        html += `<button class="btn-secondary" onclick="openPath('${escapeHtml(worktree + '/' + manifest.validation_record_path)}')">Open Validation</button>`;
-    }
-    html += '</div>';
 
-    openModal(`Session Diagnostics #${issueNumber}`, html);
+    openModal(data.title || `Session Diagnostics #${issueNumber}`, html);
+}
+
+function renderDialogAction(action) {
+    if (!action) return '';
+    const label = escapeHtml(action.label || 'Action');
+    if (action.type === 'open_path') {
+        return `<button class="btn-secondary" onclick="openPath('${escapeHtml(action.path)}')">${label}</button>`;
+    }
+    if (action.type === 'open_agent_log') {
+        return `<button class="btn-secondary" onclick="openAgentLog(${action.issue_number})">${label}</button>`;
+    }
+    if (action.type === 'view_claude_log') {
+        return `<button class="btn-secondary" onclick="viewClaudeLog(${action.issue_number})">${label}</button>`;
+    }
+    if (action.type === 'open_orchestrator_log') {
+        return `<button class="btn-secondary" onclick="openFilteredOrchestratorLog(${action.issue_number})">${label}</button>`;
+    }
+    return '';
 }
 
 async function sendAgentInput(issueNumber) {
@@ -309,9 +457,7 @@ async function togglePause() {
         badge.classList.add('status-running');
 
         await fetch('/api/resume', { method: 'POST' });
-        badge.textContent = 'Running';
-        menuItem.innerHTML = '<span>⏸</span> Pause';
-        isPaused = false;
+        await refreshViewModel({ reloadOnListChange: false });
     } else {
         // Pause
         badge.textContent = 'Pausing...';
@@ -319,9 +465,7 @@ async function togglePause() {
         badge.classList.add('status-paused');
 
         await fetch('/api/pause', { method: 'POST' });
-        badge.textContent = 'Paused';
-        menuItem.innerHTML = '<span>▶</span> Resume';
-        isPaused = true;
+        await refreshViewModel({ reloadOnListChange: false });
     }
 }
 async function refreshFromGitHub() {
@@ -695,6 +839,7 @@ async function toggleExcluded() {
         // Fetch initial state AFTER SSE connected - events arriving after this fetch will layer on top
         loadDependencyProblems();
         loadStaleIssues();
+        refreshViewModel({ reloadOnListChange: false });
     };
 
     // Listen for specific events that should trigger refresh
@@ -711,7 +856,7 @@ async function toggleExcluded() {
         evtSource.addEventListener(eventType, function(e) {
             console.log('[SSE] Received event:', eventType, e.data);
             // Slight delay to let server state settle
-            setTimeout(() => window.location.reload(), 200);
+            setTimeout(() => refreshViewModel({ reloadOnListChange: true }), 200);
         });
     });
 
@@ -736,8 +881,8 @@ async function toggleExcluded() {
         try {
             const data = JSON.parse(e.data);
             console.log('[SSE] Queue changed:', data.added.length, 'added,', data.removed.length, 'removed');
-            // Reload to show updated queue
-            setTimeout(() => window.location.reload(), 200);
+            // Refresh view-model and update list if needed
+            setTimeout(() => refreshViewModel({ reloadOnListChange: true }), 200);
         } catch (err) {
             console.error('[SSE] Failed to parse queue.changed:', err);
         }
@@ -1177,7 +1322,7 @@ const blockedResetBtn = document.getElementById('blockedResetBtn');
 async function openBlockedModal() {
     // Fetch blocked issues
     try {
-        const res = await fetch('/api/blocked-issues');
+        const res = await fetch('/api/dialog/blocked-issues');
         const data = await res.json();
         blockedIssuesData = data.blocked_issues || [];
     } catch (err) {
@@ -1203,7 +1348,7 @@ let currentPhaseIssue = null;
 async function openPhaseModal(issueNumber, flowStepKey) {
     currentPhaseIssue = issueNumber;
     try {
-        const res = await fetch(`/api/session/phases/${issueNumber}`);
+        const res = await fetch(`/api/dialog/phase/${issueNumber}?phase=${encodeURIComponent(flowStepKey)}`);
         const data = await res.json();
 
         if (data.error) {
@@ -1211,21 +1356,7 @@ async function openPhaseModal(issueNumber, flowStepKey) {
             return;
         }
 
-        // Map flow_step keys to actual phase types
-        // in_progress -> coding-*, review -> review-*, rework -> coding-*
-        let phase = null;
-        const phases = data.phases || [];
-
-        if (flowStepKey === 'in_progress' || flowStepKey === 'rework') {
-            // Find the latest coding phase
-            phase = [...phases].reverse().find(p => p.name.startsWith('coding-'));
-        } else if (flowStepKey === 'review' || flowStepKey === 'triage') {
-            // Find the latest review phase
-            phase = [...phases].reverse().find(p => p.name.startsWith('review-'));
-        } else if (phases.length > 0) {
-            // Default to latest phase
-            phase = phases[phases.length - 1];
-        }
+        const phase = data.phase;
 
         if (!phase) {
             // No phases yet, show a simple message
@@ -1943,57 +2074,39 @@ function stopLiveLogPoller() {
 
 async function showInfo() {
     settingsMenu.classList.remove('visible');
-    const res = await fetch('/api/info');
+    const res = await fetch('/api/dialog/info');
     const data = await res.json();
-    const html = `
-        <div class="info-row"><span class="info-label">Version</span><span class="info-value">${data.version || 'dev'}</span></div>
-        <div class="info-row"><span class="info-label">Repository</span><span class="info-value">${data.repo}</span></div>
-        <div class="info-row"><span class="info-label">UI Mode</span><span class="info-value">${data.ui_mode}</span></div>
-        <div class="info-row"><span class="info-label">Commit</span><span class="info-value">${data.commit_short || 'unknown'}</span></div>
-        <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${data.max_sessions || '-'}</span></div>
-        <div class="info-row"><span class="info-label">Active Sessions</span><span class="info-value">${data.active_sessions}</span></div>
-        <div class="info-row"><span class="info-label">Completed Today</span><span class="info-value">${data.completed_today}</span></div>
-    `;
-    openModal('About Issue Orchestrator', html);
+    const html = (data.rows || []).map(row => `
+        <div class="info-row"><span class="info-label">${escapeHtml(row.label)}</span><span class="info-value">${escapeHtml(String(row.value))}</span></div>
+    `).join('');
+    openModal(data.title || 'About Issue Orchestrator', html);
 }
 
 async function showConfig() {
     settingsMenu.classList.remove('visible');
-    const res = await fetch('/api/config');
+    const res = await fetch('/api/dialog/config');
     const data = await res.json();
-    openModal('Configuration', `<pre>${data.config}</pre>`);
+    openModal(data.title || 'Configuration', `<pre>${escapeHtml(data.config_text || '')}</pre>`);
 }
 
 async function showDebug() {
     settingsMenu.classList.remove('visible');
-    const res = await fetch('/api/debug');
+    const res = await fetch('/api/dialog/debug');
     const data = await res.json();
-    const opts = data.startup_options || {};
-    const html = `
-        <h3 style="margin: 0 0 8px; font-size: 14px;">Startup Options</h3>
-        <div class="info-row"><span class="info-label">UI Mode</span><span class="info-value">${opts.ui_mode || '-'}</span></div>
-        <div class="info-row"><span class="info-label">Web Port</span><span class="info-value">${opts.web_port || '-'}</span></div>
-        <div class="info-row"><span class="info-label">Test Mode</span><span class="info-value">${opts.test_mode ? 'yes' : 'no'}</span></div>
-        <div class="info-row"><span class="info-label">Filter Label</span><span class="info-value">${opts.filter_label || 'none'}</span></div>
-        <div class="info-row"><span class="info-label">Filter Milestone</span><span class="info-value">${opts.filter_milestone || 'none'}</span></div>
-        <div class="info-row"><span class="info-label">Max Sessions</span><span class="info-value">${opts.max_sessions || '-'}</span></div>
-        <h3 style="margin: 16px 0 8px; font-size: 14px;">State</h3>
-        <div class="info-row"><span class="info-label">Paused</span><span class="info-value">${data.paused}</span></div>
-        <div class="info-row"><span class="info-label">Priority Queue</span><span class="info-value">${data.priority_queue.length > 0 ? data.priority_queue.join(', ') : 'empty'}</span></div>
-        <h3 style="margin: 16px 0 8px; font-size: 14px;">Paths</h3>
-        <div class="info-row"><span class="info-label">Config Path</span><span class="info-value" style="font-size:11px">${data.config_path}</span></div>
-        <div class="info-row"><span class="info-label">Repo Root</span><span class="info-value" style="font-size:11px">${data.repo_root}</span></div>
-        <h3 style="margin: 16px 0 8px; font-size: 14px;">Agent Types</h3>
-        ${Object.entries(data.agents).map(([name, cfg]) => `
-            <div class="info-row"><span class="info-label">${name}</span><span class="info-value">timeout: ${cfg.timeout}m</span></div>
-        `).join('')}
-    `;
-    openModal('Debug Info', html);
+    let html = '';
+    for (const section of data.sections || []) {
+        html += `<h3 style="margin: 0 0 8px; font-size: 14px;">${escapeHtml(section.title)}</h3>`;
+        html += (section.rows || []).map(row => `
+            <div class="info-row"><span class="info-label">${escapeHtml(row.label)}</span><span class="info-value">${escapeHtml(String(row.value))}</span></div>
+        `).join('');
+        html += '<div style="height: 12px;"></div>';
+    }
+    openModal(data.title || 'Debug Info', html);
 }
 
 async function showDoctor() {
     settingsMenu.classList.remove('visible');
-    const res = await fetch('/api/doctor');
+    const res = await fetch('/api/dialog/doctor');
     const data = await res.json();
 
     const statusIcon = {
@@ -2005,16 +2118,16 @@ async function showDoctor() {
     const html = `
         <div style="margin-bottom: 12px;">
             <span style="font-size: 18px;">${statusIcon[data.overall]}</span>
-            <span style="font-weight: 600; margin-left: 8px;">Overall: ${data.overall.toUpperCase()}</span>
+            <span style="font-weight: 600; margin-left: 8px;">Overall: ${String(data.overall || '').toUpperCase()}</span>
         </div>
-        ${data.checks.map(c => `
+        ${(data.checks || []).map(c => `
             <div class="info-row">
-                <span class="info-label">${statusIcon[c.status]} ${c.name}</span>
-                <span class="info-value" style="font-size: 12px;">${c.detail}</span>
+                <span class="info-label">${statusIcon[c.status]} ${escapeHtml(c.name || '')}</span>
+                <span class="info-value" style="font-size: 12px;">${escapeHtml(c.detail || '')}</span>
             </div>
         `).join('')}
     `;
-    openModal('Doctor', html);
+    openModal(data.title || 'Doctor', html);
 }
 
 function openRepo() {

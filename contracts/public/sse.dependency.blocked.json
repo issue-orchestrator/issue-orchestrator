@@ -1,0 +1,19 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "issue_number": {
+      "title": "Issue Number",
+      "type": "integer"
+    },
+    "summary": {
+      "title": "Summary",
+      "type": "string"
+    }
+  },
+  "required": [
+    "issue_number",
+    "summary"
+  ],
+  "title": "DependencyBlockedPayload",
+  "type": "object"
+}

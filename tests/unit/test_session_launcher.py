@@ -69,6 +69,7 @@ from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from issue_orchestrator.contracts.public import SessionStartedPayload
 
 
 # =============================================================================
@@ -594,12 +595,18 @@ class TestLaunchIssueSession:
         assert len(mock_worktree_manager.remove_calls) == 1
 
     def test_emits_session_started_event(self, session_launcher, sample_issue, mock_events):
-        """Verify SESSION_STARTED event is emitted."""
+        """Verify SESSION_STARTED event is emitted with expected payload."""
         result = session_launcher.launch_issue_session(sample_issue, active_sessions=[])
 
         assert result.success is True
-        started_events = [e for e in mock_events.events if "session" in str(e.name).lower() and "started" in str(e.name).lower()]
-        assert len(started_events) >= 1
+        started_events = mock_events.get_events_by_name("session.started")
+        assert len(started_events) == 1
+        payload = started_events[0].data
+        assert payload["issue_number"] == sample_issue.number
+        assert {"session_id", "worktree_path", "branch_name", "completion_path", "completion_path_absolute"}.issubset(
+            payload.keys()
+        )
+        SessionStartedPayload.model_validate(payload)
 
     def test_triggers_state_machine_transitions(self, launcher_bundle, sample_issue):
         """Verify state machine transitions are triggered."""

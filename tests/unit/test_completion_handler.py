@@ -40,6 +40,7 @@ from issue_orchestrator.domain.models import AgentConfig, Issue, Session, Sessio
 from issue_orchestrator.ports import NullEventSink, InMemoryEventSink, TraceEvent
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.events import EventName
+from issue_orchestrator.contracts.public import SessionCompletedPayload
 from issue_orchestrator.infra import labels
 
 
@@ -287,6 +288,7 @@ class TestEventEmission:
         assert event is not None
         assert event.data["issue_number"] == issue.number
         assert event.data["pr_url"] == pr_url
+        SessionCompletedPayload.model_validate(event.data)
 
     def test_failed_session_emits_session_failed_event(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path

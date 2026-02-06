@@ -1,0 +1,14 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "force": {
+      "title": "Force",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "force"
+  ],
+  "title": "ShutdownRequestedPayload",
+  "type": "object"
+}

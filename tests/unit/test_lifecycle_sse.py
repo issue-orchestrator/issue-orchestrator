@@ -24,7 +24,7 @@ class TestLifecycleSSEPlugin:
 
         # Patch the web module imports that happen inside _broadcast
         with patch(
-            "issue_orchestrator.entrypoints.web._event_subscribers", [], create=True
+            "issue_orchestrator.entrypoints.web.event_subscribers_snapshot", return_value=[]
         ), patch(
             "issue_orchestrator.entrypoints.web.broadcast_event", create=True
         ) as mock_broadcast:
@@ -54,11 +54,11 @@ class TestLifecycleSSEPlugin:
         plugin = LifecycleSSEPlugin()
 
         with patch(
-            "issue_orchestrator.entrypoints.web._event_subscribers", [MagicMock()], create=True
+            "issue_orchestrator.entrypoints.web.event_subscribers_snapshot", return_value=[MagicMock()]
         ), patch(
             "issue_orchestrator.entrypoints.web.broadcast_event", MagicMock(), create=True
         ), patch(
-            "issue_orchestrator.entrypoints.web._main_loop", None, create=True
+            "issue_orchestrator.entrypoints.web.get_main_loop", return_value=None
         ), patch(
             "asyncio.get_running_loop",
             side_effect=RuntimeError("no running event loop"),
@@ -76,11 +76,11 @@ class TestLifecycleSSEPlugin:
         mock_broadcast = MagicMock()
 
         with patch(
-            "issue_orchestrator.entrypoints.web._event_subscribers", [MagicMock()], create=True
+            "issue_orchestrator.entrypoints.web.event_subscribers_snapshot", return_value=[MagicMock()]
         ), patch(
             "issue_orchestrator.entrypoints.web.broadcast_event", mock_broadcast, create=True
         ), patch(
-            "issue_orchestrator.entrypoints.web._main_loop", mock_main_loop, create=True
+            "issue_orchestrator.entrypoints.web.get_main_loop", return_value=mock_main_loop
         ), patch(
             "asyncio.get_running_loop",
             side_effect=RuntimeError("no running event loop"),
@@ -97,7 +97,7 @@ class TestLifecycleSSEPlugin:
         plugin = LifecycleSSEPlugin()
 
         with patch(
-            "issue_orchestrator.entrypoints.web._event_subscribers", [MagicMock()], create=True
+            "issue_orchestrator.entrypoints.web.event_subscribers_snapshot", return_value=[MagicMock()]
         ), patch(
             "issue_orchestrator.entrypoints.web.broadcast_event", MagicMock(), create=True
         ), patch(
@@ -108,4 +108,3 @@ class TestLifecycleSSEPlugin:
                 plugin.on_trace_event("session.started", {})
 
         assert "Failed to broadcast" in caplog.text
-

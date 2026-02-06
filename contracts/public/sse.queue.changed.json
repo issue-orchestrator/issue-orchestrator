@@ -1,0 +1,32 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "added": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Added",
+      "type": "array"
+    },
+    "removed": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Removed",
+      "type": "array"
+    },
+    "total": {
+      "title": "Total",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "added",
+    "removed",
+    "total"
+  ],
+  "title": "QueueChangedPayload",
+  "type": "object"
+}

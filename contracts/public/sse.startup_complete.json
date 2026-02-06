@@ -1,0 +1,14 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "elapsed_seconds": {
+      "title": "Elapsed Seconds",
+      "type": "number"
+    }
+  },
+  "required": [
+    "elapsed_seconds"
+  ],
+  "title": "StartupCompletePayload",
+  "type": "object"
+}

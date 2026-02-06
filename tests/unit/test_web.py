@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch, Mock, AsyncMock
 from fastapi.testclient import TestClient
 
 from issue_orchestrator.entrypoints.web import app, get_orchestrator, set_orchestrator, set_server
+from issue_orchestrator.contracts.public import ShutdownRequestedPayload, StartupCompletePayload
 
 
 @pytest.fixture(autouse=True)
@@ -968,11 +969,11 @@ class TestSSEFunctionality:
     async def test_broadcast_event_to_subscribers(self):
         """Test broadcasting events to subscribers."""
         import asyncio
-        from issue_orchestrator.entrypoints.web import broadcast_event, _event_subscribers
+        from issue_orchestrator.entrypoints.web import add_event_subscriber, broadcast_event, remove_event_subscriber
 
         # Create a test queue and add it as a subscriber
         test_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-        _event_subscribers.add(test_queue)
+        add_event_subscriber(test_queue)
 
         try:
             # Broadcast an event
@@ -984,16 +985,16 @@ class TestSSEFunctionality:
             assert event["type"] == "test_event"
             assert event["data"] == {"key": "value"}
         finally:
-            _event_subscribers.discard(test_queue)
+            remove_event_subscriber(test_queue)
 
     @pytest.mark.asyncio
     async def test_broadcast_event_handles_empty_data(self):
         """Test broadcasting events with no data."""
         import asyncio
-        from issue_orchestrator.entrypoints.web import broadcast_event, _event_subscribers
+        from issue_orchestrator.entrypoints.web import add_event_subscriber, broadcast_event, remove_event_subscriber
 
         test_queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-        _event_subscribers.add(test_queue)
+        add_event_subscriber(test_queue)
 
         try:
             await broadcast_event("empty_event")
@@ -1002,45 +1003,41 @@ class TestSSEFunctionality:
             assert event["type"] == "empty_event"
             assert event["data"] == {}
         finally:
-            _event_subscribers.discard(test_queue)
+            remove_event_subscriber(test_queue)
 
     @pytest.mark.asyncio
     async def test_broadcast_event_removes_full_queues(self):
         """Test that full queues are removed from subscribers."""
         import asyncio
-        from issue_orchestrator.entrypoints.web import broadcast_event, _event_subscribers
+        from issue_orchestrator.entrypoints.web import add_event_subscriber, broadcast_event, event_subscribers_snapshot, remove_event_subscriber
 
         # Create a queue with size 1 and fill it
         full_queue: asyncio.Queue = asyncio.Queue(maxsize=1)
         full_queue.put_nowait({"dummy": "event"})
 
-        _event_subscribers.add(full_queue)
-        assert full_queue in _event_subscribers
+        add_event_subscriber(full_queue)
+        assert full_queue in event_subscribers_snapshot()
 
         try:
             # This should fail silently and remove the full queue
             await broadcast_event("overflow_event")
 
             # Queue should be removed from subscribers
-            assert full_queue not in _event_subscribers
+            assert full_queue not in event_subscribers_snapshot()
         finally:
-            _event_subscribers.discard(full_queue)
+            remove_event_subscriber(full_queue)
 
     @pytest.mark.asyncio
     async def test_broadcast_event_no_subscribers(self):
         """Test broadcasting when there are no subscribers."""
-        from issue_orchestrator.entrypoints.web import broadcast_event, _event_subscribers
+        from issue_orchestrator.entrypoints.web import broadcast_event, event_subscribers_snapshot, swapped_event_subscribers
 
         # Ensure no subscribers
-        original_subscribers = _event_subscribers.copy()
-        _event_subscribers.clear()
-
-        try:
+        original_subscribers = event_subscribers_snapshot()
+        with swapped_event_subscribers(set()):
             # Should not raise any errors
             await broadcast_event("no_listeners", {"data": "test"})
-        finally:
-            # Restore original subscribers
-            _event_subscribers.update(original_subscribers)
+        assert event_subscribers_snapshot() == original_subscribers
 
     def test_events_endpoint_exists(self):
         """Test that /api/events endpoint is registered."""
@@ -1049,6 +1046,93 @@ class TestSSEFunctionality:
         # Check the endpoint is registered by looking at routes
         routes = [route.path for route in app.routes]
         assert "/api/events" in routes
+
+    @pytest.mark.asyncio
+    async def test_shutdown_endpoint_broadcasts_event(self, monkeypatch):
+        """Shutdown endpoint should emit shutdown_requested SSE event."""
+        import asyncio
+        from types import SimpleNamespace
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web import get_orchestrator, set_orchestrator
+
+        class OrchestratorStub:
+            def __init__(self):
+                self.state = SimpleNamespace(active_sessions=[SimpleNamespace(issue=SimpleNamespace(number=1))])
+                self.shutdown_called = False
+
+            def request_shutdown(self, force: bool = False) -> None:
+                self.shutdown_called = True
+
+        orchestrator = OrchestratorStub()
+        original = get_orchestrator()
+        set_orchestrator(orchestrator)
+
+        queue: asyncio.Queue = asyncio.Queue(maxsize=10)
+        web.add_event_subscriber(queue)
+
+        monkeypatch.setattr(web, "trigger_server_shutdown", lambda: None)
+        monkeypatch.setattr(web.shutdown_manager, "request_shutdown", lambda reason: None)
+        monkeypatch.setattr(web.shutdown_manager, "exit", lambda: None)
+
+        try:
+            response = await web.shutdown(force=False)
+            assert response.status_code == 200
+            event = queue.get_nowait()
+            assert event["type"] == "shutdown_requested"
+            assert event["data"]["force"] is False
+            assert orchestrator.shutdown_called is True
+            ShutdownRequestedPayload.model_validate(event["data"])
+        finally:
+            web.remove_event_subscriber(queue)
+            set_orchestrator(original)
+
+    @pytest.mark.asyncio
+    async def test_startup_complete_broadcasts_event(self, monkeypatch, tmp_path):
+        """Startup path should emit startup_complete event for the UI."""
+        import asyncio
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.infra.config import Config
+
+        startup_event = asyncio.Event()
+        captured: dict = {}
+
+        async def fake_broadcast_event(event_type: str, data: dict | None = None) -> None:
+            if event_type == "startup_complete":
+                captured["event_type"] = event_type
+                captured["data"] = data or {}
+                startup_event.set()
+
+        async def fake_run_web_dashboard(orchestrator, port: int, open_browser: bool = True) -> None:
+            await startup_event.wait()
+
+        async def fast_sleep(_seconds: float) -> None:
+            return None
+
+        class OrchestratorStub:
+            def __init__(self, root: Path):
+                self.config = Config()
+                self.config.repo_root = root
+                self.shutdown_requested = False
+
+            async def startup(self) -> None:
+                return None
+
+            async def run_loop(self) -> None:
+                return None
+
+        monkeypatch.setattr(web, "broadcast_event", fake_broadcast_event)
+        monkeypatch.setattr(web, "run_web_dashboard", fake_run_web_dashboard)
+        monkeypatch.setattr(web.asyncio, "sleep", fast_sleep)
+        monkeypatch.setattr(web.shutdown_manager, "initialize", lambda _: None)
+        monkeypatch.setattr(web.shutdown_manager, "request_shutdown", lambda reason: None)
+        monkeypatch.setattr(web.shutdown_manager, "exit", lambda: None)
+
+        orchestrator = OrchestratorStub(tmp_path)
+        await web.run_with_web_dashboard(orchestrator, port=0, open_browser=False)
+
+        assert captured["event_type"] == "startup_complete"
+        assert "elapsed_seconds" in captured["data"]
+        StartupCompletePayload.model_validate(captured["data"])
 
 
 class TestEmitEventHelper:
@@ -1077,6 +1161,90 @@ class TestEmitEventHelper:
         # Verify event was received
         assert len(events_received) == 1
         assert events_received[0] == ("test.event", {"key": "value"})
+
+
+class TestSSEEventStreamFormat:
+    """Tests for SSE event stream formatting."""
+
+    @pytest.mark.asyncio
+    async def test_events_stream_formats_event_and_data(self):
+        """Ensure /api/events emits event and data lines with JSON payload."""
+        import json
+        import asyncio
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web import broadcast_event
+
+        class NotifyingSet(set):
+            def __init__(self, event):
+                super().__init__()
+                self._event = event
+
+            def add(self, item):
+                super().add(item)
+                self._event.set()
+
+        from issue_orchestrator.entrypoints.web import swapped_event_subscribers
+        ready = asyncio.Event()
+
+        class DummyRequest:
+            def __init__(self):
+                self.connected = True
+
+            async def is_disconnected(self):
+                return not self.connected
+
+        with swapped_event_subscribers(NotifyingSet(ready)):
+            request = DummyRequest()
+            response = await web.events(request)
+            iterator = response.body_iterator
+
+            async def read_chunk():
+                return await iterator.__anext__()
+
+            read_task = asyncio.create_task(read_chunk())
+            await ready.wait()
+            await broadcast_event("session.started", {"issue_number": 123, "status": "active"})
+
+            chunk = await read_task
+            request.connected = False
+
+            assert chunk["event"] == "session.started"
+            payload = json.loads(chunk["data"])
+            assert payload == {"issue_number": 123, "status": "active"}
+
+
+class TestIssueRowsEndpoint:
+    """Tests for the issue row rendering endpoint."""
+
+    def test_issue_rows_returns_rendered_html(self):
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web import get_orchestrator, set_orchestrator
+        from issue_orchestrator.domain.models import Issue, OrchestratorState
+        from issue_orchestrator.infra.config import Config
+
+        class OrchestratorStub:
+            def __init__(self):
+                self.state = OrchestratorState(
+                    startup_status="complete",
+                    cached_queue_issues=[Issue(number=7, title="Test", labels=["agent:web"])],
+                )
+                self.config = Config()
+                self.config.repo = "test/repo"
+                self.config.repo_root = Path("/tmp/repo")
+                self.shutdown_requested = False
+
+        original = get_orchestrator()
+        set_orchestrator(OrchestratorStub())
+        try:
+            client = TestClient(web.app)
+            response = client.get("/api/issue-rows?tab=queue")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["count"] == 1
+            assert "issue-row-group" in data["rows"][0]["html"]
+        finally:
+            set_orchestrator(original)
 
     def test_plugin_manager_emit_with_empty_data(self):
         """Test that emit() works with no data argument."""

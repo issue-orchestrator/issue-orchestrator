@@ -30,9 +30,9 @@ class LifecycleSSEPlugin:
             data: Event data dictionary
         """
         try:
-            from ..entrypoints.web import broadcast_event, _event_subscribers, _main_loop
+            from ..entrypoints.web import broadcast_event, event_subscribers_snapshot, get_main_loop
 
-            if not _event_subscribers:
+            if not event_subscribers_snapshot():
                 logger.debug("[SSE] No subscribers, skipping event: %s", event)
                 return
 
@@ -44,9 +44,10 @@ class LifecycleSSEPlugin:
             except RuntimeError:
                 # No running loop - we're in a worker thread.
                 # Use the main loop reference stored by web.py
-                if _main_loop is not None:
-                    _main_loop.call_soon_threadsafe(
-                        lambda: _main_loop.create_task(broadcast_event(event, data))
+                main_loop = get_main_loop()
+                if main_loop is not None:
+                    main_loop.call_soon_threadsafe(
+                        lambda: main_loop.create_task(broadcast_event(event, data))
                     )
                     logger.debug("[SSE] Thread-safe scheduled broadcast of %s", event)
                 else:

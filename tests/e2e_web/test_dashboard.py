@@ -1,5 +1,6 @@
 """Playwright e2e tests for the web dashboard."""
 
+import json
 import re
 
 import pytest
@@ -218,8 +219,120 @@ class TestModals:
         """Settings > Debug opens debug modal."""
         page.locator(".settings-btn").click()
         page.locator(".settings-menu-item:has-text('Debug')").click()
-
         expect(page.locator("#modalTitle")).to_contain_text("Debug")
+
+
+class TestUiUpdateMechanisms:
+    """Tests for UI update handlers used by SSE events."""
+
+    def test_dependency_warning_updates(self, page: Page, web_server):
+        web_server["orchestrator"].add_queue_issue(101, "Dependency Issue")
+        page.goto(f"{web_server['url']}?tab=queue")
+
+        page.evaluate(
+            "() => updateDependencyWarning(101, {summary: 'Blocked by #1'})"
+        )
+        warning = page.locator("#dep-warning-101")
+        expect(warning).to_be_visible()
+        expect(warning).to_have_attribute("title", "Blocked by #1")
+
+        page.evaluate("() => updateDependencyWarning(101, null)")
+        expect(warning).not_to_be_visible()
+
+    def test_stale_warning_updates(self, page: Page, web_server):
+        web_server["orchestrator"].add_queue_issue(102, "Stale Issue")
+        page.goto(f"{web_server['url']}?tab=queue")
+
+        page.evaluate(
+            "() => updateStaleWarning(102, {consecutive_ticks: 3, persistent: true, threshold: 2})"
+        )
+        warning = page.locator("#stale-warning-102")
+        expect(warning).to_be_visible()
+        expect(warning).to_have_class(re.compile(r"persistent"))
+        expect(warning).to_have_attribute(
+            "title", "Persistent stale: no session for 3 cycles (needs investigation)"
+        )
+
+        page.evaluate("() => updateStaleWarning(102, null)")
+        expect(warning).not_to_be_visible()
+
+    def test_refresh_issue_rows_patches_dom(self, page: Page, web_server):
+        web_server["orchestrator"].add_queue_issue(1, "Old Issue")
+        page.goto(f"{web_server['url']}?tab=queue")
+        expect(page.locator('.issue-row-group[data-issue=\"1\"]')).to_have_count(1)
+
+        row_html = (
+            '<div class=\"issue-row-group\" data-issue=\"2\">'
+            '<div class=\"issue-row\" data-issue=\"2\" data-action=\"focus\" data-url=\"\">'
+            '<span class=\"issue-num\">#2'
+            '<span class=\"dep-warning-icon\" id=\"dep-warning-2\" style=\"display:none;\"></span>'
+            '<span class=\"stale-warning-icon\" id=\"stale-warning-2\" style=\"display:none;\"></span>'
+            '</span>'
+            '<span class=\"issue-title\">Issue Two</span>'
+            '<span class=\"issue-action\"></span>'
+            '</div>'
+            '</div>'
+        )
+
+        def handle_issue_rows(route):
+            payload = {"rows": [{"issue_number": 2, "html": row_html}], "count": 1}
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(payload),
+            )
+
+        page.route("**/api/issue-rows**", handle_issue_rows)
+
+        page.evaluate("() => refreshIssueRows({active_tab: 'queue'})")
+
+        expect(page.locator('.issue-row-group[data-issue=\"1\"]')).to_have_count(0)
+        expect(page.locator('.issue-row-group[data-issue=\"2\"]')).to_have_count(1)
+
+    def test_sse_sequence_updates_dom(self, page: Page, web_server):
+        web_server["orchestrator"].add_queue_issue(103, "Sequence Issue")
+        page.goto(f"{web_server['url']}?tab=queue")
+
+        page.evaluate(
+            "() => updateDependencyWarning(103, {summary: 'Blocked by #2'})"
+        )
+        dep_warning = page.locator("#dep-warning-103")
+        expect(dep_warning).to_be_visible()
+        expect(dep_warning).to_have_attribute("title", "Blocked by #2")
+
+        page.evaluate(
+            "() => updateStaleWarning(103, {consecutive_ticks: 2, persistent: true, threshold: 2})"
+        )
+        stale_warning = page.locator("#stale-warning-103")
+        expect(stale_warning).to_be_visible()
+        expect(stale_warning).to_have_class(re.compile(r"persistent"))
+
+        page.evaluate("() => updateDependencyWarning(103, null)")
+        page.evaluate("() => updateStaleWarning(103, null)")
+        expect(dep_warning).not_to_be_visible()
+        expect(stale_warning).not_to_be_visible()
+
+    def test_refresh_issue_rows_shows_empty_state(self, page: Page, web_server):
+        web_server["orchestrator"].add_queue_issue(104, "Will Disappear")
+        page.goto(f"{web_server['url']}?tab=queue")
+        expect(page.locator('.issue-row-group[data-issue=\"104\"]')).to_have_count(1)
+
+        def handle_issue_rows(route):
+            payload = {"rows": [], "count": 0}
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=json.dumps(payload),
+            )
+
+        page.route("**/api/issue-rows**", handle_issue_rows)
+
+        page.evaluate("() => refreshIssueRows({active_tab: 'queue'})")
+
+        empty_state = page.locator(".empty-state")
+        expect(page.locator('.issue-row-group[data-issue=\"104\"]')).to_have_count(0)
+        expect(empty_state).to_be_visible()
+        expect(empty_state).to_contain_text("No issues in queue")
 
     def test_modal_closes_on_x_button(self, page: Page):
         """Modal closes when X button clicked."""

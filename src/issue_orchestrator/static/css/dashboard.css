@@ -771,7 +771,7 @@ button:focus-visible,
 .issue-list.e2e-list .detail-link-indicator {
     display: none;
 }
-.issue-row:last-child { border-bottom: none; }
+.issue-row-group:last-child .issue-row { border-bottom: none; }
 .issue-row:hover {
     background: linear-gradient(90deg, rgba(88, 166, 255, 0.05) 0%, transparent 100%);
 }

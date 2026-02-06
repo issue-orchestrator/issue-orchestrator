@@ -112,8 +112,9 @@ class TestClientEventHandlers:
         from pathlib import Path
         base_path = Path(__file__).parent.parent.parent / "src/issue_orchestrator"
         template_content = (base_path / "templates/dashboard.html").read_text()
+        row_content = (base_path / "templates/issue_row.html").read_text()
         js_content = (base_path / "static/js/dashboard.js").read_text()
-        return template_content + js_content
+        return template_content + row_content + js_content
 
     def test_has_dependency_blocked_handler(self, dashboard_html):
         """Dashboard has handler for dependency.blocked events."""
