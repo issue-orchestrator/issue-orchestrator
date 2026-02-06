@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch, Mock, AsyncMock
 from fastapi.testclient import TestClient
 
 from issue_orchestrator.entrypoints.web import app, get_orchestrator, set_orchestrator, set_server
+from issue_orchestrator.contracts.public import ShutdownRequestedPayload, StartupCompletePayload
 
 
 @pytest.fixture(autouse=True)
@@ -1050,6 +1051,93 @@ class TestSSEFunctionality:
         routes = [route.path for route in app.routes]
         assert "/api/events" in routes
 
+    @pytest.mark.asyncio
+    async def test_shutdown_endpoint_broadcasts_event(self, monkeypatch):
+        """Shutdown endpoint should emit shutdown_requested SSE event."""
+        import asyncio
+        from types import SimpleNamespace
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web import get_orchestrator, set_orchestrator
+
+        class OrchestratorStub:
+            def __init__(self):
+                self.state = SimpleNamespace(active_sessions=[SimpleNamespace(issue=SimpleNamespace(number=1))])
+                self.shutdown_called = False
+
+            def request_shutdown(self, force: bool = False) -> None:
+                self.shutdown_called = True
+
+        orchestrator = OrchestratorStub()
+        original = get_orchestrator()
+        set_orchestrator(orchestrator)
+
+        queue: asyncio.Queue = asyncio.Queue(maxsize=10)
+        web._event_subscribers.add(queue)
+
+        monkeypatch.setattr(web, "trigger_server_shutdown", lambda: None)
+        monkeypatch.setattr(web.shutdown_manager, "request_shutdown", lambda reason: None)
+        monkeypatch.setattr(web.shutdown_manager, "exit", lambda: None)
+
+        try:
+            response = await web.shutdown(force=False)
+            assert response.status_code == 200
+            event = queue.get_nowait()
+            assert event["type"] == "shutdown_requested"
+            assert event["data"]["force"] is False
+            assert orchestrator.shutdown_called is True
+            ShutdownRequestedPayload.model_validate(event["data"])
+        finally:
+            web._event_subscribers.discard(queue)
+            set_orchestrator(original)
+
+    @pytest.mark.asyncio
+    async def test_startup_complete_broadcasts_event(self, monkeypatch, tmp_path):
+        """Startup path should emit startup_complete event for the UI."""
+        import asyncio
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.infra.config import Config
+
+        startup_event = asyncio.Event()
+        captured: dict = {}
+
+        async def fake_broadcast_event(event_type: str, data: dict | None = None) -> None:
+            if event_type == "startup_complete":
+                captured["event_type"] = event_type
+                captured["data"] = data or {}
+                startup_event.set()
+
+        async def fake_run_web_dashboard(orchestrator, port: int, open_browser: bool = True) -> None:
+            await startup_event.wait()
+
+        async def fast_sleep(_seconds: float) -> None:
+            return None
+
+        class OrchestratorStub:
+            def __init__(self, root: Path):
+                self.config = Config()
+                self.config.repo_root = root
+                self.shutdown_requested = False
+
+            async def startup(self) -> None:
+                return None
+
+            async def run_loop(self) -> None:
+                return None
+
+        monkeypatch.setattr(web, "broadcast_event", fake_broadcast_event)
+        monkeypatch.setattr(web, "run_web_dashboard", fake_run_web_dashboard)
+        monkeypatch.setattr(web.asyncio, "sleep", fast_sleep)
+        monkeypatch.setattr(web.shutdown_manager, "initialize", lambda _: None)
+        monkeypatch.setattr(web.shutdown_manager, "request_shutdown", lambda reason: None)
+        monkeypatch.setattr(web.shutdown_manager, "exit", lambda: None)
+
+        orchestrator = OrchestratorStub(tmp_path)
+        await web.run_with_web_dashboard(orchestrator, port=0, open_browser=False)
+
+        assert captured["event_type"] == "startup_complete"
+        assert "elapsed_seconds" in captured["data"]
+        StartupCompletePayload.model_validate(captured["data"])
+
 
 class TestEmitEventHelper:
     """Test the trace event emission via PluginManager.emit()."""
@@ -1077,6 +1165,93 @@ class TestEmitEventHelper:
         # Verify event was received
         assert len(events_received) == 1
         assert events_received[0] == ("test.event", {"key": "value"})
+
+
+class TestSSEEventStreamFormat:
+    """Tests for SSE event stream formatting."""
+
+    @pytest.mark.asyncio
+    async def test_events_stream_formats_event_and_data(self):
+        """Ensure /api/events emits event and data lines with JSON payload."""
+        import json
+        import asyncio
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web import broadcast_event
+
+        class NotifyingSet(set):
+            def __init__(self, event):
+                super().__init__()
+                self._event = event
+
+            def add(self, item):
+                super().add(item)
+                self._event.set()
+
+        original_subscribers = web._event_subscribers
+        ready = asyncio.Event()
+        web._event_subscribers = NotifyingSet(ready)
+
+        class DummyRequest:
+            def __init__(self):
+                self.connected = True
+
+            async def is_disconnected(self):
+                return not self.connected
+
+        try:
+            request = DummyRequest()
+            response = await web.events(request)
+            iterator = response.body_iterator
+
+            async def read_chunk():
+                return await iterator.__anext__()
+
+            read_task = asyncio.create_task(read_chunk())
+            await ready.wait()
+            await broadcast_event("session.started", {"issue_number": 123, "status": "active"})
+
+            chunk = await read_task
+            request.connected = False
+
+            assert chunk["event"] == "session.started"
+            payload = json.loads(chunk["data"])
+            assert payload == {"issue_number": 123, "status": "active"}
+        finally:
+            web._event_subscribers = original_subscribers
+
+
+class TestIssueRowsEndpoint:
+    """Tests for the issue row rendering endpoint."""
+
+    def test_issue_rows_returns_rendered_html(self):
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web import get_orchestrator, set_orchestrator
+        from issue_orchestrator.domain.models import Issue, OrchestratorState
+        from issue_orchestrator.infra.config import Config
+
+        class OrchestratorStub:
+            def __init__(self):
+                self.state = OrchestratorState(
+                    startup_status="complete",
+                    cached_queue_issues=[Issue(number=7, title="Test", labels=["agent:web"])],
+                )
+                self.config = Config()
+                self.config.repo = "test/repo"
+                self.config.repo_root = Path("/tmp/repo")
+                self.shutdown_requested = False
+
+        original = get_orchestrator()
+        set_orchestrator(OrchestratorStub())
+        try:
+            client = TestClient(web.app)
+            response = client.get("/api/issue-rows?tab=queue")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["count"] == 1
+            assert "issue-row-group" in data["rows"][0]["html"]
+        finally:
+            set_orchestrator(original)
 
     def test_plugin_manager_emit_with_empty_data(self):
         """Test that emit() works with no data argument."""

@@ -1,0 +1,24 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "consecutive_ticks": {
+      "title": "Consecutive Ticks",
+      "type": "integer"
+    },
+    "issue_number": {
+      "title": "Issue Number",
+      "type": "integer"
+    },
+    "threshold": {
+      "title": "Threshold",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "issue_number",
+    "consecutive_ticks",
+    "threshold"
+  ],
+  "title": "PersistentStalePayload",
+  "type": "object"
+}

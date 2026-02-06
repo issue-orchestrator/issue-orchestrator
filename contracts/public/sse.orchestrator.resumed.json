@@ -1,0 +1,6 @@
+{
+  "additionalProperties": true,
+  "properties": {},
+  "title": "OrchestratorResumedPayload",
+  "type": "object"
+}

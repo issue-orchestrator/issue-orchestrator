@@ -1,0 +1,14 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "issue_number": {
+      "title": "Issue Number",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "issue_number"
+  ],
+  "title": "StaleDetectedPayload",
+  "type": "object"
+}

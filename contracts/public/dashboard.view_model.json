@@ -1,0 +1,133 @@
+{
+  "$defs": {
+    "DashboardDataContract": {
+      "additionalProperties": true,
+      "properties": {
+        "agents": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Agents",
+          "type": "array"
+        },
+        "e2eLastRun": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "E2Elastrun"
+        },
+        "e2eRunning": {
+          "title": "E2Erunning",
+          "type": "boolean"
+        },
+        "githubOwner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Githubowner"
+        },
+        "githubRepo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Githubrepo"
+        },
+        "paused": {
+          "title": "Paused",
+          "type": "boolean"
+        },
+        "queueRefreshSeconds": {
+          "title": "Queuerefreshseconds",
+          "type": "integer"
+        },
+        "repo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Repo"
+        },
+        "repoRoot": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Reporoot"
+        },
+        "startupComplete": {
+          "title": "Startupcomplete",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "startupComplete",
+        "paused",
+        "e2eRunning",
+        "queueRefreshSeconds",
+        "repo",
+        "repoRoot",
+        "githubOwner",
+        "githubRepo",
+        "agents"
+      ],
+      "title": "DashboardDataContract",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "properties": {
+    "active_tab": {
+      "title": "Active Tab",
+      "type": "string"
+    },
+    "dashboard_data": {
+      "$ref": "#/$defs/DashboardDataContract"
+    },
+    "paused": {
+      "title": "Paused",
+      "type": "boolean"
+    },
+    "shutdown_requested": {
+      "title": "Shutdown Requested",
+      "type": "boolean"
+    },
+    "startup_status": {
+      "title": "Startup Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "dashboard_data",
+    "paused",
+    "startup_status",
+    "active_tab",
+    "shutdown_requested"
+  ],
+  "title": "DashboardViewModelContract",
+  "type": "object"
+}

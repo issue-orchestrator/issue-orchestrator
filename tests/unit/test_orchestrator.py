@@ -24,6 +24,8 @@ from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.worktree_manager import WorktreeInfo, WorktreeReuseOptions
 from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
+from issue_orchestrator.events import EventName
+from issue_orchestrator.contracts.public import OrchestratorPausedPayload, OrchestratorResumedPayload
 
 
 class MockWorktreeManager:
@@ -71,6 +73,29 @@ class MockWorktreeManager:
         if parts and parts[0].isdigit():
             return int(parts[0])
         return None
+
+
+def test_pause_emits_event(sample_config):
+    orchestrator = create_test_orchestrator(sample_config)
+
+    orchestrator.pause()
+
+    events = orchestrator.deps.events.get_events_by_name(str(EventName.ORCHESTRATOR_PAUSED))
+    assert len(events) == 1
+    assert orchestrator.state.paused is True
+    OrchestratorPausedPayload.model_validate(events[0].data)
+
+
+def test_resume_emits_event(sample_config):
+    orchestrator = create_test_orchestrator(sample_config)
+    orchestrator.state.paused = True
+
+    orchestrator.resume()
+
+    events = orchestrator.deps.events.get_events_by_name(str(EventName.ORCHESTRATOR_RESUMED))
+    assert len(events) == 1
+    assert orchestrator.state.paused is False
+    OrchestratorResumedPayload.model_validate(events[0].data)
 
 
 def create_test_orchestrator(
