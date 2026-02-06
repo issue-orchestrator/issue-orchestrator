@@ -52,12 +52,33 @@ class TimelineEvent:
         }
 
 
+@dataclass(frozen=True)
+class TimelineStream:
+    """Higher-level view over timeline records for an issue."""
+
+    issue_number: int
+    events: list[TimelineEvent]
+
+    @classmethod
+    def from_records(cls, issue_number: int, records: list[TimelineRecord]) -> "TimelineStream":
+        events = [_record_to_event(issue_number, record) for record in records]
+        return cls(issue_number=issue_number, events=events)
+
+    def group_by_phase(self) -> dict[str, list[TimelineEvent]]:
+        grouped: dict[str, list[TimelineEvent]] = {}
+        for event in self.events:
+            grouped.setdefault(event.phase, []).append(event)
+        return grouped
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "issue_number": self.issue_number,
+            "events": [event.to_dict() for event in self.events],
+        }
+
+
 def build_issue_timeline(issue_number: int, records: list[TimelineRecord]) -> dict[str, Any]:
-    events = [_record_to_event(issue_number, record) for record in records]
-    return {
-        "issue_number": issue_number,
-        "events": [event.to_dict() for event in events],
-    }
+    return TimelineStream.from_records(issue_number, records).to_dict()
 
 
 def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent:
