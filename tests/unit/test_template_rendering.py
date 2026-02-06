@@ -20,7 +20,6 @@ from issue_orchestrator.domain.models import (
     DependencyProblem,
     Issue,
     OrchestratorState,
-    PendingReview,
     Session,
     SessionHistoryEntry,
 )
@@ -818,3 +817,287 @@ class TestDataAttributes:
 
         row = soup.select_one(".issue-row")
         assert row.get("data-issue-url") == "https://github.com/test/repo/issues/99"
+
+
+# -----------------------------------------------------------------------------
+# List Population Tests
+# -----------------------------------------------------------------------------
+
+
+class TestListPopulation:
+    """Tests that verify lists render ALL items with correct distinct data."""
+
+    def test_multiple_active_sessions_all_render(self, jinja_env):
+        """All active sessions render with correct distinct data."""
+        issues = [
+            make_issue(101, "First active task"),
+            make_issue(202, "Second active task"),
+            make_issue(303, "Third active task"),
+        ]
+        sessions = [make_session(issue) for issue in issues]
+        orchestrator = make_orchestrator(active_sessions=sessions)
+        vm = build_dashboard_view_model(
+            orchestrator, active_tab="active", e2e_status_provider=e2e_disabled
+        )
+        soup = render_dashboard(jinja_env, vm)
+
+        rows = soup.select(".issue-row")
+        assert len(rows) == 3, f"Expected 3 rows, got {len(rows)}"
+
+        # Verify each row has distinct, correct data
+        issue_numbers = [row.get("data-issue") for row in rows]
+        assert "101" in issue_numbers
+        assert "202" in issue_numbers
+        assert "303" in issue_numbers
+
+        # Verify titles match their issues
+        for row in rows:
+            issue_num = row.get("data-issue")
+            title_elem = row.select_one(".issue-title")
+            if issue_num == "101":
+                assert "First active task" in title_elem.text
+            elif issue_num == "202":
+                assert "Second active task" in title_elem.text
+            elif issue_num == "303":
+                assert "Third active task" in title_elem.text
+
+    def test_multiple_queue_issues_all_render(self, jinja_env):
+        """All queued issues render with correct distinct data."""
+        issues = [
+            make_issue(10, "Queue item A"),
+            make_issue(20, "Queue item B"),
+            make_issue(30, "Queue item C"),
+            make_issue(40, "Queue item D"),
+        ]
+        orchestrator = make_orchestrator(queue_issues=issues)
+        vm = build_dashboard_view_model(
+            orchestrator, active_tab="queue", e2e_status_provider=e2e_disabled
+        )
+        soup = render_dashboard(jinja_env, vm)
+
+        rows = soup.select(".issue-row")
+        assert len(rows) == 4, f"Expected 4 rows, got {len(rows)}"
+
+        # Collect all rendered issue numbers
+        rendered_numbers = {row.get("data-issue") for row in rows}
+        assert rendered_numbers == {"10", "20", "30", "40"}
+
+        # Verify each title is present and correct
+        titles = [row.select_one(".issue-title").text.strip() for row in rows]
+        assert "Queue item A" in titles
+        assert "Queue item B" in titles
+        assert "Queue item C" in titles
+        assert "Queue item D" in titles
+
+    def test_multiple_history_entries_all_render(self, jinja_env):
+        """All completed history entries render with correct distinct data.
+
+        Note: needs_human/blocked entries go to blocked tab, not history.
+        """
+        entries = [
+            SessionHistoryEntry(
+                issue_number=1001,
+                title="Completed yesterday",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=10,
+            ),
+            SessionHistoryEntry(
+                issue_number=1002,
+                title="Completed today",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=20,
+            ),
+            SessionHistoryEntry(
+                issue_number=1003,
+                title="Also completed",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+            ),
+        ]
+        orchestrator = make_orchestrator(session_history=entries)
+        vm = build_dashboard_view_model(
+            orchestrator, active_tab="history", e2e_status_provider=e2e_disabled
+        )
+        soup = render_dashboard(jinja_env, vm)
+
+        rows = soup.select(".issue-row")
+        assert len(rows) == 3, f"Expected 3 history rows, got {len(rows)}"
+
+        rendered_numbers = {row.get("data-issue") for row in rows}
+        assert rendered_numbers == {"1001", "1002", "1003"}
+
+    def test_multiple_blocked_issues_all_render(self, jinja_env):
+        """All blocked issues render in blocked tab."""
+        issues = [
+            make_issue(501, "Blocked issue 1", labels=["agent:web", "blocked"]),
+            make_issue(502, "Blocked issue 2", labels=["agent:web", "blocked"]),
+        ]
+        orchestrator = make_orchestrator(queue_issues=issues)
+        vm = build_dashboard_view_model(
+            orchestrator, active_tab="blocked", e2e_status_provider=e2e_disabled
+        )
+        soup = render_dashboard(jinja_env, vm)
+
+        rows = soup.select(".issue-row")
+        assert len(rows) == 2, f"Expected 2 blocked rows, got {len(rows)}"
+
+        rendered_numbers = {row.get("data-issue") for row in rows}
+        assert rendered_numbers == {"501", "502"}
+
+        # Verify all have blocked status
+        for row in rows:
+            assert row.get("data-status") == "blocked"
+
+    def test_flow_stepper_all_steps_present(self, jinja_env):
+        """Flow stepper renders all expected workflow steps."""
+        issue = make_issue(1, "Test Issue")
+        session = make_session(issue)
+        orchestrator = make_orchestrator(active_sessions=[session])
+        vm = build_dashboard_view_model(orchestrator, e2e_status_provider=e2e_disabled)
+        soup = render_dashboard(jinja_env, vm)
+
+        stepper = soup.select_one(".flow-stepper")
+        steps = stepper.select(".flow-step")
+
+        # Extract step labels
+        step_labels = [step.text.strip() for step in steps]
+
+        # Verify expected workflow steps are present
+        assert "Queued" in step_labels
+        assert "In Progress" in step_labels
+        assert "Review" in step_labels
+        assert "Done" in step_labels
+
+        # Verify steps are in logical order
+        queued_idx = step_labels.index("Queued")
+        progress_idx = step_labels.index("In Progress")
+        review_idx = step_labels.index("Review")
+        done_idx = step_labels.index("Done")
+        assert queued_idx < progress_idx < review_idx < done_idx
+
+    def test_tab_badges_reflect_actual_counts(self, jinja_env):
+        """Tab badges show accurate counts for multiple items."""
+        # 3 active sessions
+        active_issues = [make_issue(i, f"Active {i}") for i in range(1, 4)]
+        active_sessions = [make_session(issue) for issue in active_issues]
+
+        # 5 queue issues
+        queue_issues = [make_issue(i, f"Queue {i}") for i in range(10, 15)]
+
+        # 2 blocked issues
+        blocked_issues = [
+            make_issue(i, f"Blocked {i}", labels=["agent:web", "blocked"])
+            for i in range(20, 22)
+        ]
+
+        orchestrator = make_orchestrator(
+            active_sessions=active_sessions,
+            queue_issues=queue_issues + blocked_issues,
+        )
+        vm = build_dashboard_view_model(orchestrator, e2e_status_provider=e2e_disabled)
+        soup = render_dashboard(jinja_env, vm)
+
+        # Check active badge shows 3
+        active_badge = soup.select_one("#tab-active .tab-badge")
+        assert active_badge is not None
+        assert "3" in active_badge.text
+
+        # Check queue badge shows 5 (non-blocked only)
+        queue_badge = soup.select_one("#tab-queue .tab-badge")
+        assert queue_badge is not None
+        assert "5" in queue_badge.text
+
+        # Check blocked badge shows 2
+        blocked_badge = soup.select_one("#tab-blocked .tab-badge")
+        assert blocked_badge is not None
+        assert "2" in blocked_badge.text
+
+    def test_needs_human_entries_go_to_blocked_tab(self, jinja_env):
+        """Entries with needs_human status appear in blocked tab, not history."""
+        entries = [
+            SessionHistoryEntry(
+                issue_number=801,
+                title="Completed task",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=10,
+            ),
+            SessionHistoryEntry(
+                issue_number=802,
+                title="Needs human help",
+                agent_type="agent:web",
+                status="needs_human",
+                runtime_minutes=15,
+            ),
+            SessionHistoryEntry(
+                issue_number=803,
+                title="Blocked by something",
+                agent_type="agent:web",
+                status="blocked",
+                runtime_minutes=5,
+            ),
+        ]
+        orchestrator = make_orchestrator(session_history=entries)
+
+        # History tab should only have completed entry
+        vm_history = build_dashboard_view_model(
+            orchestrator, active_tab="history", e2e_status_provider=e2e_disabled
+        )
+        soup_history = render_dashboard(jinja_env, vm_history)
+        history_rows = soup_history.select(".issue-row")
+        history_numbers = {row.get("data-issue") for row in history_rows}
+        assert history_numbers == {"801"}, "History should only show completed entries"
+
+        # Blocked tab should have needs_human and blocked entries
+        vm_blocked = build_dashboard_view_model(
+            orchestrator, active_tab="blocked", e2e_status_provider=e2e_disabled
+        )
+        soup_blocked = render_dashboard(jinja_env, vm_blocked)
+        blocked_rows = soup_blocked.select(".issue-row")
+        blocked_numbers = {row.get("data-issue") for row in blocked_rows}
+        assert "802" in blocked_numbers, "needs_human should appear in blocked tab"
+        assert "803" in blocked_numbers, "blocked should appear in blocked tab"
+
+    def test_mixed_tabs_correct_separation(self, jinja_env):
+        """Items appear in correct tabs, not duplicated across tabs."""
+        # Create items for different tabs
+        active_issue = make_issue(1, "Active Issue")
+        active_session = make_session(active_issue)
+
+        queue_issues = [make_issue(2, "Queued"), make_issue(3, "Also Queued")]
+        blocked_issue = make_issue(4, "Blocked", labels=["agent:web", "blocked"])
+
+        orchestrator = make_orchestrator(
+            active_sessions=[active_session],
+            queue_issues=queue_issues + [blocked_issue],
+        )
+
+        # Check active tab
+        vm_active = build_dashboard_view_model(
+            orchestrator, active_tab="active", e2e_status_provider=e2e_disabled
+        )
+        soup_active = render_dashboard(jinja_env, vm_active)
+        active_rows = soup_active.select(".issue-row")
+        active_numbers = {row.get("data-issue") for row in active_rows}
+        assert active_numbers == {"1"}, "Active tab should only show active session"
+
+        # Check queue tab
+        vm_queue = build_dashboard_view_model(
+            orchestrator, active_tab="queue", e2e_status_provider=e2e_disabled
+        )
+        soup_queue = render_dashboard(jinja_env, vm_queue)
+        queue_rows = soup_queue.select(".issue-row")
+        queue_numbers = {row.get("data-issue") for row in queue_rows}
+        assert queue_numbers == {"2", "3"}, "Queue tab should only show non-blocked queue issues"
+
+        # Check blocked tab
+        vm_blocked = build_dashboard_view_model(
+            orchestrator, active_tab="blocked", e2e_status_provider=e2e_disabled
+        )
+        soup_blocked = render_dashboard(jinja_env, vm_blocked)
+        blocked_rows = soup_blocked.select(".issue-row")
+        blocked_numbers = {row.get("data-issue") for row in blocked_rows}
+        assert "4" in blocked_numbers, "Blocked tab should show blocked issue"
