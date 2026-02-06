@@ -553,6 +553,22 @@ class CompletionProcessor:
         if not self._requires_publish_gate(record):
             return None
 
+        # Block if agent skipped validation - this is a policy violation
+        if record.validation_skipped:
+            logger.warning(
+                "Blocking publish for issue #%d: agent used --skip-validation",
+                issue_number,
+            )
+            return ProcessingResult(
+                success=False,
+                message="Agent skipped validation - cannot publish without passing tests",
+                errors=[
+                    "agent-done was called with --skip-validation flag",
+                    "Tests must pass before code can be pushed",
+                    "Fix the failing tests and run agent-done again without --skip-validation",
+                ],
+            )
+
         # Get session output dir for validation to write directly there
         if not session_name:
             return ProcessingResult(
@@ -605,6 +621,18 @@ class CompletionProcessor:
                 record=gate_record,
                 record_path=record_path,
             )
+
+        # Update manifest with validation_passed=False so UI shows correct status
+        if session_name:
+            run_dir = self.session_output.find_run_dir(worktree, session_name)
+            if run_dir:
+                self.session_output.update_manifest(run_dir, {
+                    "validation_passed": False,
+                    "validation_failure_reason": gate_reason,
+                    "ended_at": datetime.now(timezone.utc).isoformat(),
+                    "outcome": record.outcome.value,  # Agent's reported outcome
+                })
+
         # Add validation-failed label so user knows why issue is stuck
         validation_failed_label = self._get_label("validation_failed")
         try:

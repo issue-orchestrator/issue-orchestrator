@@ -383,3 +383,15 @@ class TestHistoryDisplay:
 
         time_cell = page.locator(".issue-time")
         expect(time_cell).to_contain_text("15")  # 15 minutes from mock
+
+    def test_history_shows_completion_timestamp(self, page: Page, web_server):
+        """History entries show completion time (HH:MM:SS)."""
+        from datetime import datetime
+        completed_time = datetime(2025, 1, 15, 14, 30, 45)  # 14:30:45
+        web_server["orchestrator"].add_history_entry(
+            201, "Timestamped Issue", "completed", completed_at=completed_time
+        )
+        page.goto(f"{web_server['url']}?tab=history")
+
+        time_cell = page.locator(".issue-time")
+        expect(time_cell).to_contain_text("14:30:45")

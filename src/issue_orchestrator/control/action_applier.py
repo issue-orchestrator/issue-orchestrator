@@ -518,6 +518,40 @@ class ActionApplier:
         """
         return ActionResult.ok(action, note="Queue operation delegated to orchestrator")
 
+    def _get_latest_review_section(
+        self, pr_number: int, provided_body: str | None
+    ) -> str:
+        """Build the latest review section for escalation comments.
+
+        Returns formatted markdown section or empty string.
+        """
+        review_body = provided_body
+        if not review_body and self.repository_host:
+            try:
+                reviews = self.repository_host.get_pr_reviews(pr_number)
+                for review in reversed(reviews):
+                    if review.get("state") == "CHANGES_REQUESTED" and review.get("body"):
+                        review_body = review.get("body", "")
+                        break
+            except Exception as e:
+                logger.debug("Failed to fetch PR reviews: %s", e)
+
+        if not review_body:
+            return ""
+
+        if len(review_body) > 1000:
+            review_body = review_body[:1000] + "..."
+        return f"""
+### Latest Review Feedback
+
+<details>
+<summary>Reviewer's comments (click to expand)</summary>
+
+{review_body}
+
+</details>
+"""
+
     def _apply_escalate(self, action: Action) -> ActionResult:
         """Escalate to human intervention.
 
@@ -564,11 +598,14 @@ class ActionApplier:
 
         # Post explanatory comment
         if self.repository_host:
+            latest_review_section = self._get_latest_review_section(
+                action.pr_number, action.latest_review_body
+            )
             comment = f"""## ⚠️ Escalated to Human Review
 
 This PR has gone through {action.rework_cycles - 1} rework cycles without passing review.
 Maximum rework cycles ({action.max_rework_cycles}) exceeded.
-
+{latest_review_section}
 **A human needs to review and either:**
 - Approve the PR manually
 - Provide specific guidance for the agent

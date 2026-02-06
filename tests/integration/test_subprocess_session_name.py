@@ -12,6 +12,10 @@ from pathlib import Path
 import pluggy
 import pytest
 
+# Run PTY tests sequentially in one worker to avoid Python 3.14 forkpty warning
+# (forkpty() in multi-threaded processes can deadlock)
+pytestmark = pytest.mark.xdist_group("pty")
+
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 from issue_orchestrator.infra.hooks.hookspec import PROJECT_NAME, TerminalSpec
 

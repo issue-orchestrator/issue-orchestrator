@@ -27,9 +27,9 @@ from ..control.isolation import build_isolation_prefix
 if TYPE_CHECKING:
     import pexpect
 from ..infra.env import get_env
-from ..infra.sqlite_connection import open_sqlite
 from ..infra.hooks.hookspec import hookimpl
 from ..infra.repo_identity import state_dir
+from ..infra.sqlite_connection import open_sqlite
 from .session_output_adapter import FileSystemSessionOutput
 
 logger = logging.getLogger(__name__)
@@ -285,8 +285,16 @@ class SubprocessPlugin:
         thread.start()
 
     def _start_process(self, command: str, working_dir: Path, session_name: str) -> "pexpect.spawn":
-        """Start a subprocess with pexpect, capturing output to log file."""
-        import pexpect  # Lazy import to avoid circular dependency with agent-done
+        """Start a subprocess with pexpect, capturing output to log file.
+
+        Uses pexpect.spawn which creates a PTY. This is required for interactive
+        programs like Claude that behave differently without a TTY.
+
+        Note: Python 3.14+ warns about forkpty() in multi-threaded processes.
+        Tests using this code are grouped in xdist_group("pty") to run sequentially,
+        and the warning is suppressed in pyproject.toml filterwarnings.
+        """
+        import pexpect
 
         full_cmd = self._build_process_command(command, working_dir)
         log_path = self._session_log_path(working_dir, session_name)

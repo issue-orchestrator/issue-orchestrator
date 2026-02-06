@@ -13,6 +13,7 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.events import EventHub
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from datetime import datetime
 from issue_orchestrator.domain.models import (
     AgentConfig,
     Issue,
@@ -154,7 +155,8 @@ class MockOrchestratorForWeb:
         return issue
 
     def add_history_entry(
-        self, issue_number: int, title: str, status: str = "completed"
+        self, issue_number: int, title: str, status: str = "completed",
+        completed_at: datetime | None = None
     ) -> SessionHistoryEntry:
         """Add a history entry for testing."""
         entry = SessionHistoryEntry(
@@ -166,6 +168,7 @@ class MockOrchestratorForWeb:
             pr_url=f"https://github.com/test/repo/pull/{issue_number}"
             if status == "completed"
             else "",
+            completed_at=completed_at or datetime.now(),
         )
         self.state.session_history.append(entry)
         return entry

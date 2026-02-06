@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence, Protocol
 
 from ..infra.config import Config
+from ..infra import labels as label_registry
 from ..events import EventName
 from ..domain.models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
@@ -189,6 +190,16 @@ class PRScanner:
                 continue
 
             rework_cycle = self._get_rework_cycle_from_labels(pr.labels)
+
+            # Skip if already blocked (has any blocking label like blocked-*, needs-human, etc.)
+            # This prevents escalation spam when GitHub label cache is stale
+            if label_registry.is_blocking_any(pr.labels):
+                blocking = label_registry.get_blocking_labels(pr.labels)
+                logger.debug(
+                    "[SCANNER] PR #%d already blocked (%s), skipping",
+                    pr.number, ", ".join(blocking)
+                )
+                continue
 
             # Check if exceeded max rework cycles
             if rework_cycle > self.config.max_rework_cycles:

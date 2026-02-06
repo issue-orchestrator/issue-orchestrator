@@ -237,6 +237,7 @@ class EscalateToHumanAction(Action):
     needs_human_label: str = "blocked-needs-human"
     needs_rework_label: str = "needs-rework"
     max_rework_cycles: int = 3  # For comment message
+    latest_review_body: Optional[str] = None  # Latest review feedback to include
     action_type: ActionType = field(default=ActionType.ESCALATE_TO_HUMAN, init=False)
 
 

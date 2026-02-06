@@ -10,7 +10,9 @@ import pytest
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.live,
-    pytest.mark.xdist_group("claude"),
+    # Run PTY tests sequentially in one worker to avoid Python 3.14 forkpty warning
+    # (forkpty() in multi-threaded processes can deadlock)
+    pytest.mark.xdist_group("pty"),
 ]
 import subprocess
 import shutil

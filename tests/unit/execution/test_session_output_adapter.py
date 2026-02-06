@@ -199,6 +199,54 @@ class TestListRuns:
         assert len(runs) == 1
         assert runs[0]["session_name"] == "coding-1"
 
+    def test_list_runs_derives_validation_failed_status(
+        self, session_output, tmp_path
+    ):
+        """Verify validation_passed=False leads to validation_failed status.
+
+        When the manifest has validation_passed=False, _derive_run_status
+        should return 'validation_failed' even if outcome is 'completed'.
+        This ensures the UI shows the correct status for failed validation.
+        """
+        sessions_dir = tmp_path / ".issue-orchestrator" / "sessions"
+        sessions_dir.mkdir(parents=True)
+
+        # Create run with validation_passed=False (validation failed case)
+        run_dir = sessions_dir / "20260117-100000Z__coding-1"
+        run_dir.mkdir()
+        (run_dir / MANIFEST_NAME).write_text(json.dumps({
+            "session_name": "coding-1",
+            "run_id": "20260117-100000Z",
+            "started_at": "2026-01-17T10:00:00Z",
+            "ended_at": "2026-01-17T10:30:00Z",
+            "issue_number": 123,
+            "agent_label": "agent:developer",
+            "outcome": "completed",  # Agent reported completed
+            "validation_passed": False,  # But validation failed
+            "validation_failure_reason": "make validate failed",
+        }))
+
+        # Create index
+        index = {
+            "runs": [{
+                "session_name": "coding-1",
+                "run_id": "20260117-100000Z",
+                "started_at": "2026-01-17T10:00:00Z",
+                "issue_number": 123,
+                "run_dir": str(run_dir),
+                "agent_label": "agent:developer",
+            }]
+        }
+        (sessions_dir / INDEX_NAME).write_text(json.dumps(index))
+
+        runs = session_output.list_runs(tmp_path)
+
+        assert len(runs) == 1
+        # Status should be validation_failed, not completed
+        assert runs[0]["status"] == "validation_failed"
+        assert runs[0]["outcome"] == "completed"
+        assert runs[0]["validation_passed"] is False
+
 
 class TestReviewExchangeSummary:
     """Tests for review exchange summary persistence."""

@@ -34,6 +34,7 @@ class SessionFailureDiagnosis:
     history_reason: str | None
     warnings: list[str] = field(default_factory=list)
     suggestions: list[str] = field(default_factory=list)
+    review_feedback: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -49,6 +50,7 @@ class SessionFailureDiagnosis:
             "history_reason": self.history_reason,
             "warnings": self.warnings,
             "suggestions": self.suggestions,
+            "review_feedback": self.review_feedback,
         }
 
 
@@ -168,6 +170,33 @@ def _build_warnings_and_suggestions(permission_mode: str, log_path: Path | None,
     return warnings, suggestions
 
 
+def _load_review_feedback(worktree_path: Path | None) -> list[dict[str, Any]]:
+    """Load all review feedback files from a worktree.
+
+    Returns list of dicts with 'cycle', 'path', and 'content' keys.
+    """
+    if not worktree_path:
+        return []
+
+    feedback_dir = worktree_path / ".issue-orchestrator" / "review-feedback"
+    if not feedback_dir.exists():
+        return []
+
+    result = []
+    for path in sorted(feedback_dir.glob("cycle-*.md")):
+        try:
+            # Extract cycle number from filename (cycle-N.md)
+            cycle = int(path.stem.split("-")[1])
+            result.append({
+                "cycle": cycle,
+                "path": str(path),
+                "content": path.read_text(),
+            })
+        except (ValueError, IndexError):
+            pass
+    return result
+
+
 def create_session_failure_diagnosis(
     issue_number: int,
     session_history: list,
@@ -198,6 +227,9 @@ def create_session_failure_diagnosis(
 
     warnings, suggestions = _build_warnings_and_suggestions(permission_mode, log_path, log_context, worktree_path)
 
+    # Load review feedback from per-cycle files
+    review_feedback = _load_review_feedback(Path(worktree_path) if worktree_path else None)
+
     return SessionFailureDiagnosis(
         issue_number=issue_number,
         ai_system=ai_system,
@@ -210,4 +242,5 @@ def create_session_failure_diagnosis(
         history_reason=history_entry.status_reason if history_entry else None,
         warnings=warnings,
         suggestions=suggestions,
+        review_feedback=review_feedback,
     )

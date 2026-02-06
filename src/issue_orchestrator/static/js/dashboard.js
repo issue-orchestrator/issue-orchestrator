@@ -1000,7 +1000,9 @@ menuLog.addEventListener('click', async (e) => {
                 const entry = JSON.parse(line);
                 // Show role and truncated content
                 const role = entry.type || entry.role || 'unknown';
-                const content = (entry.message?.content || entry.content || JSON.stringify(entry)).substring(0, 200);
+                // Safely extract content - may be string or object
+                let rawContent = entry.message?.content || entry.content || entry;
+                const content = (typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent)).substring(0, 200);
                 logContent += `<span style="color:#58a6ff;">[${role}]</span> ${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}...\n`;
             } catch {
                 logContent += line.substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '\n';
@@ -1886,7 +1888,9 @@ function getEntryPreview(entry) {
         return `Tool: ${entry.name}`;
     }
     if (entry.message) {
-        return entry.message.substring(0, 150);
+        // Handle message being either a string or an object
+        const msg = typeof entry.message === 'string' ? entry.message : JSON.stringify(entry.message);
+        return msg.substring(0, 150);
     }
     return JSON.stringify(entry).substring(0, 100);
 }

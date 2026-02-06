@@ -1334,6 +1334,10 @@ class TestCompletionProcessorPublishGate:
         assert (run_dir / "validation-stderr.log").read_text() == "validation stderr"
         manifest = json.loads((run_dir / "manifest.json").read_text())
         assert "validation_record_path" in manifest
+        # Verify manifest is updated with validation_passed=False for UI status derivation
+        assert manifest.get("validation_passed") is False
+        assert manifest.get("validation_failure_reason") == "Validation failed"
+        assert "ended_at" in manifest  # Must be set so UI shows correct status
 
 
 def test_cleanup_failure_posts_diagnostic_comment(
