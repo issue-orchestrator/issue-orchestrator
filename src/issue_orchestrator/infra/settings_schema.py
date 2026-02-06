@@ -5,7 +5,7 @@ via Field() + json_schema_extra. This single source of truth drives:
 - settings.html (Jinja2 renders from schema)
 - GET/POST /api/settings (serialize/validate via Pydantic)
 - setup_wizard.py (defaults, labels, hints)
-- docs/user/configuration.md (auto-generated reference)
+    - docs/user/configuration_reference.md (auto-generated reference)
 - doctor checks (path validation, agent references, status summaries)
 """
 
@@ -54,6 +54,8 @@ class ConcurrencySettings(BaseModel):
         ge=1,
         le=20,
         json_schema_extra={
+            "doc_examples": ["1", "3", "5"],
+            "doc_notes": "Set based on CPU, RAM, and how many concurrent sessions you can actively review.",
             "section": "Session Limits",
             "config_attr": "max_concurrent_sessions",
             "yaml_path": "execution.concurrency.max_concurrent_sessions",
@@ -71,6 +73,8 @@ class ConcurrencySettings(BaseModel):
         ge=5,
         le=180,
         json_schema_extra={
+            "doc_examples": ["30", "45", "90"],
+            "doc_notes": "Lower values fail faster for stuck sessions; higher values help long builds.",
             "section": "Session Limits",
             "config_attr": "session_timeout_minutes",
             "yaml_path": "execution.concurrency.session_timeout_minutes",
@@ -83,6 +87,8 @@ class ConcurrencySettings(BaseModel):
         ge=0,
         le=3600,
         json_schema_extra={
+            "doc_examples": ["0", "300", "600"],
+            "doc_notes": "Use 0 to disable automatic refreshes and refresh manually in the UI.",
             "section": "Queue",
             "config_attr": "queue_refresh_seconds",
             "yaml_path": "ui.queue_refresh_seconds",
@@ -95,6 +101,8 @@ class ConcurrencySettings(BaseModel):
         ge=0,
         le=9,
         json_schema_extra={
+            "doc_examples": ["0", "1", "2"],
+            "doc_notes": "Used when issue titles do not include a [P?-nnn] prefix.",
             "section": "Scheduling",
             "config_attr": "scheduling.default_priority_tier",
             "yaml_path": "scheduling.default_priority_tier",
@@ -110,6 +118,8 @@ class E2ESettings(BaseModel):
         title="Enable E2E Test Runner",
         description="Automatically run E2E tests when main branch changes",
         json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Keep disabled on repos without stable E2E tests.",
             "config_attr": "e2e.enabled",
             "yaml_path": "e2e.enabled",
             "summary": {
@@ -126,6 +136,8 @@ class E2ESettings(BaseModel):
         ge=0,
         le=1440,
         json_schema_extra={
+            "doc_examples": ["0", "30", "60"],
+            "doc_notes": "Set to 0 to disable automatic runs and trigger manually.",
             "config_attr": "e2e.auto_run_interval_minutes",
             "yaml_path": "e2e.auto_run_interval_minutes",
             "summary": {
@@ -142,6 +154,8 @@ class E2ESettings(BaseModel):
         title="Role",
         description="Role in multi-orchestrator setup",
         json_schema_extra={
+            "doc_examples": ["auto", "executor", "reader", "disabled"],
+            "doc_notes": "Use executor on the single machine that should run tests.",
             "config_attr": "e2e.role",
             "yaml_path": "e2e.role",
         },
@@ -151,6 +165,8 @@ class E2ESettings(BaseModel):
         title="Pytest Arguments",
         description="Space-separated pytest arguments (e.g., tests/e2e -v)",
         json_schema_extra={
+            "doc_examples": ["tests/e2e -v", "tests/e2e -v -x"],
+            "doc_notes": "First argument should be a path; it is validated by the doctor.",
             "config_attr": "e2e.pytest_args",
             "yaml_path": "e2e.pytest_args",
             "ui_transform": "space_separated_list",
@@ -170,6 +186,8 @@ class E2ESettings(BaseModel):
         title="Retry failed tests once",
         description="Retry failing tests to reduce flakiness",
         json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Disable if reruns hide real failures or are too slow.",
             "config_attr": "e2e.allow_retry_once",
             "yaml_path": "e2e.allow_retry_once",
             "summary": {
@@ -186,6 +204,8 @@ class E2ESettings(BaseModel):
         title="Stop on first failure",
         description="Add -x flag to stop test run on first failure",
         json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Enable for faster feedback when most tests pass.",
             "config_attr": "e2e.stop_on_first_failure",
             "yaml_path": "e2e.stop_on_first_failure",
         },
@@ -195,6 +215,8 @@ class E2ESettings(BaseModel):
         title="Quarantine File",
         description="Path to quarantine file for skipping known-flaky tests",
         json_schema_extra={
+            "doc_examples": ["tests/e2e/quarantine.txt", "tests/e2e/quarantine-local.txt"],
+            "doc_notes": "Doctor verifies the file exists when E2E is enabled.",
             "config_attr": "e2e.quarantine_file",
             "yaml_path": "e2e.quarantine_file",
             "doctor_check": DOCTOR_CHECK_PATH_EXISTS,
@@ -207,6 +229,8 @@ class E2ESettings(BaseModel):
         title="Auto-quarantine failing tests",
         description="Automatically add failing tests to the quarantine list",
         json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Set false to require manual quarantine updates.",
             "config_attr": "e2e.auto_quarantine",
             "yaml_path": "e2e.auto_quarantine",
             "summary": {
@@ -223,6 +247,8 @@ class E2ESettings(BaseModel):
         title="Auto-create failure issues",
         description="Automatically create GitHub issues for failed tests",
         json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Disable if you prefer manual triage of failures.",
             "config_attr": "e2e.auto_create_issues",
             "yaml_path": "e2e.auto_create_issues",
             "summary": {
@@ -239,6 +265,8 @@ class E2ESettings(BaseModel):
         title="Failure issue agent label",
         description="Agent label assigned to auto-created failure issues",
         json_schema_extra={
+            "doc_examples": ["agent:backend", "agent:triage"],
+            "doc_notes": "Must refer to an agent defined in the config.",
             "config_attr": "e2e.issue_agent_label",
             "yaml_path": "e2e.issue_agent_label",
             "doctor_check": DOCTOR_CHECK_REFERENCES_AGENT,
@@ -256,6 +284,8 @@ class FilteringSettings(BaseModel):
         title="Label Filter",
         description="Only process issues with this label (optional)",
         json_schema_extra={
+            "doc_examples": ["bot-ready", "needs-triage"],
+            "doc_notes": "Use a single label to gate which issues are eligible.",
             "config_attr": "filtering.label",
             "yaml_path": "filtering.label",
         },
@@ -265,6 +295,8 @@ class FilteringSettings(BaseModel):
         title="Milestones",
         description="Comma-separated list of milestones to process",
         json_schema_extra={
+            "doc_examples": ["M1, M2", ""],
+            "doc_notes": "Comma-separated list; leave empty to allow all milestones.",
             "config_attr": "filtering.milestones",
             "config_read_method": "filtering.get_milestones",
             "yaml_path": "filtering.milestones",
@@ -276,6 +308,8 @@ class FilteringSettings(BaseModel):
         title="Exclude Labels",
         description="Comma-separated labels to exclude",
         json_schema_extra={
+            "doc_examples": ["test-data, skip", ""],
+            "doc_notes": "Exclude any issue that carries one of these labels.",
             "config_attr": "filtering.exclude_labels",
             "yaml_path": "filtering.exclude_labels",
             "ui_transform": "comma_separated_list",
@@ -288,6 +322,8 @@ class FilteringSettings(BaseModel):
         ge=1,
         le=500,
         json_schema_extra={
+            "doc_examples": ["50", "100", "200"],
+            "doc_notes": "Lower values reduce API load; higher values reduce pagination.",
             "config_attr": "filtering.fetch_limit",
             "yaml_path": "filtering.fetch_limit",
         },
@@ -299,6 +335,8 @@ class FilteringSettings(BaseModel):
         ge=0,
         le=100,
         json_schema_extra={
+            "doc_examples": ["0", "5", "10"],
+            "doc_notes": "Useful for dry runs or throttling initial ramp-up.",
             "config_attr": "filtering.max_to_start",
             "yaml_path": "filtering.max_to_start",
         },
@@ -316,6 +354,8 @@ class MilestonesSettings(BaseModel):
             "unlisted milestones are appended using the milestone sort strategy."
         ),
         json_schema_extra={
+            "doc_examples": ["M1, M2", ""],
+            "doc_notes": "Use to override the default sort order without filtering.",
             "section": "Ordering",
             "config_attr": "milestone_order",
             "yaml_path": "milestones.order",
@@ -332,6 +372,8 @@ class ReviewSettings(BaseModel):
         title="Enable Code Review",
         description="Enable automated code review workflow",
         json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "When enabled, a reviewer agent validates work agent PRs.",
             "section": "Code Review Workflow",
             "config_attr": "review_enabled",
             "yaml_path": "review.enabled",
@@ -347,6 +389,8 @@ class ReviewSettings(BaseModel):
         title="Default Reviewer Agent",
         description="Agent label for code reviews (e.g., agent:reviewer)",
         json_schema_extra={
+            "doc_examples": ["agent:reviewer"],
+            "doc_notes": "Must match a label defined under agents.",
             "section": "Code Review Workflow",
             "config_attr": "code_review_agent",
             "yaml_path": "review.default",
@@ -367,6 +411,8 @@ class ReviewSettings(BaseModel):
         ge=0,
         le=10,
         json_schema_extra={
+            "doc_examples": ["0", "2", "10"],
+            "doc_notes": "Set to 0 to disable rework cycles (immediate escalation).",
             "section": "Code Review Workflow",
             "config_attr": "max_rework_cycles",
             "yaml_path": "review.max_rework_cycles",
@@ -377,6 +423,8 @@ class ReviewSettings(BaseModel):
         title="Keep Current Approach Label",
         description="Label that tells reviewer to avoid alternative approaches",
         json_schema_extra={
+            "doc_examples": ["reviewer-keep-current-approach"],
+            "doc_notes": "Applied to issues where stability is preferred over refactors.",
             "section": "Code Review Workflow",
             "config_attr": "review_keep_current_approach_label",
             "yaml_path": "review.keep_current_approach_label",
@@ -387,6 +435,8 @@ class ReviewSettings(BaseModel):
         title="Review Exchange Mode",
         description="Review exchange mode (via-mcp loop, local loop, or via-draft-pr review)",
         json_schema_extra={
+            "doc_examples": ["via-draft-pr", "via-mcp", "auto"],
+            "doc_notes": "Draft PR mode is the default and requires no extra setup.",
             "section": "Code Review Workflow",
             "config_attr": "review_exchange_mode",
             "yaml_path": "review.exchange.mode",
@@ -397,6 +447,8 @@ class ReviewSettings(BaseModel):
         title="Exchange Probe Schedule",
         description="When to run MCP round-trip validation",
         json_schema_extra={
+            "doc_examples": ["daily", "startup", "interval", "manual"],
+            "doc_notes": "Use manual to disable automatic probes and run on demand.",
             "section": "Code Review Workflow",
             "config_attr": "review_exchange_probe_schedule",
             "yaml_path": "review.exchange.probe.schedule",
@@ -409,6 +461,8 @@ class ReviewSettings(BaseModel):
         ge=1,
         le=30,
         json_schema_extra={
+            "doc_examples": ["1", "7", "14"],
+            "doc_notes": "Used only when schedule=interval.",
             "section": "Code Review Workflow",
             "config_attr": "review_exchange_probe_interval_days",
             "yaml_path": "review.exchange.probe.interval_days",
@@ -421,6 +475,8 @@ class ReviewSettings(BaseModel):
         ge=1,
         le=50,
         json_schema_extra={
+            "doc_examples": ["5", "10", "20"],
+            "doc_notes": "Higher values allow longer back-and-forth reviews.",
             "section": "Code Review Workflow",
             "config_attr": "review_exchange_max_rounds",
             "yaml_path": "review.exchange.loop.max_rounds",
@@ -433,6 +489,8 @@ class ReviewSettings(BaseModel):
         ge=1,
         le=10,
         json_schema_extra={
+            "doc_examples": ["1", "2", "3"],
+            "doc_notes": "Limits loops when reviewer is not seeing improvements.",
             "section": "Code Review Workflow",
             "config_attr": "review_exchange_max_no_progress",
             "yaml_path": "review.exchange.loop.max_no_progress",
@@ -443,6 +501,8 @@ class ReviewSettings(BaseModel):
         title="Exchange Requires Validation",
         description="Require a validation record before reviewer can approve",
         json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Disable only if you accept reviewer approvals without validation.",
             "section": "Code Review Workflow",
             "config_attr": "review_exchange_require_validation",
             "yaml_path": "review.exchange.loop.require_validation",
@@ -453,6 +513,8 @@ class ReviewSettings(BaseModel):
         title="Triage Review Agent",
         description="Agent for batch reviews (optional)",
         json_schema_extra={
+            "doc_examples": ["agent:triage"],
+            "doc_notes": "Must match a label defined under agents.",
             "section": "Triage Review",
             "config_attr": "triage_review_agent",
             "yaml_path": "review.triage_review_agent",
@@ -468,6 +530,8 @@ class ReviewSettings(BaseModel):
         ge=0,
         le=50,
         json_schema_extra={
+            "doc_examples": ["0", "5", "10"],
+            "doc_notes": "Set to 0 to only trigger triage manually.",
             "section": "Triage Review",
             "config_attr": "triage_review_threshold",
             "yaml_path": "review.triage_review_threshold",
@@ -483,6 +547,8 @@ class GoalPilotSettings(BaseModel):
         title="Enable Goal Pilot",
         description="Enable the Goal Pilot AI controller",
         json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Enable only when Goal Pilot prompts are configured and tested.",
             "section": "Goal Pilot",
             "config_attr": "goal_pilot.enabled",
             "yaml_path": "goal_pilot.enabled",
@@ -498,6 +564,8 @@ class GoalPilotSettings(BaseModel):
         title="Goal Pilot Agent",
         description="Agent label to run as Goal Pilot (e.g., agent:goal-pilot)",
         json_schema_extra={
+            "doc_examples": ["agent:goal-pilot"],
+            "doc_notes": "Must match a label defined under agents.",
             "section": "Goal Pilot",
             "config_attr": "goal_pilot.agent",
             "yaml_path": "goal_pilot.agent",
@@ -511,6 +579,8 @@ class GoalPilotSettings(BaseModel):
         title="Approval Policy",
         description="How Goal Pilot applies repo changes",
         json_schema_extra={
+            "doc_examples": ["journeys_only", "gatekeeper", "batch"],
+            "doc_notes": "Batch mode bundles changes before approval; gatekeeper requests approval per change.",
             "section": "Goal Pilot",
             "config_attr": "goal_pilot.approval_policy",
             "yaml_path": "goal_pilot.approval_policy",
@@ -523,6 +593,8 @@ class GoalPilotSettings(BaseModel):
         ge=1,
         le=200,
         json_schema_extra={
+            "doc_examples": ["5", "10", "25"],
+            "doc_notes": "Used only when approval_policy=batch.",
             "section": "Goal Pilot",
             "config_attr": "goal_pilot.approval_batch_size",
             "yaml_path": "goal_pilot.approval_batch_size",
@@ -535,6 +607,8 @@ class GoalPilotSettings(BaseModel):
         ge=1,
         le=1440,
         json_schema_extra={
+            "doc_examples": ["30", "60", "120"],
+            "doc_notes": "Used only when approval_policy=batch.",
             "section": "Goal Pilot",
             "config_attr": "goal_pilot.approval_batch_window_minutes",
             "yaml_path": "goal_pilot.approval_batch_window_minutes",
@@ -550,6 +624,8 @@ class AdvancedSettings(BaseModel):
         title="Enable SQLite Backups",
         description="Enable automatic backups of local SQLite state",
         json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Disable only if backups are managed externally.",
             "section": "State & Backups",
             "config_attr": "sqlite_backup.enabled",
             "yaml_path": "sqlite_backup.enabled",
@@ -562,6 +638,8 @@ class AdvancedSettings(BaseModel):
         ge=1,
         le=168,
         json_schema_extra={
+            "doc_examples": ["6", "24", "48"],
+            "doc_notes": "Lower values increase backup frequency.",
             "section": "State & Backups",
             "config_attr": "sqlite_backup.cadence_hours",
             "yaml_path": "sqlite_backup.cadence_hours",
@@ -574,6 +652,8 @@ class AdvancedSettings(BaseModel):
         ge=5,
         le=1440,
         json_schema_extra={
+            "doc_examples": ["30", "60", "120"],
+            "doc_notes": "Checks are lightweight; keep reasonably frequent.",
             "section": "State & Backups",
             "config_attr": "sqlite_backup.check_interval_minutes",
             "yaml_path": "sqlite_backup.check_interval_minutes",
@@ -586,6 +666,8 @@ class AdvancedSettings(BaseModel):
         ge=0,
         le=60,
         json_schema_extra={
+            "doc_examples": ["7", "14", "30"],
+            "doc_notes": "Set to 0 to disable daily backups.",
             "section": "State & Backups",
             "config_attr": "sqlite_backup.retention_daily",
             "yaml_path": "sqlite_backup.retention_daily",
@@ -598,6 +680,8 @@ class AdvancedSettings(BaseModel):
         ge=0,
         le=52,
         json_schema_extra={
+            "doc_examples": ["4", "8", "12"],
+            "doc_notes": "Set to 0 to disable weekly backups.",
             "section": "State & Backups",
             "config_attr": "sqlite_backup.retention_weekly",
             "yaml_path": "sqlite_backup.retention_weekly",
@@ -608,6 +692,8 @@ class AdvancedSettings(BaseModel):
         title="Enforce Backup on Startup",
         description="If cadence elapsed, force a backup on startup",
         json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Keeps backups current if the process was stopped for a while.",
             "section": "State & Backups",
             "config_attr": "sqlite_backup.enforce_on_startup",
             "yaml_path": "sqlite_backup.enforce_on_startup",
@@ -621,6 +707,8 @@ class AdvancedSettings(BaseModel):
         ge=1,
         le=10,
         json_schema_extra={
+            "doc_examples": ["2", "4", "6"],
+            "doc_notes": "Higher values reduce failures but can prolong degraded runs.",
             "section": "Provider Resilience",
             "config_attr": "provider_resilience.short_retry.max_attempts",
             "yaml_path": "provider_resilience.short_retry.max_attempts",
@@ -633,6 +721,8 @@ class AdvancedSettings(BaseModel):
         ge=1,
         le=300,
         json_schema_extra={
+            "doc_examples": ["2", "5", "10"],
+            "doc_notes": "Shorter backoffs retry faster but can amplify rate limits.",
             "section": "Provider Resilience",
             "config_attr": "provider_resilience.short_retry.initial_backoff_seconds",
             "yaml_path": "provider_resilience.short_retry.initial_backoff_seconds",
@@ -645,6 +735,8 @@ class AdvancedSettings(BaseModel):
         ge=1,
         le=3600,
         json_schema_extra={
+            "doc_examples": ["30", "60", "120"],
+            "doc_notes": "Caps exponential backoff to avoid excessive waiting.",
             "section": "Provider Resilience",
             "config_attr": "provider_resilience.short_retry.max_backoff_seconds",
             "yaml_path": "provider_resilience.short_retry.max_backoff_seconds",
@@ -655,6 +747,8 @@ class AdvancedSettings(BaseModel):
         title="Provider Retry Jitter",
         description="Apply full jitter to provider retry backoff",
         json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Keep enabled to avoid synchronized retry storms.",
             "section": "Provider Resilience",
             "config_attr": "provider_resilience.short_retry.jitter",
             "yaml_path": "provider_resilience.short_retry.jitter",
@@ -667,6 +761,8 @@ class AdvancedSettings(BaseModel):
         ge=60,
         le=86400,
         json_schema_extra={
+            "doc_examples": ["600", "1800", "3600"],
+            "doc_notes": "Longer cooldowns reduce repeated failures during incidents.",
             "section": "Provider Resilience",
             "config_attr": "provider_resilience.circuit_breaker.cooldown_seconds",
             "yaml_path": "provider_resilience.circuit_breaker.cooldown_seconds",
@@ -679,6 +775,8 @@ class AdvancedSettings(BaseModel):
         ge=1,
         le=12,
         json_schema_extra={
+            "doc_examples": ["3", "6", "8"],
+            "doc_notes": "Limits how long we will keep extending cooldowns.",
             "section": "Provider Resilience",
             "config_attr": "provider_resilience.circuit_breaker.max_cooldowns",
             "yaml_path": "provider_resilience.circuit_breaker.max_cooldowns",
@@ -689,6 +787,8 @@ class AdvancedSettings(BaseModel):
         title="Provider Blocked Label",
         description="Label applied when provider is unavailable",
         json_schema_extra={
+            "doc_examples": ["blocked:provider-unavailable"],
+            "doc_notes": "Use a label that is visible and searchable in your workflow.",
             "section": "Provider Resilience",
             "config_attr": "provider_resilience.circuit_breaker.label",
             "yaml_path": "provider_resilience.circuit_breaker.label",
@@ -702,6 +802,8 @@ class AdvancedSettings(BaseModel):
         ge=30,
         le=600,
         json_schema_extra={
+            "doc_examples": ["60", "120", "300"],
+            "doc_notes": "Lower values surface silent sessions sooner.",
             "section": "Observability",
             "config_attr": "session_no_output_seconds",
             "yaml_path": "observability.session_no_output_seconds",
@@ -714,6 +816,8 @@ class AdvancedSettings(BaseModel):
         ge=0,
         le=20,
         json_schema_extra={
+            "doc_examples": ["0", "3", "5"],
+            "doc_notes": "Set to 0 to disable automatic escalation.",
             "section": "Observability",
             "config_attr": "stale_escalation_ticks",
             "yaml_path": "observability.stale_escalation_ticks",
@@ -722,9 +826,12 @@ class AdvancedSettings(BaseModel):
     web_port: int = Field(
         8080,
         title="Web Dashboard Port",
+        description="Port for the web dashboard (requires restart)",
         ge=1024,
         le=65535,
         json_schema_extra={
+            "doc_examples": ["8080", "3000", "9090"],
+            "doc_notes": "Change if the default port is occupied.",
             "section": "Ports",
             "restart_required": True,
             "config_attr": "web_port",
@@ -744,6 +851,8 @@ class AdvancedSettings(BaseModel):
         ge=0,
         le=65535,
         json_schema_extra={
+            "doc_examples": ["0", "19080", "19081"],
+            "doc_notes": "Set to 0 to disable the control API listener.",
             "section": "Ports",
             "restart_required": True,
             "config_attr": "control_api_port",
@@ -755,6 +864,8 @@ class AdvancedSettings(BaseModel):
         title="AI Systems Allowlist",
         description="Additional ai_system values allowed in config (comma-separated)",
         json_schema_extra={
+            "doc_examples": ["codex, custom-system", ""],
+            "doc_notes": "Use to allow new providers beyond ai_systems.yaml.",
             "section": "AI Systems",
             "config_attr": "ai_systems_allowed",
             "yaml_path": "ai_systems.allowed",
@@ -766,6 +877,8 @@ class AdvancedSettings(BaseModel):
         title="Worktree Base Directory",
         description="Directory where git worktrees are created",
         json_schema_extra={
+            "doc_examples": ["../", "../worktrees", "/tmp/worktrees"],
+            "doc_notes": "Relative paths are resolved from the repo root.",
             "section": "Worktrees",
             "restart_required": True,
             "config_attr": "worktree_base",
@@ -782,6 +895,8 @@ class AdvancedSettings(BaseModel):
         title="Worktree Base Branch Override",
         description="Override the base branch for worktree creation (auto-detect if unset)",
         json_schema_extra={
+            "doc_examples": ["main", "master"],
+            "doc_notes": "Use when your default branch is not auto-detected correctly.",
             "section": "Worktrees",
             "restart_required": True,
             "config_attr": "worktree_base_branch_override",
@@ -793,6 +908,8 @@ class AdvancedSettings(BaseModel):
         title="Branch on Recreate",
         description="What to do when recreating a worktree with existing branch",
         json_schema_extra={
+            "doc_examples": ["delete", "create_new_branch"],
+            "doc_notes": "Use create_new_branch to keep the old branch intact.",
             "section": "Worktrees",
             "restart_required": True,
             "config_attr": "worktree_branch_on_recreate",
@@ -811,6 +928,8 @@ class HooksSettings(BaseModel):
         ge=0,
         le=365,
         json_schema_extra={
+            "doc_examples": ["0", "7", "30"],
+            "doc_notes": "Set to 0 to disable periodic AI gate tests.",
             "section": "AI Gate",
             "config_attr": "hooks.ai_gate.interval_days",
             "yaml_path": "hooks.ai_gate.interval_days",
@@ -828,6 +947,8 @@ class HooksSettings(BaseModel):
         title="Allow AI Gate Failure",
         description="If true, warn only on AI gate failure; if false, block orchestrator start",
         json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Keep false in production to enforce hook integrity.",
             "section": "AI Gate",
             "config_attr": "hooks.ai_gate.dangerous_allow_failure",
             "yaml_path": "hooks.ai_gate.dangerous_allow_failure",
@@ -1109,13 +1230,13 @@ def generate_config_reference() -> str:
     for tab in TAB_DEFINITIONS:
         lines.append(f"## {tab['label']}")
         lines.append("")
-        lines.append("| Field | Type | Default | Description |")
-        lines.append("|-------|------|---------|-------------|")
+        lines.append("| Field | Type | Default | Description | Examples | Notes |")
+        lines.append("|-------|------|---------|-------------|----------|-------|")
         model_cls = tab["model"]
         schema = model_cls.model_json_schema()
         for prop_name, prop in schema.get("properties", {}).items():
             field_info = model_cls.model_fields[prop_name]
-            extra = field_info.json_schema_extra
+            extra = field_info.json_schema_extra or {}
             yaml_path = extra.get("yaml_path", prop_name) if isinstance(extra, dict) else prop_name
             type_str = prop.get("type", "string")
             # Handle anyOf (Optional types)
@@ -1126,6 +1247,13 @@ def generate_config_reference() -> str:
                     type_str += " (optional)"
             default = prop.get("default", "")
             desc = prop.get("description", "")
-            lines.append(f"| `{yaml_path}` | {type_str} | `{default}` | {desc} |")
+            examples = extra.get("doc_examples", [])
+            if not isinstance(examples, list):
+                examples = [str(examples)]
+            examples_str = ", ".join(f"`{e}`" for e in examples if str(e) != "")
+            notes = extra.get("doc_notes", "") or ""
+            lines.append(
+                f"| `{yaml_path}` | {type_str} | `{default}` | {desc} | {examples_str} | {notes} |"
+            )
         lines.append("")
     return "\n".join(lines)

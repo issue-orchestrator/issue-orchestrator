@@ -6,7 +6,8 @@
 Getting started with Issue Orchestrator:
 - [Installation](user/installation.md)
 - [Quickstart](user/quickstart.md)
-- [Configuration](user/configuration.md)
+- [Configuration (Quickstart)](user/configuration.md)
+- [Configuration Reference](user/configuration_reference.md)
 - [GitHub Token Setup](user/github-permissions.md)
 - [Tutorial](user/tutorial.md)
 
@@ -31,4 +32,3 @@ System design and decision records:
 - [Architecture Decision Records](architecture/ADR/README.md) - Why decisions were made
 - [Hooks & Guardrails](architecture/hooks.md) - Multi-layer safety enforcement
 - [Validation System](architecture/validation.md) - Publish gate design
-
