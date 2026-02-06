@@ -4,7 +4,7 @@ Start here if you want to **install and run** the tool.
 
 - Install: see `installation.md`
 - Quickstart: see `quickstart.md`
-- Configure: see `configuration.md`
+- Configure: see `configuration.md` (quickstart) and `configuration_reference.md` (full reference)
 - Goal Pilot: see `goal_pilot.md`
 - FAQ: see `faq.md`
 

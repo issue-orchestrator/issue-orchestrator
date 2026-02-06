@@ -28,13 +28,28 @@ repo:
       events: false
       # file: ".issue-orchestrator/gh-audit-{pid}.log"
 
+# Optional defaults applied to agents that omit provider/model/args
+# default_agent:
+#   provider: "claude-code"
+#   model: "sonnet"
+#   provider_args:
+#     permission_mode: "bypassPermissions"
+
 agents:
   "agent:backend":
     prompt: ".prompts/backend.md"
     model: "sonnet"
     timeout_minutes: 45
     ai_system: "claude-code"
-    # command: "claude --model {model} '{initial_prompt}'"  # Custom command
+    # provider: "claude-code"       # Overrides default_agent.provider
+    # provider_args: {}               # Provider-specific args
+    # permission_mode: "default"     # Provider-specific permission mode
+    # command: "claude --model {model} '{initial_prompt}'"
+    # initial_prompt: "Work on issue #{issue_number}: {issue_title}"
+    # skip_review: false
+    # reviewer: "agent:reviewer"     # Override default reviewer
+    # meta_agent: "agent:meta"       # Agent label used to supervise this agent
+    # retry_prompt_template: ".prompts/retry.md"
 
   "agent:frontend":
     prompt: ".prompts/frontend.md"
@@ -81,8 +96,10 @@ worktrees:
     # - "npm install"
     # - "pip install -e '.[dev]'"
   reuse_push_preflight: true
+  allow_no_verify_dry_run_preflight: true
+  worktree_branch_on_recreate: "delete"  # delete | create_new_branch
   remediation:
-    pr_collision: "new_branch"    # fail | reuse_open | new_branch
+    pr_collision: "new_branch"           # fail | reuse_open | new_branch
     push_rebase_retry: true
 
 execution:
@@ -110,14 +127,16 @@ review:
   triage_review_agent: "agent:triage"
   triage_review_label: "needs-triage-review"
   triage_reviewed_label: "triage-reviewed"
+  triage_failed_label: "triage-failed"
   triage_review_threshold: 0
   triage_review_on_failure: true
   max_rework_cycles: 10
+  reviewer_feedback_cache_minutes: 5
   exchange:
-    mode: "via-draft-pr"         # via-mcp, via-local-loop, or via-draft-pr (auto optional)
+    mode: "via-draft-pr"         # via-mcp, via-local-loop, via-draft-pr (auto optional)
     probe:
       schedule: "daily"          # startup, daily, interval, manual
-      interval_days: 1           # used when schedule=interval
+      interval_days: 1            # used when schedule=interval
     loop:
       max_rounds: 10
       max_no_progress: 2
@@ -126,13 +145,6 @@ review:
 goal_pilot:
   enabled: false
   # agent: "agent:goal-pilot"
-  approval_policy: "journeys_only"   # journeys_only | gatekeeper | batch
-  approval_batch_size: 10
-  approval_batch_window_minutes: 60
-
-goal_pilot:
-  enabled: false
-  agent: "agent:goal-pilot"
   approval_policy: "journeys_only"   # journeys_only | gatekeeper | batch
   approval_batch_size: 10
   approval_batch_window_minutes: 60
@@ -164,6 +176,11 @@ validation:
   #   exclude:
   #     - "src/issue_orchestrator/generated/**"
 
+retry:
+  max_validation_retries: 3
+  validation_error_file: "validation-errors.txt"
+  # retry_prompt_template: ".prompts/retry.md"
+
 provider_resilience:
   short_retry:
     max_attempts: 4
@@ -176,6 +193,11 @@ provider_resilience:
     label: "blocked:provider-unavailable"
 
 ui:
+  mode: "web"                   # web or cli
+  web_port: 8080
+  control_api_port: 19080        # 0 = disabled
+  queue_refresh_seconds: 600
+  instances: 1                   # Multi-orchestrator instances
 
 observability:
   session_no_output_seconds: 120
@@ -200,7 +222,7 @@ security:
 hooks:
   ai_gate:
     interval_days: 7                    # Run AI gate tests every N days (0 = disabled)
-    dangerous_allow_failure: false      # If true, warn only; if false, block on failure
+    dangerous_allow_failure: false      # If true, warn only; if false, block orchestrator start
 
 ai_systems:
   allowed: []                           # Extra ai_system values beyond ai_systems.yaml
@@ -228,17 +250,21 @@ triage:
     explicit: null
   priority: null
 
+scheduling:
+  default_priority_tier: 1
+
 e2e:
   enabled: false
+  role: "auto"                     # auto | executor | reader | disabled
   auto_run_interval_minutes: 30
   pytest_args: ["tests/e2e", "-v"]
   allow_retry_once: true
   quarantine_file: "tests/e2e/quarantine.txt"
+  survive_restart: true
+  stop_on_first_failure: false        # If true, stop on first test failure (-x flag)
   auto_quarantine: true               # Auto-add failing tests to quarantine list
   auto_create_issues: true            # Auto-create GitHub issues for failures
   issue_agent_label: "agent:backend"  # Agent label for failure issues
-  survive_restart: true
-  stop_on_first_failure: false        # If true, stop on first test failure (-x flag)
   flake_threshold: 20                  # Flip rate percentage (0-100) to flag test as flaky
   flake_window_runs: 10               # Number of recent runs to check for flip rate
   pr_labels: ["io-e2e-test-data"]
@@ -250,6 +276,16 @@ sqlite_backup:
   retention_daily: 14
   retention_weekly: 8
   enforce_on_startup: true
+
+claims:
+  enabled: false
+  # claimant_id: "orchestrator-1"
+  lease_seconds: 900
+  renew_before_expiry_seconds: 300
+  convergence_timeout_seconds: 5.0
+  convergence_poll_min_ms: 250
+  convergence_poll_max_ms: 500
+  convergence_required_wins: 2
 
 state:
   # file: ".issue-orchestrator/state.json"

@@ -327,6 +327,15 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     prompter.print("NEW PROJECT SETUP")
     prompter.print("=" * 50)
 
+    setup_mode = prompter.choice(
+        "Setup depth",
+        [
+            "Quick setup (recommended)",
+            "Advanced setup",
+        ],
+    )
+    advanced = "Advanced" in setup_mode
+
     # Repo
     detected_repo = detect_repo()
     if detected_repo:
@@ -361,15 +370,21 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
 
         # Ask about agent provider
         providers = list_providers()
-        prompter.print("\n  Agent provider options:")
-        for p in providers:
-            provider_obj = get_provider(p)
-            available = "✓" if provider_obj.is_available() else "✗ not installed"
-            prompter.print(f"    {p}  - {provider_obj.description} ({available})")
-        prompter.print("    custom  - Use a custom command/script")
+        available_providers = [p for p in providers if get_provider(p).is_available()]
+        agent_type: str
+        if not advanced and len(available_providers) == 1:
+            agent_type = available_providers[0]
+            prompter.print(f"\n  Using available provider: {agent_type}")
+        else:
+            prompter.print("\n  Agent provider options:")
+            for p in providers:
+                provider_obj = get_provider(p)
+                available = "✓" if provider_obj.is_available() else "✗ not installed"
+                prompter.print(f"    {p}  - {provider_obj.description} ({available})")
+            prompter.print("    custom  - Use a custom command/script")
 
-        provider_choices = providers + ["custom"]
-        agent_type = prompter.choice("Agent provider", provider_choices)
+            provider_choices = providers + ["custom"]
+            agent_type = prompter.choice("Agent provider", provider_choices)
 
         custom_command = None
         permission_mode = "default"
@@ -456,48 +471,51 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
         "concurrency": concurrency_values,
     }
 
-    # Issue scheduling explanation and milestone sorting
-    prompter.print("\n--- Issue Scheduling ---")
-    prompter.print("Issues are scheduled using a multi-level sort:\n")
-    prompter.print("  1. Dependencies  - Issues with 'blocked by #N' wait for #N to close")
-    prompter.print("  2. Milestone     - Configurable strategy (see below)")
-    prompter.print("  3. Priority tier - From issue title: [P0-x] < [P1-x] < ... < [P9-x]")
-    prompter.print("  4. Sequence      - The number after Px: [P1-001] < [P1-002]")
-    prompter.print("  5. Issue number  - Tie-breaker (lower first)\n")
-    prompter.print("Milestone sort strategies:")
-    prompter.print("  due_date         - By milestone due date (earliest first)")
-    prompter.print("  milestone_number - Extract number from name (M1 < M2 < M10)")
-    prompter.print("  pattern          - Custom regex to extract number")
-    prompter.print("  name             - Alphabetically by milestone name\n")
-    valid_strategies = ("due_date", "milestone_number", "pattern", "name")
-    while True:
-        milestone_sort = prompter.input("Milestone sort strategy", "due_date")
-        if milestone_sort in valid_strategies:
-            break
-        prompter.print(f"  Invalid strategy '{milestone_sort}'. Please choose from: {', '.join(valid_strategies)}")
-    milestones_config: dict[str, Any] = {"sort": milestone_sort}
-    config["milestones"] = milestones_config
+    # Issue scheduling / milestones
+    if advanced:
+        prompter.print("\n--- Issue Scheduling ---")
+        prompter.print("Issues are scheduled using a multi-level sort:\n")
+        prompter.print("  1. Dependencies  - Issues with 'blocked by #N' wait for #N to close")
+        prompter.print("  2. Milestone     - Configurable strategy (see below)")
+        prompter.print("  3. Priority tier - From issue title: [P0-x] < [P1-x] < ... < [P9-x]")
+        prompter.print("  4. Sequence      - The number after Px: [P1-001] < [P1-002]")
+        prompter.print("  5. Issue number  - Tie-breaker (lower first)\n")
+        prompter.print("Milestone sort strategies:")
+        prompter.print("  due_date         - By milestone due date (earliest first)")
+        prompter.print("  milestone_number - Extract number from name (M1 < M2 < M10)")
+        prompter.print("  pattern          - Custom regex to extract number")
+        prompter.print("  name             - Alphabetically by milestone name\n")
+        valid_strategies = ("due_date", "milestone_number", "pattern", "name")
+        while True:
+            milestone_sort = prompter.input("Milestone sort strategy", "due_date")
+            if milestone_sort in valid_strategies:
+                break
+            prompter.print(f"  Invalid strategy '{milestone_sort}'. Please choose from: {', '.join(valid_strategies)}")
+        milestones_config: dict[str, Any] = {"sort": milestone_sort}
+        config["milestones"] = milestones_config
 
-    if milestone_sort == "pattern":
-        prompter.print("\n  Enter a regex pattern with one capture group for the number.")
-        prompter.print("  Examples:")
-        prompter.print("    M(\\d+)       → matches 'M13' → 13")
-        prompter.print("    Sprint (\\d+) → matches 'Sprint 5' → 5")
-        pattern = prompter.input("  Pattern", r"M(\d+)")
-        milestones_config["sort_config"] = {"pattern": pattern}
+        if milestone_sort == "pattern":
+            prompter.print("\n  Enter a regex pattern with one capture group for the number.")
+            prompter.print("  Examples:")
+            prompter.print("    M(\\d+)       → matches 'M13' → 13")
+            prompter.print("    Sprint (\\d+) → matches 'Sprint 5' → 5")
+            pattern = prompter.input("  Pattern", r"M(\d+)")
+            milestones_config["sort_config"] = {"pattern": pattern}
 
-    order_raw = prompter.input(
-        "Optional milestone order (comma-separated, blank for none)", ""
-    )
-    if order_raw.strip():
-        milestones_config["order"] = [m.strip() for m in order_raw.split(",") if m.strip()]
+        order_raw = prompter.input(
+            "Optional milestone order (comma-separated, blank for none)", ""
+        )
+        if order_raw.strip():
+            milestones_config["order"] = [m.strip() for m in order_raw.split(",") if m.strip()]
 
-    # Foundation milestone for dependency scope
-    prompter.print("\n  Dependencies must be within the same milestone OR in the foundation milestone.")
-    prompter.print("  Example: Issues in M2 can depend on M2 issues or M0 (foundation) issues.")
-    foundation_milestone = prompter.input("Foundation milestone", "M0")
-    milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
-    milestones_config["foundation"] = foundation_milestone
+        # Foundation milestone for dependency scope
+        prompter.print("\n  Dependencies must be within the same milestone OR in the foundation milestone.")
+        prompter.print("  Example: Issues in M2 can depend on M2 issues or M0 (foundation) issues.")
+        foundation_milestone = prompter.input("Foundation milestone", "M0")
+        milestones_config = cast(dict[str, Any], config.setdefault("milestones", {}))
+        milestones_config["foundation"] = foundation_milestone
+    else:
+        config["milestones"] = {"sort": "due_date", "foundation": "M0"}
 
     # Worktree location — schema-driven
     prompter.print("\n--- Worktree Location ---")
@@ -568,19 +586,33 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     prompter.print("\n--- Label Prefix ---")
     prompter.print("Prefix for status labels to avoid conflicts with existing labels.")
     prompter.print("  Example: 'io' → 'io:in-progress', 'io:blocked', etc.\n")
-    label_prefix = prompter.input("Label prefix", "io")
+    label_prefix = prompter.input("Label prefix (optional)", "")
     if label_prefix:
         config["labels"] = {"prefix": label_prefix}
         prompter.print(f"  ✓ Labels will be prefixed: {label_prefix}:in-progress, {label_prefix}:blocked, etc.")
 
-    # Two-stage review workflow (enabled by default)
-    prompter.print("\n--- Review Workflow ---")
-    prompter.print("Code review is RECOMMENDED to catch issues before merging:")
-    prompter.print("  Stage 1: Per-PR code review (immediate, after each PR)")
-    prompter.print("  Stage 2: Triage batch review (when N reviewed PRs accumulate)\n")
+    # Validation
+    prompter.print("\n--- Validation ---")
+    prompter.print("Validation runs on agent-done and pre-push.")
+    validation_cmd = prompter.input("Validation command (optional)", "make test")
+    if validation_cmd.strip():
+        timeout = prompter.input("Validation timeout (seconds)", "300")
+        config["validation"] = {
+            "cmd": validation_cmd.strip(),
+            "timeout_seconds": int(timeout),
+        }
 
-    # Stage 1: Per-PR Code Review (default enabled)
-    if prompter.yes_no("Enable Stage 1: Per-PR code review?", default=True):
+    # Filtering (optional)
+    prompter.print("\n--- Filtering (Optional) ---")
+    label_filter = prompter.input("Only process issues with label (optional)", "")
+    if label_filter.strip():
+        config["filtering"] = {"label": label_filter.strip()}
+
+    # Review workflow
+    prompter.print("\n--- Review Workflow ---")
+    prompter.print("Optional automated review for PRs created by agents.\n")
+    enable_review = prompter.yes_no("Enable code review?", default=False)
+    if enable_review:
         prompter.print("\n  --- Stage 1: Per-PR Code Review ---")
         code_review_agent = prompter.input("  Code review agent label", "agent:reviewer")
         code_review_label = prompter.input("  Label for PRs needing review", "needs-code-review")
@@ -596,24 +628,25 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
         prompter.print(f"  ✓ PRs will be reviewed by {code_review_agent}")
         prompter.print(f"  ✓ Label flow: {code_review_label} → {code_reviewed_label}")
 
-        # Stage 2: Triage Batch Review (only if Stage 1 enabled)
-        prompter.print("")
-        if prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
-            prompter.print("\n  --- Stage 2: Triage Batch Review ---")
-            triage_review_agent = prompter.input("  triage review agent label", "agent:triage")
-            triage_reviewed_label = prompter.input("  Label after triage review", "triage-reviewed")
-            threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
+        # Stage 2: Triage Batch Review (advanced only)
+        if advanced:
+            prompter.print("")
+            if prompter.yes_no("Enable Stage 2: Triage batch review?", default=False):
+                prompter.print("\n  --- Stage 2: Triage Batch Review ---")
+                triage_review_agent = prompter.input("  triage review agent label", "agent:triage")
+                triage_reviewed_label = prompter.input("  Label after triage review", "triage-reviewed")
+                threshold = prompter.input("  Trigger after N code-reviewed PRs", "5")
 
-            config["review"]["triage_review_agent"] = triage_review_agent
-            config["review"]["triage_reviewed_label"] = triage_reviewed_label
-            try:
-                threshold_int = int(threshold)
-                if threshold_int > 0:
-                    config["review"]["triage_review_threshold"] = threshold_int
-                    prompter.print(f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'")
-            except ValueError:
-                pass
-            prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {triage_reviewed_label}")
+                config["review"]["triage_review_agent"] = triage_review_agent
+                config["review"]["triage_reviewed_label"] = triage_reviewed_label
+                try:
+                    threshold_int = int(threshold)
+                    if threshold_int > 0:
+                        config["review"]["triage_review_threshold"] = threshold_int
+                        prompter.print(f"  ✓ triage review triggers after {threshold_int} PRs with '{code_reviewed_label}'")
+                except ValueError:
+                    pass
+                prompter.print(f"  ✓ Label flow: {code_reviewed_label} → {triage_reviewed_label}")
 
     return config
 

@@ -429,6 +429,7 @@ class TestWizardNewProject:
         mock_client_factory.return_value = Mock()
 
         prompter = MockPrompter([
+            "Advanced setup",       # setup depth
             "owner/repo",           # repo (accept detected)
             "agent:backend",        # first agent label
             ".prompts/backend.md",  # prompt path (accept default)
@@ -447,7 +448,10 @@ class TestWizardNewProject:
             "8080",                 # web port
             "tmux",                 # terminal backend
             "io",                   # label prefix
-            False,                  # disable Stage 1 review
+            "make test",            # validation command
+            "300",                  # validation timeout
+            "",                     # filtering label
+            False,                  # disable review
         ])
 
         config = wizard_new_project(prompter)
@@ -472,6 +476,7 @@ class TestWizardNewProject:
         mock_client_factory.return_value = Mock()
 
         prompter = MockPrompter([
+            "Advanced setup",       # setup depth
             "owner/repo",
             "agent:reviewer",
             ".prompts/reviewer.md",
@@ -490,7 +495,10 @@ class TestWizardNewProject:
             "8080",
             "tmux",
             "io",
-            False,                  # disable Stage 1 review
+            "make test",            # validation command
+            "300",                  # validation timeout
+            "",                     # filtering label
+            False,                  # disable review
         ])
 
         config = wizard_new_project(prompter)
@@ -508,6 +516,7 @@ class TestWizardNewProject:
         mock_client_factory.return_value = Mock()
 
         prompter = MockPrompter([
+            "Advanced setup",       # setup depth
             "owner/repo",           # repo (no detection)
             "backend",              # agent label without prefix
             True,                   # yes to add prefix
@@ -525,7 +534,10 @@ class TestWizardNewProject:
             "../",
             "tmux",                 # ui mode (tmux doesn't need port)
             "io",                   # label prefix
-            False,                  # disable Stage 1 review
+            "make test",            # validation command
+            "300",                  # validation timeout
+            "",                     # filtering label
+            False,                  # disable review
         ])
 
         config = wizard_new_project(prompter)
@@ -541,6 +553,7 @@ class TestWizardNewProject:
         mock_client_factory.return_value = Mock()
 
         prompter = MockPrompter([
+            "Advanced setup",       # setup depth
             "owner/repo",
             # First agent
             "agent:frontend",
@@ -570,7 +583,10 @@ class TestWizardNewProject:
             "9000",                 # custom port
             "tmux",                 # terminal backend
             "io",                   # label prefix
-            False,                  # disable Stage 1 review
+            "make test",            # validation command
+            "300",                  # validation timeout
+            "",                     # filtering label
+            False,                  # disable review
         ])
 
         config = wizard_new_project(prompter)
@@ -589,6 +605,7 @@ class TestWizardNewProject:
         mock_client_factory.return_value = Mock()
 
         prompter = MockPrompter([
+            "Advanced setup",       # setup depth
             "owner/repo",
             "agent:custom",
             ".prompts/custom.md",
@@ -606,7 +623,10 @@ class TestWizardNewProject:
             "8080",
             "tmux",                 # terminal backend
             "io",                   # label prefix
-            False,                  # disable Stage 1 review
+            "make test",            # validation command
+            "300",                  # validation timeout
+            "",                     # filtering label
+            False,                  # disable review
         ])
 
         config = wizard_new_project(prompter)
@@ -625,6 +645,7 @@ class TestWizardNewProject:
         mock_client_factory.return_value = Mock()
 
         prompter = MockPrompter([
+            "Advanced setup",       # setup depth
             "owner/repo",
             "agent:backend",
             ".prompts/backend.md",
@@ -643,7 +664,10 @@ class TestWizardNewProject:
             "8080",
             "tmux",                 # terminal backend
             "io",                   # label prefix
-            True,                   # enable Stage 1: per-PR code review
+            "make test",            # validation command
+            "300",                  # validation timeout
+            "",                     # filtering label
+            True,                   # enable code review
             "agent:reviewer",       # code review agent
             "needs-code-review",    # code review label
             "code-reviewed",        # code reviewed label
@@ -674,6 +698,7 @@ class TestWizardNewProject:
         mock_client_factory.return_value = Mock()
 
         prompter = MockPrompter([
+            "Advanced setup",       # setup depth
             "owner/repo",
             "",                     # try to finish with no agents
             "agent:backend",        # now add one
@@ -693,7 +718,10 @@ class TestWizardNewProject:
             "8080",
             "tmux",                 # terminal backend
             "io",                   # label prefix
-            False,                  # disable Stage 1 review
+            "make test",            # validation command
+            "300",                  # validation timeout
+            "",                     # filtering label
+            False,                  # disable review
         ])
 
         config = wizard_new_project(prompter)
@@ -959,6 +987,7 @@ class TestRunWizard:
         prompter = MockPrompter([
             # Mode choice (no directory prompt since we pass target_path)
             "New project - set up from scratch",
+            "Advanced setup",       # setup depth
             # wizard_new_project answers
             "owner/repo",
             "agent:backend",
@@ -978,7 +1007,10 @@ class TestRunWizard:
             "8080",
             "tmux",
             "io",                   # label prefix
-            False,                  # disable Stage 1 review
+            "make test",            # validation command
+            "300",                  # validation timeout
+            "",                     # filtering label
+            False,                  # disable review
             # Post-wizard (new flow)
             ".issue-orchestrator.yaml",  # config filename
             True,                   # Apply these changes?
@@ -1007,6 +1039,7 @@ class TestRunWizard:
         prompter = MockPrompter([
             # No directory prompt since we pass target_path
             "New project - set up from scratch",
+            "Advanced setup",       # setup depth
             "owner/repo",
             "agent:backend",
             ".prompts/backend.md",
@@ -1025,7 +1058,10 @@ class TestRunWizard:
             "8080",
             "tmux",
             "io",                   # label prefix
-            False,                  # disable Stage 1 review
+            "make test",            # validation command
+            "300",                  # validation timeout
+            "",                     # filtering label
+            False,                  # disable review
             # Post-wizard (new flow)
             ".issue-orchestrator.yaml",  # config filename
             False,                  # DON'T apply changes (exits here)
@@ -1080,6 +1116,7 @@ class TestRunWizard:
             # No directory prompt since we pass target_path
             True,                   # Continue anyway
             "New project - set up from scratch",
+            "Advanced setup",       # setup depth
             "owner/repo",
             "agent:backend",
             ".prompts/backend.md",
@@ -1098,7 +1135,10 @@ class TestRunWizard:
             "8080",
             "tmux",
             "io",                   # label prefix
-            False,                  # disable Stage 1 review
+            "make test",            # validation command
+            "300",                  # validation timeout
+            "",                     # filtering label
+            False,                  # disable review
             # Post-wizard (new flow)
             ".issue-orchestrator.yaml",  # config filename
             False,                  # Don't apply - exits here
@@ -1226,11 +1266,12 @@ class TestDryRunMode:
 
         prompter = MockPrompter([
             "New project - set up from scratch",
+            "Advanced setup",       # setup depth
             "owner/repo",
             "agent:backend",
             ".prompts/backend.md",
             "45",
-            "claude",
+            "claude-code",
             "sonnet",
             "default",
             False,  # is this a review agent?
@@ -1244,7 +1285,10 @@ class TestDryRunMode:
             "8080",
             "tmux",
             "io",  # label prefix
-            False,  # disable Stage 1 review
+            "make test",            # validation command
+            "300",                  # validation timeout
+            "",                     # filtering label
+            False,  # disable review
         ])
 
         with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):
@@ -1269,11 +1313,12 @@ class TestDryRunMode:
 
         prompter = MockPrompter([
             "New project - set up from scratch",
+            "Advanced setup",       # setup depth
             "owner/repo",
             "agent:backend",
             ".prompts/backend.md",
             "45",
-            "claude",
+            "claude-code",
             "sonnet",
             "default",
             False,  # is this a review agent?
@@ -1287,7 +1332,10 @@ class TestDryRunMode:
             "8080",
             "tmux",
             "io",   # label prefix
-            False,  # disable Stage 1 review
+            "make test",            # validation command
+            "300",                  # validation timeout
+            "",                     # filtering label
+            False,  # disable review
         ])
 
         with patch("issue_orchestrator.entrypoints.cli_tools.setup_wizard.detect_repo", return_value="owner/repo"):

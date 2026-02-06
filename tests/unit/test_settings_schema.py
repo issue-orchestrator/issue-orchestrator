@@ -460,8 +460,8 @@ class TestDocGeneration:
 
     def test_table_format(self):
         md = generate_config_reference()
-        assert "| Field | Type | Default | Description |" in md
-        assert "|-------|------|---------|-------------|" in md
+        assert "| Field | Type | Default | Description | Examples | Notes |" in md
+        assert "|-------|------|---------|-------------|----------|-------|" in md
 
 
 # ---------------------------------------------------------------------------
@@ -502,6 +502,32 @@ class TestTabDefinitions:
                 assert isinstance(extra, dict)
                 assert "yaml_path" in extra, (
                     f"{tab['key']}.{field_name} missing yaml_path"
+                )
+
+    def test_all_fields_have_doc_examples(self):
+        """Every field must include doc_examples for richer docs."""
+        for tab in TAB_DEFINITIONS:
+            model_cls = tab["model"]
+            for field_name, field_info in model_cls.model_fields.items():
+                extra = field_info.json_schema_extra
+                assert isinstance(extra, dict)
+                assert "doc_examples" in extra, (
+                    f"{tab['key']}.{field_name} missing doc_examples"
+                )
+                assert isinstance(extra["doc_examples"], list), (
+                    f"{tab['key']}.{field_name} doc_examples must be a list"
+                )
+                assert extra["doc_examples"], (
+                    f"{tab['key']}.{field_name} doc_examples must not be empty"
+                )
+
+    def test_all_fields_have_descriptions(self):
+        """Every field should have a description for docs."""
+        for tab in TAB_DEFINITIONS:
+            model_cls = tab["model"]
+            for field_name, field_info in model_cls.model_fields.items():
+                assert field_info.description, (
+                    f"{tab['key']}.{field_name} missing description"
                 )
 
     def test_doctor_check_types_are_valid(self):
@@ -798,16 +824,16 @@ class TestDriftDetection:
         )
 
     def test_config_reference_not_stale(self):
-        """configuration.md auto-generated section must match generate_config_reference().
+        """configuration_reference.md auto-generated section must match generate_config_reference().
 
         If this fails, someone edited the generated section directly instead of
         updating settings_schema.py. Regenerate by running:
             python -c "from issue_orchestrator.infra.settings_schema import generate_config_reference; print(generate_config_reference())"
-        and paste the output between the AUTO-GENERATED markers in configuration.md.
+        and paste the output between the AUTO-GENERATED markers in configuration_reference.md.
         """
         import re
 
-        docs_path = Path(__file__).parent.parent.parent / "docs" / "user" / "configuration.md"
+        docs_path = Path(__file__).parent.parent.parent / "docs" / "user" / "configuration_reference.md"
         content = docs_path.read_text()
 
         begin = "<!-- BEGIN AUTO-GENERATED CONFIG REFERENCE"
@@ -818,7 +844,7 @@ class TestDriftDetection:
             re.DOTALL,
         )
         assert match, (
-            f"configuration.md missing AUTO-GENERATED markers. "
+            f"configuration_reference.md missing AUTO-GENERATED markers. "
             f"Expected '{begin}' and '{end}' markers."
         )
 
@@ -826,8 +852,8 @@ class TestDriftDetection:
         generated = generate_config_reference().strip()
 
         assert on_disk == generated, (
-            "configuration.md config reference has drifted from settings_schema.py.\n"
+            "configuration_reference.md config reference has drifted from settings_schema.py.\n"
             "Do NOT edit the auto-generated section directly.\n"
             "Update settings_schema.py, then regenerate the reference and paste it "
-            "between the AUTO-GENERATED markers in docs/user/configuration.md."
+            "between the AUTO-GENERATED markers in docs/user/configuration_reference.md."
         )
