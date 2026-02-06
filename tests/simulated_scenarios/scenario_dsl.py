@@ -378,3 +378,12 @@ def _summary_rounds(worktree: Path) -> list[int]:
         if "completed_rounds" in data:
             rounds.append(int(data["completed_rounds"]))
     return rounds
+
+
+def _latest_validation_record(worktree: Path) -> Path | None:
+    root = worktree / ".issue-orchestrator" / "validation"
+    records = list(root.rglob("*.json"))
+    if not records:
+        return None
+    records.sort(key=lambda p: p.stat().st_mtime)
+    return records[-1]
