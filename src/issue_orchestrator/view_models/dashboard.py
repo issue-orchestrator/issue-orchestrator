@@ -438,7 +438,7 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             "status_reason": status_reason,
             "detail_label": status_labels.get(entry.status, entry.status),
             "detail_reason": status_reason,
-            "time": f"{entry.runtime_minutes} min",
+            "time": _format_history_time(entry),
             "action": "open",
             "action_icon": "↗",
             "action_hint": action_hint,
@@ -632,6 +632,18 @@ def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> tuple[l
     start_idx = (page - 1) * page_size
     end_idx = start_idx + page_size
     return items[start_idx:end_idx], total_pages, page
+
+
+def _format_history_time(entry) -> str:
+    completed_at = getattr(entry, "completed_at", None)
+    runtime = entry.runtime_minutes
+    if runtime and completed_at:
+        return f"{runtime} min @ {completed_at}"
+    if runtime:
+        return f"{runtime} min"
+    if completed_at:
+        return str(completed_at)
+    return "-"
 
 
 def _count_untriaged_failures(db, run_obj) -> int:
