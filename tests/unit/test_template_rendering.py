@@ -1101,3 +1101,454 @@ class TestListPopulation:
         blocked_rows = soup_blocked.select(".issue-row")
         blocked_numbers = {row.get("data-issue") for row in blocked_rows}
         assert "4" in blocked_numbers, "Blocked tab should show blocked issue"
+
+
+# -----------------------------------------------------------------------------
+# Settings Template Tests
+# -----------------------------------------------------------------------------
+
+
+def render_settings(jinja_env: Environment, tabs, schemas, values) -> BeautifulSoup:
+    """Render settings template and return parsed HTML."""
+    import json
+
+    template = jinja_env.get_template("settings.html")
+    tabs_json = json.dumps([{"key": t["key"], "label": t["label"]} for t in tabs])
+    schemas_json = json.dumps(schemas)
+    html = template.render(
+        tabs=tabs,
+        schemas=schemas,
+        values=values,
+        tabs_json=tabs_json,
+        schemas_json=schemas_json,
+    )
+    return BeautifulSoup(html, "html.parser")
+
+
+class TestSettingsTemplate:
+    """Tests for settings.html template rendering."""
+
+    @pytest.fixture
+    def sample_tabs(self):
+        """Sample tab definitions for testing."""
+        return [
+            {"key": "concurrency", "label": "Concurrency"},
+            {"key": "filtering", "label": "Filtering"},
+            {"key": "advanced", "label": "Advanced"},
+        ]
+
+    @pytest.fixture
+    def sample_schemas(self):
+        """Sample JSON schemas for each tab."""
+        return {
+            "concurrency": {
+                "properties": {
+                    "max_concurrent_sessions": {
+                        "type": "integer",
+                        "title": "Max Concurrent Sessions",
+                        "description": "Maximum parallel agent sessions",
+                        "minimum": 1,
+                        "maximum": 20,
+                    },
+                    "session_timeout_minutes": {
+                        "type": "integer",
+                        "title": "Session Timeout (minutes)",
+                        "description": "Kill sessions after this duration",
+                    },
+                }
+            },
+            "filtering": {
+                "properties": {
+                    "filter_label": {
+                        "type": "string",
+                        "title": "Filter Label",
+                        "description": "Only process issues with this label",
+                    },
+                    "auto_queue_enabled": {
+                        "type": "boolean",
+                        "title": "Auto Queue Enabled",
+                        "description": "Automatically queue matching issues",
+                    },
+                }
+            },
+            "advanced": {
+                "properties": {
+                    "terminal_adapter": {
+                        "type": "string",
+                        "title": "Terminal Adapter",
+                        "enum": ["subprocess", "tmux", "iterm2"],
+                    },
+                }
+            },
+        }
+
+    @pytest.fixture
+    def sample_values(self):
+        """Sample values for each tab."""
+        return {
+            "concurrency": {
+                "max_concurrent_sessions": 3,
+                "session_timeout_minutes": 45,
+            },
+            "filtering": {
+                "filter_label": "ready",
+                "auto_queue_enabled": True,
+            },
+            "advanced": {
+                "terminal_adapter": "subprocess",
+            },
+        }
+
+    def test_all_tabs_render(self, jinja_env, sample_tabs, sample_schemas, sample_values):
+        """All tabs render in the tab bar."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        tabs = soup.select(".tab-bar .tab")
+        assert len(tabs) == 3
+
+        tab_labels = [tab.text.strip() for tab in tabs]
+        assert "Concurrency" in tab_labels
+        assert "Filtering" in tab_labels
+        assert "Advanced" in tab_labels
+
+    def test_first_tab_is_active(self, jinja_env, sample_tabs, sample_schemas, sample_values):
+        """First tab is active by default."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        tabs = soup.select(".tab-bar .tab")
+        assert "active" in tabs[0].get("class", [])
+        assert "active" not in tabs[1].get("class", [])
+
+    def test_tab_content_panels_exist(self, jinja_env, sample_tabs, sample_schemas, sample_values):
+        """Each tab has a content panel."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        for tab in sample_tabs:
+            panel = soup.select_one(f"#tab-{tab['key']}")
+            assert panel is not None, f"Missing panel for tab {tab['key']}"
+
+    def test_integer_field_renders_as_number_input(
+        self, jinja_env, sample_tabs, sample_schemas, sample_values
+    ):
+        """Integer fields render as number inputs with correct value."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        input_field = soup.select_one("#concurrency__max_concurrent_sessions")
+        assert input_field is not None
+        assert input_field.get("type") == "number"
+        assert input_field.get("value") == "3"
+        assert input_field.get("data-type") == "integer"
+
+    def test_string_field_renders_as_text_input(
+        self, jinja_env, sample_tabs, sample_schemas, sample_values
+    ):
+        """String fields render as text inputs."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        input_field = soup.select_one("#filtering__filter_label")
+        assert input_field is not None
+        assert input_field.get("type") == "text"
+        assert input_field.get("value") == "ready"
+
+    def test_boolean_field_renders_as_checkbox(
+        self, jinja_env, sample_tabs, sample_schemas, sample_values
+    ):
+        """Boolean fields render as checkboxes."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        checkbox = soup.select_one("#filtering__auto_queue_enabled")
+        assert checkbox is not None
+        assert checkbox.get("type") == "checkbox"
+        assert checkbox.has_attr("checked")
+
+    def test_enum_field_renders_as_select(
+        self, jinja_env, sample_tabs, sample_schemas, sample_values
+    ):
+        """Enum fields render as select dropdowns."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        select = soup.select_one("#advanced__terminal_adapter")
+        assert select is not None
+        assert select.name == "select"
+
+        options = select.select("option")
+        assert len(options) == 3
+        option_values = [opt.get("value") for opt in options]
+        assert "subprocess" in option_values
+        assert "tmux" in option_values
+        assert "iterm2" in option_values
+
+    def test_selected_enum_option(
+        self, jinja_env, sample_tabs, sample_schemas, sample_values
+    ):
+        """Correct enum option is selected."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        select = soup.select_one("#advanced__terminal_adapter")
+        selected = select.select_one("option[selected]")
+        assert selected is not None
+        assert selected.get("value") == "subprocess"
+
+    def test_field_descriptions_render_as_hints(
+        self, jinja_env, sample_tabs, sample_schemas, sample_values
+    ):
+        """Field descriptions render as hint text."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        # Find the form group containing max_concurrent_sessions
+        form_groups = soup.select(".form-group")
+        found_hint = False
+        for group in form_groups:
+            if group.select_one("#concurrency__max_concurrent_sessions"):
+                hint = group.select_one(".hint")
+                if hint and "Maximum parallel agent sessions" in hint.text:
+                    found_hint = True
+                    break
+        assert found_hint, "Description should render as hint"
+
+    def test_save_button_exists(self, jinja_env, sample_tabs, sample_schemas, sample_values):
+        """Save button exists and is initially disabled."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        save_btn = soup.select_one("#saveBtn")
+        assert save_btn is not None
+        assert save_btn.has_attr("disabled")
+        assert "Save" in save_btn.text
+
+    def test_reset_button_exists(self, jinja_env, sample_tabs, sample_schemas, sample_values):
+        """Reset button exists."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        reset_btn = soup.select_one("button[onclick='resetSettings()']")
+        assert reset_btn is not None
+        assert "Reset" in reset_btn.text
+
+    def test_back_link_to_dashboard(self, jinja_env, sample_tabs, sample_schemas, sample_values):
+        """Back link to dashboard exists."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        back_link = soup.select_one(".back-link")
+        assert back_link is not None
+        assert back_link.get("href") == "/"
+        assert "Dashboard" in back_link.text
+
+    def test_advanced_tab_has_doctor_section(
+        self, jinja_env, sample_tabs, sample_schemas, sample_values
+    ):
+        """Advanced tab includes doctor validation section."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        advanced_panel = soup.select_one("#tab-advanced")
+        doctor_btn = advanced_panel.select_one("button[onclick='runDoctor()']")
+        assert doctor_btn is not None
+        assert "Doctor" in doctor_btn.text
+
+    def test_multiple_fields_all_render(
+        self, jinja_env, sample_tabs, sample_schemas, sample_values
+    ):
+        """All fields in each tab render correctly."""
+        soup = render_settings(jinja_env, sample_tabs, sample_schemas, sample_values)
+
+        # Concurrency tab should have 2 fields
+        concurrency_fields = soup.select("[data-tab='concurrency']")
+        assert len(concurrency_fields) == 2
+
+        # Filtering tab should have 2 fields
+        filtering_fields = soup.select("[data-tab='filtering']")
+        assert len(filtering_fields) == 2
+
+        # Advanced tab should have 1 field
+        advanced_fields = soup.select("[data-tab='advanced']")
+        assert len(advanced_fields) == 1
+
+
+# -----------------------------------------------------------------------------
+# Dialog View Model Tests
+# -----------------------------------------------------------------------------
+
+
+class TestDialogViewModels:
+    """Tests for dialog view model builder functions."""
+
+    def test_build_info_dialog_all_fields(self):
+        """Info dialog includes all expected fields."""
+        from issue_orchestrator.view_models.dialogs import build_info_dialog
+
+        info = {
+            "version": "1.2.3",
+            "repo": "owner/repo",
+            "ui_mode": "web",
+            "terminal_backend": "tmux",
+            "commit_short": "abc1234",
+            "max_sessions": 5,
+            "active_sessions": 2,
+            "completed_today": 10,
+        }
+
+        result = build_info_dialog(info)
+
+        assert result["title"] == "About Issue Orchestrator"
+        assert len(result["rows"]) == 8
+
+        labels = [row["label"] for row in result["rows"]]
+        assert "Version" in labels
+        assert "Repository" in labels
+        assert "Max Sessions" in labels
+
+        # Verify values
+        version_row = next(r for r in result["rows"] if r["label"] == "Version")
+        assert version_row["value"] == "1.2.3"
+
+    def test_build_info_dialog_handles_missing_fields(self):
+        """Info dialog handles missing data gracefully."""
+        from issue_orchestrator.view_models.dialogs import build_info_dialog
+
+        result = build_info_dialog({})
+
+        assert result["title"] == "About Issue Orchestrator"
+        # Should still have rows with defaults/empty values
+        version_row = next(r for r in result["rows"] if r["label"] == "Version")
+        assert version_row["value"] == "dev"
+
+    def test_build_config_dialog(self):
+        """Config dialog includes config text."""
+        from issue_orchestrator.view_models.dialogs import build_config_dialog
+
+        result = build_config_dialog("repo: owner/repo\nmax_sessions: 3")
+
+        assert result["title"] == "Configuration"
+        assert "repo: owner/repo" in result["config_text"]
+
+    def test_build_debug_dialog_all_sections(self):
+        """Debug dialog includes all sections."""
+        from issue_orchestrator.view_models.dialogs import build_debug_dialog
+
+        debug_data = {
+            "startup_options": {
+                "ui_mode": "web",
+                "web_port": 8080,
+                "test_mode": False,
+                "filtering": {"label": "ready", "milestone": "v1"},
+                "max_sessions": 3,
+            },
+            "paused": False,
+            "priority_queue": [1, 2, 3],
+            "config_path": "/path/to/config.yaml",
+            "repo_root": "/path/to/repo",
+            "agents": {"agent:web": {"timeout": 45}},
+        }
+
+        result = build_debug_dialog(debug_data)
+
+        assert result["title"] == "Debug Info"
+        assert len(result["sections"]) == 4  # Startup, State, Paths, Agents
+
+        section_titles = [s["title"] for s in result["sections"]]
+        assert "Startup Options" in section_titles
+        assert "State" in section_titles
+        assert "Paths" in section_titles
+        assert "Agent Types" in section_titles
+
+    def test_build_doctor_dialog(self):
+        """Doctor dialog includes check results."""
+        from issue_orchestrator.view_models.dialogs import build_doctor_dialog
+
+        doctor_data = {
+            "overall": "ok",
+            "checks": [
+                {"name": "Git", "status": "ok", "detail": "Git available"},
+                {"name": "Claude", "status": "error", "detail": "Claude not found"},
+            ],
+        }
+
+        result = build_doctor_dialog(doctor_data)
+
+        assert result["title"] == "Doctor"
+        assert result["overall"] == "ok"
+        assert len(result["checks"]) == 2
+        assert result["checks"][0]["name"] == "Git"
+        assert result["checks"][1]["status"] == "error"
+
+    def test_build_session_diagnostics_dialog(self):
+        """Session diagnostics dialog includes session info and actions."""
+        from issue_orchestrator.view_models.dialogs import build_session_diagnostics_dialog
+
+        manifest = {
+            "manifest": {
+                "session_name": "issue-123",
+                "started_at": "2024-01-01T10:00:00",
+                "run_id": "abc123",
+                "backend": "tmux",
+                "agent_label": "agent:web",
+                "claude_session_id": "sess_123",
+                "worktree": "/tmp/worktree-123",
+            },
+            "run_dir": "/tmp/run-123",
+        }
+
+        result = build_session_diagnostics_dialog(123, manifest)
+
+        assert result["title"] == "Session Diagnostics #123"
+        assert len(result["rows"]) == 7
+
+        labels = [r["label"] for r in result["rows"]]
+        assert "Session" in labels
+        assert "Backend" in labels
+        assert "Worktree" in labels
+
+        # Should have actions
+        assert len(result["actions"]) >= 2
+        action_types = [a["type"] for a in result["actions"]]
+        assert "open_path" in action_types or "open_agent_log" in action_types
+
+    def test_build_blocked_issues_dialog(self):
+        """Blocked issues dialog includes issue list."""
+        from issue_orchestrator.view_models.dialogs import build_blocked_issues_dialog
+
+        payload = {
+            "blocked_issues": [
+                {"number": 1, "title": "Issue 1"},
+                {"number": 2, "title": "Issue 2"},
+            ]
+        }
+
+        result = build_blocked_issues_dialog(payload)
+
+        assert result["title"] == "Blocked Issues"
+        assert len(result["blocked_issues"]) == 2
+
+    def test_build_phase_dialog(self):
+        """Phase dialog includes phase info."""
+        from issue_orchestrator.view_models.dialogs import build_phase_dialog
+
+        phases_payload = {
+            "phases": [
+                {"name": "coding-1", "display_name": "Coding Session 1"},
+                {"name": "review-1", "display_name": "Code Review 1"},
+            ]
+        }
+
+        result = build_phase_dialog(phases_payload, 123, "in_progress")
+
+        assert result["issue_number"] == 123
+        assert result["phase"] is not None
+        assert len(result["phases"]) == 2
+
+    def test_build_phase_dialog_selects_correct_phase(self):
+        """Phase dialog selects the appropriate phase based on key."""
+        from issue_orchestrator.view_models.dialogs import build_phase_dialog
+
+        phases_payload = {
+            "phases": [
+                {"name": "coding-1", "display_name": "Coding Session 1"},
+                {"name": "review-1", "display_name": "Code Review 1"},
+            ]
+        }
+
+        # in_progress should select coding phase
+        result = build_phase_dialog(phases_payload, 123, "in_progress")
+        assert result["phase"]["name"] == "coding-1"
+
+        # review should select review phase
+        result = build_phase_dialog(phases_payload, 123, "review")
+        assert result["phase"]["name"] == "review-1"
