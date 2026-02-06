@@ -1367,6 +1367,144 @@ class TestSettingsTemplate:
 # -----------------------------------------------------------------------------
 
 
+class TestAgentsDropdown:
+    """Tests for agent dropdown lists in dashboard."""
+
+    def test_agents_dropdown_renders_all_agents(self, jinja_env):
+        """Agent dropdown shows all configured agents."""
+        orchestrator = make_orchestrator()
+        # Add multiple agents to config
+        orchestrator.config.agents = {
+            "agent:web": make_agent_config(),
+            "agent:backend": make_agent_config(),
+            "agent:mobile": make_agent_config(),
+        }
+        vm = build_dashboard_view_model(orchestrator, e2e_status_provider=e2e_disabled)
+        soup = render_dashboard(jinja_env, vm)
+
+        # Find agent select dropdown
+        agent_select = soup.select_one("#issueAgent")
+        assert agent_select is not None
+
+        options = agent_select.select("option")
+        # First option is placeholder "Select an agent..."
+        agent_options = [opt.get("value") for opt in options if opt.get("value")]
+
+        assert "agent:web" in agent_options
+        assert "agent:backend" in agent_options
+        assert "agent:mobile" in agent_options
+        assert len(agent_options) == 3
+
+
+def render_issue_row(jinja_env: Environment, issue_data: dict, **kwargs) -> BeautifulSoup:
+    """Render issue_row template directly with issue data."""
+    template = jinja_env.get_template("issue_row.html")
+    context = {"issue": issue_data, "active_tab": "e2e", "github_owner": "test", "github_repo": "repo"}
+    context.update(kwargs)
+    html = template.render(**context)
+    return BeautifulSoup(html, "html.parser")
+
+
+class TestE2ESubIssues:
+    """Tests for E2E sub-issues and failed tests lists."""
+
+    def test_e2e_sub_issues_all_render(self, jinja_env):
+        """All E2E sub-issues render with correct data."""
+        issue_data = {
+            "issue_number": 100,
+            "title": "E2E Run with failures",
+            "status": "needs_attention",
+            "is_e2e": True,
+            "e2e_sub_issues": [
+                {"nodeid": "test_one.py::test_a", "short_name": "test_a", "resolved": True, "issue_number": 101},
+                {"nodeid": "test_one.py::test_b", "short_name": "test_b", "resolved": False, "issue_number": None},
+                {"nodeid": "test_two.py::test_c", "short_name": "test_c", "resolved": False, "issue_number": 102},
+            ],
+            "e2e_progress": {"percent": 33, "resolved": 1, "total": 3},
+            "flow_steps": None,
+            "has_dependencies": False,
+            "has_terminal": False,
+        }
+
+        soup = render_issue_row(jinja_env, issue_data)
+
+        sub_items = soup.select(".sub-issue-item")
+        assert len(sub_items) == 3, f"Expected 3 sub-issues, got {len(sub_items)}"
+
+        # Check that resolved/failed icons are correct
+        resolved_icons = soup.select(".status-icon.resolved")
+        failed_icons = soup.select(".status-icon.failed")
+        assert len(resolved_icons) == 1, "Should have 1 resolved item"
+        assert len(failed_icons) == 2, "Should have 2 failed items"
+
+        # Check nodeids are rendered
+        nodeids = soup.select(".sub-issue-nodeid")
+        nodeid_texts = [n.text.strip() for n in nodeids]
+        assert "test_a" in nodeid_texts
+        assert "test_b" in nodeid_texts
+        assert "test_c" in nodeid_texts
+
+    def test_e2e_failed_tests_all_render(self, jinja_env):
+        """All E2E failed tests render with correct data."""
+        issue_data = {
+            "issue_number": 200,
+            "title": "E2E Run needs triage",
+            "status": "needs_attention",
+            "is_e2e": True,
+            "e2e_failed_tests": [
+                {"nodeid": "test_a.py::test_fail1", "short_name": "test_fail1", "outcome": "failed", "duration": 1.5},
+                {"nodeid": "test_a.py::test_fail2", "short_name": "test_fail2", "outcome": "error", "duration": 0.3},
+                {"nodeid": "test_b.py::test_fail3", "short_name": "test_fail3", "outcome": "failed", "duration": 2.1},
+            ],
+            "detail_label": "3 failures",
+            "flow_steps": None,
+            "has_dependencies": False,
+            "has_terminal": False,
+        }
+
+        soup = render_issue_row(jinja_env, issue_data)
+
+        sub_items = soup.select(".sub-issue-item")
+        # 3 test items + 1 "click row to view" hint
+        assert len(sub_items) >= 3, f"Expected at least 3 sub-items, got {len(sub_items)}"
+
+        # Check outcome badges
+        outcome_badges = soup.select(".outcome-badge")
+        assert len(outcome_badges) == 3
+
+        badge_texts = [b.text.strip() for b in outcome_badges]
+        assert "failed" in badge_texts
+        assert "error" in badge_texts
+
+        # Check duration badges
+        duration_badges = soup.select(".duration-badge")
+        assert len(duration_badges) == 3
+
+    def test_e2e_sub_issues_shows_linked_issue_numbers(self, jinja_env):
+        """Sub-issues with linked GitHub issues show issue links."""
+        issue_data = {
+            "issue_number": 300,
+            "title": "E2E with linked issues",
+            "status": "in_progress",
+            "is_e2e": True,
+            "e2e_sub_issues": [
+                {"nodeid": "test.py::test_linked", "short_name": "test_linked", "resolved": False, "issue_number": 456},
+                {"nodeid": "test.py::test_unlinked", "short_name": "test_unlinked", "resolved": False, "issue_number": None},
+            ],
+            "e2e_progress": {"percent": 0, "resolved": 0, "total": 2},
+            "flow_steps": None,
+            "has_dependencies": False,
+            "has_terminal": False,
+        }
+
+        soup = render_issue_row(jinja_env, issue_data)
+
+        # Should have one link to issue #456
+        issue_links = soup.select(".sub-issue-link")
+        assert len(issue_links) == 1
+        assert "#456" in issue_links[0].text
+
+
 class TestDialogViewModels:
     """Tests for dialog view model builder functions."""
 
