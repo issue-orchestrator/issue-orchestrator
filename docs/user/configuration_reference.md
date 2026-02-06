@@ -37,8 +37,8 @@ _Auto-generated from settings schema._
 | Field | Type | Default | Description | Examples | Notes |
 |-------|------|---------|-------------|----------|-------|
 | `filtering.label` | string (optional) | `None` | Only process issues with this label (optional) | `bot-ready`, `needs-triage` | Use a single label to gate which issues are eligible. |
-| `filtering.milestones` | string | `` | Comma-separated list of milestones to process | `M1, M2` | Comma-separated list; leave empty to allow all milestones. |
-| `filtering.exclude_labels` | string | `` | Comma-separated labels to exclude | `test-data, skip` | Exclude any issue that carries one of these labels. |
+| `filtering.milestones` | string | `` | Milestones to process (comma-separated string or YAML list) | `M1, M2`, `["M1", "M2"]` | Accepts a comma-separated string or a YAML list. Leave empty to allow all milestones. |
+| `filtering.exclude_labels` | string | `` | Labels to exclude (comma-separated string or YAML list) | `test-data, skip`, `["test-data", "skip"]` | Accepts a comma-separated string or a YAML list. |
 | `filtering.fetch_limit` | integer | `100` | Max issues to fetch per API call | `50`, `100`, `200` | Lower values reduce API load; higher values reduce pagination. |
 | `filtering.max_to_start` | integer | `0` | Stop after starting N issues (0 = unlimited) | `0`, `5`, `10` | Useful for dry runs or throttling initial ramp-up. |
 

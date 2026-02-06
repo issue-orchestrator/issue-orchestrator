@@ -293,10 +293,10 @@ class FilteringSettings(BaseModel):
     milestones: str = Field(
         "",
         title="Milestones",
-        description="Comma-separated list of milestones to process",
+        description="Milestones to process (comma-separated string or YAML list)",
         json_schema_extra={
-            "doc_examples": ["M1, M2", ""],
-            "doc_notes": "Comma-separated list; leave empty to allow all milestones.",
+            "doc_examples": ["M1, M2", "[\"M1\", \"M2\"]", ""],
+            "doc_notes": "Accepts a comma-separated string or a YAML list. Leave empty to allow all milestones.",
             "config_attr": "filtering.milestones",
             "config_read_method": "filtering.get_milestones",
             "yaml_path": "filtering.milestones",
@@ -306,10 +306,10 @@ class FilteringSettings(BaseModel):
     exclude_labels: str = Field(
         "",
         title="Exclude Labels",
-        description="Comma-separated labels to exclude",
+        description="Labels to exclude (comma-separated string or YAML list)",
         json_schema_extra={
-            "doc_examples": ["test-data, skip", ""],
-            "doc_notes": "Exclude any issue that carries one of these labels.",
+            "doc_examples": ["test-data, skip", "[\"test-data\", \"skip\"]", ""],
+            "doc_notes": "Accepts a comma-separated string or a YAML list.",
             "config_attr": "filtering.exclude_labels",
             "yaml_path": "filtering.exclude_labels",
             "ui_transform": "comma_separated_list",
