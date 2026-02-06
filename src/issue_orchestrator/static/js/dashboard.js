@@ -1493,6 +1493,15 @@ function renderTimeline(container, events) {
     }).join('');
 
     container.innerHTML = html;
+    if (!container.dataset.timelineBound) {
+        container.addEventListener('click', (event) => {
+            const target = event.target.closest('.timeline-artifact');
+            if (target && target.dataset.path) {
+                openPath(target.dataset.path);
+            }
+        });
+        container.dataset.timelineBound = 'true';
+    }
 }
 
 function renderTimelineArtifacts(artifacts) {
@@ -1503,7 +1512,7 @@ function renderTimelineArtifacts(artifacts) {
         if (value.startsWith('http://') || value.startsWith('https://')) {
             return `<a class="timeline-artifact" href="${escapeAttr(value)}" target="_blank">${label}</a>`;
         }
-        return `<button class="timeline-artifact" onclick="openPath('${escapeHtml(value)}')">${label}</button>`;
+        return `<button class="timeline-artifact" type="button" data-path="${escapeAttr(value)}">${label}</button>`;
     }).join('');
     return `<div class="timeline-artifacts">${items}</div>`;
 }

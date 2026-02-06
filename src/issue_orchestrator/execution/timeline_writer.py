@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import timezone
+from dataclasses import asdict, is_dataclass
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 from ..ports.event_sink import TraceEvent
@@ -24,10 +28,31 @@ class DefaultTimelineWriter(TimelineWriter):
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
         timestamp = timestamp.astimezone(timezone.utc)
+        safe_data = _normalize_json(event.data)
         record = TimelineRecord(
             event_id=str(uuid4()),
             timestamp=timestamp.isoformat(),
             event=event.name,
-            data=event.data,
+            data=safe_data,
         )
         self._store.append(issue_number, record)
+
+
+def _normalize_json(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc).isoformat()
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, Enum):
+        return str(value)
+    if is_dataclass(value) and not isinstance(value, type):
+        return _normalize_json(asdict(value))
+    if isinstance(value, dict):
+        return {str(k): _normalize_json(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_normalize_json(item) for item in value]
+    return str(value)
