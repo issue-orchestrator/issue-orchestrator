@@ -133,6 +133,7 @@ class CompletionHandler:
         get_session_machine_fn: Callable[[str], Optional["SessionStateMachine"]],
         get_review_machine_fn: Callable[[int], Optional["ReviewStateMachine"]],
         session_output: SessionOutput,
+        remove_session_machine_fn: Callable[[str], None] | None = None,
     ):
         self.config = config
         self.events = events
@@ -141,6 +142,7 @@ class CompletionHandler:
         self._get_session_machine = get_session_machine_fn
         self._get_review_machine = get_review_machine_fn
         self._session_output = session_output
+        self._remove_session_machine = remove_session_machine_fn
 
     def _is_triage_session(self, session: Session) -> bool:
         """Check if this session is a triage review session."""
@@ -166,6 +168,8 @@ class CompletionHandler:
                 reason,
             )
             session_machine.fail(data={'reason': reason})  # type: ignore[attr-defined]
+        if self._remove_session_machine is not None:
+            self._remove_session_machine(session.terminal_id)
 
     def _generate_triage_actions(
         self,

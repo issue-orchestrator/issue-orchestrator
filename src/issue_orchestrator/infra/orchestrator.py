@@ -168,6 +168,7 @@ class Orchestrator:
             lambda s: self.deps.state_machine_manager.session_machines.get(s),
             lambda n: self.deps.state_machine_manager.review_machines.get(n),
             self.deps.session_output,
+            remove_session_machine_fn=self.deps.state_machine_manager.remove_session_machine,
         )
 
     @cached_property

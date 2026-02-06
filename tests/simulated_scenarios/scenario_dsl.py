@@ -7,6 +7,7 @@ from typing import Callable
 
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.events import EventName
+from issue_orchestrator.infra.config import Config
 
 from .conftest import SCRIPTS_DIR, build_config, build_orchestrator, run_until
 
@@ -90,6 +91,9 @@ class Scenario:
     _expectations: list[Expectation] = field(default_factory=list, init=False)
     _run_predicate: Callable[[object], bool] | None = field(default=None, init=False)
     _wait_for_events: set[EventName] = field(default_factory=set, init=False)
+    _config_overrides: list[Callable[[Config], None]] = field(default_factory=list, init=False)
+    _repo_host_mutator: Callable[[object], None] | None = field(default=None, init=False)
+    _working_copy_override: object | None = field(default=None, init=False)
 
     def issue(self, *, number: int | None = None, title: str | None = None, labels: list[str] | None = None) -> Scenario:
         if number is not None:
@@ -136,6 +140,18 @@ class Scenario:
             self.review_exchange_max_rounds = max_rounds
         if max_no_progress is not None:
             self.review_exchange_max_no_progress = max_no_progress
+        return self
+
+    def configure(self, mutator: Callable[[Config], None]) -> Scenario:
+        self._config_overrides.append(mutator)
+        return self
+
+    def configure_repo_host(self, mutator: Callable[[object], None]) -> Scenario:
+        self._repo_host_mutator = mutator
+        return self
+
+    def use_working_copy(self, working_copy: object) -> Scenario:
+        self._working_copy_override = working_copy
         return self
 
     def wait_for(self, predicate: Callable[[object], bool], *, max_ticks: int | None = None) -> Scenario:
@@ -278,9 +294,23 @@ class Scenario:
             labels = ctx.repo_host.get_issue_labels(ctx.issue_number)
             assert label not in labels
         return self._add_expectation(_assert)
+
+    def expect_issue_comment_contains(self, text: str, *, number: int | None = None) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            target = number if number is not None else ctx.issue_number
+            comments = [c for c in getattr(ctx.repo_host, "comments", []) if c.get("number") == target]
+            assert comments, f"No comments found for issue {target}"
+            assert any(text in c.get("body", "") for c in comments), f"Expected comment containing '{text}'"
+        return self._add_expectation(_assert)
+
     def expect_pending_validation_retries(self, count: int) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
             assert len(ctx.orch.state.pending_validation_retries) == count
+        return self._add_expectation(_assert)
+
+    def expect_pending_reviews(self, count: int) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            assert len(ctx.orch.state.pending_reviews) == count
         return self._add_expectation(_assert)
 
     def expect_session_history_status(self, expected: set[str]) -> Scenario:
@@ -305,6 +335,8 @@ class Scenario:
             validation_cmd=self.validation_cmd,
             max_validation_retries=self.max_validation_retries,
         )
+        for mutator in self._config_overrides:
+            mutator(config)
         issue = Issue(
             number=self.issue_number,
             title=self.issue_title,
@@ -316,7 +348,10 @@ class Scenario:
             config,
             reconcile=self.reconcile,
             fresh_labels=self.fresh_labels,
+            working_copy=self._working_copy_override,
         )
+        if self._repo_host_mutator is not None:
+            self._repo_host_mutator(repo_host)
         baseline = len(events.events)
         def _predicate() -> bool:
             if self._run_predicate is not None:

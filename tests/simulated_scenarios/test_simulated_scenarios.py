@@ -2,7 +2,20 @@ from pathlib import Path
 
 from issue_orchestrator.events import EventName
 
+from .conftest import StubWorkingCopy
 from .scenario_dsl import scenario, script
+
+
+class FailingPushWorkingCopy(StubWorkingCopy):
+    def push(
+        self,
+        worktree,
+        remote: str = "origin",
+        force_with_lease: bool = True,
+        set_upstream: bool = True,
+        skip_hooks: bool = False,
+    ):
+        return type("PushResult", (), {"success": False, "message": "simulated push failure"})()
 
 
 def test_local_loop_happy_path_creates_non_draft_pr(scenario_repo: Path):
@@ -60,6 +73,91 @@ def test_validation_failure_queues_retry(scenario_repo: Path):
         .expect_pending_validation_retries(1) \
         .run()
 
+
+def test_validation_retry_succeeds_after_retry(scenario_repo: Path):
+    def _disable_grace_period(config) -> None:
+        config.session_grace_period_seconds = 0
+        config.session_log_activity_seconds = 0
+
+    scenario("validation_retry_succeeds", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_fail_once.sh"), max_retries=1) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .configure(_disable_grace_period) \
+        .wait_for_event(EventName.SESSION_VALIDATION_PASSED) \
+        .wait_for(lambda orch: True, max_ticks=12) \
+        .expect_event(EventName.SESSION_VALIDATION_RETRY_NEEDED) \
+        .expect_validation_status("passed") \
+        .expect_validation_artifacts(True) \
+        .run()
+
+
+def test_draft_pr_queues_review_without_exchange(scenario_repo: Path):
+    scenario("draft_pr_queues_review", scenario_repo) \
+        .coder(script("coder_complete.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-draft-pr") \
+        .expect_pr(created=True, draft=True) \
+        .expect_event(EventName.REVIEW_QUEUED) \
+        .expect_no_event(EventName.REVIEW_EXCHANGE_STARTED) \
+        .run()
+
+
+def test_review_disabled_skips_queue(scenario_repo: Path):
+    def _disable_review(config) -> None:
+        config.review_enabled = False
+        config.code_review_agent = None
+
+    scenario("review_disabled", scenario_repo) \
+        .coder(script("coder_complete.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-draft-pr") \
+        .configure(_disable_review) \
+        .expect_pr(created=True, draft=True) \
+        .expect_no_event(EventName.REVIEW_QUEUED) \
+        .run()
+
+
+def test_skip_review_agent_suppresses_queue(scenario_repo: Path):
+    def _skip_review(config) -> None:
+        config.agents["agent:coder"].skip_review = True
+
+    scenario("skip_review", scenario_repo) \
+        .coder(script("coder_complete.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-draft-pr") \
+        .configure(_skip_review) \
+        .expect_pr(created=True, draft=True) \
+        .expect_no_event(EventName.REVIEW_QUEUED) \
+        .run()
+
+
+def test_processing_failure_push_error_marks_blocked_failed(scenario_repo: Path):
+    scenario("push_failure_blocked_failed", scenario_repo) \
+        .coder(script("coder_complete.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-draft-pr") \
+        .use_working_copy(FailingPushWorkingCopy()) \
+        .expect_issue_label("blocked-failed") \
+        .expect_issue_comment_contains("Processing Failed") \
+        .run()
+
+
+def test_session_crash_marks_blocked_needs_human(scenario_repo: Path):
+    def _disable_grace_period(config) -> None:
+        config.session_grace_period_seconds = 0
+        config.session_log_activity_seconds = 0
+
+    scenario("session_crash_needs_human", scenario_repo) \
+        .coder(script("coder_no_completion.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-draft-pr") \
+        .configure(_disable_grace_period) \
+        .wait_for_event(EventName.SESSION_FAILED) \
+        .expect_issue_label("blocked-needs-human") \
+        .expect_issue_comment_contains("Session Needs Investigation") \
+        .run()
 
 def test_review_exchange_cache_skips_agent_run(scenario_repo: Path):
     ctx1 = scenario("cache_skips_first", scenario_repo) \
