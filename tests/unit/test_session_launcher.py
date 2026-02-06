@@ -606,6 +606,9 @@ class TestLaunchIssueSession:
         assert {"session_id", "worktree_path", "branch_name", "completion_path", "completion_path_absolute"}.issubset(
             payload.keys()
         )
+        worktree_path = Path(payload["worktree_path"])
+        completion_path = payload["completion_path"]
+        assert payload["completion_path_absolute"] == str((worktree_path / completion_path).resolve())
         SessionStartedPayload.model_validate(payload)
 
     def test_triggers_state_machine_transitions(self, launcher_bundle, sample_issue):
