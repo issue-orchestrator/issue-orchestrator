@@ -10,6 +10,11 @@ from issue_orchestrator.domain.models import Issue, AgentConfig
 from issue_orchestrator.ports.worktree_manager import WorktreeInfo
 from issue_orchestrator.infra.config import Config
 from tests.conftest import MockGitHubAdapter, MockEventSink, build_test_orchestrator_deps
+from issue_orchestrator.execution import CompositeEventSink
+from issue_orchestrator.execution.timeline_event_sink import TimelineEventSink
+from issue_orchestrator.execution.timeline_store import FileSystemTimelineStore, TimelineStoreConfig
+from issue_orchestrator.execution.timeline_writer import DefaultTimelineWriter
+from issue_orchestrator.execution.timeline_reader import DefaultTimelineReader
 from issue_orchestrator.infra.orchestrator import Orchestrator
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.planner import Planner
@@ -205,7 +210,7 @@ def build_orchestrator(
     lease_renewer: object | None = None,
     reconcile: bool = False,
     fresh_labels: dict[int, set[str]] | None = None,
-) -> tuple[Orchestrator, MockGitHubAdapter, MockEventSink]:
+) -> tuple[Orchestrator, MockGitHubAdapter, MockEventSink, DefaultTimelineReader]:
     repo_host = repo_host or MockGitHubAdapter()
     repo_host.issues = issues
 
@@ -213,23 +218,32 @@ def build_orchestrator(
     runner = runner or ScriptSessionRunner()
     worktree_manager = worktree_manager or TempWorktreeManager(base=repo_root)
     working_copy = working_copy or StubWorkingCopy()
+    timeline_store = FileSystemTimelineStore(
+        repo_root,
+        TimelineStoreConfig(max_records=config.timeline.max_records),
+    )
+    timeline_writer = DefaultTimelineWriter(timeline_store)
+    timeline_reader = DefaultTimelineReader(timeline_store)
+    composite_events = CompositeEventSink(events, TimelineEventSink(timeline_writer))
     scheduler = Scheduler(config=config)
     planner = Planner(
         config=config,
         scheduler=scheduler,
-        review_workflow=ReviewWorkflow(config=config, events=events),
-        rework_workflow=ReworkWorkflow(config=config, events=events),
+        review_workflow=ReviewWorkflow(config=config, events=composite_events),
+        rework_workflow=ReworkWorkflow(config=config, events=composite_events),
     )
 
     deps = build_test_orchestrator_deps(
         config,
         repo_host,
-        events,
+        composite_events,
         runner,
         worktree_manager,
         working_copy=working_copy,
         lease_renewer=lease_renewer,
         planner=planner,
+        timeline_reader=timeline_reader,
+        timeline_writer=timeline_writer,
     )
 
     if reconcile:
@@ -238,7 +252,11 @@ def build_orchestrator(
         deps.action_applier.fresh_issue_reader = FreshIssueReader(labels_by_issue)
 
     orchestrator = Orchestrator(config=config, deps=deps)
-    return orchestrator, repo_host, events
+    orchestrator.deps.completion_processor.set_event_emitter(
+        composite_events,
+        orchestrator.event_context,
+    )
+    return orchestrator, repo_host, events, timeline_reader
 
 
 def run_until(orchestrator: Orchestrator, predicate, max_ticks: int = 10) -> None:

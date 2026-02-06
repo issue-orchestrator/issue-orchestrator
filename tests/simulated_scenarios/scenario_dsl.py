@@ -24,10 +24,12 @@ class ScenarioContext:
     orch: object
     repo_host: object
     events: object
+    timeline_reader: object
     config: object
     repo_root: Path
     issue_number: int
     event_baseline: int
+    timeline_baseline: int
 
     @property
     def worktree(self) -> Path | None:
@@ -47,8 +49,12 @@ class ScenarioContext:
     def events_since_baseline(self) -> list:
         return list(self.events.events[self.event_baseline:])
 
+    def timeline_since_baseline(self) -> list:
+        stream = self.timeline_reader.read(self.issue_number)
+        return list(stream.events[self.timeline_baseline:])
+
     def restart(self) -> "ScenarioContext":
-        orch, repo_host, events = build_orchestrator(
+        orch, repo_host, events, timeline_reader = build_orchestrator(
             self.repo_root,
             list(self.repo_host.issues),
             self.config,
@@ -58,10 +64,12 @@ class ScenarioContext:
             orch=orch,
             repo_host=repo_host,
             events=events,
+            timeline_reader=timeline_reader,
             config=self.config,
             repo_root=self.repo_root,
             issue_number=self.issue_number,
             event_baseline=len(events.events),
+            timeline_baseline=len(timeline_reader.read(self.issue_number).events),
         )
 
 
@@ -91,6 +99,8 @@ class Scenario:
     _expectations: list[Expectation] = field(default_factory=list, init=False)
     _run_predicate: Callable[[object], bool] | None = field(default=None, init=False)
     _wait_for_events: set[EventName] = field(default_factory=set, init=False)
+    _expected_events: set[EventName] = field(default_factory=set, init=False)
+    _expected_timeline_events: set[EventName] = field(default_factory=set, init=False)
     _config_overrides: list[Callable[[Config], None]] = field(default_factory=list, init=False)
     _repo_host_mutator: Callable[[object], None] | None = field(default=None, init=False)
     _working_copy_override: object | None = field(default=None, init=False)
@@ -181,8 +191,29 @@ class Scenario:
         return self._add_expectation(_assert)
 
     def expect_event(self, name: EventName) -> Scenario:
+        self._expected_events.add(name)
         def _assert(ctx: ScenarioContext) -> None:
             assert any(e.name == name for e in ctx.events_since_baseline())
+        return self._add_expectation(_assert)
+
+    def expect_timeline_event(self, name: EventName) -> Scenario:
+        self._expected_timeline_events.add(name)
+        def _assert(ctx: ScenarioContext) -> None:
+            assert any(e.event == name.value for e in ctx.timeline_since_baseline())
+        return self._add_expectation(_assert)
+
+    def expect_latest_timeline_event(
+        self,
+        name: EventName,
+        *,
+        predicate: Callable[[object], bool] | None = None,
+    ) -> Scenario:
+        self._expected_timeline_events.add(name)
+        def _assert(ctx: ScenarioContext) -> None:
+            latest = _latest_timeline_event(ctx.timeline_since_baseline(), {name.value})
+            assert latest is not None, f"Expected latest timeline event {name} not found"
+            if predicate is not None:
+                assert predicate(latest)
         return self._add_expectation(_assert)
 
     def expect_no_event(self, name: EventName) -> Scenario:
@@ -196,6 +227,7 @@ class Scenario:
         *,
         predicate: Callable[[dict], bool] | None = None,
     ) -> Scenario:
+        self._expected_events.add(name)
         def _assert(ctx: ScenarioContext) -> None:
             latest = _latest_event(ctx.events_since_baseline(), {name})
             assert latest is not None, f"Expected latest event {name} not found"
@@ -393,7 +425,7 @@ class Scenario:
             title=self.issue_title,
             labels=self.issue_labels,
         )
-        orch, repo_host, events = build_orchestrator(
+        orch, repo_host, events, timeline_reader = build_orchestrator(
             self.repo_root,
             [issue],
             config,
@@ -405,6 +437,9 @@ class Scenario:
         if self._repo_host_mutator is not None:
             self._repo_host_mutator(repo_host)
         baseline = len(events.events)
+        timeline_baseline = len(timeline_reader.read(self.issue_number).events)
+        expected_events = set(self._wait_for_events) | set(self._expected_events)
+        expected_timeline_events = set(self._expected_timeline_events)
         def _predicate() -> bool:
             if self._run_predicate is not None:
                 base = self._run_predicate(orch)
@@ -412,21 +447,32 @@ class Scenario:
                 base = True
             else:
                 base = not orch.state.active_sessions
-            if not self._wait_for_events:
-                return base
-            events_since = events.events[baseline:]
-            have_events = all(any(e.name == name for e in events_since) for name in self._wait_for_events)
-            return base and have_events
+            if expected_events:
+                events_since = events.events[baseline:]
+                have_events = all(any(e.name == name for e in events_since) for name in expected_events)
+            else:
+                have_events = True
+            if expected_timeline_events:
+                timeline_since = timeline_reader.read(self.issue_number).events[timeline_baseline:]
+                have_timeline = all(
+                    any(e.event == name.value for e in timeline_since)
+                    for name in expected_timeline_events
+                )
+            else:
+                have_timeline = True
+            return base and have_events and have_timeline
 
         run_until(orch, _predicate, max_ticks=self.max_ticks)
         ctx = ScenarioContext(
             orch=orch,
             repo_host=repo_host,
             events=events,
+            timeline_reader=timeline_reader,
             config=config,
             repo_root=self.repo_root,
             issue_number=self.issue_number,
             event_baseline=baseline,
+            timeline_baseline=timeline_baseline,
         )
         for expectation in self._expectations:
             expectation(ctx)
@@ -457,6 +503,11 @@ def _latest_event_payload(events, name: EventName) -> dict | None:
 
 def _latest_event(events, names: set[EventName]):
     matches = [e for e in events if e.name in names]
+    return matches[-1] if matches else None
+
+
+def _latest_timeline_event(events, names: set[str]):
+    matches = [e for e in events if e.event in names]
     return matches[-1] if matches else None
 
 
