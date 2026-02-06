@@ -564,3 +564,32 @@ class SessionOutput(Protocol):
             Session name if found, None otherwise
         """
         ...
+
+    # -------------------------------------------------------------------------
+    # Review Feedback
+    # -------------------------------------------------------------------------
+
+    def save_review_feedback(
+        self,
+        worktree_path: Path,
+        cycle: int,
+        feedback: str,
+        reviewer: str | None = None,
+        pr_number: int | None = None,
+    ) -> Path:
+        """Save review feedback for a specific cycle.
+
+        Each review cycle's feedback is stored as a separate file in:
+        <worktree>/.issue-orchestrator/review-feedback/cycle-N.md
+
+        Args:
+            worktree_path: Path to the worktree
+            cycle: Rework cycle number (1-based)
+            feedback: The review feedback text
+            reviewer: Optional reviewer label
+            pr_number: Optional PR number
+
+        Returns:
+            Path to the written feedback file
+        """
+        ...
