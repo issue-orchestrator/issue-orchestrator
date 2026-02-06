@@ -1199,6 +1199,14 @@ class SessionLauncher:
                 existing_work = reviewer_feedback
             logger.info("[launch] Including reviewer feedback in rework session prompt")
 
+            # Save feedback for diagnostics (per-cycle file)
+            self._session_output.save_review_feedback(
+                worktree_path=worktree_path,
+                cycle=rework.rework_cycle,
+                feedback=reviewer_feedback,
+                pr_number=pr_number,
+            )
+
         # Build command
         base_command = agent_config.get_command(
             issue_number=issue_number,

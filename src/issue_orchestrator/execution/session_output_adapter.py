@@ -54,6 +54,9 @@ SESSION_IDENTITY_NAME = "session-identity.json"
 REVIEW_EXCHANGE_DIR_NAME = "review-exchange"
 REVIEW_EXCHANGE_SUMMARY_NAME = "summary.json"
 
+# Review feedback artifacts (stored per-cycle for diagnostics)
+REVIEW_FEEDBACK_DIR_NAME = "review-feedback"
+
 
 class FileSystemSessionOutput:
     """Filesystem-backed implementation of SessionOutput port.
@@ -534,6 +537,86 @@ Timestamp: {self._now_iso()}
             summary_path=summary_path,
             validation_record_path=validation_path if validation_path.exists() else None,
         )
+
+    # -------------------------------------------------------------------------
+    # Review Feedback (per-cycle storage for diagnostics)
+    # -------------------------------------------------------------------------
+
+    def save_review_feedback(
+        self,
+        worktree_path: Path,
+        cycle: int,
+        feedback: str,
+        reviewer: str | None = None,
+        pr_number: int | None = None,
+    ) -> Path:
+        """Save review feedback for a specific cycle.
+
+        Creates a markdown file in review-feedback/ subdirectory:
+            <worktree>/.issue-orchestrator/review-feedback/cycle-<N>.md
+
+        Args:
+            worktree_path: Path to the worktree.
+            cycle: The rework cycle number (1, 2, 3, ...).
+            feedback: The review feedback text.
+            reviewer: Optional reviewer login.
+            pr_number: Optional PR number.
+
+        Returns:
+            Path to the saved feedback file.
+        """
+        feedback_dir = worktree_path / ".issue-orchestrator" / REVIEW_FEEDBACK_DIR_NAME
+        feedback_dir.mkdir(parents=True, exist_ok=True)
+
+        filename = f"cycle-{cycle}.md"
+        feedback_path = feedback_dir / filename
+
+        # Build markdown content
+        lines = [f"# Review Feedback - Cycle {cycle}"]
+        if pr_number:
+            lines.append(f"\n**PR:** #{pr_number}")
+        if reviewer:
+            lines.append(f"**Reviewer:** {reviewer}")
+        lines.append(f"**Timestamp:** {datetime.now(timezone.utc).isoformat()}")
+        lines.append("\n---\n")
+        lines.append(feedback)
+
+        feedback_path.write_text("\n".join(lines))
+        logger.info("[session_output] Saved review feedback: %s", feedback_path)
+        return feedback_path
+
+    def list_review_feedback(self, worktree_path: Path) -> list[Path]:
+        """List all review feedback files for a worktree.
+
+        Returns:
+            List of feedback file paths, sorted by cycle number.
+        """
+        feedback_dir = worktree_path / ".issue-orchestrator" / REVIEW_FEEDBACK_DIR_NAME
+        if not feedback_dir.exists():
+            return []
+
+        files = sorted(feedback_dir.glob("cycle-*.md"))
+        return files
+
+    def load_all_review_feedback(self, worktree_path: Path) -> list[dict[str, Any]]:
+        """Load all review feedback for a worktree.
+
+        Returns:
+            List of dicts with 'cycle', 'path', and 'content' keys.
+        """
+        result = []
+        for path in self.list_review_feedback(worktree_path):
+            try:
+                # Extract cycle number from filename (cycle-N.md)
+                cycle = int(path.stem.split("-")[1])
+                result.append({
+                    "cycle": cycle,
+                    "path": str(path),
+                    "content": path.read_text(),
+                })
+            except (ValueError, IndexError):
+                logger.warning("[session_output] Invalid feedback filename: %s", path)
+        return result
 
     # -------------------------------------------------------------------------
     # Session Metadata
