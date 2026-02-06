@@ -32,6 +32,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.timeline import TimelineArtifact, TimelineEvent, TimelineStream
 
 
 # Helper functions
@@ -86,6 +87,7 @@ def create_mock_orchestrator():
 
     mock_deps = MagicMock()
     mock_deps.publish_executor = mock_executor
+    mock_deps.timeline_reader = MagicMock()
     mock_orch.deps = mock_deps
 
     return mock_orch
@@ -1285,6 +1287,48 @@ class TestRefreshEndpoint:
             assert response.status_code == 200
             assert response.json()["status"] == "refresh_requested"
             mock_orch.request_refresh.assert_called_once()
+        finally:
+            set_orchestrator(None)
+
+
+class TestApiTimelineEndpoint:
+    """Test the GET /api/timeline/{issue_number} endpoint."""
+
+    def test_timeline_returns_events(self):
+        """Timeline endpoint returns stream events with artifacts."""
+        from issue_orchestrator.entrypoints import web
+        mock_orch = create_mock_orchestrator()
+
+        stream = TimelineStream(
+            issue_number=123,
+            events=[
+                TimelineEvent(
+                    event_id="e1",
+                    timestamp="2026-02-06T00:00:00Z",
+                    event="session.started",
+                    issue_number=123,
+                    phase="in_progress",
+                    step="started",
+                    status="started",
+                    level="phase",
+                    summary=None,
+                    parent_key="session:issue-123",
+                    artifacts=[TimelineArtifact("worktree", "Worktree", "/tmp/worktree")],
+                )
+            ],
+        )
+        mock_orch.deps.timeline_reader.read.return_value = stream
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/timeline/123")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["issue_number"] == 123
+            assert len(payload["events"]) == 1
+            assert payload["events"][0]["event"] == "session.started"
+            assert payload["events"][0]["artifacts"][0]["type"] == "worktree"
         finally:
             set_orchestrator(None)
 
