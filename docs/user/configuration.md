@@ -4,7 +4,7 @@ Configuration lives in `.issue-orchestrator/config/default.yaml` (or a named con
 
 ---
 
-## TL;DR - Minimal Config to Get Started
+## TL;DR - Starter Config to Get Running
 
 ```yaml
 agents:
