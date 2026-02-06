@@ -46,7 +46,7 @@ def render_dashboard(jinja_env: Environment, view_model) -> BeautifulSoup:
     """Render dashboard template and return parsed HTML."""
     template = jinja_env.get_template("dashboard.html")
     html = template.render(**view_model.template_context())
-    return BeautifulSoup(html, "html.parser")
+    return BeautifulSoup(html, "lxml")
 
 
 # -----------------------------------------------------------------------------
@@ -117,7 +117,6 @@ def make_orchestrator(
     active_sessions: list[Session] | None = None,
     queue_issues: list[Issue] | None = None,
     session_history: list[SessionHistoryEntry] | None = None,
-    pending_reviews: list[PendingReview] | None = None,
     dependency_problems: dict[int, DependencyProblem] | None = None,
 ) -> OrchestratorStub:
     """Create a configured orchestrator stub."""
@@ -130,7 +129,7 @@ def make_orchestrator(
         active_sessions=active_sessions or [],
         cached_queue_issues=queue_issues or [],
         session_history=session_history or [],
-        pending_reviews=pending_reviews or [],
+        pending_reviews=[],
         dependency_problems=dependency_problems or {},
     )
 
@@ -1122,7 +1121,7 @@ def render_settings(jinja_env: Environment, tabs, schemas, values) -> BeautifulS
         tabs_json=tabs_json,
         schemas_json=schemas_json,
     )
-    return BeautifulSoup(html, "html.parser")
+    return BeautifulSoup(html, "lxml")
 
 
 class TestSettingsTemplate:
@@ -1402,7 +1401,7 @@ def render_issue_row(jinja_env: Environment, issue_data: dict, **kwargs) -> Beau
     context = {"issue": issue_data, "active_tab": "e2e", "github_owner": "test", "github_repo": "repo"}
     context.update(kwargs)
     html = template.render(**context)
-    return BeautifulSoup(html, "html.parser")
+    return BeautifulSoup(html, "lxml")
 
 
 class TestE2ESubIssues:
