@@ -1225,11 +1225,9 @@ async def get_issue_timeline(issue_number: int) -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..view_models.timeline import build_issue_timeline
-
-    store = _orchestrator.deps.timeline_store
-    records = store.read(issue_number, limit=2000)
-    return JSONResponse(build_issue_timeline(issue_number, records))
+    reader = _orchestrator.deps.timeline_reader
+    stream = reader.read(issue_number, limit=2000)
+    return JSONResponse(stream.to_dict())
 
 
 def _format_phase_name(phase_name: str) -> str:

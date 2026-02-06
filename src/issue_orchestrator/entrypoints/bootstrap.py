@@ -29,7 +29,8 @@ from ..ports import (
     NullSessionRunner,
     IssueTracker,
     InMemoryProviderCircuitStore,
-    NullTimelineStore,
+    NullTimelineReader,
+    NullTimelineWriter,
 )
 from ..control.orchestrator_deps import OrchestratorDeps
 from ..control.provider_resilience import ProviderResilienceManager
@@ -43,7 +44,9 @@ from ..execution import (
     SqliteGoalPilotStore,
     SQLiteProviderCircuitStore,
     TimelineEventSink,
+    DefaultTimelineReader,
     FileSystemTimelineStore,
+    DefaultTimelineWriter,
 )
 from ..execution.gh_guard import install_gh_guard
 from ..events import EventHub, SequencedEventSink
@@ -477,9 +480,11 @@ def build_orchestrator(
     base_events = PluggyEventSink(pm)
     runner = PluggySessionRunner(pm)
 
-    # Timeline store + event sink
+    # Timeline store + reader/writer + event sink
     timeline_store = FileSystemTimelineStore(config.repo_root)
-    timeline_sink = TimelineEventSink(timeline_store)
+    timeline_reader = DefaultTimelineReader(timeline_store)
+    timeline_writer = DefaultTimelineWriter(timeline_store)
+    timeline_sink = TimelineEventSink(timeline_writer)
 
     # Resolve repo and create GitHub adapter
     repo = _resolve_repo(config)
@@ -630,7 +635,8 @@ def build_orchestrator(
         publish_executor=publish_executor,
         goal_pilot_store=goal_pilot_store,
         provider_resilience=provider_resilience,
-        timeline_store=timeline_store,
+        timeline_reader=timeline_reader,
+        timeline_writer=timeline_writer,
     )
 
     return Orchestrator(config=config, deps=deps)
@@ -827,7 +833,8 @@ def build_orchestrator_for_testing(
 
     # Create EventHub for testing
     event_hub = EventHub()
-    timeline_store = NullTimelineStore()
+    timeline_reader = NullTimelineReader()
+    timeline_writer = NullTimelineWriter()
 
     # Create claim components for testing (always use NullClaimManager)
     lease_config = LeaseConfig()
@@ -879,7 +886,8 @@ def build_orchestrator_for_testing(
         publish_executor=publish_executor,
         goal_pilot_store=goal_pilot_store,
         provider_resilience=provider_resilience,
-        timeline_store=timeline_store,
+        timeline_reader=timeline_reader,
+        timeline_writer=timeline_writer,
     )
 
     return Orchestrator(config=config, deps=deps)

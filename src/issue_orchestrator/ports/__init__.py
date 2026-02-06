@@ -63,6 +63,8 @@ from issue_orchestrator.ports.provider_resilience import (
     InMemoryProviderCircuitStore,
 )
 from issue_orchestrator.ports.timeline_store import TimelineStore, TimelineRecord, NullTimelineStore
+from issue_orchestrator.ports.timeline_reader import TimelineReader, NullTimelineReader
+from issue_orchestrator.ports.timeline_writer import TimelineWriter, NullTimelineWriter
 
 __all__ = [
     # Issue Protocol (abstract work item)
@@ -130,4 +132,8 @@ __all__ = [
     "TimelineStore",
     "TimelineRecord",
     "NullTimelineStore",
+    "TimelineReader",
+    "NullTimelineReader",
+    "TimelineWriter",
+    "NullTimelineWriter",
 ]

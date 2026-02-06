@@ -23,7 +23,8 @@ if TYPE_CHECKING:
         SessionOutput,
         ManifestDownloader,
     )
-    from ..ports.timeline_store import TimelineStore
+    from ..ports.timeline_reader import TimelineReader
+    from ..ports.timeline_writer import TimelineWriter
     from ..ports.e2e_issue_tracker import E2EIssueTracker
     from ..ports.goal_pilot_store import GoalPilotStore
     from ..ports.fresh_issue_reader import FreshIssueReader
@@ -88,7 +89,8 @@ class OrchestratorDeps:
         publish_executor: Executes publish jobs in background threads
         goal_pilot_store: Durable Goal Pilot state store
         provider_resilience: Provider circuit breaker manager
-        timeline_store: Timeline store for issue event traces
+        timeline_reader: Timeline reader for issue event traces
+        timeline_writer: Timeline writer for issue event traces
     """
 
     # Core event/runtime ports
@@ -139,4 +141,5 @@ class OrchestratorDeps:
     provider_resilience: "ProviderResilienceManager"
 
     # Timeline storage
-    timeline_store: "TimelineStore"
+    timeline_reader: "TimelineReader"
+    timeline_writer: "TimelineWriter"

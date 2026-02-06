@@ -646,13 +646,18 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.execution.goal_pilot_store import SqliteGoalPilotStore
     goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
     from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
-    from issue_orchestrator.ports import InMemoryProviderCircuitStore, NullTimelineStore
+    from issue_orchestrator.ports import (
+        InMemoryProviderCircuitStore,
+        NullTimelineReader,
+        NullTimelineWriter,
+    )
     provider_resilience = ProviderResilienceManager(
         config.provider_resilience,
         store=InMemoryProviderCircuitStore(),
         events=events,
     )
-    timeline_store = NullTimelineStore()
+    timeline_reader = NullTimelineReader()
+    timeline_writer = NullTimelineWriter()
 
     return OrchestratorDeps(
         events=events,
@@ -684,7 +689,8 @@ def build_test_orchestrator_deps(
         publish_executor=publish_executor,
         goal_pilot_store=goal_pilot_store,
         provider_resilience=provider_resilience,
-        timeline_store=timeline_store,
+        timeline_reader=timeline_reader,
+        timeline_writer=timeline_writer,
     )
 
 
