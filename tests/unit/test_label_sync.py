@@ -6,8 +6,8 @@ from unittest.mock import MagicMock
 from issue_orchestrator.control.label_sync import (
     LabelSync,
     LabelSyncResult,
+    DesiredLabels,
 )
-from issue_orchestrator.control.label_projection import DesiredLabels
 from issue_orchestrator.ports import NullEventSink, TraceEvent
 
 

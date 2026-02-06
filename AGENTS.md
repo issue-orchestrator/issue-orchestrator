@@ -94,6 +94,7 @@ Skills in `.claude/skills/` are automatically invoked when working on relevant a
 | `architecture` | Working on ports, adapters, DI, bootstrap |
 | `troubleshooting` | Debugging sessions, hooks, locks |
 | `review-workflow` | Code review pipeline, triage, rework |
+| `schema-updates` | Updating UI contracts, SSE payloads, or config schemas |
 
 ## Directory Context (CLAUDE.md)
 
@@ -140,6 +141,13 @@ self.events.publish(TraceEvent(EventName.TICK_COMPLETED, ctx.enrich({"idle": Tru
 # Logs - for debugging
 logger.info("[PLAN] %d action(s)", count, extra=log_context(tick_id=5))
 ```
+
+## Schema Contracts (Public UI + Settings)
+
+- **UI contracts** live in `src/issue_orchestrator/contracts/public.py`.
+- **Generated JSON schemas** live in `contracts/public/*.json` (regen via `python scripts/generate_public_contracts.py`).
+- **Settings schema** lives in `src/issue_orchestrator/infra/settings_schema.py` and drives `docs/user/configuration_reference.md`.
+- Drift is enforced by `tests/unit/test_public_contract_schemas.py` and `tests/unit/test_settings_schema.py`.
 
 ## Fail-Fast Design
 

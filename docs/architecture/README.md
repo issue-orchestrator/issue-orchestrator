@@ -295,21 +295,6 @@ New code should import from the canonical locations.
 
 The control plane (`control/`) contains several specialized modules:
 
-### TransitionGuard
-
-Centralizes state machine transition handling with "fail loud but caught" semantics:
-
-```python
-guard = TransitionGuard(events=event_sink)
-result = guard.try_trigger(issue_machine, "claim", entity_type="issue", entity_id=123)
-if not result.applied:
-    logger.warning(f"Invalid transition: {result.error}")
-```
-
-- Wraps state machine triggers
-- Emits `transition.applied` and `transition.rejected` trace events
-- Returns typed `TransitionResult` instead of raising exceptions
-
 ### SessionManager
 
 Owns terminal session lifecycle and naming conventions:
@@ -324,21 +309,15 @@ manager.start(ctx)
 - `SessionContext`: Launch parameters for sessions
 - Delegates to `SessionRunner` port for actual terminal operations
 
-### LabelProjection + LabelSync
+### LabelSync
 
-Separates label POLICY from label MECHANICS:
+Encapsulates label mechanics with immutable desired-label intent:
 
 ```python
-# LabelProjection: Pure logic - state → desired labels
-projection = LabelProjection(config)
-desired = projection.for_issue_state(IssueState.IN_PROGRESS)
-
-# LabelSync: IO - applies label changes idempotently
 sync = LabelSync(labels=label_set, events=event_sink)
 result = sync.sync(issue_number=123, current=current_labels, desired=desired)
 ```
 
-- `LabelProjection`: Single source of truth for label policy
 - `DesiredLabels`: Immutable representation of intended label state
 - `LabelSync`: Idempotent label synchronization via `LabelSet` port
 
@@ -396,9 +375,7 @@ control/
 ├── __init__.py              # Public exports
 ├── scheduler.py             # Issue prioritization
 ├── completion_processor.py  # Handle agent completion records
-├── transition_guard.py      # State machine transition wrapper
 ├── session_manager.py       # Terminal session lifecycle
-├── label_projection.py      # State → labels policy
 ├── label_sync.py            # Label synchronization IO
 ├── actions.py               # Action dataclasses
 ├── action_applier.py        # Execute actions via ports

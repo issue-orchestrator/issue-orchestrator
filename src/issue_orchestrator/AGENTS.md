@@ -70,6 +70,19 @@ TraceEvent(EventName.X, {}) --> PluggyEventSink --> on_trace_event(event, data)
 - `execution/event_sink_adapter.py` - Pluggy-backed EventSink adapter
 - `execution/lifecycle_sse.py` - SSE broadcast plugin (web UI)
 
+## Public Contract Schemas (UI + SSE)
+
+UI-facing payloads are centrally defined and schema-validated.
+
+**Source of truth**
+- `contracts/public.py` (Pydantic contracts)
+
+**Generated artifacts**
+- `contracts/public/*.json` (regenerate with `python scripts/generate_public_contracts.py`)
+
+**Drift test**
+- `tests/unit/test_public_contract_schemas.py`
+
 ## Architectural Patterns
 
 ### Observer → Planner → ActionApplier (Core Loop Pattern)

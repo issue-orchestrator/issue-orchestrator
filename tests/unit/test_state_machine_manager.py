@@ -21,7 +21,6 @@ from issue_orchestrator.domain.state_machines import (
 )
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.ports import NullEventSink
 
 
 @pytest.fixture
@@ -34,15 +33,9 @@ def config() -> Config:
 
 
 @pytest.fixture
-def events() -> NullEventSink:
-    """Create a null event sink for tests."""
-    return NullEventSink()
-
-
-@pytest.fixture
-def manager(config: Config, events: NullEventSink) -> StateMachineManager:
+def manager(config: Config) -> StateMachineManager:
     """Create a StateMachineManager for tests."""
-    return StateMachineManager(config=config, events=events)
+    return StateMachineManager(config=config)
 
 
 @pytest.fixture
@@ -431,30 +424,22 @@ class TestManagerInitialization:
     """Tests for manager initialization and configuration."""
 
     def test_manager_initializes_with_empty_caches(
-        self, config: Config, events: NullEventSink
+        self, config: Config
     ):
         """New manager starts with no machines registered."""
-        manager = StateMachineManager(config=config, events=events)
+        manager = StateMachineManager(config=config)
 
         assert len(manager.issue_machines) == 0
         assert len(manager.session_machines) == 0
         assert len(manager.review_machines) == 0
 
     def test_manager_stores_config_reference(
-        self, config: Config, events: NullEventSink
+        self, config: Config
     ):
         """Manager stores reference to config for use by machines."""
-        manager = StateMachineManager(config=config, events=events)
+        manager = StateMachineManager(config=config)
 
         assert manager.config is config
-
-    def test_manager_stores_events_reference(
-        self, config: Config, events: NullEventSink
-    ):
-        """Manager stores reference to events sink."""
-        manager = StateMachineManager(config=config, events=events)
-
-        assert manager.events is events
 
 
 class TestEdgeCases:

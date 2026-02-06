@@ -47,9 +47,6 @@ class ActionType(Enum):
     ADD_COMMENT = "add_comment"
     CLOSE_ISSUE = "close_issue"
 
-    # State transitions
-    TRANSITION = "transition"
-
     # Worktree operations
     CREATE_WORKTREE = "create_worktree"
     REMOVE_WORKTREE = "remove_worktree"
@@ -139,17 +136,6 @@ class StopSessionAction(Action):
     session_type: SessionType = SessionType.ISSUE
     number: int = 0
     action_type: ActionType = field(default=ActionType.STOP_SESSION, init=False)
-
-
-@dataclass(frozen=True)
-class TransitionAction(Action):
-    """Trigger a state machine transition."""
-
-    machine_type: str = ""  # "issue", "session", "review"
-    entity_id: int | str = 0
-    trigger: str = ""
-    data: dict[str, Any] = field(default_factory=dict)
-    action_type: ActionType = field(default=ActionType.TRANSITION, init=False)
 
 
 @dataclass(frozen=True)

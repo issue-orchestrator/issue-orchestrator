@@ -30,25 +30,12 @@ from ..events import EventName, EventContext
 from ..ports import EventSink, TraceEvent, RepositoryHost
 from .actions import AddLabelAction
 from .reconciliation import ReconciliationRequired, get_pause_label
+from .transition_log import log_transition
 from ..domain.models import (
     PendingReview, PendingRework, PendingTriageReview,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def log_transition(
-    entity_type: str,
-    number: int,
-    from_state: str,
-    to_state: str,
-    reason: str,
-    extra: dict[str, object] | None = None,
-) -> None:
-    """Log state transition: [TRANSITION] {type} #{number}: {from} → {to} ({reason})"""
-    logger.info(f"[TRANSITION] {entity_type} #{number}: {from_state} → {to_state} ({reason})")
-    if extra:
-        logger.debug(f"[TRANSITION] #{number} extra: {extra}")
 
 
 def init_orchestrator_components(orch: "Orchestrator", dep_eval: "DependencyEvaluator") -> None:

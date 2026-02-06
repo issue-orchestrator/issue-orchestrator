@@ -17,7 +17,6 @@ The control plane:
 
 from .scheduler import Scheduler
 from .completion_processor import CompletionProcessor, ProcessingResult
-from .transition_guard import TransitionGuard, TransitionResult, TransitionResultType
 from .session_manager import (
     SessionManager,
     SessionRef,
@@ -27,13 +26,7 @@ from .session_manager import (
     review_session_context,
     rework_session_context,
 )
-from .label_projection import (
-    LabelProjection,
-    DesiredLabels,
-    LabelCategory,
-    compute_label_changes,
-)
-from .label_sync import LabelSync, LabelSyncResult
+from .label_sync import LabelSync, LabelSyncResult, DesiredLabels, compute_label_changes
 from .workflows import (
     ReviewWorkflow,
     ReviewDecision,
@@ -52,7 +45,6 @@ from .actions import (
     SyncLabelsAction,
     LaunchSessionAction,
     StopSessionAction,
-    TransitionAction,
     QueueReviewAction,
     QueueReworkAction,
     QueueTriageAction,
@@ -99,9 +91,6 @@ __all__ = [
     "Scheduler",
     "CompletionProcessor",
     "ProcessingResult",
-    "TransitionGuard",
-    "TransitionResult",
-    "TransitionResultType",
     "SessionManager",
     "SessionRef",
     "SessionType",
@@ -109,12 +98,10 @@ __all__ = [
     "issue_session_context",
     "review_session_context",
     "rework_session_context",
-    "LabelProjection",
-    "DesiredLabels",
-    "LabelCategory",
-    "compute_label_changes",
     "LabelSync",
     "LabelSyncResult",
+    "DesiredLabels",
+    "compute_label_changes",
     "ReviewWorkflow",
     "ReviewDecision",
     "ReworkWorkflow",
@@ -131,7 +118,6 @@ __all__ = [
     "SyncLabelsAction",
     "LaunchSessionAction",
     "StopSessionAction",
-    "TransitionAction",
     "QueueReviewAction",
     "QueueReworkAction",
     "QueueTriageAction",

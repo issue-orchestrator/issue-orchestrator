@@ -532,7 +532,7 @@ def build_orchestrator(
     ) if github else None
 
     # Create state machine manager
-    state_machine_manager = StateMachineManager(config=config, events=events)
+    state_machine_manager = StateMachineManager(config=config)
 
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
@@ -767,10 +767,7 @@ def build_orchestrator_for_testing(
 
     # Create StateMachineManager for testing
     from ..control.state_machine_manager import StateMachineManager
-    state_machine_manager = StateMachineManager(
-        config=config,
-        events=events,
-    )
+    state_machine_manager = StateMachineManager(config=config)
 
     # Create CompletionProcessor for testing
     from ..control.completion_processor import CompletionProcessor

@@ -552,7 +552,7 @@ def build_test_orchestrator_deps(
     _planner = planner or Planner(config=config, scheduler=scheduler)
     _session_manager = session_manager or SessionManager(runner=runner, events=events, config=config)
     _fact_gatherer = fact_gatherer or FactGatherer(config=config, repository_host=repo_host, events=events)
-    state_machine_manager = StateMachineManager(config=config, events=events)
+    state_machine_manager = StateMachineManager(config=config)
 
     session_output = FileSystemSessionOutput()
     completion_processor = CompletionProcessor(

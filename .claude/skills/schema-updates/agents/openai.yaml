@@ -1,0 +1,4 @@
+interface:
+  display_name: "Schema Updates"
+  short_description: "Update JSON schemas safely"
+  default_prompt: "Use $schema-updates to update public and config schemas."
