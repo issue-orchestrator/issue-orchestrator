@@ -461,6 +461,8 @@ class Orchestrator:
                 s for s in self.state.active_sessions
                 if s.terminal_id != session.terminal_id
             ]
+            # Drop the session state machine to avoid relaunch conflicts.
+            self.deps.state_machine_manager.remove_session_machine(session.terminal_id)
 
             # Add blocked label (best effort - session lost claim so this may also fail)
             try:

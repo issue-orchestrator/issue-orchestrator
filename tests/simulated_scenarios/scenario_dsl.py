@@ -94,6 +94,7 @@ class Scenario:
     _config_overrides: list[Callable[[Config], None]] = field(default_factory=list, init=False)
     _repo_host_mutator: Callable[[object], None] | None = field(default=None, init=False)
     _working_copy_override: object | None = field(default=None, init=False)
+    _lease_renewer_override: object | None = field(default=None, init=False)
 
     def issue(self, *, number: int | None = None, title: str | None = None, labels: list[str] | None = None) -> Scenario:
         if number is not None:
@@ -152,6 +153,10 @@ class Scenario:
 
     def use_working_copy(self, working_copy: object) -> Scenario:
         self._working_copy_override = working_copy
+        return self
+
+    def use_lease_renewer(self, lease_renewer: object) -> Scenario:
+        self._lease_renewer_override = lease_renewer
         return self
 
     def wait_for(self, predicate: Callable[[object], bool], *, max_ticks: int | None = None) -> Scenario:
@@ -349,6 +354,7 @@ class Scenario:
             reconcile=self.reconcile,
             fresh_labels=self.fresh_labels,
             working_copy=self._working_copy_override,
+            lease_renewer=self._lease_renewer_override,
         )
         if self._repo_host_mutator is not None:
             self._repo_host_mutator(repo_host)

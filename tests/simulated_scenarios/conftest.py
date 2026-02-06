@@ -198,6 +198,7 @@ def build_orchestrator(
     runner: ScriptSessionRunner | None = None,
     worktree_manager: TempWorktreeManager | None = None,
     working_copy: StubWorkingCopy | None = None,
+    lease_renewer: object | None = None,
     reconcile: bool = False,
     fresh_labels: dict[int, set[str]] | None = None,
 ) -> tuple[Orchestrator, MockGitHubAdapter, MockEventSink]:
@@ -216,6 +217,7 @@ def build_orchestrator(
         runner,
         worktree_manager,
         working_copy=working_copy,
+        lease_renewer=lease_renewer,
     )
 
     if reconcile:

@@ -502,6 +502,7 @@ def build_test_orchestrator_deps(
     planner=None,
     session_manager=None,
     action_applier=None,
+    lease_renewer=None,
 ):
     """Factory function to create OrchestratorDeps for testing.
 
@@ -631,7 +632,7 @@ def build_test_orchestrator_deps(
     lease_config = LeaseConfig.for_testing()
     claim_manager = NullClaimManager()
     claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
-    lease_renewer = LeaseRenewer(
+    lease_renewer = lease_renewer or LeaseRenewer(
         claim_manager=claim_manager,
         events=events,
         config=lease_config,

@@ -1,6 +1,8 @@
 from pathlib import Path
+import sqlite3
 
 from issue_orchestrator.events import EventName
+from issue_orchestrator.infra import labels as label_module
 
 from .conftest import StubWorkingCopy
 from .scenario_dsl import scenario, script
@@ -16,6 +18,17 @@ class FailingPushWorkingCopy(StubWorkingCopy):
         skip_hooks: bool = False,
     ):
         return type("PushResult", (), {"success": False, "message": "simulated push failure"})()
+
+
+class LeaseRenewerOnce:
+    def __init__(self) -> None:
+        self._used = False
+
+    def check_renewals(self, sessions):
+        if not sessions or self._used:
+            return []
+        self._used = True
+        return list(sessions)
 
 
 def test_local_loop_happy_path_creates_non_draft_pr(scenario_repo: Path):
@@ -159,6 +172,42 @@ def test_session_crash_marks_blocked_needs_human(scenario_repo: Path):
         .expect_issue_comment_contains("Session Needs Investigation") \
         .run()
 
+
+def test_grace_period_keeps_session_running(scenario_repo: Path):
+    def _configure_grace_period(config) -> None:
+        config.session_grace_period_seconds = 300
+        config.session_log_activity_seconds = 0
+
+    ctx = scenario("grace_period_running", scenario_repo) \
+        .coder(script("coder_no_completion.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-draft-pr") \
+        .configure(_configure_grace_period) \
+        .wait_for(lambda orch: len(orch.state.active_sessions) == 1, max_ticks=1) \
+        .run()
+
+    assert len(ctx.orch.state.active_sessions) == 1
+
+
+def test_claim_loss_marks_blocked_and_comment(scenario_repo: Path):
+    def _configure_grace_period(config) -> None:
+        config.session_grace_period_seconds = 300
+        config.session_log_activity_seconds = 0
+
+    scenario("claim_loss_blocked", scenario_repo) \
+        .coder(script("coder_no_completion.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-draft-pr") \
+        .configure(_configure_grace_period) \
+        .use_lease_renewer(LeaseRenewerOnce()) \
+        .wait_for(
+            lambda orch: label_module.BLOCKED_CLAIM_LOST in orch.deps.repository_host.get_issue_labels(1),
+            max_ticks=3,
+        ) \
+        .expect_issue_label(label_module.BLOCKED_CLAIM_LOST) \
+        .expect_issue_comment_contains("Work Cancelled") \
+        .run()
+
 def test_review_exchange_cache_skips_agent_run(scenario_repo: Path):
     ctx1 = scenario("cache_skips_first", scenario_repo) \
         .coder(script("coder_dual_mode.sh")) \
@@ -234,6 +283,36 @@ def test_reconciliation_drift_pauses_issue(scenario_repo: Path):
             predicate=lambda data: data.get("issue_number") == 1 and data.get("pause_label") == pause_label,
         ) \
         .run()
+
+
+def test_sqlite_backups_created_for_existing_dbs(scenario_repo: Path):
+    state_dir = scenario_repo / ".issue-orchestrator" / "state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    db_paths = [
+        state_dir / "publish_jobs.db",
+        state_dir / "session_registry.sqlite",
+    ]
+    for db_path in db_paths:
+        with sqlite3.connect(db_path) as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY)")
+            conn.commit()
+
+    def _enable_sqlite_backups(config) -> None:
+        config.sqlite_backup.enabled = True
+        config.sqlite_backup.retention_daily = 1
+        config.sqlite_backup.retention_weekly = 0
+        config.sqlite_backup.cadence_hours = 0
+
+    scenario("sqlite_backups", scenario_repo) \
+        .coder(script("coder_complete.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .review_exchange(mode="via-draft-pr") \
+        .configure(_enable_sqlite_backups) \
+        .run()
+
+    backup_root = scenario_repo / ".issue-orchestrator" / "backups" / "sqlite"
+    backups = list(backup_root.rglob("*.db"))
+    assert backups, "Expected sqlite backup files to be created"
 
 
 def test_restart_recovery_uses_labels_not_memory(scenario_repo: Path):
