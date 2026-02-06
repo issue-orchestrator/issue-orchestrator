@@ -192,25 +192,28 @@ def build_blocked_issues_dialog(blocked_payload: dict[str, Any]) -> dict[str, An
     }
 
 
-def build_phase_dialog(phases_payload: dict[str, Any], issue_number: int, phase_key: str | None) -> dict[str, Any]:
-    phases = phases_payload.get("phases", [])
-    current = None
+def _find_last_phase_with_prefix(phases: list[dict[str, Any]], prefix: str) -> dict[str, Any] | None:
+    for phase in reversed(phases):
+        if phase.get("name", "").startswith(prefix):
+            return phase
+    return None
 
+
+def _select_phase(phases: list[dict[str, Any]], phase_key: str | None) -> dict[str, Any] | None:
     if phase_key in ("in_progress", "rework"):
-        for phase in reversed(phases):
-            if phase.get("name", "").startswith("coding-"):
-                current = phase
-                break
-    elif phase_key in ("review", "triage"):
-        for phase in reversed(phases):
-            if phase.get("name", "").startswith("review-"):
-                current = phase
-                break
-    elif phase_key:
+        return _find_last_phase_with_prefix(phases, "coding-")
+    if phase_key in ("review", "triage"):
+        return _find_last_phase_with_prefix(phases, "review-")
+    if phase_key:
         for phase in phases:
             if phase.get("name") == phase_key:
-                current = phase
-                break
+                return phase
+    return None
+
+
+def build_phase_dialog(phases_payload: dict[str, Any], issue_number: int, phase_key: str | None) -> dict[str, Any]:
+    phases = phases_payload.get("phases", [])
+    current = _select_phase(phases, phase_key)
 
     if current is None and phases:
         current = phases[-1]

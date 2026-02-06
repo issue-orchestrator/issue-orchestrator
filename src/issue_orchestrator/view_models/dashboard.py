@@ -229,6 +229,411 @@ def _relative_time(dt_str: str) -> str:
         return ""
 
 
+def _pending_issue_numbers(state) -> dict[str, set[int]]:
+    pending_review_numbers = {r.issue_number for r in state.pending_reviews} | {
+        r.issue_number for r in state.discovered_reviews
+    }
+    pending_rework_numbers = {r.issue_number for r in state.pending_reworks} | {
+        r.issue_number for r in state.discovered_reworks
+    }
+    pending_triage_numbers = {r.issue_number for r in state.pending_triage_reviews}
+    return {
+        "review": pending_review_numbers,
+        "rework": pending_rework_numbers,
+        "triage": pending_triage_numbers,
+    }
+
+
+def _build_active_items(state, config, queue_page: int, seen_issues: set[int]) -> tuple[list[dict[str, Any]], set[int]]:
+    if queue_page != 1:
+        return [], seen_issues
+
+    items: list[dict[str, Any]] = []
+    for session in state.active_sessions:
+        runtime = session.runtime_minutes
+        timeout = session.agent_config.timeout_minutes
+        tmux_name = session.terminal_id or ""
+        is_review = tmux_name.startswith("review-")
+        phase = "Reviewing" if is_review else "Coding"
+
+        agent_label = (session.issue.agent_type or "unknown").replace("agent:", "")
+        if runtime >= timeout:
+            status = "slow"
+            status_reason = f"Over timeout ({runtime} min / {timeout} min)"
+        else:
+            status = "active"
+            status_reason = f"Running for {runtime} min"
+
+        seen_issues.add(session.issue.number)
+        if session.key.task == TaskKind.REVIEW:
+            flow_stage = "review"
+        elif session.key.task == TaskKind.REWORK:
+            flow_stage = "rework"
+        elif session.key.task == TaskKind.TRIAGE:
+            flow_stage = "triage"
+        else:
+            flow_stage = "in_progress"
+        flow_steps = flow_steps_for(flow_stage)
+        flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
+
+        blocked = blocked_summary(
+            list(session.issue.labels),
+            state.dependency_problems.get(session.issue.number).summary
+            if session.issue.number in state.dependency_problems
+            else None,
+        )
+
+        terminal_hint = "Click to focus terminal session"
+        if config and config.terminal_adapter == "subprocess":
+            terminal_hint = "Click to view agent UI log"
+
+        items.append({
+            "issue_number": session.issue.number,
+            "title": session.issue.title,
+            "agent_type": agent_label,
+            "status": status,
+            "status_reason": status_reason,
+            "detail_label": f"agent: {agent_label}",
+            "detail_reason": status_reason,
+            "phase": phase,
+            "time": f"{runtime} min",
+            "action": "focus",
+            "action_icon": "→",
+            "action_hint": terminal_hint,
+            "url": "",
+            "issue_url": issue_url_for(config, session.issue.number),
+            "pr_url": "",
+            "has_terminal": True,
+            "worktree_path": str(session.worktree_path) if session.worktree_path else "",
+            "flow_stage": flow_stage,
+            "flow_stage_label": flow_stage_label_value,
+            "flow_steps": flow_steps,
+            "blocked_summary": blocked,
+        })
+
+    return items, seen_issues
+
+
+def _build_queue_items(
+    state,
+    config,
+    queue_page: int,
+    seen_issues: set[int],
+    pending_numbers: dict[str, set[int]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, set[int]]:
+    queue_items: list[dict[str, Any]] = []
+    blocked_items: list[dict[str, Any]] = []
+    queue_total = 0
+
+    if state.startup_status != "complete":
+        return queue_items, blocked_items, queue_total, seen_issues
+
+    queue_issues = state.cached_queue_issues
+    queue_total = len(queue_issues)
+    dependency_info = get_issue_dependencies(queue_issues, config)
+
+    start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
+    end_idx = start_idx + QUEUE_PAGE_SIZE
+    for issue in queue_issues[start_idx:end_idx]:
+        if issue.number in seen_issues:
+            continue
+        seen_issues.add(issue.number)
+
+        dep_info = dependency_info.get(issue.number)
+        has_deps = dep_info.has_dependencies if dep_info else False
+        deps_json = json.dumps([
+            {"number": d[0], "title": d[1]}
+            for d in (dep_info.dependencies if dep_info else [])
+        ])
+        dep_summary = dep_info.summary if dep_info else ""
+
+        dep_problem = state.dependency_problems.get(issue.number)
+        blocked = blocked_summary(
+            list(issue.labels),
+            dep_problem.summary if dep_problem else None,
+        )
+        is_blocked = issue.is_blocked or dep_problem is not None
+        agent_label = (issue.agent_type or "unknown").replace("agent:", "")
+        if is_blocked:
+            status = "blocked"
+            status_reason = dep_summary or "blocked"
+            detail_label = blocked or "blocked"
+        else:
+            status = "queue"
+            status_reason = dep_summary
+            detail_label = f"agent: {agent_label}"
+
+        if issue.number in pending_numbers["rework"]:
+            flow_stage = "rework"
+        elif issue.number in pending_numbers["triage"]:
+            flow_stage = "triage"
+        elif issue.number in pending_numbers["review"] or label_module.is_pr_pending(issue.labels):
+            flow_stage = "review"
+        elif label_module.is_in_progress(issue.labels):
+            flow_stage = "in_progress"
+        else:
+            flow_stage = "queued"
+        flow_steps = flow_steps_for(flow_stage)
+        flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
+
+        item = {
+            "issue_number": issue.number,
+            "title": issue.title,
+            "agent_type": agent_label,
+            "status": status,
+            "status_reason": status_reason,
+            "detail_label": detail_label,
+            "detail_reason": status_reason,
+            "time": "",
+            "action": "open",
+            "action_icon": "↗",
+            "action_hint": "Click to open issue on GitHub",
+            "url": issue_url_for(config, issue.number),
+            "issue_url": issue_url_for(config, issue.number),
+            "pr_url": "",
+            "has_terminal": False,
+            "worktree_path": "",
+            "has_dependencies": has_deps,
+            "dependencies": deps_json,
+            "dependency_summary": dep_summary,
+            "flow_stage": flow_stage,
+            "flow_stage_label": flow_stage_label_value,
+            "flow_steps": flow_steps,
+            "blocked_summary": blocked,
+        }
+        if is_blocked:
+            blocked_items.append(item)
+        else:
+            queue_items.append(item)
+
+    return queue_items, blocked_items, queue_total, seen_issues
+
+
+def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    status_labels = {
+        "completed": "Completed",
+        "failed": "Failed",
+        "blocked": "Blocked",
+        "needs_human": "Needs Human",
+        "timed_out": "Timed Out",
+    }
+    history_items: list[dict[str, Any]] = []
+    blocked_items: list[dict[str, Any]] = []
+    for entry in reversed(state.session_history[-50:]):
+        url = entry.pr_url if entry.pr_url else issue_url_for(config, entry.issue_number)
+        action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
+        status_reason = getattr(entry, "status_reason", None) or status_labels.get(entry.status, entry.status)
+
+        flow_stage = "done" if entry.status == "completed" else "in_progress"
+        flow_steps = flow_steps_for(flow_stage)
+        flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
+
+        worktree_path = str(entry.worktree_path) if entry.worktree_path else ""
+
+        item = {
+            "issue_number": entry.issue_number,
+            "title": entry.title,
+            "agent_type": entry.agent_type.replace("agent:", ""),
+            "status": entry.status,
+            "status_reason": status_reason,
+            "detail_label": status_labels.get(entry.status, entry.status),
+            "detail_reason": status_reason,
+            "time": f"{entry.runtime_minutes} min",
+            "action": "open",
+            "action_icon": "↗",
+            "action_hint": action_hint,
+            "url": url,
+            "issue_url": issue_url_for(config, entry.issue_number),
+            "pr_url": entry.pr_url or "",
+            "has_terminal": False,
+            "worktree_path": worktree_path,
+            "flow_stage": flow_stage,
+            "flow_stage_label": flow_stage_label_value,
+            "flow_steps": flow_steps,
+            "blocked_summary": status_reason if entry.status != "completed" else None,
+        }
+        if entry.status in ("blocked", "needs_human"):
+            blocked_items.append(item)
+        else:
+            history_items.append(item)
+
+    return history_items, blocked_items
+
+
+def _build_e2e_running_items(e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
+    if not e2e_status.get("running"):
+        return []
+    return [{
+        "issue_number": "E2E-running",
+        "title": "E2E Run in Progress",
+        "status": "running",
+        "detail_label": "Tests are executing...",
+        "action": "stop",
+        "action_hint": "Click to stop E2E run",
+        "is_e2e": True,
+        "e2e_running": True,
+        "time": "now",
+    }]
+
+
+def _build_e2e_attention_items(e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
+    if not (e2e_status.get("needs_attention") and e2e_status.get("untriaged_count", 0) > 0):
+        return []
+    untriaged = e2e_status["untriaged_count"]
+    last_run = e2e_status.get("last_run", {})
+    run_id = last_run.get("id", "?")
+    failed_tests_data = []
+    failed_tests = e2e_status.get("failed_tests", [])
+    for ft in failed_tests:
+        nodeid = ft.get("nodeid", "")
+        short_name = nodeid.split("::")[-1] if "::" in nodeid else nodeid
+        failed_tests_data.append({
+            "nodeid": nodeid,
+            "short_name": short_name,
+            "outcome": ft.get("outcome", "failed"),
+            "duration": ft.get("duration_seconds"),
+        })
+    return [{
+        "issue_number": f"E2E-{run_id}",
+        "title": f"{untriaged} failure{'s' if untriaged != 1 else ''} need{'s' if untriaged == 1 else ''} triage",
+        "status": "needs_attention",
+        "detail_label": f"{untriaged} test{'s' if untriaged != 1 else ''} failed without issues",
+        "action": "triage",
+        "action_hint": "Click to open triage modal",
+        "is_e2e": True,
+        "e2e_failed_tests": failed_tests_data,
+        "e2e_run_id": run_id,
+        "relative_time": last_run.get("relative_time", ""),
+        "time": last_run.get("relative_time", ""),
+    }]
+
+
+def _build_e2e_open_run_issue_items(db) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for run_issue in db.get_open_run_issues():
+        sub_issues = db.get_failure_issues_for_parent(run_issue.github_issue_number)
+        if not sub_issues:
+            continue
+        resolved = sum(1 for s in sub_issues if s.resolved_at)
+        total = len(sub_issues)
+        pct = int((resolved / total * 100)) if total > 0 else 0
+        sub_issues_data = []
+        for si in sub_issues:
+            short_name = si.nodeid.split("::")[-1] if "::" in si.nodeid else si.nodeid
+            sub_issues_data.append({
+                "issue_number": si.github_issue_number,
+                "nodeid": si.nodeid,
+                "short_name": short_name,
+                "status": "resolved" if si.resolved_at else "open",
+                "resolved_at": si.resolved_at,
+            })
+        run_issue_number = getattr(run_issue, "github_issue_number", None)
+        run_issue_title = getattr(run_issue, "title", "") or ""
+        run_issue_url = getattr(run_issue, "github_issue_url", "") or ""
+        items.append({
+            "issue_number": run_issue_number,
+            "title": run_issue_title,
+            "status": "triage",
+            "detail_label": f"{resolved}/{total} resolved",
+            "action": "open",
+            "action_hint": f"View issue #{run_issue_number} on GitHub" if run_issue_number else "View issue on GitHub",
+            "url": run_issue_url,
+            "is_e2e": True,
+            "e2e_progress": {"resolved": resolved, "total": total, "percent": pct},
+            "e2e_sub_issues": sub_issues_data,
+            "flow_steps": [
+                {"key": "triage", "label": "Triage"},
+                {"key": "fixing", "label": "Fixing"},
+                {"key": "done", "label": "Done"},
+            ],
+            "flow_stage": "fixing" if resolved < total else "done",
+        })
+    return items
+
+
+def _build_e2e_recent_run_items(db, config, e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    recent_runs = db.list_runs(orchestrator_id=config.orchestrator_id, limit=100)
+    for run in recent_runs:
+        if e2e_status.get("running") and run.status == "running":
+            continue
+        if e2e_status.get("last_run", {}).get("id") == run.id and e2e_status.get("needs_attention"):
+            continue
+        run_issue = db.get_run_issue(run.id)
+        if run_issue and not run_issue.closed_at:
+            continue
+
+        relative_time = _relative_time(run.started_at) if run.started_at else ""
+        items.append({
+            "issue_number": f"E2E-{run.id}",
+            "title": run.commit_sha[:7] if run.commit_sha else "no commit",
+            "status": run.status,
+            "detail_label": "",
+            "action": "details",
+            "action_hint": "View run details",
+            "is_e2e": True,
+            "e2e_run_id": run.id,
+            "relative_time": relative_time,
+            "time": relative_time,
+            "commit_sha": run.commit_sha[:7] if run.commit_sha else "",
+        })
+    return items
+
+
+def _build_e2e_db_items(config, e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
+    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db" if config else None
+    if not (db_path and db_path.exists() and config):
+        return []
+    try:
+        from ..infra.e2e_db import E2EDB
+
+        db = E2EDB(db_path)
+        items = _build_e2e_open_run_issue_items(db)
+        items.extend(_build_e2e_recent_run_items(db, config, e2e_status))
+        return items
+    except Exception:
+        return []
+
+
+def _build_e2e_items(config, e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    items.extend(_build_e2e_running_items(e2e_status))
+    items.extend(_build_e2e_attention_items(e2e_status))
+    items.extend(_build_e2e_db_items(config, e2e_status))
+    return items
+
+
+def _select_issues_for_tab(
+    active_tab: str,
+    active_items: list[dict[str, Any]],
+    queue_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    e2e_items: list[dict[str, Any]],
+    history_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if active_tab == "active":
+        return active_items
+    if active_tab == "queue":
+        return queue_items
+    if active_tab == "blocked":
+        return blocked_items
+    if active_tab == "e2e":
+        return e2e_items
+    if active_tab == "history":
+        return history_items
+    return active_items
+
+
+def _paginate(items: list[dict[str, Any]], page: int, page_size: int) -> tuple[list[dict[str, Any]], int, int]:
+    total = len(items)
+    total_pages = (total + page_size - 1) // page_size if total > 0 else 1
+    if page > total_pages:
+        page = total_pages
+    start_idx = (page - 1) * page_size
+    end_idx = start_idx + page_size
+    return items[start_idx:end_idx], total_pages, page
+
+
 def _count_untriaged_failures(db, run_obj) -> int:
     count = 0
     for result in db.get_failed_tests(run_obj.id):
@@ -323,346 +728,27 @@ def build_dashboard_view_model(
 
     if state and config:
         active_numbers = {s.issue.number for s in state.active_sessions}
-        pending_review_numbers = {r.issue_number for r in state.pending_reviews} | {
-            r.issue_number for r in state.discovered_reviews
-        }
-        pending_rework_numbers = {r.issue_number for r in state.pending_reworks} | {
-            r.issue_number for r in state.discovered_reworks
-        }
-        pending_triage_numbers = {r.issue_number for r in state.pending_triage_reviews}
-
         seen_issues.update(active_numbers)
 
-        if queue_page == 1:
-            for session in state.active_sessions:
-                runtime = session.runtime_minutes
-                timeout = session.agent_config.timeout_minutes
-                tmux_name = session.terminal_id or ""
-                is_review = tmux_name.startswith("review-")
-                phase = "Reviewing" if is_review else "Coding"
-
-                agent_label = (session.issue.agent_type or "unknown").replace("agent:", "")
-                if runtime >= timeout:
-                    status = "slow"
-                    status_reason = f"Over timeout ({runtime} min / {timeout} min)"
-                else:
-                    status = "active"
-                    status_reason = f"Running for {runtime} min"
-
-                seen_issues.add(session.issue.number)
-                if session.key.task == TaskKind.REVIEW:
-                    flow_stage = "review"
-                elif session.key.task == TaskKind.REWORK:
-                    flow_stage = "rework"
-                elif session.key.task == TaskKind.TRIAGE:
-                    flow_stage = "triage"
-                else:
-                    flow_stage = "in_progress"
-                flow_steps = flow_steps_for(flow_stage)
-                flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
-
-                blocked = blocked_summary(
-                    list(session.issue.labels),
-                    state.dependency_problems.get(session.issue.number).summary
-                    if session.issue.number in state.dependency_problems
-                    else None,
-                )
-
-                terminal_hint = "Click to focus terminal session"
-                if config and config.terminal_adapter == "subprocess":
-                    terminal_hint = "Click to view agent UI log"
-
-                item = {
-                    "issue_number": session.issue.number,
-                    "title": session.issue.title,
-                    "agent_type": agent_label,
-                    "status": status,
-                    "status_reason": status_reason,
-                    "detail_label": f"agent: {agent_label}",
-                    "detail_reason": status_reason,
-                    "phase": phase,
-                    "time": f"{runtime} min",
-                    "action": "focus",
-                    "action_icon": "→",
-                    "action_hint": terminal_hint,
-                    "url": "",
-                    "issue_url": issue_url_for(config, session.issue.number),
-                    "pr_url": "",
-                    "has_terminal": True,
-                    "worktree_path": str(session.worktree_path) if session.worktree_path else "",
-                    "flow_stage": flow_stage,
-                    "flow_stage_label": flow_stage_label_value,
-                    "flow_steps": flow_steps,
-                    "blocked_summary": blocked,
-                }
-                active_items.append(item)
-
-        dependency_info = {}
-        if state.startup_status == "complete":
-            queue_issues = state.cached_queue_issues
-            queue_total = len(queue_issues)
-
-            dependency_info = get_issue_dependencies(queue_issues, config)
-
-            start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
-            end_idx = start_idx + QUEUE_PAGE_SIZE
-            for issue in queue_issues[start_idx:end_idx]:
-                if issue.number in seen_issues:
-                    continue
-                seen_issues.add(issue.number)
-
-                dep_info = dependency_info.get(issue.number)
-                has_deps = dep_info.has_dependencies if dep_info else False
-                deps_json = json.dumps([
-                    {"number": d[0], "title": d[1]}
-                    for d in (dep_info.dependencies if dep_info else [])
-                ])
-                dep_summary = dep_info.summary if dep_info else ""
-
-                dep_problem = state.dependency_problems.get(issue.number)
-                blocked = blocked_summary(
-                    list(issue.labels),
-                    dep_problem.summary if dep_problem else None,
-                )
-                is_blocked = issue.is_blocked or dep_problem is not None
-                agent_label = (issue.agent_type or "unknown").replace("agent:", "")
-                if is_blocked:
-                    status = "blocked"
-                    status_reason = dep_summary or "blocked"
-                    detail_label = blocked or "blocked"
-                else:
-                    status = "queue"
-                    status_reason = dep_summary
-                    detail_label = f"agent: {agent_label}"
-
-                if issue.number in pending_rework_numbers:
-                    flow_stage = "rework"
-                elif issue.number in pending_triage_numbers:
-                    flow_stage = "triage"
-                elif issue.number in pending_review_numbers or label_module.is_pr_pending(issue.labels):
-                    flow_stage = "review"
-                elif label_module.is_in_progress(issue.labels):
-                    flow_stage = "in_progress"
-                else:
-                    flow_stage = "queued"
-                flow_steps = flow_steps_for(flow_stage)
-                flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
-
-                item = {
-                    "issue_number": issue.number,
-                    "title": issue.title,
-                    "agent_type": agent_label,
-                    "status": status,
-                    "status_reason": status_reason,
-                    "detail_label": detail_label,
-                    "detail_reason": status_reason,
-                    "time": "",
-                    "action": "open",
-                    "action_icon": "↗",
-                    "action_hint": "Click to open issue on GitHub",
-                    "url": issue_url_for(config, issue.number),
-                    "issue_url": issue_url_for(config, issue.number),
-                    "pr_url": "",
-                    "has_terminal": False,
-                    "worktree_path": "",
-                    "has_dependencies": has_deps,
-                    "dependencies": deps_json,
-                    "dependency_summary": dep_summary,
-                    "flow_stage": flow_stage,
-                    "flow_stage_label": flow_stage_label_value,
-                    "flow_steps": flow_steps,
-                    "blocked_summary": blocked,
-                }
-                if is_blocked:
-                    blocked_items.append(item)
-                else:
-                    queue_items.append(item)
-
-        status_labels = {
-            "completed": "Completed",
-            "failed": "Failed",
-            "blocked": "Blocked",
-            "needs_human": "Needs Human",
-            "timed_out": "Timed Out",
-        }
-        for entry in reversed(state.session_history[-50:]):
-            url = entry.pr_url if entry.pr_url else issue_url_for(config, entry.issue_number)
-            action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
-            status_reason = getattr(entry, "status_reason", None) or status_labels.get(entry.status, entry.status)
-
-            if entry.status == "completed":
-                flow_stage = "done"
-            else:
-                flow_stage = "in_progress"
-            flow_steps = flow_steps_for(flow_stage)
-            flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
-
-            worktree_path = str(entry.worktree_path) if entry.worktree_path else ""
-
-            item = {
-                "issue_number": entry.issue_number,
-                "title": entry.title,
-                "agent_type": entry.agent_type.replace("agent:", ""),
-                "status": entry.status,
-                "status_reason": status_reason,
-                "detail_label": status_labels.get(entry.status, entry.status),
-                "detail_reason": status_reason,
-                "time": f"{entry.runtime_minutes} min",
-                "action": "open",
-                "action_icon": "↗",
-                "action_hint": action_hint,
-                "url": url,
-                "issue_url": issue_url_for(config, entry.issue_number),
-                "pr_url": entry.pr_url or "",
-                "has_terminal": False,
-                "worktree_path": worktree_path,
-                "flow_stage": flow_stage,
-                "flow_stage_label": flow_stage_label_value,
-                "flow_steps": flow_steps,
-                "blocked_summary": status_reason if entry.status != "completed" else None,
-            }
-            if entry.status in ("blocked", "needs_human"):
-                blocked_items.append(item)
-            else:
-                history_items.append(item)
+        pending_numbers = _pending_issue_numbers(state)
+        active_items, seen_issues = _build_active_items(state, config, queue_page, seen_issues)
+        queue_items, queue_blocked, queue_total, seen_issues = _build_queue_items(
+            state, config, queue_page, seen_issues, pending_numbers
+        )
+        blocked_items.extend(queue_blocked)
+        history_items, history_blocked = _build_history_items(state, config)
+        blocked_items.extend(history_blocked)
 
     e2e_status_provider = e2e_status_provider or _get_e2e_status
     e2e_status = e2e_status_provider(config)
 
-    if e2e_status.get("running"):
-        e2e_items.append({
-            "issue_number": "E2E-running",
-            "title": "E2E Run in Progress",
-            "status": "running",
-            "detail_label": "Tests are executing...",
-            "action": "stop",
-            "action_hint": "Click to stop E2E run",
-            "is_e2e": True,
-            "e2e_running": True,
-            "time": "now",
-        })
-
-    if e2e_status.get("needs_attention") and e2e_status.get("untriaged_count", 0) > 0:
-        untriaged = e2e_status["untriaged_count"]
-        last_run = e2e_status.get("last_run", {})
-        run_id = last_run.get("id", "?")
-        failed_tests_data = []
-        failed_tests = e2e_status.get("failed_tests", [])
-        for ft in failed_tests:
-            nodeid = ft.get("nodeid", "")
-            short_name = nodeid.split("::")[-1] if "::" in nodeid else nodeid
-            failed_tests_data.append({
-                "nodeid": nodeid,
-                "short_name": short_name,
-                "outcome": ft.get("outcome", "failed"),
-                "duration": ft.get("duration_seconds"),
-            })
-        e2e_items.append({
-            "issue_number": f"E2E-{run_id}",
-            "title": f"{untriaged} failure{'s' if untriaged != 1 else ''} need{'s' if untriaged == 1 else ''} triage",
-            "status": "needs_attention",
-            "detail_label": f"{untriaged} test{'s' if untriaged != 1 else ''} failed without issues",
-            "action": "triage",
-            "action_hint": "Click to open triage modal",
-            "is_e2e": True,
-            "e2e_failed_tests": failed_tests_data,
-            "e2e_run_id": run_id,
-            "relative_time": last_run.get("relative_time", ""),
-            "time": last_run.get("relative_time", ""),
-        })
-
-    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db" if config else None
-    if db_path and db_path.exists() and config:
-        try:
-            from ..infra.e2e_db import E2EDB
-
-            db = E2EDB(db_path)
-            for run_issue in db.get_open_run_issues():
-                sub_issues = db.get_failure_issues_for_parent(run_issue.github_issue_number)
-                if sub_issues:
-                    resolved = sum(1 for s in sub_issues if s.resolved_at)
-                    total = len(sub_issues)
-                    pct = int((resolved / total * 100)) if total > 0 else 0
-                    sub_issues_data = []
-                    for si in sub_issues:
-                        short_name = si.nodeid.split("::")[-1] if "::" in si.nodeid else si.nodeid
-                        sub_issues_data.append({
-                            "issue_number": si.github_issue_number,
-                            "nodeid": si.nodeid,
-                            "short_name": short_name,
-                            "status": "resolved" if si.resolved_at else "open",
-                            "resolved_at": si.resolved_at,
-                        })
-                    run_issue_number = getattr(run_issue, "github_issue_number", None)
-                    run_issue_title = getattr(run_issue, "title", "") or ""
-                    run_issue_url = getattr(run_issue, "github_issue_url", "") or ""
-                    e2e_items.append({
-                        "issue_number": run_issue_number,
-                        "title": run_issue_title,
-                        "status": "triage",
-                        "detail_label": f"{resolved}/{total} resolved",
-                        "action": "open",
-                        "action_hint": f"View issue #{run_issue_number} on GitHub" if run_issue_number else "View issue on GitHub",
-                        "url": run_issue_url,
-                        "is_e2e": True,
-                        "e2e_progress": {"resolved": resolved, "total": total, "percent": pct},
-                        "e2e_sub_issues": sub_issues_data,
-                        "flow_steps": [
-                            {"key": "triage", "label": "Triage"},
-                            {"key": "fixing", "label": "Fixing"},
-                            {"key": "done", "label": "Done"},
-                        ],
-                        "flow_stage": "fixing" if resolved < total else "done",
-                    })
-
-            recent_runs = db.list_runs(orchestrator_id=config.orchestrator_id, limit=100)
-            for run in recent_runs:
-                if e2e_status.get("running") and run.status == "running":
-                    continue
-                if e2e_status.get("last_run", {}).get("id") == run.id and e2e_status.get("needs_attention"):
-                    continue
-                run_issue = db.get_run_issue(run.id)
-                if run_issue and not run_issue.closed_at:
-                    continue
-
-                relative_time = _relative_time(run.started_at) if run.started_at else ""
-                e2e_items.append({
-                    "issue_number": f"E2E-{run.id}",
-                    "title": run.commit_sha[:7] if run.commit_sha else "no commit",
-                    "status": run.status,
-                    "detail_label": "",
-                    "action": "details",
-                    "action_hint": "View run details",
-                    "is_e2e": True,
-                    "e2e_run_id": run.id,
-                    "relative_time": relative_time,
-                    "time": relative_time,
-                    "commit_sha": run.commit_sha[:7] if run.commit_sha else "",
-                })
-        except Exception:
-            pass
-
+    e2e_items = _build_e2e_items(config, e2e_status)
     e2e_total = len(e2e_items)
-    e2e_total_pages = (e2e_total + E2E_PAGE_SIZE - 1) // E2E_PAGE_SIZE if e2e_total > 0 else 1
-    if e2e_page > e2e_total_pages:
-        e2e_page = e2e_total_pages
 
-    e2e_start_idx = (e2e_page - 1) * E2E_PAGE_SIZE
-    e2e_end_idx = e2e_start_idx + E2E_PAGE_SIZE
-    e2e_items_paginated = e2e_items[e2e_start_idx:e2e_end_idx]
-
-    if active_tab == "active":
-        issues = active_items
-    elif active_tab == "queue":
-        issues = queue_items
-    elif active_tab == "blocked":
-        issues = blocked_items
-    elif active_tab == "e2e":
-        issues = e2e_items_paginated
-    elif active_tab == "history":
-        issues = history_items
-    else:
-        issues = active_items
+    e2e_items_paginated, e2e_total_pages, e2e_page = _paginate(e2e_items, e2e_page, E2E_PAGE_SIZE)
+    issues = _select_issues_for_tab(
+        active_tab, active_items, queue_items, blocked_items, e2e_items_paginated, history_items
+    )
 
     queue_total_pages = (queue_total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE if queue_total > 0 else 1
     if queue_page > queue_total_pages:
