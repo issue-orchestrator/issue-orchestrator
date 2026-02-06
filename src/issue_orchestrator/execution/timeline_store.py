@@ -65,6 +65,8 @@ class FileSystemTimelineStore(TimelineStore):
                 buffer.append(line)
         if count <= max_records:
             return
+        if count <= max_records * 2:
+            return
         with path.open("w", encoding="utf-8") as handle:
             handle.writelines(buffer)
 

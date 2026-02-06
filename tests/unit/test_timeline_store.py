@@ -29,9 +29,11 @@ def test_timeline_store_trims_max_records(tmp_path: Path) -> None:
     store.append(issue, TimelineRecord(event_id="1", timestamp="t1", event="e1", data={}))
     store.append(issue, TimelineRecord(event_id="2", timestamp="t2", event="e2", data={}))
     store.append(issue, TimelineRecord(event_id="3", timestamp="t3", event="e3", data={}))
+    store.append(issue, TimelineRecord(event_id="4", timestamp="t4", event="e4", data={}))
+    store.append(issue, TimelineRecord(event_id="5", timestamp="t5", event="e5", data={}))
 
     records = store.read(issue)
-    assert [record.event_id for record in records] == ["2", "3"]
+    assert [record.event_id for record in records] == ["4", "5"]
 
 
 def test_timeline_store_read_limit_returns_tail(tmp_path: Path) -> None:

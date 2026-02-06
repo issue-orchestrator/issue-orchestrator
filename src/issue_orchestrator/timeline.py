@@ -151,6 +151,7 @@ def _status_for_event(event_name: str) -> str:
         "session.blocked",
         "issue.blocked",
         "issue.needs_human",
+        "review.changes_requested",
     }
     success_events = {
         "session.completed",
