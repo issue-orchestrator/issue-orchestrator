@@ -176,20 +176,59 @@ def get_session(self, id: str) -> Session:
 GitHub CLI/API calls are a limited resource. Be mindful of command volume and avoid unnecessary scans or polling. Inefficient usage forces expensive systemic tuning later, so prefer cached data, targeted reads, and minimal refreshes whenever possible.
 Direct `gh` CLI usage from Python is forbidden; token resolution must use explicit config/env or OS keychain/hosts.yml.
 
-## Think Like an Owner
+## Think Like a Long-Term Owner
+
+**You are not here to complete tasks. You are here to build lasting value.**
+
+The difference between a contractor and an owner: a contractor finishes the task and moves on. An owner asks "will I be proud of this in six months?" Don't just make it work—make it right.
+
+### Seek the Right Abstractions
+
+When you're about to add a few lines to an already bloated method, stop. That's the contractor move. The owner move is:
+
+1. **Recognize the smell** - If a method is already long and complex, adding more lines makes it worse
+2. **Find the hidden concept** - There's usually an abstraction trying to emerge. Name it.
+3. **Extract and refactor** - Create the abstraction, then migrate existing code to use it
+4. **Leave it better** - The next person should find clean seams, not more spaghetti
+
+```python
+# Contractor: adds to the pile
+def process_session(self, session):
+    # ... 80 lines of existing code ...
+    # NEW: handle the edge case
+    if session.state == "weird":
+        do_thing_a()
+        do_thing_b()
+
+# Owner: finds the abstraction
+def process_session(self, session):
+    handler = self._get_state_handler(session.state)
+    handler.process(session)
+```
+
+### Be Relentlessly Thorough
+
+"It looks right" is not the same as "it is right." Don't stop at the first thing that works.
+
+- **Testing UI?** The row headers look good—now validate every list item. Check the empty state. Check overflow.
+- **Writing a function?** The happy path works—now what about nulls? Empty collections? Concurrency?
+- **Fixing a bug?** The symptom is gone—did you fix the root cause? Are there similar bugs elsewhere?
+
+The work isn't done when it *appears* done. The work is done when you've verified every assumption and edge case.
+
+### Own the Tests
 
 **Goal**: Actually test the system, not just get tests passing in name only.
 
-**Anti-patterns to avoid:**
+**Anti-patterns:**
 - Using `@pytest.mark.skip` to hide infrastructure requirements - tests should FAIL if prerequisites are missing
-- Treating test failures as "not my problem" or "pre-existing issues" - if tests fail, investigate and fix
-- Writing tests that pass but don't actually verify the important behavior
+- Treating test failures as "not my problem" - if tests fail, investigate and fix
+- Writing tests that pass but don't verify important behavior
 - Skipping tests because they're hard to set up - that difficulty is valuable feedback
 
 **Owner mindset:**
-- Tests exist to catch problems BEFORE production. A skipped test can't catch anything.
+- Tests exist to catch problems BEFORE production. A skipped test catches nothing.
 - If a test requires infrastructure (GitHub token, Claude CLI, etc.), failing clearly tells someone to set it up.
-- Skipping silently means the gap in coverage goes unnoticed indefinitely.
 - The goal isn't green CI - it's a system that works correctly under real conditions.
 
 **When tests fail:**
