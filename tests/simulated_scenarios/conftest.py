@@ -11,6 +11,10 @@ from issue_orchestrator.ports.worktree_manager import WorktreeInfo
 from issue_orchestrator.infra.config import Config
 from tests.conftest import MockGitHubAdapter, MockEventSink, build_test_orchestrator_deps
 from issue_orchestrator.infra.orchestrator import Orchestrator
+from issue_orchestrator.control.scheduler import Scheduler
+from issue_orchestrator.control.planner import Planner
+from issue_orchestrator.control.workflows.review_workflow import ReviewWorkflow
+from issue_orchestrator.control.workflows.rework_workflow import ReworkWorkflow
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -209,6 +213,13 @@ def build_orchestrator(
     runner = runner or ScriptSessionRunner()
     worktree_manager = worktree_manager or TempWorktreeManager(base=repo_root)
     working_copy = working_copy or StubWorkingCopy()
+    scheduler = Scheduler(config=config)
+    planner = Planner(
+        config=config,
+        scheduler=scheduler,
+        review_workflow=ReviewWorkflow(config=config, events=events),
+        rework_workflow=ReworkWorkflow(config=config, events=events),
+    )
 
     deps = build_test_orchestrator_deps(
         config,
@@ -218,6 +229,7 @@ def build_orchestrator(
         worktree_manager,
         working_copy=working_copy,
         lease_renewer=lease_renewer,
+        planner=planner,
     )
 
     if reconcile:

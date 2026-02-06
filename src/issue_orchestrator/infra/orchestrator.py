@@ -590,6 +590,11 @@ class Orchestrator:
 
         # Clean up terminal backend (kills tmux session - atomic cleanup of all windows)
         self.deps.runner.on_orchestrator_shutdown()
+        goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
+        if goal_pilot_store is not None:
+            close = getattr(goal_pilot_store, "close", None)
+            if callable(close):
+                close()
 
     def request_shutdown(self, force: bool = False) -> None:
         """Request graceful or forced shutdown."""
@@ -618,6 +623,17 @@ class Orchestrator:
                 self.state.active_sessions = []
         else:
             logger.info("Shutdown requested - waiting for %d session(s)", len(active))
+
+    def close(self) -> None:
+        """Release external resources for test harnesses and short-lived runs."""
+        self._cleanup_e2e_runner()
+        self.shutdown_publish_executor(wait=True, timeout=60.0)
+        self.deps.runner.on_orchestrator_shutdown()
+        goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
+        if goal_pilot_store is not None:
+            close = getattr(goal_pilot_store, "close", None)
+            if callable(close):
+                close()
 
     def request_refresh(self, inflight_stable_ids: set[str] | None = None) -> None:
         with self._state_lock:

@@ -318,6 +318,33 @@ class Scenario:
             assert len(ctx.orch.state.pending_reviews) == count
         return self._add_expectation(_assert)
 
+    def expect_pending_reworks(self, count: int) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            assert len(ctx.orch.state.pending_reworks) == count
+        return self._add_expectation(_assert)
+
+    def expect_pr_label(self, label: str, *, pr_number: int = 100) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            pr = ctx.repo_host.get_pr(pr_number)
+            assert pr is not None
+            assert label in pr.labels
+        return self._add_expectation(_assert)
+
+    def expect_pr_lacks_label(self, label: str, *, pr_number: int = 100) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            pr = ctx.repo_host.get_pr(pr_number)
+            assert pr is not None
+            assert label not in pr.labels
+        return self._add_expectation(_assert)
+
+    def expect_review_feedback_written(self) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            worktree = ctx.worktree
+            assert worktree is not None
+            feedback = _latest_review_feedback(worktree)
+            assert feedback is not None, "reviewer-feedback.json not found"
+        return self._add_expectation(_assert)
+
     def expect_session_history_status(self, expected: set[str]) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
             assert any(
@@ -384,7 +411,11 @@ class Scenario:
         )
         for expectation in self._expectations:
             expectation(ctx)
-        _close_goal_pilot_store(orch)
+        close = getattr(orch, "close", None)
+        if callable(close):
+            close()
+        else:
+            _close_goal_pilot_store(orch)
         return ctx
 
     def _add_expectation(self, expectation: Expectation) -> Scenario:
@@ -437,6 +468,15 @@ def _close_goal_pilot_store(orch: object) -> None:
 def _latest_validation_record(worktree: Path) -> Path | None:
     root = worktree / ".issue-orchestrator" / "validation"
     records = list(root.rglob("*.json"))
+    if not records:
+        return None
+    records.sort(key=lambda p: p.stat().st_mtime)
+    return records[-1]
+
+
+def _latest_review_feedback(worktree: Path) -> Path | None:
+    root = worktree / ".issue-orchestrator" / "sessions"
+    records = list(root.rglob("reviewer-feedback.json"))
     if not records:
         return None
     records.sort(key=lambda p: p.stat().st_mtime)

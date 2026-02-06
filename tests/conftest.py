@@ -108,11 +108,17 @@ class MockGitHubAdapter:
         """Add a label to an issue."""
         self.add_label_calls.append((issue_number, label))
         self.labels.setdefault(issue_number, set()).add(label)
+        pr = self.get_pr(issue_number)
+        if pr and label not in pr.labels:
+            pr.labels.append(label)
 
     def remove_label(self, issue_number: int, label: str) -> None:
         """Remove a label from an issue."""
         self.remove_label_calls.append((issue_number, label))
         self.labels.get(issue_number, set()).discard(label)
+        pr = self.get_pr(issue_number)
+        if pr and label in pr.labels:
+            pr.labels.remove(label)
 
     def has_label(self, issue_number: int, label: str) -> bool:
         """Check if issue has a specific label."""
