@@ -22,7 +22,15 @@ from typing import TYPE_CHECKING
 from ..infra.config import Config
 from ..infra.env import ENV_PREFIX
 from ..adapters.github.repo import get_repo_from_git, GitRepoError
-from ..ports import EventSink, SessionRunner, NullEventSink, NullSessionRunner, IssueTracker, InMemoryProviderCircuitStore
+from ..ports import (
+    EventSink,
+    SessionRunner,
+    NullEventSink,
+    NullSessionRunner,
+    IssueTracker,
+    InMemoryProviderCircuitStore,
+    NullTimelineStore,
+)
 from ..control.orchestrator_deps import OrchestratorDeps
 from ..control.provider_resilience import ProviderResilienceManager
 from ..execution import (
@@ -34,6 +42,8 @@ from ..execution import (
     CompositeEventSink,
     SqliteGoalPilotStore,
     SQLiteProviderCircuitStore,
+    TimelineEventSink,
+    FileSystemTimelineStore,
 )
 from ..execution.gh_guard import install_gh_guard
 from ..events import EventHub, SequencedEventSink
@@ -117,11 +127,16 @@ def _create_github_adapter(repo: str, config: Config) -> GitHubAdapter:
 def _setup_event_sinks(
     base_events: PluggyEventSink,
     github: GitHubAdapter | None,
+    *extra_sinks: EventSink,
 ) -> tuple[EventSink, EventHub | None]:
     """Set up event sinks and event hub."""
     event_hub = EventHub() if github else None
+    sinks: list[EventSink] = [base_events]
     if event_hub:
-        events = CompositeEventSink(base_events, event_hub)
+        sinks.append(event_hub)
+    sinks.extend(extra_sinks)
+    if len(sinks) > 1:
+        events = CompositeEventSink(*sinks)
     else:
         events = base_events
     events = SequencedEventSink(events)
@@ -462,12 +477,16 @@ def build_orchestrator(
     base_events = PluggyEventSink(pm)
     runner = PluggySessionRunner(pm)
 
+    # Timeline store + event sink
+    timeline_store = FileSystemTimelineStore(config.repo_root)
+    timeline_sink = TimelineEventSink(timeline_store)
+
     # Resolve repo and create GitHub adapter
     repo = _resolve_repo(config)
     github = _create_github_adapter(repo, config) if repo else None
 
     # Set up event sinks
-    events, event_hub = _setup_event_sinks(base_events, github)
+    events, event_hub = _setup_event_sinks(base_events, github, timeline_sink)
 
     # Configure GitHub audit logging
     _configure_gh_audit(config, events, github)
@@ -611,6 +630,7 @@ def build_orchestrator(
         publish_executor=publish_executor,
         goal_pilot_store=goal_pilot_store,
         provider_resilience=provider_resilience,
+        timeline_store=timeline_store,
     )
 
     return Orchestrator(config=config, deps=deps)
@@ -807,6 +827,7 @@ def build_orchestrator_for_testing(
 
     # Create EventHub for testing
     event_hub = EventHub()
+    timeline_store = NullTimelineStore()
 
     # Create claim components for testing (always use NullClaimManager)
     lease_config = LeaseConfig()
@@ -858,6 +879,7 @@ def build_orchestrator_for_testing(
         publish_executor=publish_executor,
         goal_pilot_store=goal_pilot_store,
         provider_resilience=provider_resilience,
+        timeline_store=timeline_store,
     )
 
     return Orchestrator(config=config, deps=deps)

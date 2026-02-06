@@ -45,6 +45,8 @@ from .command_runner import LocalCommandRunner
 from .session_output_adapter import FileSystemSessionOutput
 from .goal_pilot_store import SqliteGoalPilotStore
 from .provider_circuit_store import SQLiteProviderCircuitStore
+from .timeline_event_sink import TimelineEventSink
+from .timeline_store import FileSystemTimelineStore, TimelineStoreConfig
 
 __all__ = [
     # Main interface (internal, used by composition root)
@@ -78,4 +80,8 @@ __all__ = [
     "SqliteGoalPilotStore",
     # Provider circuit store
     "SQLiteProviderCircuitStore",
+    # Timeline storage
+    "TimelineEventSink",
+    "FileSystemTimelineStore",
+    "TimelineStoreConfig",
 ]

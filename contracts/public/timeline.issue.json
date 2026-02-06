@@ -1,0 +1,121 @@
+{
+  "$defs": {
+    "TimelineArtifactContract": {
+      "additionalProperties": true,
+      "properties": {
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "type": {
+          "title": "Type",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "label",
+        "value"
+      ],
+      "title": "TimelineArtifactContract",
+      "type": "object"
+    },
+    "TimelineEventContract": {
+      "additionalProperties": true,
+      "properties": {
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/TimelineArtifactContract"
+          },
+          "title": "Artifacts",
+          "type": "array"
+        },
+        "event": {
+          "title": "Event",
+          "type": "string"
+        },
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
+        },
+        "issue_number": {
+          "title": "Issue Number",
+          "type": "integer"
+        },
+        "level": {
+          "title": "Level",
+          "type": "string"
+        },
+        "parent_key": {
+          "title": "Parent Key",
+          "type": "string"
+        },
+        "phase": {
+          "title": "Phase",
+          "type": "string"
+        },
+        "status": {
+          "title": "Status",
+          "type": "string"
+        },
+        "step": {
+          "title": "Step",
+          "type": "string"
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Summary"
+        },
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "string"
+        }
+      },
+      "required": [
+        "event_id",
+        "timestamp",
+        "event",
+        "issue_number",
+        "phase",
+        "step",
+        "status",
+        "level",
+        "parent_key"
+      ],
+      "title": "TimelineEventContract",
+      "type": "object"
+    }
+  },
+  "additionalProperties": true,
+  "properties": {
+    "events": {
+      "items": {
+        "$ref": "#/$defs/TimelineEventContract"
+      },
+      "title": "Events",
+      "type": "array"
+    },
+    "issue_number": {
+      "title": "Issue Number",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "issue_number",
+    "events"
+  ],
+  "title": "TimelineIssueContract",
+  "type": "object"
+}

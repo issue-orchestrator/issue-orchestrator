@@ -1419,6 +1419,110 @@ function closePhaseModal(e) {
     }
 }
 
+const timelineModal = document.getElementById('timelineModal');
+
+async function openTimelineModal(issueNumber) {
+    if (!timelineModal) return;
+    timelineModal.classList.add('visible');
+    document.getElementById('timelineModalTitle').textContent = `Timeline #${issueNumber}`;
+    const content = document.getElementById('timelineModalContent');
+    content.innerHTML = '<div class="timeline-loading">Loading timeline...</div>';
+
+    try {
+        const res = await fetch(`/api/timeline/${issueNumber}`);
+        if (!res.ok) {
+            content.innerHTML = '<div class="timeline-empty">No timeline data found.</div>';
+            return;
+        }
+        const data = await res.json();
+        renderTimeline(content, data.events || []);
+    } catch (err) {
+        console.error('Failed to load timeline:', err);
+        content.innerHTML = '<div class="timeline-empty">Failed to load timeline.</div>';
+    }
+}
+
+function closeTimelineModal(e) {
+    if (!e || e.target === timelineModal) {
+        timelineModal.classList.remove('visible');
+    }
+}
+
+function renderTimeline(container, events) {
+    if (!events || events.length === 0) {
+        container.innerHTML = '<div class="timeline-empty">No timeline events recorded yet.</div>';
+        return;
+    }
+
+    const groups = [];
+    for (const event of events) {
+        const phase = event.phase || 'system';
+        let group = groups[groups.length - 1];
+        if (!group || group.phase !== phase) {
+            group = { phase, events: [] };
+            groups.push(group);
+        }
+        group.events.push(event);
+    }
+
+    const html = groups.map(group => {
+        const phaseLabel = formatPhaseLabel(group.phase);
+        const items = group.events.map(evt => {
+            const stepLabel = formatStepLabel(evt.step);
+            const summary = evt.summary ? `<div class="timeline-summary">${escapeHtml(evt.summary)}</div>` : '';
+            const time = evt.timestamp ? `<div class="timeline-time">${formatTimestamp(evt.timestamp)}</div>` : '';
+            const artifacts = renderTimelineArtifacts(evt.artifacts || []);
+            return `
+                <div class="timeline-event ${evt.status || ''}">
+                    <div class="timeline-event-header">
+                        <span class="timeline-step">${escapeHtml(stepLabel)}</span>
+                        <span class="timeline-status">${formatStatus(evt.status)}</span>
+                    </div>
+                    ${time}
+                    ${summary}
+                    ${artifacts}
+                </div>
+            `;
+        }).join('');
+        return `
+            <div class="timeline-group">
+                <div class="timeline-group-header">${escapeHtml(phaseLabel)}</div>
+                <div class="timeline-group-body">${items}</div>
+            </div>
+        `;
+    }).join('');
+
+    container.innerHTML = html;
+}
+
+function renderTimelineArtifacts(artifacts) {
+    if (!artifacts || artifacts.length === 0) return '';
+    const items = artifacts.map(artifact => {
+        const label = escapeHtml(artifact.label || artifact.type || 'Artifact');
+        const value = artifact.value || '';
+        if (value.startsWith('http://') || value.startsWith('https://')) {
+            return `<a class="timeline-artifact" href="${escapeAttr(value)}" target="_blank">${label}</a>`;
+        }
+        return `<button class="timeline-artifact" onclick="openPath('${escapeHtml(value)}')">${label}</button>`;
+    }).join('');
+    return `<div class="timeline-artifacts">${items}</div>`;
+}
+
+function formatPhaseLabel(phase) {
+    return phase.replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase());
+}
+
+function formatStepLabel(step) {
+    return step.replace(/_/g, ' ').replace(/\\b\\w/g, c => c.toUpperCase());
+}
+
+function formatTimestamp(timestamp) {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return timestamp;
+    return date.toLocaleString();
+}
+
 function openPhaseDetails() {
     if (currentPhaseData && currentPhaseData.run_dir) {
         // Open the session manifest modal with this specific run
