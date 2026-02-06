@@ -199,6 +199,12 @@ Example of a GOOD fix:
 exists = self._session_runner.session_exists(session.terminal_id)  # ✅ Proper abstraction
 ```
 
+## Abstraction Heuristics
+
+- Favor higher-level abstractions when they improve clarity, conciseness, or testability.
+- If callers must rummage across disparate classes/fields to accomplish a task, consider introducing a higher-level port or helper.
+- Entry points should depend on behavior-level ports, not storage or transport details.
+
 ## Hexagonal Architecture - Layer Boundaries
 
 This codebase follows hexagonal (ports & adapters) architecture. **Respect layer boundaries.**

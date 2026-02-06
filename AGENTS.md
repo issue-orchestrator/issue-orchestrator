@@ -179,6 +179,12 @@ def get_session(self, id: str) -> Session:
 - Session ops via `self.runner.*`, never direct plugin manager
 - All orchestrator dependencies injected via constructor
 
+## Abstraction Heuristics
+
+- Favor higher-level abstractions when they improve clarity, conciseness, or testability.
+- If callers must rummage across disparate classes/fields to accomplish a task, consider introducing a higher-level port or helper.
+- Entry points should depend on behavior-level ports, not storage or transport details.
+
 ## GitHub API Discipline
 
 GitHub CLI/API calls are a limited resource. Be mindful of command volume and avoid unnecessary scans or polling. Inefficient usage forces expensive systemic tuning later, so prefer cached data, targeted reads, and minimal refreshes whenever possible.
