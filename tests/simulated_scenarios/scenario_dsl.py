@@ -343,6 +343,7 @@ class Scenario:
         )
         for expectation in self._expectations:
             expectation(ctx)
+        _close_goal_pilot_store(orch)
         return ctx
 
     def _add_expectation(self, expectation: Expectation) -> Scenario:
@@ -378,6 +379,18 @@ def _summary_rounds(worktree: Path) -> list[int]:
         if "completed_rounds" in data:
             rounds.append(int(data["completed_rounds"]))
     return rounds
+
+
+def _close_goal_pilot_store(orch: object) -> None:
+    deps = getattr(orch, "deps", None)
+    if deps is None:
+        return
+    store = getattr(deps, "goal_pilot_store", None)
+    if store is None:
+        return
+    close = getattr(store, "close", None)
+    if callable(close):
+        close()
 
 
 def _latest_validation_record(worktree: Path) -> Path | None:
