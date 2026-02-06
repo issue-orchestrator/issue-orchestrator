@@ -1314,7 +1314,23 @@ class TestApiTimelineEndpoint:
                     summary=None,
                     parent_key="session:issue-123",
                     artifacts=[TimelineArtifact("worktree", "Worktree", "/tmp/worktree")],
-                )
+                ),
+                TimelineEvent(
+                    event_id="e2",
+                    timestamp="2026-02-06T00:01:00Z",
+                    event="session.completed",
+                    issue_number=123,
+                    phase="completed",
+                    step="completed",
+                    status="completed",
+                    level="phase",
+                    summary=None,
+                    parent_key="session:issue-123",
+                    artifacts=[
+                        TimelineArtifact("pull_request", "PR", "https://example/pr/1"),
+                        TimelineArtifact("completion_record", "Completion", "/tmp/worktree/completion.json"),
+                    ],
+                ),
             ],
         )
         mock_orch.deps.timeline_reader.read.return_value = stream
@@ -1326,9 +1342,12 @@ class TestApiTimelineEndpoint:
             assert response.status_code == 200
             payload = response.json()
             assert payload["issue_number"] == 123
-            assert len(payload["events"]) == 1
+            assert len(payload["events"]) == 2
             assert payload["events"][0]["event"] == "session.started"
             assert payload["events"][0]["artifacts"][0]["type"] == "worktree"
+            completion_artifacts = {a["type"] for a in payload["events"][1]["artifacts"]}
+            assert "pull_request" in completion_artifacts
+            assert "completion_record" in completion_artifacts
         finally:
             set_orchestrator(None)
 
