@@ -195,7 +195,6 @@ class TestValidateFields:
             "risk": None,
             "checks": None,
             "checks_needed": None,
-            "skip_validation": False,
         }
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
@@ -471,7 +470,6 @@ class TestBuildCompletionRecord:
         assert record.problems == "None"
         assert RequestedAction.PUSH_BRANCH in record.requested_actions
         assert RequestedAction.CREATE_PR in record.requested_actions
-        assert record.validation_skipped is False
 
     def test_build_blocked_record(self):
         """Test building completion record for blocked status."""
@@ -1014,57 +1012,6 @@ validation:
             manifest = json.loads(manifest_path.read_text())
             assert manifest.get("validation_record_path")
             assert manifest.get("validation_status") == "failed"
-        finally:
-            os.chdir(original_cwd)
-
-    def test_validation_skipped_with_flag(self, tmp_path, capsys):
-        """Test that validation can be skipped with --skip-validation."""
-        # Create fake git repo
-        git_dir = tmp_path / ".git"
-        git_dir.mkdir()
-        (tmp_path / "README.md").write_text("test")
-
-        import subprocess
-        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
-        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
-        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
-        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
-        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
-
-        # Create config with validation that would fail
-        config_dir = tmp_path / ".issue-orchestrator" / "config"
-        config_dir.mkdir(parents=True)
-        config_path = config_dir / "default.yaml"
-        config_path.write_text("""
-validation:
-  cmd: "exit 1"
-  timeout_seconds: 10
-""")
-
-        original_cwd = Path.cwd()
-        try:
-            os.chdir(tmp_path)
-
-            with patch('sys.argv', [
-                'agent-done', 'completed',
-                '--implementation', 'Added feature',
-                '--problems', 'None',
-                '--skip-validation'
-            ]):
-                with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                    main()
-
-            captured = capsys.readouterr()
-            # Should NOT print validation failure (skipped)
-            assert "Validation failed" not in captured.out
-            # Should still write completion record
-            assert "Completion record written to" in captured.out
-            # Should not show validation status
-            assert "Running validation" not in captured.out
-            record_path = tmp_path / COMPLETION_RECORD_PATH
-            assert record_path.exists()
-            data = json.loads(record_path.read_text())
-            assert data.get("validation_skipped") is True
         finally:
             os.chdir(original_cwd)
 

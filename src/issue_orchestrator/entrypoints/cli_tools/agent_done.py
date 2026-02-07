@@ -339,7 +339,7 @@ def build_completion_record(status: str, args: argparse.Namespace) -> Completion
         comment_body=comment_body,
         # PR labels
         pr_labels=getattr(args, 'pr_labels', None),
-        validation_skipped=bool(getattr(args, "skip_validation", False)),
+        validation_skipped=False,
     )
 
 
@@ -673,11 +673,6 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     # Meta options
     parser.add_argument("--dry-run", action="store_true", help="Show what would be written")
     parser.add_argument(
-        "--skip-validation",
-        action="store_true",
-        help="Skip agent gate validation even if configured",
-    )
-    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Show detailed output",
@@ -723,10 +718,7 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
         AgentStatus.APPROVED,
         AgentStatus.CHANGES_REQUESTED,
     }
-    should_validate = (
-        not args.skip_validation
-        and status in statuses_requiring_validation
-    )
+    should_validate = status in statuses_requiring_validation
 
     if should_validate:
         # Check if validation is configured before requiring session output
