@@ -36,7 +36,7 @@ from ..view_models.dialogs import (
     build_phase_dialog,
     build_session_diagnostics_dialog,
 )
-from ..contracts.openapi import (
+from ..contracts.ui_openapi_models import (
     BlockedIssuesDialogPayload,
     ConfigDialogPayload,
     DashboardViewModelPayload,
