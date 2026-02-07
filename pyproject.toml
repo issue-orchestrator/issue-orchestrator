@@ -98,7 +98,7 @@ markers = [
 ]
 
 [tool.pyright]
-include = ["src", "packages/agent_runner/src"]
+include = ["src", "packages/agent_runner/src", "tests"]
 pythonVersion = "3.14"
 venvPath = "."
 venv = ".venv"

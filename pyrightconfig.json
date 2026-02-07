@@ -1,5 +1,5 @@
 {
-  "include": ["src", "packages/agent_runner/src"],
+  "include": ["src", "packages/agent_runner/src", "tests"],
   "exclude": [
     "src/issue_orchestrator/domain",
     "src/issue_orchestrator/ports",
