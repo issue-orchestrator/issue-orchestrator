@@ -497,18 +497,19 @@ class AgentConfig:
         # Build provider-specific kwargs from provider_args
         kwargs = dict(self.provider_args)
 
-        # Add system prompt with agent-done instructions (sandwich pattern):
-        # - Brief critical hook at top (in agent_done.md)
-        # - "Read prompt file" in the middle
-        # - Full agent-done docs at bottom (in agent_done.md)
-        # NOTE: Agent-done is ALWAYS injected - user system_prompt is appended, not replaced
+        # STRICT ENFORCEMENT: Agent-done is ALWAYS injected for ALL providers.
+        # - For Claude: inject via system_prompt (--append-system-prompt)
+        # - For other providers: prepend to the prompt itself
+        agent_done_docs = get_agent_done_instructions()
+        agent_done_with_prompt_ref = (
+            f"{agent_done_docs}\n\n"
+            f"---\n\n"
+            f"Read {prompt_file} for your task-specific instructions."
+        )
+
         if self.provider == "claude-code":
-            agent_done_docs = get_agent_done_instructions()
-            system_prompt = (
-                f"{agent_done_docs}\n\n"
-                f"---\n\n"
-                f"Read {prompt_file} for your task-specific instructions."
-            )
+            # Claude Code uses --append-system-prompt for agent-done
+            system_prompt = agent_done_with_prompt_ref
             # Append any user-provided system_prompt (agent-done always comes first)
             user_system_prompt = kwargs.pop("system_prompt", None)
             if user_system_prompt:
@@ -516,6 +517,9 @@ class AgentConfig:
             kwargs["system_prompt"] = system_prompt
             # Use permission_mode from provider_args or fall back to legacy field
             kwargs.setdefault("permission_mode", self.permission_mode)
+        else:
+            # Other providers (Codex, etc.): prepend agent-done to the prompt itself
+            prompt = f"{agent_done_with_prompt_ref}\n\n---\n\n{prompt}"
 
         # Build the command (returns list[str])
         cmd_list = provider.build_command(prompt=prompt, model=self.model, **kwargs)

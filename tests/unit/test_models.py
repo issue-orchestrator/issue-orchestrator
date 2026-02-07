@@ -235,6 +235,51 @@ class TestAgentConfig:
         # User content is also present (extensibility)
         assert "My own instructions without agent-done" in cmd
 
+    def test_get_command_codex_provider_injects_agent_done(self, tmp_path):
+        """Test Codex provider also gets agent-done injection (universal enforcement)."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Task instructions")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+            provider="codex",
+            model="gpt-5-codex",
+        )
+
+        cmd = config.get_command(123, "Test Issue", tmp_path)
+
+        # Agent-done MUST be present even for non-Claude providers
+        assert "CRITICAL" in cmd
+        assert "agent-done" in cmd
+        assert "prompt.md" in cmd
+        # Should use codex executable
+        assert "codex" in cmd
+
+    def test_get_command_non_claude_provider_prepends_to_prompt(self, tmp_path):
+        """Test non-Claude providers get agent-done prepended to prompt."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Task instructions")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+            provider="codex",
+            model="gpt-5-codex",
+            initial_prompt="Do the work on issue #{issue_number}",
+        )
+
+        cmd = config.get_command(123, "Test Issue", tmp_path)
+
+        # Both agent-done and the initial prompt should be in the command
+        assert "CRITICAL" in cmd
+        assert "agent-done" in cmd
+        assert "Do the work on issue #123" in cmd
+        # Agent-done should come before the user's initial prompt
+        critical_pos = cmd.find("CRITICAL")
+        user_prompt_pos = cmd.find("Do the work on issue #123")
+        assert critical_pos < user_prompt_pos, "Agent-done must precede user prompt"
+
 
 class TestSession:
     """Test the Session data model."""
