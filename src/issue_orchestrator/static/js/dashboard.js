@@ -110,7 +110,7 @@ function buildEmptyStateHtml(vm) {
     if (vm.active_tab === 'history') {
         return 'No session history yet';
     }
-    if (vm.active_tab === 'blocked') {
+    if (vm.active_tab === 'attention') {
         return 'Nothing needs attention - all systems running smoothly!';
     }
     if (vm.active_tab === 'e2e') {
@@ -627,8 +627,8 @@ function switchTab(tab) {
 }
 
 // Keyboard navigation for tabs (accessibility)
-const tabOrder = ['active', 'queue', 'blocked', 'history', 'e2e'];
-document.querySelectorAll('.tab-bar .tab').forEach(tabBtn => {
+const tabOrder = ['flow', 'attention', 'history'];
+document.querySelectorAll('.board-tabs .tab').forEach(tabBtn => {
     tabBtn.addEventListener('keydown', (e) => {
         const currentTab = tabBtn.id.replace('tab-', '');
         const currentIndex = tabOrder.indexOf(currentTab);
@@ -1420,6 +1420,9 @@ function closePhaseModal(e) {
 }
 
 const timelineModal = document.getElementById('timelineModal');
+const issueDetailDrawer = document.getElementById('issueDetailDrawer');
+let issueDetailData = null;
+let issueDetailMode = 'loops';
 
 async function openTimelineModal(issueNumber) {
     if (!timelineModal) return;
@@ -1435,7 +1438,7 @@ async function openTimelineModal(issueNumber) {
             return;
         }
         const data = await res.json();
-        renderTimeline(content, data.events || []);
+        renderTimeline(content, data.events || [], data.phase_toc || [], data.loops || []);
     } catch (err) {
         console.error('Failed to load timeline:', err);
         content.innerHTML = '<div class="timeline-empty">Failed to load timeline.</div>';
@@ -1448,7 +1451,82 @@ function closeTimelineModal(e) {
     }
 }
 
-function renderTimeline(container, events) {
+async function openIssueDetail(issueNumber) {
+    if (!issueDetailDrawer) return;
+    issueDetailDrawer.classList.add('visible');
+    issueDetailDrawer.setAttribute('aria-hidden', 'false');
+    document.getElementById('issueDetailTitle').textContent = `Issue #${issueNumber}`;
+    document.getElementById('issueDetailSummary').textContent = 'Loading issue detail...';
+    document.getElementById('issueDetailBody').innerHTML = '';
+
+    try {
+        const res = await fetch(`/api/issue-detail/${issueNumber}`);
+        if (!res.ok) {
+            document.getElementById('issueDetailSummary').textContent = 'Issue detail unavailable.';
+            return;
+        }
+        issueDetailData = await res.json();
+        issueDetailMode = 'loops';
+        renderIssueDetail();
+    } catch (err) {
+        console.error('Failed to load issue detail:', err);
+        document.getElementById('issueDetailSummary').textContent = 'Failed to load issue detail.';
+    }
+}
+
+function closeIssueDetail() {
+    if (!issueDetailDrawer) return;
+    issueDetailDrawer.classList.remove('visible');
+    issueDetailDrawer.setAttribute('aria-hidden', 'true');
+}
+
+function setIssueDetailMode(mode) {
+    issueDetailMode = mode;
+    renderIssueDetail();
+}
+
+function renderIssueDetail() {
+    if (!issueDetailData) return;
+    const title = issueDetailData.title || `Issue #${issueDetailData.issue_number}`;
+    document.getElementById('issueDetailTitle').textContent = title;
+    document.getElementById('issueDetailGitHubBtn').href = issueDetailData.issue_url || '#';
+    document.getElementById('issueDetailFocusBtn').onclick = () => openTimelineModal(issueDetailData.issue_number);
+    const summary = issueDetailData.summary || {};
+    document.getElementById('issueDetailSummary').textContent =
+        `Status: ${summary.status || 'unknown'} · Last: ${summary.last_event || 'none'} · Events: ${summary.event_count || 0}`;
+
+    const loopsBtn = document.getElementById('issueDetailLoopsBtn');
+    const rawBtn = document.getElementById('issueDetailRawBtn');
+    loopsBtn.classList.toggle('active', issueDetailMode === 'loops');
+    rawBtn.classList.toggle('active', issueDetailMode === 'raw');
+
+    const body = document.getElementById('issueDetailBody');
+    if (issueDetailMode === 'raw') {
+        const events = issueDetailData.events || [];
+        body.innerHTML = events.map(evt => `
+            <div class="timeline-event ${evt.status || ''}">
+                <div class="timeline-event-header">
+                    <span>${escapeHtml(formatStepLabel(evt.step || evt.event || 'event'))}</span>
+                    <span>${formatStatus(evt.status)}</span>
+                </div>
+                <div class="timeline-time">${escapeHtml(formatTimestamp(evt.timestamp || ''))}</div>
+                ${evt.summary ? `<div class="timeline-summary">${escapeHtml(evt.summary)}</div>` : ''}
+            </div>
+        `).join('') || '<div class="timeline-empty">No events recorded.</div>';
+        return;
+    }
+
+    const loops = issueDetailData.loops || [];
+    body.innerHTML = loops.map(loop => `
+        <div class="timeline-loop-item">
+            <div class="timeline-loop-title">Loop ${loop.loop}</div>
+            <div class="timeline-loop-phases">${(loop.phases || []).map(formatPhaseLabel).join(' → ')}</div>
+            <div class="timeline-loop-status">${formatStatus(loop.status)}</div>
+        </div>
+    `).join('') || '<div class="timeline-empty">No loop data recorded.</div>';
+}
+
+function renderTimeline(container, events, phaseToc = [], loops = []) {
     if (!events || events.length === 0) {
         container.innerHTML = '<div class="timeline-empty">No timeline events recorded yet.</div>';
         return;
@@ -1465,7 +1543,21 @@ function renderTimeline(container, events) {
         group.events.push(event);
     }
 
-    const html = groups.map(group => {
+    const loopHtml = loops.length > 0
+        ? `<div class=\"timeline-loop-list\">${loops.map(loop => `
+            <div class=\"timeline-loop-item\">
+                <div class=\"timeline-loop-title\">Loop ${loop.loop}</div>
+                <div class=\"timeline-loop-phases\">${(loop.phases || []).map(formatPhaseLabel).join(' → ')}</div>
+                <div class=\"timeline-loop-status\">${formatStatus(loop.status)}</div>
+            </div>
+        `).join('')}</div>`
+        : '';
+
+    const tocHtml = phaseToc.length > 0
+        ? `<div class=\"timeline-toc\">${phaseToc.map(item => `<span class=\"timeline-toc-item\">${escapeHtml(item.label || item.phase || '')}</span>`).join('')}</div>`
+        : '';
+
+    const continuumHtml = groups.map(group => {
         const phaseLabel = formatPhaseLabel(group.phase);
         const items = group.events.map(evt => {
             const stepLabel = formatStepLabel(evt.step);
@@ -1492,7 +1584,7 @@ function renderTimeline(container, events) {
         `;
     }).join('');
 
-    container.innerHTML = html;
+    container.innerHTML = `${tocHtml}${loopHtml}<div class=\"timeline-continuum\">${continuumHtml}</div>`;
     if (!container.dataset.timelineBound) {
         container.addEventListener('click', (event) => {
             const target = event.target.closest('.timeline-artifact');

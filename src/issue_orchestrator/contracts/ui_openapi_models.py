@@ -48,15 +48,23 @@ class DashboardViewModelPayload(BaseModel):
     active_session_count: int
     active_tab: str
     agents: list[str]
+    attention_groups: list[dict[str, Any]]
+    awaiting_merge_count: int
+    awaiting_merge_items: list[IssueItemPayload]
+    backlog_count: int
+    backlog_items: list[IssueItemPayload]
     blocked_count: int
     blocked_items: list[IssueItemPayload]
     dashboard_data: DashboardDataPayload
+    done_count: int
+    done_items: list[IssueItemPayload]
     e2e_count: int
     e2e_items: list[IssueItemPayload]
     e2e_page: int
     e2e_status: dict[str, Any]
     e2e_total: int
     e2e_total_pages: int
+    flow_columns: list[dict[str, Any]]
     github_owner: str
     github_repo: str
     history_count: int
@@ -71,6 +79,7 @@ class DashboardViewModelPayload(BaseModel):
     queue_total_pages: int
     repo: str
     repo_root: str
+    scope_summary: dict[str, Any]
     shutdown_requested: bool
     startup_message: str
     startup_status: str
@@ -105,6 +114,17 @@ class DoctorDialogPayload(BaseModel):
 class InfoDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     rows: list[DialogRowPayload]
+    title: str
+
+class IssueDetailPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    actions: list[dict[str, Any]]
+    events: list[dict[str, Any]]
+    issue_number: int
+    issue_url: str
+    loops: list[dict[str, Any]]
+    phase_toc: list[dict[str, Any]]
+    summary: dict[str, Any]
     title: str
 
 class IssueItemPayload(BaseModel):

@@ -37,15 +37,23 @@ export interface DashboardViewModelPayload {
   active_session_count: number;
   active_tab: string;
   agents: string[];
+  attention_groups: Record<string, any>[];
+  awaiting_merge_count: number;
+  awaiting_merge_items: IssueItemPayload[];
+  backlog_count: number;
+  backlog_items: IssueItemPayload[];
   blocked_count: number;
   blocked_items: IssueItemPayload[];
   dashboard_data: DashboardDataPayload;
+  done_count: number;
+  done_items: IssueItemPayload[];
   e2e_count: number;
   e2e_items: IssueItemPayload[];
   e2e_page: number;
   e2e_status: Record<string, any>;
   e2e_total: number;
   e2e_total_pages: number;
+  flow_columns: Record<string, any>[];
   github_owner: string;
   github_repo: string;
   history_count: number;
@@ -60,6 +68,7 @@ export interface DashboardViewModelPayload {
   queue_total_pages: number;
   repo: string;
   repo_root: string;
+  scope_summary: Record<string, any>;
   shutdown_requested: boolean;
   startup_message: string;
   startup_status: string;
@@ -94,6 +103,17 @@ export interface DoctorDialogPayload {
 
 export interface InfoDialogPayload {
   rows: DialogRowPayload[];
+  title: string;
+}
+
+export interface IssueDetailPayload {
+  actions: Record<string, any>[];
+  events: Record<string, any>[];
+  issue_number: number;
+  issue_url: string;
+  loops: Record<string, any>[];
+  phase_toc: Record<string, any>[];
+  summary: Record<string, any>;
   title: string;
 }
 

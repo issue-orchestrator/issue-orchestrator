@@ -1371,6 +1371,47 @@ class TestApiTimelineEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_issue_detail_returns_payload(self):
+        """Issue detail endpoint returns drawer payload."""
+        from issue_orchestrator.entrypoints import web
+        mock_orch = create_mock_orchestrator()
+        mock_orch.state.cached_queue_issues = [create_issue(123, "Detail Issue")]
+
+        stream = TimelineStream(
+            issue_number=123,
+            events=[
+                TimelineEvent(
+                    event_id="e1",
+                    timestamp="2026-02-06T00:00:00Z",
+                    event="session.started",
+                    issue_number=123,
+                    phase="in_progress",
+                    step="started",
+                    status="started",
+                    level="phase",
+                    summary="started",
+                    parent_key="session:issue-123",
+                    artifacts=[],
+                ),
+            ],
+        )
+        mock_orch.deps.timeline_reader.read.return_value = stream
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/issue-detail/123")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["issue_number"] == 123
+            assert payload["title"] == "Detail Issue"
+            assert "summary" in payload
+            assert "events" in payload
+            assert "loops" in payload
+            assert "actions" in payload
+        finally:
+            set_orchestrator(None)
+
     def test_refresh_with_inflight_stable_ids(self):
         """Test refresh with inflight_stable_ids parameter."""
         from issue_orchestrator.entrypoints import web
