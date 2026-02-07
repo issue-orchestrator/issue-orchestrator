@@ -1,0 +1,3 @@
+display_name: Control Center Lifecycle
+short_description: Applies lifecycle scope and UI control placement rules for Control Center and repository engines.
+default_prompt: Use the Control Center lifecycle model to keep Control Center, repository engine, and job scopes explicit and consistent.
