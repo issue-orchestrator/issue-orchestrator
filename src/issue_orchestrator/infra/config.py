@@ -441,6 +441,13 @@ class SqliteBackupConfig:
 
 
 @dataclass
+class TimelineConfig:
+    """Timeline retention configuration."""
+
+    max_records: int = 5000
+
+
+@dataclass
 class ClaimsConfig:
     """Claims/lease configuration for multi-orchestrator coordination.
 
@@ -513,6 +520,13 @@ def _parse_sqlite_backup_config(data: dict) -> SqliteBackupConfig:
         retention_daily=data.get("retention_daily", 14),
         retention_weekly=data.get("retention_weekly", 8),
         enforce_on_startup=data.get("enforce_on_startup", True),
+    )
+
+
+def _parse_timeline_config(data: dict) -> TimelineConfig:
+    """Parse timeline section from YAML data."""
+    return TimelineConfig(
+        max_records=data.get("max_records", 5000),
     )
 
 
@@ -653,6 +667,8 @@ def _apply_optional_sections(config: "Config", sections: dict) -> None:
         config.scheduling = _parse_scheduling_config(sections["scheduling"])
     if sections["e2e"]:
         config.e2e = _parse_e2e_config(sections["e2e"])
+    if sections["timeline"]:
+        config.timeline = _parse_timeline_config(sections["timeline"])
     if sections["sqlite_backup"]:
         config.sqlite_backup = _parse_sqlite_backup_config(sections["sqlite_backup"])
     if sections["goal_pilot"]:
@@ -965,7 +981,7 @@ def _load_agents_section(
 
 _TOP_LEVEL_SECTION_KEYS = (
     "agents", "labels", "review", "cleanup", "worktrees", "execution",
-    "validation", "provider_resilience", "ui", "observability", "security", "filtering",
+    "validation", "provider_resilience", "ui", "observability", "timeline", "security", "filtering",
     "triage", "scheduling", "e2e", "goal_pilot", "milestones", "state", "config", "claims", "hooks",
     "ai_systems",
     "triage", "scheduling", "e2e", "milestones", "state", "config", "claims", "hooks",
@@ -1169,6 +1185,8 @@ class Config:
     goal_pilot: GoalPilotConfig = field(default_factory=GoalPilotConfig)
     # SQLite backup configuration
     sqlite_backup: SqliteBackupConfig = field(default_factory=SqliteBackupConfig)
+    # Timeline retention configuration
+    timeline: TimelineConfig = field(default_factory=TimelineConfig)
 
     # Goal Pilot AI configuration
     goal_pilot: GoalPilotConfig = field(default_factory=GoalPilotConfig)
@@ -1774,6 +1792,12 @@ class Config:
                 "retention_daily": self.sqlite_backup.retention_daily,
                 "retention_weekly": self.sqlite_backup.retention_weekly,
                 "enforce_on_startup": self.sqlite_backup.enforce_on_startup,
+            }
+
+        # Timeline section
+        if self.timeline != TimelineConfig():
+            result["timeline"] = {
+                "max_records": self.timeline.max_records,
             }
 
         # Validation section

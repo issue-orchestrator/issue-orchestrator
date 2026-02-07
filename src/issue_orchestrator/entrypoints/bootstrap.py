@@ -46,6 +46,7 @@ from ..execution import (
     TimelineEventSink,
     DefaultTimelineReader,
     FileSystemTimelineStore,
+    TimelineStoreConfig,
     DefaultTimelineWriter,
 )
 from ..execution.gh_guard import install_gh_guard
@@ -481,7 +482,10 @@ def build_orchestrator(
     runner = PluggySessionRunner(pm)
 
     # Timeline store + reader/writer + event sink
-    timeline_store = FileSystemTimelineStore(config.repo_root)
+    timeline_store = FileSystemTimelineStore(
+        config.repo_root,
+        TimelineStoreConfig(max_records=config.timeline.max_records),
+    )
     timeline_reader = DefaultTimelineReader(timeline_store)
     timeline_writer = DefaultTimelineWriter(timeline_store)
     timeline_sink = TimelineEventSink(timeline_writer)

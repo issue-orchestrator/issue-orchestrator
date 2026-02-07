@@ -92,6 +92,7 @@ _Auto-generated from settings schema._
 | `sqlite_backup.retention_daily` | integer | `14` | Number of daily backups to keep | `7`, `14`, `30` | Set to 0 to disable daily backups. |
 | `sqlite_backup.retention_weekly` | integer | `8` | Number of weekly backups to keep | `4`, `8`, `12` | Set to 0 to disable weekly backups. |
 | `sqlite_backup.enforce_on_startup` | boolean | `True` | If cadence elapsed, force a backup on startup | `true`, `false` | Keeps backups current if the process was stopped for a while. |
+| `timeline.max_records` | integer | `5000` | Max timeline events kept per issue before trimming | `2000`, `5000`, `10000` | Higher values keep more history but grow state files faster. |
 | `provider_resilience.short_retry.max_attempts` | integer | `4` | Max attempts for transient provider failures | `2`, `4`, `6` | Higher values reduce failures but can prolong degraded runs. |
 | `provider_resilience.short_retry.initial_backoff_seconds` | integer | `5` | Initial backoff for transient provider retries | `2`, `5`, `10` | Shorter backoffs retry faster but can amplify rate limits. |
 | `provider_resilience.short_retry.max_backoff_seconds` | integer | `60` | Maximum backoff for transient provider retries | `30`, `60`, `120` | Caps exponential backoff to avoid excessive waiting. |

@@ -1510,7 +1510,7 @@ function renderTimelineArtifacts(artifacts) {
         const label = escapeHtml(artifact.label || artifact.type || 'Artifact');
         const value = artifact.value || '';
         if (value.startsWith('http://') || value.startsWith('https://')) {
-            return `<a class="timeline-artifact" href="${escapeAttr(value)}" target="_blank">${label}</a>`;
+            return `<a class="timeline-artifact" href="${escapeAttr(value)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
         }
         return `<button class="timeline-artifact" type="button" data-path="${escapeAttr(value)}">${label}</button>`;
     }).join('');

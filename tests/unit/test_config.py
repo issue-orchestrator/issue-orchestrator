@@ -499,6 +499,24 @@ sqlite_backup:
         assert config.sqlite_backup.retention_weekly == 4
         assert config.sqlite_backup.enforce_on_startup is False
 
+    def test_timeline_defaults(self):
+        """Test default timeline settings."""
+        config = Config()
+        assert config.timeline.max_records == 5000
+
+    def test_timeline_loaded_from_yaml(self, tmp_path):
+        """Test timeline settings from YAML."""
+        config_content = """
+timeline:
+  max_records: 1200
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+
+        assert config.timeline.max_records == 1200
+
     def test_config_multiple_agents(self, tmp_path):
         """Test loading config with multiple agents."""
         prompt1 = tmp_path / "prompt1.txt"
@@ -2574,6 +2592,36 @@ sqlite_backup:
         assert result["sqlite_backup"]["retention_daily"] == 7
         assert result["sqlite_backup"]["retention_weekly"] == 4
         assert result["sqlite_backup"]["enforce_on_startup"] is False
+
+    def test_to_dict_timeline_settings(self, tmp_path):
+        """Test to_dict includes timeline settings when non-default."""
+        prompt_file = tmp_path / "prompt.txt"
+        prompt_file.write_text("test prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+
+        config_content = f"""
+repo:
+  name: owner/repo
+
+worktrees:
+  base: {worktree_base}
+
+agents:
+  agent:test:
+    prompt: {prompt_file}
+
+timeline:
+  max_records: 1200
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        result = config.to_dict()
+
+        assert "timeline" in result
+        assert result["timeline"]["max_records"] == 1200
 
     def test_to_dict_omits_defaults(self, tmp_path):
         """Test to_dict omits default values to keep output minimal."""

@@ -699,6 +699,19 @@ class AdvancedSettings(BaseModel):
             "yaml_path": "sqlite_backup.enforce_on_startup",
         },
     )
+    timeline_max_records: int = Field(
+        5000,
+        title="Timeline Retention (records)",
+        description="Max timeline events kept per issue before trimming",
+        ge=1,
+        json_schema_extra={
+            "doc_examples": ["2000", "5000", "10000"],
+            "doc_notes": "Higher values keep more history but grow state files faster.",
+            "section": "Timeline",
+            "config_attr": "timeline.max_records",
+            "yaml_path": "timeline.max_records",
+        },
+    )
 
     provider_short_retry_max_attempts: int = Field(
         4,
