@@ -39,37 +39,48 @@ def resolve_type(schema: dict[str, Any]) -> str:
     if "$ref" in schema:
         return ref_name(schema["$ref"])
 
-    if "oneOf" in schema:
-        return " | ".join(resolve_type(s) for s in schema["oneOf"])
-    if "anyOf" in schema:
-        return " | ".join(resolve_type(s) for s in schema["anyOf"])
+    union = schema.get("oneOf") or schema.get("anyOf")
+    if union:
+        return " | ".join(resolve_type(s) for s in union)
 
     schema_type = schema.get("type")
     if isinstance(schema_type, list):
-        types = [t for t in schema_type if t != "null"]
-        resolved = [resolve_type({**schema, "type": t}) for t in types]
-        resolved.append("None")
-        return " | ".join(dict.fromkeys(resolved))
+        return _resolve_type_union(schema, schema_type)
 
-    if schema_type == "string":
-        return "str"
-    if schema_type == "integer":
-        return "int"
-    if schema_type == "number":
-        return "float"
-    if schema_type == "boolean":
-        return "bool"
+    return _resolve_single_type(schema_type, schema)
+
+
+def _resolve_type_union(schema: dict[str, Any], schema_types: list[str]) -> str:
+    resolved = [resolve_type({**schema, "type": t}) for t in schema_types if t != "null"]
+    if "null" in schema_types:
+        resolved.append("None")
+    return " | ".join(dict.fromkeys(resolved))
+
+
+def _resolve_single_type(schema_type: str | None, schema: dict[str, Any]) -> str:
+    scalar = {
+        "string": "str",
+        "integer": "int",
+        "number": "float",
+        "boolean": "bool",
+        "null": "None",
+    }
+    if schema_type in scalar:
+        return scalar[schema_type]
     if schema_type == "array":
         return f"list[{resolve_type(schema.get('items', {}))}]"
     if schema_type == "object":
-        additional = schema.get("additionalProperties")
-        if additional is True:
-            return "dict[str, Any]"
-        if isinstance(additional, dict):
-            return f"dict[str, {resolve_type(additional)}]"
-        return "dict[str, Any]"
-
+        return _resolve_object_type(schema)
     return "Any"
+
+
+def _resolve_object_type(schema: dict[str, Any]) -> str:
+    additional = schema.get("additionalProperties")
+    if additional is True:
+        return "dict[str, Any]"
+    if isinstance(additional, dict):
+        return f"dict[str, {resolve_type(additional)}]"
+    return "dict[str, Any]"
 
 
 def is_optional(schema: dict[str, Any]) -> bool:
@@ -135,36 +146,6 @@ def render_python_models(components: list[ComponentSchema]) -> str:
 
 def render_dts_types(components: list[ComponentSchema]) -> str:
     lines: list[str] = [DTS_HEADER, "\n"]
-
-    def ts_type(schema: dict[str, Any]) -> str:
-        if "$ref" in schema:
-            return ref_name(schema["$ref"])
-        if "oneOf" in schema:
-            return " | ".join(ts_type(s) for s in schema["oneOf"])
-        if "anyOf" in schema:
-            return " | ".join(ts_type(s) for s in schema["anyOf"])
-        schema_type = schema.get("type")
-        if isinstance(schema_type, list):
-            return " | ".join(ts_type({**schema, "type": t}) for t in schema_type)
-        if schema_type == "null":
-            return "null"
-        if schema_type == "string":
-            return "string"
-        if schema_type in ("integer", "number"):
-            return "number"
-        if schema_type == "boolean":
-            return "boolean"
-        if schema_type == "array":
-            return f"{ts_type(schema.get('items', {}))}[]"
-        if schema_type == "object":
-            additional = schema.get("additionalProperties")
-            if additional is True:
-                return "Record<string, any>"
-            if isinstance(additional, dict):
-                return f"Record<string, {ts_type(additional)}>"
-            return "Record<string, any>"
-        return "any"
-
     for component in components:
         name = component.name
         schema = component.schema
@@ -183,6 +164,46 @@ def render_dts_types(components: list[ComponentSchema]) -> str:
         lines.append("}\n")
 
     return "\n".join(lines).rstrip() + "\n"
+
+
+def ts_type(schema: dict[str, Any]) -> str:
+    if "$ref" in schema:
+        return ref_name(schema["$ref"])
+    union = schema.get("oneOf") or schema.get("anyOf")
+    if union:
+        return " | ".join(ts_type(s) for s in union)
+
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        return " | ".join(ts_type({**schema, "type": t}) for t in schema_type)
+
+    return _ts_single_type(schema_type, schema)
+
+
+def _ts_single_type(schema_type: str | None, schema: dict[str, Any]) -> str:
+    scalar = {
+        "null": "null",
+        "string": "string",
+        "integer": "number",
+        "number": "number",
+        "boolean": "boolean",
+    }
+    if schema_type in scalar:
+        return scalar[schema_type]
+    if schema_type == "array":
+        return f"{ts_type(schema.get('items', {}))}[]"
+    if schema_type == "object":
+        return _ts_object_type(schema)
+    return "any"
+
+
+def _ts_object_type(schema: dict[str, Any]) -> str:
+    additional = schema.get("additionalProperties")
+    if additional is True:
+        return "Record<string, any>"
+    if isinstance(additional, dict):
+        return f"Record<string, {ts_type(additional)}>"
+    return "Record<string, any>"
 
 
 def generate_artifacts(schema_path: Path | None = None, python_out: Path | None = None, dts_out: Path | None = None) -> None:
