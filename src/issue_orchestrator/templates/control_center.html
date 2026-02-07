@@ -184,50 +184,6 @@
             fill: currentColor;
         }
 
-        /* Running repos sub-list in sidebar */
-        .nav-repo-list {
-            padding-left: 20px;
-            margin-top: 4px;
-        }
-
-        .nav-repo-item {
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            width: 100%;
-            padding: 6px 12px;
-            border: none;
-            border-radius: 6px;
-            background: transparent;
-            color: var(--text-secondary);
-            font-size: 13px;
-            text-align: left;
-            cursor: pointer;
-            transition: background 0.15s, color 0.15s;
-        }
-
-        .nav-repo-item:hover {
-            background: var(--bg-card-hover);
-            color: var(--text-primary);
-        }
-
-        .nav-repo-item.active {
-            background: rgba(88, 166, 255, 0.1);
-            color: var(--accent-blue);
-        }
-
-        .nav-repo-dot {
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-            background: var(--accent-green);
-            flex-shrink: 0;
-        }
-
-        .nav-repo-dot.paused {
-            background: var(--accent-yellow);
-        }
-
         .sidebar-footer {
             padding: 12px 8px;
             border-top: 1px solid var(--border-subtle);
@@ -622,6 +578,40 @@
             border-radius: 8px;
             background: var(--bg-card);
             padding: 10px 12px;
+        }
+
+        .recovery-banner {
+            margin-bottom: 12px;
+            border: 1px solid var(--accent-yellow);
+            border-radius: 8px;
+            background: color-mix(in srgb, var(--accent-yellow) 12%, var(--bg-card));
+            padding: 10px 12px;
+            display: none;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+
+        .recovery-banner.active {
+            display: flex;
+        }
+
+        .recovery-banner-title {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+        }
+
+        .recovery-banner-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        .recovery-banner-actions {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
         }
 
         .repo-card {
@@ -1647,6 +1637,16 @@
             <div class="view-container active" id="repositoriesView" role="main" aria-labelledby="viewTitle">
                 <div class="scope-note">
                     Closing this window does not stop repository engines running on this machine.
+                </div>
+                <div class="recovery-banner" id="recoveryBanner">
+                    <div>
+                        <div class="recovery-banner-title" id="recoveryBannerTitle">Running engines detected</div>
+                        <div class="recovery-banner-meta" id="recoveryBannerMeta"></div>
+                    </div>
+                    <div class="recovery-banner-actions">
+                        <button class="btn btn-sm" id="reconnectEnginesBtn">Reconnect</button>
+                        <button class="btn btn-sm" id="cleanupRecoveryBtn">Clean stale state</button>
+                    </div>
                 </div>
                 <div id="reposContent">
                     <div class="empty-state" id="loadingState">
@@ -2749,6 +2749,7 @@
                 renderRepos();
                 updateRunningCount();
                 updateActiveSummary();
+                updateRecoveryBanner();
                 updateDropdownDisplay();
 
                 // Check for deep-link in URL (only on first load)
@@ -2951,6 +2952,88 @@
             const pausedCount = state.repos.filter(r => getRepoState(r) === 'paused').length;
             const notRunningCount = state.repos.filter(r => getRepoState(r) === 'not running').length;
             el.textContent = `${runningCount} Running · ${pausedCount} Paused · ${notRunningCount} Not running`;
+        }
+
+        function updateRecoveryBanner() {
+            const banner = document.getElementById('recoveryBanner');
+            const title = document.getElementById('recoveryBannerTitle');
+            const meta = document.getElementById('recoveryBannerMeta');
+            if (!banner || !title || !meta) return;
+
+            const active = state.repos.filter(r => {
+                const s = r.status || {};
+                return s.state === 'running' || s.state === 'partial' || s.paused;
+            });
+            const orphaned = state.repos.filter(r => r.status?.runtime_health === 'orphaned');
+            const staleLocks = state.repos.filter(r => r.status?.runtime_health === 'stale_lock');
+            const unresponsive = state.repos.filter(r => r.status?.runtime_health === 'unresponsive');
+
+            const shouldShow = active.length > 0 || orphaned.length > 0 || staleLocks.length > 0 || unresponsive.length > 0;
+            banner.classList.toggle('active', shouldShow);
+            if (!shouldShow) {
+                return;
+            }
+
+            if (orphaned.length > 0 || staleLocks.length > 0 || unresponsive.length > 0) {
+                title.textContent = 'Recovery attention needed';
+                meta.textContent = `${active.length} active · ${orphaned.length} orphaned · ${staleLocks.length} stale lock · ${unresponsive.length} unresponsive`;
+                return;
+            }
+            title.textContent = `${active.length} engines still running in background`;
+            meta.textContent = 'Reconnect to a running engine or keep working from overview.';
+        }
+
+        function reconnectToActiveEngine() {
+            const activeRepo = state.repos.find(r => {
+                const s = r.status || {};
+                return s.state === 'running' || s.state === 'partial' || s.paused;
+            });
+            if (!activeRepo) {
+                showToast('No active repository engines to reconnect', 'warning');
+                return;
+            }
+            switchView('activity', activeRepo.path);
+        }
+
+        async function cleanRecoveryState() {
+            try {
+                let response = await fetch('/control/orchestrator/reconcile', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({}),
+                });
+                let data = await response.json();
+
+                const orphanedCount = (data.orphaned_detected || []).length;
+                const unresponsiveCount = (data.unresponsive_detected || []).length;
+                const shouldOfferStop = orphanedCount > 0 || unresponsiveCount > 0;
+
+                if (shouldOfferStop) {
+                    const prompt = `Detected ${orphanedCount} orphaned and ${unresponsiveCount} unresponsive engine(s). Stop them now?`;
+                    if (confirm(prompt)) {
+                        response = await fetch('/control/orchestrator/reconcile', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                stop_orphaned: true,
+                                stop_unresponsive: true,
+                            }),
+                        });
+                        data = await response.json();
+                    }
+                }
+
+                const reconciled = (data.reconciled_stale_locks || []).length;
+                const stoppedOrphaned = (data.stopped_orphaned || []).length;
+                const stoppedUnresponsive = (data.stopped_unresponsive || []).length;
+                showToast(
+                    `Reconciled ${reconciled} stale lock(s), stopped ${stoppedOrphaned} orphaned, stopped ${stoppedUnresponsive} unresponsive`,
+                    'success',
+                );
+                await loadRepos();
+            } catch (error) {
+                showToast(`Recovery cleanup failed: ${error.message}`, 'error');
+            }
         }
 
         // ============================================
@@ -3433,6 +3516,8 @@
             });
 
             document.getElementById('rescanReposBtn').addEventListener('click', rescanRepos);
+            document.getElementById('reconnectEnginesBtn').addEventListener('click', reconnectToActiveEngine);
+            document.getElementById('cleanupRecoveryBtn').addEventListener('click', cleanRecoveryState);
 
             document.getElementById('activityConfigSelect').addEventListener('change', (e) => {
                 if (!state.activeRepo?.path) return;
