@@ -293,6 +293,8 @@ class TestControlCenterTemplate:
         assert "Closing this window does not stop repository engines" in body
         assert ">Stopped<" not in body
         assert 'id="sidebarRepoList"' not in body
+        assert "nav-repo-list" not in body
+        assert "nav-repo-item" not in body
 
 
 # --- Test: Refresh Endpoint ---
