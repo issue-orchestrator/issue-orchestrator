@@ -199,11 +199,21 @@ class FileSystemSessionOutput:
         if not base_dir.exists():
             return []
 
-        runs = sorted(
-            [d for d in base_dir.iterdir() if d.is_dir() and not d.is_symlink()],
-            key=lambda p: p.stat().st_mtime,
+        runs_with_mtime: list[tuple[Path, float]] = []
+        for run_dir in base_dir.iterdir():
+            if not run_dir.is_dir() or run_dir.is_symlink():
+                continue
+            try:
+                runs_with_mtime.append((run_dir, run_dir.stat().st_mtime))
+            except FileNotFoundError:
+                # Run directory vanished between listing and stat.
+                continue
+
+        runs = [run for run, _mtime in sorted(
+            runs_with_mtime,
+            key=lambda item: item[1],
             reverse=True,
-        )
+        )]
 
         removed: list[Path] = []
         for run_dir in runs[keep:]:
