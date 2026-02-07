@@ -6,6 +6,7 @@
 # - forbidden imports
 # - forbidden dynamic imports (__import__, importlib.import_module)
 # - forbidden calls (subprocess.run, os.system, etc.)
+# - adapter boundary violations (ports/adapters architecture enforcement)
 #
 # Exit codes: 0 OK, 2 violations, 1 unexpected error
 
@@ -19,6 +20,16 @@ from pathlib import Path
 from typing import Iterable, Optional, Sequence, Tuple
 
 import yaml
+
+# Import adapter boundary guardrail
+try:
+    from issue_orchestrator.validation.adapter_boundary_guardrail import (
+        check_adapter_boundaries as _check_adapter_boundaries,
+    )
+    HAS_ADAPTER_BOUNDARY_CHECK = True
+except ImportError:
+    HAS_ADAPTER_BOUNDARY_CHECK = False
+    _check_adapter_boundaries = None  # type: ignore
 
 
 @dataclass(frozen=True)
@@ -361,6 +372,24 @@ def main(argv: list[str]) -> int:
     all_v: list[Violation] = []
     for p in iter_py_files(root):
         all_v.extend(check_file(p, rules, allow_prefixes))
+
+    # Check adapter boundaries if available
+    if HAS_ADAPTER_BOUNDARY_CHECK and _check_adapter_boundaries:
+        source_dir = Path(root) / "issue_orchestrator"
+        if source_dir.exists():
+            boundary_result = _check_adapter_boundaries(source_dir)
+            if boundary_result.status == "fail":
+                # Convert boundary violations to standard violation format for reporting
+                for violation in boundary_result.violations:
+                    all_v.append(
+                        Violation(
+                            path=violation.file_path,
+                            lineno=violation.line_number,
+                            col=0,
+                            kind="adapter-boundary",
+                            detail=violation.message,
+                        )
+                    )
 
     if all_v:
         print("Architecture guardrails violations:\n", file=sys.stderr)
