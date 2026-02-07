@@ -82,9 +82,58 @@ def test_build_issue_timeline_status_mapping():
             event="rework.escalating",
             data={"issue_number": 123},
         ),
+        TimelineRecord(
+            event_id="e7",
+            timestamp="2026-02-06T00:06:00Z",
+            event="review.rework_completed",
+            data={"issue_number": 123},
+        ),
+        TimelineRecord(
+            event_id="e8",
+            timestamp="2026-02-06T00:07:00Z",
+            event="triage.issue_created",
+            data={"issue_number": 123},
+        ),
+        TimelineRecord(
+            event_id="e9",
+            timestamp="2026-02-06T00:08:00Z",
+            event="triage.skipped",
+            data={"issue_number": 123},
+        ),
+        TimelineRecord(
+            event_id="e10",
+            timestamp="2026-02-06T00:09:00Z",
+            event="review.closed",
+            data={"issue_number": 123},
+        ),
+        TimelineRecord(
+            event_id="e11",
+            timestamp="2026-02-06T00:10:00Z",
+            event="issue.unblocked",
+            data={"issue_number": 123},
+        ),
+        TimelineRecord(
+            event_id="e12",
+            timestamp="2026-02-06T00:11:00Z",
+            event="provider.outage_entered",
+            data={"issue_number": 123},
+        ),
     ]
 
     timeline = build_issue_timeline(123, records)
     statuses = [event["status"] for event in timeline["events"]]
 
-    assert statuses == ["started", "failed", "failed", "failed", "completed", "started"]
+    assert statuses == [
+        "started",
+        "failed",
+        "failed",
+        "failed",
+        "completed",
+        "failed",
+        "completed",
+        "started",
+        "completed",
+        "failed",
+        "completed",
+        "started",
+    ]
