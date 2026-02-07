@@ -353,6 +353,25 @@ class Scenario:
             )
         return self._add_expectation(_assert)
 
+    def expect_run_manifest(
+        self,
+        *,
+        require_keys: list[str] | None = None,
+        expected_fields: dict[str, object] | None = None,
+    ) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            worktree = ctx.worktree
+            assert worktree is not None
+            manifest = _latest_run_manifest(worktree)
+            assert manifest is not None, "run manifest.json not found"
+            if require_keys:
+                for key in require_keys:
+                    assert key in manifest and manifest[key] not in ("", None), f"run manifest missing {key}"
+            if expected_fields:
+                for key, value in expected_fields.items():
+                    assert manifest.get(key) == value, f"run manifest {key} != {value}"
+        return self._add_expectation(_assert)
+
     def run(self) -> ScenarioContext:
         if not self.coder_command or not self.reviewer_command:
             raise AssertionError("coder and reviewer commands must be set")
@@ -481,3 +500,12 @@ def _latest_review_feedback(worktree: Path) -> Path | None:
         return None
     records.sort(key=lambda p: p.stat().st_mtime)
     return records[-1]
+
+
+def _latest_run_manifest(worktree: Path) -> dict | None:
+    root = worktree / ".issue-orchestrator" / "sessions"
+    manifests = list(root.rglob("manifest.json"))
+    if not manifests:
+        return None
+    manifests.sort(key=lambda p: p.stat().st_mtime)
+    return json.loads(manifests[-1].read_text())

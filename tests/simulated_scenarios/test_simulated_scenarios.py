@@ -279,6 +279,24 @@ def test_validation_failure_exhausts_retries(scenario_repo: Path):
         .run()
 
 
+def test_validation_failure_updates_run_manifest(scenario_repo: Path):
+    scenario("validation_manifest", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_fail.sh"), max_retries=0) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .expect_validation_status("failed") \
+        .expect_run_manifest(
+            require_keys=["ended_at"],
+            expected_fields={
+                "outcome": "completed",
+                "validation_passed": False,
+                "validation_status": "failed",
+            },
+        ) \
+        .run()
+
+
 def test_validation_timeout_marks_failed(scenario_repo: Path):
     def _short_timeout(config) -> None:
         config.validation.timeout_seconds = 1
@@ -539,4 +557,19 @@ def test_coder_exit_nonzero_emits_error(scenario_repo: Path):
         .reviewer(script("reviewer_never_ok.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
         .expect_review_exchange_round_response(coder_response_type="error") \
+        .run()
+
+
+def test_review_session_no_completion_marks_needs_human(scenario_repo: Path):
+    def _disable_grace_period(config) -> None:
+        config.session_grace_period_seconds = 0
+        config.session_log_activity_seconds = 0
+
+    scenario("review_no_completion", scenario_repo) \
+        .coder(script("coder_complete.sh")) \
+        .reviewer(script("reviewer_no_completion.sh")) \
+        .review_exchange(mode="via-draft-pr") \
+        .configure(_disable_grace_period) \
+        .wait_for_event(EventName.SESSION_FAILED) \
+        .expect_issue_comment_contains("Review Session Needs Investigation") \
         .run()
