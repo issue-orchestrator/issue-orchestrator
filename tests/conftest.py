@@ -509,6 +509,8 @@ def build_test_orchestrator_deps(
     session_manager=None,
     action_applier=None,
     lease_renewer=None,
+    timeline_reader=None,
+    timeline_writer=None,
 ):
     """Factory function to create OrchestratorDeps for testing.
 
@@ -668,8 +670,8 @@ def build_test_orchestrator_deps(
         store=InMemoryProviderCircuitStore(),
         events=events,
     )
-    timeline_reader = NullTimelineReader()
-    timeline_writer = NullTimelineWriter()
+    timeline_reader = timeline_reader or NullTimelineReader()
+    timeline_writer = timeline_writer or NullTimelineWriter()
 
     return OrchestratorDeps(
         events=events,

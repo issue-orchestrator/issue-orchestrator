@@ -42,6 +42,8 @@ def test_local_loop_happy_path_creates_non_draft_pr(scenario_repo: Path):
         .expect_pr(created=True, draft=False) \
         .expect_event(EventName.REVIEW_EXCHANGE_STARTED) \
         .expect_event(EventName.REVIEW_EXCHANGE_COMPLETED) \
+        .expect_timeline_event(EventName.REVIEW_EXCHANGE_COMPLETED) \
+        .expect_timeline_event(EventName.ISSUE_PR_CREATED) \
         .run()
 
 
@@ -84,6 +86,7 @@ def test_validation_failure_queues_retry(scenario_repo: Path):
         .expect_validation_status("retry") \
         .expect_validation_artifacts(False) \
         .expect_pending_validation_retries(1) \
+        .expect_timeline_event(EventName.SESSION_VALIDATION_RETRY_NEEDED) \
         .run()
 
 
@@ -276,6 +279,7 @@ def test_validation_failure_exhausts_retries(scenario_repo: Path):
         .expect_validation_artifacts(False) \
         .expect_pending_validation_retries(0) \
         .expect_session_history_status({"validation_failed"}) \
+        .expect_timeline_event(EventName.SESSION_VALIDATION_FAILED) \
         .run()
 
 
@@ -406,6 +410,10 @@ def test_completion_outcome_blocked_sets_label_and_event(scenario_repo: Path):
             EventName.ISSUE_BLOCKED,
             predicate=lambda data: data.get("issue_number") == 1,
         ) \
+        .expect_latest_timeline_event(
+            EventName.ISSUE_BLOCKED,
+            predicate=lambda event: event.issue_number == 1,
+        ) \
         .run()
 
 
@@ -418,6 +426,10 @@ def test_completion_outcome_needs_human_sets_label_and_event(scenario_repo: Path
         .expect_latest_event(
             EventName.ISSUE_NEEDS_HUMAN,
             predicate=lambda data: data.get("issue_number") == 1,
+        ) \
+        .expect_latest_timeline_event(
+            EventName.ISSUE_NEEDS_HUMAN,
+            predicate=lambda event: event.issue_number == 1,
         ) \
         .run()
 

@@ -283,7 +283,7 @@ class CompletionHandler:
         )
 
         # Emit trace events
-        self._emit_trace_events(session, status, pr_url)
+        self._emit_trace_events(session, status, pr_url, pr_number)
 
         # Update state machines
         self._update_state_machines(session, status, pr_url)
@@ -468,6 +468,7 @@ class CompletionHandler:
         session: Session,
         status: SessionStatus,
         pr_url: Optional[str],
+        pr_number: Optional[int],
     ) -> None:
         """Emit trace events for session completion."""
         status_reasons = {
@@ -486,6 +487,12 @@ class CompletionHandler:
                 "pr_url": pr_url,
                 "runtime_minutes": session.runtime_minutes,
             }))
+            if pr_url and pr_number is not None:
+                self.events.publish(TraceEvent(EventName.ISSUE_PR_CREATED, {
+                    "issue_number": session.issue.number,
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                }))
         elif status == SessionStatus.FAILED or status == SessionStatus.TIMED_OUT:
             self.events.publish(TraceEvent(EventName.SESSION_FAILED, {
                 "issue_number": session.issue.number,
