@@ -1451,6 +1451,7 @@ class TestKillSessionEndpoint:
         """Test successful session kill."""
         from issue_orchestrator.entrypoints import web
         from issue_orchestrator.infra import labels
+        from issue_orchestrator.control.actions import AddLabelAction
         mock_orch = create_mock_orchestrator()
 
         issue = create_issue(1, "Issue to Kill")
@@ -1458,9 +1459,9 @@ class TestKillSessionEndpoint:
         mock_orch.state.active_sessions = [session]
         mock_orch.kill_session = MagicMock()
 
-        # Mock the repository_host to track label additions
-        mock_orch.deps.repository_host = MagicMock()
-        mock_orch.deps.repository_host.add_label = MagicMock()
+        # Mock the action_applier to track label actions
+        mock_orch.deps.action_applier = MagicMock()
+        mock_orch.deps.action_applier.apply_all = MagicMock()
 
         set_orchestrator(mock_orch)
 
@@ -1476,10 +1477,13 @@ class TestKillSessionEndpoint:
             mock_orch.kill_session.assert_called_once_with("issue-1")
             # Session should be removed from active sessions
             assert len(mock_orch.state.active_sessions) == 0
-            # Verify blocked:user-force-killed label was applied
-            mock_orch.deps.repository_host.add_label.assert_called_once_with(
-                1, labels.BLOCKED_USER_FORCE_KILLED
-            )
+            # Verify blocked:user-force-killed label was applied via ActionApplier
+            mock_orch.deps.action_applier.apply_all.assert_called_once()
+            call_args = mock_orch.deps.action_applier.apply_all.call_args[0][0]
+            assert len(call_args) == 1
+            assert isinstance(call_args[0], AddLabelAction)
+            assert call_args[0].issue_number == 1
+            assert call_args[0].label == labels.BLOCKED_USER_FORCE_KILLED
         finally:
             set_orchestrator(None)
 

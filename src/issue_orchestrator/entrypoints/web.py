@@ -750,6 +750,7 @@ async def refresh(request: Request) -> JSONResponse:
 async def kill_session(issue_number: int) -> JSONResponse:
     """Force kill a specific session."""
     from ..infra import labels
+    from ..control.actions import AddLabelAction
 
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -776,12 +777,10 @@ async def kill_session(issue_number: int) -> JSONResponse:
         if s.issue.number != issue_number
     ]
 
-    # Apply blocked:user-force-killed label to prevent re-queueing
+    # Apply blocked:user-force-killed label to prevent re-queueing via ActionApplier
     try:
-        _orchestrator.deps.repository_host.add_label(
-            issue_number,
-            labels.BLOCKED_USER_FORCE_KILLED
-        )
+        action = AddLabelAction(issue_number=issue_number, label=labels.BLOCKED_USER_FORCE_KILLED)
+        _orchestrator.deps.action_applier.apply_all([action])
     except Exception as e:
         logger.warning("Failed to apply blocked:user-force-killed label: %s", e)
 
