@@ -18,6 +18,22 @@ This instruction has been ignored multiple times. Don't be the next one.
 
 ---
 
+## No‑Surprise Rule (Required)
+
+Before starting any work, post a short “Plan & Scope” message:
+- Goals: what you believe the user wants
+- Will do: concrete deliverables
+- Will not do: explicit exclusions
+- Unknowns: assumptions or areas needing confirmation
+
+If scope changes while working, post an updated Plan & Scope before proceeding.
+
+## Alignment Check Trigger
+
+If a user says “discuss” or “explore”, do not implement until you:
+- Summarize the proposed approach in 3–6 bullets
+- Ask for confirmation to proceed
+
 ## What This Is
 
 **issue-orchestrator** orchestrates multiple Claude Code agents working on GitHub issues in parallel. It fetches issues, creates git worktrees, launches agent sessions (tmux/iTerm2/web), enforces structured completion via `agent-done`, and manages the full lifecycle including code review and triage.
