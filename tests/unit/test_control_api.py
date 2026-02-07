@@ -277,6 +277,21 @@ class TestShutdownEndpoint:
         mock_orch.request_shutdown.assert_called_once()
 
 
+class TestControlCenterTemplate:
+    """Test rendered control center UI copy and scope labels."""
+
+    def test_control_center_ui_uses_engine_terminology(self, client_without_orchestrator):
+        response = client_without_orchestrator.get("/")
+
+        assert response.status_code == 200
+        body = response.text
+        assert "Repository Engines" in body
+        assert "Close Control Center" in body
+        assert "Start engine" in body
+        assert "Closing this window does not stop repository engines" in body
+        assert 'id="sidebarRepoList"' not in body
+
+
 # --- Test: Refresh Endpoint ---
 
 

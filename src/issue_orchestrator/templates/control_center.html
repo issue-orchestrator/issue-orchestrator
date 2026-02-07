@@ -264,6 +264,18 @@
             font-weight: 600;
         }
 
+        .header-subtitle {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-top: 2px;
+        }
+
+        .active-summary {
+            font-size: 12px;
+            color: var(--accent-blue);
+            margin-top: 4px;
+        }
+
         .header-actions {
             display: flex;
             align-items: center;
@@ -602,14 +614,14 @@
             grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
         }
 
-        .repos-toolbar {
-            display: flex;
-            justify-content: flex-end;
+        .scope-note {
             margin-bottom: 12px;
-        }
-
-        .repos-toolbar .btn {
             font-size: 12px;
+            color: var(--text-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: var(--bg-card);
+            padding: 10px 12px;
         }
 
         .repo-card {
@@ -685,6 +697,26 @@
             margin-bottom: 12px;
             font-size: 13px;
             color: var(--text-secondary);
+        }
+
+        .repo-card-config {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 12px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .repo-card-config select {
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-input);
+            color: var(--text-primary);
+            font-size: 12px;
+            min-width: 140px;
         }
 
         .repo-card-stat {
@@ -767,11 +799,30 @@
             display: flex;
             align-items: center;
             gap: 12px;
+            flex-wrap: wrap;
         }
 
         .activity-repo-name {
             font-size: 16px;
             font-weight: 600;
+        }
+
+        .engine-config-inline {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .engine-config-inline select {
+            padding: 4px 8px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-input);
+            color: var(--text-primary);
+            font-size: 12px;
+            min-width: 140px;
         }
 
         .activity-iframe-container {
@@ -1524,12 +1575,8 @@
                         <svg viewBox="0 0 16 16" aria-hidden="true">
                             <path fill-rule="evenodd" d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8zM5 12.25v3.25a.25.25 0 00.4.2l1.45-1.087a.25.25 0 01.3 0L8.6 15.7a.25.25 0 00.4-.2v-3.25a.25.25 0 00-.25-.25h-3.5a.25.25 0 00-.25.25z"/>
                         </svg>
-                        Repositories
+                        Repository Engines
                     </button>
-
-                    <div class="nav-repo-list" id="sidebarRepoList" role="list" aria-label="Running repositories">
-                        <!-- Populated by JS: running repos appear here -->
-                    </div>
                 </div>
 
                 <div class="nav-section">
@@ -1573,33 +1620,13 @@
         <main class="main-content">
             <!-- Header -->
             <header class="header">
-                <div style="display: flex; align-items: center; gap: 16px;">
-                    <h1 class="header-title" id="viewTitle">Repositories</h1>
-                    <!-- Repo Context Dropdown -->
-                    <div class="repo-dropdown-container" id="repoDropdownContainer">
-                        <button class="repo-dropdown-trigger" id="repoDropdownTrigger" aria-haspopup="listbox" aria-expanded="false">
-                            <span class="status-dot stopped" id="dropdownStatusDot"></span>
-                            <span class="repo-name" id="dropdownRepoName">No repo selected</span>
-                            <span class="repo-state" id="dropdownRepoState"></span>
-                            <svg class="dropdown-arrow" viewBox="0 0 16 16" aria-hidden="true">
-                                <path fill="currentColor" d="M4.427 7.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 7H4.604a.25.25 0 00-.177.427z"/>
-                            </svg>
-                        </button>
-                        <div class="repo-dropdown-menu" id="repoDropdownMenu" role="listbox" aria-label="Select repository">
-                            <!-- Populated by JavaScript -->
-                        </div>
-                    </div>
-                    <!-- Config selector (shown when multi-config repo selected) -->
-                    <div class="config-selector" id="configSelector" style="display: none;">
-                        <label for="configSelect">Config:</label>
-                        <select id="configSelect"></select>
-                        <label class="set-default">
-                            <input type="checkbox" id="setDefaultConfig">
-                            Set as default
-                        </label>
-                    </div>
+                <div>
+                    <h1 class="header-title" id="viewTitle">Repository Engines</h1>
+                    <div class="header-subtitle">Control Center window visibility is independent from repository engine runtime.</div>
+                    <div class="active-summary" id="activeSummary">0 running · 0 paused · 0 not running</div>
                 </div>
                 <div class="header-actions">
+                    <button class="btn btn-sm" id="rescanReposBtn">Rescan Repositories</button>
                     <button class="btn btn-icon" id="doctorBtn" title="Run diagnostics" aria-label="Run doctor diagnostics">
                         <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
                             <path fill="currentColor" d="M8.5 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm9-3a1 1 0 11-2 0 1 1 0 012 0zM6.5 8a.75.75 0 01.75-.75h.75v3.75H7A.75.75 0 017 9.5h.25v-2H7A.75.75 0 016.5 8zm2.25 3a.75.75 0 010 1.5h-1.5a.75.75 0 010-1.5h1.5z"/>
@@ -1611,15 +1638,15 @@
                         </svg>
                     </button>
                     <button class="btn btn-danger btn-sm" id="shutdownBtn">
-                        Shutdown
+                        Close Control Center
                     </button>
                 </div>
             </header>
 
             <!-- Repositories View -->
             <div class="view-container active" id="repositoriesView" role="main" aria-labelledby="viewTitle">
-                <div class="repos-toolbar">
-                    <button class="btn btn-sm" id="rescanReposBtn">Rescan Repositories</button>
+                <div class="scope-note">
+                    Closing this window does not stop repository engines running on this machine.
                 </div>
                 <div id="reposContent">
                     <div class="empty-state" id="loadingState">
@@ -1639,14 +1666,22 @@
                             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
                                 <path fill="currentColor" fill-rule="evenodd" d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z"/>
                             </svg>
-                            Back
+                            Back to repository engines
                         </button>
                         <span class="activity-repo-name" id="activityRepoName"></span>
                         <span class="repo-card-badge running" id="activityRepoBadge">Running</span>
+                        <div class="engine-config-inline">
+                            <label for="activityConfigSelect">Config</label>
+                            <select id="activityConfigSelect"></select>
+                            <label class="set-default">
+                                <input type="checkbox" id="activitySetDefaultConfig">
+                                Set as default
+                            </label>
+                        </div>
                     </div>
                     <div class="header-actions">
-                        <button class="btn btn-sm" id="pauseResumeBtn">Pause</button>
-                        <button class="btn btn-danger btn-sm" id="stopRepoBtn">Stop</button>
+                        <button class="btn btn-sm" id="pauseResumeBtn">Pause engine</button>
+                        <button class="btn btn-danger btn-sm" id="stopRepoBtn">Stop engine</button>
                     </div>
                 </div>
                 <div class="activity-iframe-container">
@@ -1654,7 +1689,7 @@
                         <div class="spinner"></div>
                         <p>Loading activity...</p>
                     </div>
-                    <iframe id="activityIframe" title="Repository activity dashboard"></iframe>
+                    <iframe id="activityIframe" title="Repository engine activity dashboard"></iframe>
                 </div>
             </div>
 
@@ -2089,7 +2124,7 @@
     <div class="modal-backdrop" id="shutdownModal" role="dialog" aria-labelledby="shutdownModalTitle" aria-modal="true">
         <div class="modal">
             <div class="modal-header">
-                <h2 class="modal-title" id="shutdownModalTitle">Confirm Shutdown</h2>
+                <h2 class="modal-title" id="shutdownModalTitle">Close Control Center</h2>
                 <button class="modal-close" id="closeShutdownModal" aria-label="Close dialog">
                     <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
                         <path fill="currentColor" fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
@@ -2097,11 +2132,11 @@
                 </button>
             </div>
             <div class="modal-body">
-                <p>This will shut down the dashboard server. Any running orchestrators will continue running independently.</p>
+                <p>This closes the Control Center window and dashboard server. Repository engines keep running independently.</p>
             </div>
             <div class="modal-footer">
                 <button class="btn" id="cancelShutdown">Cancel</button>
-                <button class="btn btn-danger" id="confirmShutdown">Shutdown</button>
+                <button class="btn btn-danger" id="confirmShutdown">Close Control Center</button>
             </div>
         </div>
     </div>
@@ -2424,6 +2459,7 @@
             const dot = document.getElementById('dropdownStatusDot');
             const nameEl = document.getElementById('dropdownRepoName');
             const stateEl = document.getElementById('dropdownRepoState');
+            if (!dot || !nameEl || !stateEl) return;
 
             if (!state.activeRepo) {
                 dot.className = 'status-dot stopped';
@@ -2456,6 +2492,7 @@
             const selector = document.getElementById('configSelector');
             const select = document.getElementById('configSelect');
             const setDefaultCheckbox = document.getElementById('setDefaultConfig');
+            if (!selector || !select || !setDefaultCheckbox) return;
 
             if (!repo || !repo.configs || repo.configs.length <= 1) {
                 selector.style.display = 'none';
@@ -2477,6 +2514,7 @@
 
         function renderDropdownMenu() {
             const menu = document.getElementById('repoDropdownMenu');
+            if (!menu) return;
 
             // Categorize repos
             const running = state.repos.filter(r => {
@@ -2595,6 +2633,7 @@
         function toggleDropdown() {
             const container = document.getElementById('repoDropdownContainer');
             const trigger = document.getElementById('repoDropdownTrigger');
+            if (!container || !trigger) return;
             const isOpen = container.classList.toggle('open');
             trigger.setAttribute('aria-expanded', isOpen);
 
@@ -2611,6 +2650,7 @@
         function closeDropdown() {
             const container = document.getElementById('repoDropdownContainer');
             const trigger = document.getElementById('repoDropdownTrigger');
+            if (!container || !trigger) return;
             container.classList.remove('open');
             trigger.setAttribute('aria-expanded', 'false');
         }
@@ -2671,8 +2711,8 @@
 
             // Update header title
             const titles = {
-                repositories: 'Repositories',
-                activity: 'Activity',
+                repositories: 'Repository Engines',
+                activity: 'Repository Engine',
                 tools: 'Tools',
                 settings: 'Settings',
                 goalPilot: 'Goal Pilot'
@@ -2707,8 +2747,8 @@
                 }
 
                 renderRepos();
-                updateSidebarRepos();
                 updateRunningCount();
+                updateActiveSummary();
                 updateDropdownDisplay();
 
                 // Check for deep-link in URL (only on first load)
@@ -2814,6 +2854,19 @@
             container.querySelectorAll('[data-action]').forEach(btn => {
                 btn.addEventListener('click', handleRepoAction);
             });
+            container.querySelectorAll('select[data-action="select-config"]').forEach(select => {
+                select.addEventListener('change', (event) => {
+                    const path = event.currentTarget.dataset.path;
+                    const config = event.currentTarget.value;
+                    if (!path || !config) return;
+                    setDefaultConfigForRepo(path, config);
+                    if (state.activeRepo?.path === path) {
+                        state.activeRepo.config = config;
+                        saveRecentRepo(path, config);
+                    }
+                    showToast(`Default config for ${path.split('/').pop()} set to ${config}`, 'success');
+                });
+            });
         }
 
         function renderRepoCard(repo) {
@@ -2839,15 +2892,30 @@
                 </div>
             ` : '';
 
+            const selectedConfig = getDefaultConfig(repo.path) || repo.configs?.[0] || null;
+            const configMarkup = repo.configs?.length ? `
+                <div class="repo-card-config">
+                    <span>Config:</span>
+                    <select data-action="select-config" data-path="${escapeHtml(repo.path)}">
+                        ${repo.configs.map(c => `<option value="${escapeHtml(c)}" ${c === selectedConfig ? 'selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+                    </select>
+                </div>
+            ` : '';
+
             let actions = '';
             if (isNeedsSetup) {
                 actions = `<button class="btn btn-primary" data-action="setup" data-path="${escapeHtml(repo.path)}">Setup</button>`;
             } else if (isStopped) {
-                actions = `<button class="btn btn-primary" data-action="start" data-path="${escapeHtml(repo.path)}">Start</button>`;
+                actions = `
+                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open engine</button>
+                    <button class="btn btn-primary" data-action="start" data-path="${escapeHtml(repo.path)}">Start engine</button>
+                    <button class="btn" data-action="start-paused" data-path="${escapeHtml(repo.path)}">Start paused</button>
+                `;
             } else {
                 actions = `
-                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">View Activity</button>
-                    <button class="btn btn-danger btn-sm" data-action="stop" data-path="${escapeHtml(repo.path)}">Stop</button>
+                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open engine</button>
+                    <button class="btn" data-action="${isPaused ? 'resume' : 'pause'}" data-path="${escapeHtml(repo.path)}">${isPaused ? 'Resume engine' : 'Pause engine'}</button>
+                    <button class="btn btn-danger btn-sm" data-action="stop" data-path="${escapeHtml(repo.path)}">Stop engine</button>
                 `;
             }
 
@@ -2860,6 +2928,7 @@
                         </div>
                         <span class="repo-card-badge ${badgeClass}">${badgeText}</span>
                     </div>
+                    ${configMarkup}
                     ${stats}
                     <div class="repo-card-actions">
                         ${actions}
@@ -2868,39 +2937,20 @@
             `;
         }
 
-        function updateSidebarRepos() {
-            const container = document.getElementById('sidebarRepoList');
-            const runningRepos = state.repos.filter(r => {
-                const repoState = getRepoState(r);
-                return repoState === 'running' || repoState === 'paused';
-            });
-
-            if (runningRepos.length === 0) {
-                container.innerHTML = '';
-                return;
-            }
-
-            container.innerHTML = runningRepos.map(repo => `
-                <button class="nav-repo-item" data-repo-path="${escapeHtml(repo.path)}">
-                    <span class="nav-repo-dot ${getRepoState(repo) === 'paused' ? 'paused' : ''}"></span>
-                    ${escapeHtml(repo.name)}
-                </button>
-            `).join('');
-
-            // Attach click handlers
-            container.querySelectorAll('.nav-repo-item').forEach(btn => {
-                btn.addEventListener('click', () => {
-                    switchView('activity', btn.dataset.repoPath);
-                });
-            });
+        function updateRunningCount() {
+            const runningCount = state.repos.filter(r => getRepoState(r) === 'running').length;
+            const pausedCount = state.repos.filter(r => getRepoState(r) === 'paused').length;
+            const count = runningCount + pausedCount;
+            document.getElementById('runningCount').textContent = count;
         }
 
-        function updateRunningCount() {
-            const count = state.repos.filter(r => {
-                const repoState = getRepoState(r);
-                return repoState === 'running' || repoState === 'paused';
-            }).length;
-            document.getElementById('runningCount').textContent = count;
+        function updateActiveSummary() {
+            const el = document.getElementById('activeSummary');
+            if (!el) return;
+            const runningCount = state.repos.filter(r => getRepoState(r) === 'running').length;
+            const pausedCount = state.repos.filter(r => getRepoState(r) === 'paused').length;
+            const stoppedCount = state.repos.filter(r => getRepoState(r) === 'stopped').length;
+            el.textContent = `${runningCount} running · ${pausedCount} paused · ${stoppedCount} not running`;
         }
 
         // ============================================
@@ -2914,19 +2964,44 @@
                 return;
             }
 
-            state.activeRepo = repo;
+            state.activeRepo = {
+                path: repo.path,
+                config: getDefaultConfig(repo.path) || repo.configs?.[0] || null,
+                source: 'registered'
+            };
             const repoState = getRepoState(repo);
             const isPaused = repoState === 'paused';
 
             // Update header info
             document.getElementById('activityRepoName').textContent = repo.name;
             const badge = document.getElementById('activityRepoBadge');
-            badge.textContent = isPaused ? 'Paused' : 'Running';
-            badge.className = `repo-card-badge ${isPaused ? 'paused' : 'running'}`;
+            badge.textContent = isPaused ? 'Paused' : (repoState === 'running' ? 'Running' : 'Not running');
+            const badgeClass = isPaused ? 'paused' : (repoState === 'running' ? 'running' : 'stopped');
+            badge.className = `repo-card-badge ${badgeClass}`;
 
             // Update pause/resume button
             const pauseBtn = document.getElementById('pauseResumeBtn');
-            pauseBtn.textContent = isPaused ? 'Resume' : 'Pause';
+            pauseBtn.textContent = isPaused ? 'Resume engine' : 'Pause engine';
+            pauseBtn.disabled = repoState === 'stopped';
+
+            const activityConfigSelect = document.getElementById('activityConfigSelect');
+            const activitySetDefaultConfig = document.getElementById('activitySetDefaultConfig');
+            if (activityConfigSelect && activitySetDefaultConfig) {
+                const configs = repo.configs || [];
+                if (configs.length > 0) {
+                    activityConfigSelect.innerHTML = configs.map(c =>
+                        `<option value="${escapeHtml(c)}" ${c === state.activeRepo.config ? 'selected' : ''}>${escapeHtml(c)}</option>`
+                    ).join('');
+                    activityConfigSelect.disabled = false;
+                    activitySetDefaultConfig.checked = getDefaultConfig(repo.path) === state.activeRepo.config;
+                    activitySetDefaultConfig.disabled = false;
+                } else {
+                    activityConfigSelect.innerHTML = '<option value="">No config</option>';
+                    activityConfigSelect.disabled = true;
+                    activitySetDefaultConfig.checked = false;
+                    activitySetDefaultConfig.disabled = true;
+                }
+            }
 
             // Load iframe
             const iframe = document.getElementById('activityIframe');
@@ -2943,13 +3018,8 @@
                     iframe.style.display = 'block';
                 };
             } else {
-                loading.innerHTML = '<p>Orchestrator port not available</p>';
+                loading.innerHTML = '<p>Repository engine is not running.</p>';
             }
-
-            // Update sidebar selection
-            document.querySelectorAll('.nav-repo-item').forEach(item => {
-                item.classList.toggle('active', item.dataset.repoPath === repoPath);
-            });
         }
 
         // ============================================
@@ -2963,11 +3033,20 @@
                 case 'start':
                     await startRepo(path);
                     break;
+                case 'start-paused':
+                    await startRepo(path, null, true);
+                    break;
                 case 'stop':
                     await stopRepo(path);
                     break;
                 case 'view':
                     switchView('activity', path);
+                    break;
+                case 'pause':
+                    await pauseRepo(path);
+                    break;
+                case 'resume':
+                    await resumeRepo(path);
                     break;
                 case 'setup':
                     openSetupWizard(path);
@@ -2975,7 +3054,7 @@
             }
         }
 
-        async function startRepo(path, configName = null) {
+        async function startRepo(path, configName = null, startPaused = false) {
             try {
                 // Determine config to use:
                 // 1. Explicit configName parameter
@@ -3011,11 +3090,48 @@
                     throw new Error(error.detail || 'Failed to start');
                 }
 
-                showToast(`Orchestrator started with ${config}`, 'success');
+                showToast(`Repository engine started with ${config}`, 'success');
 
                 // Select this repo as active
                 selectRepo(path, config, 'registered');
 
+                await loadRepos();
+                if (startPaused) {
+                    await pauseRepo(path);
+                }
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function pauseRepo(path) {
+            try {
+                const response = await fetch('/control/orchestrator/pause', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path })
+                });
+                if (!response.ok) {
+                    throw new Error('Failed to pause repository engine');
+                }
+                showToast('Repository engine paused', 'success');
+                await loadRepos();
+            } catch (error) {
+                showToast(error.message, 'error');
+            }
+        }
+
+        async function resumeRepo(path) {
+            try {
+                const response = await fetch('/control/orchestrator/resume', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path })
+                });
+                if (!response.ok) {
+                    throw new Error('Failed to resume repository engine');
+                }
+                showToast('Repository engine resumed', 'success');
                 await loadRepos();
             } catch (error) {
                 showToast(error.message, 'error');
@@ -3035,7 +3151,7 @@
                     throw new Error(error.detail || 'Failed to stop');
                 }
 
-                showToast('Orchestrator stopped', 'success');
+                showToast('Repository engine stopped', 'success');
 
                 if (state.currentView === 'activity' && state.activeRepo?.path === path) {
                     switchView('repositories');
@@ -3131,10 +3247,10 @@
         async function confirmShutdown() {
             try {
                 await fetch('/control/shutdown', { method: 'POST' });
-                showToast('Dashboard shutting down...', 'success');
+                showToast('Closing Control Center window...', 'success');
                 setTimeout(() => window.close(), 1000);
             } catch (error) {
-                showToast('Failed to shutdown', 'error');
+                showToast('Failed to close Control Center', 'error');
             }
         }
 
@@ -3316,46 +3432,23 @@
                 btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
             });
 
-            // Repo dropdown
-            document.getElementById('repoDropdownTrigger').addEventListener('click', (e) => {
-                e.stopPropagation();
-                toggleDropdown();
-            });
-
             document.getElementById('rescanReposBtn').addEventListener('click', rescanRepos);
 
-            // Close dropdown when clicking outside
-            document.addEventListener('click', (e) => {
-                const container = document.getElementById('repoDropdownContainer');
-                if (!container.contains(e.target)) {
-                    closeDropdown();
-                }
+            document.getElementById('activityConfigSelect').addEventListener('change', (e) => {
+                if (!state.activeRepo?.path) return;
+                state.activeRepo.config = e.target.value;
+                saveRecentRepo(state.activeRepo.path, state.activeRepo.config);
+                document.getElementById('activitySetDefaultConfig').checked =
+                    getDefaultConfig(state.activeRepo.path) === state.activeRepo.config;
             });
-
-            // Config selector change
-            document.getElementById('configSelect').addEventListener('change', (e) => {
-                const newConfig = e.target.value;
-                if (state.activeRepo) {
-                    state.activeRepo.config = newConfig;
-                    saveRecentRepo(state.activeRepo.path, newConfig);
-
-                    // Update set-as-default checkbox
-                    const savedDefault = getDefaultConfig(state.activeRepo.path);
-                    document.getElementById('setDefaultConfig').checked = savedDefault === newConfig;
+            document.getElementById('activitySetDefaultConfig').addEventListener('change', (e) => {
+                if (!state.activeRepo?.path || !state.activeRepo?.config) return;
+                if (e.target.checked) {
+                    setDefaultConfigForRepo(state.activeRepo.path, state.activeRepo.config);
+                    showToast(`${state.activeRepo.config} set as default`, 'success');
+                    return;
                 }
-            });
-
-            // Set default config checkbox
-            document.getElementById('setDefaultConfig').addEventListener('change', (e) => {
-                if (state.activeRepo && state.activeRepo.config) {
-                    if (e.target.checked) {
-                        setDefaultConfigForRepo(state.activeRepo.path, state.activeRepo.config);
-                        showToast(`${state.activeRepo.config} set as default`, 'success');
-                    } else {
-                        // Clear default
-                        setDefaultConfigForRepo(state.activeRepo.path, null);
-                    }
-                }
+                setDefaultConfigForRepo(state.activeRepo.path, null);
             });
 
             // Doctor
@@ -4411,7 +4504,7 @@
                         html += '</ul>';
                     }
 
-                    html += '<p style="margin-top: 16px;">You can now start the orchestrator for this repository.</p>';
+                    html += '<p style="margin-top: 16px;">You can now start the repository engine for this repository.</p>';
 
                     document.getElementById('setupContent').innerHTML = html;
                     document.getElementById('setupWizardNext').textContent = 'Done';
@@ -4462,29 +4555,15 @@
 
             // Pause/Resume in activity view
             document.getElementById('pauseResumeBtn').addEventListener('click', async () => {
-                if (!state.activeRepo) return;
-                const isPaused = getRepoState(state.activeRepo) === 'paused';
-                const endpoint = isPaused ? '/control/orchestrator/resume' : '/control/orchestrator/pause';
-
-                try {
-                    const response = await fetch(endpoint, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ repo_root: state.activeRepo.path })
-                    });
-
-                    if (!response.ok) {
-                        throw new Error('Operation failed');
-                    }
-
-                    showToast(isPaused ? 'Orchestrator resumed' : 'Orchestrator paused', 'success');
-                    await loadRepos();
-                    if (state.activeRepo) {
-                        loadActivityView(state.activeRepo.path);
-                    }
-                } catch (error) {
-                    showToast(error.message, 'error');
+                if (!state.activeRepo?.path) return;
+                const repo = state.repos.find(r => r.path === state.activeRepo.path);
+                if (!repo) return;
+                if (getRepoState(repo) === 'paused') {
+                    await resumeRepo(repo.path);
+                } else {
+                    await pauseRepo(repo.path);
                 }
+                loadActivityView(repo.path);
             });
 
             // Stop from activity view
