@@ -24,9 +24,10 @@ agent-done completed \
 agent-done blocked \
   --reason "Why you're blocked" \
   --attempted "What you tried" \
-  --blocked-by 123 456 \        # Optional: blocking issue numbers
-  --when-unblocked "..."        # Optional: hint for resolution
+  --blocked-by 123 456 \
+  --when-unblocked "Hint for resolution"
 ```
+The `--blocked-by` and `--when-unblocked` options are optional.
 
 **Cannot proceed - gave up:**
 ```bash
@@ -39,10 +40,11 @@ agent-done blocked \
 ```bash
 agent-done needs_human \
   --question "What do you need answered?" \
-  --context "Background info" \          # Optional
-  --options "Option A" "Option B" \      # Optional
-  --default "What to do if no response"  # Optional
+  --context "Background info" \
+  --options "Option A" "Option B" \
+  --default "What to do if no response"
 ```
+The `--context`, `--options`, and `--default` options are optional.
 
 ### For code review
 
@@ -50,17 +52,19 @@ agent-done needs_human \
 ```bash
 agent-done approved \
   --summary "Why the code looks good" \
-  --risk low|medium|high \
-  --checks tests_pass code_quality  # Optional: what you verified
+  --risk low \
+  --checks tests_pass code_quality
 ```
+The `--checks` option is optional. Risk must be `low`, `medium`, or `high`.
 
 **Changes requested:**
 ```bash
 agent-done changes_requested \
   --issues "What needs to be fixed" \
-  --risk low|medium|high \
-  --checks-needed tests error_handling  # Optional: what's missing
+  --risk medium \
+  --checks-needed tests error_handling
 ```
+The `--checks-needed` option is optional.
 
 ### Additional options
 

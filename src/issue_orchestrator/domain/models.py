@@ -501,6 +501,7 @@ class AgentConfig:
         # - Brief critical hook at top (in agent_done.md)
         # - "Read prompt file" in the middle
         # - Full agent-done docs at bottom (in agent_done.md)
+        # NOTE: Agent-done is ALWAYS injected - user system_prompt is appended, not replaced
         if self.provider == "claude-code":
             agent_done_docs = get_agent_done_instructions()
             system_prompt = (
@@ -508,7 +509,11 @@ class AgentConfig:
                 f"---\n\n"
                 f"Read {prompt_file} for your task-specific instructions."
             )
-            kwargs.setdefault("system_prompt", system_prompt)
+            # Append any user-provided system_prompt (agent-done always comes first)
+            user_system_prompt = kwargs.pop("system_prompt", None)
+            if user_system_prompt:
+                system_prompt = f"{system_prompt}\n\n---\n\n{user_system_prompt}"
+            kwargs["system_prompt"] = system_prompt
             # Use permission_mode from provider_args or fall back to legacy field
             kwargs.setdefault("permission_mode", self.permission_mode)
 
