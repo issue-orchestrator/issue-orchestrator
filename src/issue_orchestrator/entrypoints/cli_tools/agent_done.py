@@ -339,7 +339,6 @@ def build_completion_record(status: str, args: argparse.Namespace) -> Completion
         comment_body=comment_body,
         # PR labels
         pr_labels=getattr(args, 'pr_labels', None),
-        validation_skipped=False,
     )
 
 

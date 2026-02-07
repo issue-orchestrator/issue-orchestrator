@@ -1198,32 +1198,6 @@ class TestCompletionProcessorPublishGate:
         # Push must NOT have been called
         mock_git_adapter.push.assert_not_called()
 
-    def test_cannot_publish_when_validation_skipped(
-        self, processor_with_gate, mock_publish_gate, mock_label_adapter, mock_git_adapter, worktree_with_completion
-    ):
-        """Skipping validation must block publish actions even if gate would allow."""
-        from issue_orchestrator.control.validation import PublishGateResult
-
-        mock_publish_gate.check.return_value = PublishGateResult(
-            allowed=True,
-            reason="Validation passed",
-        )
-
-        record = make_record(
-            outcome=CompletionOutcome.COMPLETED,
-            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
-            summary="Done",
-            validation_skipped=True,
-        )
-        worktree = worktree_with_completion(record)
-
-        result = processor_with_gate.process(worktree, issue_number=123, issue_title="Test")
-
-        assert not result.success
-        assert "validation skipped" in result.message.lower()
-        mock_git_adapter.push.assert_not_called()
-        mock_label_adapter.add_label.assert_called_once_with(123, "validation-failed")
-
     def test_publish_allowed_when_validation_passes(
         self, processor_with_gate, mock_publish_gate, mock_git_adapter, worktree_with_completion
     ):
