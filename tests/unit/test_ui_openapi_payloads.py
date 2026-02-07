@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import warnings
+
 from jsonschema import Draft202012Validator, RefResolver
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -57,7 +59,13 @@ def _make_agent_config() -> AgentConfig:
 def _validator(component: str) -> Draft202012Validator:
     schema = Path("docs/api/ui-openapi.json").read_text()
     data = __import__("json").loads(schema)
-    resolver = RefResolver.from_schema(data)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            category=DeprecationWarning,
+            message="jsonschema.RefResolver is deprecated",
+        )
+        resolver = RefResolver.from_schema(data)
     return Draft202012Validator(data["components"]["schemas"][component], resolver=resolver)
 
 
