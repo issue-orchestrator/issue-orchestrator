@@ -385,7 +385,10 @@ async def dashboard(request: Request, orchestrator=Depends(get_orchestrator)) ->
 
 
 @app.get("/api/view-model", response_model=DashboardViewModelPayload)
-async def get_view_model(request: Request, orchestrator=Depends(get_orchestrator)) -> JSONResponse:
+async def get_view_model(
+    request: Request,
+    orchestrator=Depends(get_orchestrator),
+) -> DashboardViewModelPayload | JSONResponse:
     """Get the dashboard view model as JSON."""
     if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -403,11 +406,11 @@ async def get_view_model(request: Request, orchestrator=Depends(get_orchestrator
         active_tab=active_tab,
         e2e_page=e2e_page,
     )
-    return JSONResponse(view_model.to_dict())
+    return DashboardViewModelPayload.model_validate(view_model.to_dict())
 
 
 @app.get("/api/issue-rows", response_model=IssueRowsPayload)
-async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator)) -> JSONResponse:
+async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator)) -> IssueRowsPayload | JSONResponse:
     """Get rendered issue rows for the current view."""
     if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -443,7 +446,7 @@ async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator
             "html": html,
         })
 
-    return JSONResponse({
+    return IssueRowsPayload.model_validate({
         "rows": rows,
         "active_tab": view_model.active_tab,
         "count": len(rows),
@@ -451,71 +454,71 @@ async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator
 
 
 @app.get("/api/dialog/info", response_model=InfoDialogPayload)
-async def get_info_dialog() -> JSONResponse:
+async def get_info_dialog() -> InfoDialogPayload | JSONResponse:
     """Get view model for the About dialog."""
     response = await get_info()
     if response.status_code != 200:
         return response
     payload = _response_json(response)
-    return JSONResponse(build_info_dialog(payload))
+    return InfoDialogPayload.model_validate(build_info_dialog(payload))
 
 
 @app.get("/api/dialog/config", response_model=ConfigDialogPayload)
-async def get_config_dialog() -> JSONResponse:
+async def get_config_dialog() -> ConfigDialogPayload | JSONResponse:
     """Get view model for the configuration dialog."""
     response = await get_config()
     if response.status_code != 200:
         return response
     payload = _response_json(response)
-    return JSONResponse(build_config_dialog(payload.get("config", "")))
+    return ConfigDialogPayload.model_validate(build_config_dialog(payload.get("config", "")))
 
 
 @app.get("/api/dialog/debug", response_model=DebugDialogPayload)
-async def get_debug_dialog() -> JSONResponse:
+async def get_debug_dialog() -> DebugDialogPayload | JSONResponse:
     """Get view model for the debug dialog."""
     response = await get_debug()
     if response.status_code != 200:
         return response
     payload = _response_json(response)
-    return JSONResponse(build_debug_dialog(payload))
+    return DebugDialogPayload.model_validate(build_debug_dialog(payload))
 
 
 @app.get("/api/dialog/doctor", response_model=DoctorDialogPayload)
-async def get_doctor_dialog() -> JSONResponse:
+async def get_doctor_dialog() -> DoctorDialogPayload:
     """Get view model for the doctor dialog."""
     response = await get_doctor()
     payload = _response_json(response)
-    return JSONResponse(build_doctor_dialog(payload))
+    return DoctorDialogPayload.model_validate(build_doctor_dialog(payload))
 
 
 @app.get("/api/dialog/session-diagnostics/{issue_number}", response_model=SessionDiagnosticsDialogPayload)
-async def get_session_diagnostics_dialog(issue_number: int) -> JSONResponse:
+async def get_session_diagnostics_dialog(issue_number: int) -> SessionDiagnosticsDialogPayload | JSONResponse:
     """Get view model for session diagnostics dialog."""
     response = await get_session_manifest(issue_number)
     if response.status_code != 200:
         return response
     payload = _response_json(response)
-    return JSONResponse(build_session_diagnostics_dialog(issue_number, payload))
+    return SessionDiagnosticsDialogPayload.model_validate(build_session_diagnostics_dialog(issue_number, payload))
 
 
 @app.get("/api/dialog/blocked-issues", response_model=BlockedIssuesDialogPayload)
-async def get_blocked_issues_dialog() -> JSONResponse:
+async def get_blocked_issues_dialog() -> BlockedIssuesDialogPayload | JSONResponse:
     """Get view model for blocked issues dialog."""
     response = await get_blocked_issues()
     if response.status_code != 200:
         return response
     payload = _response_json(response)
-    return JSONResponse(build_blocked_issues_dialog(payload))
+    return BlockedIssuesDialogPayload.model_validate(build_blocked_issues_dialog(payload))
 
 
 @app.get("/api/dialog/phase/{issue_number}", response_model=PhaseDialogPayload)
-async def get_phase_dialog(issue_number: int, phase: str | None = None) -> JSONResponse:
+async def get_phase_dialog(issue_number: int, phase: str | None = None) -> PhaseDialogPayload | JSONResponse:
     """Get view model for phase details dialog."""
     response = await get_session_phases(issue_number)
     if response.status_code != 200:
         return response
     payload = _response_json(response)
-    return JSONResponse(build_phase_dialog(payload, issue_number, phase))
+    return PhaseDialogPayload.model_validate(build_phase_dialog(payload, issue_number, phase))
 
 
 @app.get("/api/status")
