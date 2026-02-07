@@ -613,6 +613,16 @@ class CompletionProcessor:
                 record=gate_record,
                 record_path=record_path,
             )
+        if session_name:
+            run_dir = self.session_output.ensure_run_dir(worktree, session_name)
+            self.session_output.update_manifest(
+                run_dir,
+                {
+                    "validation_passed": False,
+                    "validation_failure_reason": gate_reason,
+                    "ended_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
         # Add validation-failed label so user knows why issue is stuck
         validation_failed_label = self._get_label("validation_failed")
         try:
