@@ -107,63 +107,88 @@ def _is_adapter_internal_import(node: ast.ImportFrom | ast.Import) -> Optional[s
     return None
 
 
+def _check_import_violations(
+    file_path: Path,
+    node: ast.Import | ast.ImportFrom,
+    lines: list[str],
+) -> BoundaryViolation | None:
+    """Check if an import node violates adapter boundaries."""
+    if not (hasattr(node, "lineno") and hasattr(node, "col_offset")):
+        return None
+
+    internal = _is_adapter_internal_import(node)
+    if not internal:
+        return None
+
+    line_num = node.lineno
+    code_line = lines[line_num - 1] if line_num <= len(lines) else ""
+
+    return BoundaryViolation(
+        file_path=str(file_path),
+        line_number=line_num,
+        violation_type="import",
+        message=f"Importing adapter-internal class '{internal}' outside execution/adapters",
+        code_snippet=code_line.strip(),
+    )
+
+
+def _check_attribute_violations(
+    file_path: Path,
+    node: ast.Attribute,
+    lines: list[str],
+) -> BoundaryViolation | None:
+    """Check if an attribute access node violates adapter boundaries."""
+    if not hasattr(node, "lineno"):
+        return None
+
+    if not node.attr.startswith("_"):
+        return None
+
+    if not isinstance(node.value, ast.Name):
+        return None
+
+    if node.value.id not in {"github", "repository_host"}:
+        return None
+
+    line_num = node.lineno
+    code_line = lines[line_num - 1] if line_num <= len(lines) else ""
+
+    return BoundaryViolation(
+        file_path=str(file_path),
+        line_number=line_num,
+        violation_type="attribute_access",
+        message=f"Accessing private attribute '{node.attr}' on adapter instance",
+        code_snippet=code_line.strip(),
+    )
+
+
 def _check_file(file_path: Path, source_code: str) -> list[BoundaryViolation]:
     """Check a single file for boundary violations."""
-    violations = []
-
     module_package = _get_module_package(file_path)
     if not _should_check_file(module_package):
-        return violations
+        return []
 
     try:
         tree = ast.parse(source_code, filename=str(file_path))
     except SyntaxError as e:
         logger.debug("Syntax error in %s: %s", file_path, e)
-        return violations
+        return []
 
     lines = source_code.split("\n")
+    violations = []
 
     for node in ast.walk(tree):
         # Check for imports of adapter internals
         if isinstance(node, (ast.Import, ast.ImportFrom)):
-            if hasattr(node, "lineno") and hasattr(node, "col_offset"):
-                internal = _is_adapter_internal_import(node)
-                if internal:
-                    line_num = node.lineno
-                    code_line = (
-                        lines[line_num - 1] if line_num <= len(lines) else ""
-                    )
-                    violations.append(
-                        BoundaryViolation(
-                            file_path=str(file_path),
-                            line_number=line_num,
-                            violation_type="import",
-                            message=f"Importing adapter-internal class '{internal}' outside execution/adapters",
-                            code_snippet=code_line.strip(),
-                        )
-                    )
+            violation = _check_import_violations(file_path, node, lines)
+            if violation:
+                violations.append(violation)
 
         # Check for direct attribute access on known adapters
-        if isinstance(node, ast.Attribute):
-            if hasattr(node, "lineno") and node.attr.startswith("_"):
-                # Check if this is accessing a private attribute
-                # We look for patterns like github._http_client
-                if isinstance(node.value, ast.Name):
-                    line_num = node.lineno
-                    code_line = (
-                        lines[line_num - 1] if line_num <= len(lines) else ""
-                    )
-                    # Only flag obvious violations on known adapter vars
-                    if node.value.id in {"github", "repository_host"}:
-                        violations.append(
-                            BoundaryViolation(
-                                file_path=str(file_path),
-                                line_number=line_num,
-                                violation_type="attribute_access",
-                                message=f"Accessing private attribute '{node.attr}' on adapter instance",
-                                code_snippet=code_line.strip(),
-                            )
-                        )
+        elif isinstance(node, ast.Attribute):
+            violation = _check_attribute_violations(file_path, node, lines)
+            if violation:
+                violations.append(violation)
 
     return violations
 
