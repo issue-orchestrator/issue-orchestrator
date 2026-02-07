@@ -42,3 +42,49 @@ def test_build_issue_timeline_maps_phase_and_step():
     stream = TimelineStream.from_records(123, records)
     grouped = stream.group_by_phase()
     assert grouped["in_progress"][0].step == "started"
+
+
+def test_build_issue_timeline_status_mapping():
+    records = [
+        TimelineRecord(
+            event_id="e1",
+            timestamp="2026-02-06T00:00:00Z",
+            event="review.queued",
+            data={"issue_number": 123},
+        ),
+        TimelineRecord(
+            event_id="e2",
+            timestamp="2026-02-06T00:01:00Z",
+            event="review.escalated",
+            data={"issue_number": 123},
+        ),
+        TimelineRecord(
+            event_id="e3",
+            timestamp="2026-02-06T00:02:00Z",
+            event="issue.pr_rejected",
+            data={"issue_number": 123},
+        ),
+        TimelineRecord(
+            event_id="e4",
+            timestamp="2026-02-06T00:03:00Z",
+            event="session.validation_failed",
+            data={"issue_number": 123},
+        ),
+        TimelineRecord(
+            event_id="e5",
+            timestamp="2026-02-06T00:04:00Z",
+            event="review.skipped",
+            data={"issue_number": 123},
+        ),
+        TimelineRecord(
+            event_id="e6",
+            timestamp="2026-02-06T00:05:00Z",
+            event="rework.escalating",
+            data={"issue_number": 123},
+        ),
+    ]
+
+    timeline = build_issue_timeline(123, records)
+    statuses = [event["status"] for event in timeline["events"]]
+
+    assert statuses == ["started", "failed", "failed", "failed", "completed", "started"]

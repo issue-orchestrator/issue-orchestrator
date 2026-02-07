@@ -149,20 +149,31 @@ def _status_for_event(event_name: str) -> str:
         "session.failed",
         "session.timeout",
         "session.blocked",
+        "session.validation_failed",
         "issue.blocked",
+        "issue.dependency_blocked",
         "issue.needs_human",
+        "issue.pr_rejected",
         "review.changes_requested",
+        "review.escalated",
     }
     success_events = {
         "session.completed",
         "issue.pr_created",
         "issue.completed",
         "review.approved",
+        "review.skipped",
+    }
+    pending_events = {
+        "review.queued",
+        "rework.escalating",
     }
     if event_name in failure_events:
         return "failed"
     if event_name in success_events:
         return "completed"
+    if event_name in pending_events:
+        return "started"
     if event_name.endswith(".started") or event_name.endswith(".launching"):
         return "started"
     return "completed"
