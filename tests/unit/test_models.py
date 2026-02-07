@@ -155,6 +155,131 @@ class TestAgentConfig:
         assert config.model == "sonnet"
         assert config.timeout_minutes == 45
 
+    def test_get_command_legacy_includes_system_prompt_variable(self, tmp_path):
+        """Test legacy command path includes {system_prompt} with agent-done docs."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Task instructions")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+        )
+
+        cmd = config.get_command(123, "Test Issue", tmp_path)
+
+        # Should include agent-done docs
+        assert "CRITICAL" in cmd
+        assert "agent-done" in cmd
+        # Should include instruction to read prompt file
+        assert "prompt.md" in cmd
+
+    def test_get_command_provider_always_injects_agent_done(self, tmp_path):
+        """Test provider path always injects agent-done docs (strict enforcement)."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Task instructions")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+            provider="claude-code",
+        )
+
+        cmd = config.get_command(123, "Test Issue", tmp_path)
+
+        # Should include agent-done docs
+        assert "CRITICAL" in cmd
+        assert "agent-done" in cmd
+        assert "prompt.md" in cmd
+
+    def test_get_command_provider_appends_user_system_prompt(self, tmp_path):
+        """Test user-provided system_prompt is appended, not replaced."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Task instructions")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+            provider="claude-code",
+            provider_args={"system_prompt": "Custom user instructions here"},
+        )
+
+        cmd = config.get_command(123, "Test Issue", tmp_path)
+
+        # Should include BOTH agent-done docs AND user content
+        assert "CRITICAL" in cmd  # Agent-done enforcement
+        assert "agent-done" in cmd
+        assert "Custom user instructions here" in cmd  # User content appended
+        # Agent-done should come BEFORE user content in the command
+        critical_pos = cmd.find("CRITICAL")
+        user_pos = cmd.find("Custom user instructions")
+        assert critical_pos < user_pos, "Agent-done docs must come before user system_prompt"
+
+    def test_get_command_provider_user_system_prompt_cannot_replace(self, tmp_path):
+        """Test user cannot replace agent-done injection even with matching key."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Task instructions")
+
+        # User tries to provide their own system_prompt that omits agent-done
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+            provider="claude-code",
+            provider_args={"system_prompt": "My own instructions without agent-done"},
+        )
+
+        cmd = config.get_command(123, "Test Issue", tmp_path)
+
+        # Agent-done MUST still be present (strict enforcement)
+        assert "CRITICAL" in cmd
+        assert "agent-done" in cmd
+        # User content is also present (extensibility)
+        assert "My own instructions without agent-done" in cmd
+
+    def test_get_command_codex_provider_injects_agent_done(self, tmp_path):
+        """Test Codex provider also gets agent-done injection (universal enforcement)."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Task instructions")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+            provider="codex",
+            model="gpt-5-codex",
+        )
+
+        cmd = config.get_command(123, "Test Issue", tmp_path)
+
+        # Agent-done MUST be present even for non-Claude providers
+        assert "CRITICAL" in cmd
+        assert "agent-done" in cmd
+        assert "prompt.md" in cmd
+        # Should use codex executable
+        assert "codex" in cmd
+
+    def test_get_command_non_claude_provider_prepends_to_prompt(self, tmp_path):
+        """Test non-Claude providers get agent-done prepended to prompt."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Task instructions")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+            provider="codex",
+            model="gpt-5-codex",
+            initial_prompt="Do the work on issue #{issue_number}",
+        )
+
+        cmd = config.get_command(123, "Test Issue", tmp_path)
+
+        # Both agent-done and the initial prompt should be in the command
+        assert "CRITICAL" in cmd
+        assert "agent-done" in cmd
+        assert "Do the work on issue #123" in cmd
+        # Agent-done should come before the user's initial prompt
+        critical_pos = cmd.find("CRITICAL")
+        user_prompt_pos = cmd.find("Do the work on issue #123")
+        assert critical_pos < user_prompt_pos, "Agent-done must precede user prompt"
+
 
 class TestSession:
     """Test the Session data model."""

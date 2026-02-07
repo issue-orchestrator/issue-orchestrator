@@ -380,7 +380,8 @@ class AgentConfig:
     # Command template - escape hatch to override provider-generated command
     # If set, this is used instead of provider.build_command()
     # For non-interactive mode, add -p flag (Claude), use 'exec' (Codex), or -p (Gemini)
-    command: str = "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt 'Read {prompt} for your instructions.' '{initial_prompt}'"
+    # Note: {system_prompt} includes agent-done instructions + "Read {prompt} for task instructions"
+    command: str = "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
     # Optional override for hook verification AI agent (e.g., "claude-code")
     meta_agent: Optional[str] = None
     initial_prompt: str = "Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, exit with /exit."
@@ -442,11 +443,24 @@ class AgentConfig:
             return self._build_provider_command(rendered_prompt, prompt_for_command)
 
         # Legacy template-based command building
+        from issue_orchestrator.resources import get_agent_done_instructions
+
         # Escape single quotes in the prompt for shell safety
         escaped_prompt = rendered_prompt.replace("'", "'\\''")
 
+        # Build the full system prompt with agent-done instructions
+        agent_done_docs = get_agent_done_instructions()
+        system_prompt = (
+            f"{agent_done_docs}\n\n"
+            f"---\n\n"
+            f"Read {prompt_for_command} for your task-specific instructions."
+        )
+        # Escape single quotes for shell embedding
+        escaped_system_prompt = system_prompt.replace("'", "'\\''")
+
         # Then render the full command with the prompt included
         format_kwargs["initial_prompt"] = escaped_prompt
+        format_kwargs["system_prompt"] = escaped_system_prompt
 
         prompt_mode = os.environ.get("ORCHESTRATOR_CLAUDE_PROMPT_MODE", "arg").strip().lower()
         if prompt_mode == "stdin":
@@ -454,7 +468,7 @@ class AgentConfig:
                 "printf '%s' '{initial_prompt}' | "
                 "claude {claude_args} --input-format text "
                 "--permission-mode {permission_mode} --model {model} "
-                "--append-system-prompt 'Read {prompt} for your instructions.'"
+                "--append-system-prompt '{system_prompt}'"
             )
             return template.format(**format_kwargs)
 
@@ -471,6 +485,7 @@ class AgentConfig:
             Shell-safe command string
         """
         from issue_orchestrator.agent_runner import get_provider
+        from issue_orchestrator.resources import get_agent_done_instructions
 
         # self.provider is guaranteed non-None here (caller checks)
         assert self.provider is not None
@@ -479,12 +494,29 @@ class AgentConfig:
         # Build provider-specific kwargs from provider_args
         kwargs = dict(self.provider_args)
 
-        # Add system prompt about reading the instructions file
+        # STRICT ENFORCEMENT: Agent-done is ALWAYS injected for ALL providers.
+        # - For Claude: inject via system_prompt (--append-system-prompt)
+        # - For other providers: prepend to the prompt itself
+        agent_done_docs = get_agent_done_instructions()
+        agent_done_with_prompt_ref = (
+            f"{agent_done_docs}\n\n"
+            f"---\n\n"
+            f"Read {prompt_file} for your task-specific instructions."
+        )
+
         if self.provider == "claude-code":
-            # Claude Code uses --append-system-prompt
-            kwargs.setdefault("system_prompt", f"Read {prompt_file} for your instructions.")
+            # Claude Code uses --append-system-prompt for agent-done
+            system_prompt = agent_done_with_prompt_ref
+            # Append any user-provided system_prompt (agent-done always comes first)
+            user_system_prompt = kwargs.pop("system_prompt", None)
+            if user_system_prompt:
+                system_prompt = f"{system_prompt}\n\n---\n\n{user_system_prompt}"
+            kwargs["system_prompt"] = system_prompt
             # Use permission_mode from provider_args or fall back to legacy field
             kwargs.setdefault("permission_mode", self.permission_mode)
+        else:
+            # Other providers (Codex, etc.): prepend agent-done to the prompt itself
+            prompt = f"{agent_done_with_prompt_ref}\n\n---\n\n{prompt}"
 
         # Build the command (returns list[str])
         cmd_list = provider.build_command(prompt=prompt, model=self.model, **kwargs)

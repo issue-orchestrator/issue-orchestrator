@@ -30,7 +30,8 @@ class TemplateValidator(ConfigValidator):
     }
 
     # Valid variables for command (after initial_prompt is rendered)
-    VALID_COMMAND_VARS = VALID_INITIAL_PROMPT_VARS | {"initial_prompt"}
+    # system_prompt includes agent-done instructions, built by get_command()
+    VALID_COMMAND_VARS = VALID_INITIAL_PROMPT_VARS | {"initial_prompt", "system_prompt"}
 
     # Regex to find {variable_name} patterns (excluding {{ escaped braces }})
     VAR_PATTERN = re.compile(r"\{([a-zA-Z_][a-zA-Z0-9_]*)\}")
@@ -58,7 +59,7 @@ class TemplateValidator(ConfigValidator):
                 errors.append(
                     f"Agent '{label}': invalid template variable(s) in command: {{{vars_str}}}. "
                     f"Valid: issue_number, issue_title, prompt, worktree, model, permission_mode, "
-                    f"claude_args, pr_number, initial_prompt"
+                    f"claude_args, pr_number, initial_prompt, system_prompt"
                 )
 
         return errors

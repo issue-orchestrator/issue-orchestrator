@@ -90,17 +90,7 @@ handles all GitHub operations after you complete.
 The orchestrator will automatically add `triage-reviewed` label to all PRs in the manifest
 when you complete successfully. You do NOT need to add labels yourself.
 
-When done, use `agent-done`:
-```bash
-agent-done completed \
-  --implementation "Reviewed N PRs. Found patterns: X, Y, Z. Made improvements to: ..." \
-  --problems "Any blockers or items needing human attention"
-```
-
-Or if blocked:
-```bash
-agent-done blocked --reason "..." --attempted "..."
-```
+Use `agent-done completed` or `agent-done blocked` to report your status.
 
 ## IMPORTANT: Local-Only Operation
 
@@ -110,32 +100,6 @@ agent-done blocked --reason "..." --attempted "..."
 - **DO NOT** use `gh issue create` or `gh pr create` - commit changes locally
 
 The orchestrator handles all GitHub operations after you complete.
-
----
-
-## CRITICAL: Observe agent-done Results
-
-When you run `agent-done completed`, it automatically runs full validation (type checks, linting, ALL tests).
-
-**You MUST check if agent-done succeeded or failed.**
-
-### If agent-done fails validation:
-
-1. **Read the error output** - it shows exactly what failed
-2. **Fix the issue** - update your code to fix tests/types/lint
-3. **Run agent-done completed again** - retry after fixing
-
-### If you CANNOT fix after 2-3 attempts:
-
-Use `agent-done blocked` - this SKIPS validation (since you're reporting a problem):
-
-```bash
-agent-done blocked \
-  --reason "Validation failing: test_foo.py AssertionError on line 42" \
-  --attempted "Tried fixing the assertion, checked related code, but issue persists"
-```
-
----
 
 ## Guidelines
 
