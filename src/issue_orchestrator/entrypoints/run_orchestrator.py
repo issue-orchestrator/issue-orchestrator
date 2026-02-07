@@ -86,7 +86,7 @@ async def run(
     from ..entrypoints.bootstrap import build_orchestrator
     from ..entrypoints.web import run_with_web_dashboard
     from ..infra.config import Config
-    from ..infra.repo_lock import acquire_lock, release_lock
+    from ..infra.repo_lock import acquire_lock, release_lock, touch_lock
 
     # Acquire the repository lock (instance-specific if multi-instance)
     instance_str = f" instance={instance_id}" if instance_id else ""
@@ -100,6 +100,11 @@ async def run(
         release_lock(repo_root, instance_id=instance_id)
 
     atexit.register(cleanup)
+
+    async def _heartbeat_loop() -> None:
+        while True:
+            touch_lock(repo_root, instance_id=instance_id)
+            await asyncio.sleep(5.0)
 
     # Load config
     if config_path:
@@ -146,7 +151,15 @@ async def run(
 
     # Run with web dashboard
     logger.info("Starting orchestrator on port %d", port)
-    await run_with_web_dashboard(orchestrator, port, open_browser=not no_browser)
+    heartbeat_task = asyncio.create_task(_heartbeat_loop(), name="repo-lock-heartbeat")
+    try:
+        await run_with_web_dashboard(orchestrator, port, open_browser=not no_browser)
+    finally:
+        heartbeat_task.cancel()
+        try:
+            await heartbeat_task
+        except asyncio.CancelledError:
+            pass
 
 
 def main() -> int:

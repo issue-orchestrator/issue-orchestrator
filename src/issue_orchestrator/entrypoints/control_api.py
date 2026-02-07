@@ -45,6 +45,7 @@ E2E Test Runner API endpoints:
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -1499,6 +1500,122 @@ async def control_stop(request: Request) -> JSONResponse:
         })
 
 
+@control_app.post("/control/orchestrator/reconcile")
+async def control_reconcile(request: Request) -> JSONResponse:
+    """Reconcile stale runtime metadata and optionally stop orphaned/unresponsive engines.
+
+    JSON body:
+        stop_orphaned: bool (optional, default false)
+        stop_unresponsive: bool (optional, default false)
+        force: bool (optional, default false)
+    """
+    sv = get_supervisor()
+    from ..infra.repo_registry import list_repos
+
+    stop_orphaned, stop_unresponsive, force = await _parse_reconcile_options(request)
+
+    reconciled_stale_locks: list[str] = []
+    orphaned_detected: list[dict[str, Any]] = []
+    stopped_orphaned: list[str] = []
+    unresponsive_detected: list[dict[str, Any]] = []
+    stopped_unresponsive: list[str] = []
+
+    for repo in list_repos():
+        reconciliation = _reconcile_repo_runtime(
+            sv=sv,
+            repo_path=Path(repo.path),
+            selected_config=repo.selected_config or "default.yaml",
+            stop_orphaned=stop_orphaned,
+            stop_unresponsive=stop_unresponsive,
+            force=force,
+        )
+        if reconciliation is None:
+            continue
+
+        stale_lock_reconciled, orphaned_entry, orphaned_stopped, unresponsive_entry, unresponsive_stopped = reconciliation
+        if stale_lock_reconciled:
+            reconciled_stale_locks.append(repo.path)
+        if orphaned_entry is not None:
+            orphaned_detected.append(orphaned_entry)
+        if orphaned_stopped:
+            stopped_orphaned.append(repo.path)
+        if unresponsive_entry is not None:
+            unresponsive_detected.append(unresponsive_entry)
+        if unresponsive_stopped:
+            stopped_unresponsive.append(repo.path)
+
+    return JSONResponse({
+        "status": "ok",
+        "reconciled_stale_locks": reconciled_stale_locks,
+        "orphaned_detected": orphaned_detected,
+        "stopped_orphaned": stopped_orphaned,
+        "unresponsive_detected": unresponsive_detected,
+        "stopped_unresponsive": stopped_unresponsive,
+    })
+
+
+async def _parse_reconcile_options(request: Request) -> tuple[bool, bool, bool]:
+    stop_orphaned = False
+    stop_unresponsive = False
+    force = False
+    try:
+        body = await request.json()
+        if isinstance(body, dict):
+            stop_orphaned = bool(body.get("stop_orphaned", False))
+            stop_unresponsive = bool(body.get("stop_unresponsive", False))
+            force = bool(body.get("force", False))
+    except Exception:
+        pass
+    return stop_orphaned, stop_unresponsive, force
+
+
+def _reconcile_repo_runtime(
+    *,
+    sv: SupervisorOps,
+    repo_path: Path,
+    selected_config: str,
+    stop_orphaned: bool,
+    stop_unresponsive: bool,
+    force: bool,
+) -> tuple[bool, dict[str, Any] | None, bool, dict[str, Any] | None, bool] | None:
+    """Reconcile one repository and return reconciliation outcomes.
+
+    Returns tuple:
+      (stale_lock_reconciled, orphaned_entry, orphaned_stopped, unresponsive_entry, unresponsive_stopped)
+    """
+    if not repo_path.exists():
+        return None
+
+    status_info = sv.status(repo_path)
+
+    if status_info.state == "failed":
+        return sv.stop(repo_path, force=False), None, False, None, False
+
+    if status_info.state != "running":
+        detected = _detect_orchestrator_by_port(repo_path, selected_config)
+        if not detected:
+            return False, None, False, None, False
+        orphaned_entry = {"repo_root": str(repo_path), "port": detected.get("port")}
+        if stop_orphaned and detected.get("port"):
+            stopped = sv.stop_by_port(int(detected["port"]), force=force)
+            return False, orphaned_entry, stopped, None, False
+        return False, orphaned_entry, False, None, False
+
+    payload = _enrich_runtime_health(repo_path, status_info.to_dict())
+    if payload is None or payload.get("runtime_health") != "unresponsive":
+        return False, None, False, None, False
+
+    unresponsive_entry = {
+        "repo_root": str(repo_path),
+        "heartbeat_age_seconds": payload.get("heartbeat_age_seconds"),
+        "pid": payload.get("pid"),
+        "port": payload.get("port"),
+    }
+    if stop_unresponsive:
+        return False, None, False, unresponsive_entry, sv.stop(repo_path, force=force)
+    return False, None, False, unresponsive_entry, False
+
+
 @control_app.get("/control/orchestrator/status")
 async def control_status(
     repo_root: str = Query(...),
@@ -1539,7 +1656,8 @@ async def control_status(
     # Single instance mode - return backward-compatible format
     # Check if we have exactly one running instance
     if multi_status.instances and len(multi_status.instances) == 1:
-        return JSONResponse(multi_status.instances[0].to_dict())
+        payload = _enrich_runtime_health(path, multi_status.instances[0].to_dict())
+        return JSONResponse(payload or multi_status.instances[0].to_dict())
 
     # No running instances - check for orphaned process
     status_info = sv.status(path)
@@ -1547,7 +1665,7 @@ async def control_status(
         detected = _detect_orchestrator_by_port(path, selected)
         if detected:
             status_data = detected.get("status", {})
-            return JSONResponse({
+            orphaned_payload = {
                 "state": "running",
                 "pid": None,
                 "port": detected["port"],
@@ -1559,9 +1677,11 @@ async def control_status(
                 "tick_age_seconds": detected.get("tick_age_seconds"),
                 "shutdown_requested": status_data.get("shutdown_requested", False),
                 "active_session_count": len(status_data.get("active_sessions", [])),
-            })
+            }
+            return JSONResponse(_enrich_runtime_health(path, orphaned_payload, orphaned=True) or orphaned_payload)
 
-    return JSONResponse(status_info.to_dict())
+    payload = _enrich_runtime_health(path, status_info.to_dict())
+    return JSONResponse(payload or status_info.to_dict())
 
 
 @control_app.post("/control/orchestrator/pause")
@@ -1873,6 +1993,58 @@ async def control_log_tail(
 # ======================================================================# Multi-Repo Registry API Endpoints
 # ======================================================================# These endpoints manage the repo registry for multi-repo supervision.
 
+LOCK_HEARTBEAT_UNRESPONSIVE_SECONDS = 45
+
+
+def _heartbeat_age_seconds(iso_timestamp: str | None) -> int | None:
+    if not iso_timestamp:
+        return None
+    try:
+        parsed = datetime.fromisoformat(iso_timestamp)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
+
+
+def _enrich_runtime_health(
+    repo_path: Path,
+    status_payload: dict[str, Any] | None,
+    *,
+    orphaned: bool = False,
+    instance_id: str | None = None,
+) -> dict[str, Any] | None:
+    if status_payload is None:
+        return None
+
+    from ..infra.repo_lock import read_lock
+
+    lock_info = read_lock(repo_path, instance_id=instance_id)
+    last_heartbeat_at = lock_info.last_heartbeat_at if lock_info is not None else None
+    heartbeat_age = _heartbeat_age_seconds(last_heartbeat_at)
+    status_payload["last_heartbeat_at"] = last_heartbeat_at
+    status_payload["heartbeat_age_seconds"] = heartbeat_age
+
+    if orphaned:
+        status_payload["runtime_health"] = "orphaned"
+        return status_payload
+
+    state = status_payload.get("state")
+    if state == "failed":
+        status_payload["runtime_health"] = "stale_lock"
+        return status_payload
+    if state == "running" and heartbeat_age is not None and heartbeat_age > LOCK_HEARTBEAT_UNRESPONSIVE_SECONDS:
+        status_payload["runtime_health"] = "unresponsive"
+        status_payload["unresponsive"] = True
+        return status_payload
+    if state == "running":
+        status_payload["runtime_health"] = "healthy"
+        status_payload["unresponsive"] = False
+        return status_payload
+    status_payload["runtime_health"] = "not_running"
+    return status_payload
+
 
 def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - multi-repo status with state aggregation
     """Build status data for all registered repos.
@@ -1942,7 +2114,8 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
                     except Exception:
                         pass
 
-                repo_data["instances"].append(inst_data)
+                enriched_instance = _enrich_runtime_health(path, inst_data, instance_id=inst_data.get("instance_id"))
+                repo_data["instances"].append(enriched_instance or inst_data)
 
             # Compute aggregate status for the repo
             running_count = sum(1 for i in multi_status.instances if i.state == "running")
@@ -1956,13 +2129,13 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
         else:
             # Single instance mode (existing behavior)
             status_info = sv.status(path) if path.exists() else None
-            repo_data["status"] = status_info.to_dict() if status_info else None
+            repo_data["status"] = _enrich_runtime_health(path, status_info.to_dict() if status_info else None)
 
             if status_info and status_info.state != "running" and path.exists():
                 detected = _detect_orchestrator_by_port(path, repo.selected_config)
                 if detected:
                     status_data = detected.get("status", {})
-                    repo_data["status"] = {
+                    orphaned_status = {
                         "state": "running",
                         "pid": None,
                         "port": detected["port"],
@@ -1975,6 +2148,7 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
                         "shutdown_requested": status_data.get("shutdown_requested", False),
                         "active_session_count": len(status_data.get("active_sessions", [])),
                     }
+                    repo_data["status"] = _enrich_runtime_health(path, orphaned_status, orphaned=True)
 
             # If running, fetch internal state from the orchestrator
             if status_info and status_info.state == "running" and status_info.port:

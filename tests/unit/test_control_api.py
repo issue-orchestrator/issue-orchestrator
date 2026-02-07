@@ -16,6 +16,7 @@ Testing strategy:
 
 import pytest
 import json
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
 from fastapi.testclient import TestClient
@@ -909,6 +910,44 @@ class TestSupervisorStop:
 
         assert response.status_code == 409
         assert response.json()["error"] == "port_mismatch"
+
+
+class TestSupervisorReconcile:
+    """Tests for POST /control/orchestrator/reconcile endpoint."""
+
+    def test_reconcile_cleans_stale_locks(
+        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_supervisor: MagicMock
+    ) -> None:
+        mock_supervisor.status.return_value = SupervisorStatus(state="failed", pid=123, error="stale lock")
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.repo_registry.list_repos",
+            lambda: [SimpleNamespace(path=str(tmp_path), selected_config="default.yaml")],
+        )
+
+        response = supervisor_client.post("/control/orchestrator/reconcile", json={})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert str(tmp_path) in data["reconciled_stale_locks"]
+
+    def test_reconcile_reports_orphaned_and_can_stop(
+        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_supervisor: MagicMock
+    ) -> None:
+        from issue_orchestrator.entrypoints import control_api
+
+        mock_supervisor.status.return_value = SupervisorStatus(state="stopped")
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.repo_registry.list_repos",
+            lambda: [SimpleNamespace(path=str(tmp_path), selected_config="default.yaml")],
+        )
+        monkeypatch.setattr(control_api, "_detect_orchestrator_by_port", lambda *_: {"port": 19080, "status": {}})
+
+        response = supervisor_client.post("/control/orchestrator/reconcile", json={"stop_orphaned": True})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["orphaned_detected"][0]["port"] == 19080
+        assert str(tmp_path) in data["stopped_orphaned"]
 
 
 class TestSupervisorStart:

@@ -49,6 +49,7 @@ class LockInfo:
     state_dir: str
     recovered: bool = False
     instance_id: str | None = None  # For multi-instance deployments
+    last_heartbeat_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for JSON serialization."""
@@ -59,6 +60,7 @@ class LockInfo:
             "http_port": self.http_port,
             "state_dir": self.state_dir,
             "recovered": self.recovered,
+            "last_heartbeat_at": self.last_heartbeat_at,
         }
         if self.instance_id is not None:
             result["instance_id"] = self.instance_id
@@ -75,6 +77,7 @@ class LockInfo:
             state_dir=data["state_dir"],
             recovered=data.get("recovered", False),
             instance_id=data.get("instance_id"),
+            last_heartbeat_at=data.get("last_heartbeat_at"),
         )
 
 
@@ -175,6 +178,7 @@ def acquire_lock(
         state_dir=str(state_dir(repo_root)),
         recovered=recovered,
         instance_id=instance_id,
+        last_heartbeat_at=datetime.now(timezone.utc).isoformat(),
     )
 
     _write_lock(lock_path, info)
@@ -269,3 +273,23 @@ def list_instance_locks(repo_root: Path | str) -> list[LockInfo]:
             active_locks.append(info)
 
     return active_locks
+
+
+def touch_lock(
+    repo_root: Path | str,
+    pid: int | None = None,
+    instance_id: str | None = None,
+) -> bool:
+    """Update lock heartbeat timestamp for the owning process.
+
+    Returns False when the lock does not exist or belongs to another process.
+    """
+    repo_root = normalize_repo_root(repo_root)
+    lock_path = lock_file(repo_root, instance_id)
+    expected_pid = pid or os.getpid()
+    existing = _read_lock(lock_path)
+    if existing is None or existing.pid != expected_pid:
+        return False
+    existing.last_heartbeat_at = datetime.now(timezone.utc).isoformat()
+    _write_lock(lock_path, existing)
+    return True
