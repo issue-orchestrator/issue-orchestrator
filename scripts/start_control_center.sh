@@ -6,6 +6,115 @@ VENV_PATH="${ROOT_DIR}/.venv"
 PYTHON_BIN="${PYTHON:-python3}"
 PORT="${CC_PORT:-19080}"
 
+# ---------------------------------------------------------------------------
+# Stop all running orchestrator processes (control centers, agents, validators)
+# ---------------------------------------------------------------------------
+stop_all_orchestrators() {
+  echo "=== Stopping all orchestrator processes ==="
+  local found_any=false
+
+  # 1. Control centers (any port)
+  local cc_pids
+  cc_pids=$(pgrep -f 'issue_orchestrator\.entrypoints\.control_center' 2>/dev/null || echo "")
+  if [[ -n "${cc_pids}" ]]; then
+    found_any=true
+    local cc_count
+    cc_count=$(echo "${cc_pids}" | wc -l | tr -d ' ')
+    echo "  Killing ${cc_count} control center(s)..."
+    echo "${cc_pids}" | xargs kill 2>/dev/null || true
+  fi
+
+  # 2. Claude agent sessions (orchestrator-spawned)
+  local agent_pids
+  agent_pids=$(pgrep -f 'claude.*--permission-mode bypassPermissions' 2>/dev/null || echo "")
+  if [[ -n "${agent_pids}" ]]; then
+    found_any=true
+    local agent_count
+    agent_count=$(echo "${agent_pids}" | wc -l | tr -d ' ')
+    echo "  Killing ${agent_count} Claude agent session(s)..."
+    echo "${agent_pids}" | xargs kill 2>/dev/null || true
+  fi
+
+  # 3. Validate runners
+  local vr_pids
+  vr_pids=$(pgrep -f 'issue_orchestrator\.entrypoints\.cli_tools\.validate_runner' 2>/dev/null || echo "")
+  if [[ -n "${vr_pids}" ]]; then
+    found_any=true
+    local vr_count
+    vr_count=$(echo "${vr_pids}" | wc -l | tr -d ' ')
+    echo "  Killing ${vr_count} validate runner(s)..."
+    echo "${vr_pids}" | xargs kill 2>/dev/null || true
+  fi
+
+  # 4. Playwright drivers (spawned by orchestrator)
+  local pw_pids
+  pw_pids=$(pgrep -f 'playwright/driver.*run-driver' 2>/dev/null || echo "")
+  if [[ -n "${pw_pids}" ]]; then
+    found_any=true
+    echo "  Killing Playwright driver(s)..."
+    echo "${pw_pids}" | xargs kill 2>/dev/null || true
+  fi
+
+  if [[ "${found_any}" == "false" ]]; then
+    echo "  No orchestrator processes found"
+    return 0
+  fi
+
+  # Wait for processes to exit (up to 5 seconds)
+  echo "  Waiting for processes to exit..."
+  local remaining
+  for _ in {1..10}; do
+    sleep 0.5
+    remaining=$(pgrep -f 'issue_orchestrator\.entrypoints\.control_center|claude.*--permission-mode bypassPermissions|issue_orchestrator\.entrypoints\.cli_tools\.validate_runner' 2>/dev/null || echo "")
+    if [[ -z "${remaining}" ]]; then
+      echo "  All processes stopped"
+      return 0
+    fi
+  done
+
+  # Stragglers get SIGKILL
+  echo "  Some processes didn't exit gracefully, sending SIGKILL..."
+  echo "${remaining}" | xargs kill -9 2>/dev/null || true
+  sleep 1
+
+  remaining=$(pgrep -f 'issue_orchestrator\.entrypoints\.control_center|claude.*--permission-mode bypassPermissions|issue_orchestrator\.entrypoints\.cli_tools\.validate_runner' 2>/dev/null || echo "")
+  if [[ -n "${remaining}" ]]; then
+    echo "  WARNING: Some processes survived SIGKILL: ${remaining}"
+  else
+    echo "  All processes stopped (required SIGKILL)"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Pull latest code into the base repo
+# ---------------------------------------------------------------------------
+git_pull() {
+  echo "=== Pulling latest code ==="
+  local current_branch
+  current_branch=$(cd "${ROOT_DIR}" && git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+
+  if [[ "${current_branch}" != "main" && "${current_branch}" != "master" ]]; then
+    echo "ERROR: Base repo is on branch '${current_branch}', not main." >&2
+    echo "  The orchestrator must run from latest main." >&2
+    echo "  Fix: cd ${ROOT_DIR} && git checkout main" >&2
+    exit 1
+  fi
+
+  if ! (cd "${ROOT_DIR}" && git diff --quiet && git diff --cached --quiet); then
+    echo "ERROR: Base repo has uncommitted changes." >&2
+    echo "  The orchestrator must run from a clean main." >&2
+    echo "  Fix: cd ${ROOT_DIR} && git stash  (or git checkout .)" >&2
+    exit 1
+  fi
+
+  if ! (cd "${ROOT_DIR}" && git pull --ff-only); then
+    echo "ERROR: git pull --ff-only failed." >&2
+    echo "  Local main has diverged from remote." >&2
+    echo "  Fix: cd ${ROOT_DIR} && git reset --hard origin/main" >&2
+    exit 1
+  fi
+}
+
 ensure_venv() {
   if [[ ! -x "${VENV_PATH}/bin/python" ]]; then
     echo "Creating venv at ${VENV_PATH}"
@@ -26,7 +135,6 @@ ensure_deps() {
     echo "Reinstalling from ${ROOT_DIR}..."
     "${VENV_PATH}/bin/python" -m pip install -e ".[dev]"
   fi
-
 }
 
 ensure_port_free() {
@@ -90,12 +198,15 @@ ensure_port_free() {
 show_startup_info() {
   local commit_sha
   commit_sha=$(cd "${ROOT_DIR}" && git rev-parse --short HEAD 2>/dev/null || echo "unknown")
-  echo "Starting Control Center"
+  echo "=== Starting Control Center ==="
   echo "  Repo: ${ROOT_DIR}"
   echo "  Port: ${PORT}"
   echo "  Commit: ${commit_sha}"
 }
 
+# --- Main ---
+stop_all_orchestrators
+[[ "${SKIP_PULL:-}" == "1" ]] || git_pull
 ensure_venv
 ensure_deps
 ensure_port_free
