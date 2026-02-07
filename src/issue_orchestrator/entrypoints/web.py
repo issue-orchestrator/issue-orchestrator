@@ -484,9 +484,11 @@ async def get_debug_dialog() -> DebugDialogPayload | JSONResponse:
 
 
 @app.get("/api/dialog/doctor", response_model=DoctorDialogPayload)
-async def get_doctor_dialog() -> DoctorDialogPayload:
+async def get_doctor_dialog() -> DoctorDialogPayload | JSONResponse:
     """Get view model for the doctor dialog."""
     response = await get_doctor()
+    if response.status_code != 200:
+        return response
     payload = _response_json(response)
     return DoctorDialogPayload.model_validate(build_doctor_dialog(payload))
 
