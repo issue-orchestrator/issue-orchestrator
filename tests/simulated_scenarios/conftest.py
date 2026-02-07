@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 
@@ -33,11 +35,17 @@ class ScriptSessionRunner:
         self._last_output: dict[str, str] = {}
 
     def create_session(self, session_id: int, command: str, working_dir: str, title: str | None, session_name: str) -> bool:
+        # Ensure fixture scripts that invoke `python` use the same interpreter
+        # as the test process (e.g., .venv/bin/python in CI).
+        env = dict(os.environ)
+        python_bin_dir = str(Path(sys.executable).parent)
+        env["PATH"] = f"{python_bin_dir}:{env.get('PATH', '')}"
         result = subprocess.run(
             command,
             shell=True,
             cwd=working_dir,
             executable="/bin/bash",
+            env=env,
             capture_output=True,
             text=True,
         )
