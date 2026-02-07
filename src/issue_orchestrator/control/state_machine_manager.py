@@ -10,7 +10,7 @@ from ..domain.state_machines.issue_machine import IssueStateMachine
 from ..domain.state_machines.session_machine import SessionStateMachine
 from ..domain.state_machines.review_machine import ReviewStateMachine
 from ..infra.config import Config
-from ..ports import EventSink, Issue
+from ..ports import Issue
 
 logger = logging.getLogger(__name__)
 
@@ -28,16 +28,13 @@ class StateMachineManager:
     def __init__(
         self,
         config: Config,
-        events: EventSink,
     ):
         """Initialize the state machine manager.
 
         Args:
             config: Configuration for state machine parameters
-            events: EventSink for state machine events
         """
         self.config = config
-        self.events = events
 
         # State machine caches
         self._issue_machines: dict[int, IssueStateMachine] = {}

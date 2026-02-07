@@ -9,15 +9,64 @@ Usage:
 """
 
 import logging
-from dataclasses import dataclass
-from typing import Optional, Set
+from dataclasses import dataclass, field
+from typing import Optional, Set, FrozenSet
 
 from ..events import EventName
 from ..ports import EventSink, TraceEvent
 from ..infra import gh_audit
 from ..ports.label_set import LabelSet
 from ..ports.pull_request_tracker import PullRequestTracker
-from .label_projection import DesiredLabels, compute_label_changes
+
+
+@dataclass(frozen=True)
+class DesiredLabels:
+    """The set of labels an issue should have."""
+
+    to_add: FrozenSet[str] = field(default_factory=frozenset)
+    to_remove: FrozenSet[str] = field(default_factory=frozenset)
+    # Labels that must not be on the issue (for explicit cleanup)
+    must_not_have: FrozenSet[str] = field(default_factory=frozenset)
+
+    @classmethod
+    def add(cls, *labels: str) -> "DesiredLabels":
+        """Create a DesiredLabels that adds the given labels."""
+        return cls(to_add=frozenset(labels))
+
+    @classmethod
+    def remove(cls, *labels: str) -> "DesiredLabels":
+        """Create a DesiredLabels that removes the given labels."""
+        return cls(to_remove=frozenset(labels))
+
+    @classmethod
+    def replace(cls, add: set[str], remove: set[str]) -> "DesiredLabels":
+        """Create a DesiredLabels that adds and removes labels."""
+        return cls(to_add=frozenset(add), to_remove=frozenset(remove))
+
+    def merge(self, other: "DesiredLabels") -> "DesiredLabels":
+        """Merge two DesiredLabels, combining their add/remove sets."""
+        return DesiredLabels(
+            to_add=self.to_add | other.to_add,
+            to_remove=self.to_remove | other.to_remove,
+            must_not_have=self.must_not_have | other.must_not_have,
+        )
+
+
+def compute_label_changes(
+    current: Set[str],
+    desired: DesiredLabels,
+) -> tuple[Set[str], Set[str]]:
+    """Compute what label changes are needed."""
+    to_add: Set[str] = set(desired.to_add - current)
+    to_remove: Set[str] = set(desired.to_remove & current)
+
+    # Handle must_not_have patterns (prefix matching)
+    for pattern in desired.must_not_have:
+        for label in current:
+            if label.startswith(pattern):
+                to_remove.add(label)
+
+    return to_add, to_remove
 
 logger = logging.getLogger(__name__)
 

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ContractBase(BaseModel):
@@ -92,6 +92,31 @@ class ShutdownRequestedPayload(ContractBase):
     force: bool
 
 
+class TimelineArtifactContract(ContractBase):
+    type: str
+    label: str
+    value: str
+
+
+class TimelineEventContract(ContractBase):
+    event_id: str
+    timestamp: str
+    event: str
+    issue_number: int
+    phase: str
+    step: str
+    status: str
+    level: str
+    summary: Optional[str] = None
+    parent_key: str
+    artifacts: list[TimelineArtifactContract] = Field(default_factory=list)
+
+
+class TimelineIssueContract(ContractBase):
+    issue_number: int
+    events: list[TimelineEventContract]
+
+
 PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "dashboard.view_model": DashboardViewModelContract,
     "sse.session.started": SessionStartedPayload,
@@ -106,6 +131,7 @@ PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "sse.stale.persistent_detected": PersistentStalePayload,
     "sse.startup_complete": StartupCompletePayload,
     "sse.shutdown_requested": ShutdownRequestedPayload,
+    "timeline.issue": TimelineIssueContract,
 }
 
 

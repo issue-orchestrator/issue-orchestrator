@@ -22,7 +22,16 @@ from typing import TYPE_CHECKING
 from ..infra.config import Config
 from ..infra.env import ENV_PREFIX
 from ..adapters.github.repo import get_repo_from_git, GitRepoError
-from ..ports import EventSink, SessionRunner, NullEventSink, NullSessionRunner, IssueTracker, InMemoryProviderCircuitStore
+from ..ports import (
+    EventSink,
+    SessionRunner,
+    NullEventSink,
+    NullSessionRunner,
+    IssueTracker,
+    InMemoryProviderCircuitStore,
+    NullTimelineReader,
+    NullTimelineWriter,
+)
 from ..control.orchestrator_deps import OrchestratorDeps
 from ..control.provider_resilience import ProviderResilienceManager
 from ..execution import (
@@ -34,6 +43,11 @@ from ..execution import (
     CompositeEventSink,
     SqliteGoalPilotStore,
     SQLiteProviderCircuitStore,
+    TimelineEventSink,
+    DefaultTimelineReader,
+    FileSystemTimelineStore,
+    TimelineStoreConfig,
+    DefaultTimelineWriter,
 )
 from ..execution.gh_guard import install_gh_guard
 from ..events import EventHub, SequencedEventSink
@@ -117,11 +131,16 @@ def _create_github_adapter(repo: str, config: Config) -> GitHubAdapter:
 def _setup_event_sinks(
     base_events: PluggyEventSink,
     github: GitHubAdapter | None,
+    *extra_sinks: EventSink,
 ) -> tuple[EventSink, EventHub | None]:
     """Set up event sinks and event hub."""
     event_hub = EventHub() if github else None
+    sinks: list[EventSink] = [base_events]
     if event_hub:
-        events = CompositeEventSink(base_events, event_hub)
+        sinks.append(event_hub)
+    sinks.extend(extra_sinks)
+    if len(sinks) > 1:
+        events = CompositeEventSink(*sinks)
     else:
         events = base_events
     events = SequencedEventSink(events)
@@ -462,12 +481,21 @@ def build_orchestrator(
     base_events = PluggyEventSink(pm)
     runner = PluggySessionRunner(pm)
 
+    # Timeline store + reader/writer + event sink
+    timeline_store = FileSystemTimelineStore(
+        config.repo_root,
+        TimelineStoreConfig(max_records=config.timeline.max_records),
+    )
+    timeline_reader = DefaultTimelineReader(timeline_store)
+    timeline_writer = DefaultTimelineWriter(timeline_store)
+    timeline_sink = TimelineEventSink(timeline_writer)
+
     # Resolve repo and create GitHub adapter
     repo = _resolve_repo(config)
     github = _create_github_adapter(repo, config) if repo else None
 
     # Set up event sinks
-    events, event_hub = _setup_event_sinks(base_events, github)
+    events, event_hub = _setup_event_sinks(base_events, github, timeline_sink)
 
     # Configure GitHub audit logging
     _configure_gh_audit(config, events, github)
@@ -532,7 +560,7 @@ def build_orchestrator(
     ) if github else None
 
     # Create state machine manager
-    state_machine_manager = StateMachineManager(config=config, events=events)
+    state_machine_manager = StateMachineManager(config=config)
 
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
@@ -611,6 +639,8 @@ def build_orchestrator(
         publish_executor=publish_executor,
         goal_pilot_store=goal_pilot_store,
         provider_resilience=provider_resilience,
+        timeline_reader=timeline_reader,
+        timeline_writer=timeline_writer,
     )
 
     return Orchestrator(config=config, deps=deps)
@@ -767,10 +797,7 @@ def build_orchestrator_for_testing(
 
     # Create StateMachineManager for testing
     from ..control.state_machine_manager import StateMachineManager
-    state_machine_manager = StateMachineManager(
-        config=config,
-        events=events,
-    )
+    state_machine_manager = StateMachineManager(config=config)
 
     # Create CompletionProcessor for testing
     from ..control.completion_processor import CompletionProcessor
@@ -810,6 +837,8 @@ def build_orchestrator_for_testing(
 
     # Create EventHub for testing
     event_hub = EventHub()
+    timeline_reader = NullTimelineReader()
+    timeline_writer = NullTimelineWriter()
 
     # Create claim components for testing (always use NullClaimManager)
     lease_config = LeaseConfig()
@@ -861,6 +890,8 @@ def build_orchestrator_for_testing(
         publish_executor=publish_executor,
         goal_pilot_store=goal_pilot_store,
         provider_resilience=provider_resilience,
+        timeline_reader=timeline_reader,
+        timeline_writer=timeline_writer,
     )
 
     return Orchestrator(config=config, deps=deps)

@@ -94,6 +94,7 @@ Skills in `.claude/skills/` are automatically invoked when working on relevant a
 | `architecture` | Working on ports, adapters, DI, bootstrap |
 | `troubleshooting` | Debugging sessions, hooks, locks |
 | `review-workflow` | Code review pipeline, triage, rework |
+| `schema-updates` | Updating UI contracts, SSE payloads, or config schemas |
 
 ## Directory Context (CLAUDE.md)
 
@@ -141,6 +142,13 @@ self.events.publish(TraceEvent(EventName.TICK_COMPLETED, ctx.enrich({"idle": Tru
 logger.info("[PLAN] %d action(s)", count, extra=log_context(tick_id=5))
 ```
 
+## Schema Contracts (Public UI + Settings)
+
+- **UI contracts** live in `src/issue_orchestrator/contracts/public.py`.
+- **Generated JSON schemas** live in `contracts/public/*.json` (regen via `python scripts/generate_public_contracts.py`).
+- **Settings schema** lives in `src/issue_orchestrator/infra/settings_schema.py` and drives `docs/user/configuration_reference.md`.
+- Drift is enforced by `tests/unit/test_public_contract_schemas.py` and `tests/unit/test_settings_schema.py`.
+
 ## Fail-Fast Design
 
 **Fallbacks are strongly discouraged.** While there may be rare cases where appropriate, the default stance is:
@@ -170,6 +178,12 @@ def get_session(self, id: str) -> Session:
 - Events via `self.events.publish(TraceEvent(...))`, never direct pluggy
 - Session ops via `self.runner.*`, never direct plugin manager
 - All orchestrator dependencies injected via constructor
+
+## Abstraction Heuristics
+
+- Favor higher-level abstractions when they improve clarity, conciseness, or testability.
+- If callers must rummage across disparate classes/fields to accomplish a task, consider introducing a higher-level port or helper.
+- Entry points should depend on behavior-level ports, not storage or transport details.
 
 ## GitHub API Discipline
 

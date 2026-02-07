@@ -552,7 +552,7 @@ def build_test_orchestrator_deps(
     _planner = planner or Planner(config=config, scheduler=scheduler)
     _session_manager = session_manager or SessionManager(runner=runner, events=events, config=config)
     _fact_gatherer = fact_gatherer or FactGatherer(config=config, repository_host=repo_host, events=events)
-    state_machine_manager = StateMachineManager(config=config, events=events)
+    state_machine_manager = StateMachineManager(config=config)
 
     session_output = FileSystemSessionOutput()
     completion_processor = CompletionProcessor(
@@ -646,12 +646,18 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.execution.goal_pilot_store import SqliteGoalPilotStore
     goal_pilot_store = SqliteGoalPilotStore(repo_root=config.repo_root)
     from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
-    from issue_orchestrator.ports import InMemoryProviderCircuitStore
+    from issue_orchestrator.ports import (
+        InMemoryProviderCircuitStore,
+        NullTimelineReader,
+        NullTimelineWriter,
+    )
     provider_resilience = ProviderResilienceManager(
         config.provider_resilience,
         store=InMemoryProviderCircuitStore(),
         events=events,
     )
+    timeline_reader = NullTimelineReader()
+    timeline_writer = NullTimelineWriter()
 
     return OrchestratorDeps(
         events=events,
@@ -683,6 +689,8 @@ def build_test_orchestrator_deps(
         publish_executor=publish_executor,
         goal_pilot_store=goal_pilot_store,
         provider_resilience=provider_resilience,
+        timeline_reader=timeline_reader,
+        timeline_writer=timeline_writer,
     )
 
 

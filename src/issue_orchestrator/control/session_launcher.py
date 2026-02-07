@@ -68,23 +68,9 @@ from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
 from .session_manager import SessionManager
+from .transition_log import log_transition
 
 logger = logging.getLogger(__name__)
-
-
-def log_transition(
-    entity_type: str,
-    number: int,
-    from_state: str,
-    to_state: str,
-    reason: str,
-    extra: dict[str, str | int | bool | None] | None = None,
-) -> None:
-    """Log a state transition in a consistent, searchable format."""
-    msg = f"[TRANSITION] {entity_type} #{number}: {from_state} → {to_state} ({reason})"
-    logger.info(msg)
-    if extra:
-        logger.debug(f"[TRANSITION] #{number} extra: {extra}")
 
 
 def detect_existing_work(worktree_path: Path, working_copy: WorkingCopy) -> Optional[str]:

@@ -213,6 +213,9 @@ observability:
     blocked: "## Blocked"
     needs_human: "## Needs Human Input"
 
+timeline:
+  max_records: 5000              # 0 disables trimming
+
 security:
   enforce_hooks: true
   # pre_push_hook: "./custom-hook.sh"

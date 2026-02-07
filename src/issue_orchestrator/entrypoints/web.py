@@ -1219,6 +1219,17 @@ async def get_session_phases(issue_number: int) -> JSONResponse:  # noqa: C901 -
     })
 
 
+@app.get("/api/timeline/{issue_number}")
+async def get_issue_timeline(issue_number: int) -> JSONResponse:
+    """Get timeline events for an issue."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    reader = _orchestrator.deps.timeline_reader
+    stream = reader.read(issue_number, limit=2000)
+    return JSONResponse(stream.to_dict())
+
+
 def _format_phase_name(phase_name: str) -> str:
     """Format phase name for display (e.g., 'coding-1' -> 'Coding 1')."""
     if not phase_name:
