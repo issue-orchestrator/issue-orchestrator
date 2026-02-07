@@ -703,10 +703,10 @@ class AdvancedSettings(BaseModel):
         5000,
         title="Timeline Retention (records)",
         description="Max timeline events kept per issue before trimming",
-        ge=1,
+        ge=0,
         json_schema_extra={
             "doc_examples": ["2000", "5000", "10000"],
-            "doc_notes": "Higher values keep more history but grow state files faster.",
+            "doc_notes": "Set to 0 to disable trimming; higher values keep more history but grow state files faster.",
             "section": "Timeline",
             "config_attr": "timeline.max_records",
             "yaml_path": "timeline.max_records",

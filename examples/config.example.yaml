@@ -214,7 +214,7 @@ observability:
     needs_human: "## Needs Human Input"
 
 timeline:
-  max_records: 5000
+  max_records: 5000              # 0 disables trimming
 
 security:
   enforce_hooks: true
