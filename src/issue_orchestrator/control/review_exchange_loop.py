@@ -14,6 +14,8 @@ from ..agent_runner import AgentRunner, RunSpec
 from ..domain.models import AgentConfig
 from ..infra.env import ENV_PREFIX
 from ..ports.session_output import SessionOutput
+from ..ports import EventSink, TraceEvent
+from ..events import EventName, EventContext
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +53,15 @@ def run_review_exchange_loop(
     max_no_progress: int,
     require_validation: bool,
     web_port: int | None,
+    events: EventSink | None = None,
+    event_context: EventContext | None = None,
 ) -> ReviewExchangeOutcome:
     """Run the coder↔reviewer exchange loop and capture round-trip logs."""
+    def _emit(event_name: EventName, payload: dict[str, Any]) -> None:
+        if events is None or event_context is None:
+            return
+        events.publish(TraceEvent(event_name, event_context.enrich(payload)))
+
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     session_name = f"review-exchange-{issue_number}-{timestamp}"
     run = session_output.start_run(
@@ -66,105 +75,176 @@ def run_review_exchange_loop(
     exchange_dir.mkdir(parents=True, exist_ok=True)
     session_output.update_manifest(run_dir, {"review_exchange_dir": str(exchange_dir)})
 
+    _emit(EventName.REVIEW_EXCHANGE_STARTED, {
+        "issue_number": issue_number,
+        "issue_title": issue_title,
+        "session_name": session_name,
+        "coder_label": coder_label,
+        "reviewer_label": reviewer_label,
+        "max_rounds": max_rounds,
+        "max_no_progress": max_no_progress,
+        "require_validation": require_validation,
+        "exchange_dir": str(exchange_dir),
+    })
+
     runner = AgentRunner()
     no_progress_count = 0
     last_reviewer_text: str | None = None
     last_coder_text: str | None = None
 
-    for round_index in range(1, max_rounds + 1):
-        reviewer_response = _run_reviewer_round(
-            runner=runner,
-            worktree_path=worktree_path,
-            run_dir=run_dir,
-            exchange_dir=exchange_dir,
-            round_index=round_index,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            reviewer_agent=reviewer_agent,
-            last_coder_text=last_coder_text,
-            last_reviewer_text=last_reviewer_text,
-            require_validation=require_validation,
-            web_port=web_port,
-            session_name=session_name,
-            agent_label=reviewer_label,
-        )
+    current_round = 0
+    try:
+        for round_index in range(1, max_rounds + 1):
+            current_round = round_index
+            _emit(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "round_index": round_index,
+            })
+            reviewer_response = _run_reviewer_round(
+                runner=runner,
+                worktree_path=worktree_path,
+                run_dir=run_dir,
+                exchange_dir=exchange_dir,
+                round_index=round_index,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                reviewer_agent=reviewer_agent,
+                last_coder_text=last_coder_text,
+                last_reviewer_text=last_reviewer_text,
+                require_validation=require_validation,
+                web_port=web_port,
+                session_name=session_name,
+                agent_label=reviewer_label,
+            )
 
-        if reviewer_response.response_type == "ok":
-            if require_validation and not _validation_passed(run_dir):
-                reviewer_response = ReviewExchangeResponse(
-                    response_type="changes_requested",
-                    response_text=(
-                        "Validation record missing or failed. "
-                        "Run make validate and record it via agent-done."
-                    ),
-                    getting_closer=False,
-                    raw_json=reviewer_response.raw_json,
-                    raw_output=reviewer_response.raw_output,
-                )
+            if reviewer_response.response_type == "ok":
+                if require_validation and not _validation_passed(run_dir):
+                    reviewer_response = ReviewExchangeResponse(
+                        response_type="changes_requested",
+                        response_text=(
+                            "Validation record missing or failed. "
+                            "Run make validate and record it via agent-done."
+                        ),
+                        getting_closer=False,
+                        raw_json=reviewer_response.raw_json,
+                        raw_output=reviewer_response.raw_output,
+                    )
+                else:
+                    _write_round_log(
+                        exchange_dir=exchange_dir,
+                        round_index=round_index,
+                        role="reviewer",
+                        response=reviewer_response,
+                    )
+                    summary = _write_summary(exchange_dir, round_index, reviewer_response)
+                    _emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+                        "issue_number": issue_number,
+                        "session_name": session_name,
+                        "round_index": round_index,
+                        "reviewer_response_type": reviewer_response.response_type,
+                        "coder_response_type": None,
+                    })
+                    _emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+                        "issue_number": issue_number,
+                        "session_name": session_name,
+                        "rounds": round_index,
+                        "status": "ok",
+                        "reason": "reviewer_ok",
+                    })
+                    return ReviewExchangeOutcome(
+                        status="ok",
+                        rounds=round_index,
+                        reason="reviewer_ok",
+                        reviewer_response=reviewer_response,
+                        exchange_dir=exchange_dir,
+                        summary=summary,
+                    )
+            _write_round_log(
+                exchange_dir=exchange_dir,
+                round_index=round_index,
+                role="reviewer",
+                response=reviewer_response,
+            )
+
+            if reviewer_response.getting_closer is False:
+                no_progress_count += 1
             else:
-                _write_round_log(
-                    exchange_dir=exchange_dir,
-                    round_index=round_index,
-                    role="reviewer",
-                    response=reviewer_response,
-                )
+                no_progress_count = 0
+
+            if max_no_progress > 0 and no_progress_count >= max_no_progress:
                 summary = _write_summary(exchange_dir, round_index, reviewer_response)
+                _emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "round_index": round_index,
+                    "reviewer_response_type": reviewer_response.response_type,
+                    "coder_response_type": None,
+                })
+                _emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "rounds": round_index,
+                    "status": "stopped",
+                    "reason": "reviewer_reports_no_progress",
+                })
                 return ReviewExchangeOutcome(
-                    status="ok",
+                    status="stopped",
                     rounds=round_index,
-                    reason="reviewer_ok",
+                    reason="reviewer_reports_no_progress",
                     reviewer_response=reviewer_response,
                     exchange_dir=exchange_dir,
                     summary=summary,
                 )
-        _write_round_log(
-            exchange_dir=exchange_dir,
-            round_index=round_index,
-            role="reviewer",
-            response=reviewer_response,
-        )
 
-        if reviewer_response.getting_closer is False:
-            no_progress_count += 1
-        else:
-            no_progress_count = 0
+            last_reviewer_text = reviewer_response.response_text
 
-        if max_no_progress > 0 and no_progress_count >= max_no_progress:
-            summary = _write_summary(exchange_dir, round_index, reviewer_response)
-            return ReviewExchangeOutcome(
-                status="stopped",
-                rounds=round_index,
-                reason="reviewer_reports_no_progress",
-                reviewer_response=reviewer_response,
+            coder_response = _run_coder_round(
+                runner=runner,
+                worktree_path=worktree_path,
+                run_dir=run_dir,
                 exchange_dir=exchange_dir,
-                summary=summary,
+                round_index=round_index,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                coder_agent=coder_agent,
+                reviewer_feedback=reviewer_response.response_text,
+                web_port=web_port,
+                session_name=session_name,
+                agent_label=coder_label,
             )
-
-        last_reviewer_text = reviewer_response.response_text
-
-        coder_response = _run_coder_round(
-            runner=runner,
-            worktree_path=worktree_path,
-            run_dir=run_dir,
-            exchange_dir=exchange_dir,
-            round_index=round_index,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            coder_agent=coder_agent,
-            reviewer_feedback=reviewer_response.response_text,
-            web_port=web_port,
-            session_name=session_name,
-            agent_label=coder_label,
-        )
-        _write_round_log(
-            exchange_dir=exchange_dir,
-            round_index=round_index,
-            role="coder",
-            response=coder_response,
-        )
-        last_coder_text = coder_response.response_text
+            _write_round_log(
+                exchange_dir=exchange_dir,
+                round_index=round_index,
+                role="coder",
+                response=coder_response,
+            )
+            _emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "round_index": round_index,
+                "reviewer_response_type": reviewer_response.response_type,
+                "coder_response_type": coder_response.response_type,
+            })
+            last_coder_text = coder_response.response_text
+    except Exception as exc:
+        _emit(EventName.REVIEW_EXCHANGE_FAILED, {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": current_round,
+            "error": str(exc),
+            "exception_type": type(exc).__name__,
+        })
+        raise
 
     summary = _write_summary(exchange_dir, max_rounds, reviewer_response=None)
+    _emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+        "issue_number": issue_number,
+        "session_name": session_name,
+        "rounds": max_rounds,
+        "status": "stopped",
+        "reason": "max_rounds_exceeded",
+    })
     return ReviewExchangeOutcome(
         status="stopped",
         rounds=max_rounds,

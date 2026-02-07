@@ -39,6 +39,7 @@ node_modules/
 .pytest_cache/
 .coverage
 htmlcov/
+coverage/
 
 # OS
 .DS_Store

@@ -303,6 +303,7 @@ def _create_completion_components(
         command_runner=command_runner if config.validation and config.validation.cmd else None,
         validation_cmd=config.validation.cmd if config.validation else None,
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        max_validation_retries=config.retry.max_validation_retries,
         provider_resilience=provider_resilience,
         provider_blocked_label=config.get_label_provider_unavailable(),
     ) if completion_processor else None

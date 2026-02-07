@@ -18,6 +18,7 @@ Example flows:
 """
 
 import logging
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional, TYPE_CHECKING
@@ -30,7 +31,7 @@ if TYPE_CHECKING:
     from .provider_resilience import ProviderResilienceManager
 
 from ..events import EventName
-from ..domain.models import SessionStatus
+from ..domain.models import SessionStatus, CompletionOutcome
 from ..ports.provider_resilience import ProviderErrorType
 from ..infra.provider_resilience import ProviderStatus, read_provider_status
 from ..infra.logging_config import issue_log
@@ -183,7 +184,7 @@ class SessionController:
         validation_passed, validation_error, validation_error_file = None, None, None
         if status == SessionStatus.COMPLETED and self._validation_cmd and self._command_runner:
             status, validation_passed, validation_error, validation_error_file = self._run_validation_gate(
-                worktree_path, session_name, issue_number, issue_title, validation_retry_count,
+                worktree_path, session_name, issue_number, issue_title, record.outcome, validation_retry_count,
                 original_prompt, retry_prompt_template, repo_root,
             )
 
@@ -328,6 +329,7 @@ class SessionController:
         session_name: str,
         issue_number: int,
         issue_title: str,
+        outcome: CompletionOutcome,
         validation_retry_count: int,
         original_prompt: str | None,
         retry_prompt_template: str | None,
@@ -341,12 +343,31 @@ class SessionController:
         if validation_passed:
             logger.info(issue_log(issue_number, "Validation gate PASSED"))
             self.session_output.clear_retry_state(run_dir)
+            self.session_output.update_manifest(
+                run_dir,
+                {
+                    "ended_at": datetime.now(timezone.utc).isoformat(),
+                    "outcome": outcome.value,
+                    "validation_passed": True,
+                    "validation_status": "passed",
+                },
+            )
             self._emit_event(EventName.SESSION_VALIDATION_PASSED, {"issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd})
             return SessionStatus.COMPLETED, validation_passed, validation_error, validation_error_file
 
         # Validation failed - validation_passed is False in both retry and exhausted cases
         retries_remaining = validation_retry_count < self._max_validation_retries
         if retries_remaining:
+            self.session_output.update_manifest(
+                run_dir,
+                {
+                    "ended_at": datetime.now(timezone.utc).isoformat(),
+                    "outcome": outcome.value,
+                    "validation_passed": False,
+                    "validation_status": "retry",
+                    "validation_reason": validation_error,
+                },
+            )
             return self._handle_validation_retry(
                 worktree_path, run_dir, session_name, issue_number, issue_title,
                 validation_retry_count, validation_error, validation_error_file,
@@ -354,6 +375,16 @@ class SessionController:
             ), False, validation_error, validation_error_file
 
         # Max retries exhausted
+        self.session_output.update_manifest(
+            run_dir,
+            {
+                "ended_at": datetime.now(timezone.utc).isoformat(),
+                "outcome": outcome.value,
+                "validation_passed": False,
+                "validation_status": "failed",
+                "validation_reason": validation_error,
+            },
+        )
         return self._handle_validation_exhausted(
             run_dir, session_name, issue_number, validation_retry_count, validation_error, validation_error_file,
         ), False, validation_error, validation_error_file

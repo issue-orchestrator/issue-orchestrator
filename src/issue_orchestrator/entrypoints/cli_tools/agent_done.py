@@ -672,11 +672,6 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     # Meta options
     parser.add_argument("--dry-run", action="store_true", help="Show what would be written")
     parser.add_argument(
-        "--skip-validation",
-        action="store_true",
-        help="Skip agent gate validation even if configured",
-    )
-    parser.add_argument(
         "--verbose", "-v",
         action="store_true",
         help="Show detailed output",
@@ -722,10 +717,7 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
         AgentStatus.APPROVED,
         AgentStatus.CHANGES_REQUESTED,
     }
-    should_validate = (
-        not args.skip_validation
-        and status in statuses_requiring_validation
-    )
+    should_validate = status in statuses_requiring_validation
 
     if should_validate:
         # Check if validation is configured before requiring session output
@@ -819,10 +811,6 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     # If validation ran, include the record path in the completion record
     if validation_result and validation_result.record_path:
         record.validation_record_path = validation_result.record_path
-
-    # Track if validation was explicitly skipped (for orchestrator to flag)
-    if args.skip_validation and status in statuses_requiring_validation:
-        record.validation_skipped = True
 
     # Run preflight push check for statuses that will push
     # This catches issues like branch divergence while the agent can still fix them

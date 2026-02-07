@@ -168,6 +168,7 @@ class Orchestrator:
             lambda s: self.deps.state_machine_manager.session_machines.get(s),
             lambda n: self.deps.state_machine_manager.review_machines.get(n),
             self.deps.session_output,
+            remove_session_machine_fn=self.deps.state_machine_manager.remove_session_machine,
         )
 
     @cached_property
@@ -181,6 +182,7 @@ class Orchestrator:
             self._get_review_machine, self._refresh_issue, getattr(self.scheduler, "dependency_evaluator", None),
             claim_manager=self.deps.claim_manager,
             provider_resilience=self.deps.provider_resilience,
+            remove_session_machine=self.deps.state_machine_manager.remove_session_machine,
         )
 
     @cached_property
@@ -460,6 +462,8 @@ class Orchestrator:
                 s for s in self.state.active_sessions
                 if s.terminal_id != session.terminal_id
             ]
+            # Drop the session state machine to avoid relaunch conflicts.
+            self.deps.state_machine_manager.remove_session_machine(session.terminal_id)
 
             # Add blocked label (best effort - session lost claim so this may also fail)
             try:
@@ -587,6 +591,11 @@ class Orchestrator:
 
         # Clean up terminal backend (kills tmux session - atomic cleanup of all windows)
         self.deps.runner.on_orchestrator_shutdown()
+        goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
+        if goal_pilot_store is not None:
+            close = getattr(goal_pilot_store, "close", None)
+            if callable(close):
+                close()
 
     def request_shutdown(self, force: bool = False) -> None:
         """Request graceful or forced shutdown."""
@@ -615,6 +624,17 @@ class Orchestrator:
                 self.state.active_sessions = []
         else:
             logger.info("Shutdown requested - waiting for %d session(s)", len(active))
+
+    def close(self) -> None:
+        """Release external resources for test harnesses and short-lived runs."""
+        self._cleanup_e2e_runner()
+        self.shutdown_publish_executor(wait=True, timeout=60.0)
+        self.deps.runner.on_orchestrator_shutdown()
+        goal_pilot_store = getattr(self.deps, "goal_pilot_store", None)
+        if goal_pilot_store is not None:
+            close = getattr(goal_pilot_store, "close", None)
+            if callable(close):
+                close()
 
     def request_refresh(self, inflight_stable_ids: set[str] | None = None) -> None:
         with self._state_lock:

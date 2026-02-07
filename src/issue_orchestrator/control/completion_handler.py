@@ -133,6 +133,7 @@ class CompletionHandler:
         get_session_machine_fn: Callable[[str], Optional["SessionStateMachine"]],
         get_review_machine_fn: Callable[[int], Optional["ReviewStateMachine"]],
         session_output: SessionOutput,
+        remove_session_machine_fn: Callable[[str], None] | None = None,
     ):
         self.config = config
         self.events = events
@@ -141,6 +142,7 @@ class CompletionHandler:
         self._get_session_machine = get_session_machine_fn
         self._get_review_machine = get_review_machine_fn
         self._session_output = session_output
+        self._remove_session_machine = remove_session_machine_fn
 
     def _is_triage_session(self, session: Session) -> bool:
         """Check if this session is a triage review session."""
@@ -148,6 +150,26 @@ class CompletionHandler:
             return False
         # Check if the session's agent type matches triage agent
         return session.issue.agent_type == self.config.triage_review_agent
+
+    def mark_session_retry(self, session: Session, reason: str) -> None:
+        """Mark a session terminal when it will be retried.
+
+        Validation retries re-launch a session with the same name. Ensure the
+        existing session state machine reaches a terminal state so the next
+        launch can create a fresh machine without invalid transitions.
+        """
+        session_machine = self._get_session_machine(session.terminal_id)
+        if not session_machine:
+            return
+        if session_machine.can_transition("fail"):
+            logger.info(
+                "[STATE_MACHINE] Session %s: RUNNING -> FAILED (reason: %s)",
+                session.terminal_id,
+                reason,
+            )
+            session_machine.fail(data={'reason': reason})  # type: ignore[attr-defined]
+        if self._remove_session_machine is not None:
+            self._remove_session_machine(session.terminal_id)
 
     def _generate_triage_actions(
         self,
@@ -261,7 +283,7 @@ class CompletionHandler:
         )
 
         # Emit trace events
-        self._emit_trace_events(session, status, pr_url)
+        self._emit_trace_events(session, status, pr_url, pr_number)
 
         # Update state machines
         self._update_state_machines(session, status, pr_url)
@@ -446,6 +468,7 @@ class CompletionHandler:
         session: Session,
         status: SessionStatus,
         pr_url: Optional[str],
+        pr_number: Optional[int],
     ) -> None:
         """Emit trace events for session completion."""
         status_reasons = {
@@ -464,6 +487,12 @@ class CompletionHandler:
                 "pr_url": pr_url,
                 "runtime_minutes": session.runtime_minutes,
             }))
+            if pr_url and pr_number is not None:
+                self.events.publish(TraceEvent(EventName.ISSUE_PR_CREATED, {
+                    "issue_number": session.issue.number,
+                    "pr_url": pr_url,
+                    "pr_number": pr_number,
+                }))
         elif status == SessionStatus.FAILED or status == SessionStatus.TIMED_OUT:
             self.events.publish(TraceEvent(EventName.SESSION_FAILED, {
                 "issue_number": session.issue.number,

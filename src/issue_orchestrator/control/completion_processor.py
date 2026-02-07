@@ -33,6 +33,8 @@ from ..domain.models import (
     sanitize_agent_label,
 )
 from ..domain.events import EventBus, SessionEvent
+from ..events import EventContext
+from ..ports import EventSink
 from ..infra.issue_diagnostics import write_issue_diagnostic
 from ..infra.worktree_base import resolve_base_branch
 from ..ports.session_output import SessionOutput, ValidationRecord
@@ -145,6 +147,8 @@ class CompletionProcessor:
         self.git_adapter = git_adapter
         self.session_output = session_output
         self.event_bus = event_bus
+        self._trace_events: EventSink | None = None
+        self._event_context: EventContext | None = None
         self.label_config = label_config or {}
         self.publish_gate = publish_gate
         self._config = config
@@ -173,6 +177,11 @@ class CompletionProcessor:
                 data=data or {},
                 source="completion_processor",
             )
+
+    def set_event_emitter(self, events: EventSink, event_context: EventContext) -> None:
+        """Attach TraceEvent emitter for review exchange events."""
+        self._trace_events = events
+        self._event_context = event_context
 
     def _get_label(self, key: str) -> str:
         """Get label name from config, or use default."""
@@ -552,23 +561,6 @@ class CompletionProcessor:
         """
         if not self._requires_publish_gate(record):
             return None
-
-        # Block if agent skipped validation - this is a policy violation
-        if record.validation_skipped:
-            logger.warning(
-                "Blocking publish for issue #%d: agent used --skip-validation",
-                issue_number,
-            )
-            return ProcessingResult(
-                success=False,
-                message="Agent skipped validation - cannot publish without passing tests",
-                errors=[
-                    "agent-done was called with --skip-validation flag",
-                    "Tests must pass before code can be pushed",
-                    "Fix the failing tests and run agent-done again without --skip-validation",
-                ],
-            )
-
         # Get session output dir for validation to write directly there
         if not session_name:
             return ProcessingResult(
@@ -621,18 +613,16 @@ class CompletionProcessor:
                 record=gate_record,
                 record_path=record_path,
             )
-
-        # Update manifest with validation_passed=False so UI shows correct status
         if session_name:
-            run_dir = self.session_output.find_run_dir(worktree, session_name)
-            if run_dir:
-                self.session_output.update_manifest(run_dir, {
+            run_dir = self.session_output.ensure_run_dir(worktree, session_name)
+            self.session_output.update_manifest(
+                run_dir,
+                {
                     "validation_passed": False,
                     "validation_failure_reason": gate_reason,
                     "ended_at": datetime.now(timezone.utc).isoformat(),
-                    "outcome": record.outcome.value,  # Agent's reported outcome
-                })
-
+                },
+            )
         # Add validation-failed label so user knows why issue is stuck
         validation_failed_label = self._get_label("validation_failed")
         try:
@@ -1199,6 +1189,8 @@ class CompletionProcessor:
             max_no_progress=max_no_progress,
             require_validation=require_validation,
             web_port=web_port,
+            events=self._trace_events,
+            event_context=self._event_context,
         )
 
     def _create_pr_with_collision_handling(

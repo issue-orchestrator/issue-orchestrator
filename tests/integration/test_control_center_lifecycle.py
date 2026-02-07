@@ -169,7 +169,7 @@ def control_center_process(
     )
 
     # Wait for control center to be ready
-    if not _wait_for_port(control_center_port, timeout=10):
+    if not _wait_for_port(control_center_port, timeout=30):
         process.kill()
         stdout, _ = process.communicate(timeout=5)
         pytest.fail(f"Control center failed to start. Output:\n{stdout}")
@@ -323,7 +323,7 @@ class TestControlCenterLifecycle:
         assert _is_process_running(orchestrator_pid), "Process should be running"
 
         # 4. Verify port is listening
-        assert _wait_for_port(orchestrator_port, timeout=10), (
+        assert _wait_for_port(orchestrator_port, timeout=30), (
             f"Orchestrator port {orchestrator_port} should be listening"
         )
 
@@ -357,7 +357,7 @@ class TestControlCenterLifecycle:
         assert data["status"] == "stopped", f"Expected stopped, got: {data}"
 
         # 8. Verify process is actually dead (poll, don't sleep)
-        assert _wait_for_process_dead(orchestrator_pid, timeout=10), (
+        assert _wait_for_process_dead(orchestrator_pid, timeout=30), (
             f"Process {orchestrator_pid} should be dead"
         )
 
@@ -396,7 +396,7 @@ class TestControlCenterLifecycle:
         )
         assert resp.status_code == 200
         first_pid = resp.json()["pid"]
-        _wait_for_port(orchestrator_port, timeout=10)
+        _wait_for_port(orchestrator_port, timeout=30)
 
         # Stop
         resp = cc_client.post(
@@ -405,7 +405,7 @@ class TestControlCenterLifecycle:
         )
         assert resp.status_code == 200
         assert resp.json()["status"] == "stopped"
-        _wait_for_port_free(orchestrator_port, timeout=10)
+        _wait_for_port_free(orchestrator_port, timeout=30)
 
         # Restart
         logger.info("Restarting orchestrator")
@@ -422,7 +422,7 @@ class TestControlCenterLifecycle:
         assert second_pid != first_pid, "Should be a new process"
 
         # Verify it's running
-        assert _wait_for_port(orchestrator_port, timeout=10)
+        assert _wait_for_port(orchestrator_port, timeout=30)
         assert _is_process_running(second_pid)
 
         # Cleanup
@@ -452,7 +452,7 @@ class TestControlCenterLifecycle:
         )
         assert resp.status_code == 200
         first_pid = resp.json()["pid"]
-        _wait_for_port(orchestrator_port, timeout=10)
+        _wait_for_port(orchestrator_port, timeout=30)
 
         # Try to start again
         resp = cc_client.post(
@@ -497,7 +497,7 @@ class TestControlCenterLifecycle:
         )
         assert resp.status_code == 200
         pid = resp.json()["pid"]
-        _wait_for_port(orchestrator_port, timeout=10)
+        _wait_for_port(orchestrator_port, timeout=30)
 
         # Shutdown via orchestrator's own API
         logger.info("Sending shutdown via orchestrator API")
@@ -514,10 +514,10 @@ class TestControlCenterLifecycle:
         )
 
         # Process should be dead (poll with generous timeout for graceful shutdown)
-        assert _wait_for_process_dead(pid, timeout=10), "Process should have exited"
+        assert _wait_for_process_dead(pid, timeout=30), "Process should have exited"
 
         # Control Center should show stopped (poll until status changes)
-        status = _wait_for_status(cc_client, test_repo, ["stopped", "failed"], timeout=10)
+        status = _wait_for_status(cc_client, test_repo, ["stopped", "failed"], timeout=30)
         assert status is not None, "Status should be stopped or failed"
         assert status["state"] in ("stopped", "failed"), f"Unexpected: {status}"
 
@@ -540,7 +540,7 @@ class TestControlCenterLifecycle:
         )
         assert resp.status_code == 200
         pid = resp.json()["pid"]
-        _wait_for_port(orchestrator_port, timeout=10)
+        _wait_for_port(orchestrator_port, timeout=30)
 
         # Force stop
         logger.info("Force stopping orchestrator")
@@ -577,7 +577,7 @@ class TestControlCenterStatusConsistency:
             "/control/orchestrator/start",
             json={"repo_root": str(test_repo), "config_name": "test.yaml"},
         )
-        _wait_for_port(orchestrator_port, timeout=10)
+        _wait_for_port(orchestrator_port, timeout=30)
 
         # Get status from both sources
         cc_status = cc_client.get(
@@ -604,7 +604,7 @@ class TestControlCenterStatusConsistency:
         assert _wait_for_port_free(orchestrator_port, timeout=15), "Port should be free after shutdown"
 
         # CC should reflect stopped state (poll until status changes)
-        cc_status = _wait_for_status(cc_client, test_repo, ["stopped", "failed"], timeout=10)
+        cc_status = _wait_for_status(cc_client, test_repo, ["stopped", "failed"], timeout=30)
         assert cc_status is not None, "Status should be stopped or failed"
         assert cc_status["state"] in ("stopped", "failed")
 

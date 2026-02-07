@@ -108,11 +108,17 @@ class MockGitHubAdapter:
         """Add a label to an issue."""
         self.add_label_calls.append((issue_number, label))
         self.labels.setdefault(issue_number, set()).add(label)
+        pr = self.get_pr(issue_number)
+        if pr and label not in pr.labels:
+            pr.labels.append(label)
 
     def remove_label(self, issue_number: int, label: str) -> None:
         """Remove a label from an issue."""
         self.remove_label_calls.append((issue_number, label))
         self.labels.get(issue_number, set()).discard(label)
+        pr = self.get_pr(issue_number)
+        if pr and label in pr.labels:
+            pr.labels.remove(label)
 
     def has_label(self, issue_number: int, label: str) -> bool:
         """Check if issue has a specific label."""
@@ -162,7 +168,7 @@ class MockGitHubAdapter:
                     return pr
         return None
 
-    def create_pr(self, title: str, body: str, head: str, base: str = "main") -> PRInfo:
+    def create_pr(self, title: str, body: str, head: str, base: str = "main", draft: bool | None = None) -> PRInfo:
         """Create a new PR (mock)."""
         pr = PRInfo(
             number=100,
@@ -172,6 +178,7 @@ class MockGitHubAdapter:
             body=body,
             state="open",
             labels=[],
+            draft=draft,
         )
         self.prs.setdefault(head, []).append(pr)
         return pr
@@ -501,6 +508,9 @@ def build_test_orchestrator_deps(
     planner=None,
     session_manager=None,
     action_applier=None,
+    lease_renewer=None,
+    timeline_reader=None,
+    timeline_writer=None,
 ):
     """Factory function to create OrchestratorDeps for testing.
 
@@ -545,6 +555,7 @@ def build_test_orchestrator_deps(
 
     if working_copy is None:
         working_copy = GitWorkingCopy()
+    command_runner = LocalCommandRunner()
 
     # Create control components with injected mocks
     # Use provided overrides or create defaults
@@ -569,12 +580,17 @@ def build_test_orchestrator_deps(
             "code_review": config.code_review_label or "needs-code-review",
             "in_progress": config.get_label_in_progress(),
         },
+        config=config,
     )
     _session_controller = session_controller or SessionController(
         completion_processor=completion_processor,
         events=events,
         session_output=session_output,
         working_copy=working_copy,
+        command_runner=command_runner if config.validation and config.validation.cmd else None,
+        validation_cmd=config.validation.cmd if config.validation else None,
+        validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
+        max_validation_retries=config.retry.max_validation_retries,
     )
     pr_scanner = PRScanner(
         config=config,
@@ -608,8 +624,6 @@ def build_test_orchestrator_deps(
 
     _label_sync = label_sync or LabelSync(labels=repo_host, events=events, pr_tracker=repo_host)
     event_hub = EventHub()
-    command_runner = LocalCommandRunner()
-
     # Create manifest downloader for triage sessions
     from issue_orchestrator.execution.triage_downloader import TriageDownloader
     manifest_downloader = TriageDownloader(
@@ -626,7 +640,7 @@ def build_test_orchestrator_deps(
     lease_config = LeaseConfig.for_testing()
     claim_manager = NullClaimManager()
     claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
-    lease_renewer = LeaseRenewer(
+    lease_renewer = lease_renewer or LeaseRenewer(
         claim_manager=claim_manager,
         events=events,
         config=lease_config,
@@ -656,8 +670,8 @@ def build_test_orchestrator_deps(
         store=InMemoryProviderCircuitStore(),
         events=events,
     )
-    timeline_reader = NullTimelineReader()
-    timeline_writer = NullTimelineWriter()
+    timeline_reader = timeline_reader or NullTimelineReader()
+    timeline_writer = timeline_writer or NullTimelineWriter()
 
     return OrchestratorDeps(
         events=events,

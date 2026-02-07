@@ -199,6 +199,7 @@ class SessionLauncher:
         dependency_evaluator: Optional["DependencyEvaluator"] = None,
         claim_manager: Optional["ClaimManager"] = None,
         provider_resilience: Optional["ProviderResilienceManager"] = None,
+        remove_session_machine: Callable[[str], None] | None = None,
     ):
         self.config = config
         self.events = events
@@ -220,6 +221,7 @@ class SessionLauncher:
         self._claim_manager = claim_manager
         self._provider_resilience = provider_resilience
         self._provider_policy = ProviderAvailabilityPolicy(config, provider_resilience) if provider_resilience else None
+        self._remove_session_machine = remove_session_machine
 
     def _worktree_reuse_options(self, *, allow_remote_branch_delete: bool = True) -> WorktreeReuseOptions:
         return WorktreeReuseOptions(
@@ -1590,6 +1592,7 @@ class SessionLauncher:
     ) -> None:
         """Trigger state machine transitions for issue session launch."""
         from ..domain.state_machines.issue_machine import IssueState
+        from ..domain.state_machines.session_machine import SessionState
 
         logger.debug(f"[STATE_MACHINE] Triggering transitions for issue #{issue.number}")
         issue_machine = self._get_issue_machine(issue)
@@ -1600,6 +1603,18 @@ class SessionLauncher:
             issue_machine.start()
 
         session_machine = self._get_session_machine(session_name, issue.number, timeout_minutes)
+        if session_machine.state != SessionState.PENDING.value:
+            logger.warning(
+                "[STATE_MACHINE] Session %s unexpected state %s during launch; resetting",
+                session_name,
+                session_machine.state,
+            )
+            if self._remove_session_machine is not None:
+                self._remove_session_machine(session_name)
+                session_machine = self._get_session_machine(session_name, issue.number, timeout_minutes)
+            else:
+                return
+
         logger.debug(f"[STATE_MACHINE] Session {session_name}: PENDING -> STARTING")
         session_machine.launch()
         logger.debug(f"[STATE_MACHINE] Session {session_name}: STARTING -> RUNNING")
@@ -1704,6 +1719,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
             session.issue.number,
             session.validation_retry_count + 1,
         )
+        completion_handler.mark_session_retry(session, reason="validation_retry")
         state.pending_validation_retries.append(PendingValidationRetry(
             issue_number=session.issue.number,
             issue_title=session.issue.title,
