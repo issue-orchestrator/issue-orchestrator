@@ -178,7 +178,7 @@ class CompletionRecord:
 
     # Validation reference (if agent_gate was run)
     validation_record_path: Optional[str] = None  # Path to validation record JSON
-    validation_skipped: bool = False  # True if --skip-validation was used
+    validation_skipped: bool = False  # True if agent requested to skip validation
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -258,7 +258,7 @@ class CompletionRecord:
             comment_body=data.get("comment_body"),
             pr_labels=data.get("pr_labels"),
             validation_record_path=data.get("validation_record_path"),
-            validation_skipped=data.get("validation_skipped", False),
+            validation_skipped=bool(data.get("validation_skipped", False)),
         )
 
 

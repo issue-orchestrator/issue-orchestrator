@@ -195,6 +195,7 @@ class TestValidateFields:
             "risk": None,
             "checks": None,
             "checks_needed": None,
+            "skip_validation": False,
         }
         defaults.update(kwargs)
         return argparse.Namespace(**defaults)
@@ -470,6 +471,7 @@ class TestBuildCompletionRecord:
         assert record.problems == "None"
         assert RequestedAction.PUSH_BRANCH in record.requested_actions
         assert RequestedAction.CREATE_PR in record.requested_actions
+        assert record.validation_skipped is False
 
     def test_build_blocked_record(self):
         """Test building completion record for blocked status."""
@@ -1059,6 +1061,10 @@ validation:
             assert "Completion record written to" in captured.out
             # Should not show validation status
             assert "Running validation" not in captured.out
+            record_path = tmp_path / COMPLETION_RECORD_PATH
+            assert record_path.exists()
+            data = json.loads(record_path.read_text())
+            assert data.get("validation_skipped") is True
         finally:
             os.chdir(original_cwd)
 

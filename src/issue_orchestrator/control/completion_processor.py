@@ -563,6 +563,15 @@ class CompletionProcessor:
         """
         if not self._requires_publish_gate(record):
             return None
+        if record.validation_skipped:
+            return self._handle_gate_failure(
+                worktree,
+                record,
+                session_name,
+                issue_number,
+                "validation skipped by agent",
+                gate_record=None,
+            )
 
         # Block if agent skipped validation - this is a policy violation
         if record.validation_skipped:
