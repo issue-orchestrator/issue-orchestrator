@@ -1,0 +1,450 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Issue Orchestrator UI API",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/view-model": {
+      "get": {
+        "summary": "Get dashboard view model",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {"type": "integer", "minimum": 1},
+            "required": false
+          },
+          {
+            "name": "e2e_page",
+            "in": "query",
+            "schema": {"type": "integer", "minimum": 1},
+            "required": false
+          },
+          {
+            "name": "tab",
+            "in": "query",
+            "schema": {"type": "string"},
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Dashboard view model",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/DashboardViewModelPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/issue-rows": {
+      "get": {
+        "summary": "Get rendered issue rows",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {"type": "integer", "minimum": 1},
+            "required": false
+          },
+          {
+            "name": "e2e_page",
+            "in": "query",
+            "schema": {"type": "integer", "minimum": 1},
+            "required": false
+          },
+          {
+            "name": "tab",
+            "in": "query",
+            "schema": {"type": "string"},
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rendered issue rows",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/IssueRowsPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dialog/info": {
+      "get": {
+        "summary": "Get about dialog",
+        "responses": {
+          "200": {
+            "description": "Info dialog",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/InfoDialogPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dialog/config": {
+      "get": {
+        "summary": "Get configuration dialog",
+        "responses": {
+          "200": {
+            "description": "Configuration dialog",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/ConfigDialogPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dialog/debug": {
+      "get": {
+        "summary": "Get debug dialog",
+        "responses": {
+          "200": {
+            "description": "Debug dialog",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/DebugDialogPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dialog/doctor": {
+      "get": {
+        "summary": "Get doctor dialog",
+        "responses": {
+          "200": {
+            "description": "Doctor dialog",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/DoctorDialogPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dialog/session-diagnostics/{issue_number}": {
+      "get": {
+        "summary": "Get session diagnostics dialog",
+        "parameters": [
+          {
+            "name": "issue_number",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Session diagnostics dialog",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/SessionDiagnosticsDialogPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dialog/blocked-issues": {
+      "get": {
+        "summary": "Get blocked issues dialog",
+        "responses": {
+          "200": {
+            "description": "Blocked issues dialog",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/BlockedIssuesDialogPayload"}
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/dialog/phase/{issue_number}": {
+      "get": {
+        "summary": "Get phase dialog",
+        "parameters": [
+          {
+            "name": "issue_number",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer"}
+          },
+          {
+            "name": "phase",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "string"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Phase dialog",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/PhaseDialogPayload"}
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "IssueItemPayload": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "issue_number": {
+            "type": ["integer", "string", "null"]
+          },
+          "title": {"type": ["string", "null"]},
+          "status": {"type": ["string", "null"]},
+          "action": {"type": ["string", "null"]},
+          "action_hint": {"type": ["string", "null"]},
+          "url": {"type": ["string", "null"]},
+          "issue_url": {"type": ["string", "null"]}
+        }
+      },
+      "DashboardDataPayload": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": [
+          "startupComplete",
+          "paused",
+          "e2eRunning",
+          "queueRefreshSeconds",
+          "repo",
+          "repoRoot",
+          "githubOwner",
+          "githubRepo",
+          "agents"
+        ],
+        "properties": {
+          "startupComplete": {"type": "boolean"},
+          "paused": {"type": "boolean"},
+          "e2eRunning": {"type": "boolean"},
+          "queueRefreshSeconds": {"type": "integer"},
+          "repo": {"type": "string"},
+          "repoRoot": {"type": "string"},
+          "githubOwner": {"type": "string"},
+          "githubRepo": {"type": "string"},
+          "e2eLastRun": {"type": ["object", "null"], "additionalProperties": true},
+          "agents": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "DashboardViewModelPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issues",
+          "active_items",
+          "queue_items",
+          "blocked_items",
+          "history_items",
+          "e2e_items",
+          "active_count",
+          "queue_count",
+          "blocked_count",
+          "history_count",
+          "e2e_count",
+          "active_tab",
+          "paused",
+          "shutdown_requested",
+          "active_session_count",
+          "startup_status",
+          "startup_message",
+          "repo",
+          "repo_root",
+          "github_owner",
+          "github_repo",
+          "queue_page",
+          "queue_total_pages",
+          "queue_total",
+          "queue_refresh_seconds",
+          "agents",
+          "e2e_status",
+          "e2e_page",
+          "e2e_total_pages",
+          "e2e_total",
+          "dashboard_data"
+        ],
+        "properties": {
+          "issues": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
+          "active_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
+          "queue_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
+          "blocked_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
+          "history_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
+          "e2e_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
+          "active_count": {"type": "integer"},
+          "queue_count": {"type": "integer"},
+          "blocked_count": {"type": "integer"},
+          "history_count": {"type": "integer"},
+          "e2e_count": {"type": "integer"},
+          "active_tab": {"type": "string"},
+          "paused": {"type": "boolean"},
+          "shutdown_requested": {"type": "boolean"},
+          "active_session_count": {"type": "integer"},
+          "startup_status": {"type": "string"},
+          "startup_message": {"type": "string"},
+          "repo": {"type": "string"},
+          "repo_root": {"type": "string"},
+          "github_owner": {"type": "string"},
+          "github_repo": {"type": "string"},
+          "queue_page": {"type": "integer"},
+          "queue_total_pages": {"type": "integer"},
+          "queue_total": {"type": "integer"},
+          "queue_refresh_seconds": {"type": "integer"},
+          "agents": {"type": "array", "items": {"type": "string"}},
+          "e2e_status": {"type": "object", "additionalProperties": true},
+          "e2e_page": {"type": "integer"},
+          "e2e_total_pages": {"type": "integer"},
+          "e2e_total": {"type": "integer"},
+          "dashboard_data": {"$ref": "#/components/schemas/DashboardDataPayload"}
+        }
+      },
+      "IssueRowPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["html"],
+        "properties": {
+          "issue_number": {"type": ["integer", "string", "null"]},
+          "html": {"type": "string"}
+        }
+      },
+      "IssueRowsPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["rows", "active_tab", "count"],
+        "properties": {
+          "rows": {"type": "array", "items": {"$ref": "#/components/schemas/IssueRowPayload"}},
+          "active_tab": {"type": "string"},
+          "count": {"type": "integer"}
+        }
+      },
+      "DialogRowPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "value"],
+        "properties": {
+          "label": {"type": "string"},
+          "value": {"type": "string"}
+        }
+      },
+      "DialogSectionPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "rows"],
+        "properties": {
+          "title": {"type": "string"},
+          "rows": {"type": "array", "items": {"$ref": "#/components/schemas/DialogRowPayload"}}
+        }
+      },
+      "InfoDialogPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "rows"],
+        "properties": {
+          "title": {"type": "string"},
+          "rows": {"type": "array", "items": {"$ref": "#/components/schemas/DialogRowPayload"}}
+        }
+      },
+      "ConfigDialogPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "config_text"],
+        "properties": {
+          "title": {"type": "string"},
+          "config_text": {"type": "string"}
+        }
+      },
+      "DebugDialogPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "sections"],
+        "properties": {
+          "title": {"type": "string"},
+          "sections": {"type": "array", "items": {"$ref": "#/components/schemas/DialogSectionPayload"}}
+        }
+      },
+      "DoctorCheckPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": ["string", "null"]},
+          "status": {"type": ["string", "null"]},
+          "detail": {"type": ["string", "null"]}
+        }
+      },
+      "DoctorDialogPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "overall", "checks"],
+        "properties": {
+          "title": {"type": "string"},
+          "overall": {"type": "string"},
+          "checks": {"type": "array", "items": {"$ref": "#/components/schemas/DoctorCheckPayload"}}
+        }
+      },
+      "SessionDiagnosticsActionPayload": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["type", "label"],
+        "properties": {
+          "type": {"type": "string"},
+          "label": {"type": "string"},
+          "path": {"type": ["string", "null"]},
+          "issue_number": {"type": ["integer", "null"]}
+        }
+      },
+      "SessionDiagnosticsDialogPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "rows", "actions"],
+        "properties": {
+          "title": {"type": "string"},
+          "rows": {"type": "array", "items": {"$ref": "#/components/schemas/DialogRowPayload"}},
+          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}}
+        }
+      },
+      "BlockedIssuePayload": {
+        "type": "object",
+        "additionalProperties": true
+      },
+      "BlockedIssuesDialogPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "blocked_issues"],
+        "properties": {
+          "title": {"type": "string"},
+          "blocked_issues": {"type": "array", "items": {"$ref": "#/components/schemas/BlockedIssuePayload"}}
+        }
+      },
+      "PhaseDialogPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "issue_number", "phase", "phases"],
+        "properties": {
+          "title": {"type": "string"},
+          "issue_number": {"type": "integer"},
+          "phase": {"type": ["object", "null"], "additionalProperties": true},
+          "phases": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
+        }
+      }
+    }
+  }
+}

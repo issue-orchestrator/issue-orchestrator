@@ -1270,6 +1270,26 @@ class TestIssueRowsEndpoint:
         assert events_received[0] == ("test.event", {})
 
 
+class TestDialogEndpoints:
+    """Tests for dialog view-model endpoints."""
+
+    def test_doctor_dialog_returns_non_200_upstream_response(self):
+        """GET /api/dialog/doctor forwards upstream error response unchanged."""
+        from issue_orchestrator.entrypoints import web
+        from fastapi.responses import JSONResponse
+
+        with patch.object(
+            web,
+            "get_doctor",
+            AsyncMock(return_value=JSONResponse({"error": "Orchestrator not running"}, status_code=503)),
+        ):
+            client = TestClient(app)
+            response = client.get("/api/dialog/doctor")
+
+        assert response.status_code == 503
+        assert response.json() == {"error": "Orchestrator not running"}
+
+
 class TestRefreshEndpoint:
     """Test the POST /api/refresh endpoint."""
 
