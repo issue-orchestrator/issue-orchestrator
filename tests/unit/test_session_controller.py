@@ -15,7 +15,7 @@ from issue_orchestrator.control.session_controller import SessionController, Ses
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.domain.models import SessionStatus, CompletionRecord, CompletionOutcome, RequestedAction
-from issue_orchestrator.ports import NullEventSink
+from issue_orchestrator.ports import NullEventSink, TraceEvent
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
@@ -420,6 +420,16 @@ class MockWorkingCopy:
         return "test-branch"
 
 
+class CollectingEventSink:
+    """Event sink that collects events for test assertions."""
+
+    def __init__(self):
+        self.events: list[TraceEvent] = []
+
+    def publish(self, event: TraceEvent) -> None:
+        self.events.append(event)
+
+
 class TestSessionControllerValidationCaching:
     """Tests for validation caching via PublishGate."""
 
@@ -548,3 +558,106 @@ class TestSessionControllerValidationCaching:
 
         # Command runner should NOT have been called
         assert len(command_runner.run_calls) == 0
+
+    def test_validation_passed_event_includes_record_path(self, tmp_path):
+        """SESSION_VALIDATION_PASSED event should include validation_record_path."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+
+        command_runner = MockCommandRunner(returncode=0)
+        working_copy = MockWorkingCopy(head_sha="abc1234567890")
+        events_sink = CollectingEventSink()
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=events_sink,
+            session_output=FileSystemSessionOutput(),
+            working_copy=working_copy,
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        observation = SessionObservationResult.terminated(runtime_minutes=10.0)
+
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        # Validation should pass
+        assert decision.status == SessionStatus.COMPLETED
+        assert decision.validation_passed is True
+
+        # Find the validation passed event
+        validation_events = [e for e in events_sink.events if e.name == "session.validation_passed"]
+        assert len(validation_events) == 1
+
+        # Event data should include validation_record_path
+        event = validation_events[0]
+        assert "validation_record_path" in event.data
+        assert event.data["validation_record_path"] is not None
+        # Record path should be in the .issue-orchestrator/validation directory
+        assert ".issue-orchestrator/validation" in event.data["validation_record_path"]
+
+    def test_validation_failed_event_includes_record_path(self, tmp_path):
+        """SESSION_VALIDATION_FAILED event should include validation_record_path."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+
+        command_runner = MockCommandRunner(returncode=1, stderr="Tests failed!")
+        working_copy = MockWorkingCopy(head_sha="def5678901234")
+        events_sink = CollectingEventSink()
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=events_sink,
+            session_output=FileSystemSessionOutput(),
+            working_copy=working_copy,
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+            max_validation_retries=0,  # Don't retry, go straight to failure
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        observation = SessionObservationResult.terminated(runtime_minutes=10.0)
+
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        # Validation failed
+        assert decision.status == SessionStatus.VALIDATION_FAILED
+        assert decision.validation_passed is False
+
+        # Find the validation failed event
+        validation_events = [e for e in events_sink.events if e.name == "session.validation_failed"]
+        assert len(validation_events) == 1
+
+        # Event data should include validation_record_path
+        event = validation_events[0]
+        assert "validation_record_path" in event.data
+        assert event.data["validation_record_path"] is not None
+        # Record path should be in the .issue-orchestrator/validation directory
+        assert ".issue-orchestrator/validation" in event.data["validation_record_path"]

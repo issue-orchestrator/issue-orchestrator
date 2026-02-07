@@ -42,7 +42,7 @@ from ..infra.validation_state import (
 from ..observation.observation import SessionObservation, SessionObservationResult
 from ..ports import EventSink, TraceEvent
 from ..ports.session_output import SessionOutput, ValidationState
-from .validation import PublishGate
+from .validation import PublishGate, ValidationRecordStore
 
 logger = logging.getLogger(__name__)
 
@@ -353,7 +353,7 @@ class SessionController:
     ) -> tuple[SessionStatus, Optional[bool], Optional[str], Optional[Path]]:
         """Run validation gate and return updated status."""
         logger.info(issue_log(issue_number, "Running validation gate: cmd=%s timeout=%ds"), self._validation_cmd, self._validation_timeout)
-        validation_passed, validation_error, validation_error_file = self._run_validation(worktree_path, session_name, issue_number)
+        validation_passed, validation_error, validation_error_file, validation_record_path = self._run_validation(worktree_path, session_name, issue_number)
         run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
 
         if validation_passed:
@@ -368,7 +368,10 @@ class SessionController:
                     "validation_status": "passed",
                 },
             )
-            self._emit_event(EventName.SESSION_VALIDATION_PASSED, {"issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd})
+            event_data = {"issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd}
+            if validation_record_path:
+                event_data["validation_record_path"] = validation_record_path
+            self._emit_event(EventName.SESSION_VALIDATION_PASSED, event_data)
             return SessionStatus.COMPLETED, validation_passed, validation_error, validation_error_file
 
         # Validation failed - validation_passed is False in both retry and exhausted cases
@@ -387,7 +390,7 @@ class SessionController:
             return self._handle_validation_retry(
                 worktree_path, run_dir, session_name, issue_number, issue_title,
                 validation_retry_count, validation_error, validation_error_file,
-                original_prompt, retry_prompt_template, repo_root,
+                original_prompt, retry_prompt_template, repo_root, validation_record_path,
             ), False, validation_error, validation_error_file
 
         # Max retries exhausted
@@ -402,7 +405,7 @@ class SessionController:
             },
         )
         return self._handle_validation_exhausted(
-            run_dir, session_name, issue_number, validation_retry_count, validation_error, validation_error_file,
+            run_dir, session_name, issue_number, validation_retry_count, validation_error, validation_error_file, validation_record_path,
         ), False, validation_error, validation_error_file
 
     def _handle_validation_retry(
@@ -418,6 +421,7 @@ class SessionController:
         original_prompt: str | None,
         retry_prompt_template: str | None,
         repo_root: Path | None,
+        validation_record_path: Optional[str] = None,
     ) -> SessionStatus:
         """Handle validation failure with retries remaining."""
         logger.warning(
@@ -441,11 +445,14 @@ class SessionController:
         )
         self.session_output.write_retry_prompt(run_dir, retry_prompt_content)
 
-        self._emit_event(EventName.SESSION_VALIDATION_RETRY_NEEDED, {
+        event_data = {
             "issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd,
             "error_file": str(validation_error_file) if validation_error_file else None,
             "retry_count": validation_retry_count, "max_retries": self._max_validation_retries,
-        })
+        }
+        if validation_record_path:
+            event_data["validation_record_path"] = validation_record_path
+        self._emit_event(EventName.SESSION_VALIDATION_RETRY_NEEDED, event_data)
         return SessionStatus.NEEDS_VALIDATION_RETRY
 
     def _handle_validation_exhausted(
@@ -456,6 +463,7 @@ class SessionController:
         validation_retry_count: int,
         validation_error: Optional[str],
         validation_error_file: Optional[Path],
+        validation_record_path: Optional[str] = None,
     ) -> SessionStatus:
         """Handle validation failure with max retries exhausted."""
         logger.warning(
@@ -463,11 +471,14 @@ class SessionController:
             self._max_validation_retries, validation_error[:200] if validation_error else "none", validation_error_file,
         )
         self.session_output.clear_retry_state(run_dir)
-        self._emit_event(EventName.SESSION_VALIDATION_FAILED, {
+        event_data = {
             "issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd,
             "error_file": str(validation_error_file) if validation_error_file else None,
             "retry_count": validation_retry_count,
-        })
+        }
+        if validation_record_path:
+            event_data["validation_record_path"] = validation_record_path
+        self._emit_event(EventName.SESSION_VALIDATION_FAILED, event_data)
         return SessionStatus.VALIDATION_FAILED
 
     def _enrich_manifest_from_completion(
@@ -544,7 +555,7 @@ class SessionController:
         worktree_path: Path,
         session_name: str,
         issue_number: int,
-    ) -> tuple[bool, Optional[str], Optional[Path]]:
+    ) -> tuple[bool, Optional[str], Optional[Path], Optional[str]]:
         """Run validation command (with SHA-based caching) and return result.
 
         Uses PublishGate for caching. If a previous validation passed for
@@ -558,10 +569,10 @@ class SessionController:
             issue_number: Issue number for logging
 
         Returns:
-            Tuple of (passed, error_message, error_file_path)
+            Tuple of (passed, error_message, error_file_path, validation_record_path)
         """
         if not self._command_runner or not self._validation_cmd:
-            return True, None, None
+            return True, None, None, None
 
         # Get session output directory for validation artifacts
         run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
@@ -588,6 +599,12 @@ class SessionController:
 
         result = gate.check(session_output_dir=run_dir)
 
+        # Get record path from store (same SHA-based approach as PublishGate)
+        record_path = None
+        if head_sha:
+            store = ValidationRecordStore(worktree_path)
+            record_path = str(store.get_record_path(head_sha))
+
         if result.allowed:
             if result.cache_hit:
                 logger.info(
@@ -599,13 +616,13 @@ class SessionController:
                     issue_log(issue_number, "Validation passed: SHA=%s"),
                     sha_display,
                 )
-            return True, None, None
+            return True, None, None, record_path
 
         # Validation failed - get error file path from record
         error_msg = result.reason
         error_file = self._resolve_error_file_path(worktree_path, result.record)
 
-        return False, error_msg, error_file
+        return False, error_msg, error_file, record_path
 
     def _resolve_error_file_path(
         self,

@@ -149,3 +149,68 @@ def test_build_issue_timeline_status_mapping():
         "completed",
         "started",
     ]
+
+
+def test_validation_events_include_validation_record_path():
+    """Validation events should include validation_record_path in artifacts."""
+    records = [
+        TimelineRecord(
+            event_id="e1",
+            timestamp="2026-02-06T00:00:00Z",
+            event="session.validation_passed",
+            data={
+                "issue_number": 123,
+                "session_name": "issue-123",
+                "validation_record_path": "/tmp/worktree/.issue-orchestrator/validation/abc123.json",
+            },
+        ),
+        TimelineRecord(
+            event_id="e2",
+            timestamp="2026-02-06T00:01:00Z",
+            event="session.validation_failed",
+            data={
+                "issue_number": 123,
+                "session_name": "issue-123",
+                "validation_record_path": "/tmp/worktree/.issue-orchestrator/validation/def456.json",
+            },
+        ),
+    ]
+
+    timeline = build_issue_timeline(123, records)
+    events = timeline["events"]
+
+    # Validation passed event should include validation artifact
+    assert events[0]["event"] == "session.validation_passed"
+    assert events[0]["status"] == "completed"
+    assert len(events[0]["artifacts"]) == 1
+    assert events[0]["artifacts"][0]["type"] == "validation"
+    assert events[0]["artifacts"][0]["label"] == "Validation"
+    assert events[0]["artifacts"][0]["value"] == "/tmp/worktree/.issue-orchestrator/validation/abc123.json"
+
+    # Validation failed event should include validation artifact
+    assert events[1]["event"] == "session.validation_failed"
+    assert events[1]["status"] == "failed"
+    assert len(events[1]["artifacts"]) == 1
+    assert events[1]["artifacts"][0]["type"] == "validation"
+    assert events[1]["artifacts"][0]["value"] == "/tmp/worktree/.issue-orchestrator/validation/def456.json"
+
+
+def test_validation_events_without_record_path():
+    """Validation events without record_path should have no artifacts."""
+    records = [
+        TimelineRecord(
+            event_id="e1",
+            timestamp="2026-02-06T00:00:00Z",
+            event="session.validation_passed",
+            data={
+                "issue_number": 123,
+                "session_name": "issue-123",
+            },
+        ),
+    ]
+
+    timeline = build_issue_timeline(123, records)
+    events = timeline["events"]
+
+    assert events[0]["event"] == "session.validation_passed"
+    assert len(events[0]["artifacts"]) == 0
