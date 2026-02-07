@@ -288,7 +288,9 @@ class TestControlCenterTemplate:
         assert "Repository Engines" in body
         assert "Close Control Center" in body
         assert "Start engine" in body
+        assert "Not running" in body
         assert "Closing this window does not stop repository engines" in body
+        assert ">Stopped<" not in body
         assert 'id="sidebarRepoList"' not in body
 
 

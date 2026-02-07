@@ -1623,7 +1623,7 @@
                 <div>
                     <h1 class="header-title" id="viewTitle">Repository Engines</h1>
                     <div class="header-subtitle">Control Center window visibility is independent from repository engine runtime.</div>
-                    <div class="active-summary" id="activeSummary">0 running · 0 paused · 0 not running</div>
+                    <div class="active-summary" id="activeSummary">0 Running · 0 Paused · 0 Not running</div>
                 </div>
                 <div class="header-actions">
                     <button class="btn btn-sm" id="rescanReposBtn">Rescan Repositories</button>
@@ -2419,7 +2419,7 @@
             const status = repo.status || {};
             if (status.paused) return 'paused';
             if (status.state === 'running' || status.state === 'partial') return 'running';
-            return 'stopped';
+            return 'not running';
         }
 
         function getRepoStateText(repo, isDiscovered = false) {
@@ -2431,7 +2431,7 @@
             const status = repo.status || {};
             if (status.paused) return 'paused';
             if (status.state === 'running' || status.state === 'partial') return 'running';
-            return 'stopped';
+            return 'not running';
         }
 
         function selectRepo(path, config = null, source = 'registered') {
@@ -2521,7 +2521,7 @@
                 const s = r.status || {};
                 return s.state === 'running' || s.state === 'partial' || s.paused;
             });
-            const stopped = state.repos.filter(r => {
+            const notRunning = state.repos.filter(r => {
                 const s = r.status || {};
                 return s.state !== 'running' && s.state !== 'partial' && !s.paused;
             });
@@ -2543,12 +2543,12 @@
                 </div>`;
             }
 
-            // Stopped section
-            if (stopped.length > 0) {
+            // Not running section
+            if (notRunning.length > 0) {
                 hasItems = true;
                 html += `<div class="dropdown-section">
-                    <div class="dropdown-section-label">Stopped</div>
-                    ${stopped.map(r => renderDropdownItem(r, false)).join('')}
+                    <div class="dropdown-section-label">Not running</div>
+                    ${notRunning.map(r => renderDropdownItem(r, false)).join('')}
                 </div>`;
             }
 
@@ -2820,7 +2820,7 @@
             if (status.paused) return 'paused';
             if (status.state === 'running') return 'running';
             if (status.state === 'partial') return 'running';
-            return 'stopped';
+            return 'not running';
         }
 
         function getRepoPort(repo) {
@@ -2873,11 +2873,11 @@
             const repoState = getRepoState(repo);
             const isRunning = repoState === 'running';
             const isPaused = repoState === 'paused';
-            const isStopped = repoState === 'stopped';
+            const isNotRunning = repoState === 'not running';
             const isNeedsSetup = needsSetup(repo);
 
             let badgeClass = 'stopped';
-            let badgeText = 'Stopped';
+            let badgeText = 'Not running';
             if (isRunning) { badgeClass = 'running'; badgeText = 'Running'; }
             if (isPaused) { badgeClass = 'paused'; badgeText = 'Paused'; }
             if (isNeedsSetup) { badgeClass = 'needs-setup'; badgeText = 'Needs Setup'; }
@@ -2905,7 +2905,7 @@
             let actions = '';
             if (isNeedsSetup) {
                 actions = `<button class="btn btn-primary" data-action="setup" data-path="${escapeHtml(repo.path)}">Setup</button>`;
-            } else if (isStopped) {
+            } else if (isNotRunning) {
                 actions = `
                     <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open engine</button>
                     <button class="btn btn-primary" data-action="start" data-path="${escapeHtml(repo.path)}">Start engine</button>
@@ -2949,8 +2949,8 @@
             if (!el) return;
             const runningCount = state.repos.filter(r => getRepoState(r) === 'running').length;
             const pausedCount = state.repos.filter(r => getRepoState(r) === 'paused').length;
-            const stoppedCount = state.repos.filter(r => getRepoState(r) === 'stopped').length;
-            el.textContent = `${runningCount} running · ${pausedCount} paused · ${stoppedCount} not running`;
+            const notRunningCount = state.repos.filter(r => getRepoState(r) === 'not running').length;
+            el.textContent = `${runningCount} Running · ${pausedCount} Paused · ${notRunningCount} Not running`;
         }
 
         // ============================================
@@ -2982,7 +2982,7 @@
             // Update pause/resume button
             const pauseBtn = document.getElementById('pauseResumeBtn');
             pauseBtn.textContent = isPaused ? 'Resume engine' : 'Pause engine';
-            pauseBtn.disabled = repoState === 'stopped';
+            pauseBtn.disabled = repoState === 'not running';
 
             const activityConfigSelect = document.getElementById('activityConfigSelect');
             const activitySetDefaultConfig = document.getElementById('activitySetDefaultConfig');
