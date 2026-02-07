@@ -36,6 +36,17 @@ from ..view_models.dialogs import (
     build_phase_dialog,
     build_session_diagnostics_dialog,
 )
+from ..contracts.openapi import (
+    BlockedIssuesDialogPayload,
+    ConfigDialogPayload,
+    DashboardViewModelPayload,
+    DebugDialogPayload,
+    DoctorDialogPayload,
+    InfoDialogPayload,
+    IssueRowsPayload,
+    PhaseDialogPayload,
+    SessionDiagnosticsDialogPayload,
+)
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
@@ -373,7 +384,7 @@ async def dashboard(request: Request, orchestrator=Depends(get_orchestrator)) ->
     return HTMLResponse(content=html)
 
 
-@app.get("/api/view-model")
+@app.get("/api/view-model", response_model=DashboardViewModelPayload)
 async def get_view_model(request: Request, orchestrator=Depends(get_orchestrator)) -> JSONResponse:
     """Get the dashboard view model as JSON."""
     if not orchestrator:
@@ -395,7 +406,7 @@ async def get_view_model(request: Request, orchestrator=Depends(get_orchestrator
     return JSONResponse(view_model.to_dict())
 
 
-@app.get("/api/issue-rows")
+@app.get("/api/issue-rows", response_model=IssueRowsPayload)
 async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator)) -> JSONResponse:
     """Get rendered issue rows for the current view."""
     if not orchestrator:
@@ -439,7 +450,7 @@ async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator
     })
 
 
-@app.get("/api/dialog/info")
+@app.get("/api/dialog/info", response_model=InfoDialogPayload)
 async def get_info_dialog() -> JSONResponse:
     """Get view model for the About dialog."""
     response = await get_info()
@@ -449,7 +460,7 @@ async def get_info_dialog() -> JSONResponse:
     return JSONResponse(build_info_dialog(payload))
 
 
-@app.get("/api/dialog/config")
+@app.get("/api/dialog/config", response_model=ConfigDialogPayload)
 async def get_config_dialog() -> JSONResponse:
     """Get view model for the configuration dialog."""
     response = await get_config()
@@ -459,7 +470,7 @@ async def get_config_dialog() -> JSONResponse:
     return JSONResponse(build_config_dialog(payload.get("config", "")))
 
 
-@app.get("/api/dialog/debug")
+@app.get("/api/dialog/debug", response_model=DebugDialogPayload)
 async def get_debug_dialog() -> JSONResponse:
     """Get view model for the debug dialog."""
     response = await get_debug()
@@ -469,7 +480,7 @@ async def get_debug_dialog() -> JSONResponse:
     return JSONResponse(build_debug_dialog(payload))
 
 
-@app.get("/api/dialog/doctor")
+@app.get("/api/dialog/doctor", response_model=DoctorDialogPayload)
 async def get_doctor_dialog() -> JSONResponse:
     """Get view model for the doctor dialog."""
     response = await get_doctor()
@@ -477,7 +488,7 @@ async def get_doctor_dialog() -> JSONResponse:
     return JSONResponse(build_doctor_dialog(payload))
 
 
-@app.get("/api/dialog/session-diagnostics/{issue_number}")
+@app.get("/api/dialog/session-diagnostics/{issue_number}", response_model=SessionDiagnosticsDialogPayload)
 async def get_session_diagnostics_dialog(issue_number: int) -> JSONResponse:
     """Get view model for session diagnostics dialog."""
     response = await get_session_manifest(issue_number)
@@ -487,7 +498,7 @@ async def get_session_diagnostics_dialog(issue_number: int) -> JSONResponse:
     return JSONResponse(build_session_diagnostics_dialog(issue_number, payload))
 
 
-@app.get("/api/dialog/blocked-issues")
+@app.get("/api/dialog/blocked-issues", response_model=BlockedIssuesDialogPayload)
 async def get_blocked_issues_dialog() -> JSONResponse:
     """Get view model for blocked issues dialog."""
     response = await get_blocked_issues()
@@ -497,7 +508,7 @@ async def get_blocked_issues_dialog() -> JSONResponse:
     return JSONResponse(build_blocked_issues_dialog(payload))
 
 
-@app.get("/api/dialog/phase/{issue_number}")
+@app.get("/api/dialog/phase/{issue_number}", response_model=PhaseDialogPayload)
 async def get_phase_dialog(issue_number: int, phase: str | None = None) -> JSONResponse:
     """Get view model for phase details dialog."""
     response = await get_session_phases(issue_number)
