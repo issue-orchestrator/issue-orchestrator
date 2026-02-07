@@ -182,6 +182,7 @@ class Orchestrator:
             self._get_review_machine, self._refresh_issue, getattr(self.scheduler, "dependency_evaluator", None),
             claim_manager=self.deps.claim_manager,
             provider_resilience=self.deps.provider_resilience,
+            remove_session_machine=self.deps.state_machine_manager.remove_session_machine,
         )
 
     @cached_property

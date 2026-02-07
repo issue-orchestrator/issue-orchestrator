@@ -372,6 +372,9 @@ def launcher_bundle(
             session_machines[name] = SessionStateMachine(name, n, timeout_minutes=timeout)
         return session_machines[name]
 
+    def remove_session_machine(name: str) -> None:
+        session_machines.pop(name, None)
+
     def get_review_machine(pr_number: int, issue_number: int):
         if pr_number not in review_machines:
             review_machines[pr_number] = ReviewStateMachine(pr_number, issue_number)
@@ -394,6 +397,7 @@ def launcher_bundle(
         get_issue_machine=get_issue_machine,
         get_session_machine=get_session_machine,
         get_review_machine=get_review_machine,
+        remove_session_machine=remove_session_machine,
     )
 
     bundle = LauncherTestBundle(
@@ -623,6 +627,20 @@ class TestLaunchIssueSession:
         # Check session machine transitioned
         session_machine = launcher_bundle.session_machines["issue-123"]
         assert session_machine.state == SessionState.RUNNING.value
+
+    def test_resets_non_pending_session_machine_on_launch(self, launcher_bundle, sample_issue):
+        """Launch resets an unexpected session machine state before transitioning."""
+        original = SessionStateMachine("issue-123", 123, timeout_minutes=30)
+        original.launch()
+        original.started()
+        launcher_bundle.session_machines["issue-123"] = original
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        replacement = launcher_bundle.session_machines["issue-123"]
+        assert replacement is not original
+        assert replacement.state == SessionState.RUNNING.value
 
     def test_handles_session_creation_failure(self, launcher_bundle, sample_issue, mock_repo_host):
         """Verify handles terminal session creation failure (lines 373-376)."""
