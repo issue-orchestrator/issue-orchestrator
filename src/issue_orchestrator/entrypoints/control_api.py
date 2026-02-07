@@ -57,7 +57,7 @@ from ..control.worktree_manager import get_worktree_path
 from ..domain.models import get_completion_path
 from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
-from ..infra.supervisor import DefaultSupervisorOps, SupervisorOps
+from ..infra.supervisor import DefaultSupervisorOps, MultiInstanceStatus, SupervisorOps
 from ..control.goal_pilot import GoalPilot
 
 # Path to templates
@@ -1532,16 +1532,13 @@ async def control_reconcile(request: Request) -> JSONResponse:
         if reconciliation is None:
             continue
 
-        stale_lock_reconciled, orphaned_entry, orphaned_stopped, unresponsive_entry, unresponsive_stopped = reconciliation
-        if stale_lock_reconciled:
+        if reconciliation["reconciled_stale_lock"]:
             reconciled_stale_locks.append(repo.path)
-        if orphaned_entry is not None:
-            orphaned_detected.append(orphaned_entry)
-        if orphaned_stopped:
+        orphaned_detected.extend(reconciliation["orphaned_detected"])
+        if reconciliation["stopped_orphaned"]:
             stopped_orphaned.append(repo.path)
-        if unresponsive_entry is not None:
-            unresponsive_detected.append(unresponsive_entry)
-        if unresponsive_stopped:
+        unresponsive_detected.extend(reconciliation["unresponsive_detected"])
+        if reconciliation["stopped_unresponsive"]:
             stopped_unresponsive.append(repo.path)
 
     return JSONResponse({
@@ -1577,43 +1574,171 @@ def _reconcile_repo_runtime(
     stop_orphaned: bool,
     stop_unresponsive: bool,
     force: bool,
-) -> tuple[bool, dict[str, Any] | None, bool, dict[str, Any] | None, bool] | None:
-    """Reconcile one repository and return reconciliation outcomes.
-
-    Returns tuple:
-      (stale_lock_reconciled, orphaned_entry, orphaned_stopped, unresponsive_entry, unresponsive_stopped)
-    """
+) -> dict[str, Any] | None:
+    """Reconcile one repository and return aggregated reconciliation outcomes."""
     if not repo_path.exists():
         return None
+
+    multi_status = sv.status_all_instances(repo_path, config_name=selected_config)
+    if _is_multi_instance_repo(multi_status):
+        return _reconcile_multi_instance_repo_runtime(
+            sv=sv,
+            repo_path=repo_path,
+            multi_status=multi_status,
+            stop_unresponsive=stop_unresponsive,
+            force=force,
+        )
 
     status_info = sv.status(repo_path)
 
     if status_info.state == "failed":
-        return sv.stop(repo_path, force=False), None, False, None, False
+        return {
+            "reconciled_stale_lock": sv.stop(repo_path, force=False),
+            "orphaned_detected": [],
+            "stopped_orphaned": False,
+            "unresponsive_detected": [],
+            "stopped_unresponsive": False,
+        }
 
     if status_info.state != "running":
         detected = _detect_orchestrator_by_port(repo_path, selected_config)
         if not detected:
-            return False, None, False, None, False
+            return {
+                "reconciled_stale_lock": False,
+                "orphaned_detected": [],
+                "stopped_orphaned": False,
+                "unresponsive_detected": [],
+                "stopped_unresponsive": False,
+            }
         orphaned_entry = {"repo_root": str(repo_path), "port": detected.get("port")}
         if stop_orphaned and detected.get("port"):
             stopped = sv.stop_by_port(int(detected["port"]), force=force)
-            return False, orphaned_entry, stopped, None, False
-        return False, orphaned_entry, False, None, False
+            return {
+                "reconciled_stale_lock": False,
+                "orphaned_detected": [orphaned_entry],
+                "stopped_orphaned": stopped,
+                "unresponsive_detected": [],
+                "stopped_unresponsive": False,
+            }
+        return {
+            "reconciled_stale_lock": False,
+            "orphaned_detected": [orphaned_entry],
+            "stopped_orphaned": False,
+            "unresponsive_detected": [],
+            "stopped_unresponsive": False,
+        }
 
     payload = _enrich_runtime_health(repo_path, status_info.to_dict())
     if payload is None or payload.get("runtime_health") != "unresponsive":
-        return False, None, False, None, False
+        return {
+            "reconciled_stale_lock": False,
+            "orphaned_detected": [],
+            "stopped_orphaned": False,
+            "unresponsive_detected": [],
+            "stopped_unresponsive": False,
+        }
 
     unresponsive_entry = {
         "repo_root": str(repo_path),
+        "instance_id": None,
         "heartbeat_age_seconds": payload.get("heartbeat_age_seconds"),
         "pid": payload.get("pid"),
         "port": payload.get("port"),
     }
     if stop_unresponsive:
-        return False, None, False, unresponsive_entry, sv.stop(repo_path, force=force)
-    return False, None, False, unresponsive_entry, False
+        return {
+            "reconciled_stale_lock": False,
+            "orphaned_detected": [],
+            "stopped_orphaned": False,
+            "unresponsive_detected": [unresponsive_entry],
+            "stopped_unresponsive": sv.stop(repo_path, force=force),
+        }
+    return {
+        "reconciled_stale_lock": False,
+        "orphaned_detected": [],
+        "stopped_orphaned": False,
+        "unresponsive_detected": [unresponsive_entry],
+        "stopped_unresponsive": False,
+    }
+
+
+def _is_multi_instance_repo(multi_status: MultiInstanceStatus) -> bool:
+    return multi_status.expected_count > 1 or any(inst.instance_id is not None for inst in multi_status.instances)
+
+
+def _reconcile_multi_instance_repo_runtime(
+    *,
+    sv: SupervisorOps,
+    repo_path: Path,
+    multi_status: MultiInstanceStatus,
+    stop_unresponsive: bool,
+    force: bool,
+) -> dict[str, Any]:
+    """Reconcile a multi-instance repository.
+
+    Orphaned process probing is skipped in multi-instance mode because a single
+    config-level port probe is ambiguous across N orchestrator instances.
+    """
+    reconciled_stale_lock = False
+    unresponsive_detected: list[dict[str, Any]] = []
+    stopped_unresponsive = False
+
+    instance_ids: list[str | None] = [None]
+    instance_ids.extend(f"orchestrator-{i}" for i in range(1, multi_status.expected_count + 1))
+    instance_ids.extend(
+        inst.instance_id
+        for inst in multi_status.instances
+        if inst.instance_id is not None
+    )
+
+    # Deduplicate while preserving order.
+    deduped_ids: list[str | None] = []
+    for instance_id in instance_ids:
+        if instance_id not in deduped_ids:
+            deduped_ids.append(instance_id)
+
+    for instance_id in deduped_ids:
+        status_info = sv.status(repo_path, instance_id=instance_id)
+
+        if status_info.state == "failed":
+            if sv.stop(repo_path, force=False, instance_id=instance_id):
+                reconciled_stale_lock = True
+            continue
+
+        if status_info.state != "running":
+            continue
+
+        payload = _enrich_runtime_health(repo_path, status_info.to_dict(), instance_id=instance_id)
+        if payload is None or payload.get("runtime_health") != "unresponsive":
+            continue
+
+        unresponsive_detected.append({
+            "repo_root": str(repo_path),
+            "instance_id": instance_id,
+            "heartbeat_age_seconds": payload.get("heartbeat_age_seconds"),
+            "pid": payload.get("pid"),
+            "port": payload.get("port"),
+        })
+
+        if not stop_unresponsive:
+            continue
+
+        port = payload.get("port")
+        stopped = sv.stop_by_port(port, force=force) if isinstance(port, int) else sv.stop(
+            repo_path,
+            force=force,
+            instance_id=instance_id,
+        )
+        if stopped:
+            stopped_unresponsive = True
+
+    return {
+        "reconciled_stale_lock": reconciled_stale_lock,
+        "orphaned_detected": [],
+        "stopped_orphaned": False,
+        "unresponsive_detected": unresponsive_detected,
+        "stopped_unresponsive": stopped_unresponsive,
+    }
 
 
 @control_app.get("/control/orchestrator/status")

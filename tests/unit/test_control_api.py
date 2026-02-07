@@ -31,6 +31,7 @@ from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.supervisor import (
     DefaultSupervisorOps,
+    MultiInstanceStatus,
     SupervisorOps,
     SupervisorStatus,
 )
@@ -745,6 +746,7 @@ def mock_supervisor():
     """Inject a mock SupervisorOps into the control API."""
     mock = MagicMock(spec=SupervisorOps)
     mock.status.return_value = SupervisorStatus(state="stopped")
+    mock.status_all_instances.return_value = MultiInstanceStatus(repo_root="", expected_count=1, instances=[])
     mock.stop.return_value = True
     mock.stop_by_port.return_value = True
     set_supervisor(mock)
@@ -920,6 +922,11 @@ class TestSupervisorReconcile:
     def test_reconcile_cleans_stale_locks(
         self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_supervisor: MagicMock
     ) -> None:
+        mock_supervisor.status_all_instances.return_value = MultiInstanceStatus(
+            repo_root=str(tmp_path),
+            expected_count=1,
+            instances=[],
+        )
         mock_supervisor.status.return_value = SupervisorStatus(state="failed", pid=123, error="stale lock")
         monkeypatch.setattr(
             "issue_orchestrator.infra.repo_registry.list_repos",
@@ -937,6 +944,11 @@ class TestSupervisorReconcile:
     ) -> None:
         from issue_orchestrator.entrypoints import control_api
 
+        mock_supervisor.status_all_instances.return_value = MultiInstanceStatus(
+            repo_root=str(tmp_path),
+            expected_count=1,
+            instances=[],
+        )
         mock_supervisor.status.return_value = SupervisorStatus(state="stopped")
         monkeypatch.setattr(
             "issue_orchestrator.infra.repo_registry.list_repos",
@@ -950,6 +962,77 @@ class TestSupervisorReconcile:
         data = response.json()
         assert data["orphaned_detected"][0]["port"] == 19080
         assert str(tmp_path) in data["stopped_orphaned"]
+
+    def test_reconcile_multi_instance_handles_stale_and_unresponsive(
+        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_supervisor: MagicMock
+    ) -> None:
+        from issue_orchestrator.entrypoints import control_api
+
+        mock_supervisor.status_all_instances.return_value = MultiInstanceStatus(
+            repo_root=str(tmp_path),
+            expected_count=3,
+            instances=[
+                SupervisorStatus(state="running", instance_id="orchestrator-1", pid=101, port=19101),
+                SupervisorStatus(state="running", instance_id="orchestrator-2", pid=102, port=19102),
+            ],
+        )
+
+        def status_for_instance(repo_root: Path, instance_id: str | None = None) -> SupervisorStatus:
+            del repo_root
+            if instance_id is None:
+                return SupervisorStatus(state="stopped")
+            if instance_id == "orchestrator-1":
+                return SupervisorStatus(state="running", instance_id=instance_id, pid=101, port=19101)
+            if instance_id == "orchestrator-2":
+                return SupervisorStatus(state="running", instance_id=instance_id, pid=102, port=19102)
+            if instance_id == "orchestrator-3":
+                return SupervisorStatus(state="failed", instance_id=instance_id, pid=103, error="stale lock")
+            raise AssertionError(f"Unexpected instance_id {instance_id}")
+
+        mock_supervisor.status.side_effect = status_for_instance
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.repo_registry.list_repos",
+            lambda: [SimpleNamespace(path=str(tmp_path), selected_config="multi.yaml")],
+        )
+        monkeypatch.setattr(
+            control_api,
+            "_detect_orchestrator_by_port",
+            lambda *_: pytest.fail("orphan detector should not run for multi-instance reconcile"),
+        )
+
+        def fake_enrich(repo_path: Path, payload: dict[str, object] | None, *, orphaned: bool = False, instance_id: str | None = None):
+            del repo_path
+            del orphaned
+            if payload is None:
+                return None
+            data = dict(payload)
+            if instance_id == "orchestrator-2":
+                data["runtime_health"] = "unresponsive"
+                data["heartbeat_age_seconds"] = 200
+                data["port"] = 19102
+                return data
+            data["runtime_health"] = "healthy"
+            return data
+
+        monkeypatch.setattr(control_api, "_enrich_runtime_health", fake_enrich)
+
+        response = supervisor_client.post("/control/orchestrator/reconcile", json={"stop_unresponsive": True})
+
+        assert response.status_code == 200
+        data = response.json()
+        assert str(tmp_path) in data["reconciled_stale_locks"]
+        assert str(tmp_path) in data["stopped_unresponsive"]
+        assert data["orphaned_detected"] == []
+        assert data["unresponsive_detected"] == [{
+            "repo_root": str(tmp_path),
+            "instance_id": "orchestrator-2",
+            "heartbeat_age_seconds": 200,
+            "pid": 102,
+            "port": 19102,
+        }]
+        mock_supervisor.stop.assert_any_call(tmp_path, force=False, instance_id="orchestrator-3")
+        mock_supervisor.stop_by_port.assert_any_call(19102, force=False)
 
 
 class TestSupervisorStart:
