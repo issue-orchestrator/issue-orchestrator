@@ -107,23 +107,8 @@ labels:
 
 ## Review Decision Policy (Strict)
 
-Use a hardline merge bar. Do not soften medium-or-higher concerns into approval.
-
-- **Only nits may remain unaddressed at merge time.**
-- If a comment identifies correctness, reliability, safety, architecture, contract, test coverage, observability, or maintainability risk, it is not a nit.
-- Concerns marked "verify", "worth checking", or "might be an issue" require confirmation before approval.
-- If unsure whether something is a nit, treat it as non-nit until proven otherwise.
-
-### Allowed Outcomes
-
-- **Approve**: all non-nit concerns are resolved in code, or conclusively disproven with evidence.
-- **Request changes**: any non-nit concern remains unresolved, unverified, or deferred.
-
-### Not Allowed
-
-- "Approve with comments" when comments include unresolved non-nits.
-- Approving while asking for follow-up on medium/high-risk items.
-- Downgrading meaningful concerns to "minor" to avoid blocking.
+Review decision criteria are maintained in `.claude/skills/review-workflow/SKILL.md` (canonical source).
+Use that section for nit vs non-nit examples and strict approve/request-changes rules.
 
 ## Orchestrator Methods
 
