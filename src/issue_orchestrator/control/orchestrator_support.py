@@ -725,28 +725,29 @@ def _select_hot_issue_numbers(state: "OrchestratorState", limit: int) -> list[in
 
     hot_issue_numbers: list[int] = []
     seen: set[int] = set()
-
-    def _add(number: int) -> None:
-        if number in seen:
-            return
-        seen.add(number)
-        hot_issue_numbers.append(number)
-
-    for session in state.active_sessions:
-        _add(session.issue.number)
-    for review in state.pending_reviews:
-        _add(review.issue_number)
-    for rework in state.pending_reworks:
-        if rework.issue_number is not None:
-            _add(rework.issue_number)
-    for issue_number in state.priority_queue:
-        _add(issue_number)
-    for issue in state.cached_queue_issues:
-        _add(issue.number)
+    for issue_number in _iter_hot_issue_numbers(state):
+        if issue_number in seen:
+            continue
+        seen.add(issue_number)
+        hot_issue_numbers.append(issue_number)
         if len(hot_issue_numbers) >= limit:
             break
 
-    return hot_issue_numbers[:limit]
+    return hot_issue_numbers
+
+
+def _iter_hot_issue_numbers(state: "OrchestratorState"):
+    for session in state.active_sessions:
+        yield session.issue.number
+    for review in state.pending_reviews:
+        yield review.issue_number
+    for rework in state.pending_reworks:
+        if rework.issue_number is not None:
+            yield rework.issue_number
+    for issue_number in state.priority_queue:
+        yield issue_number
+    for issue in state.cached_queue_issues:
+        yield issue.number
 
 
 def _process_inflight_ids(required_stable_ids: set[str] | None, all_issues: list["Issue"], inflight_stable_ids: dict[str, float]) -> None:
