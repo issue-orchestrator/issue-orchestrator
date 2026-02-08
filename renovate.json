@@ -2,7 +2,7 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
   "labels": ["dependencies"],
-  "enabledManagers": ["github-actions", "npm", "pep621", "uv"],
+  "enabledManagers": ["github-actions", "npm", "pep621"],
   "prConcurrentLimit": 5,
   "lockFileMaintenance": {
     "enabled": true
