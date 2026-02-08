@@ -188,6 +188,7 @@ class TestSessionControllerTerminated:
 
         assert decision.status == SessionStatus.BLOCKED
         assert decision.completion_processed
+        assert decision.blocked_reason == "Waiting for API"
 
     def test_terminated_with_needs_human_record_is_needs_human(self):
         """Session that exits with needs_human outcome = NEEDS_HUMAN."""
@@ -316,6 +317,7 @@ class TestSessionControllerTimeout:
         assert decision.status == SessionStatus.BLOCKED
         assert decision.completion_processed
         assert decision.recovered_from_timeout
+        assert decision.blocked_reason == "External dependency"
 
 
 class TestSessionControllerReviewOutcomes:

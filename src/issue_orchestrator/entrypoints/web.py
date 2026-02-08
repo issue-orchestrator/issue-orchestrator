@@ -222,6 +222,25 @@ _event_subscribers: set[asyncio.Queue] = set()
 # Main event loop reference for thread-safe event broadcasting
 # Set at startup so worker threads can schedule SSE broadcasts
 _main_loop: asyncio.AbstractEventLoop | None = None
+_NOISY_TIMELINE_EVENTS = frozenset({"issue.labels_changed"})
+_TIMELINE_ARTIFACT_PATH_TYPES = frozenset({
+    "completion_record",
+    "run_dir",
+    "validation",
+    "worktree",
+})
+_TIMELINE_START_EVENTS = frozenset({"session.started", "review.started", "rework.started"})
+_TIMELINE_FAILURE_EVENTS = frozenset({
+    "issue.blocked",
+    "issue.needs_human",
+    "issue.pr_rejected",
+    "session.blocked",
+    "session.failed",
+    "session.timeout",
+    "session.validation_failed",
+    "review.changes_requested",
+    "review.escalated",
+})
 
 
 async def broadcast_event(event_type: str, data: dict | None = None) -> None:
@@ -1246,7 +1265,9 @@ async def get_issue_timeline(issue_number: int) -> JSONResponse:
     reader = _orchestrator.deps.timeline_reader
     stream = reader.read(issue_number, limit=2000)
     payload = stream.to_dict()
-    events = payload.get("events", [])
+    events = _filter_timeline_events(payload.get("events", []))
+    events = _decorate_timeline_events(events, issue_number)
+    payload["events"] = events
     payload["phase_toc"] = _build_phase_toc(events)
     payload["loops"] = _build_timeline_loops(events)
     return JSONResponse(payload)
@@ -1261,7 +1282,8 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
     reader = _orchestrator.deps.timeline_reader
     stream = reader.read(issue_number, limit=2000)
     timeline = stream.to_dict()
-    events = timeline.get("events", [])
+    events = _filter_timeline_events(timeline.get("events", []))
+    events = _decorate_timeline_events(events, issue_number)
     phase_toc = _build_phase_toc(events)
     loops = _build_timeline_loops(events)
     title = _issue_title_for(issue_number)
@@ -1326,6 +1348,130 @@ def _build_timeline_loops(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     if current is not None:
         loops.append(current)
     return loops
+
+
+def _latest_history_entries(session_history: list[Any], limit: int = 50) -> list[Any]:
+    """Return most recent history entries, deduplicated by issue number."""
+    latest: list[Any] = []
+    seen_issue_numbers: set[int] = set()
+    for entry in reversed(session_history):
+        issue_number = int(entry.issue_number)
+        if issue_number in seen_issue_numbers:
+            continue
+        seen_issue_numbers.add(issue_number)
+        latest.append(entry)
+        if len(latest) >= limit:
+            break
+    return latest
+
+
+def _filter_timeline_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop high-volume low-signal events from timeline payloads."""
+    return [
+        event
+        for event in events
+        if str(event.get("event")) not in _NOISY_TIMELINE_EVENTS
+    ]
+
+
+def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -> list[dict[str, Any]]:
+    decorated: list[dict[str, Any]] = []
+    for event in events:
+        event_with_actions = dict(event)
+        event_with_actions["actions"] = _timeline_event_actions(event, issue_number)
+        decorated.append(event_with_actions)
+    return decorated
+
+
+def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    event_name = str(event.get("event") or "")
+
+    def _add_action(action: dict[str, Any], dedupe_value: str) -> None:
+        action_type = str(action.get("type") or "")
+        key = (action_type, dedupe_value)
+        if key in seen:
+            return
+        seen.add(key)
+        actions.append(action)
+
+    # Event-type recommendations first to make common actions obvious.
+    if event_name in _TIMELINE_START_EVENTS:
+        _add_action(
+            {"type": "open_agent_log", "label": "View Agent UI Log", "issue_number": issue_number},
+            f"agent:{issue_number}",
+        )
+        _add_action(
+            {"type": "view_claude_log", "label": "View Claude Log", "issue_number": issue_number},
+            f"claude:{issue_number}",
+        )
+    if event_name.startswith("validation."):
+        _add_action(
+            {"type": "open_orchestrator_log", "label": "View Orchestrator Log", "issue_number": issue_number},
+            f"orchestrator:{issue_number}",
+        )
+    if event_name in _TIMELINE_FAILURE_EVENTS:
+        _add_action(
+            {
+                "type": "open_session_diagnostics",
+                "label": "Diagnostics…",
+                "issue_number": issue_number,
+            },
+            f"diagnostics:{issue_number}",
+        )
+
+    for artifact in event.get("artifacts", []):
+        if not isinstance(artifact, dict):
+            continue
+        artifact_type = str(artifact.get("type") or "")
+        label = str(artifact.get("label") or artifact_type or "Artifact")
+        value = str(artifact.get("value") or "")
+        if not value:
+            continue
+        if value.startswith("http://") or value.startswith("https://"):
+            _add_action(
+                {"type": "open_url", "label": f"Open {label} ↗", "url": value},
+                value,
+            )
+            continue
+        if artifact_type in _TIMELINE_ARTIFACT_PATH_TYPES:
+            _add_action(
+                {"type": "open_path", "label": f"Open {label}", "path": value},
+                value,
+            )
+
+    run_dir = event.get("run_dir")
+    if isinstance(run_dir, str) and run_dir:
+        _add_action(
+            {"type": "open_path", "label": "Open Run Dir", "path": run_dir},
+            run_dir,
+        )
+
+    # Structured quick actions for session debugging.
+    _add_action(
+        {"type": "open_agent_log", "label": "View Agent UI Log", "issue_number": issue_number},
+        f"agent:{issue_number}",
+    )
+    _add_action(
+        {"type": "view_claude_log", "label": "View Claude Log", "issue_number": issue_number},
+        f"claude:{issue_number}",
+    )
+    _add_action(
+        {"type": "open_orchestrator_log", "label": "View Orchestrator Log", "issue_number": issue_number},
+        f"orchestrator:{issue_number}",
+    )
+
+    # Always offer diagnostics drilldown from any timeline event.
+    _add_action(
+        {
+            "type": "open_session_diagnostics",
+            "label": "Diagnostics…",
+            "issue_number": issue_number,
+        },
+        f"diagnostics:{issue_number}",
+    )
+    return actions
 
 
 def _issue_title_for(issue_number: int) -> str:
@@ -1828,7 +1974,7 @@ async def get_history() -> JSONResponse:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     entries = []
-    for entry in reversed(_orchestrator.state.session_history):
+    for entry in _latest_history_entries(_orchestrator.state.session_history):
         entries.append({
             "issue_number": entry.issue_number,
             "title": entry.title,

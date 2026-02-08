@@ -27,6 +27,125 @@ class DialogSection:
         }
 
 
+@dataclass(frozen=True)
+class SessionDiagnosticsContext:
+    issue_number: int
+    session_name: str
+    started_at: str
+    run_id: str
+    backend: str
+    agent_label: str
+    claude_session_id: str
+    worktree: str
+    retention_tier: str
+    retention_expires_at: str
+    retention_pinned: str
+    run_dir: str
+    claude_log_path: str
+    claude_log_dir: str
+    orchestrator_log: str
+    diagnostic_path: str
+    validation_path: str
+
+    @classmethod
+    def from_payload(
+        cls,
+        issue_number: int,
+        manifest_payload: dict[str, Any],
+    ) -> "SessionDiagnosticsContext":
+        manifest = manifest_payload.get("manifest") or {}
+        worktree = str(manifest.get("worktree") or "")
+        session_name = str(manifest.get("session_name") or manifest_payload.get("session_name") or "")
+        diagnostic_path = _join_worktree_path(worktree, manifest.get("diagnostic_path"))
+        validation_path = _join_worktree_path(worktree, manifest.get("validation_record_path"))
+        return cls(
+            issue_number=issue_number,
+            session_name=session_name,
+            started_at=str(manifest.get("started_at") or ""),
+            run_id=str(manifest.get("run_id") or ""),
+            backend=str(manifest.get("backend") or ""),
+            agent_label=str(manifest.get("agent_label") or ""),
+            claude_session_id=str(manifest.get("claude_session_id") or ""),
+            worktree=worktree,
+            retention_tier=str(manifest.get("retention_tier") or ""),
+            retention_expires_at=str(manifest.get("retention_expires_at") or ""),
+            retention_pinned=str(manifest.get("retention_pinned") if "retention_pinned" in manifest else ""),
+            run_dir=str(manifest.get("run_dir") or manifest_payload.get("run_dir") or ""),
+            claude_log_path=str(manifest.get("claude_log_path") or ""),
+            claude_log_dir=str(manifest.get("claude_log_dir") or ""),
+            orchestrator_log=str(manifest.get("orchestrator_log") or ""),
+            diagnostic_path=diagnostic_path,
+            validation_path=validation_path,
+        )
+
+
+def _join_worktree_path(worktree: str, rel_path: Any) -> str:
+    """Join worktree + manifest-relative path when both are present."""
+    if not worktree:
+        return ""
+    rel_value = str(rel_path or "")
+    if not rel_value:
+        return ""
+    return f"{worktree}/{rel_value}"
+
+
+def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[DialogRow]:
+    return [
+        DialogRow("Session", ctx.session_name or "-"),
+        DialogRow("Started", ctx.started_at or "-"),
+        DialogRow("Run ID", ctx.run_id or "-"),
+        DialogRow("Backend", ctx.backend or "-"),
+        DialogRow("Agent", ctx.agent_label or "-"),
+        DialogRow("Claude Session", ctx.claude_session_id or "-"),
+        DialogRow("Retention Tier", ctx.retention_tier or "-"),
+        DialogRow("Retention Expires", ctx.retention_expires_at or "-"),
+        DialogRow("Retention Pinned", ctx.retention_pinned or "-"),
+        DialogRow("Worktree", ctx.worktree or "-"),
+    ]
+
+
+def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    if ctx.run_dir:
+        actions.append({"type": "open_path", "label": "Open Session Dir", "path": ctx.run_dir})
+
+    actions.append({"type": "open_agent_log", "label": "View Session Log", "issue_number": ctx.issue_number})
+
+    if ctx.claude_log_path:
+        actions.append({"type": "view_claude_log", "label": "View Claude Log", "issue_number": ctx.issue_number})
+        actions.append({
+            "type": "open_path",
+            "label": "Open Claude Log File",
+            "path": ctx.claude_log_path,
+        })
+    if ctx.claude_log_dir:
+        actions.append({
+            "type": "open_path",
+            "label": "Open Claude Log Dir",
+            "path": ctx.claude_log_dir,
+        })
+
+    actions.append({"type": "open_orchestrator_log", "label": "Open Orchestrator Log", "issue_number": ctx.issue_number})
+
+    if ctx.orchestrator_log:
+        actions.append({
+            "type": "open_path",
+            "label": "Open Full Log",
+            "path": ctx.orchestrator_log,
+        })
+
+    if ctx.diagnostic_path:
+        actions.append({"type": "open_path", "label": "Open Diagnostic", "path": ctx.diagnostic_path})
+
+    if ctx.validation_path:
+        actions.append({
+            "type": "open_path",
+            "label": "Open Validation",
+            "path": ctx.validation_path,
+        })
+    return actions
+
+
 def build_info_dialog(info: dict[str, Any]) -> dict[str, Any]:
     rows = [
         DialogRow("Version", info.get("version") or "dev"),
@@ -123,60 +242,9 @@ def build_session_diagnostics_dialog(
     issue_number: int,
     manifest_payload: dict[str, Any],
 ) -> dict[str, Any]:
-    manifest = manifest_payload.get("manifest") or {}
-    worktree = manifest.get("worktree") or ""
-    run_dir = manifest.get("run_dir") or manifest_payload.get("run_dir") or ""
-    diagnostic_rel = manifest.get("diagnostic_path") or ""
-    diagnostic_path = f"{worktree}/{diagnostic_rel}" if worktree and diagnostic_rel else ""
-
-    rows = [
-        DialogRow("Session", str(manifest.get("session_name") or manifest_payload.get("session_name") or "-")),
-        DialogRow("Started", str(manifest.get("started_at") or "-")),
-        DialogRow("Run ID", str(manifest.get("run_id") or "-")),
-        DialogRow("Backend", str(manifest.get("backend") or "-")),
-        DialogRow("Agent", str(manifest.get("agent_label") or "-")),
-        DialogRow("Claude Session", str(manifest.get("claude_session_id") or "-")),
-        DialogRow("Worktree", worktree or "-"),
-    ]
-
-    actions: list[dict[str, Any]] = []
-    if run_dir:
-        actions.append({"type": "open_path", "label": "Open Session Dir", "path": run_dir})
-
-    actions.append({"type": "open_agent_log", "label": "View Session Log", "issue_number": issue_number})
-
-    if manifest.get("claude_log_path"):
-        actions.append({"type": "view_claude_log", "label": "View Claude Log", "issue_number": issue_number})
-        actions.append({
-            "type": "open_path",
-            "label": "Open Claude Log File",
-            "path": manifest.get("claude_log_path"),
-        })
-    if manifest.get("claude_log_dir"):
-        actions.append({
-            "type": "open_path",
-            "label": "Open Claude Log Dir",
-            "path": manifest.get("claude_log_dir"),
-        })
-
-    actions.append({"type": "open_orchestrator_log", "label": "Open Orchestrator Log", "issue_number": issue_number})
-
-    if manifest.get("orchestrator_log"):
-        actions.append({
-            "type": "open_path",
-            "label": "Open Full Log",
-            "path": manifest.get("orchestrator_log"),
-        })
-
-    if diagnostic_path:
-        actions.append({"type": "open_path", "label": "Open Diagnostic", "path": diagnostic_path})
-
-    if manifest.get("validation_record_path") and worktree:
-        actions.append({
-            "type": "open_path",
-            "label": "Open Validation",
-            "path": f"{worktree}/{manifest.get('validation_record_path')}",
-        })
+    ctx = SessionDiagnosticsContext.from_payload(issue_number, manifest_payload)
+    rows = _build_session_diagnostics_rows(ctx)
+    actions = _build_session_diagnostics_actions(ctx)
 
     return {
         "title": f"Session Diagnostics #{issue_number}",

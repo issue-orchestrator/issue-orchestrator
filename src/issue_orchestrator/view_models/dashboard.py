@@ -447,7 +447,14 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
     }
     history_items: list[dict[str, Any]] = []
     blocked_items: list[dict[str, Any]] = []
-    for entry in reversed(state.session_history[-50:]):
+    seen_issue_numbers: set[int] = set()
+    for entry in reversed(state.session_history):
+        # Show only the most recent history entry per issue.
+        if entry.issue_number in seen_issue_numbers:
+            continue
+        seen_issue_numbers.add(entry.issue_number)
+        if len(seen_issue_numbers) > 50:
+            break
         url = entry.pr_url if entry.pr_url else issue_url_for(config, entry.issue_number)
         action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
         status_reason = getattr(entry, "status_reason", None) or status_labels.get(entry.status, entry.status)

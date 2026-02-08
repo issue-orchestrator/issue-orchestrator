@@ -158,6 +158,9 @@ class SessionOutput(Protocol):
         claude_log_dir: str | None = None,
         orchestrator_log: str | None = None,
         completion_path: str | None = None,
+        retention_tier: str = "hot",
+        retention_days: int = 7,
+        retention_pinned: bool = False,
     ) -> SessionRun:
         """Create a new run directory and initial manifest.
 
@@ -170,6 +173,9 @@ class SessionOutput(Protocol):
             claude_log_dir: Path to Claude log directory
             orchestrator_log: Path to orchestrator log
             completion_path: Path where completion.json will be written
+            retention_tier: Retention tier label persisted in manifest
+            retention_days: Retention window in days (0 = expires immediately)
+            retention_pinned: Whether this run is pinned from retention cleanup
 
         Returns:
             SessionRun with paths to the new run directory

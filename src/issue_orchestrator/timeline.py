@@ -35,6 +35,8 @@ class TimelineEvent:
     summary: str | None
     parent_key: str
     artifacts: list[TimelineArtifact]
+    run_id: str | None = None
+    run_dir: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,6 +50,8 @@ class TimelineEvent:
             "level": self.level,
             "summary": self.summary,
             "parent_key": self.parent_key,
+            "run_id": self.run_id,
+            "run_dir": self.run_dir,
             "artifacts": [a.to_dict() for a in self.artifacts],
         }
 
@@ -90,6 +94,8 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
     level = _level_for_event(event_name)
     summary = _summary_from_data(data)
     parent_key = _parent_key(issue_number, data)
+    run_id = _run_id_from_data(data)
+    run_dir = _run_dir_from_data(data)
     artifacts = _artifacts_from_data(data)
     return TimelineEvent(
         event_id=record.event_id,
@@ -102,6 +108,8 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         level=level,
         summary=summary,
         parent_key=parent_key,
+        run_id=run_id,
+        run_dir=run_dir,
         artifacts=artifacts,
     )
 
@@ -235,6 +243,9 @@ def _artifacts_from_data(data: dict[str, Any]) -> list[TimelineArtifact]:
     pr_url = data.get("pr_url")
     if isinstance(pr_url, str) and pr_url:
         artifacts.append(TimelineArtifact("pull_request", "PR", pr_url))
+    comment_url = data.get("comment_url")
+    if isinstance(comment_url, str) and comment_url:
+        artifacts.append(TimelineArtifact("review_comment", "Review Comment", comment_url))
     completion_path = data.get("completion_path_absolute")
     if isinstance(completion_path, str) and completion_path:
         artifacts.append(TimelineArtifact("completion_record", "Completion", completion_path))
@@ -244,4 +255,21 @@ def _artifacts_from_data(data: dict[str, Any]) -> list[TimelineArtifact]:
     validation_path = data.get("validation_record_path")
     if isinstance(validation_path, str) and validation_path:
         artifacts.append(TimelineArtifact("validation", "Validation", validation_path))
+    run_dir = _run_dir_from_data(data)
+    if isinstance(run_dir, str) and run_dir:
+        artifacts.append(TimelineArtifact("run_dir", "Run Dir", run_dir))
     return artifacts
+
+
+def _run_id_from_data(data: dict[str, Any]) -> str | None:
+    run_id = data.get("run_id")
+    if isinstance(run_id, str) and run_id:
+        return run_id
+    return None
+
+
+def _run_dir_from_data(data: dict[str, Any]) -> str | None:
+    run_dir = data.get("run_dir")
+    if isinstance(run_dir, str) and run_dir:
+        return run_dir
+    return None

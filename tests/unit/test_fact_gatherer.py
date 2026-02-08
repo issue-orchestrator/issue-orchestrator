@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, Mock, call
 from pathlib import Path
 
 from issue_orchestrator.control.fact_gatherer import FactGatherer
+from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import (
     Issue,
@@ -19,6 +20,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.ports import PRInfo
+from issue_orchestrator.ports.event_sink import InMemoryEventSink
 
 
 @pytest.fixture
@@ -137,6 +139,37 @@ class TestFactGathererCreateSnapshot:
         snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
 
         assert snapshot.paused is True
+
+
+class TestFactGathererEvents:
+    """Tests for fetch-time event emission."""
+
+    def test_fetch_issues_emits_issues_fetched_without_label_churn(self, mock_config, mock_repository_host):
+        mock_config.agents = {"agent:web": MagicMock()}
+        mock_repository_host.list_issues.return_value = [
+            Issue(number=1, title="Issue 1", labels=["agent:web"]),
+        ]
+        events = InMemoryEventSink()
+        gatherer = FactGatherer(config=mock_config, repository_host=mock_repository_host, events=events)
+
+        gatherer.fetch_issues(labels_for_agent=[], milestone=None)
+
+        assert events.has_event(EventName.ISSUES_FETCHED.value)
+        assert not events.has_event(EventName.ISSUE_LABELS_CHANGED.value)
+
+    def test_fetch_issues_repeated_cycles_do_not_emit_label_churn(self, mock_config, mock_repository_host):
+        mock_config.agents = {"agent:web": MagicMock()}
+        mock_repository_host.list_issues.return_value = [
+            Issue(number=1, title="Issue 1", labels=["agent:web"]),
+        ]
+        events = InMemoryEventSink()
+        gatherer = FactGatherer(config=mock_config, repository_host=mock_repository_host, events=events)
+
+        gatherer.fetch_issues(labels_for_agent=[], milestone=None)
+        gatherer.fetch_issues(labels_for_agent=[], milestone=None)
+
+        assert len(events.get_events(EventName.ISSUES_FETCHED.value)) == 2
+        assert len(events.get_events(EventName.ISSUE_LABELS_CHANGED.value)) == 0
 
     def test_create_snapshot_max_issues_to_start(
         self, fact_gatherer, sample_state, sample_issues, mock_config

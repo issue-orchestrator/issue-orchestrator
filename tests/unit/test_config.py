@@ -816,6 +816,8 @@ observability:
   session_no_output_tail_lines: 25
   session_no_output_max_bytes: 5000
   session_no_output_repeat_seconds: 300
+  session_output_retention_days: 14
+  session_output_retention_tier: cold
 
 repo:
   github:
@@ -842,6 +844,8 @@ agents:
         assert config.session_no_output_tail_lines == 25
         assert config.session_no_output_max_bytes == 5000
         assert config.session_no_output_repeat_seconds == 300
+        assert config.session_output_retention_days == 14
+        assert config.session_output_retention_tier == "cold"
         assert config.gh_write_verify_timeout_seconds == 30
         assert config.gh_write_verify_initial_delay_ms == 300
         assert config.gh_write_verify_max_delay_ms == 2500
@@ -867,6 +871,25 @@ agents:
         config = Config.load(config_file)
 
         assert config.filtering.max_to_start == 5
+
+    def test_session_output_retention_tier_invalid_fails(self, tmp_path):
+        """Invalid observability.session_output_retention_tier should fail load."""
+        config_content = """
+observability:
+  session_output_retention_tier: warm
+
+worktrees:
+  base: /tmp
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        with pytest.raises(ValueError, match="session_output_retention_tier"):
+            Config.load(config_file)
 
     def test_queue_refresh_seconds_zero_disables_auto_refresh(self, tmp_path):
         """Test that queue_refresh_seconds=0 means manual refresh only."""

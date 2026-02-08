@@ -195,6 +195,42 @@ def test_view_model_history_routing():
     assert 11 in blocked_numbers
 
 
+def test_view_model_history_dedupes_latest_per_issue():
+    config = _make_config()
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=10,
+                title="Failed First",
+                agent_type="agent:web",
+                status="failed",
+                runtime_minutes=12,
+            ),
+            SessionHistoryEntry(
+                issue_number=10,
+                title="Blocked Latest",
+                agent_type="agent:web",
+                status="blocked",
+                runtime_minutes=3,
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="history",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    combined = view_model.history_items + view_model.blocked_items
+    assert len([item for item in combined if item["issue_number"] == 10]) == 1
+    assert any(item["status"] == "blocked" for item in combined if item["issue_number"] == 10)
+
+
 def test_view_model_e2e_items_from_provider():
     config = _make_config()
     config.e2e.enabled = True

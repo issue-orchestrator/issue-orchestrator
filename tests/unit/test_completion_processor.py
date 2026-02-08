@@ -937,7 +937,7 @@ class TestCompletionProcessorGitActions:
         mock_git_adapter.push.assert_called_once_with(worktree, skip_hooks=False)
 
     def test_push_failure_is_recorded(
-        self, processor, mock_git_adapter, worktree_with_completion
+        self, processor, mock_git_adapter, mock_pr_adapter, worktree_with_completion
     ):
         """Failed push should be recorded in result."""
         mock_git_adapter.push.return_value = PushResult(
@@ -957,6 +957,10 @@ class TestCompletionProcessorGitActions:
 
         assert not result.success
         assert any("Push failed" in err for err in result.errors)
+        mock_pr_adapter.add_comment.assert_called_once()
+        comment = mock_pr_adapter.add_comment.call_args[0][1]
+        assert "Orchestrator Processing Failed" in comment
+        assert "Push failed" in comment
 
     def test_push_non_fast_forward_retries_after_rebase(
         self, processor, mock_git_adapter, worktree_with_completion
@@ -1015,7 +1019,7 @@ class TestCompletionProcessorValidation:
         assert not result.success
 
     def test_protected_branch_push_rejected(
-        self, processor, mock_git_adapter, worktree_with_completion
+        self, processor, mock_git_adapter, mock_pr_adapter, worktree_with_completion
     ):
         """Push to main branch should be rejected."""
         mock_git_adapter.get_current_branch.return_value = "main"
@@ -1031,6 +1035,10 @@ class TestCompletionProcessorValidation:
         assert not result.success
         assert "protected branch" in result.message.lower()
         mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.add_comment.assert_called_once()
+        comment = mock_pr_adapter.add_comment.call_args[0][1]
+        assert "Orchestrator Processing Failed" in comment
+        assert "protected branch" in comment.lower()
 
 
 class TestCompletionProcessorEvents:
@@ -1247,7 +1255,13 @@ class TestCompletionProcessorPublishGate:
         mock_label_adapter.add_label.assert_called_once()
 
     def test_validation_failed_label_added_on_gate_failure(
-        self, processor_with_gate, mock_publish_gate, mock_label_adapter, mock_git_adapter, worktree_with_completion
+        self,
+        processor_with_gate,
+        mock_publish_gate,
+        mock_label_adapter,
+        mock_git_adapter,
+        mock_pr_adapter,
+        worktree_with_completion,
     ):
         """When validation fails, the validation-failed label should be added to the issue."""
         from issue_orchestrator.control.validation import PublishGateResult
@@ -1273,6 +1287,10 @@ class TestCompletionProcessorPublishGate:
 
         # validation-failed label must be added
         mock_label_adapter.add_label.assert_called_once_with(123, "validation-failed")
+        mock_pr_adapter.add_comment.assert_called_once()
+        comment = mock_pr_adapter.add_comment.call_args[0][1]
+        assert "Validation Failed" in comment
+        assert "Validation failed: tests failed" in comment
 
     def test_validation_failure_captured_in_session_output(
         self, processor_with_gate, mock_publish_gate, tmp_path

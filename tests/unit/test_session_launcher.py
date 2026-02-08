@@ -1780,6 +1780,62 @@ class TestHandleSessionCompletion:
         assert len(state.discovered_reviews) == 1
         assert state.discovered_reviews[0].pr_number == 456
 
+    def test_passes_blocked_reason_to_completion_handler(self, sample_agent_config, tmp_path):
+        """Verify blocked_reason is forwarded to completion handler."""
+        issue = Issue(number=123, title="Test", labels=["agent:web"])
+        issue_key = FakeIssueKey("123")
+        session = Session(
+            key=SessionKey(issue=issue_key, task=TaskKind.CODE),
+            issue=issue,
+            agent_config=sample_agent_config,
+            terminal_id="issue-123",
+            worktree_path=tmp_path / "worktree",
+            branch_name="123-feature",
+        )
+
+        state = OrchestratorState()
+        state.active_sessions = [session]
+
+        mock_completion_handler = MagicMock()
+        mock_completion_handler.process_completion.return_value = MagicMock(
+            actions=[],
+            history_entry=SessionHistoryEntry(
+                issue_number=123,
+                title="Test",
+                agent_type="agent:web",
+                status="blocked",
+                runtime_minutes=10,
+            ),
+            should_defer_cleanup=False,
+            pending_cleanup=None,
+            should_queue_review=False,
+            pr_url=None,
+            pr_number=None,
+        )
+        mock_action_applier = MagicMock()
+        mock_observer = MagicMock()
+        config = MagicMock()
+        config.cleanup.without_triage.close_ai_session_tabs = True
+        config.code_review_agent = None
+
+        handle_session_completion(
+            session=session,
+            status=SessionStatus.BLOCKED,
+            state=state,
+            completion_handler=mock_completion_handler,
+            action_applier=mock_action_applier,
+            observer=mock_observer,
+            worktree_manager=None,
+            kill_session_fn=lambda x: None,
+            config=config,
+            session_output=MagicMock(spec=SessionOutput),
+            blocked_reason="Waiting for external API",
+        )
+
+        mock_completion_handler.process_completion.assert_called_once()
+        kwargs = mock_completion_handler.process_completion.call_args.kwargs
+        assert kwargs["blocked_reason"] == "Waiting for external API"
+
 
 # =============================================================================
 # Environment Isolation Tests

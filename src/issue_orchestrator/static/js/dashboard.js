@@ -313,21 +313,108 @@ async function openSessionManifest(issueNumber) {
         return;
     }
 
-    let html = '<div class="info-grid">';
-    for (const row of data.rows || []) {
-        html += `<div class="info-row"><span class="info-label">${escapeHtml(row.label)}</span><span class="info-value">${escapeHtml(String(row.value))}</span></div>`;
-    }
+    const rows = data.rows || [];
+    const actions = data.actions || [];
+    const rowByLabel = new Map(rows.map(row => [String(row.label || '').toLowerCase(), String(row.value || '')]));
+    const worktree = rowByLabel.get('worktree') || '';
+
+    const hasWorktree = worktree && worktree !== '-';
+    const hasDiagnostic = actions.some(action => action.type === 'open_path' && (action.label || '').toLowerCase().includes('diagnostic'));
+    const hasValidation = actions.some(action => action.type === 'open_path' && (action.label || '').toLowerCase().includes('validation'));
+
+    const chips = [
+        `<span class="diag-chip ${hasWorktree ? 'is-ok' : 'is-muted'}">${hasWorktree ? 'Worktree Present' : 'Worktree Unavailable'}</span>`,
+        `<span class="diag-chip ${hasDiagnostic ? 'is-ok' : 'is-muted'}">${hasDiagnostic ? 'Diagnostic Available' : 'No Diagnostic Yet'}</span>`,
+        `<span class="diag-chip ${hasValidation ? 'is-ok' : 'is-muted'}">${hasValidation ? 'Validation Captured' : 'No Validation Artifact'}</span>`,
+    ].join('');
+
+    const overviewKeys = new Set([
+        'session',
+        'started',
+        'run id',
+        'backend',
+        'agent',
+        'claude session',
+        'retention tier',
+        'retention expires',
+        'retention pinned',
+    ]);
+    const overviewRows = rows.filter(row => overviewKeys.has(String(row.label || '').toLowerCase()));
+    const pathRows = rows.filter(row => !overviewKeys.has(String(row.label || '').toLowerCase()));
+
+    const pathActions = actions.filter(action => action.type === 'open_path');
+    const logActions = actions.filter(action => action.type !== 'open_path');
+    const hasActions = pathActions.length > 0 || logActions.length > 0;
+
+    let html = '<div class="diag-modal">';
+    html += '<div class="diag-header">';
+    html += `<div class="diag-header-title">Issue #${issueNumber} Diagnostics</div>`;
+    html += `<div class="diag-chip-row">${chips}</div>`;
     html += '</div>';
 
-    if (data.actions && data.actions.length > 0) {
-        html += '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;">';
-        for (const action of data.actions) {
-            html += renderDialogAction(action);
+    html += '<div class="diag-grid">';
+    html += '<section class="diag-section">';
+    html += '<div class="diag-section-title">Session Overview</div>';
+    html += renderDialogRows(overviewRows);
+    html += '</section>';
+    html += '<section class="diag-section">';
+    html += '<div class="diag-section-title">Paths</div>';
+    html += renderDialogRows(pathRows, { monospace: true });
+    html += '</section>';
+    html += '</div>';
+
+    if (hasActions) {
+        html += '<div class="diag-actions">';
+        if (pathActions.length > 0) {
+            html += '<section class="diag-section">';
+            html += '<div class="diag-section-title">Artifacts</div>';
+            html += '<div class="diag-action-group">';
+            for (const action of pathActions) {
+                html += renderDialogAction(action);
+            }
+            html += '</div></section>';
+        }
+        if (logActions.length > 0) {
+            html += '<section class="diag-section">';
+            html += '<div class="diag-section-title">Logs & Tools</div>';
+            html += '<div class="diag-action-group">';
+            for (const action of logActions) {
+                html += renderDialogAction(action);
+            }
+            html += '</div></section>';
+        }
+        html += '</div>';
+    } else {
+        html += '<div class="diag-empty">No diagnostic actions available for this run.</div>';
+    }
+
+    html += '<div class="diag-footnote">Tip: this view is for deep troubleshooting and artifact access.</div>';
+    html += '</div>';
+
+    openModal(data.title || `Session Diagnostics #${issueNumber}`, html);
+}
+
+function renderDialogRows(rows, options = {}) {
+    const useMonospace = !!options.monospace;
+    if (!rows || rows.length === 0) {
+        return '<div class="diag-empty">No data available.</div>';
+    }
+    let html = '<div class="diag-rows">';
+    for (const row of rows) {
+        const label = escapeHtml(String(row.label || ''));
+        const rawValue = String(row.value || '-');
+        const value = escapeHtml(rawValue);
+        html += '<div class="diag-row">';
+        html += `<span class="diag-row-label">${label}</span>`;
+        if (useMonospace) {
+            html += `<code class="diag-row-value is-monospace">${value}</code>`;
+        } else {
+            html += `<span class="diag-row-value">${value}</span>`;
         }
         html += '</div>';
     }
-
-    openModal(data.title || `Session Diagnostics #${issueNumber}`, html);
+    html += '</div>';
+    return html;
 }
 
 function renderDialogAction(action) {
@@ -1624,12 +1711,14 @@ function renderTimeline(container, events, phaseToc = [], loops = []) {
             const summary = evt.summary ? `<div class="timeline-summary">${escapeHtml(evt.summary)}</div>` : '';
             const time = evt.timestamp ? `<div class="timeline-time">${formatTimestamp(evt.timestamp)}</div>` : '';
             const artifacts = renderTimelineArtifacts(evt.artifacts || []);
+            const actions = renderTimelineEventActions(evt.actions || []);
             return `
                 <div class="timeline-event ${evt.status || ''}">
                     <div class="timeline-event-header">
                         <span class="timeline-step">${escapeHtml(stepLabel)}</span>
                         <span class="timeline-status">${formatStatus(evt.status)}</span>
                     </div>
+                    ${actions}
                     ${time}
                     ${summary}
                     ${artifacts}
@@ -1644,12 +1733,23 @@ function renderTimeline(container, events, phaseToc = [], loops = []) {
         `;
     }).join('');
 
-    container.innerHTML = `${tocHtml}${loopHtml}<div class=\"timeline-continuum\">${continuumHtml}</div>`;
+    const affordanceHint = '<div class="timeline-actions-hint">Use the ⋯ button on any event for actions and diagnostics.</div>';
+    container.innerHTML = `${tocHtml}${loopHtml}${affordanceHint}<div class=\"timeline-continuum\">${continuumHtml}</div>`;
     if (!container.dataset.timelineBound) {
         container.addEventListener('click', (event) => {
             const target = event.target.closest('.timeline-artifact');
             if (target && target.dataset.path) {
                 openPath(target.dataset.path);
+            }
+            const actionTarget = event.target.closest('.timeline-action-btn');
+            if (actionTarget && actionTarget.dataset.action) {
+                try {
+                    const action = JSON.parse(actionTarget.dataset.action);
+                    runTimelineEventAction(action);
+                } catch (err) {
+                    console.error('Failed to parse timeline action:', err);
+                    showToast('Unable to execute timeline action', 'error');
+                }
             }
         });
         container.dataset.timelineBound = 'true';
@@ -1667,6 +1767,56 @@ function renderTimelineArtifacts(artifacts) {
         return `<button class="timeline-artifact" type="button" data-path="${escapeAttr(value)}">${label}</button>`;
     }).join('');
     return `<div class="timeline-artifacts">${items}</div>`;
+}
+
+function renderTimelineEventActions(actions) {
+    if (!actions || actions.length === 0) return '';
+    let diagnosticsDividerInserted = false;
+    const items = actions.map(action => {
+        let prefix = '';
+        if (!diagnosticsDividerInserted && action.type === 'open_session_diagnostics') {
+            prefix = '<div class="timeline-action-divider" role="separator" aria-hidden="true"></div>';
+            diagnosticsDividerInserted = true;
+        }
+        const payload = escapeAttr(JSON.stringify(action));
+        const label = escapeHtml(action.label || 'Action');
+        return `${prefix}<button type="button" class="timeline-action-btn" data-action="${payload}">${label}</button>`;
+    }).join('');
+    return `
+        <details class="timeline-event-menu">
+            <summary class="timeline-event-menu-trigger" title="Open actions menu" aria-label="Open actions menu">⋯</summary>
+            <div class="timeline-event-menu-items">${items}</div>
+        </details>
+    `;
+}
+
+function runTimelineEventAction(action) {
+    if (!action || !action.type) return;
+    if (action.type === 'open_path' && action.path) {
+        openPath(action.path);
+        return;
+    }
+    if (action.type === 'open_url' && action.url) {
+        window.open(action.url, '_blank', 'noopener,noreferrer');
+        return;
+    }
+    if (action.type === 'open_agent_log' && action.issue_number) {
+        openAgentLog(action.issue_number);
+        return;
+    }
+    if (action.type === 'view_claude_log' && action.issue_number) {
+        viewClaudeLog(action.issue_number);
+        return;
+    }
+    if (action.type === 'open_orchestrator_log' && action.issue_number) {
+        openFilteredOrchestratorLog(action.issue_number);
+        return;
+    }
+    if (action.type === 'open_session_diagnostics' && action.issue_number) {
+        openSessionManifest(action.issue_number);
+        return;
+    }
+    showToast(`Unsupported timeline action: ${action.type}`, 'error');
 }
 
 function formatPhaseLabel(phase) {

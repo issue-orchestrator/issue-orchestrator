@@ -224,6 +224,7 @@ class CompletionHandler:
         diagnostic_path: Optional[str] = None,
         review_exchange_completed: bool = False,
         blocked_label: Optional[str] = None,
+        blocked_reason: Optional[str] = None,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
@@ -307,6 +308,7 @@ class CompletionHandler:
             session, status, processing_errors=processing_errors,
             diagnostic_path=diagnostic_path,
             blocked_label=blocked_label,
+            blocked_reason=blocked_reason,
         ))
         if review_exchange_completed and pr_url:
             completion_actions.append(AddLabelAction(
@@ -942,17 +944,31 @@ class CompletionHandler:
         session: Session,
         expected: ExpectedState,
         blocked_label: Optional[str] = None,
+        blocked_reason: Optional[str] = None,
     ) -> list[Action]:
         """Generate actions when agent explicitly reported blocked."""
         is_issue_session = session.terminal_id.startswith("issue-")
         label = blocked_label or labels.BLOCKED
 
         if is_issue_session:
+            reason_text = blocked_reason.strip() if blocked_reason else "No reason provided."
             return [
                 AddLabelAction(
                     issue_number=session.issue.number,
                     label=label,
                     reason="Agent reported issue as blocked",
+                    expected=expected,
+                ),
+                AddCommentAction(
+                    number=session.issue.number,
+                    comment=f"🚧 **Session Blocked**\n\n"
+                            f"The agent reported this issue as blocked.\n\n"
+                            f"**Reason:** {reason_text}\n"
+                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                            f"- Session: `{session.terminal_id}`\n\n"
+                            f"This issue has been marked as `{label}` and will not be automatically retried.\n"
+                            f"Remove the label to allow reprocessing.",
+                    reason="Notify about blocked session and reason",
                     expected=expected,
                 ),
                 RemoveLabelAction(
@@ -971,6 +987,7 @@ class CompletionHandler:
         processing_errors: Optional[list[str]] = None,
         diagnostic_path: Optional[str] = None,
         blocked_label: Optional[str] = None,
+        blocked_reason: Optional[str] = None,
     ) -> tuple[Action, ...]:
         """Generate label/comment actions for session completion.
 
@@ -1012,7 +1029,12 @@ class CompletionHandler:
             return tuple(self._generate_failure_actions(session, expected))
 
         if status == SessionStatus.BLOCKED:
-            return tuple(self._generate_blocked_actions(session, expected, blocked_label=blocked_label))
+            return tuple(self._generate_blocked_actions(
+                session,
+                expected,
+                blocked_label=blocked_label,
+                blocked_reason=blocked_reason,
+            ))
 
         if status == SessionStatus.COMPLETED:
             # POLICY: Completion → release in-progress (claim maintained via pr-pending)

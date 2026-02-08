@@ -98,7 +98,7 @@ class FactGatherer:
             if still_needed and issue.key.stable_id() in still_needed:
                 still_needed.discard(issue.key.stable_id())
 
-        if self.events:
+        if self.events is not None:
             self._emit_issues_fetched_events(issues, agent_label, labels, milestone_name)
 
     def _emit_issues_fetched_events(self, issues: list["Issue"], agent_label: str, labels: list[str], milestone_name: str | None) -> None:
@@ -107,11 +107,6 @@ class FactGatherer:
             "agent": agent_label, "labels": labels, "milestone": milestone_name,
             "count": len(issues), "issue_numbers": [i.number for i in issues],
         }))
-        for issue in issues:
-            self.events.publish(TraceEvent(EventName.ISSUE_LABELS_CHANGED, {
-                "issue_number": issue.number, "issue_key": issue.key.stable_id(),
-                "labels": list(issue.labels), "state": issue.state,
-            }))
 
     def _apply_issue_filter(self, all_issues: list["Issue"]) -> list["Issue"]:
         """Apply exclusion filter to issues."""

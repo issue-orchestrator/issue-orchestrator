@@ -13,7 +13,7 @@ import logging
 import re
 import shutil
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +83,9 @@ class FileSystemSessionOutput:
         claude_log_dir: str | None = None,
         orchestrator_log: str | None = None,
         completion_path: str | None = None,
+        retention_tier: str = "hot",
+        retention_days: int = 7,
+        retention_pinned: bool = False,
     ) -> SessionRun:
         """Create a new run directory and initial manifest."""
         run_id = self._run_timestamp()
@@ -97,6 +100,10 @@ class FileSystemSessionOutput:
         log_path = run_dir / SESSION_LOG_NAME
         manifest_path = run_dir / MANIFEST_NAME
         started_at = datetime.now(timezone.utc).isoformat()
+        retention_window_days = max(0, retention_days)
+        retention_expires_at = (
+            datetime.now(timezone.utc) + timedelta(days=retention_window_days)
+        ).isoformat()
 
         manifest = {
             "session_name": session_name,
@@ -112,6 +119,10 @@ class FileSystemSessionOutput:
             "orchestrator_log": orchestrator_log,
             "completion_path": completion_path,
             "diagnostic_path": None,
+            "retention_tier": retention_tier,
+            "retention_days": retention_window_days,
+            "retention_expires_at": retention_expires_at,
+            "retention_pinned": retention_pinned,
         }
         self._write_json(manifest_path, manifest)
 

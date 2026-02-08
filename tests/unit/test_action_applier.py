@@ -1,5 +1,6 @@
 """Unit tests for ActionApplier."""
 
+import logging
 import pytest
 from unittest.mock import MagicMock, Mock
 from pathlib import Path
@@ -21,12 +22,14 @@ from issue_orchestrator.control.actions import (
 )
 from issue_orchestrator.control.session_manager import SessionType
 from issue_orchestrator.domain.models import Issue, Session, AgentConfig
+from issue_orchestrator.events import EventName
 
 
 @pytest.fixture
 def mock_labels():
     """Create a mock LabelSet."""
     labels = MagicMock()
+    labels.has_label.return_value = False
     return labels
 
 
@@ -112,12 +115,23 @@ class TestAddLabelAction:
         assert not result.success
         assert "API error" in result.error
 
+    def test_add_label_noop_when_already_present(self, applier, mock_labels):
+        """Skip add_label mutation when label is already present."""
+        mock_labels.has_label.return_value = True
+        action = AddLabelAction(issue_number=123, label="in-progress")
+
+        result = applier.apply(action)
+
+        assert result.result_type == ActionResultType.SKIPPED
+        mock_labels.add_label.assert_not_called()
+
 
 class TestRemoveLabelAction:
     """Tests for REMOVE_LABEL action."""
 
     def test_remove_label_success(self, applier, mock_labels):
         """Test successful label removal."""
+        mock_labels.has_label.return_value = True
         action = RemoveLabelAction(issue_number=123, label="in-progress")
 
         result = applier.apply(action)
@@ -127,6 +141,7 @@ class TestRemoveLabelAction:
 
     def test_remove_label_failure(self, applier, mock_labels):
         """Test label removal failure."""
+        mock_labels.has_label.return_value = True
         mock_labels.remove_label.side_effect = Exception("API error")
         action = RemoveLabelAction(issue_number=123, label="in-progress")
 
@@ -134,6 +149,16 @@ class TestRemoveLabelAction:
 
         assert not result.success
         assert "API error" in result.error
+
+    def test_remove_label_noop_when_already_absent(self, applier, mock_labels):
+        """Skip remove_label mutation when label is already absent."""
+        mock_labels.has_label.return_value = False
+        action = RemoveLabelAction(issue_number=123, label="in-progress")
+
+        result = applier.apply(action)
+
+        assert result.result_type == ActionResultType.SKIPPED
+        mock_labels.remove_label.assert_not_called()
 
 
 class TestSyncLabelsAction:
@@ -166,6 +191,28 @@ class TestSyncLabelsAction:
 
         assert not result.success
         assert "remove ready" in result.error
+
+    def test_sync_labels_contributes_to_mutation_summary(self, applier):
+        """SYNC_LABELS should increment add/remove counters in batch summary."""
+        action = SyncLabelsAction(
+            issue_number=123,
+            add_labels=("in-progress",),
+            remove_labels=("ready",),
+        )
+
+        applier.apply_all([action])
+
+        summary_events = [
+            call.args[0]
+            for call in applier.events.publish.call_args_list
+            if getattr(call.args[0], "name", None) == str(EventName.LABEL_MUTATION_SUMMARY)
+        ]
+        assert len(summary_events) == 1
+        payload = summary_events[0].data
+        assert payload["label_add_attempted"] == 1
+        assert payload["label_remove_attempted"] == 1
+        assert payload["label_mutation_applied"] == 2
+        assert payload["label_mutation_failed"] == 0
 
 
 class TestLaunchSessionAction:
@@ -492,6 +539,56 @@ class TestApplyAll:
         assert results[0].success
         assert not results[1].success
         assert results[2].success
+
+    def test_apply_all_emits_label_mutation_summary(self, applier, mock_labels, caplog):
+        """Emit summary event/log with attempted/applied/noop/failed mutation counters."""
+        # add #1 => no-op, remove #2 => no-op, add #3 => failure, remove #4 => applied
+        mock_labels.has_label.side_effect = [True, False, False, True]
+        mock_labels.add_label.side_effect = Exception("boom")
+        actions = [
+            AddLabelAction(issue_number=1, label="already-present"),
+            RemoveLabelAction(issue_number=1, label="already-absent"),
+            AddLabelAction(issue_number=2, label="fails"),
+            RemoveLabelAction(issue_number=2, label="removed"),
+        ]
+
+        with caplog.at_level(logging.INFO):
+            applier.apply_all(actions)
+
+        summary_events = [
+            call.args[0]
+            for call in applier.events.publish.call_args_list
+            if getattr(call.args[0], "name", None) == str(EventName.LABEL_MUTATION_SUMMARY)
+        ]
+        assert len(summary_events) == 1
+        payload = summary_events[0].data
+        assert payload["label_add_attempted"] == 2
+        assert payload["label_remove_attempted"] == 2
+        assert payload["label_mutation_attempted"] == 4
+        assert payload["label_mutation_applied"] == 1
+        assert payload["label_mutation_noop"] == 2
+        assert payload["label_mutation_failed"] == 1
+        assert payload["noop_ratio"] == 0.5
+        assert payload["failure_ratio"] == 0.25
+        assert len(payload["per_issue"]) == 2
+
+        assert any(
+            "label_mutations attempted=4 applied=1 noop=2 failed=1" in message
+            for message in caplog.messages
+        )
+
+    def test_apply_all_skips_label_mutation_summary_when_no_label_actions(self, applier):
+        """Avoid summary event noise when batch does no label mutations."""
+        actions = [StopSessionAction(session_type=SessionType.ISSUE, number=99)]
+
+        applier.apply_all(actions)
+
+        summary_events = [
+            call.args[0]
+            for call in applier.events.publish.call_args_list
+            if getattr(call.args[0], "name", None) == str(EventName.LABEL_MUTATION_SUMMARY)
+        ]
+        assert summary_events == []
 
 
 class TestReconciliation:

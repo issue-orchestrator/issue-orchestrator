@@ -65,6 +65,8 @@ class TestWorktreeContextCreate:
         config.worktree_base = None
         config.worktree_base_branch_override = None
         config.session_output_retention_runs = 5
+        config.session_output_retention_days = 7
+        config.session_output_retention_tier = "hot"
         config.terminal_adapter = "subprocess"
         return config
 

@@ -189,6 +189,9 @@ class WorktreeContext:
             backend=config.terminal_adapter or "subprocess",
             claude_log_dir=str(claude_project_dir),
             orchestrator_log=str(get_repo_log_path(config.repo_root)),
+            retention_tier=config.session_output_retention_tier,
+            retention_days=config.session_output_retention_days,
+            retention_pinned=False,
         )
 
         return cls(

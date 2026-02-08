@@ -307,3 +307,24 @@ class TestReviewExchangeSummary:
         assert (
             session_output.load_review_exchange_summary(worktree, session_name) is None
         )
+
+
+class TestRunRetentionMetadata:
+    """Tests for retention metadata persisted in run manifests."""
+
+    def test_start_run_writes_retention_metadata(self, tmp_path):
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(
+            tmp_path,
+            "issue-123",
+            issue_number=123,
+            retention_tier="cold",
+            retention_days=14,
+            retention_pinned=True,
+        )
+
+        manifest = json.loads((run.run_dir / MANIFEST_NAME).read_text())
+        assert manifest["retention_tier"] == "cold"
+        assert manifest["retention_days"] == 14
+        assert manifest["retention_pinned"] is True
+        assert "retention_expires_at" in manifest

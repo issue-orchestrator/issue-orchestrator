@@ -26,7 +26,7 @@ Usage:
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Optional, Sequence
 
@@ -75,6 +75,45 @@ LeaseIdLookup = Callable[[int], str | None]
 
 
 @dataclass
+class _LabelMutationStats:
+    """Per-batch label mutation counters for churn observability."""
+
+    label_add_attempted: int = 0
+    label_add_applied: int = 0
+    label_add_noop: int = 0
+    label_remove_attempted: int = 0
+    label_remove_applied: int = 0
+    label_remove_noop: int = 0
+    label_mutation_failed: int = 0
+
+    @property
+    def attempted(self) -> int:
+        return self.label_add_attempted + self.label_remove_attempted
+
+    @property
+    def applied(self) -> int:
+        return self.label_add_applied + self.label_remove_applied
+
+    @property
+    def noop(self) -> int:
+        return self.label_add_noop + self.label_remove_noop
+
+    def to_payload(self) -> dict[str, int]:
+        return {
+            "label_add_attempted": self.label_add_attempted,
+            "label_add_applied": self.label_add_applied,
+            "label_add_noop": self.label_add_noop,
+            "label_remove_attempted": self.label_remove_attempted,
+            "label_remove_applied": self.label_remove_applied,
+            "label_remove_noop": self.label_remove_noop,
+            "label_mutation_attempted": self.attempted,
+            "label_mutation_applied": self.applied,
+            "label_mutation_noop": self.noop,
+            "label_mutation_failed": self.label_mutation_failed,
+        }
+
+
+@dataclass
 class ActionApplier:
     """Applies actions via ports/adapters.
 
@@ -106,6 +145,12 @@ class ActionApplier:
     # Used by async completion processing to mark jobs as WORKTREE_GONE
     # Returns the number of jobs marked as worktree_gone
     on_worktree_removed: Optional[Callable[[str], int]] = None
+    _active_label_mutation_stats: _LabelMutationStats | None = field(
+        default=None, init=False, repr=False
+    )
+    _active_label_mutation_by_issue: dict[int, _LabelMutationStats] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def apply(self, action: Action) -> ActionResult:
         """Apply a single action.
@@ -142,7 +187,14 @@ class ActionApplier:
         Returns:
             List of ActionResults
         """
-        return [self.apply(action) for action in actions]
+        self._active_label_mutation_stats = _LabelMutationStats()
+        self._active_label_mutation_by_issue = {}
+        try:
+            return [self.apply(action) for action in actions]
+        finally:
+            self._emit_label_mutation_summary()
+            self._active_label_mutation_stats = None
+            self._active_label_mutation_by_issue = {}
 
     def _dispatch(self, action: Action) -> ActionResult:
         """Dispatch an action to the appropriate handler."""
@@ -184,7 +236,17 @@ class ActionApplier:
         self._verify_claim_before_write(action, action.issue_number)
 
         try:
+            self._record_label_stat(action.issue_number, "label_add_attempted")
+            has_label = self._has_label_safely(action.issue_number, action.label)
+            if has_label is True:
+                self._record_label_stat(action.issue_number, "label_add_noop")
+                logger.debug(
+                    issue_log(action.issue_number, "No-op add_label (already present): %s"),
+                    action.label,
+                )
+                return ActionResult.skip(action, f"Label already present: {action.label}")
             self.labels.add_label(action.issue_number, action.label)
+            self._record_label_stat(action.issue_number, "label_add_applied")
             logger.info(issue_log(action.issue_number, "Label added: %s"), action.label)
             self._emit_issue_labels_changed(action.issue_number, [action.label], [])
             return ActionResult.ok(
@@ -193,6 +255,7 @@ class ActionApplier:
                 label=action.label,
             )
         except Exception as e:
+            self._record_label_stat(action.issue_number, "label_mutation_failed")
             logger.error(issue_log(action.issue_number, "Failed to add label %s: %s"), action.label, e)
             return ActionResult.fail(action, str(e))
 
@@ -206,7 +269,17 @@ class ActionApplier:
         self._verify_claim_before_write(action, action.issue_number)
 
         try:
+            self._record_label_stat(action.issue_number, "label_remove_attempted")
+            has_label = self._has_label_safely(action.issue_number, action.label)
+            if has_label is False:
+                self._record_label_stat(action.issue_number, "label_remove_noop")
+                logger.debug(
+                    issue_log(action.issue_number, "No-op remove_label (already absent): %s"),
+                    action.label,
+                )
+                return ActionResult.skip(action, f"Label already absent: {action.label}")
             self.labels.remove_label(action.issue_number, action.label)
+            self._record_label_stat(action.issue_number, "label_remove_applied")
             logger.info(issue_log(action.issue_number, "Label removed: %s"), action.label)
             self._emit_issue_labels_changed(action.issue_number, [], [action.label])
             return ActionResult.ok(
@@ -215,6 +288,7 @@ class ActionApplier:
                 label=action.label,
             )
         except Exception as e:
+            self._record_label_stat(action.issue_number, "label_mutation_failed")
             logger.error(issue_log(action.issue_number, "Failed to remove label %s: %s"), action.label, e)
             return ActionResult.fail(action, str(e))
 
@@ -229,8 +303,19 @@ class ActionApplier:
         self._verify_claim_before_write(action, action.number)
 
         try:
-            self.repository_host.add_comment(action.number, action.comment)
+            comment_url = self.repository_host.add_comment(action.number, action.comment)
             logger.info(issue_log(action.number, "Comment added (%d chars)"), len(action.comment))
+            # Emit review comment event for PR-targeted comments.
+            if action.is_pr:
+                self.events.publish(TraceEvent(
+                    EventName.REVIEW_COMMENT_ADDED,
+                    {
+                        "issue_number": action.number,
+                        "pr_number": action.number,
+                        "comment_url": comment_url,
+                        "summary": "Posted review comment",
+                    },
+                ))
             return ActionResult.ok(
                 action,
                 number=action.number,
@@ -333,6 +418,18 @@ class ActionApplier:
             operation=action.action_type.value,
         )
 
+    def _has_label_safely(self, issue_number: int, label: str) -> bool | None:
+        """Best-effort label presence check for no-op mutation guards."""
+        try:
+            return bool(self.labels.has_label(issue_number, label))
+        except Exception as e:
+            logger.debug(
+                issue_log(issue_number, "Unable to check label presence for %s: %s"),
+                label,
+                e,
+            )
+            return None
+
     def _check_reconciliation_for_sync(
         self,
         issue_number: int,
@@ -420,16 +517,22 @@ class ActionApplier:
 
         # Add labels
         for label in action.add_labels:
+            self._record_label_stat(action.issue_number, "label_add_attempted")
             try:
                 self.labels.add_label(action.issue_number, label)
+                self._record_label_stat(action.issue_number, "label_add_applied")
             except Exception as e:
+                self._record_label_stat(action.issue_number, "label_mutation_failed")
                 errors.append(f"add {label}: {e}")
 
         # Remove labels
         for label in action.remove_labels:
+            self._record_label_stat(action.issue_number, "label_remove_attempted")
             try:
                 self.labels.remove_label(action.issue_number, label)
+                self._record_label_stat(action.issue_number, "label_remove_applied")
             except Exception as e:
+                self._record_label_stat(action.issue_number, "label_mutation_failed")
                 errors.append(f"remove {label}: {e}")
 
         if errors:
@@ -571,22 +674,29 @@ class ActionApplier:
         self._verify_claim_before_write(action, action.issue_number)
 
         errors = []
+        comment_url = ""
 
         added_labels: list[str] = []
         removed_labels: list[str] = []
 
         # Add needs-human label
+        self._record_label_stat(action.issue_number, "label_add_attempted")
         try:
             self.labels.add_label(action.pr_number, action.needs_human_label)
+            self._record_label_stat(action.issue_number, "label_add_applied")
             added_labels.append(action.needs_human_label)
         except Exception as e:
+            self._record_label_stat(action.issue_number, "label_mutation_failed")
             errors.append(f"add label: {e}")
 
         # Remove needs-rework label
+        self._record_label_stat(action.issue_number, "label_remove_attempted")
         try:
             self.labels.remove_label(action.pr_number, action.needs_rework_label)
+            self._record_label_stat(action.issue_number, "label_remove_applied")
             removed_labels.append(action.needs_rework_label)
         except Exception as e:
+            self._record_label_stat(action.issue_number, "label_mutation_failed")
             # Not a hard failure - label may already be removed
             logger.debug("Failed to remove needs-rework label: %s", e)
         self._emit_pr_view_changed(
@@ -612,9 +722,10 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
 - Take over the implementation
 """
             try:
-                self.repository_host.add_comment(action.pr_number, comment)
+                comment_url = self.repository_host.add_comment(action.pr_number, comment)
             except Exception as e:
                 errors.append(f"add comment: {e}")
+                comment_url = ""
 
         logger.warning(
             issue_log(action.issue_number, "PR #%d escalated to %s after %d rework cycles"),
@@ -633,6 +744,18 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                 },
             )
         )
+        if comment_url:
+            self.events.publish(
+                TraceEvent(
+                    EventName.REVIEW_COMMENT_ADDED,
+                    {
+                        "issue_number": action.issue_number,
+                        "pr_number": action.pr_number,
+                        "comment_url": comment_url,
+                        "summary": "Posted escalation comment",
+                    },
+                )
+            )
 
         if errors:
             return ActionResult.fail(action, "; ".join(errors))
@@ -687,8 +810,10 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
 
         # Add review label if available
         if self.labels and action.code_review_label and action.pr_number:
+            self._record_label_stat(action.issue_number or action.pr_number, "label_add_attempted")
             try:
                 self.labels.add_label(action.pr_number, action.code_review_label)
+                self._record_label_stat(action.issue_number or action.pr_number, "label_add_applied")
                 logger.info(issue_log(action.issue_number, "Review label '%s' added to PR #%d"), action.code_review_label, action.pr_number)
                 self._emit_pr_view_changed(
                     pr_number=action.pr_number,
@@ -697,6 +822,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                     removed=[],
                 )
             except Exception as e:
+                self._record_label_stat(action.issue_number or action.pr_number, "label_mutation_failed")
                 logger.warning(issue_log(action.issue_number, "Failed to add review label to PR #%d: %s"), action.pr_number, e)
 
         self.events.publish(TraceEvent(EventName.REVIEW_QUEUED, {
@@ -877,3 +1003,46 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             payload["issue_number"] = issue_number
             payload["issue_key"] = str(issue_number)
         self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, payload))
+
+    def _record_label_stat(self, issue_number: int, field_name: str) -> None:
+        """Increment label mutation counters for current apply_all batch."""
+        if self._active_label_mutation_stats is None:
+            return
+
+        setattr(
+            self._active_label_mutation_stats,
+            field_name,
+            getattr(self._active_label_mutation_stats, field_name) + 1,
+        )
+
+        issue_stats = self._active_label_mutation_by_issue.setdefault(
+            issue_number, _LabelMutationStats()
+        )
+        setattr(issue_stats, field_name, getattr(issue_stats, field_name) + 1)
+
+    def _emit_label_mutation_summary(self) -> None:
+        """Emit per-batch label mutation summary event and log line."""
+        stats = self._active_label_mutation_stats
+        if stats is None or stats.attempted == 0:
+            return
+
+        attempted = stats.attempted
+        payload: dict[str, object] = dict(stats.to_payload())
+        payload["noop_ratio"] = stats.noop / attempted
+        payload["failure_ratio"] = stats.label_mutation_failed / attempted
+        payload["per_issue"] = [
+            {"issue_number": issue_number, **issue_stats.to_payload()}
+            for issue_number, issue_stats in sorted(self._active_label_mutation_by_issue.items())
+            if issue_stats.attempted > 0
+        ]
+
+        self.events.publish(TraceEvent(EventName.LABEL_MUTATION_SUMMARY, payload))
+        logger.info(
+            "[LABELS] label_mutations attempted=%d applied=%d noop=%d failed=%d add_attempted=%d remove_attempted=%d",
+            stats.attempted,
+            stats.applied,
+            stats.noop,
+            stats.label_mutation_failed,
+            stats.label_add_attempted,
+            stats.label_remove_attempted,
+        )

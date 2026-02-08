@@ -1087,21 +1087,30 @@ class TestLabelActionGeneration:
     def test_blocked_generates_blocked_label_and_removes_in_progress(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
-        """Blocked session adds blocked label and removes in-progress."""
+        """Blocked session adds blocked label, comments, and removes in-progress."""
         issue = make_issue()
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
 
-        result = handler.process_completion(session, SessionStatus.BLOCKED)
+        result = handler.process_completion(
+            session,
+            SessionStatus.BLOCKED,
+            blocked_reason="Waiting for API access",
+        )
 
-        # BLOCKED adds blocked label and releases in-progress claim
-        assert len(result.actions) == 2
+        # BLOCKED adds blocked label, posts reason, and releases in-progress claim
+        assert len(result.actions) == 3
 
         add_label = result.actions[0]
         assert isinstance(add_label, AddLabelAction)
         assert add_label.label == labels.BLOCKED
 
-        remove_label = result.actions[1]
+        add_comment = result.actions[1]
+        assert isinstance(add_comment, AddCommentAction)
+        assert "Session Blocked" in add_comment.comment
+        assert "Waiting for API access" in add_comment.comment
+
+        remove_label = result.actions[2]
         assert isinstance(remove_label, RemoveLabelAction)
         assert remove_label.label == config.get_label_in_progress()
 
@@ -1208,15 +1217,19 @@ class TestLabelActionGeneration:
 
         result = handler.process_completion(session, SessionStatus.BLOCKED)
 
-        # Should have 2 actions: add blocked label, remove in-progress
-        assert len(result.actions) == 2
+        # Should have 3 actions: add blocked label, comment, remove in-progress
+        assert len(result.actions) == 3
 
         add_label = result.actions[0]
         assert isinstance(add_label, AddLabelAction)
         # Note: blocked label is NOT prefixed (only in-progress is)
         assert add_label.label == labels.BLOCKED
 
-        remove_label = result.actions[1]
+        add_comment = result.actions[1]
+        assert isinstance(add_comment, AddCommentAction)
+        assert f"`{labels.BLOCKED}`" in add_comment.comment
+
+        remove_label = result.actions[2]
         assert isinstance(remove_label, RemoveLabelAction)
         assert remove_label.label == "bot:in-progress"
 
@@ -1303,18 +1316,22 @@ class TestStatusSessionTypeMatrix:
     def test_blocked_issue_session_adds_blocked_removes_in_progress(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
-        """BLOCKED issue session: adds blocked label, removes in-progress."""
+        """BLOCKED issue session: adds blocked label, comments, removes in-progress."""
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="issue-1"
         )
         result = make_handler(config).process_completion(session, SessionStatus.BLOCKED)
 
-        assert len(result.actions) == 2
+        assert len(result.actions) == 3
         add_label = result.actions[0]
         assert isinstance(add_label, AddLabelAction)
         assert add_label.label == labels.BLOCKED
 
-        remove_label = result.actions[1]
+        add_comment = result.actions[1]
+        assert isinstance(add_comment, AddCommentAction)
+        assert "Session Blocked" in add_comment.comment
+
+        remove_label = result.actions[2]
         assert isinstance(remove_label, RemoveLabelAction)
         assert remove_label.label == config.get_label_in_progress()
 
