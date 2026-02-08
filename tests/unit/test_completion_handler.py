@@ -1027,6 +1027,7 @@ class TestLabelActionGeneration:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """Failure (no completion) generates blocked-needs-human label for investigation."""
+        config.retry.interrupted_sessions.enabled = False
         issue = make_issue(number=456)
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
@@ -1463,6 +1464,7 @@ class TestStatusSessionTypeMatrix:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """FAILED issue session: adds blocked-needs-human, comment, removes in-progress."""
+        config.retry.interrupted_sessions.enabled = False
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="issue-1"
         )
@@ -1482,6 +1484,7 @@ class TestStatusSessionTypeMatrix:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """FAILED review session: only adds comment, no labels."""
+        config.retry.interrupted_sessions.enabled = False
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="review-1"
         )
@@ -1496,6 +1499,7 @@ class TestStatusSessionTypeMatrix:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """FAILED rework session: only adds comment, no labels."""
+        config.retry.interrupted_sessions.enabled = False
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="rework-1"
         )
