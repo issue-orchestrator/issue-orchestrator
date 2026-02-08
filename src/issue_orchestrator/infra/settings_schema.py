@@ -176,6 +176,30 @@ class ConcurrencySettings(BaseModel):
             "yaml_path": "ui.fetch_layer.dependency_scan_every_n_refreshes",
         },
     )
+    fetch_layer_visibility_aware_enabled: bool = Field(
+        False,
+        title="Visibility-Aware Refresh",
+        description="Prioritize refresh for issues currently visible in the Flow board",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Requires browser visibility hints from the Flow board.",
+            "section": "Queue",
+            "config_attr": "fetch_layer_visibility_aware_enabled",
+            "yaml_path": "ui.fetch_layer.visibility_aware_enabled",
+        },
+    )
+    fetch_layer_selective_sync_planner_enabled: bool = Field(
+        False,
+        title="Selective Sync Planner",
+        description="Enable cross-entity selective sync planning for queue refresh cycles",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Use with telemetry to tune freshness versus API cost.",
+            "section": "Queue",
+            "config_attr": "fetch_layer_selective_sync_planner_enabled",
+            "yaml_path": "ui.fetch_layer.selective_sync_planner_enabled",
+        },
+    )
     default_priority_tier: int = Field(
         1,
         title="Default Priority Tier",

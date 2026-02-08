@@ -232,6 +232,34 @@ def test_pr_pending_issue_not_shown_in_queued_flow_column():
     assert any(item["issue_number"] == 4072 for item in awaiting_merge_group["items"])
 
 
+def test_view_model_includes_refresh_staleness_meta():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+    config.queue_refresh_seconds = 300
+    queued_issue = Issue(number=22, title="Queued", labels=["agent:web"])
+
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[queued_issue],
+        issue_refresh_timestamps={22: datetime.now().timestamp() - 1200},
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queue_item = view_model.queue_items[0]
+    assert queue_item["refresh_age_label"]
+    assert queue_item["refresh_age_seconds"] is not None
+    assert queue_item["is_stale"] is True
+
+
 def test_view_model_history_routing():
     config = _make_config()
     state = OrchestratorState(

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import time
 from typing import Any, Callable
 
 from ..domain.session_key import TaskKind
@@ -141,6 +142,8 @@ class DashboardViewModel:
                 "attentionPriority": str(self.scope_summary.get("flow_attention_priority", "strict")),
             }),
             "githubUsage": github_usage,
+            "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
+            "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -316,8 +319,6 @@ def _attach_refresh_meta(items: list[dict[str, Any]], state, config, now_ts: flo
         if not isinstance(issue_number, int):
             continue
         item.update(_refresh_meta_for_issue(state, config, issue_number, now_ts))
-
-
 def _pending_issue_numbers(state) -> dict[str, set[int]]:
     pending_review_numbers = {r.issue_number for r in state.pending_reviews} | {
         r.issue_number for r in state.discovered_reviews
@@ -398,6 +399,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int]) -
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            **_refresh_meta(state, config, session.issue.number),
         })
 
     return items, seen_issues
@@ -541,6 +543,7 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": status_reason if entry.status != "completed" else None,
+            **_refresh_meta(state, config, entry.issue_number),
         }
         if entry.status in ("blocked", "needs_human"):
             blocked_items.append(item)
@@ -722,6 +725,8 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
         "is_stale": bool(item.get("is_stale", False)),
         "stale_reason": item.get("stale_reason", ""),
         "last_refreshed_age_seconds": item.get("last_refreshed_age_seconds", -1),
+        "refresh_age_label": item.get("last_refreshed_label", item.get("refresh_age_label", "unknown")),
+        "refresh_age_seconds": item.get("last_refreshed_age_seconds", item.get("refresh_age_seconds")),
     }
 
 
@@ -748,6 +753,7 @@ def _build_backlog_items(state, config) -> list[dict[str, Any]]:
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
+            **_refresh_meta(state, config, issue.number),
         })
     return cards
 
@@ -1151,6 +1157,8 @@ def build_dashboard_view_model(
         "maxHotIssuesPerCycle": config.fetch_layer_max_hot_issues_per_cycle if config else 40,
         "prScanEveryNRefreshes": config.fetch_layer_pr_scan_every_n_refreshes if config else 2,
         "dependencyScanEveryNRefreshes": config.fetch_layer_dependency_scan_every_n_refreshes if config else 1,
+        "visibilityAwareEnabled": config.fetch_layer_visibility_aware_enabled if config else False,
+        "selectiveSyncPlannerEnabled": config.fetch_layer_selective_sync_planner_enabled if config else False,
     }
     if config:
         milestones = config.get_filter_milestones()
