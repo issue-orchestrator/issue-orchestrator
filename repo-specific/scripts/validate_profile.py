@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Profile validate target execution and report bottlenecks."""
+"""Profile validate bottlenecks using isolated cold runs."""
 
 from __future__ import annotations
 
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -31,6 +33,7 @@ class CommandResult:
     command: list[str]
     wall_seconds: float
     exit_code: int
+    worktree_path: str | None = None
 
 
 def detect_jobs() -> int:
@@ -40,19 +43,33 @@ def detect_jobs() -> int:
     return cpu_count
 
 
-def run_command(name: str, command: list[str], dry_run: bool) -> CommandResult:
-    print(f"[profile] {name}: {' '.join(command)}")
+def run_command(
+    name: str,
+    command: list[str],
+    dry_run: bool,
+    cwd: Path | None = None,
+    worktree_path: str | None = None,
+) -> CommandResult:
+    cwd_info = f" (cwd={cwd})" if cwd is not None else ""
+    print(f"[profile] {name}: {' '.join(command)}{cwd_info}")
     if dry_run:
-        return CommandResult(name=name, command=command, wall_seconds=0.0, exit_code=0)
+        return CommandResult(
+            name=name,
+            command=command,
+            wall_seconds=0.0,
+            exit_code=0,
+            worktree_path=worktree_path,
+        )
 
     start = time.monotonic()
-    completed = subprocess.run(command, check=False)
+    completed = subprocess.run(command, check=False, cwd=cwd)
     wall = time.monotonic() - start
     return CommandResult(
         name=name,
         command=command,
         wall_seconds=wall,
         exit_code=completed.returncode,
+        worktree_path=worktree_path,
     )
 
 
@@ -118,6 +135,12 @@ def parse_args() -> argparse.Namespace:
             "If omitted, targets are discovered from _validate-impl."
         ),
     )
+    parser.add_argument(
+        "--repo-root",
+        type=Path,
+        default=Path(__file__).resolve().parents[2],
+        help="Repository root (default: inferred from this script location)",
+    )
     return parser.parse_args()
 
 
@@ -126,33 +149,27 @@ def default_output_path() -> Path:
     return Path(".issue-orchestrator/diagnostics") / f"validate-profile-{ts}.json"
 
 
-def fail_on_nonzero(results: list[CommandResult]) -> int:
-    for result in results:
-        if result.exit_code != 0:
+def collect_failures(results: list[CommandResult]) -> list[CommandResult]:
+    failed = [result for result in results if result.exit_code != 0]
+    if failed:
+        print("[profile] failed command(s):", file=sys.stderr)
+        for result in failed:
             print(
-                f"[profile] command failed: {result.name} (exit={result.exit_code})",
+                f"  - {result.name} (exit={result.exit_code})",
                 file=sys.stderr,
             )
-            return result.exit_code
-    return 0
+    return failed
 
 
 def emit_summary(
     target_results: list[CommandResult],
-    parallel_results: list[CommandResult],
-    include_vscode: bool,
+    validate_raw_result: CommandResult,
     jobs: int,
 ) -> dict[str, object]:
     serial_total = sum(result.wall_seconds for result in target_results)
-    observed_parallel_total = sum(result.wall_seconds for result in parallel_results)
-    max_parallel_target = max((result.wall_seconds for result in target_results), default=0.0)
-    vs_time = 0.0
-    if include_vscode and target_results:
-        for result in target_results:
-            if result.name.endswith("test-vscode"):
-                vs_time = result.wall_seconds
-                break
-    estimated_critical_path = max_parallel_target + vs_time
+    cold_parallel_total = validate_raw_result.wall_seconds
+    max_target = max((result.wall_seconds for result in target_results), default=0.0)
+    bottleneck_gap = cold_parallel_total - max_target
 
     sorted_targets = sorted(target_results, key=lambda r: r.wall_seconds, reverse=True)
     top_targets = sorted_targets[:3]
@@ -160,12 +177,10 @@ def emit_summary(
     summary = {
         "timestamp_utc": datetime.now(tz=UTC).isoformat(),
         "jobs": jobs,
-        "serial_target_sum_seconds": serial_total,
-        "observed_parallel_seconds": observed_parallel_total,
-        "estimated_critical_path_seconds": estimated_critical_path,
-        "parallel_speedup_vs_serial": (
-            (serial_total / observed_parallel_total) if observed_parallel_total > 0 else None
-        ),
+        "cold_validate_raw_seconds": cold_parallel_total,
+        "cold_target_sum_seconds": serial_total,
+        "cold_slowest_target_seconds": max_target,
+        "cold_validate_minus_slowest_target_seconds": bottleneck_gap,
         "top_targets": [asdict(result) for result in top_targets],
     }
 
@@ -173,20 +188,81 @@ def emit_summary(
     print("Validate Profile Summary")
     print("------------------------")
     print(f"jobs: {jobs}")
-    print(f"serial target sum: {serial_total:.2f}s")
-    print(f"observed parallel total: {observed_parallel_total:.2f}s")
-    print(f"estimated critical path: {estimated_critical_path:.2f}s")
-    if summary["parallel_speedup_vs_serial"] is not None:
-        print(f"speedup vs serial: {summary['parallel_speedup_vs_serial']:.2f}x")
+    print(f"cold validate-raw: {cold_parallel_total:.2f}s")
+    print(f"cold target sum: {serial_total:.2f}s")
+    print(f"cold slowest target: {max_target:.2f}s")
+    print(f"validate-raw minus slowest target: {bottleneck_gap:.2f}s")
     print("top targets:")
     for result in top_targets:
         print(f"  - {result.name}: {result.wall_seconds:.2f}s")
     return summary
 
 
+def ensure_worktree_runtime(base_repo: Path, worktree: Path, include_vscode: bool, dry_run: bool) -> None:
+    """Make the isolated worktree runnable without measuring setup time."""
+    if dry_run:
+        return
+
+    base_venv = base_repo / ".venv"
+    wt_venv = worktree / ".venv"
+    if base_venv.exists() and not wt_venv.exists():
+        wt_venv.symlink_to(base_venv)
+
+    if include_vscode:
+        base_nm = base_repo / "packages" / "vscode" / "node_modules"
+        wt_nm = worktree / "packages" / "vscode" / "node_modules"
+        if base_nm.exists() and not wt_nm.exists():
+            wt_nm.symlink_to(base_nm)
+
+
+def run_in_isolated_worktree(
+    repo_root: Path,
+    make_bin: str,
+    name: str,
+    make_target: str,
+    dry_run: bool,
+    jobs: int | None = None,
+    include_vscode: bool = False,
+) -> CommandResult:
+    tmp_dir = Path(tempfile.mkdtemp(prefix="io-validate-profile-"))
+    worktree = tmp_dir / "wt"
+    try:
+        add_cmd = ["git", "-C", str(repo_root), "worktree", "add", "--detach", str(worktree), "HEAD"]
+        _ = run_command(
+            name=f"{name}:worktree-add",
+            command=add_cmd,
+            dry_run=dry_run,
+        )
+        ensure_worktree_runtime(repo_root, worktree, include_vscode=include_vscode, dry_run=dry_run)
+
+        make_cmd = [make_bin]
+        if jobs is not None:
+            make_cmd.append(f"-j{jobs}")
+        # output-sync is useful for parallel aggregate runs; unnecessary for single-target runs.
+        if jobs is not None:
+            make_cmd.append("--output-sync=target")
+        make_cmd.append(make_target)
+        return run_command(
+            name=name,
+            command=make_cmd,
+            dry_run=dry_run,
+            cwd=worktree,
+            worktree_path=str(worktree),
+        )
+    finally:
+        _ = run_command(
+            name=f"{name}:worktree-remove",
+            command=["git", "-C", str(repo_root), "worktree", "remove", "--force", str(worktree)],
+            dry_run=dry_run,
+        )
+        if not dry_run:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def main() -> int:
     args = parse_args()
     make_bin = args.make_bin
+    repo_root = args.repo_root.resolve()
     include_vscode = not args.no_vscode
     output_path = args.output or default_output_path()
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -195,55 +271,47 @@ def main() -> int:
         target_list = [target.strip() for target in args.targets.split(",") if target.strip()]
     else:
         target_list = discover_validate_targets(make_bin)
-    if include_vscode:
+    if include_vscode and "test-vscode" not in target_list:
         target_list.append("test-vscode")
 
     target_results: list[CommandResult] = []
     for target in target_list:
         target_results.append(
-            run_command(
+            run_in_isolated_worktree(
+                repo_root=repo_root,
+                make_bin=make_bin,
                 name=f"target:{target}",
-                command=[make_bin, "--output-sync=target", target],
+                make_target=target,
                 dry_run=args.dry_run,
+                include_vscode=include_vscode,
             ),
         )
 
-    parallel_results: list[CommandResult] = []
-    parallel_results.append(
-        run_command(
-            name="parallel:_validate-impl",
-            command=[
-                make_bin,
-                f"-j{args.jobs}",
-                "--output-sync=target",
-                "_validate-impl",
-            ],
-            dry_run=args.dry_run,
-        ),
+    validate_raw_result = run_in_isolated_worktree(
+        repo_root=repo_root,
+        make_bin=make_bin,
+        name="parallel:validate-raw",
+        make_target="validate-raw",
+        dry_run=args.dry_run,
+        jobs=args.jobs,
+        include_vscode=include_vscode,
     )
-    if include_vscode:
-        parallel_results.append(
-            run_command(
-                name="parallel:test-vscode",
-                command=[make_bin, "--output-sync=target", "test-vscode"],
-                dry_run=args.dry_run,
-            ),
-        )
 
     payload = {
         "config": {
             "make_bin": make_bin,
+            "repo_root": str(repo_root),
             "jobs": args.jobs,
             "include_vscode": include_vscode,
             "dry_run": args.dry_run,
             "targets": target_list,
+            "method": "isolated_cold_worktree",
         },
         "target_runs": [asdict(result) for result in target_results],
-        "parallel_runs": [asdict(result) for result in parallel_results],
+        "validate_raw_run": asdict(validate_raw_result),
         "summary": emit_summary(
             target_results=target_results,
-            parallel_results=parallel_results,
-            include_vscode=include_vscode,
+            validate_raw_result=validate_raw_result,
             jobs=args.jobs,
         ),
     }
@@ -251,10 +319,11 @@ def main() -> int:
     output_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     print(f"report: {output_path}")
 
-    exit_code = fail_on_nonzero(target_results)
-    if exit_code != 0:
-        return exit_code
-    return fail_on_nonzero(parallel_results)
+    failures = collect_failures(target_results + [validate_raw_result])
+    if failures:
+        # Return the first failing code for shell compatibility.
+        return failures[0].exit_code
+    return 0
 
 
 if __name__ == "__main__":
