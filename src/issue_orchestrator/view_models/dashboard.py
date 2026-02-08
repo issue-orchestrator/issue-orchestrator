@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import time
 from typing import Any, Callable
 
 from ..domain.session_key import TaskKind
@@ -127,20 +128,10 @@ class DashboardViewModel:
             "e2eLastRun": self.e2e_status.get("last_run"),
             "agents": self.agent_names,
             "scope": self.scope_summary,
-            "refresh": {
-                "inProgress": bool(self.scope_summary.get("queue_refresh_in_progress", False)),
-                "requested": bool(self.scope_summary.get("queue_refresh_requested", False)),
-                "lastRefreshAt": self.scope_summary.get("queue_last_refresh_at", 0.0),
-                "lastRefreshAgeSeconds": self.scope_summary.get("queue_last_refresh_age_seconds", -1),
-                "lastRefreshLabel": self.scope_summary.get("queue_last_refresh_label", "unknown"),
-                "flowLazyEnabled": bool(self.scope_summary.get("flow_refresh_enabled", True)),
-                "flowStaleSeconds": int(self.scope_summary.get("flow_refresh_stale_seconds", 900)),
-                "flowCooldownSeconds": int(self.scope_summary.get("flow_refresh_cooldown_seconds", 120)),
-                "freshnessMode": str(self.scope_summary.get("flow_freshness_mode", "balanced")),
-                "apiBudget": str(self.scope_summary.get("flow_api_budget", "medium")),
-                "attentionPriority": str(self.scope_summary.get("flow_attention_priority", "strict")),
-            },
+            "refresh": self.scope_summary.get("refresh", {}),
             "githubUsage": github_usage,
+            "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
+            "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -318,6 +309,36 @@ def _attach_refresh_meta(items: list[dict[str, Any]], state, config, now_ts: flo
         item.update(_refresh_meta_for_issue(state, config, issue_number, now_ts))
 
 
+def _refresh_meta(state, config, issue_number: int) -> dict[str, Any]:
+    refreshed_at = state.issue_refresh_timestamps.get(issue_number, 0.0)
+    queue_interval = config.queue_refresh_seconds if config else 600
+    full_scan_interval = config.fetch_layer_full_scan_interval_seconds if config else 1800
+    if queue_interval > 0:
+        stale_after = max(queue_interval * 2, 120)
+    else:
+        stale_after = max(full_scan_interval, 300)
+
+    if refreshed_at <= 0:
+        return {
+            "refresh_age_seconds": None,
+            "refresh_age_label": "not refreshed",
+            "is_stale": True,
+        }
+
+    age_seconds = max(0, int(time.time() - refreshed_at))
+    if age_seconds >= 3600:
+        age_label = f"{age_seconds // 3600}h"
+    elif age_seconds >= 60:
+        age_label = f"{age_seconds // 60}m"
+    else:
+        age_label = f"{age_seconds}s"
+    return {
+        "refresh_age_seconds": age_seconds,
+        "refresh_age_label": age_label,
+        "is_stale": age_seconds >= stale_after,
+    }
+
+
 def _pending_issue_numbers(state) -> dict[str, set[int]]:
     pending_review_numbers = {r.issue_number for r in state.pending_reviews} | {
         r.issue_number for r in state.discovered_reviews
@@ -398,6 +419,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int]) -
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            **_refresh_meta(state, config, session.issue.number),
         })
 
     return items, seen_issues
@@ -490,6 +512,7 @@ def _build_queue_items(
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
             "merge_pending": label_module.is_pr_pending(issue.labels),
+            **_refresh_meta(state, config, issue.number),
         }
         if is_blocked:
             blocked_items.append(item)
@@ -541,6 +564,7 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": status_reason if entry.status != "completed" else None,
+            **_refresh_meta(state, config, entry.issue_number),
         }
         if entry.status in ("blocked", "needs_human"):
             blocked_items.append(item)
@@ -748,6 +772,7 @@ def _build_backlog_items(state, config) -> list[dict[str, Any]]:
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
+            **_refresh_meta(state, config, issue.number),
         })
     return cards
 
@@ -1140,34 +1165,49 @@ def build_dashboard_view_model(
     github_repo = repo.split("/")[1] if repo and "/" in repo else ""
 
     queue_refresh_seconds = config.queue_refresh_seconds if config else 600
+    queue_last_refresh_age = (
+        max(0.0, datetime.now(timezone.utc).timestamp() - state.queue_last_refresh_at)
+        if state and state.queue_last_refresh_at > 0
+        else -1
+    )
+    refresh_status = {
+        "mode": state.queue_last_refresh_mode if state else "none",
+        "lastRefreshAt": state.queue_last_refresh_at if state else 0.0,
+        "lastRefreshAgeSeconds": queue_last_refresh_age,
+        "lastRefreshLabel": (
+            f"{_format_age_seconds(queue_last_refresh_age)} ago"
+            if queue_last_refresh_age >= 0
+            else "never"
+        ),
+        "inProgress": bool(state.queue_refresh_in_progress) if state else False,
+        "requested": bool(state.queue_refresh_requested) if state else False,
+        "lastFullScanAt": state.queue_last_full_scan_at if state else 0.0,
+        "refreshCount": state.queue_refresh_count if state else 0,
+        "fetchLayerEnabled": config.fetch_layer_enabled if config else True,
+        "fullScanIntervalSeconds": config.fetch_layer_full_scan_interval_seconds if config else 1800,
+        "discoveryLimit": config.fetch_layer_discovery_limit if config else 25,
+        "maxHotIssuesPerCycle": config.fetch_layer_max_hot_issues_per_cycle if config else 40,
+        "prScanEveryNRefreshes": config.fetch_layer_pr_scan_every_n_refreshes if config else 2,
+        "dependencyScanEveryNRefreshes": config.fetch_layer_dependency_scan_every_n_refreshes if config else 1,
+        "flowLazyEnabled": bool(config.flow_refresh_enabled) if config else True,
+        "flowStaleSeconds": int(config.flow_refresh_stale_seconds) if config else 900,
+        "flowCooldownSeconds": int(config.flow_refresh_cooldown_seconds) if config else 120,
+        "freshnessMode": str(config.flow_freshness_mode) if config else "balanced",
+        "apiBudget": str(config.flow_api_budget) if config else "medium",
+        "attentionPriority": str(config.flow_attention_priority) if config else "strict",
+        "visibilityAwareEnabled": config.fetch_layer_visibility_aware_enabled if config else False,
+        "selectiveSyncPlannerEnabled": config.fetch_layer_selective_sync_planner_enabled if config else False,
+    }
     if config:
         milestones = config.get_filter_milestones()
-        queue_last_refresh_age = (
-            max(0.0, datetime.now(timezone.utc).timestamp() - state.queue_last_refresh_at)
-            if state and state.queue_last_refresh_at > 0
-            else -1
-        )
         scope_summary = {
             "repo_open_total": queue_total,
             "in_scope_total": len(backlog_items),
             "filter_label": config.filtering.label or "",
             "filter_milestones": milestones,
             "exclude_labels": list(config.filtering.exclude_labels),
-            "queue_last_refresh_at": state.queue_last_refresh_at if state else 0.0,
-            "queue_last_refresh_age_seconds": queue_last_refresh_age,
-            "queue_last_refresh_label": (
-                f"{_format_age_seconds(queue_last_refresh_age)} ago"
-                if queue_last_refresh_age >= 0
-                else "never"
-            ),
-            "queue_refresh_in_progress": bool(state.queue_refresh_in_progress) if state else False,
-            "queue_refresh_requested": bool(state.queue_refresh_requested) if state else False,
-            "flow_refresh_enabled": bool(config.flow_refresh_enabled),
-            "flow_refresh_stale_seconds": int(config.flow_refresh_stale_seconds),
-            "flow_refresh_cooldown_seconds": int(config.flow_refresh_cooldown_seconds),
-            "flow_freshness_mode": str(config.flow_freshness_mode),
-            "flow_api_budget": str(config.flow_api_budget),
-            "flow_attention_priority": str(config.flow_attention_priority),
+            "refresh_mode": state.queue_last_refresh_mode if state else "none",
+            "refresh": refresh_status,
         }
     else:
         scope_summary = {
@@ -1176,17 +1216,8 @@ def build_dashboard_view_model(
             "filter_label": "",
             "filter_milestones": [],
             "exclude_labels": [],
-            "queue_last_refresh_at": 0.0,
-            "queue_last_refresh_age_seconds": -1,
-            "queue_last_refresh_label": "never",
-            "queue_refresh_in_progress": False,
-            "queue_refresh_requested": False,
-            "flow_refresh_enabled": True,
-            "flow_refresh_stale_seconds": 900,
-            "flow_refresh_cooldown_seconds": 120,
-            "flow_freshness_mode": "balanced",
-            "flow_api_budget": "medium",
-            "flow_attention_priority": "strict",
+            "refresh_mode": "none",
+            "refresh": refresh_status,
         }
 
     return DashboardViewModel(

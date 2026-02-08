@@ -63,9 +63,11 @@ class FactGatherer:
         labels_for_agent: list[str],
         milestone: Optional[str] = None,
         required_stable_ids: set[str] | None = None,
+        fetch_limit: int | None = None,
     ) -> list["Issue"]:
         """Fetch all issues for configured agents from GitHub."""
         milestones = self.config.get_filter_milestones() or [milestone]
+        limit = fetch_limit if fetch_limit is not None else self.config.filtering.fetch_limit
         all_issues, seen, still_needed = [], set(), set(required_stable_ids) if required_stable_ids else None
 
         for agent_label in self.config.agents.keys():
@@ -73,7 +75,7 @@ class FactGatherer:
             for milestone_name in milestones:
                 issues = self.repository_host.list_issues(
                     labels=labels, milestone=milestone_name,
-                    limit=self.config.filtering.fetch_limit, required_stable_ids=still_needed,
+                    limit=limit, required_stable_ids=still_needed,
                 )
                 self._process_fetched_issues(issues, all_issues, seen, still_needed, agent_label, labels, milestone_name)
 

@@ -15,6 +15,14 @@ _Auto-generated from settings schema._
 | `execution.concurrency.max_concurrent_sessions` | integer | `3` | Maximum parallel agent sessions | `1`, `3`, `5` | Set based on CPU, RAM, and how many concurrent sessions you can actively review. |
 | `execution.concurrency.session_timeout_minutes` | integer | `45` | Kill sessions after this duration | `30`, `45`, `90` | Lower values fail faster for stuck sessions; higher values help long builds. |
 | `ui.queue_refresh_seconds` | integer | `600` | How often to refresh the issue queue from GitHub (0 = manual only) | `0`, `300`, `600` | Use 0 to disable automatic refreshes and refresh manually in the UI. |
+| `ui.fetch_layer.enabled` | boolean | `True` | Enable incremental refreshes between periodic full scans | `true`, `false` | Disable to force a full GitHub queue scan on every refresh. |
+| `ui.fetch_layer.full_scan_interval_seconds` | integer | `1800` | Run a full queue scan at this interval even when incremental mode is enabled | `600`, `1800`, `3600` | Lower values discover new work faster; higher values reduce API usage. |
+| `ui.fetch_layer.discovery_limit` | integer | `25` | Max issues fetched per incremental discovery pass | `0`, `25`, `50` | Set to 0 to disable discovery during incremental refreshes. |
+| `ui.fetch_layer.max_hot_issues_per_cycle` | integer | `40` | Max existing queue issues to refresh by direct issue lookup per cycle | `20`, `40`, `100` | Higher values improve freshness but increase API usage. |
+| `ui.fetch_layer.pr_scan_every_n_refreshes` | integer | `2` | Scan review/rework PRs every N queue refreshes | `1`, `2`, `3` | Use 1 for max freshness; increase to reduce PR API calls. |
+| `ui.fetch_layer.dependency_scan_every_n_refreshes` | integer | `1` | Recompute dependency blocking every N queue refreshes | `1`, `2`, `3` | Use 1 for immediate dependency updates; increase to reduce load. |
+| `ui.fetch_layer.visibility_aware_enabled` | boolean | `False` | Prioritize refresh for issues currently visible in the Flow board | `true`, `false` | Requires browser visibility hints from the Flow board. |
+| `ui.fetch_layer.selective_sync_planner_enabled` | boolean | `False` | Enable cross-entity selective sync planning for queue refresh cycles | `true`, `false` | Use with telemetry to tune freshness versus API cost. |
 | `scheduling.default_priority_tier` | integer | `1` | Default priority tier when none is specified (0-9) | `0`, `1`, `2` | Used when issue titles do not include a [P?-nnn] prefix. |
 
 ## E2E Runner

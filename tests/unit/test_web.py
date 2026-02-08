@@ -1368,7 +1368,7 @@ class TestRefreshEndpoint:
             response = client.post("/api/issues/77/refresh")
             assert response.status_code == 200
             payload = response.json()
-            assert payload["status"] == "ok"
+            assert payload["status"] == "refreshed"
             assert payload["issue_number"] == 77
             assert payload["is_stale"] is False
             assert payload["last_refreshed_label"] == "just now"
@@ -1654,6 +1654,113 @@ class TestApiTimelineEndpoint:
 
         assert response.status_code == 503
         assert "error" in response.json()
+
+    def test_refresh_visibility_updates_state(self):
+        """Test visibility refresh endpoint stores current visible issues."""
+        mock_orch = create_mock_orchestrator()
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.post("/api/refresh/visibility", json={"issues": [12, "13", -1, "bad"]})
+            assert response.status_code == 200
+            assert response.json()["status"] == "ok"
+            assert mock_orch.state.ui_visible_issue_numbers == [12, 13]
+            assert mock_orch.state.ui_visible_updated_at > 0
+        finally:
+            set_orchestrator(None)
+
+    def test_refresh_visibility_requires_valid_json(self):
+        """Test visibility refresh endpoint rejects invalid payload."""
+        mock_orch = create_mock_orchestrator()
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.post(
+                "/api/refresh/visibility",
+                content="not-json",
+                headers={"Content-Type": "application/json"},
+            )
+            assert response.status_code == 400
+        finally:
+            set_orchestrator(None)
+
+    def test_refresh_single_issue_updates_cached_queue(self):
+        """Test single issue refresh updates existing cached issue and timestamp."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.filtering.label = "agent:web"
+        mock_orch.state.cached_queue_issues = [create_issue(7, "old title")]
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.get_issue.return_value = create_issue(7, "new title")
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/7/refresh")
+            assert response.status_code == 200
+            assert response.json()["status"] == "refreshed"
+            assert response.json()["in_scope"] is True
+            assert response.json()["updated"] is True
+            assert mock_orch.state.cached_queue_issues[0].title == "new title"
+            assert mock_orch.state.issue_refresh_timestamps[7] > 0
+        finally:
+            set_orchestrator(None)
+
+    def test_refresh_single_issue_does_not_inject_out_of_scope_issue(self):
+        """Out-of-scope single refresh should not inject issue into queue."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.filtering.label = "agent:web"
+        mock_orch.state.cached_queue_issues = [create_issue(7, "old title")]
+        mock_orch.state.issue_refresh_timestamps = {7: 100.0, 999: 200.0}
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.get_issue.return_value = create_issue(
+            7, "other scope", labels=["agent:other"]
+        )
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/7/refresh")
+            assert response.status_code == 200
+            assert response.json()["status"] == "rejected_out_of_scope"
+            assert response.json()["in_scope"] is False
+            assert not any(issue.number == 7 for issue in mock_orch.state.cached_queue_issues)
+            assert 7 not in mock_orch.state.issue_refresh_timestamps
+            assert 999 not in mock_orch.state.issue_refresh_timestamps
+        finally:
+            set_orchestrator(None)
+
+    def test_refresh_single_issue_404_when_missing(self):
+        """Test single issue refresh returns 404 when issue cannot be fetched."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.get_issue.return_value = None
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/77/refresh")
+            assert response.status_code == 404
+        finally:
+            set_orchestrator(None)
+
+    def test_refresh_single_issue_rejects_closed_issue(self):
+        """Closed issues should never be re-admitted to cached queue via refresh."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.filtering.label = "agent:web"
+        mock_orch.state.cached_queue_issues = [create_issue(7, "old title")]
+        mock_orch.state.issue_refresh_timestamps = {7: 100.0}
+        mock_orch.repository_host = MagicMock()
+        closed_issue = create_issue(7, "closed issue", labels=["agent:web"])
+        closed_issue.state = "closed"
+        mock_orch.repository_host.get_issue.return_value = closed_issue
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/7/refresh")
+            assert response.status_code == 200
+            assert response.json()["status"] == "rejected_out_of_scope"
+            assert response.json()["in_scope"] is False
+            assert not any(issue.number == 7 for issue in mock_orch.state.cached_queue_issues)
+            assert 7 not in mock_orch.state.issue_refresh_timestamps
+        finally:
+            set_orchestrator(None)
 
 
 class TestKillSessionEndpoint:

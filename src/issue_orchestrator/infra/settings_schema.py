@@ -94,6 +94,112 @@ class ConcurrencySettings(BaseModel):
             "yaml_path": "ui.queue_refresh_seconds",
         },
     )
+    fetch_layer_enabled: bool = Field(
+        True,
+        title="Fetch-Layer Optimization",
+        description="Enable incremental refreshes between periodic full scans",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Disable to force a full GitHub queue scan on every refresh.",
+            "section": "Queue",
+            "config_attr": "fetch_layer_enabled",
+            "yaml_path": "ui.fetch_layer.enabled",
+        },
+    )
+    fetch_layer_full_scan_interval_seconds: int = Field(
+        1800,
+        title="Full Scan Interval (seconds)",
+        description="Run a full queue scan at this interval even when incremental mode is enabled",
+        ge=60,
+        le=86400,
+        json_schema_extra={
+            "doc_examples": ["600", "1800", "3600"],
+            "doc_notes": "Lower values discover new work faster; higher values reduce API usage.",
+            "section": "Queue",
+            "config_attr": "fetch_layer_full_scan_interval_seconds",
+            "yaml_path": "ui.fetch_layer.full_scan_interval_seconds",
+        },
+    )
+    fetch_layer_discovery_limit: int = Field(
+        25,
+        title="Discovery Limit",
+        description="Max issues fetched per incremental discovery pass",
+        ge=0,
+        le=200,
+        json_schema_extra={
+            "doc_examples": ["0", "25", "50"],
+            "doc_notes": "Set to 0 to disable discovery during incremental refreshes.",
+            "section": "Queue",
+            "config_attr": "fetch_layer_discovery_limit",
+            "yaml_path": "ui.fetch_layer.discovery_limit",
+        },
+    )
+    fetch_layer_max_hot_issues_per_cycle: int = Field(
+        40,
+        title="Hot Issue Refresh Limit",
+        description="Max existing queue issues to refresh by direct issue lookup per cycle",
+        ge=0,
+        le=500,
+        json_schema_extra={
+            "doc_examples": ["20", "40", "100"],
+            "doc_notes": "Higher values improve freshness but increase API usage.",
+            "section": "Queue",
+            "config_attr": "fetch_layer_max_hot_issues_per_cycle",
+            "yaml_path": "ui.fetch_layer.max_hot_issues_per_cycle",
+        },
+    )
+    fetch_layer_pr_scan_every_n_refreshes: int = Field(
+        2,
+        title="PR Scan Cadence",
+        description="Scan review/rework PRs every N queue refreshes",
+        ge=1,
+        le=20,
+        json_schema_extra={
+            "doc_examples": ["1", "2", "3"],
+            "doc_notes": "Use 1 for max freshness; increase to reduce PR API calls.",
+            "section": "Queue",
+            "config_attr": "fetch_layer_pr_scan_every_n_refreshes",
+            "yaml_path": "ui.fetch_layer.pr_scan_every_n_refreshes",
+        },
+    )
+    fetch_layer_dependency_scan_every_n_refreshes: int = Field(
+        1,
+        title="Dependency Scan Cadence",
+        description="Recompute dependency blocking every N queue refreshes",
+        ge=1,
+        le=20,
+        json_schema_extra={
+            "doc_examples": ["1", "2", "3"],
+            "doc_notes": "Use 1 for immediate dependency updates; increase to reduce load.",
+            "section": "Queue",
+            "config_attr": "fetch_layer_dependency_scan_every_n_refreshes",
+            "yaml_path": "ui.fetch_layer.dependency_scan_every_n_refreshes",
+        },
+    )
+    fetch_layer_visibility_aware_enabled: bool = Field(
+        False,
+        title="Visibility-Aware Refresh",
+        description="Prioritize refresh for issues currently visible in the Flow board",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Requires browser visibility hints from the Flow board.",
+            "section": "Queue",
+            "config_attr": "fetch_layer_visibility_aware_enabled",
+            "yaml_path": "ui.fetch_layer.visibility_aware_enabled",
+        },
+    )
+    fetch_layer_selective_sync_planner_enabled: bool = Field(
+        False,
+        title="Selective Sync Planner",
+        description="Enable cross-entity selective sync planning for queue refresh cycles",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Use with telemetry to tune freshness versus API cost.",
+            "section": "Queue",
+            "config_attr": "fetch_layer_selective_sync_planner_enabled",
+            "yaml_path": "ui.fetch_layer.selective_sync_planner_enabled",
+        },
+    )
     default_priority_tier: int = Field(
         1,
         title="Default Priority Tier",

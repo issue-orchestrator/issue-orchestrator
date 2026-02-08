@@ -210,6 +210,8 @@ async function refreshIssueRows(vm) {
 
     ensureEmptyState(vm, rows.length > 0);
     updateActionHints();
+    initVisibilityObserver();
+    initFlowLazyVisibleRefresh();
 }
 
 async function refreshViewModel({ reloadOnListChange = true } = {}) {
@@ -245,6 +247,7 @@ document.addEventListener('DOMContentLoaded', () => {
     applyGitHubUsagePrefs();
     renderGitHubUsage();
     refreshViewModel({ reloadOnListChange: false });
+    initVisibilityObserver();
     const nextRun = document.getElementById('e2eNextRun');
     if (nextRun && nextRun.dataset.nextRunReason) {
         const nextInfo = {
@@ -263,6 +266,70 @@ document.addEventListener('change', (event) => {
         setFlowRefreshInputsEnabled(Boolean(event.target.checked));
     }
 });
+let visibilityObserver = null;
+let visibilityPostTimer = null;
+let lastVisibilityPayload = '';
+
+function initVisibilityObserver() {
+    if (visibilityObserver) {
+        visibilityObserver.disconnect();
+        visibilityObserver = null;
+    }
+    const enabled = Boolean(window.dashboardData && window.dashboardData.fetchLayerVisibilityAwareEnabled);
+    if (!enabled) return;
+    const cards = Array.from(document.querySelectorAll('.issue-card[data-issue]'));
+    if (!cards.length) return;
+
+    const visibleNumbers = new Set();
+    visibilityObserver = new IntersectionObserver((entries) => {
+        let changed = false;
+        entries.forEach((entry) => {
+            const issueNumber = parseInt(entry.target.dataset.issue || '0', 10);
+            if (!issueNumber) return;
+            if (entry.isIntersecting) {
+                if (!visibleNumbers.has(issueNumber)) {
+                    visibleNumbers.add(issueNumber);
+                    changed = true;
+                }
+            } else if (visibleNumbers.delete(issueNumber)) {
+                changed = true;
+            }
+        });
+        if (changed) {
+            scheduleVisibilityPost(Array.from(visibleNumbers));
+        }
+    }, { threshold: 0.25 });
+
+    cards.forEach((card) => visibilityObserver.observe(card));
+}
+
+function scheduleVisibilityPost(visibleIssueNumbers) {
+    const normalized = Array.from(new Set(visibleIssueNumbers.map(n => parseInt(n, 10)).filter(Boolean))).sort((a, b) => a - b);
+    const payload = JSON.stringify(normalized);
+    if (payload === lastVisibilityPayload) return;
+    if (visibilityPostTimer) window.clearTimeout(visibilityPostTimer);
+    visibilityPostTimer = window.setTimeout(() => {
+        postVisibility(visibleIssueNumbers);
+    }, 600);
+}
+
+async function postVisibility(visibleIssueNumbers) {
+    const normalized = Array.from(new Set(visibleIssueNumbers.map(n => parseInt(n, 10)).filter(Boolean))).sort((a, b) => a - b);
+    const payload = JSON.stringify(normalized);
+    if (payload === lastVisibilityPayload) return;
+    try {
+        const res = await fetch('/api/refresh/visibility', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ issues: normalized }),
+        });
+        if (res.ok) {
+            lastVisibilityPayload = payload;
+        }
+    } catch (err) {
+        console.error('Failed to post visibility hint:', err);
+    }
+}
 
 let logPoller = null;
 let logFollow = true;
@@ -1026,7 +1093,6 @@ function resetFlowRefreshPrefs() {
     closeFlowRefreshPrefs();
     showToast('Flow refresh preferences reset');
 }
-
 // Shutdown state - used to cancel polling when "Shutdown now" is clicked
 let shutdownInProgress = false;
 

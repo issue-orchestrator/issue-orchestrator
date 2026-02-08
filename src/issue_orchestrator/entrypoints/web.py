@@ -51,6 +51,7 @@ from ..contracts.ui_openapi_models import (
     SessionDiagnosticsDialogPayload,
     IssueDetailPayload,
 )
+from ..control.queue_cache import QueueCache, QueueMutationStatus
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
@@ -775,93 +776,72 @@ async def refresh(request: Request) -> JSONResponse:
     })
 
 
-def _issue_matches_scope(config, issue) -> bool:
-    """Check whether an issue belongs to current configured scope."""
-    if issue.state == "closed":
-        return False
-    if config.filtering.issue and issue.number != config.filtering.issue:
-        return False
-    if config.filtering.label and config.filtering.label not in issue.labels:
-        return False
-    milestones = config.get_filter_milestones()
-    if milestones and (issue.milestone not in milestones):
-        return False
-    if any(label in issue.labels for label in config.filtering.exclude_labels):
-        return False
-    return True
+@app.post("/api/refresh/visibility")
+async def update_refresh_visibility(request: Request) -> JSONResponse:
+    """Store issue visibility hints from Flow UI for visibility-aware refresh.
 
-
-@app.post("/api/issues/{issue_number}/refresh")
-async def refresh_single_issue(issue_number: int) -> JSONResponse:
-    """Refresh a single issue from GitHub and update local queue cache."""
+    JSON body:
+        issues: list[int] - Issue numbers currently visible to the user.
+    """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    state = _orchestrator.state
-    config = _orchestrator.config
-    repository_host = _orchestrator.repository_host
-    now = time.time()
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
-    issue = repository_host.get_issue(issue_number)
-    if not issue:
+    raw_issues = body.get("issues", [])
+    if not isinstance(raw_issues, list):
+        return JSONResponse({"error": "issues must be a list"}, status_code=400)
+
+    visible_numbers: list[int] = []
+    for value in raw_issues:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            visible_numbers.append(number)
+
+    state = _orchestrator.state
+    state.ui_visible_issue_numbers = sorted(set(visible_numbers))
+    state.ui_visible_updated_at = time.time()
+    return JSONResponse({"status": "ok", "count": len(state.ui_visible_issue_numbers)})
+
+
+@app.post("/api/issues/{issue_number}/refresh")
+async def refresh_issue(issue_number: int) -> JSONResponse:
+    """Refresh a single issue from GitHub and update cached queue state."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    issue = _orchestrator.repository_host.get_issue(issue_number)
+    if issue is None:
         return JSONResponse({"error": f"Issue #{issue_number} not found"}, status_code=404)
 
-    in_scope = _issue_matches_scope(config, issue)
-    repository_host.update_label_cache(issue.number, list(issue.labels))
-    state.issue_last_refreshed_at[issue.number] = now
-
-    # Update dependency status for this issue only (if dependency evaluator is active).
-    dep_eval = getattr(_orchestrator.scheduler, "dependency_evaluator", None)
-    dep_problem = None
-    if dep_eval and issue.body:
-        report = dep_eval.evaluate(
-            issue_number=issue.number,
-            issue_body=issue.body,
-            source_milestone=issue.milestone,
-        )
-        if not report.runnable:
-            from ..domain.models import DependencyProblem
-
-            dep_problem = DependencyProblem(
-                issue_number=issue.number,
-                issue_title=issue.title,
-                blocked_by=[
-                    (d.issue_number, d.title, d.state)
-                    for d in report.blocking_dependencies
-                ],
-                summary=report.summary(),
-            )
-    if dep_problem:
-        state.dependency_problems[issue.number] = dep_problem
+    state = _orchestrator.state
+    config = _orchestrator.config
+    queue_cache = QueueCache(config, state)
+    outcome = queue_cache.upsert_refreshed_issue(issue)
+    refreshed_at = time.time()
+    if outcome.status == QueueMutationStatus.ACCEPTED:
+        state.issue_refresh_timestamps[issue_number] = refreshed_at
+        state.issue_last_refreshed_at[issue_number] = refreshed_at
     else:
-        state.dependency_problems.pop(issue.number, None)
-
-    # Update cached queue snapshot with refreshed issue if it belongs in scope.
-    active_numbers = {s.issue.number for s in state.active_sessions}
-    history_numbers = {entry.issue_number for entry in state.session_history}
-    existing = [i for i in state.cached_queue_issues if i.number != issue_number]
-    if (
-        in_scope
-        and issue.number not in active_numbers
-        and issue.number not in history_numbers
-    ):
-        existing.append(issue)
-    state.cached_queue_issues = _orchestrator.scheduler.sort_by_priority(existing)
+        state.issue_refresh_timestamps.pop(issue_number, None)
+        state.issue_last_refreshed_at.pop(issue_number, None)
+    queue_cache.prune_refresh_timestamps()
 
     return JSONResponse({
-        "status": "ok",
-        "issue_number": issue.number,
-        "last_refreshed_at": now,
+        "status": "refreshed" if outcome.status == QueueMutationStatus.ACCEPTED else outcome.status.value,
+        "issue_number": issue_number,
+        "updated": outcome.updated,
+        "in_scope": outcome.in_queue,
         "last_refreshed_label": "just now",
+        "last_refreshed_age_seconds": 0,
         "is_stale": False,
         "stale_reason": "",
-        "last_refreshed_age_seconds": 0,
-        "in_scope": in_scope,
-        "dependency_blocked": dep_problem is not None,
-        "refresh": {
-            "in_progress": bool(state.queue_refresh_in_progress),
-            "requested": bool(state.queue_refresh_requested),
-        },
     })
 
 

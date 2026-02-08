@@ -13,6 +13,7 @@ from ..events import EventName
 from ..ports.issue import Issue
 from ..domain.models import OrchestratorState
 from ..ports.event_sink import EventSink, TraceEvent
+from .queue_cache import QueueCache
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -71,8 +72,8 @@ class QueueProjection:
             added_numbers = new_numbers - old_numbers
             removed_numbers = old_numbers - new_numbers
 
-            # Update state
-            state.cached_queue_issues = queue_issues
+            # Update state through queue cache abstraction.
+            QueueCache(self._config, state).replace_from_refresh(queue_issues)
 
             # Clear failed_this_cycle on cache refresh - GitHub now has the blocked-failed labels
             if state.failed_this_cycle:
