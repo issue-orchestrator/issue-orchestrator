@@ -42,6 +42,12 @@ class TestModelDefaults:
         assert m.max_concurrent_sessions == 3
         assert m.session_timeout_minutes == 45
         assert m.queue_refresh_seconds == 600
+        assert m.fetch_layer_enabled is True
+        assert m.fetch_layer_full_scan_interval_seconds == 1800
+        assert m.fetch_layer_discovery_limit == 25
+        assert m.fetch_layer_max_hot_issues_per_cycle == 40
+        assert m.fetch_layer_pr_scan_every_n_refreshes == 2
+        assert m.fetch_layer_dependency_scan_every_n_refreshes == 1
         assert m.default_priority_tier == 1
 
     def test_e2e_defaults(self):
@@ -157,6 +163,12 @@ class TestFromConfig:
         cfg.max_concurrent_sessions = 5
         cfg.session_timeout_minutes = 60
         cfg.queue_refresh_seconds = 300
+        cfg.fetch_layer_enabled = False
+        cfg.fetch_layer_full_scan_interval_seconds = 1200
+        cfg.fetch_layer_discovery_limit = 15
+        cfg.fetch_layer_max_hot_issues_per_cycle = 30
+        cfg.fetch_layer_pr_scan_every_n_refreshes = 3
+        cfg.fetch_layer_dependency_scan_every_n_refreshes = 2
         cfg.e2e = E2EConfig(
             enabled=True,
             role="executor",
@@ -194,6 +206,12 @@ class TestFromConfig:
         assert conc.max_concurrent_sessions == 5
         assert conc.session_timeout_minutes == 60
         assert conc.queue_refresh_seconds == 300
+        assert conc.fetch_layer_enabled is False
+        assert conc.fetch_layer_full_scan_interval_seconds == 1200
+        assert conc.fetch_layer_discovery_limit == 15
+        assert conc.fetch_layer_max_hot_issues_per_cycle == 30
+        assert conc.fetch_layer_pr_scan_every_n_refreshes == 3
+        assert conc.fetch_layer_dependency_scan_every_n_refreshes == 2
 
     def test_e2e_tab(self):
         tabs = from_config(self._make_config())

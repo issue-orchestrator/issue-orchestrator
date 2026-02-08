@@ -602,6 +602,7 @@ def _fetch_and_update_queue(
     """Fetch issues and update queue cache."""
     from ..infra import gh_audit
 
+    refresh_started_at = time.time()
     manual_refresh = refresh_requested
     required_stable_ids = set(inflight_stable_ids.keys()) if inflight_stable_ids else None
 
@@ -612,26 +613,140 @@ def _fetch_and_update_queue(
 
     reason = gh_audit.AuditReason.QUEUE_REFRESH_MANUAL if manual_refresh else gh_audit.AuditReason.QUEUE_REFRESH_SCHEDULED
     scope = gh_audit.AuditScope.MANUAL if manual_refresh else gh_audit.AuditScope.PERIODIC
+    full_scan = _should_run_full_scan(config, state, manual_refresh, required_stable_ids, refresh_started_at)
     with gh_audit.context(reason=reason, scope=scope):
-        all_issues = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
+        if full_scan:
+            all_issues = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
+        else:
+            all_issues = _fetch_incremental_issues(
+                config,
+                state,
+                github_workflow,
+                required_stable_ids,
+            )
 
     _process_inflight_ids(required_stable_ids, all_issues, inflight_stable_ids)
     _update_label_cache(repository_host, all_issues)
 
-    github_workflow.scan_needs_code_review_prs(state)
-    github_workflow.scan_needs_rework_prs(state)
-    _, dep_blocked = scheduler.get_available_issues(all_issues)
-    github_workflow.update_dependency_problems(state, dep_blocked)
+    if _should_run_pr_scan(config, state, manual_refresh):
+        github_workflow.scan_needs_code_review_prs(state)
+        github_workflow.scan_needs_rework_prs(state)
+
+    if _should_run_dependency_scan(config, state, manual_refresh):
+        _, dep_blocked = scheduler.get_available_issues(all_issues)
+        github_workflow.update_dependency_problems(state, dep_blocked)
 
     new_queue = _filter_queue(config, state, all_issues)
     _emit_queue_changes(events, state, new_queue)
     state.cached_queue_issues = new_queue
+    state.queue_last_refresh_at = refresh_started_at
+    state.queue_refresh_count += 1
+    if full_scan:
+        state.queue_last_full_scan_at = refresh_started_at
+    state.queue_last_refresh_mode = "full" if full_scan else "incremental"
 
     if state.failed_this_cycle:
         logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", state.failed_this_cycle)
         state.failed_this_cycle.clear()
 
     return time.time(), False
+
+
+def _should_run_full_scan(
+    config: "Config",
+    state: "OrchestratorState",
+    manual_refresh: bool,
+    required_stable_ids: set[str] | None,
+    now: float,
+) -> bool:
+    if not config.fetch_layer_enabled:
+        return True
+    if manual_refresh:
+        return True
+    if required_stable_ids:
+        return True
+    if not state.cached_queue_issues:
+        return True
+    if state.queue_last_full_scan_at <= 0:
+        return True
+    return (now - state.queue_last_full_scan_at) >= config.fetch_layer_full_scan_interval_seconds
+
+
+def _should_run_pr_scan(config: "Config", state: "OrchestratorState", manual_refresh: bool) -> bool:
+    if manual_refresh:
+        return True
+    if config.fetch_layer_pr_scan_every_n_refreshes <= 1:
+        return True
+    next_refresh_count = state.queue_refresh_count + 1
+    return next_refresh_count % config.fetch_layer_pr_scan_every_n_refreshes == 0
+
+
+def _should_run_dependency_scan(config: "Config", state: "OrchestratorState", manual_refresh: bool) -> bool:
+    if manual_refresh:
+        return True
+    if config.fetch_layer_dependency_scan_every_n_refreshes <= 1:
+        return True
+    next_refresh_count = state.queue_refresh_count + 1
+    return next_refresh_count % config.fetch_layer_dependency_scan_every_n_refreshes == 0
+
+
+def _fetch_incremental_issues(
+    config: "Config",
+    state: "OrchestratorState",
+    github_workflow: object,
+    required_stable_ids: set[str] | None,
+) -> list["Issue"]:
+    issue_map = {issue.number: issue for issue in state.cached_queue_issues}
+    hot_issue_numbers = _select_hot_issue_numbers(state, config.fetch_layer_max_hot_issues_per_cycle)
+    refreshed = github_workflow.refresh_issues(hot_issue_numbers)
+    for issue in refreshed:
+        issue_map[issue.number] = issue
+
+    if config.fetch_layer_discovery_limit > 0:
+        discovered = github_workflow.fetch_discovery_issues(
+            config.filtering.milestone,
+            config.fetch_layer_discovery_limit,
+        )
+        for issue in discovered:
+            issue_map[issue.number] = issue
+
+    # Ensure required IDs can still be discovered even if they were not in hot/discovery subsets.
+    if required_stable_ids:
+        fallback = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
+        for issue in fallback:
+            issue_map[issue.number] = issue
+
+    return list(issue_map.values())
+
+
+def _select_hot_issue_numbers(state: "OrchestratorState", limit: int) -> list[int]:
+    if limit <= 0:
+        return []
+
+    hot_issue_numbers: list[int] = []
+    seen: set[int] = set()
+
+    def _add(number: int) -> None:
+        if number in seen:
+            return
+        seen.add(number)
+        hot_issue_numbers.append(number)
+
+    for session in state.active_sessions:
+        _add(session.issue.number)
+    for review in state.pending_reviews:
+        _add(review.issue_number)
+    for rework in state.pending_reworks:
+        if rework.issue_number is not None:
+            _add(rework.issue_number)
+    for issue_number in state.priority_queue:
+        _add(issue_number)
+    for issue in state.cached_queue_issues:
+        _add(issue.number)
+        if len(hot_issue_numbers) >= limit:
+            break
+
+    return hot_issue_numbers[:limit]
 
 
 def _process_inflight_ids(required_stable_ids: set[str] | None, all_issues: list["Issue"], inflight_stable_ids: dict[str, float]) -> None:

@@ -124,6 +124,7 @@ class DashboardViewModel:
             "e2eLastRun": self.e2e_status.get("last_run"),
             "agents": self.agent_names,
             "scope": self.scope_summary,
+            "refresh": self.scope_summary.get("refresh", {}),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -969,6 +970,18 @@ def build_dashboard_view_model(
     github_repo = repo.split("/")[1] if repo and "/" in repo else ""
 
     queue_refresh_seconds = config.queue_refresh_seconds if config else 600
+    refresh_status = {
+        "mode": state.queue_last_refresh_mode if state else "none",
+        "lastRefreshAt": state.queue_last_refresh_at if state else 0.0,
+        "lastFullScanAt": state.queue_last_full_scan_at if state else 0.0,
+        "refreshCount": state.queue_refresh_count if state else 0,
+        "fetchLayerEnabled": config.fetch_layer_enabled if config else True,
+        "fullScanIntervalSeconds": config.fetch_layer_full_scan_interval_seconds if config else 1800,
+        "discoveryLimit": config.fetch_layer_discovery_limit if config else 25,
+        "maxHotIssuesPerCycle": config.fetch_layer_max_hot_issues_per_cycle if config else 40,
+        "prScanEveryNRefreshes": config.fetch_layer_pr_scan_every_n_refreshes if config else 2,
+        "dependencyScanEveryNRefreshes": config.fetch_layer_dependency_scan_every_n_refreshes if config else 1,
+    }
     if config:
         milestones = config.get_filter_milestones()
         scope_summary = {
@@ -977,6 +990,8 @@ def build_dashboard_view_model(
             "filter_label": config.filtering.label or "",
             "filter_milestones": milestones,
             "exclude_labels": list(config.filtering.exclude_labels),
+            "refresh_mode": state.queue_last_refresh_mode if state else "none",
+            "refresh": refresh_status,
         }
     else:
         scope_summary = {
@@ -985,6 +1000,8 @@ def build_dashboard_view_model(
             "filter_label": "",
             "filter_milestones": [],
             "exclude_labels": [],
+            "refresh_mode": "none",
+            "refresh": refresh_status,
         }
 
     return DashboardViewModel(

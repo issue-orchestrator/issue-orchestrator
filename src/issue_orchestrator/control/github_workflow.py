@@ -58,6 +58,28 @@ class GitHubWorkflow:
             base_labels, milestone_filter, required_stable_ids=required_stable_ids
         )
 
+    def fetch_discovery_issues(
+        self,
+        milestone_filter: str | None,
+        fetch_limit: int,
+    ) -> list["Issue"]:
+        """Fetch a bounded issue set for incremental discovery."""
+        base_labels = [self.config.filtering.label] if self.config.filtering.label else []
+        return self.fact_gatherer.fetch_issues(
+            base_labels,
+            milestone_filter,
+            fetch_limit=fetch_limit,
+        )
+
+    def refresh_issues(self, issue_numbers: list[int]) -> list["Issue"]:
+        """Refresh a bounded set of issues by number."""
+        refreshed: list["Issue"] = []
+        for issue_number in issue_numbers:
+            issue = self.refresh_issue(issue_number)
+            if issue is not None:
+                refreshed.append(issue)
+        return refreshed
+
     def scan_needs_code_review_prs(
         self,
         state: "OrchestratorState",

@@ -851,6 +851,13 @@ def _load_ui_section(config: "Config", ui_section: dict) -> None:
     config.web_port = ui_section.get("web_port", 8080)
     config.control_api_port = ui_section.get("control_api_port", 19080)
     config.queue_refresh_seconds = ui_section.get("queue_refresh_seconds", 600)
+    fetch_layer = ui_section.get("fetch_layer", {})
+    config.fetch_layer_enabled = fetch_layer.get("enabled", True)
+    config.fetch_layer_full_scan_interval_seconds = fetch_layer.get("full_scan_interval_seconds", 1800)
+    config.fetch_layer_discovery_limit = fetch_layer.get("discovery_limit", 25)
+    config.fetch_layer_max_hot_issues_per_cycle = fetch_layer.get("max_hot_issues_per_cycle", 40)
+    config.fetch_layer_pr_scan_every_n_refreshes = fetch_layer.get("pr_scan_every_n_refreshes", 2)
+    config.fetch_layer_dependency_scan_every_n_refreshes = fetch_layer.get("dependency_scan_every_n_refreshes", 1)
     config.instances = ui_section.get("instances", 1)
 
 
@@ -1066,6 +1073,13 @@ class Config:
     web_port: int = 8080  # Port for web dashboard
     control_api_port: int = 19080  # Port for control API (always available, 0 = disabled)
     queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
+    # Fetch-layer optimization for queue refreshes
+    fetch_layer_enabled: bool = True
+    fetch_layer_full_scan_interval_seconds: int = 1800
+    fetch_layer_discovery_limit: int = 25
+    fetch_layer_max_hot_issues_per_cycle: int = 40
+    fetch_layer_pr_scan_every_n_refreshes: int = 2
+    fetch_layer_dependency_scan_every_n_refreshes: int = 1
 
     # Multi-instance support (for multi-orchestrator coordination)
     instances: int = 1  # Number of orchestrator instances to spawn (CC manages this)
@@ -1393,6 +1407,14 @@ class Config:
                 "web_port": self.web_port,
                 "control_api_port": self.control_api_port,
                 "queue_refresh_seconds": self.queue_refresh_seconds,
+                "fetch_layer": {
+                    "enabled": self.fetch_layer_enabled,
+                    "full_scan_interval_seconds": self.fetch_layer_full_scan_interval_seconds,
+                    "discovery_limit": self.fetch_layer_discovery_limit,
+                    "max_hot_issues_per_cycle": self.fetch_layer_max_hot_issues_per_cycle,
+                    "pr_scan_every_n_refreshes": self.fetch_layer_pr_scan_every_n_refreshes,
+                    "dependency_scan_every_n_refreshes": self.fetch_layer_dependency_scan_every_n_refreshes,
+                },
                 "instances": self.instances,
             },
             "observability": {
@@ -1662,6 +1684,22 @@ class Config:
             ui_dict["control_api_port"] = self.control_api_port
         if self.queue_refresh_seconds != 600:
             ui_dict["queue_refresh_seconds"] = self.queue_refresh_seconds
+        if (
+            not self.fetch_layer_enabled
+            or self.fetch_layer_full_scan_interval_seconds != 1800
+            or self.fetch_layer_discovery_limit != 25
+            or self.fetch_layer_max_hot_issues_per_cycle != 40
+            or self.fetch_layer_pr_scan_every_n_refreshes != 2
+            or self.fetch_layer_dependency_scan_every_n_refreshes != 1
+        ):
+            ui_dict["fetch_layer"] = {
+                "enabled": self.fetch_layer_enabled,
+                "full_scan_interval_seconds": self.fetch_layer_full_scan_interval_seconds,
+                "discovery_limit": self.fetch_layer_discovery_limit,
+                "max_hot_issues_per_cycle": self.fetch_layer_max_hot_issues_per_cycle,
+                "pr_scan_every_n_refreshes": self.fetch_layer_pr_scan_every_n_refreshes,
+                "dependency_scan_every_n_refreshes": self.fetch_layer_dependency_scan_every_n_refreshes,
+            }
         if self.instances != 1:
             ui_dict["instances"] = self.instances
         if ui_dict:
