@@ -424,7 +424,7 @@ endif
 	trap 'kill $$(jobs -p) 2>/dev/null' EXIT; \
 	pass=0; fail=0; \
 	for i in $$(seq 1 $(RUNS)); do \
-		if $(PYTEST) "$(TEST)" -q --no-header --tb=line 2>&1 | grep -q "passed"; then \
+		if $(PYTEST) "$(TEST)" -q --no-header --tb=line >/dev/null 2>&1; then \
 			pass=$$((pass+1)); \
 		else \
 			fail=$$((fail+1)); \
