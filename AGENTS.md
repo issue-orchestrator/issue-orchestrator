@@ -200,6 +200,9 @@ def get_session(self, id: str) -> Session:
 - Favor higher-level abstractions when they improve clarity, conciseness, or testability.
 - If callers must rummage across disparate classes/fields to accomplish a task, consider introducing a higher-level port or helper.
 - Entry points should depend on behavior-level ports, not storage or transport details.
+- Abstraction trigger: if implementing one policy requires touching multiple internal fields/classes, stop and introduce or extend a behavior-level abstraction first.
+- Shared state rule: do not mutate shared state collections directly from entrypoints/controllers when policy enforcement is required; route through an owner abstraction with explicit outcomes.
+- Review classification: if this rule is violated, classify as `Correctness Risk` when a concrete invariant can be bypassed, otherwise classify as `Design Smell`.
 
 ## GitHub API Discipline
 
@@ -266,3 +269,27 @@ The work isn't done when it *appears* done. The work is done when you've verifie
 2. Fix the underlying issue (not just the symptom)
 3. Verify the fix actually solves the problem
 4. Never dismiss failures as "someone else's job"
+
+### Final Abstraction Pass (Required)
+
+Before finishing any review or code change, run one final pass focused on abstraction integrity.
+
+Check for:
+1. Policy scattered across multiple call sites that should have one owner abstraction.
+2. Entry points/controllers touching storage/state internals directly instead of owner APIs.
+3. Shared mutable state writes outside the owning boundary.
+4. Callers requiring knowledge of multiple internals to complete one task.
+5. Cross-path rule drift where the same rule is enforced differently by path.
+
+Decision rule:
+- If an abstraction issue is found, implement the abstraction fix in this PR by default.
+- Deferral is allowed only when the abstraction fix is a substantial undertaking that would materially expand scope or risk.
+- If deferred, a follow-up issue must be created immediately with clear scope, named owner, due milestone/date, risk statement, and link from the PR/review.
+
+Review output requirement:
+- Reviewers must list abstraction findings as implementation-required unless explicitly deferred under the decision rule above.
+- If none exist, state: `Final abstraction pass: no issues found.`
+
+Coding output requirement:
+- Coders must state which abstraction findings were implemented in this PR.
+- If any were deferred, include the follow-up issue link and required metadata listed above.
