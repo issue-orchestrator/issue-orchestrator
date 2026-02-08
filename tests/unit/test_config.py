@@ -1527,6 +1527,41 @@ provider_resilience:
         assert config.provider_resilience.circuit_breaker.max_cooldowns == 3
 
 
+class TestInterruptedSessionRetryConfig:
+    """Tests for interrupted-session retry config parsing."""
+
+    def test_defaults(self):
+        config = Config()
+        assert config.retry.interrupted_sessions.enabled is False
+        assert config.retry.interrupted_sessions.retry_coding is True
+        assert config.retry.interrupted_sessions.retry_review is True
+        assert config.retry.interrupted_sessions.coding_guard_label == "io:auto-retried-interrupted-coding"
+        assert config.retry.interrupted_sessions.review_guard_label == "io:auto-retried-interrupted-review"
+
+    def test_parsing(self, tmp_path):
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:backend:
+    prompt: {prompt}
+retry:
+  interrupted_sessions:
+    enabled: true
+    retry_coding: false
+    retry_review: true
+    coding_guard_label: "io:custom-coding-guard"
+    review_guard_label: "io:custom-review-guard"
+""")
+        config = Config.load(config_file)
+        assert config.retry.interrupted_sessions.enabled is True
+        assert config.retry.interrupted_sessions.retry_coding is False
+        assert config.retry.interrupted_sessions.retry_review is True
+        assert config.retry.interrupted_sessions.coding_guard_label == "io:custom-coding-guard"
+        assert config.retry.interrupted_sessions.review_guard_label == "io:custom-review-guard"
+
+
 class TestCleanupConfig:
     """Tests for cleanup configuration."""
 

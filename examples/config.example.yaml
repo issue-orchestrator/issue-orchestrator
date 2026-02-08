@@ -180,6 +180,12 @@ retry:
   max_validation_retries: 3
   validation_error_file: "validation-errors.txt"
   # retry_prompt_template: ".prompts/retry.md"
+  interrupted_sessions:
+    enabled: false
+    retry_coding: true
+    retry_review: true
+    coding_guard_label: "io:auto-retried-interrupted-coding"
+    review_guard_label: "io:auto-retried-interrupted-review"
 
 provider_resilience:
   short_retry:

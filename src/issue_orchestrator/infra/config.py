@@ -283,6 +283,20 @@ class RetryConfig:
     # Agents can override this with their own retry_prompt_template.
     # If None, uses built-in default template.
     retry_prompt_template: Optional[str] = None
+    interrupted_sessions: "InterruptedSessionRetryConfig" = field(
+        default_factory=lambda: InterruptedSessionRetryConfig()
+    )
+
+
+@dataclass
+class InterruptedSessionRetryConfig:
+    """Auto-retry settings for sessions that exit without completion."""
+
+    enabled: bool = False
+    retry_coding: bool = True
+    retry_review: bool = True
+    coding_guard_label: str = "io:auto-retried-interrupted-coding"
+    review_guard_label: str = "io:auto-retried-interrupted-review"
 
 
 @dataclass
@@ -907,14 +921,25 @@ def _load_validation_section(config: "Config", validation_section: dict) -> None
         )
 
 
-def _load_retry_section(config: "Config", data: dict) -> None:
+def _load_retry_section(config: "Config", retry_data: dict) -> None:
     """Load retry configuration."""
-    retry_data = data.get("retry", {})
     if retry_data:
+        interrupted_data = retry_data.get("interrupted_sessions", {}) or {}
         config.retry = RetryConfig(
             max_validation_retries=retry_data.get("max_validation_retries", 3),
             validation_error_file=retry_data.get("validation_error_file", "validation-errors.txt"),
             retry_prompt_template=retry_data.get("retry_prompt_template"),
+            interrupted_sessions=InterruptedSessionRetryConfig(
+                enabled=interrupted_data.get("enabled", False),
+                retry_coding=interrupted_data.get("retry_coding", True),
+                retry_review=interrupted_data.get("retry_review", True),
+                coding_guard_label=interrupted_data.get(
+                    "coding_guard_label", "io:auto-retried-interrupted-coding"
+                ),
+                review_guard_label=interrupted_data.get(
+                    "review_guard_label", "io:auto-retried-interrupted-review"
+                ),
+            ),
         )
 
 
@@ -983,7 +1008,7 @@ _TOP_LEVEL_SECTION_KEYS = (
     "agents", "labels", "review", "cleanup", "worktrees", "execution",
     "validation", "provider_resilience", "ui", "observability", "timeline", "security", "filtering",
     "triage", "scheduling", "e2e", "goal_pilot", "milestones", "state", "config", "claims", "hooks",
-    "ai_systems",
+    "ai_systems", "retry",
     "triage", "scheduling", "e2e", "milestones", "state", "config", "claims", "hooks",
     "sqlite_backup",
 )
@@ -1820,6 +1845,32 @@ class Config:
         if validation_dict:
             result["validation"] = validation_dict
 
+        # Retry section
+        retry_dict: dict = {}
+        if self.retry.max_validation_retries != 3:
+            retry_dict["max_validation_retries"] = self.retry.max_validation_retries
+        if self.retry.validation_error_file != "validation-errors.txt":
+            retry_dict["validation_error_file"] = self.retry.validation_error_file
+        if self.retry.retry_prompt_template:
+            retry_dict["retry_prompt_template"] = self.retry.retry_prompt_template
+
+        interrupted_dict: dict = {}
+        interrupted = self.retry.interrupted_sessions
+        if interrupted.enabled:
+            interrupted_dict["enabled"] = True
+        if interrupted.retry_coding is not True:
+            interrupted_dict["retry_coding"] = interrupted.retry_coding
+        if interrupted.retry_review is not True:
+            interrupted_dict["retry_review"] = interrupted.retry_review
+        if interrupted.coding_guard_label != "io:auto-retried-interrupted-coding":
+            interrupted_dict["coding_guard_label"] = interrupted.coding_guard_label
+        if interrupted.review_guard_label != "io:auto-retried-interrupted-review":
+            interrupted_dict["review_guard_label"] = interrupted.review_guard_label
+        if interrupted_dict:
+            retry_dict["interrupted_sessions"] = interrupted_dict
+        if retry_dict:
+            result["retry"] = retry_dict
+
         # Security section
         security_dict: dict = {}
         if not self.enforce_hooks:
@@ -1928,7 +1979,7 @@ class Config:
         _load_review_section(config, sections["review"])
         _load_cleanup_section(config, sections["cleanup"])
         _load_validation_section(config, sections["validation"])
-        _load_retry_section(config, data)
+        _load_retry_section(config, sections["retry"])
 
         # Simple direct assignments
         config.e2e_pr_labels = sections["e2e"].get("pr_labels", [])
