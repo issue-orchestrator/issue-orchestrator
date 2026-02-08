@@ -105,6 +105,11 @@ labels:
 
 3. **Labels as source of truth** - Crash-safe: labels persist, orchestrator picks up where it left off
 
+## Review Decision Policy (Strict)
+
+Review decision criteria are maintained in `.claude/skills/review-workflow/SKILL.md` (canonical source).
+Use that section for nit vs non-nit examples and strict approve/request-changes rules.
+
 ## Orchestrator Methods
 
 | Method | Purpose |

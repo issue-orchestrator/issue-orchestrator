@@ -30,6 +30,40 @@ When reviewing changes that touch review/rework/triage/session launch paths, sca
 
 If any of the above appear, recommend centralizing the policy into a shared helper/module and reusing it.
 
+## Review Decision Policy (Strict)
+
+Use a hardline merge bar. Do not soften medium-or-higher concerns into an approval.
+
+- **Only nits may remain unaddressed at merge time.**
+- If a comment identifies correctness, reliability, safety, architecture, contract, test coverage, observability, or maintainability risk, it is **not a nit**.
+- Concerns marked "verify", "worth checking", or "might be an issue" are not informational notes. They require confirmation before approval.
+- If uncertain whether something is a nit, treat it as non-nit until proven otherwise.
+
+### Allowed Outcomes
+
+- **Approve**: all non-nit concerns are resolved in-code, or conclusively disproven with evidence.
+- **Request changes**: any non-nit concern remains unresolved, unverified, or deferred.
+
+### Not Allowed
+
+- "Approve with comments" when comments include unresolved non-nits.
+- Approving while asking for follow-up on medium/high-risk items.
+- Downgrading meaningful concerns to "minor" to avoid blocking.
+
+### Nits (Examples)
+
+- Wording tweaks in comments/docs that do not affect behavior.
+- Optional formatting/style preferences with no readability or maintainability impact.
+- Non-substantive naming preferences where current naming is clear and consistent.
+
+### Non-Nits (Always Blocking Until Resolved)
+
+- Control-flow changes that could alter behavior.
+- Potential runtime exceptions or missing fields/attributes.
+- Data/contract/schema mismatches or payload bloat risks.
+- Missing or weak tests for changed behavior.
+- Architectural drift from ports/adapters, DI, or lifecycle boundaries.
+
 ## Review Pipeline
 
 ```
