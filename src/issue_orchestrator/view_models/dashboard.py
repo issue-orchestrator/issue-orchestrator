@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
-import time
 from typing import Any, Callable
 
 from ..domain.session_key import TaskKind
@@ -290,7 +289,7 @@ def _format_age_seconds(seconds: float | int | None) -> str:
 
 
 def _refresh_meta_for_issue(state, config, issue_number: int, now_ts: float) -> dict[str, Any]:
-    per_issue = state.issue_last_refreshed_at.get(issue_number)
+    per_issue = state.issue_last_refreshed_at.get(issue_number) or state.issue_refresh_timestamps.get(issue_number)
     fallback = state.queue_last_refresh_at if state.queue_last_refresh_at > 0 else None
     last_refreshed_at = per_issue or fallback
     age_seconds = (now_ts - last_refreshed_at) if last_refreshed_at else None
@@ -308,6 +307,8 @@ def _refresh_meta_for_issue(state, config, issue_number: int, now_ts: float) -> 
         "last_refreshed_at": last_refreshed_at or 0.0,
         "last_refreshed_age_seconds": age_seconds if age_seconds is not None else -1,
         "last_refreshed_label": freshness_label,
+        "refresh_age_seconds": age_seconds if age_seconds is not None else None,
+        "refresh_age_label": freshness_label,
         "is_stale": is_stale,
         "stale_reason": stale_reason,
     }
@@ -399,7 +400,6 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int]) -
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
-            **_refresh_meta(state, config, session.issue.number),
         })
 
     return items, seen_issues
@@ -543,7 +543,6 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": status_reason if entry.status != "completed" else None,
-            **_refresh_meta(state, config, entry.issue_number),
         }
         if entry.status in ("blocked", "needs_human"):
             blocked_items.append(item)
@@ -753,7 +752,6 @@ def _build_backlog_items(state, config) -> list[dict[str, Any]]:
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
-            **_refresh_meta(state, config, issue.number),
         })
     return cards
 
@@ -1159,6 +1157,12 @@ def build_dashboard_view_model(
         "dependencyScanEveryNRefreshes": config.fetch_layer_dependency_scan_every_n_refreshes if config else 1,
         "visibilityAwareEnabled": config.fetch_layer_visibility_aware_enabled if config else False,
         "selectiveSyncPlannerEnabled": config.fetch_layer_selective_sync_planner_enabled if config else False,
+        "flowLazyEnabled": bool(config.flow_refresh_enabled) if config else True,
+        "flowStaleSeconds": int(config.flow_refresh_stale_seconds) if config else 900,
+        "flowCooldownSeconds": int(config.flow_refresh_cooldown_seconds) if config else 120,
+        "freshnessMode": str(config.flow_freshness_mode) if config else "balanced",
+        "apiBudget": str(config.flow_api_budget) if config else "medium",
+        "attentionPriority": str(config.flow_attention_priority) if config else "strict",
     }
     if config:
         milestones = config.get_filter_milestones()

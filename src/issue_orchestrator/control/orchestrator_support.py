@@ -649,7 +649,7 @@ def _fetch_and_update_queue(
         queue_cache = QueueCache(config, state)
         new_queue = queue_cache.replace_from_refresh(all_issues)
         _emit_queue_changes(events, state, new_queue)
-        prune_issue_refresh_timestamps(state)
+        queue_cache.prune_refresh_timestamps()
         state.queue_last_refresh_at = refreshed_at
         state.queue_refresh_count += 1
         if full_scan:

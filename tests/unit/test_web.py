@@ -1368,7 +1368,7 @@ class TestRefreshEndpoint:
             response = client.post("/api/issues/77/refresh")
             assert response.status_code == 200
             payload = response.json()
-            assert payload["status"] == "ok"
+            assert payload["status"] == "refreshed"
             assert payload["issue_number"] == 77
             assert payload["is_stale"] is False
             assert payload["last_refreshed_label"] == "just now"
