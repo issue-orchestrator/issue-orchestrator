@@ -103,13 +103,20 @@
                                 {% elif card.summary %}
                                 <div class="card-line card-muted">{{ card.summary }}</div>
                                 {% endif %}
-                                {% if card.badges %}
+                                {% if card.badges or card.is_stale %}
                                 <div class="card-badges">
                                     {% for badge in card.badges %}
                                     <span class="badge">{{ badge }}</span>
                                     {% endfor %}
+                                    {% if card.is_stale %}
+                                    <span class="badge badge-stale" title="Data may be stale">stale</span>
+                                    {% endif %}
                                 </div>
                                 {% endif %}
+                                <div class="card-actions">
+                                    <span class="card-refresh-age">refreshed {{ card.refresh_age_label }}</span>
+                                    <button class="issue-action-btn issue-refresh-btn" onclick="refreshIssueCard({{ card.issue_number }}, event)">Refresh</button>
+                                </div>
                             </div>
                             {% endfor %}
                         {% else %}

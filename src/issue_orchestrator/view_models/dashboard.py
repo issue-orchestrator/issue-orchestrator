@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import time
 from typing import Any, Callable
 
 from ..domain.session_key import TaskKind
@@ -125,6 +126,8 @@ class DashboardViewModel:
             "agents": self.agent_names,
             "scope": self.scope_summary,
             "refresh": self.scope_summary.get("refresh", {}),
+            "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
+            "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -258,6 +261,36 @@ def _relative_time(dt_str: str) -> str:
         return ""
 
 
+def _refresh_meta(state, config, issue_number: int) -> dict[str, Any]:
+    refreshed_at = state.issue_refresh_timestamps.get(issue_number, 0.0)
+    queue_interval = config.queue_refresh_seconds if config else 600
+    full_scan_interval = config.fetch_layer_full_scan_interval_seconds if config else 1800
+    if queue_interval > 0:
+        stale_after = max(queue_interval * 2, 120)
+    else:
+        stale_after = max(full_scan_interval, 300)
+
+    if refreshed_at <= 0:
+        return {
+            "refresh_age_seconds": None,
+            "refresh_age_label": "not refreshed",
+            "is_stale": True,
+        }
+
+    age_seconds = max(0, int(time.time() - refreshed_at))
+    if age_seconds >= 3600:
+        age_label = f"{age_seconds // 3600}h"
+    elif age_seconds >= 60:
+        age_label = f"{age_seconds // 60}m"
+    else:
+        age_label = f"{age_seconds}s"
+    return {
+        "refresh_age_seconds": age_seconds,
+        "refresh_age_label": age_label,
+        "is_stale": age_seconds >= stale_after,
+    }
+
+
 def _pending_issue_numbers(state) -> dict[str, set[int]]:
     pending_review_numbers = {r.issue_number for r in state.pending_reviews} | {
         r.issue_number for r in state.discovered_reviews
@@ -338,6 +371,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int]) -
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            **_refresh_meta(state, config, session.issue.number),
         })
 
     return items, seen_issues
@@ -429,6 +463,7 @@ def _build_queue_items(
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            **_refresh_meta(state, config, issue.number),
         }
         if is_blocked:
             blocked_items.append(item)
@@ -480,6 +515,7 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": status_reason if entry.status != "completed" else None,
+            **_refresh_meta(state, config, entry.issue_number),
         }
         if entry.status in ("blocked", "needs_human"):
             blocked_items.append(item)
@@ -657,6 +693,9 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
         "issue_url": item.get("issue_url") or item.get("url") or "",
         "focus_hint": "Focus issue",
         "github_hint": "Open in GitHub",
+        "refresh_age_label": item.get("refresh_age_label", ""),
+        "refresh_age_seconds": item.get("refresh_age_seconds"),
+        "is_stale": bool(item.get("is_stale")),
     }
 
 
@@ -683,6 +722,7 @@ def _build_backlog_items(state, config) -> list[dict[str, Any]]:
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
+            **_refresh_meta(state, config, issue.number),
         })
     return cards
 
@@ -981,6 +1021,8 @@ def build_dashboard_view_model(
         "maxHotIssuesPerCycle": config.fetch_layer_max_hot_issues_per_cycle if config else 40,
         "prScanEveryNRefreshes": config.fetch_layer_pr_scan_every_n_refreshes if config else 2,
         "dependencyScanEveryNRefreshes": config.fetch_layer_dependency_scan_every_n_refreshes if config else 1,
+        "visibilityAwareEnabled": config.fetch_layer_visibility_aware_enabled if config else False,
+        "selectiveSyncPlannerEnabled": config.fetch_layer_selective_sync_planner_enabled if config else False,
     }
     if config:
         milestones = config.get_filter_milestones()

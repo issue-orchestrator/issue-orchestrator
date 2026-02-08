@@ -21,6 +21,8 @@ _Auto-generated from settings schema._
 | `ui.fetch_layer.max_hot_issues_per_cycle` | integer | `40` | Max existing queue issues to refresh by direct issue lookup per cycle | `20`, `40`, `100` | Higher values improve freshness but increase API usage. |
 | `ui.fetch_layer.pr_scan_every_n_refreshes` | integer | `2` | Scan review/rework PRs every N queue refreshes | `1`, `2`, `3` | Use 1 for max freshness; increase to reduce PR API calls. |
 | `ui.fetch_layer.dependency_scan_every_n_refreshes` | integer | `1` | Recompute dependency blocking every N queue refreshes | `1`, `2`, `3` | Use 1 for immediate dependency updates; increase to reduce load. |
+| `ui.fetch_layer.visibility_aware_enabled` | boolean | `False` | Prioritize refresh for issues currently visible in the Flow board | `true`, `false` | Requires browser visibility hints from the Flow board. |
+| `ui.fetch_layer.selective_sync_planner_enabled` | boolean | `False` | Enable cross-entity selective sync planning for queue refresh cycles | `true`, `false` | Use with telemetry to tune freshness versus API cost. |
 | `scheduling.default_priority_tier` | integer | `1` | Default priority tier when none is specified (0-9) | `0`, `1`, `2` | Used when issue titles do not include a [P?-nnn] prefix. |
 
 ## E2E Runner

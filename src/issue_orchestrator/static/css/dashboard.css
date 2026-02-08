@@ -266,6 +266,25 @@ h1 {
     padding: 2px 6px;
     color: var(--text-muted);
 }
+.badge-stale {
+    border-color: #e09f3e;
+    color: #e09f3e;
+}
+.card-actions {
+    margin-top: 6px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+}
+.card-refresh-age {
+    font-size: 10px;
+    color: var(--text-muted);
+}
+.issue-refresh-btn {
+    font-size: 10px;
+    padding: 3px 7px;
+}
 
 .attention-board {
     display: grid;

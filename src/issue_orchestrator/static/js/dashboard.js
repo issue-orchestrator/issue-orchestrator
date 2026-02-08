@@ -218,6 +218,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
 document.addEventListener('DOMContentLoaded', () => {
     updateActionHints();
     refreshViewModel({ reloadOnListChange: false });
+    initVisibilityObserver();
     const nextRun = document.getElementById('e2eNextRun');
     if (nextRun && nextRun.dataset.nextRunReason) {
         const nextInfo = {
@@ -230,6 +231,67 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 });
+
+let visibilityObserver = null;
+let visibilityPostTimer = null;
+let lastVisibilityPayload = '';
+
+function initVisibilityObserver() {
+    const enabled = Boolean(window.dashboardData && window.dashboardData.fetchLayerVisibilityAwareEnabled);
+    if (!enabled) return;
+    const cards = Array.from(document.querySelectorAll('.issue-card[data-issue]'));
+    if (!cards.length) return;
+
+    const visibleNumbers = new Set();
+    visibilityObserver = new IntersectionObserver((entries) => {
+        let changed = false;
+        entries.forEach((entry) => {
+            const issueNumber = parseInt(entry.target.dataset.issue || '0', 10);
+            if (!issueNumber) return;
+            if (entry.isIntersecting) {
+                if (!visibleNumbers.has(issueNumber)) {
+                    visibleNumbers.add(issueNumber);
+                    changed = true;
+                }
+            } else if (visibleNumbers.delete(issueNumber)) {
+                changed = true;
+            }
+        });
+        if (changed) {
+            scheduleVisibilityPost(Array.from(visibleNumbers));
+        }
+    }, { threshold: 0.25 });
+
+    cards.forEach((card) => visibilityObserver.observe(card));
+}
+
+function scheduleVisibilityPost(visibleIssueNumbers) {
+    const normalized = Array.from(new Set(visibleIssueNumbers.map(n => parseInt(n, 10)).filter(Boolean))).sort((a, b) => a - b);
+    const payload = JSON.stringify(normalized);
+    if (payload === lastVisibilityPayload) return;
+    if (visibilityPostTimer) window.clearTimeout(visibilityPostTimer);
+    visibilityPostTimer = window.setTimeout(() => {
+        postVisibility(visibleIssueNumbers);
+    }, 600);
+}
+
+async function postVisibility(visibleIssueNumbers) {
+    const normalized = Array.from(new Set(visibleIssueNumbers.map(n => parseInt(n, 10)).filter(Boolean))).sort((a, b) => a - b);
+    const payload = JSON.stringify(normalized);
+    if (payload === lastVisibilityPayload) return;
+    try {
+        const res = await fetch('/api/refresh/visibility', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ issues: normalized }),
+        });
+        if (res.ok) {
+            lastVisibilityPayload = payload;
+        }
+    } catch (err) {
+        console.error('Failed to post visibility hint:', err);
+    }
+}
 
 let logPoller = null;
 let logFollow = true;
@@ -480,6 +542,22 @@ async function refreshFromGitHub() {
     } catch (e) {
         console.error('Refresh failed:', e);
         showToast('Refresh failed', true);
+    }
+}
+
+async function refreshIssueCard(issueNumber, event) {
+    if (event) event.stopPropagation();
+    try {
+        const res = await fetch(`/api/issues/${issueNumber}/refresh`, { method: 'POST' });
+        if (!res.ok) {
+            showToast(`Issue #${issueNumber} refresh failed`, true);
+            return;
+        }
+        showToast(`Issue #${issueNumber} refreshed`);
+        window.location.reload();
+    } catch (err) {
+        console.error('Issue refresh failed:', err);
+        showToast(`Issue #${issueNumber} refresh failed`, true);
     }
 }
 

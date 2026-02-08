@@ -269,6 +269,66 @@ class TestQueueFetchPlanner:
         github_workflow.scan_needs_rework_prs.assert_not_called()
         scheduler.get_available_issues.assert_called_once()
 
+    def test_visibility_aware_hot_list_prioritizes_visible_issues(self, mock_event_sink, mock_repository_host):
+        config = self._make_config()
+        config.fetch_layer_visibility_aware_enabled = True
+        config.fetch_layer_max_hot_issues_per_cycle = 2
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"]), make_issue(2, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+            ui_visible_issue_numbers=[99],
+            ui_visible_updated_at=time.time(),
+        )
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
+        github_workflow.fetch_discovery_issues.return_value = []
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=False,
+            inflight_stable_ids={},
+        )
+
+        github_workflow.refresh_issues.assert_called_once_with([99, 1])
+
+    def test_selective_sync_planner_can_skip_noncritical_scans(self, mock_event_sink, mock_repository_host):
+        config = self._make_config()
+        config.fetch_layer_selective_sync_planner_enabled = True
+        config.fetch_layer_pr_scan_every_n_refreshes = 10
+        config.fetch_layer_dependency_scan_every_n_refreshes = 10
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+            queue_refresh_count=1,
+        )
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
+        github_workflow.fetch_discovery_issues.return_value = []
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=False,
+            inflight_stable_ids={},
+        )
+
+        github_workflow.scan_needs_code_review_prs.assert_not_called()
+        github_workflow.scan_needs_rework_prs.assert_not_called()
+        scheduler.get_available_issues.assert_not_called()
+
 
 # =============================================================================
 # Tests for log_transition

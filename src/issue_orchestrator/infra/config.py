@@ -858,6 +858,8 @@ def _load_ui_section(config: "Config", ui_section: dict) -> None:
     config.fetch_layer_max_hot_issues_per_cycle = fetch_layer.get("max_hot_issues_per_cycle", 40)
     config.fetch_layer_pr_scan_every_n_refreshes = fetch_layer.get("pr_scan_every_n_refreshes", 2)
     config.fetch_layer_dependency_scan_every_n_refreshes = fetch_layer.get("dependency_scan_every_n_refreshes", 1)
+    config.fetch_layer_visibility_aware_enabled = fetch_layer.get("visibility_aware_enabled", False)
+    config.fetch_layer_selective_sync_planner_enabled = fetch_layer.get("selective_sync_planner_enabled", False)
     config.instances = ui_section.get("instances", 1)
 
 
@@ -1080,6 +1082,8 @@ class Config:
     fetch_layer_max_hot_issues_per_cycle: int = 40
     fetch_layer_pr_scan_every_n_refreshes: int = 2
     fetch_layer_dependency_scan_every_n_refreshes: int = 1
+    fetch_layer_visibility_aware_enabled: bool = False
+    fetch_layer_selective_sync_planner_enabled: bool = False
 
     # Multi-instance support (for multi-orchestrator coordination)
     instances: int = 1  # Number of orchestrator instances to spawn (CC manages this)
@@ -1414,6 +1418,8 @@ class Config:
                     "max_hot_issues_per_cycle": self.fetch_layer_max_hot_issues_per_cycle,
                     "pr_scan_every_n_refreshes": self.fetch_layer_pr_scan_every_n_refreshes,
                     "dependency_scan_every_n_refreshes": self.fetch_layer_dependency_scan_every_n_refreshes,
+                    "visibility_aware_enabled": self.fetch_layer_visibility_aware_enabled,
+                    "selective_sync_planner_enabled": self.fetch_layer_selective_sync_planner_enabled,
                 },
                 "instances": self.instances,
             },
@@ -1691,6 +1697,8 @@ class Config:
             or self.fetch_layer_max_hot_issues_per_cycle != 40
             or self.fetch_layer_pr_scan_every_n_refreshes != 2
             or self.fetch_layer_dependency_scan_every_n_refreshes != 1
+            or self.fetch_layer_visibility_aware_enabled
+            or self.fetch_layer_selective_sync_planner_enabled
         ):
             ui_dict["fetch_layer"] = {
                 "enabled": self.fetch_layer_enabled,
@@ -1699,6 +1707,8 @@ class Config:
                 "max_hot_issues_per_cycle": self.fetch_layer_max_hot_issues_per_cycle,
                 "pr_scan_every_n_refreshes": self.fetch_layer_pr_scan_every_n_refreshes,
                 "dependency_scan_every_n_refreshes": self.fetch_layer_dependency_scan_every_n_refreshes,
+                "visibility_aware_enabled": self.fetch_layer_visibility_aware_enabled,
+                "selective_sync_planner_enabled": self.fetch_layer_selective_sync_planner_enabled,
             }
         if self.instances != 1:
             ui_dict["instances"] = self.instances

@@ -9,6 +9,7 @@ import re
 import signal
 import socket
 import subprocess
+import time
 import webbrowser
 from pathlib import Path
 from collections.abc import Iterator
@@ -746,6 +747,68 @@ async def refresh(request: Request) -> JSONResponse:
 
     _orchestrator.request_refresh(inflight_stable_ids=inflight_stable_ids)
     return JSONResponse({"status": "refresh_requested"})
+
+
+@app.post("/api/refresh/visibility")
+async def update_refresh_visibility(request: Request) -> JSONResponse:
+    """Store issue visibility hints from Flow UI for visibility-aware refresh.
+
+    JSON body:
+        issues: list[int] - Issue numbers currently visible to the user.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "Invalid JSON"}, status_code=400)
+
+    raw_issues = body.get("issues", [])
+    if not isinstance(raw_issues, list):
+        return JSONResponse({"error": "issues must be a list"}, status_code=400)
+
+    visible_numbers: list[int] = []
+    for value in raw_issues:
+        try:
+            number = int(value)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            visible_numbers.append(number)
+
+    state = _orchestrator.state
+    state.ui_visible_issue_numbers = sorted(set(visible_numbers))
+    state.ui_visible_updated_at = time.time()
+    return JSONResponse({"status": "ok", "count": len(state.ui_visible_issue_numbers)})
+
+
+@app.post("/api/issues/{issue_number}/refresh")
+async def refresh_issue(issue_number: int) -> JSONResponse:
+    """Refresh a single issue from GitHub and update cached queue state."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    issue = _orchestrator.repository_host.get_issue(issue_number)
+    if issue is None:
+        return JSONResponse({"error": f"Issue #{issue_number} not found"}, status_code=404)
+
+    state = _orchestrator.state
+    updated = False
+    for idx, cached in enumerate(state.cached_queue_issues):
+        if cached.number == issue_number:
+            state.cached_queue_issues[idx] = issue
+            updated = True
+            break
+    if not updated:
+        state.cached_queue_issues.append(issue)
+
+    state.issue_refresh_timestamps[issue_number] = time.time()
+    return JSONResponse({
+        "status": "refreshed",
+        "issue_number": issue_number,
+        "updated": updated,
+    })
 
 
 @app.post("/api/kill/{issue_number}")
