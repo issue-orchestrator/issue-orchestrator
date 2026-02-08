@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full verify-hooks-all _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create stress-test
+.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full verify-hooks-all _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -46,7 +46,6 @@ help:
 	@echo "  issues-fix          Apply issue name fixes"
 	@echo "  issues-fix-dry-run  Preview issue name fixes (no changes)"
 	@echo "  issues-create       Create issue (use ARGS='--agent x --milestone n --title y')"
-	@echo "  stress-test         Run a test 100x under CPU load (TEST=path::name [RUNS=N])"
 	@echo "  clean               Remove build artifacts"
 	@echo ""
 	@echo "Using: $(GMAKE_VERSION)"
@@ -408,28 +407,3 @@ issues-fix-dry-run:
 
 issues-create:
 	$(PYTHON) scripts/issues.py create $(ARGS)
-
-# Stress-test a single test under CPU saturation to flush out flaky timing bugs.
-# Spawns one busy-loop per core, runs the test RUNS times, then kills the load.
-# Usage: make stress-test TEST=tests/unit/test_foo.py::test_bar
-#        make stress-test TEST=tests/unit/test_foo.py::test_bar RUNS=200
-RUNS ?= 100
-NCPU := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
-stress-test:
-ifndef TEST
-	$(error TEST is required. Usage: make stress-test TEST=tests/unit/test_foo.py::test_bar)
-endif
-	@echo "Stress-testing $(TEST) ($(RUNS) runs, $(NCPU) CPU burners)"
-	@for i in $$(seq 1 $(NCPU)); do python3 -c "while True: pass" & done; \
-	trap 'kill $$(jobs -p) 2>/dev/null' EXIT; \
-	pass=0; fail=0; \
-	for i in $$(seq 1 $(RUNS)); do \
-		if $(PYTEST) "$(TEST)" -q --no-header --tb=line >/dev/null 2>&1; then \
-			pass=$$((pass+1)); \
-		else \
-			fail=$$((fail+1)); \
-			echo "FAIL on run $$i"; \
-		fi; \
-	done; \
-	echo "Results: $$pass passed, $$fail failed out of $(RUNS)"; \
-	[ $$fail -eq 0 ]
