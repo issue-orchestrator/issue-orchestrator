@@ -110,7 +110,7 @@ function buildEmptyStateHtml(vm) {
     if (vm.active_tab === 'history') {
         return 'No session history yet';
     }
-    if (vm.active_tab === 'blocked') {
+    if (vm.active_tab === 'attention') {
         return 'Nothing needs attention - all systems running smoothly!';
     }
     if (vm.active_tab === 'e2e') {
@@ -627,8 +627,8 @@ function switchTab(tab) {
 }
 
 // Keyboard navigation for tabs (accessibility)
-const tabOrder = ['active', 'queue', 'blocked', 'history', 'e2e'];
-document.querySelectorAll('.tab-bar .tab').forEach(tabBtn => {
+const tabOrder = ['flow', 'attention', 'history'];
+document.querySelectorAll('.board-tabs .tab').forEach(tabBtn => {
     tabBtn.addEventListener('keydown', (e) => {
         const currentTab = tabBtn.id.replace('tab-', '');
         const currentIndex = tabOrder.indexOf(currentTab);
@@ -972,6 +972,7 @@ async function toggleExcluded() {
 
 // Helper to add keyboard support to menu items
 function addKeyboardSupport(element) {
+    if (!element) return;
     element.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
@@ -998,11 +999,32 @@ const menuDepsDivider = document.getElementById('menuDepsDivider');
 const menuDepsLabel = document.getElementById('menuDepsLabel');
 const menuDepsContainer = document.getElementById('menuDepsContainer');
 let currentRow = null;
+const contextMenuEnabled = [
+    contextMenu,
+    menuFocus,
+    menuFinder,
+    menuLog,
+    menuAgentLog,
+    menuInput,
+    menuPrompt,
+    menuKill,
+    menuIssue,
+    menuPR,
+    menuRetry,
+    menuDismiss,
+    menuHistoryDivider,
+    menuDepsDivider,
+    menuDepsLabel,
+    menuDepsContainer,
+].every((el) => el !== null);
 
 // Add keyboard support to all context menu items
-[menuFocus, menuFinder, menuLog, menuAgentLog, menuInput, menuPrompt, menuKill, menuIssue, menuPR, menuRetry, menuDismiss].forEach(addKeyboardSupport);
+if (contextMenuEnabled) {
+    [menuFocus, menuFinder, menuLog, menuAgentLog, menuInput, menuPrompt, menuKill, menuIssue, menuPR, menuRetry, menuDismiss].forEach(addKeyboardSupport);
+}
 
 function showContextMenu(e, row) {
+    if (!contextMenuEnabled) return;
     e.preventDefault();
     currentRow = row;
 
@@ -1098,177 +1120,179 @@ function showContextMenu(e, row) {
 }
 
 // Hide context menu on click elsewhere
-document.addEventListener('click', () => {
-    contextMenu.classList.remove('visible');
-});
+if (contextMenuEnabled) {
+    document.addEventListener('click', () => {
+        contextMenu.classList.remove('visible');
+    });
 
-// Menu actions - must stopPropagation to prevent document click handler from interfering
-menuFocus.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow && !menuFocus.classList.contains('disabled')) {
-        await fetch(`/api/focus/${currentRow.dataset.issue}`, { method: 'POST' });
-    }
-});
-
-menuFinder.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow && !menuFinder.classList.contains('disabled')) {
-        const res = await fetch(`/api/finder/${currentRow.dataset.issue}`, { method: 'POST' });
-        const data = await res.json();
-        console.log('Finder response:', data);
-    }
-});
-
-menuLog.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow) {
-        const issueNumber = currentRow.dataset.issue;
-        const res = await fetch(`/api/log/${issueNumber}`);
-        const data = await res.json();
-
-        if (data.error) {
-            alert(data.error + (data.hint ? '\n\n' + data.hint : ''));
-            return;
+    // Menu actions - must stopPropagation to prevent document click handler from interfering
+    menuFocus.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow && !menuFocus.classList.contains('disabled')) {
+            await fetch(`/api/focus/${currentRow.dataset.issue}`, { method: 'POST' });
         }
+    });
 
-        // Format log content for display
-        let logContent = '';
-        if (data.truncated) {
-            logContent += `<p style="color:#8b949e;margin-bottom:10px;">Showing last ${data.lines.length} of ${data.total_lines} entries...</p>`;
+    menuFinder.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow && !menuFinder.classList.contains('disabled')) {
+            const res = await fetch(`/api/finder/${currentRow.dataset.issue}`, { method: 'POST' });
+            const data = await res.json();
+            console.log('Finder response:', data);
         }
-        logContent += '<pre style="font-size:11px;max-height:400px;overflow:auto;background:#161b22;padding:10px;border-radius:4px;">';
-        for (const line of data.lines) {
-            try {
-                const entry = JSON.parse(line);
-                // Show role and truncated content
-                const role = entry.type || entry.role || 'unknown';
-                // Safely extract content - may be string or object
-                let rawContent = entry.message?.content || entry.content || entry;
-                const content = (typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent)).substring(0, 200);
-                logContent += `<span style="color:#58a6ff;">[${role}]</span> ${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}...\n`;
-            } catch {
-                logContent += line.substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '\n';
+    });
+
+    menuLog.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            const issueNumber = currentRow.dataset.issue;
+            const res = await fetch(`/api/log/${issueNumber}`);
+            const data = await res.json();
+
+            if (data.error) {
+                alert(data.error + (data.hint ? '\n\n' + data.hint : ''));
+                return;
             }
+
+            // Format log content for display
+            let logContent = '';
+            if (data.truncated) {
+                logContent += `<p style="color:#8b949e;margin-bottom:10px;">Showing last ${data.lines.length} of ${data.total_lines} entries...</p>`;
+            }
+            logContent += '<pre style="font-size:11px;max-height:400px;overflow:auto;background:#161b22;padding:10px;border-radius:4px;">';
+            for (const line of data.lines) {
+                try {
+                    const entry = JSON.parse(line);
+                    // Show role and truncated content
+                    const role = entry.type || entry.role || 'unknown';
+                    // Safely extract content - may be string or object
+                    let rawContent = entry.message?.content || entry.content || entry;
+                    const content = (typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent)).substring(0, 200);
+                    logContent += `<span style="color:#58a6ff;">[${role}]</span> ${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}...\n`;
+                } catch {
+                    logContent += line.substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '\n';
+                }
+            }
+            logContent += '</pre>';
+            logContent += `<p style="color:#8b949e;font-size:11px;margin-top:10px;">Log: ${data.log_path}</p>`;
+
+            // Show in modal
+            document.getElementById('modalTitle').textContent = `Session Log #${issueNumber}`;
+            document.getElementById('modalBody').innerHTML = logContent;
+            document.getElementById('modalOverlay').classList.add('visible');
         }
-        logContent += '</pre>';
-        logContent += `<p style="color:#8b949e;font-size:11px;margin-top:10px;">Log: ${data.log_path}</p>`;
+    });
 
-        // Show in modal
-        document.getElementById('modalTitle').textContent = `Session Log #${issueNumber}`;
-        document.getElementById('modalBody').innerHTML = logContent;
-        document.getElementById('modalOverlay').classList.add('visible');
-    }
-});
+    menuAgentLog.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            const issueNumber = currentRow.dataset.issue;
+            await openAgentLog(issueNumber);
+        }
+    });
 
-menuAgentLog.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow) {
-        const issueNumber = currentRow.dataset.issue;
-        await openAgentLog(issueNumber);
-    }
-});
-
-menuInput.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow && !menuInput.classList.contains('disabled')) {
-        const issueNumber = currentRow.dataset.issue;
-        openModal(
-            `Send Input #${issueNumber}`,
-            `
-                <div style="display:flex;flex-direction:column;gap:12px;">
-                    <label for="agentInput" class="form-label">Input</label>
-                    <textarea id="agentInput" class="form-textarea" rows="6" placeholder="Type a message or command (e.g., /exit)"></textarea>
-                    <div style="display:flex;justify-content:flex-end;gap:8px;">
-                        <button class="btn-secondary" onclick="closeModal()">Cancel</button>
-                        <button class="btn-primary" onclick="sendAgentInput(${issueNumber})">Send</button>
+    menuInput.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow && !menuInput.classList.contains('disabled')) {
+            const issueNumber = currentRow.dataset.issue;
+            openModal(
+                `Send Input #${issueNumber}`,
+                `
+                    <div style="display:flex;flex-direction:column;gap:12px;">
+                        <label for="agentInput" class="form-label">Input</label>
+                        <textarea id="agentInput" class="form-textarea" rows="6" placeholder="Type a message or command (e.g., /exit)"></textarea>
+                        <div style="display:flex;justify-content:flex-end;gap:8px;">
+                            <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button class="btn-primary" onclick="sendAgentInput(${issueNumber})">Send</button>
+                        </div>
                     </div>
-                </div>
-            `
-        );
-    }
-});
+                `
+            );
+        }
+    });
 
-menuPrompt.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow && !menuPrompt.classList.contains('disabled')) {
-        const agentType = currentRow.dataset.agent;
-        const res = await fetch(`/api/prompt/${encodeURIComponent(agentType)}`, { method: 'POST' });
-        const data = await res.json();
-        console.log('Prompt response:', data);
-    }
-});
-
-menuKill.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow) {
-        const issueNumber = currentRow.dataset.issue;
-        const title = currentRow.dataset.title;
-        if (confirm(`Kill session #${issueNumber}: ${title}?\n\nThis will terminate the Claude agent immediately.`)) {
-            const res = await fetch(`/api/kill/${issueNumber}`, { method: 'POST' });
+    menuPrompt.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow && !menuPrompt.classList.contains('disabled')) {
+            const agentType = currentRow.dataset.agent;
+            const res = await fetch(`/api/prompt/${encodeURIComponent(agentType)}`, { method: 'POST' });
             const data = await res.json();
-            if (data.status === 'killed') {
-                location.reload();
-            } else {
-                alert(data.error || 'Failed to kill session');
+            console.log('Prompt response:', data);
+        }
+    });
+
+    menuKill.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            const issueNumber = currentRow.dataset.issue;
+            const title = currentRow.dataset.title;
+            if (confirm(`Kill session #${issueNumber}: ${title}?\n\nThis will terminate the Claude agent immediately.`)) {
+                const res = await fetch(`/api/kill/${issueNumber}`, { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'killed') {
+                    location.reload();
+                } else {
+                    alert(data.error || 'Failed to kill session');
+                }
             }
         }
-    }
-});
+    });
 
-menuIssue.addEventListener('click', (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow) {
-        window.open(currentRow.dataset.issueUrl, '_blank');
-    }
-});
+    menuIssue.addEventListener('click', (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            window.open(currentRow.dataset.issueUrl, '_blank');
+        }
+    });
 
-menuPR.addEventListener('click', (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow && currentRow.dataset.prUrl) {
-        window.open(currentRow.dataset.prUrl, '_blank');
-    }
-});
+    menuPR.addEventListener('click', (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow && currentRow.dataset.prUrl) {
+            window.open(currentRow.dataset.prUrl, '_blank');
+        }
+    });
 
-menuRetry.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow) {
-        const issueNumber = currentRow.dataset.issue;
-        if (confirm(`Retry issue #${issueNumber}? It will be picked up on the next cycle.`)) {
-            const res = await fetch(`/api/retry/${issueNumber}`, { method: 'POST' });
-            const data = await res.json();
-            if (data.retrying) {
-                location.reload();
-            } else {
-                alert(data.error || 'Failed to retry issue');
+    menuRetry.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            const issueNumber = currentRow.dataset.issue;
+            if (confirm(`Retry issue #${issueNumber}? It will be picked up on the next cycle.`)) {
+                const res = await fetch(`/api/retry/${issueNumber}`, { method: 'POST' });
+                const data = await res.json();
+                if (data.retrying) {
+                    location.reload();
+                } else {
+                    alert(data.error || 'Failed to retry issue');
+                }
             }
         }
-    }
-});
+    });
 
-menuDismiss.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow) {
-        const issueNumber = currentRow.dataset.issue;
-        const res = await fetch(`/api/history/dismiss/${issueNumber}`, { method: 'POST' });
-        const data = await res.json();
-        if (data.dismissed) {
-            location.reload();
-        } else {
-            alert(data.error || 'Failed to dismiss');
+    menuDismiss.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            const issueNumber = currentRow.dataset.issue;
+            const res = await fetch(`/api/history/dismiss/${issueNumber}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.dismissed) {
+                location.reload();
+            } else {
+                alert(data.error || 'Failed to dismiss');
+            }
         }
-    }
-});
+    });
+}
 
 // Settings menu
 const settingsMenu = document.getElementById('settingsMenu');
@@ -1420,6 +1444,10 @@ function closePhaseModal(e) {
 }
 
 const timelineModal = document.getElementById('timelineModal');
+const issueDetailDrawer = document.getElementById('issueDetailDrawer');
+let issueDetailData = null;
+let issueDetailMode = 'loops';
+let lastIssueDetailTrigger = null;
 
 async function openTimelineModal(issueNumber) {
     if (!timelineModal) return;
@@ -1435,7 +1463,7 @@ async function openTimelineModal(issueNumber) {
             return;
         }
         const data = await res.json();
-        renderTimeline(content, data.events || []);
+        renderTimeline(content, data.events || [], data.phase_toc || [], data.loops || []);
     } catch (err) {
         console.error('Failed to load timeline:', err);
         content.innerHTML = '<div class="timeline-empty">Failed to load timeline.</div>';
@@ -1448,7 +1476,117 @@ function closeTimelineModal(e) {
     }
 }
 
-function renderTimeline(container, events) {
+function getIssueDetailFocusableElements() {
+    if (!issueDetailDrawer) return [];
+    return Array.from(
+        issueDetailDrawer.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
+    ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
+}
+
+async function openIssueDetail(issueNumber, triggerEl = null) {
+    if (!issueDetailDrawer) return;
+    lastIssueDetailTrigger = triggerEl || document.activeElement;
+    issueDetailDrawer.classList.add('visible');
+    issueDetailDrawer.setAttribute('aria-hidden', 'false');
+    document.getElementById('issueDetailTitle').textContent = `Issue #${issueNumber}`;
+    document.getElementById('issueDetailSummary').textContent = 'Loading issue detail...';
+    document.getElementById('issueDetailBody').innerHTML = '';
+    const closeBtn = document.getElementById('issueDetailCloseBtn');
+    if (closeBtn) closeBtn.focus();
+
+    try {
+        const res = await fetch(`/api/issue-detail/${issueNumber}`);
+        if (!res.ok) {
+            document.getElementById('issueDetailSummary').textContent = 'Issue detail unavailable.';
+            return;
+        }
+        issueDetailData = await res.json();
+        issueDetailMode = 'loops';
+        renderIssueDetail();
+    } catch (err) {
+        console.error('Failed to load issue detail:', err);
+        document.getElementById('issueDetailSummary').textContent = 'Failed to load issue detail.';
+    }
+}
+
+function closeIssueDetail() {
+    if (!issueDetailDrawer) return;
+    issueDetailDrawer.classList.remove('visible');
+    issueDetailDrawer.setAttribute('aria-hidden', 'true');
+    if (lastIssueDetailTrigger && typeof lastIssueDetailTrigger.focus === 'function') {
+        lastIssueDetailTrigger.focus();
+    }
+}
+
+function setIssueDetailMode(mode) {
+    issueDetailMode = mode;
+    renderIssueDetail();
+}
+
+function renderIssueDetail() {
+    if (!issueDetailData) return;
+    const title = issueDetailData.title || `Issue #${issueDetailData.issue_number}`;
+    document.getElementById('issueDetailTitle').textContent = title;
+    document.getElementById('issueDetailGitHubBtn').href = issueDetailData.issue_url || '#';
+    document.getElementById('issueDetailFocusBtn').onclick = () => openTimelineModal(issueDetailData.issue_number);
+    const summary = issueDetailData.summary || {};
+    document.getElementById('issueDetailSummary').textContent =
+        `Status: ${summary.status || 'unknown'} · Last: ${summary.last_event || 'none'} · Events: ${summary.event_count || 0}`;
+
+    const loopsBtn = document.getElementById('issueDetailLoopsBtn');
+    const rawBtn = document.getElementById('issueDetailRawBtn');
+    loopsBtn.classList.toggle('active', issueDetailMode === 'loops');
+    rawBtn.classList.toggle('active', issueDetailMode === 'raw');
+
+    const body = document.getElementById('issueDetailBody');
+    if (issueDetailMode === 'raw') {
+        const events = issueDetailData.events || [];
+        body.innerHTML = events.map(evt => `
+            <div class="timeline-event ${evt.status || ''}">
+                <div class="timeline-event-header">
+                    <span>${escapeHtml(formatStepLabel(evt.step || evt.event || 'event'))}</span>
+                    <span>${formatStatus(evt.status)}</span>
+                </div>
+                <div class="timeline-time">${escapeHtml(formatTimestamp(evt.timestamp || ''))}</div>
+                ${evt.summary ? `<div class="timeline-summary">${escapeHtml(evt.summary)}</div>` : ''}
+            </div>
+        `).join('') || '<div class="timeline-empty">No events recorded.</div>';
+        return;
+    }
+
+    const loops = issueDetailData.loops || [];
+    body.innerHTML = loops.map(loop => `
+        <div class="timeline-loop-item">
+            <div class="timeline-loop-title">Loop ${loop.loop}</div>
+            <div class="timeline-loop-phases">${(loop.phases || []).map(formatPhaseLabel).join(' → ')}</div>
+            <div class="timeline-loop-status">${formatStatus(loop.status)}</div>
+        </div>
+    `).join('') || '<div class="timeline-empty">No loop data recorded.</div>';
+}
+
+document.addEventListener('keydown', (event) => {
+    if (!issueDetailDrawer || !issueDetailDrawer.classList.contains('visible')) return;
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        closeIssueDetail();
+        return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = getIssueDetailFocusableElements();
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const current = document.activeElement;
+    if (event.shiftKey && current === first) {
+        event.preventDefault();
+        last.focus();
+    } else if (!event.shiftKey && current === last) {
+        event.preventDefault();
+        first.focus();
+    }
+});
+
+function renderTimeline(container, events, phaseToc = [], loops = []) {
     if (!events || events.length === 0) {
         container.innerHTML = '<div class="timeline-empty">No timeline events recorded yet.</div>';
         return;
@@ -1465,7 +1603,21 @@ function renderTimeline(container, events) {
         group.events.push(event);
     }
 
-    const html = groups.map(group => {
+    const loopHtml = loops.length > 0
+        ? `<div class=\"timeline-loop-list\">${loops.map(loop => `
+            <div class=\"timeline-loop-item\">
+                <div class=\"timeline-loop-title\">Loop ${loop.loop}</div>
+                <div class=\"timeline-loop-phases\">${(loop.phases || []).map(formatPhaseLabel).join(' → ')}</div>
+                <div class=\"timeline-loop-status\">${formatStatus(loop.status)}</div>
+            </div>
+        `).join('')}</div>`
+        : '';
+
+    const tocHtml = phaseToc.length > 0
+        ? `<div class=\"timeline-toc\">${phaseToc.map(item => `<span class=\"timeline-toc-item\">${escapeHtml(item.label || item.phase || '')}</span>`).join('')}</div>`
+        : '';
+
+    const continuumHtml = groups.map(group => {
         const phaseLabel = formatPhaseLabel(group.phase);
         const items = group.events.map(evt => {
             const stepLabel = formatStepLabel(evt.step);
@@ -1492,7 +1644,7 @@ function renderTimeline(container, events) {
         `;
     }).join('');
 
-    container.innerHTML = html;
+    container.innerHTML = `${tocHtml}${loopHtml}<div class=\"timeline-continuum\">${continuumHtml}</div>`;
     if (!container.dataset.timelineBound) {
         container.addEventListener('click', (event) => {
             const target = event.target.closest('.timeline-artifact');

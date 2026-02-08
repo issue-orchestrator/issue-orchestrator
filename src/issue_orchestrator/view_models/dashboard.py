@@ -26,12 +26,21 @@ class DashboardViewModel:
     blocked_items: list[dict[str, Any]]
     history_items: list[dict[str, Any]]
     e2e_items: list[dict[str, Any]]
+    backlog_items: list[dict[str, Any]]
+    done_items: list[dict[str, Any]]
+    awaiting_merge_items: list[dict[str, Any]]
+    flow_columns: list[dict[str, Any]]
+    attention_groups: list[dict[str, Any]]
+    scope_summary: dict[str, Any]
 
     active_count: int
     queue_count: int
     blocked_count: int
     history_count: int
     e2e_count: int
+    backlog_count: int
+    done_count: int
+    awaiting_merge_count: int
 
     active_tab: str
     paused: bool
@@ -66,11 +75,20 @@ class DashboardViewModel:
             "blocked_items": self.blocked_items,
             "history_items": self.history_items,
             "e2e_items": self.e2e_items,
+            "backlog_items": self.backlog_items,
+            "done_items": self.done_items,
+            "awaiting_merge_items": self.awaiting_merge_items,
+            "flow_columns": self.flow_columns,
+            "attention_groups": self.attention_groups,
+            "scope_summary": self.scope_summary,
             "active_count": self.active_count,
             "queue_count": self.queue_count,
             "blocked_count": self.blocked_count,
             "history_count": self.history_count,
             "e2e_count": self.e2e_count,
+            "backlog_count": self.backlog_count,
+            "done_count": self.done_count,
+            "awaiting_merge_count": self.awaiting_merge_count,
             "active_tab": self.active_tab,
             "paused": self.paused,
             "shutdown_requested": self.shutdown_requested,
@@ -105,6 +123,7 @@ class DashboardViewModel:
             "githubRepo": self.github_repo,
             "e2eLastRun": self.e2e_status.get("last_run"),
             "agents": self.agent_names,
+            "scope": self.scope_summary,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -115,11 +134,20 @@ class DashboardViewModel:
             "blocked_items": self.blocked_items,
             "history_items": self.history_items,
             "e2e_items": self.e2e_items,
+            "backlog_items": self.backlog_items,
+            "done_items": self.done_items,
+            "awaiting_merge_items": self.awaiting_merge_items,
+            "flow_columns": self.flow_columns,
+            "attention_groups": self.attention_groups,
+            "scope_summary": self.scope_summary,
             "active_count": self.active_count,
             "queue_count": self.queue_count,
             "blocked_count": self.blocked_count,
             "history_count": self.history_count,
             "e2e_count": self.e2e_count,
+            "backlog_count": self.backlog_count,
+            "done_count": self.done_count,
+            "awaiting_merge_count": self.awaiting_merge_count,
             "active_tab": self.active_tab,
             "paused": self.paused,
             "shutdown_requested": self.shutdown_requested,
@@ -603,6 +631,154 @@ def _build_e2e_items(config, e2e_status: dict[str, Any]) -> list[dict[str, Any]]
     return items
 
 
+def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[str, Any]:
+    phase = item.get("flow_stage_label") or item.get("flow_stage") or ""
+    phase_age = item.get("time") or ""
+    blocked = item.get("blocked_summary") or ""
+    badges: list[str] = []
+    blocked_lower = blocked.lower()
+    if "dependency" in blocked_lower or "waiting on" in blocked_lower:
+        badges.append("dependency")
+    if "human" in blocked_lower:
+        badges.append("human")
+    if item.get("flow_stage") == "review":
+        badges.append("merge")
+    return {
+        "issue_number": item.get("issue_number"),
+        "title": item.get("title", ""),
+        "state_label": state_label or item.get("status", ""),
+        "phase": phase,
+        "phase_age": phase_age,
+        "summary": item.get("detail_label") or "",
+        "blocked_summary": blocked,
+        "badges": badges,
+        "focus_action": "focus",
+        "issue_url": item.get("issue_url") or item.get("url") or "",
+        "focus_hint": "Focus issue",
+        "github_hint": "Open in GitHub",
+    }
+
+
+def _build_backlog_items(state, config) -> list[dict[str, Any]]:
+    if state.startup_status != "complete":
+        return []
+    dependency_info = get_issue_dependencies(state.cached_queue_issues, config)
+    cards: list[dict[str, Any]] = []
+    for issue in state.cached_queue_issues:
+        dep_info = dependency_info.get(issue.number)
+        dep_summary = dep_info.summary if dep_info else ""
+        blocked = blocked_summary(
+            list(issue.labels),
+            dep_summary if dep_summary else None,
+        )
+        cards.append({
+            "issue_number": issue.number,
+            "title": issue.title,
+            "status": "backlog",
+            "detail_label": "In execution scope",
+            "flow_stage": "queued",
+            "flow_stage_label": "Queued",
+            "blocked_summary": blocked,
+            "time": "",
+            "issue_url": issue_url_for(config, issue.number),
+            "url": issue_url_for(config, issue.number),
+        })
+    return cards
+
+
+def _build_attention_groups(
+    blocked_items: list[dict[str, Any]],
+    queue_items: list[dict[str, Any]],
+    history_items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    awaiting_merge = [item for item in queue_items + blocked_items if item.get("flow_stage") == "review"]
+    dependency_blocked = [
+        item for item in blocked_items
+        if "dependency" in (item.get("blocked_summary") or "").lower()
+        or "waiting on" in (item.get("blocked_summary") or "").lower()
+    ]
+    failed_exhausted = [item for item in history_items if item.get("status") in {"failed", "timed_out"}]
+    needs_human = [
+        item for item in blocked_items
+        if "human" in (item.get("blocked_summary") or "").lower()
+    ]
+    groups = [
+        {
+            "id": "needs-human",
+            "title": "Waiting on Human",
+            "description": "Blocked items that require a human action.",
+            "items": [_compact_card(item, "waiting") for item in needs_human],
+        },
+        {
+            "id": "aging-blocked",
+            "title": "Aging Blockers",
+            "description": "Blocked items to triage first.",
+            "items": [_compact_card(item, "blocked") for item in blocked_items],
+        },
+        {
+            "id": "awaiting-merge",
+            "title": "Awaiting Merge",
+            "description": "PR-ready items waiting for merge.",
+            "items": [_compact_card(item, "awaiting merge") for item in awaiting_merge],
+        },
+        {
+            "id": "dependency",
+            "title": "Dependency Blocked",
+            "description": "Issues blocked by dependencies.",
+            "items": [_compact_card(item, "dependency") for item in dependency_blocked],
+        },
+        {
+            "id": "failed",
+            "title": "Failed / Exhausted",
+            "description": "Runs that failed and need investigation.",
+            "items": [_compact_card(item, "failed") for item in failed_exhausted],
+        },
+    ]
+    groups = [group for group in groups if group["items"]]
+    return groups, awaiting_merge
+
+
+def _build_flow_columns(
+    backlog_items: list[dict[str, Any]],
+    queue_items: list[dict[str, Any]],
+    active_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    done_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "backlog",
+            "title": "Backlog",
+            "count": len(backlog_items),
+            "items": [_compact_card(item, "backlog") for item in backlog_items[:12]],
+        },
+        {
+            "id": "queued",
+            "title": "Queued",
+            "count": len(queue_items),
+            "items": [_compact_card(item, "queued") for item in queue_items[:12]],
+        },
+        {
+            "id": "running",
+            "title": "Running",
+            "count": len(active_items),
+            "items": [_compact_card(item, "running") for item in active_items[:12]],
+        },
+        {
+            "id": "blocked",
+            "title": "Blocked",
+            "count": len(blocked_items),
+            "items": [_compact_card(item, "blocked") for item in blocked_items[:12]],
+        },
+        {
+            "id": "done",
+            "title": "Done",
+            "count": len(done_items),
+            "items": [_compact_card(item, "done") for item in done_items[:12]],
+        },
+    ]
+
+
 def _select_issues_for_tab(
     active_tab: str,
     active_items: list[dict[str, Any]],
@@ -611,11 +787,11 @@ def _select_issues_for_tab(
     e2e_items: list[dict[str, Any]],
     history_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    if active_tab == "active":
-        return active_items
-    if active_tab == "queue":
+    if active_tab in {"active", "flow"}:
+        return active_items if active_items else queue_items
+    if active_tab in {"queue", "backlog"}:
         return queue_items
-    if active_tab == "blocked":
+    if active_tab in {"blocked", "attention"}:
         return blocked_items
     if active_tab == "e2e":
         return e2e_items
@@ -708,16 +884,22 @@ def _get_e2e_status(config) -> dict[str, Any]:
 
 def _normalize_tab(active_tab: str) -> str:
     if active_tab == "work":
-        return "active"
+        return "flow"
     if active_tab == "attention":
-        return "blocked"
+        return "attention"
+    if active_tab == "active":
+        return "flow"
+    if active_tab == "queue":
+        return "flow"
+    if active_tab == "blocked":
+        return "attention"
     return active_tab
 
 
 def build_dashboard_view_model(
     orchestrator,
     queue_page: int = 1,
-    active_tab: str = "active",
+    active_tab: str = "flow",
     e2e_page: int = 1,
     e2e_status_provider: Callable[[Any], dict[str, Any]] | None = None,
 ) -> DashboardViewModel:
@@ -734,6 +916,12 @@ def build_dashboard_view_model(
     blocked_items: list[dict[str, Any]] = []
     history_items: list[dict[str, Any]] = []
     e2e_items: list[dict[str, Any]] = []
+    backlog_items: list[dict[str, Any]] = []
+    done_items: list[dict[str, Any]] = []
+    awaiting_merge_items: list[dict[str, Any]] = []
+    flow_columns: list[dict[str, Any]] = []
+    attention_groups: list[dict[str, Any]] = []
+    scope_summary: dict[str, Any] = {}
     seen_issues: set[int] = set()
 
     queue_total = 0
@@ -747,9 +935,13 @@ def build_dashboard_view_model(
         queue_items, queue_blocked, queue_total, seen_issues = _build_queue_items(
             state, config, queue_page, seen_issues, pending_numbers
         )
+        backlog_items = _build_backlog_items(state, config)
         blocked_items.extend(queue_blocked)
         history_items, history_blocked = _build_history_items(state, config)
         blocked_items.extend(history_blocked)
+        done_items = [item for item in history_items if item.get("status") == "completed"]
+        attention_groups, awaiting_merge_items = _build_attention_groups(blocked_items, queue_items, history_items)
+        flow_columns = _build_flow_columns(backlog_items, queue_items, active_items, blocked_items, done_items)
 
     e2e_status_provider = e2e_status_provider or _get_e2e_status
     e2e_status = e2e_status_provider(config)
@@ -777,6 +969,23 @@ def build_dashboard_view_model(
     github_repo = repo.split("/")[1] if repo and "/" in repo else ""
 
     queue_refresh_seconds = config.queue_refresh_seconds if config else 600
+    if config:
+        milestones = config.get_filter_milestones()
+        scope_summary = {
+            "repo_open_total": queue_total,
+            "in_scope_total": len(backlog_items),
+            "filter_label": config.filtering.label or "",
+            "filter_milestones": milestones,
+            "exclude_labels": list(config.filtering.exclude_labels),
+        }
+    else:
+        scope_summary = {
+            "repo_open_total": queue_total,
+            "in_scope_total": len(backlog_items),
+            "filter_label": "",
+            "filter_milestones": [],
+            "exclude_labels": [],
+        }
 
     return DashboardViewModel(
         issues=issues,
@@ -785,11 +994,20 @@ def build_dashboard_view_model(
         blocked_items=blocked_items,
         history_items=history_items,
         e2e_items=e2e_items_paginated,
+        backlog_items=backlog_items,
+        done_items=done_items,
+        awaiting_merge_items=awaiting_merge_items,
+        flow_columns=flow_columns,
+        attention_groups=attention_groups,
+        scope_summary=scope_summary,
         active_count=len(active_items),
         queue_count=len(queue_items),
         blocked_count=len(blocked_items),
         history_count=len(history_items),
         e2e_count=e2e_total,
+        backlog_count=len(backlog_items),
+        done_count=len(done_items),
+        awaiting_merge_count=len(awaiting_merge_items),
         active_tab=active_tab,
         paused=state.paused if state else False,
         shutdown_requested=shutdown_requested,

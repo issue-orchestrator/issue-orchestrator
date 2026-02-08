@@ -70,7 +70,7 @@ def test_view_model_active_session_and_dashboard_data():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="active",
+        active_tab="flow",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
@@ -80,11 +80,15 @@ def test_view_model_active_session_and_dashboard_data():
     assert view_model.active_items[0]["status"] == "active"
     assert view_model.active_items[0]["flow_stage"] == "review"
     assert view_model.active_items[0]["action_hint"] == "Click to view agent UI log"
+    assert view_model.flow_columns
+    assert view_model.flow_columns[2]["id"] == "running"
+    assert view_model.flow_columns[2]["count"] == 1
 
     dashboard_data = view_model.dashboard_data()
     assert dashboard_data["paused"] is False
     assert dashboard_data["queueRefreshSeconds"] == 600
     assert dashboard_data["agents"] == ["agent:web"]
+    assert "scope" in dashboard_data
 
 
 def test_view_model_queue_and_blocked_items():
@@ -130,7 +134,7 @@ def test_view_model_queue_and_blocked_items():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="queue",
+        active_tab="flow",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
@@ -149,6 +153,8 @@ def test_view_model_queue_and_blocked_items():
     assert blocked_item["status"] == "blocked"
     assert "blocked" in (blocked_item["blocked_summary"] or "")
     assert "waiting on" in (blocked_item["blocked_summary"] or "")
+    assert view_model.backlog_count == 2
+    assert any(group["id"] == "awaiting-merge" for group in view_model.attention_groups)
 
 
 def test_view_model_history_routing():
@@ -252,7 +258,7 @@ def test_view_model_matches_public_contract():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="active",
+        active_tab="flow",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )

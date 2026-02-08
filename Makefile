@@ -31,13 +31,13 @@ help:
 	@echo "  test-real-gh            Run full real-GitHub suite (dev + review + labels)"
 	@echo "  test-real-gh-plus-e2e   Run real-GitHub suite plus full e2e tests"
 	@echo "  test-real-gh-plus-e2e-subprocess   Same as above but using subprocess backend"
-	@echo "  test-web            Run Playwright web UI tests (headless)"
-	@echo "  test-web-headed     Run Playwright web UI tests (headed, for debugging)"
+	@echo "  test-web            Run Flow-first Playwright web UI smoke tests (headless)"
+	@echo "  test-web-headed     Run Flow-first Playwright web UI smoke tests (headed)"
 	@echo "  test-vscode         Run VS Code extension tests (local only, skipped in CI)"
 	@echo "  install-vscode-extensions      Install VS Code extension dev dependencies"
 	@echo "  playwright-install  Install Playwright browser binaries"
 	@echo "  test                Run all tests"
-	@echo "  validate            Parallel validation (~40s): typecheck + lint-arch + unit + integration + web-ui"
+	@echo "  validate            Parallel validation (~40s): typecheck + lint-arch + unit + integration + web-ui smoke"
 	@echo "  validate-quick      Quick validation (typecheck + unit tests only)"
 	@echo "  validate-full       Full parallel validation: validate + e2e tests"
 	@echo "  verify-hooks-all    Install + live-verify hooks for all supported CLIs"
@@ -333,7 +333,7 @@ endif
 test:
 	$(PYTEST) tests/ -x -q --tb=short $(PYTEST_TIMINGS)
 
-# Playwright browser tests for web UI
+# Playwright browser smoke tests for Flow-first web UI
 test-web:
 	$(PYTEST) tests/e2e_web -v --tb=short $(PYTEST_TIMINGS)
 

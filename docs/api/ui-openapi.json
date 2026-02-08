@@ -201,6 +201,29 @@
           }
         }
       }
+    },
+    "/api/issue-detail/{issue_number}": {
+      "get": {
+        "summary": "Get issue detail payload",
+        "parameters": [
+          {
+            "name": "issue_number",
+            "in": "path",
+            "required": true,
+            "schema": {"type": "integer"}
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Issue detail",
+            "content": {
+              "application/json": {
+                "schema": {"$ref": "#/components/schemas/IssueDetailPayload"}
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -257,11 +280,20 @@
           "blocked_items",
           "history_items",
           "e2e_items",
+          "backlog_items",
+          "done_items",
+          "awaiting_merge_items",
+          "flow_columns",
+          "attention_groups",
+          "scope_summary",
           "active_count",
           "queue_count",
           "blocked_count",
           "history_count",
           "e2e_count",
+          "backlog_count",
+          "done_count",
+          "awaiting_merge_count",
           "active_tab",
           "paused",
           "shutdown_requested",
@@ -290,11 +322,20 @@
           "blocked_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
           "history_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
           "e2e_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
+          "backlog_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
+          "done_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
+          "awaiting_merge_items": {"type": "array", "items": {"$ref": "#/components/schemas/IssueItemPayload"}},
+          "flow_columns": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "attention_groups": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "scope_summary": {"type": "object", "additionalProperties": true},
           "active_count": {"type": "integer"},
           "queue_count": {"type": "integer"},
           "blocked_count": {"type": "integer"},
           "history_count": {"type": "integer"},
           "e2e_count": {"type": "integer"},
+          "backlog_count": {"type": "integer"},
+          "done_count": {"type": "integer"},
+          "awaiting_merge_count": {"type": "integer"},
           "active_tab": {"type": "string"},
           "paused": {"type": "boolean"},
           "shutdown_requested": {"type": "boolean"},
@@ -334,6 +375,30 @@
           "rows": {"type": "array", "items": {"$ref": "#/components/schemas/IssueRowPayload"}},
           "active_tab": {"type": "string"},
           "count": {"type": "integer"}
+        }
+      },
+      "IssueDetailPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "issue_number",
+          "title",
+          "issue_url",
+          "phase_toc",
+          "loops",
+          "events",
+          "summary",
+          "actions"
+        ],
+        "properties": {
+          "issue_number": {"type": "integer"},
+          "title": {"type": "string"},
+          "issue_url": {"type": "string"},
+          "phase_toc": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "loops": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "events": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
+          "summary": {"type": "object", "additionalProperties": true},
+          "actions": {"type": "array", "items": {"type": "object", "additionalProperties": true}}
         }
       },
       "DialogRowPayload": {

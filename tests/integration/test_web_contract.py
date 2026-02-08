@@ -7,6 +7,7 @@ satisfy the OrchestratorForWeb protocol, catching drift between them.
 import pytest
 
 from issue_orchestrator.ports.web_contract import OrchestratorForWeb
+from tests.fixtures.web_contract_mocks import MockOrchestratorForWeb
 
 
 class TestOrchestratorWebContract:
@@ -21,8 +22,6 @@ class TestOrchestratorWebContract:
 
     def test_mock_orchestrator_satisfies_protocol(self):
         """MockOrchestratorForWeb must satisfy OrchestratorForWeb protocol."""
-        from tests.e2e_web.conftest import MockOrchestratorForWeb
-
         mock = MockOrchestratorForWeb()
         assert isinstance(mock, OrchestratorForWeb), (
             "MockOrchestratorForWeb no longer satisfies OrchestratorForWeb protocol. "
@@ -41,8 +40,6 @@ class TestOrchestratorWebContract:
 
     def test_protocol_attributes_exist_on_mock(self):
         """Verify required attributes exist on mock orchestrator."""
-        from tests.e2e_web.conftest import MockOrchestratorForWeb
-
         mock = MockOrchestratorForWeb()
         assert hasattr(mock, "state")
         assert hasattr(mock, "config")

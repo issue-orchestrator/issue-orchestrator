@@ -1,1 +1,1 @@
-"""Playwright browser-based e2e tests for the web UI."""
+"""Browser smoke tests for the web dashboard."""

@@ -35,6 +35,7 @@ from issue_orchestrator.view_models.dialogs import (
     build_phase_dialog,
     build_session_diagnostics_dialog,
 )
+from issue_orchestrator.view_models.issue_detail import build_issue_detail_view_model
 
 
 @dataclass
@@ -151,3 +152,15 @@ def test_dialog_payloads_match_ui_openapi() -> None:
 
     phase_dialog = build_phase_dialog({"phases": [{"name": "review-1", "display_name": "Review"}]}, 12, None)
     _validator("PhaseDialogPayload").validate(phase_dialog)
+
+
+def test_issue_detail_payload_matches_ui_openapi() -> None:
+    payload = build_issue_detail_view_model(
+        issue_number=12,
+        title="Issue #12",
+        issue_url="https://github.com/test/repo/issues/12",
+        events=[{"event": "session.started", "status": "started"}],
+        phase_toc=[{"phase": "in_progress", "label": "In Progress"}],
+        loops=[{"loop": 1, "status": "started", "phases": ["in_progress"]}],
+    )
+    _validator("IssueDetailPayload").validate(payload)

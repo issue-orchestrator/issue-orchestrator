@@ -36,6 +36,7 @@ from ..view_models.dialogs import (
     build_phase_dialog,
     build_session_diagnostics_dialog,
 )
+from ..view_models.issue_detail import build_issue_detail_view_model
 from ..contracts.ui_openapi_models import (
     BlockedIssuesDialogPayload,
     ConfigDialogPayload,
@@ -46,6 +47,7 @@ from ..contracts.ui_openapi_models import (
     IssueRowsPayload,
     PhaseDialogPayload,
     SessionDiagnosticsDialogPayload,
+    IssueDetailPayload,
 )
 
 if TYPE_CHECKING:
@@ -367,7 +369,7 @@ async def dashboard(request: Request, orchestrator=Depends(get_orchestrator)) ->
     e2e_page = int(request.query_params.get("e2e_page", 1))
     if e2e_page < 1:
         e2e_page = 1
-    active_tab = request.query_params.get("tab", "active")
+    active_tab = request.query_params.get("tab", "flow")
     logger.info("[dashboard] Request URL: %s, page=%s, tab=%s", request.url, queue_page, active_tab)
 
     templates = get_templates()
@@ -398,7 +400,7 @@ async def get_view_model(
     e2e_page = int(request.query_params.get("e2e_page", 1))
     if e2e_page < 1:
         e2e_page = 1
-    active_tab = request.query_params.get("tab", "active")
+    active_tab = request.query_params.get("tab", "flow")
 
     view_model = build_dashboard_view_model(
         orchestrator,
@@ -421,7 +423,7 @@ async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator
     e2e_page = int(request.query_params.get("e2e_page", 1))
     if e2e_page < 1:
         e2e_page = 1
-    active_tab = request.query_params.get("tab", "active")
+    active_tab = request.query_params.get("tab", "flow")
 
     view_model = build_dashboard_view_model(
         orchestrator,
@@ -1243,7 +1245,102 @@ async def get_issue_timeline(issue_number: int) -> JSONResponse:
 
     reader = _orchestrator.deps.timeline_reader
     stream = reader.read(issue_number, limit=2000)
-    return JSONResponse(stream.to_dict())
+    payload = stream.to_dict()
+    events = payload.get("events", [])
+    payload["phase_toc"] = _build_phase_toc(events)
+    payload["loops"] = _build_timeline_loops(events)
+    return JSONResponse(payload)
+
+
+@app.get("/api/issue-detail/{issue_number}", response_model=IssueDetailPayload)
+async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONResponse:
+    """Get an issue-detail payload for drawer rendering."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    reader = _orchestrator.deps.timeline_reader
+    stream = reader.read(issue_number, limit=2000)
+    timeline = stream.to_dict()
+    events = timeline.get("events", [])
+    phase_toc = _build_phase_toc(events)
+    loops = _build_timeline_loops(events)
+    title = _issue_title_for(issue_number)
+    issue_url = issue_url_for(_orchestrator.config, issue_number)
+    payload = build_issue_detail_view_model(
+        issue_number=issue_number,
+        title=title,
+        issue_url=issue_url,
+        events=events,
+        phase_toc=phase_toc,
+        loops=loops,
+    )
+    return IssueDetailPayload.model_validate(payload)
+
+
+def _build_phase_toc(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    toc: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for event in events:
+        phase = str(event.get("phase") or "system")
+        if phase in seen:
+            continue
+        seen.add(phase)
+        toc.append({
+            "phase": phase,
+            "label": _format_phase_name(phase),
+        })
+    return toc
+
+
+def _build_timeline_loops(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    loops: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+    loop_number = 0
+    loop_phases = {"in_progress", "reviewing", "rework", "triage"}
+
+    for event in events:
+        phase = str(event.get("phase") or "system")
+        if phase not in loop_phases:
+            continue
+        if current is None:
+            loop_number += 1
+            current = {
+                "loop": loop_number,
+                "start": event.get("timestamp"),
+                "end": event.get("timestamp"),
+                "status": event.get("status") or "started",
+                "phases": [phase],
+                "events": [event],
+                "summary": event.get("summary") or "",
+            }
+            continue
+        current["end"] = event.get("timestamp")
+        current["status"] = event.get("status") or current["status"]
+        if phase not in current["phases"]:
+            current["phases"].append(phase)
+        current["events"].append(event)
+        if phase == "reviewing" and str(event.get("status")) in {"completed", "failed"}:
+            loops.append(current)
+            current = None
+
+    if current is not None:
+        loops.append(current)
+    return loops
+
+
+def _issue_title_for(issue_number: int) -> str:
+    if not _orchestrator:
+        return f"Issue #{issue_number}"
+    for session in _orchestrator.state.active_sessions:
+        if session.issue.number == issue_number:
+            return session.issue.title
+    for issue in _orchestrator.state.cached_queue_issues:
+        if issue.number == issue_number:
+            return issue.title
+    for entry in _orchestrator.state.session_history:
+        if entry.issue_number == issue_number:
+            return entry.title
+    return f"Issue #{issue_number}"
 
 
 def _format_phase_name(phase_name: str) -> str:
