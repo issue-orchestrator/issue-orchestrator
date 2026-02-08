@@ -1,4 +1,11 @@
-.PHONY: validate-profile
+# Developer-only targets for issue-orchestrator development.
+# These are NOT for end users of the orchestrator framework.
+#
+# Usage: make -f repo-specific/Makefile <target>
+
+.PHONY: validate-profile stress-test
+
+PYTEST ?= .venv/bin/pytest
 
 # Repo-maintainer profiling target (not framework/user-facing).
 # Usage:
@@ -15,3 +22,28 @@ validate-profile:
 	VALIDATE_JOBS=$${VALIDATE_JOBS:-$$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 5)} \
 	GMAKE="$${GMAKE:-$$(command -v gmake 2>/dev/null || command -v make)}" \
 	$$py repo-specific/scripts/validate_profile.py $$args
+
+# Stress-test a single test under CPU saturation to flush out flaky timing bugs.
+# Spawns one busy-loop per core, runs the test RUNS times, then kills the load.
+# Usage: make -f repo-specific/Makefile stress-test TEST=tests/unit/test_foo.py::test_bar
+#        make -f repo-specific/Makefile stress-test TEST=tests/unit/test_foo.py::test_bar RUNS=200
+RUNS ?= 100
+NCPU := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+stress-test:
+ifndef TEST
+	$(error TEST is required. Usage: make -f repo-specific/Makefile stress-test TEST=tests/unit/test_foo.py::test_bar)
+endif
+	@echo "Stress-testing $(TEST) ($(RUNS) runs, $(NCPU) CPU burners)"
+	@for i in $$(seq 1 $(NCPU)); do python3 -c "while True: pass" & done; \
+	trap 'kill $$(jobs -p) 2>/dev/null' EXIT; \
+	pass=0; fail=0; \
+	for i in $$(seq 1 $(RUNS)); do \
+		if $(PYTEST) "$(TEST)" -q --no-header --tb=line >/dev/null 2>&1; then \
+			pass=$$((pass+1)); \
+		else \
+			fail=$$((fail+1)); \
+			echo "FAIL on run $$i"; \
+		fi; \
+	done; \
+	echo "Results: $$pass passed, $$fail failed out of $(RUNS)"; \
+	[ $$fail -eq 0 ]
