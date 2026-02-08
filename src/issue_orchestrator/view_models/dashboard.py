@@ -11,6 +11,7 @@ from ..domain.session_key import TaskKind
 from ..infra import labels as label_module
 from ..infra.audit import get_issue_dependencies
 from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
+from ..infra import gh_audit
 
 QUEUE_PAGE_SIZE = 20
 E2E_PAGE_SIZE = 15
@@ -112,6 +113,7 @@ class DashboardViewModel:
         }
 
     def dashboard_data(self) -> dict[str, Any]:
+        github_usage = gh_audit.get_live_usage_snapshot()
         return {
             "startupComplete": self.startup_status == "complete",
             "paused": self.paused,
@@ -133,7 +135,11 @@ class DashboardViewModel:
                 "flowLazyEnabled": bool(self.scope_summary.get("flow_refresh_enabled", True)),
                 "flowStaleSeconds": int(self.scope_summary.get("flow_refresh_stale_seconds", 900)),
                 "flowCooldownSeconds": int(self.scope_summary.get("flow_refresh_cooldown_seconds", 120)),
+                "freshnessMode": str(self.scope_summary.get("flow_freshness_mode", "balanced")),
+                "apiBudget": str(self.scope_summary.get("flow_api_budget", "medium")),
+                "attentionPriority": str(self.scope_summary.get("flow_attention_priority", "strict")),
             },
+            "githubUsage": github_usage,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -1158,6 +1164,9 @@ def build_dashboard_view_model(
             "flow_refresh_enabled": bool(config.flow_refresh_enabled),
             "flow_refresh_stale_seconds": int(config.flow_refresh_stale_seconds),
             "flow_refresh_cooldown_seconds": int(config.flow_refresh_cooldown_seconds),
+            "flow_freshness_mode": str(config.flow_freshness_mode),
+            "flow_api_budget": str(config.flow_api_budget),
+            "flow_attention_priority": str(config.flow_attention_priority),
         }
     else:
         scope_summary = {
@@ -1174,6 +1183,9 @@ def build_dashboard_view_model(
             "flow_refresh_enabled": True,
             "flow_refresh_stale_seconds": 900,
             "flow_refresh_cooldown_seconds": 120,
+            "flow_freshness_mode": "balanced",
+            "flow_api_budget": "medium",
+            "flow_attention_priority": "strict",
         }
 
     return DashboardViewModel(

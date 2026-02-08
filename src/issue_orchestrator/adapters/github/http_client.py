@@ -118,7 +118,7 @@ class _ETagEntry:
     payload: Any
 
 
-def _extract_rate_limit_headers(response: httpx.Response) -> dict[str, int] | None:
+def _extract_rate_limit_headers(response: httpx.Response) -> dict[str, Any] | None:
     """Extract X-RateLimit-* headers from GitHub response.
 
     Returns a dict with remaining, limit, used, reset if available.
@@ -127,11 +127,12 @@ def _extract_rate_limit_headers(response: httpx.Response) -> dict[str, int] | No
     limit = response.headers.get("X-RateLimit-Limit")
     used = response.headers.get("X-RateLimit-Used")
     reset = response.headers.get("X-RateLimit-Reset")
+    resource = response.headers.get("X-RateLimit-Resource")
 
     if remaining is None and limit is None:
         return None
 
-    result: dict[str, int] = {}
+    result: dict[str, Any] = {}
     if remaining is not None:
         result["remaining"] = int(remaining)
     if limit is not None:
@@ -140,6 +141,8 @@ def _extract_rate_limit_headers(response: httpx.Response) -> dict[str, int] | No
         result["used"] = int(used)
     if reset is not None:
         result["reset"] = int(reset)
+    if resource is not None:
+        result["resource"] = resource
     return result if result else None
 
 
@@ -248,6 +251,12 @@ class GitHubHttpClient:
             duration_ms = int((time.monotonic() - start) * 1000)
             # 304 Not Modified: no data was transferred, so items_returned=0
             items_count = 0 if was_304 else _count_items(payload)
+            gh_audit.record_live_call(
+                command=f"{method.upper()} {url}",
+                caller=caller,
+                error=error,
+                rate_limit=rate_limit_info,
+            )
             gh_audit.record(
                 args=[method.upper(), url],
                 repo=self._config.repo,
@@ -337,6 +346,12 @@ class GitHubHttpClient:
         finally:
             duration_ms = int((time.monotonic() - start) * 1000)
             rate_limit_info = _extract_rate_limit_headers(response) if response is not None else None
+            gh_audit.record_live_call(
+                command="POST /graphql",
+                caller=caller,
+                error=error,
+                rate_limit=rate_limit_info,
+            )
             gh_audit.record(
                 args=["POST", "/graphql", caller],
                 repo=self._config.repo,

@@ -176,6 +176,22 @@ def test_flow_refresh_preferences_modal_is_rendered(jinja_env):
     assert modal is not None
     assert "Flow refresh preferences" in soup.text
     assert soup.select_one("#flowRefreshOverrideEnabled") is not None
+    assert soup.select_one("#flowFreshnessMode") is not None
+    assert soup.select_one("#flowApiBudget") is not None
+    assert soup.select_one("#flowAttentionPriority") is not None
+
+
+def test_github_usage_pill_is_rendered(jinja_env):
+    config = make_config()
+    state = OrchestratorState(startup_status="complete")
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="flow",
+        e2e_status_provider=e2e_disabled,
+    )
+    soup = render_dashboard(jinja_env, vm)
+    assert soup.select_one("#ghUsagePill") is not None
+    assert soup.select_one("#ghUsagePanel") is not None
 
 
 def test_e2e_tab_and_panels_render(jinja_env):

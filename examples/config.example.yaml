@@ -205,6 +205,9 @@ ui:
   queue_refresh_seconds: 600
   instances: 1                   # Multi-orchestrator instances
   flow_refresh:
+    freshness_mode: balanced       # aggressive | balanced | economy
+    api_budget: medium             # low | medium | high
+    attention_priority: strict     # strict | normal
     enabled: true
     stale_seconds: 900
     cooldown_seconds: 120

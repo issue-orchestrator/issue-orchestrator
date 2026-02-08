@@ -28,6 +28,22 @@
                 {% endif %}
             </div>
             <div class="controls">
+                <div class="gh-usage-wrap" id="ghUsageWrap">
+                    <button class="gh-usage-pill" id="ghUsagePill" onclick="toggleGitHubUsagePanel()" aria-expanded="false" aria-controls="ghUsagePanel">
+                        <span class="gh-usage-label">GH</span>
+                        <span class="gh-usage-summary" id="ghUsageSummary">Usage</span>
+                    </button>
+                    <section class="gh-usage-panel" id="ghUsagePanel" aria-label="GitHub API usage">
+                        <div class="gh-usage-row"><span class="label">Calls/min</span><span class="value" id="ghUsageCallsPerMinute">-</span></div>
+                        <div class="gh-usage-row"><span class="label">Total calls</span><span class="value" id="ghUsageTotalCalls">-</span></div>
+                        <div class="gh-usage-row"><span class="label">Errors</span><span class="value" id="ghUsageErrors">-</span></div>
+                        <div class="gh-usage-row"><span class="label">Rate limit</span><span class="value" id="ghUsageRateLimit">-</span></div>
+                        <div class="gh-usage-row"><span class="label">Resets</span><span class="value" id="ghUsageReset">-</span></div>
+                        <div class="gh-usage-actions">
+                            <button class="issue-action-btn" onclick="setGitHubUsageHidden(true)">Hide</button>
+                        </div>
+                    </section>
+                </div>
                 <button class="settings-btn settings-icon-btn" onclick="toggleSettingsMenu(event)" aria-label="Open actions menu" aria-haspopup="true">☰</button>
                 <div class="settings-menu" id="settingsMenu" role="menu" aria-label="Actions menu">
                     <button class="settings-menu-item" id="pauseResumeItem" onclick="togglePause()" role="menuitem">
@@ -35,6 +51,7 @@
                     </button>
                     <button class="settings-menu-item" onclick="refreshFromGitHub()" role="menuitem"><span aria-hidden="true">🔄</span> Refresh from GitHub</button>
                     <button class="settings-menu-item" onclick="openFlowRefreshPrefs()" role="menuitem"><span aria-hidden="true">⚡</span> Flow refresh preferences</button>
+                    <button class="settings-menu-item" onclick="setGitHubUsageHidden(false)" role="menuitem"><span aria-hidden="true">📊</span> Show GitHub usage</button>
                     <button class="settings-menu-item" onclick="window.location.href='/settings'" role="menuitem"><span aria-hidden="true">⚙</span> Settings</button>
                 </div>
             </div>
@@ -327,6 +344,29 @@
                 <label class="prefs-row">
                     <input type="checkbox" id="flowRefreshOverrideEnabled">
                     Override YAML defaults in this browser
+                </label>
+                <label class="prefs-row">
+                    Freshness mode
+                    <select id="flowFreshnessMode">
+                        <option value="aggressive">Aggressive</option>
+                        <option value="balanced">Balanced</option>
+                        <option value="economy">Economy</option>
+                    </select>
+                </label>
+                <label class="prefs-row">
+                    API budget
+                    <select id="flowApiBudget">
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                    </select>
+                </label>
+                <label class="prefs-row">
+                    Attention priority
+                    <select id="flowAttentionPriority">
+                        <option value="strict">Strict</option>
+                        <option value="normal">Normal</option>
+                    </select>
                 </label>
                 <label class="prefs-row">
                     <input type="checkbox" id="flowRefreshEnabled">

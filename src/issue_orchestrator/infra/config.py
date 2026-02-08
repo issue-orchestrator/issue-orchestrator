@@ -861,15 +861,58 @@ def _load_execution_section(config: "Config", execution_section: dict, config_pa
 
 def _load_ui_section(config: "Config", ui_section: dict) -> None:
     """Load UI configuration."""
+    def _choice(raw: object, allowed: set[str], default: str) -> str:
+        value = str(raw or default).strip().lower()
+        return value if value in allowed else default
+
+    def _flow_refresh_defaults_for_mode(
+        freshness_mode: str,
+        api_budget: str,
+    ) -> tuple[bool, int, int]:
+        # High-level presets: these define the default lazy-refresh behavior.
+        preset = {
+            "aggressive": (True, 180, 30),
+            "balanced": (True, 900, 120),
+            "economy": (True, 3600, 300),
+        }[freshness_mode]
+        enabled, stale_seconds, cooldown_seconds = preset
+        budget_multiplier = {
+            "high": 0.6,
+            "medium": 1.0,
+            "low": 1.7,
+        }[api_budget]
+        stale_seconds = max(60, int(stale_seconds * budget_multiplier))
+        cooldown_seconds = max(0, int(cooldown_seconds * budget_multiplier))
+        return enabled, stale_seconds, cooldown_seconds
+
     config.ui_mode = ui_section.get("mode", "web")
     config.web_port = ui_section.get("web_port", 8080)
     config.control_api_port = ui_section.get("control_api_port", 19080)
     config.queue_refresh_seconds = ui_section.get("queue_refresh_seconds", 600)
     config.instances = ui_section.get("instances", 1)
     flow_refresh_section = ui_section.get("flow_refresh", {}) or {}
-    config.flow_refresh_enabled = flow_refresh_section.get("enabled", True)
-    config.flow_refresh_stale_seconds = flow_refresh_section.get("stale_seconds", 900)
-    config.flow_refresh_cooldown_seconds = flow_refresh_section.get("cooldown_seconds", 120)
+    config.flow_freshness_mode = _choice(
+        flow_refresh_section.get("freshness_mode", "balanced"),
+        {"aggressive", "balanced", "economy"},
+        "balanced",
+    )
+    config.flow_api_budget = _choice(
+        flow_refresh_section.get("api_budget", "medium"),
+        {"low", "medium", "high"},
+        "medium",
+    )
+    config.flow_attention_priority = _choice(
+        flow_refresh_section.get("attention_priority", "strict"),
+        {"strict", "normal"},
+        "strict",
+    )
+    default_enabled, default_stale, default_cooldown = _flow_refresh_defaults_for_mode(
+        config.flow_freshness_mode,
+        config.flow_api_budget,
+    )
+    config.flow_refresh_enabled = flow_refresh_section.get("enabled", default_enabled)
+    config.flow_refresh_stale_seconds = flow_refresh_section.get("stale_seconds", default_stale)
+    config.flow_refresh_cooldown_seconds = flow_refresh_section.get("cooldown_seconds", default_cooldown)
 
 
 def _load_observability_section(config: "Config", observability_section: dict) -> None:
@@ -1099,6 +1142,9 @@ class Config:
     flow_refresh_enabled: bool = True
     flow_refresh_stale_seconds: int = 900
     flow_refresh_cooldown_seconds: int = 120
+    flow_freshness_mode: str = "balanced"  # aggressive | balanced | economy
+    flow_api_budget: str = "medium"  # low | medium | high
+    flow_attention_priority: str = "strict"  # strict | normal
 
     # Multi-instance support (for multi-orchestrator coordination)
     instances: int = 1  # Number of orchestrator instances to spawn (CC manages this)
@@ -1427,6 +1473,14 @@ class Config:
                 "control_api_port": self.control_api_port,
                 "queue_refresh_seconds": self.queue_refresh_seconds,
                 "instances": self.instances,
+                "flow_refresh": {
+                    "enabled": self.flow_refresh_enabled,
+                    "stale_seconds": self.flow_refresh_stale_seconds,
+                    "cooldown_seconds": self.flow_refresh_cooldown_seconds,
+                    "freshness_mode": self.flow_freshness_mode,
+                    "api_budget": self.flow_api_budget,
+                    "attention_priority": self.flow_attention_priority,
+                },
             },
             "observability": {
                 "session_no_output_seconds": self.session_no_output_seconds,
@@ -1700,6 +1754,12 @@ class Config:
         flow_refresh_dict: dict = {}
         if self.flow_refresh_enabled is not True:
             flow_refresh_dict["enabled"] = self.flow_refresh_enabled
+        if self.flow_freshness_mode != "balanced":
+            flow_refresh_dict["freshness_mode"] = self.flow_freshness_mode
+        if self.flow_api_budget != "medium":
+            flow_refresh_dict["api_budget"] = self.flow_api_budget
+        if self.flow_attention_priority != "strict":
+            flow_refresh_dict["attention_priority"] = self.flow_attention_priority
         if self.flow_refresh_stale_seconds != 900:
             flow_refresh_dict["stale_seconds"] = self.flow_refresh_stale_seconds
         if self.flow_refresh_cooldown_seconds != 120:

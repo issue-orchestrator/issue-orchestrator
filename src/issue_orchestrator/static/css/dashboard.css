@@ -2,6 +2,7 @@
     --bg: #0f1722;
     --bg-panel: #172435;
     --bg-panel-soft: #122033;
+    --bg-hero: #1b2f48;
     --border: #2a3a4f;
     --text: #d7e2ef;
     --text-muted: #90a5bf;
@@ -15,6 +16,7 @@
     --bg: #f3f6fb;
     --bg-panel: #ffffff;
     --bg-panel-soft: #f7f9fc;
+    --bg-hero: #dce9f8;
     --border: #d0d9e6;
     --text: #17263a;
     --text-muted: #5b6f87;
@@ -29,7 +31,7 @@ body {
     margin: 0;
     font-family: "Segoe UI", "SF Pro Text", "Helvetica Neue", sans-serif;
     color: var(--text);
-    background: radial-gradient(circle at top, #1b2f48 0%, var(--bg) 56%);
+    background: radial-gradient(circle at top, var(--bg-hero) 0%, var(--bg) 56%);
 }
 
 .container {
@@ -100,6 +102,11 @@ h1 {
 }
 
 .controls { position: relative; }
+.controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
 .settings-btn,
 .issue-action-btn {
     border: 1px solid var(--border);
@@ -150,6 +157,65 @@ h1 {
     cursor: pointer;
 }
 .settings-menu-item:hover { background: var(--bg-panel-soft); }
+
+.gh-usage-wrap {
+    position: relative;
+}
+.gh-usage-pill {
+    border: 1px solid var(--border);
+    background: var(--bg-panel);
+    color: var(--text);
+    border-radius: 999px;
+    font-size: 11px;
+    padding: 6px 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+.gh-usage-pill:hover {
+    border-color: var(--accent);
+}
+.gh-usage-label {
+    font-weight: 700;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+}
+.gh-usage-panel {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    min-width: 240px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-panel);
+    padding: 8px;
+    z-index: 25;
+}
+.gh-usage-panel.visible {
+    display: block;
+}
+.gh-usage-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    padding: 4px 0;
+}
+.gh-usage-row .label {
+    color: var(--text-muted);
+}
+.gh-usage-row .value {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+}
+.gh-usage-actions {
+    margin-top: 6px;
+    display: flex;
+    justify-content: flex-end;
+}
 
 .scope-summary {
     margin-top: 12px;
@@ -529,6 +595,14 @@ h1 {
     color: var(--text);
 }
 .prefs-row input[type="number"] {
+    border: 1px solid var(--border);
+    background: var(--bg-panel-soft);
+    color: var(--text);
+    border-radius: 8px;
+    padding: 8px;
+    width: 100%;
+}
+.prefs-row select {
     border: 1px solid var(--border);
     background: var(--bg-panel-soft);
     color: var(--text);

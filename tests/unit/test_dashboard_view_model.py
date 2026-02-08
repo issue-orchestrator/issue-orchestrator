@@ -190,6 +190,13 @@ def test_view_model_includes_refresh_freshness_metadata():
     refresh_meta = view_model.dashboard_data()["refresh"]
     assert refresh_meta["flowLazyEnabled"] is True
     assert refresh_meta["flowStaleSeconds"] == 60
+    assert refresh_meta["freshnessMode"] == "balanced"
+    assert refresh_meta["apiBudget"] == "medium"
+    assert refresh_meta["attentionPriority"] == "strict"
+
+    gh_usage = view_model.dashboard_data()["githubUsage"]
+    assert "total_calls" in gh_usage
+    assert "calls_per_minute" in gh_usage
 
 
 def test_pr_pending_issue_not_shown_in_queued_flow_column():

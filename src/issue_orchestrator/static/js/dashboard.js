@@ -12,6 +12,13 @@ const issueRefreshLastAttempt = new Map();
 let flowRefreshObserver = null;
 const flowRefreshPrefsModal = document.getElementById('flowRefreshPrefsModal');
 const FLOW_REFRESH_OVERRIDE_KEY = 'issue-orchestrator.flow-refresh.override.v1';
+const GH_USAGE_UI_PREF_KEY = 'issue-orchestrator.github-usage.ui.v1';
+const FLOW_FRESHNESS_PRESETS = {
+    aggressive: { enabled: true, staleSeconds: 180, cooldownSeconds: 30 },
+    balanced: { enabled: true, staleSeconds: 900, cooldownSeconds: 120 },
+    economy: { enabled: true, staleSeconds: 3600, cooldownSeconds: 300 },
+};
+const FLOW_BUDGET_MULTIPLIER = { low: 1.7, medium: 1.0, high: 0.6 };
 
 function applyDashboardTheme() {
     const storedTheme = localStorage.getItem('theme') || 'system';
@@ -221,6 +228,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
         updateStatusBadgeFromViewModel(viewModel);
         updatePauseMenuFromViewModel(viewModel);
         updateRefreshStatusFromViewModel(viewModel);
+        renderGitHubUsage();
 
         if (reloadOnListChange && viewModel.startup_status === 'complete') {
             await refreshIssueRows(viewModel);
@@ -234,6 +242,8 @@ document.addEventListener('DOMContentLoaded', () => {
     applyDashboardTheme();
     updateActionHints();
     initFlowLazyVisibleRefresh();
+    applyGitHubUsagePrefs();
+    renderGitHubUsage();
     refreshViewModel({ reloadOnListChange: false });
     const nextRun = document.getElementById('e2eNextRun');
     if (nextRun && nextRun.dataset.nextRunReason) {
@@ -514,26 +524,59 @@ async function refreshFromGitHub() {
     }
 }
 
-function currentRefreshConfig() {
-    const refresh = window.dashboardData?.refresh || {};
-    const serverConfig = {
-        enabled: Boolean(refresh.flowLazyEnabled),
-        staleSeconds: Number(refresh.flowStaleSeconds || 900),
-        cooldownSeconds: Number(refresh.flowCooldownSeconds || 120),
+function deriveFlowConfig(strategy) {
+    const normalizedMode = ['aggressive', 'balanced', 'economy'].includes(strategy.freshnessMode)
+        ? strategy.freshnessMode
+        : 'balanced';
+    const normalizedBudget = ['low', 'medium', 'high'].includes(strategy.apiBudget)
+        ? strategy.apiBudget
+        : 'medium';
+    const normalizedAttention = ['strict', 'normal'].includes(strategy.attentionPriority)
+        ? strategy.attentionPriority
+        : 'strict';
+    const preset = FLOW_FRESHNESS_PRESETS[normalizedMode];
+    const multiplier = FLOW_BUDGET_MULTIPLIER[normalizedBudget];
+    const hasCustomStale = Number.isFinite(Number(strategy.flowStaleSeconds));
+    const hasCustomCooldown = Number.isFinite(Number(strategy.flowCooldownSeconds));
+    const staleBase = hasCustomStale ? Number(strategy.flowStaleSeconds) : preset.staleSeconds * multiplier;
+    const cooldownBase = hasCustomCooldown ? Number(strategy.flowCooldownSeconds) : preset.cooldownSeconds * multiplier;
+    return {
+        enabled: strategy.flowLazyEnabled ?? Boolean(preset.enabled),
+        staleSeconds: Math.max(60, Math.round(staleBase)),
+        cooldownSeconds: Math.max(0, Math.round(cooldownBase)),
+        freshnessMode: normalizedMode,
+        apiBudget: normalizedBudget,
+        attentionPriority: normalizedAttention,
     };
+}
+
+function serverRefreshStrategy() {
+    const refresh = window.dashboardData?.refresh || {};
+    return {
+        flowLazyEnabled: Boolean(refresh.flowLazyEnabled),
+        flowStaleSeconds: Number(refresh.flowStaleSeconds || 900),
+        flowCooldownSeconds: Number(refresh.flowCooldownSeconds || 120),
+        freshnessMode: String(refresh.freshnessMode || 'balanced'),
+        apiBudget: String(refresh.apiBudget || 'medium'),
+        attentionPriority: String(refresh.attentionPriority || 'strict'),
+    };
+}
+
+function currentRefreshConfig() {
+    const server = deriveFlowConfig(serverRefreshStrategy());
     const override = getFlowRefreshOverride();
     if (!override?.enabled) {
-        return {
-            ...serverConfig,
-            source: 'yaml',
-        };
+        return { ...server, source: 'yaml' };
     }
-    return {
-        enabled: Boolean(override.flowLazyEnabled),
-        staleSeconds: Number(override.flowStaleSeconds || serverConfig.staleSeconds),
-        cooldownSeconds: Number(override.flowCooldownSeconds ?? serverConfig.cooldownSeconds),
-        source: 'override',
-    };
+    const combined = deriveFlowConfig({
+        flowLazyEnabled: override.flowLazyEnabled,
+        flowStaleSeconds: Number(override.flowStaleSeconds),
+        flowCooldownSeconds: Number(override.flowCooldownSeconds),
+        freshnessMode: override.freshnessMode || server.freshnessMode,
+        apiBudget: override.apiBudget || server.apiBudget,
+        attentionPriority: override.attentionPriority || server.attentionPriority,
+    });
+    return { ...combined, source: 'override' };
 }
 
 function getFlowRefreshOverride() {
@@ -547,9 +590,111 @@ function getFlowRefreshOverride() {
             flowLazyEnabled: Boolean(parsed.flowLazyEnabled),
             flowStaleSeconds: Math.max(60, Number(parsed.flowStaleSeconds || 900)),
             flowCooldownSeconds: Math.max(0, Number(parsed.flowCooldownSeconds || 120)),
+            freshnessMode: ['aggressive', 'balanced', 'economy'].includes(parsed.freshnessMode) ? parsed.freshnessMode : 'balanced',
+            apiBudget: ['low', 'medium', 'high'].includes(parsed.apiBudget) ? parsed.apiBudget : 'medium',
+            attentionPriority: ['strict', 'normal'].includes(parsed.attentionPriority) ? parsed.attentionPriority : 'strict',
         };
     } catch {
         return null;
+    }
+}
+
+function formatResetLabel(resetEpochSeconds) {
+    if (!resetEpochSeconds || !Number.isFinite(resetEpochSeconds)) return '-';
+    const delta = Math.max(0, Math.floor(resetEpochSeconds - Date.now() / 1000));
+    const mins = Math.floor(delta / 60);
+    const secs = delta % 60;
+    return `${mins}m ${secs}s`;
+}
+
+function getGitHubUsagePrefs() {
+    const raw = localStorage.getItem(GH_USAGE_UI_PREF_KEY);
+    if (!raw) {
+        return { hidden: false, expanded: false };
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        return {
+            hidden: Boolean(parsed.hidden),
+            expanded: Boolean(parsed.expanded),
+        };
+    } catch {
+        return { hidden: false, expanded: false };
+    }
+}
+
+function saveGitHubUsagePrefs(prefs) {
+    localStorage.setItem(GH_USAGE_UI_PREF_KEY, JSON.stringify({
+        hidden: Boolean(prefs.hidden),
+        expanded: Boolean(prefs.expanded),
+    }));
+}
+
+function applyGitHubUsagePrefs() {
+    const prefs = getGitHubUsagePrefs();
+    const wrap = document.getElementById('ghUsageWrap');
+    const panel = document.getElementById('ghUsagePanel');
+    const pill = document.getElementById('ghUsagePill');
+    if (!wrap || !panel || !pill) return;
+    wrap.style.display = prefs.hidden ? 'none' : '';
+    panel.classList.toggle('visible', !prefs.hidden && prefs.expanded);
+    pill.setAttribute('aria-expanded', (!prefs.hidden && prefs.expanded) ? 'true' : 'false');
+}
+
+function toggleGitHubUsagePanel() {
+    const prefs = getGitHubUsagePrefs();
+    prefs.hidden = false;
+    prefs.expanded = !prefs.expanded;
+    saveGitHubUsagePrefs(prefs);
+    applyGitHubUsagePrefs();
+}
+
+function setGitHubUsageHidden(hidden) {
+    const prefs = getGitHubUsagePrefs();
+    prefs.hidden = Boolean(hidden);
+    if (prefs.hidden) {
+        prefs.expanded = false;
+    }
+    saveGitHubUsagePrefs(prefs);
+    applyGitHubUsagePrefs();
+}
+
+function renderGitHubUsage() {
+    const usage = window.dashboardData?.githubUsage || {};
+    const rate = usage.last_rate_limit_from_headers || {};
+    const remaining = Number(rate.remaining);
+    const limit = Number(rate.limit);
+    const callsPerMinute = Number(usage.calls_per_minute || 0);
+    const totalCalls = Number(usage.total_calls || 0);
+    const errors = Number(usage.errors || 0);
+    const summary = document.getElementById('ghUsageSummary');
+    const cpmEl = document.getElementById('ghUsageCallsPerMinute');
+    const totalEl = document.getElementById('ghUsageTotalCalls');
+    const errEl = document.getElementById('ghUsageErrors');
+    const limitEl = document.getElementById('ghUsageRateLimit');
+    const resetEl = document.getElementById('ghUsageReset');
+
+    if (summary) {
+        if (Number.isFinite(remaining) && Number.isFinite(limit) && limit > 0) {
+            summary.textContent = `${remaining.toLocaleString()}/${limit.toLocaleString()}`;
+        } else {
+            summary.textContent = `${totalCalls.toLocaleString()} calls`;
+        }
+    }
+    if (cpmEl) cpmEl.textContent = callsPerMinute.toLocaleString();
+    if (totalEl) totalEl.textContent = totalCalls.toLocaleString();
+    if (errEl) errEl.textContent = errors.toLocaleString();
+    if (limitEl) {
+        if (Number.isFinite(remaining) && Number.isFinite(limit) && limit > 0) {
+            const used = Number.isFinite(Number(rate.used)) ? Number(rate.used) : Math.max(0, limit - remaining);
+            const resource = rate.resource ? ` (${String(rate.resource)})` : '';
+            limitEl.textContent = `${used.toLocaleString()} used · ${remaining.toLocaleString()} left${resource}`;
+        } else {
+            limitEl.textContent = 'No rate header yet';
+        }
+    }
+    if (resetEl) {
+        resetEl.textContent = formatResetLabel(Number(rate.reset || 0));
     }
 }
 
@@ -572,9 +717,9 @@ function updateRefreshStatusFromViewModel(vm) {
     }
     if (statusMeta) {
         const cfg = currentRefreshConfig();
-        const source = cfg.source === 'override' ? 'ui override' : 'yaml';
+        const source = cfg.source === 'override' ? 'browser' : 'yaml';
         if (cfg.enabled) {
-            statusMeta.textContent = `· lazy visible refresh on (stale>${cfg.staleSeconds}s, ${source})`;
+            statusMeta.textContent = `· ${cfg.freshnessMode}/${cfg.apiBudget}/${cfg.attentionPriority} · stale>${cfg.staleSeconds}s · ${source}`;
         } else {
             statusMeta.textContent = `· lazy visible refresh off (${source})`;
         }
@@ -684,12 +829,13 @@ function initFlowLazyVisibleRefresh() {
         flowRefreshObserver.disconnect();
         flowRefreshObserver = null;
     }
-    const panel = document.getElementById('panel-flow');
-    if (!panel) return;
     const cfg = currentRefreshConfig();
     if (!cfg.enabled) return;
-
-    const cards = panel.querySelectorAll('.issue-card[data-issue]');
+    const selectors = ['#panel-flow .issue-card[data-issue]'];
+    if (cfg.attentionPriority === 'strict') {
+        selectors.push('#panel-attention .attention-item[data-issue]');
+    }
+    const cards = document.querySelectorAll(selectors.join(', '));
     if (!cards.length) return;
     flowRefreshObserver = new IntersectionObserver((entries) => {
         for (const entry of entries) {
@@ -702,7 +848,14 @@ function initFlowLazyVisibleRefresh() {
 }
 
 function setFlowRefreshInputsEnabled(enabled) {
-    const ids = ['flowRefreshEnabled', 'flowRefreshStaleSeconds', 'flowRefreshCooldownSeconds'];
+    const ids = [
+        'flowRefreshEnabled',
+        'flowRefreshStaleSeconds',
+        'flowRefreshCooldownSeconds',
+        'flowFreshnessMode',
+        'flowApiBudget',
+        'flowAttentionPriority',
+    ];
     ids.forEach((id) => {
         const el = document.getElementById(id);
         if (el) el.disabled = !enabled;
@@ -717,14 +870,21 @@ function openFlowRefreshPrefs() {
     const enabledEl = document.getElementById('flowRefreshEnabled');
     const staleEl = document.getElementById('flowRefreshStaleSeconds');
     const cooldownEl = document.getElementById('flowRefreshCooldownSeconds');
-    if (!overrideEnabledEl || !enabledEl || !staleEl || !cooldownEl || !flowRefreshPrefsModal) return;
+    const freshnessModeEl = document.getElementById('flowFreshnessMode');
+    const apiBudgetEl = document.getElementById('flowApiBudget');
+    const attentionPriorityEl = document.getElementById('flowAttentionPriority');
+    if (!overrideEnabledEl || !enabledEl || !staleEl || !cooldownEl || !freshnessModeEl || !apiBudgetEl || !attentionPriorityEl || !flowRefreshPrefsModal) return;
 
     const useOverride = Boolean(override?.enabled);
     const base = currentRefreshConfig();
     overrideEnabledEl.checked = useOverride;
-    enabledEl.checked = useOverride ? Boolean(override.flowLazyEnabled) : Boolean(refresh.flowLazyEnabled);
+    const server = serverRefreshStrategy();
+    enabledEl.checked = useOverride ? Boolean(override.flowLazyEnabled) : Boolean(server.flowLazyEnabled);
     staleEl.value = String(useOverride ? Number(override.flowStaleSeconds) : Number(base.staleSeconds || 900));
     cooldownEl.value = String(useOverride ? Number(override.flowCooldownSeconds) : Number(base.cooldownSeconds || 120));
+    freshnessModeEl.value = useOverride ? String(override.freshnessMode || 'balanced') : String(server.freshnessMode || 'balanced');
+    apiBudgetEl.value = useOverride ? String(override.apiBudget || 'medium') : String(server.apiBudget || 'medium');
+    attentionPriorityEl.value = useOverride ? String(override.attentionPriority || 'strict') : String(server.attentionPriority || 'strict');
     setFlowRefreshInputsEnabled(useOverride);
     flowRefreshPrefsModal.classList.add('visible');
 }
@@ -740,7 +900,10 @@ function saveFlowRefreshPrefs() {
     const enabledEl = document.getElementById('flowRefreshEnabled');
     const staleEl = document.getElementById('flowRefreshStaleSeconds');
     const cooldownEl = document.getElementById('flowRefreshCooldownSeconds');
-    if (!overrideEnabledEl || !enabledEl || !staleEl || !cooldownEl) return;
+    const freshnessModeEl = document.getElementById('flowFreshnessMode');
+    const apiBudgetEl = document.getElementById('flowApiBudget');
+    const attentionPriorityEl = document.getElementById('flowAttentionPriority');
+    if (!overrideEnabledEl || !enabledEl || !staleEl || !cooldownEl || !freshnessModeEl || !apiBudgetEl || !attentionPriorityEl) return;
 
     if (!overrideEnabledEl.checked) {
         localStorage.removeItem(FLOW_REFRESH_OVERRIDE_KEY);
@@ -758,6 +921,9 @@ function saveFlowRefreshPrefs() {
         flowLazyEnabled: Boolean(enabledEl.checked),
         flowStaleSeconds: staleSeconds,
         flowCooldownSeconds: cooldownSeconds,
+        freshnessMode: ['aggressive', 'balanced', 'economy'].includes(freshnessModeEl.value) ? freshnessModeEl.value : 'balanced',
+        apiBudget: ['low', 'medium', 'high'].includes(apiBudgetEl.value) ? apiBudgetEl.value : 'medium',
+        attentionPriority: ['strict', 'normal'].includes(attentionPriorityEl.value) ? attentionPriorityEl.value : 'strict',
     };
     localStorage.setItem(FLOW_REFRESH_OVERRIDE_KEY, JSON.stringify(payload));
     updateRefreshStatusFromViewModel(viewModel);
