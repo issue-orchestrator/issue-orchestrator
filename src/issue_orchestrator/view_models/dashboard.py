@@ -770,6 +770,7 @@ def _build_flow_columns(
     blocked_items: list[dict[str, Any]],
     done_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    queued_items = [item for item in queue_items if item.get("flow_stage") != "review"]
     return [
         {
             "id": "backlog",
@@ -780,8 +781,8 @@ def _build_flow_columns(
         {
             "id": "queued",
             "title": "Queued",
-            "count": len(queue_items),
-            "items": [_compact_card(item, "queued") for item in queue_items[:12]],
+            "count": len(queued_items),
+            "items": [_compact_card(item, "queued") for item in queued_items[:12]],
         },
         {
             "id": "running",

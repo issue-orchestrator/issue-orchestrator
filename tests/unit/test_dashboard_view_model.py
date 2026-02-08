@@ -162,6 +162,36 @@ def test_view_model_queue_and_blocked_items():
     assert any(group["id"] == "awaiting-merge" for group in view_model.attention_groups)
 
 
+def test_pr_pending_issue_not_shown_in_queued_flow_column():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+
+    pr_pending_issue = Issue(
+        number=4072,
+        title="PR pending merge",
+        labels=["agent:web", "pr-pending"],
+    )
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[pr_pending_issue],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queued_col = next(col for col in view_model.flow_columns if col["id"] == "queued")
+    assert queued_col["count"] == 0
+    assert all(item["issue_number"] != 4072 for item in queued_col["items"])
+    assert any(group["id"] == "awaiting-merge" for group in view_model.attention_groups)
+
+
 def test_view_model_history_routing():
     config = _make_config()
     state = OrchestratorState(
