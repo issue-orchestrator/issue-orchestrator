@@ -1708,6 +1708,7 @@ class TestIntegrationBehaviors:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """Failed session correctly updates state, emits events, and generates actions."""
+        config.retry.interrupted_sessions.enabled = False
         events = InMemoryEventSink()
         issue = make_issue()
         issue_machine = IssueStateMachine(issue, initial_state=IssueState.IN_PROGRESS)
