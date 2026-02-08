@@ -4,6 +4,9 @@
 Each run executes in a detached HEAD worktree rooted at the current committed
 revision. Uncommitted local changes are intentionally excluded for reproducible
 baselines.
+
+Each isolated worktree is provisioned via `make worktree-setup` before running
+the measured target, so runtime behavior matches real worktree usage.
 """
 
 from __future__ import annotations
@@ -203,21 +206,20 @@ def emit_summary(
     return summary
 
 
-def ensure_worktree_runtime(base_repo: Path, worktree: Path, include_vscode: bool, dry_run: bool) -> None:
-    """Make the isolated worktree runnable without measuring setup time."""
-    if dry_run:
-        return
-
-    base_venv = base_repo / ".venv"
-    wt_venv = worktree / ".venv"
-    if base_venv.exists() and not wt_venv.exists():
-        wt_venv.symlink_to(base_venv.resolve())
-
-    if include_vscode:
-        base_nm = base_repo / "packages" / "vscode" / "node_modules"
-        wt_nm = worktree / "packages" / "vscode" / "node_modules"
-        if base_nm.exists() and not wt_nm.exists():
-            wt_nm.symlink_to(base_nm.resolve())
+def prepare_worktree(
+    make_bin: str,
+    name: str,
+    worktree: Path,
+    dry_run: bool,
+) -> CommandResult:
+    """Prepare a fresh worktree exactly like real agent/user setup."""
+    return run_command(
+        name=f"{name}:worktree-setup",
+        command=[make_bin, "worktree-setup"],
+        dry_run=dry_run,
+        cwd=worktree,
+        worktree_path=str(worktree),
+    )
 
 
 def run_in_isolated_worktree(
@@ -227,7 +229,6 @@ def run_in_isolated_worktree(
     make_target: str,
     dry_run: bool,
     jobs: int | None = None,
-    include_vscode: bool = False,
 ) -> CommandResult:
     tmp_dir = Path(tempfile.mkdtemp(prefix="io-validate-profile-"))
     worktree = tmp_dir / "wt"
@@ -246,7 +247,20 @@ def run_in_isolated_worktree(
                 exit_code=add_result.exit_code,
                 worktree_path=str(worktree),
             )
-        ensure_worktree_runtime(repo_root, worktree, include_vscode=include_vscode, dry_run=dry_run)
+        setup_result = prepare_worktree(
+            make_bin=make_bin,
+            name=name,
+            worktree=worktree,
+            dry_run=dry_run,
+        )
+        if setup_result.exit_code != 0:
+            return CommandResult(
+                name=name,
+                command=setup_result.command,
+                wall_seconds=setup_result.wall_seconds,
+                exit_code=setup_result.exit_code,
+                worktree_path=str(worktree),
+            )
 
         make_cmd = [make_bin]
         if jobs is not None:
@@ -299,7 +313,6 @@ def main() -> int:
                 name=f"target:{target}",
                 make_target=target,
                 dry_run=args.dry_run,
-                include_vscode=include_vscode,
             ),
         )
 
@@ -310,7 +323,6 @@ def main() -> int:
         make_target="validate-raw",
         dry_run=args.dry_run,
         jobs=args.jobs,
-        include_vscode=include_vscode,
     )
 
     payload = {
@@ -321,7 +333,7 @@ def main() -> int:
             "include_vscode": include_vscode,
             "dry_run": args.dry_run,
             "targets": target_list,
-            "method": "isolated_cold_worktree",
+            "method": "isolated_cold_worktree_with_full_worktree_setup",
             "profiled_ref": "HEAD (detached worktrees; uncommitted changes excluded)",
         },
         "target_runs": [asdict(result) for result in target_results],
