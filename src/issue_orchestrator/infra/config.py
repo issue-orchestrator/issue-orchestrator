@@ -922,6 +922,13 @@ def _load_observability_section(config: "Config", observability_section: dict) -
     config.session_no_output_max_bytes = observability_section.get("session_no_output_max_bytes", 10000)
     config.session_no_output_repeat_seconds = observability_section.get("session_no_output_repeat_seconds", 120)
     config.session_output_retention_runs = observability_section.get("session_output_retention_runs", 7)
+    config.session_output_retention_days = observability_section.get("session_output_retention_days", 7)
+    tier = str(observability_section.get("session_output_retention_tier", "hot")).strip().lower()
+    if tier not in {"hot", "cold"}:
+        raise ValueError(
+            "observability.session_output_retention_tier must be 'hot' or 'cold'"
+        )
+    config.session_output_retention_tier = tier
     config.stale_escalation_ticks = observability_section.get("stale_escalation_ticks", 0)
 
     # Comment headings
@@ -1132,6 +1139,8 @@ class Config:
     # Logging
     log_retention_days: int = 7  # Days to keep rotated log files
     session_output_retention_runs: int = 7  # Runs to keep per worktree
+    session_output_retention_days: int = 7  # Days to retain session run artifacts
+    session_output_retention_tier: str = "hot"  # Retention tier tag stored in run manifest
 
     # UI mode: "web" (default, browser dashboard)
     ui_mode: str = "web"
@@ -1488,6 +1497,8 @@ class Config:
                 "session_no_output_max_bytes": self.session_no_output_max_bytes,
                 "session_no_output_repeat_seconds": self.session_no_output_repeat_seconds,
                 "session_output_retention_runs": self.session_output_retention_runs,
+                "session_output_retention_days": self.session_output_retention_days,
+                "session_output_retention_tier": self.session_output_retention_tier,
                 "stale_escalation_ticks": self.stale_escalation_ticks,
                 "comment_headings": {
                     "implementation": self.comment_headings.implementation,
@@ -1777,6 +1788,10 @@ class Config:
             observability_dict["stale_escalation_ticks"] = self.stale_escalation_ticks
         if self.session_output_retention_runs != 7:
             observability_dict["session_output_retention_runs"] = self.session_output_retention_runs
+        if self.session_output_retention_days != 7:
+            observability_dict["session_output_retention_days"] = self.session_output_retention_days
+        if self.session_output_retention_tier != "hot":
+            observability_dict["session_output_retention_tier"] = self.session_output_retention_tier
         if observability_dict:
             result["observability"] = observability_dict
 

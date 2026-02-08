@@ -33,8 +33,8 @@ from ..domain.models import (
     sanitize_agent_label,
 )
 from ..domain.events import EventBus, SessionEvent
-from ..events import EventContext
-from ..ports import EventSink
+from ..events import EventContext, EventName
+from ..ports import EventSink, TraceEvent
 from ..infra.issue_diagnostics import write_issue_diagnostic
 from ..infra.worktree_base import resolve_base_branch
 from ..ports.session_output import SessionOutput, ValidationRecord
@@ -296,11 +296,37 @@ class CompletionProcessor:
         if RequestedAction.PUSH_BRANCH in record.requested_actions:
             if self.git_adapter.has_uncommitted_changes(worktree):
                 logger.warning(
-                    f"Worktree has uncommitted changes, will push anyway"
+                    "Worktree has uncommitted changes, will push anyway"
                 )
                 # This is a warning, not a failure - agent may have left uncommitted changes
 
         return True, ""
+
+    def _emit_review_comment_added(
+        self,
+        *,
+        issue_number: int,
+        pr_number: int,
+        comment_url: str | None,
+        comment_body: str,
+    ) -> None:
+        """Emit trace event for a posted review comment (if trace events are configured)."""
+        if not self._trace_events or not self._event_context:
+            return
+        excerpt = comment_body.strip().replace("\n", " ")
+        payload = {
+            "issue_number": issue_number,
+            "pr_number": pr_number,
+            "comment_url": comment_url or "",
+            "comment_excerpt": excerpt[:180] if excerpt else "",
+            "summary": "Posted review comment",
+        }
+        self._trace_events.publish(
+            TraceEvent(
+                EventName.REVIEW_COMMENT_ADDED,
+                self._event_context.enrich(payload),
+            )
+        )
 
     def _requires_publish_gate(self, record: CompletionRecord) -> bool:
         """Check if the completion record requests actions that require publish gate.
@@ -433,6 +459,12 @@ class CompletionProcessor:
         # Validate worktree state
         valid, reason = self.validate_worktree_state(worktree, record)
         if not valid:
+            self._report_processing_failure_comment(
+                issue_number=issue_number,
+                errors=[reason],
+                actions_taken=[],
+                diagnostic_path=None,
+            )
             return ProcessingResult(
                 success=False,
                 message=f"Validation failed: {reason}",
@@ -563,6 +595,12 @@ class CompletionProcessor:
             return None
         # Get session output dir for validation to write directly there
         if not session_name:
+            self._report_processing_failure_comment(
+                issue_number=issue_number,
+                errors=["session_name is required for publish gate"],
+                actions_taken=[],
+                diagnostic_path=None,
+            )
             return ProcessingResult(
                 success=False,
                 message="Publish gate requires session output but no session name available",
@@ -570,10 +608,17 @@ class CompletionProcessor:
             )
         session_output_dir = self.session_output.find_run_dir(worktree, session_name)
         if session_output_dir is None:
+            message = f"Session output directory not found for {session_name}"
+            self._report_processing_failure_comment(
+                issue_number=issue_number,
+                errors=[message],
+                actions_taken=[],
+                diagnostic_path=None,
+            )
             return ProcessingResult(
                 success=False,
                 message=f"Publish gate requires session output but run dir not found for {session_name}",
-                errors=[f"Session output directory not found for {session_name}"],
+                errors=[message],
             )
 
         gate_passed, gate_reason, gate_record = self._check_publish_gate(
@@ -638,6 +683,7 @@ class CompletionProcessor:
                 issue_number,
                 e,
             )
+        self._report_gate_failure_comment(issue_number=issue_number, gate_reason=gate_reason)
 
         self._emit(
             SessionEvent.FAILED,
@@ -781,29 +827,79 @@ class CompletionProcessor:
                 errors=errors,
             )
         elif action == RequestedAction.POST_COMMENT:
-            if record.comment_body:
-                self.pr_adapter.add_comment(label_target, record.comment_body)
-                actions_taken.append(f"Posted comment to #{label_target}")
-        elif action == RequestedAction.ADD_BLOCKED_LABEL:
-            label = self._get_label("blocked")
-            self.label_adapter.add_label(issue_number, label)
-            actions_taken.append(f"Added '{label}' label")
-        elif action == RequestedAction.ADD_NEEDS_HUMAN_LABEL:
-            label = self._get_label("needs_human")
-            self.label_adapter.add_label(issue_number, label)
-            actions_taken.append(f"Added '{label}' label")
-        elif action == RequestedAction.ADD_CODE_REVIEWED_LABEL:
-            label = self._get_label("code_reviewed")
-            self.label_adapter.add_label(label_target, label)
-            actions_taken.append(f"Added '{label}' label to #{label_target}")
-        elif action == RequestedAction.ADD_NEEDS_REWORK_LABEL:
-            label = self._get_label("needs_rework")
-            self.label_adapter.add_label(label_target, label)
-            actions_taken.append(f"Added '{label}' label to #{label_target}")
-        elif action == RequestedAction.REMOVE_CODE_REVIEW_LABEL:
-            label = self._get_label("code_review")
-            self.label_adapter.remove_label(label_target, label)
-            actions_taken.append(f"Removed '{label}' label from #{label_target}")
+            return self._execute_post_comment_action(
+                record=record,
+                issue_number=issue_number,
+                label_target=label_target,
+                actions_taken=actions_taken,
+            )
+        else:
+            label_result = self._execute_label_mutation_action(
+                action=action,
+                issue_number=issue_number,
+                label_target=label_target,
+                actions_taken=actions_taken,
+            )
+            if label_result is not None:
+                return label_result
+
+        return self._ActionResult()
+
+    def _execute_post_comment_action(
+        self,
+        *,
+        record: CompletionRecord,
+        issue_number: int,
+        label_target: int,
+        actions_taken: list[str],
+    ) -> "_ActionResult":
+        """Execute post-comment action with optional review comment event."""
+        if not record.comment_body:
+            return self._ActionResult()
+
+        comment_url = self.pr_adapter.add_comment(label_target, record.comment_body)
+        actions_taken.append(f"Posted comment to #{label_target}")
+        # If comment target differs from issue number, this is a PR-scoped review comment.
+        if label_target != issue_number:
+            self._emit_review_comment_added(
+                issue_number=issue_number,
+                pr_number=label_target,
+                comment_url=comment_url,
+                comment_body=record.comment_body,
+            )
+        return self._ActionResult()
+
+    def _execute_label_mutation_action(
+        self,
+        *,
+        action: RequestedAction,
+        issue_number: int,
+        label_target: int,
+        actions_taken: list[str],
+    ) -> "_ActionResult | None":
+        """Execute label add/remove action variants."""
+        label_actions: dict[RequestedAction, tuple[str, int, str]] = {
+            RequestedAction.ADD_BLOCKED_LABEL: ("blocked", issue_number, "add"),
+            RequestedAction.ADD_NEEDS_HUMAN_LABEL: ("needs_human", issue_number, "add"),
+            RequestedAction.ADD_CODE_REVIEWED_LABEL: ("code_reviewed", label_target, "add"),
+            RequestedAction.ADD_NEEDS_REWORK_LABEL: ("needs_rework", label_target, "add"),
+            RequestedAction.REMOVE_CODE_REVIEW_LABEL: ("code_review", label_target, "remove"),
+        }
+        config = label_actions.get(action)
+        if config is None:
+            return None
+
+        label_key, target_number, operation = config
+        label = self._get_label(label_key)
+        if operation == "add":
+            self.label_adapter.add_label(target_number, label)
+            if target_number == issue_number:
+                actions_taken.append(f"Added '{label}' label")
+            else:
+                actions_taken.append(f"Added '{label}' label to #{target_number}")
+        else:
+            self.label_adapter.remove_label(target_number, label)
+            actions_taken.append(f"Removed '{label}' label from #{target_number}")
 
         return self._ActionResult()
 
@@ -974,8 +1070,14 @@ class CompletionProcessor:
                 )
                 if self._config and self._config.review_exchange_require_validation:
                     comment += "- Validation: required and passed\n"
-                self.pr_adapter.add_comment(pr.number, comment)
+                comment_url = self.pr_adapter.add_comment(pr.number, comment)
                 actions_taken.append(f"Posted review completion comment to PR #{pr.number}")
+                self._emit_review_comment_added(
+                    issue_number=issue_number,
+                    pr_number=pr.number,
+                    comment_url=comment_url,
+                    comment_body=comment,
+                )
             return self._ActionResult(
                 branch=branch,
                 pr_url=pr.url,
@@ -1339,6 +1441,12 @@ class CompletionProcessor:
                 error_details=error_details,
                 duration_seconds=total_duration,
             )
+            self._report_processing_failure_comment(
+                issue_number=issue_number,
+                errors=errors,
+                actions_taken=actions_taken,
+                diagnostic_path=diagnostic_path,
+            )
 
         # Clean up the completion record after processing to prevent re-processing
         self._cleanup_completion_record(worktree, completion_path, issue_number)
@@ -1614,6 +1722,50 @@ class CompletionProcessor:
             self.pr_adapter.add_comment(issue_number, comment)
         except Exception as exc:
             logger.warning("Failed to add cleanup warning comment for #%d: %s", issue_number, exc)
+
+    def _report_gate_failure_comment(self, issue_number: int, gate_reason: str) -> None:
+        """Post a GitHub comment for publish gate failures."""
+        comment = (
+            "## Validation Failed\n\n"
+            "Publish actions were blocked by validation.\n\n"
+            f"- Reason: {gate_reason}\n"
+            f"- Label added: `{self._get_label('validation_failed')}`\n"
+        )
+        try:
+            self.pr_adapter.add_comment(issue_number, comment)
+        except Exception as exc:
+            logger.warning(
+                "Failed to add validation failure comment for #%d: %s",
+                issue_number,
+                exc,
+            )
+
+    def _report_processing_failure_comment(
+        self,
+        issue_number: int,
+        errors: list[str],
+        actions_taken: list[str],
+        diagnostic_path: str | None,
+    ) -> None:
+        """Post a GitHub comment for completion processing failures."""
+        primary_error = errors[0] if errors else "Unknown processing error"
+        comment = (
+            "## Orchestrator Processing Failed\n\n"
+            "The agent reported completion, but orchestrator publish/finalize steps failed.\n\n"
+            f"- Primary error: {primary_error}\n"
+        )
+        if actions_taken:
+            comment += f"- Actions completed before failure: {', '.join(actions_taken)}\n"
+        if diagnostic_path:
+            comment += f"- Diagnostic file: `{diagnostic_path}`\n"
+        try:
+            self.pr_adapter.add_comment(issue_number, comment)
+        except Exception as exc:
+            logger.warning(
+                "Failed to add processing failure comment for #%d: %s",
+                issue_number,
+                exc,
+            )
 
     def _write_failure_diagnostic(
         self,

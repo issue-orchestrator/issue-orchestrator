@@ -77,6 +77,7 @@ class SessionDecision:
 
     # Optional blocked label override (e.g., provider unavailable)
     blocked_label: Optional[str] = None
+    blocked_reason: Optional[str] = None
 
 
 class SessionController:
@@ -179,6 +180,7 @@ class SessionController:
 
         # Map outcome to status
         status = self._map_outcome_to_status(record)
+        blocked_reason = record.blocked_reason if status == SessionStatus.BLOCKED else None
 
         # Run validation if configured
         validation_passed, validation_error, validation_error_file = None, None, None
@@ -200,6 +202,7 @@ class SessionController:
             validation_passed=validation_passed,
             validation_error=validation_error,
             validation_error_file=validation_error_file,
+            blocked_reason=blocked_reason,
         )
 
     def _log_completion_lookup(
@@ -252,6 +255,7 @@ class SessionController:
                 status=SessionStatus.BLOCKED,
                 reason="Provider unavailable",
                 blocked_label=self._provider_blocked_label,
+                blocked_reason=provider_status.last_error_summary or "Provider unavailable",
             )
 
         if observation.observation == SessionObservation.TIMED_OUT:

@@ -77,6 +77,8 @@ class TestModelDefaults:
         assert m.web_port == 8080
         assert m.control_api_port == 19080
         assert m.worktree_branch_on_recreate == "delete"
+        assert m.session_output_retention_days == 7
+        assert m.session_output_retention_tier == "hot"
 
 
 # ---------------------------------------------------------------------------
@@ -181,6 +183,8 @@ class TestFromConfig:
         cfg.triage_review_threshold = 5
         cfg.session_no_output_seconds = 60
         cfg.stale_escalation_ticks = 3
+        cfg.session_output_retention_days = 21
+        cfg.session_output_retention_tier = "cold"
         cfg.web_port = 9090
         cfg.control_api_port = 19090
         cfg.worktree_base = Path("/tmp/worktrees")
@@ -240,6 +244,8 @@ class TestFromConfig:
         assert isinstance(adv, AdvancedSettings)
         assert adv.session_no_output_seconds == 60
         assert adv.stale_escalation_ticks == 3
+        assert adv.session_output_retention_days == 21
+        assert adv.session_output_retention_tier == "cold"
         assert adv.web_port == 9090
         assert adv.control_api_port == 19090
         assert adv.worktree_base == "/tmp/worktrees"

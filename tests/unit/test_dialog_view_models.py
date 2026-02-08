@@ -175,6 +175,29 @@ def test_build_session_diagnostics_dialog_actions():
     assert "/wt/validate.json" in paths
 
 
+def test_build_session_diagnostics_dialog_fallbacks_without_worktree():
+    dialog = build_session_diagnostics_dialog(
+        7,
+        {
+            "manifest": {
+                "session_name": "",
+                "validation_record_path": "validate.json",
+            },
+            "run_dir": "/run/fallback",
+            "session_name": "fallback-session",
+        },
+    )
+
+    rows = _rows_to_map(dialog["rows"])
+    assert rows["Session"] == "fallback-session"
+    assert rows["Worktree"] == "-"
+
+    paths = {action.get("path") for action in dialog["actions"] if "path" in action}
+    assert "/run/fallback" in paths
+    # No worktree means relative validation path cannot be resolved/opened.
+    assert "validate.json" not in paths
+
+
 def test_build_blocked_issues_dialog():
     dialog = build_blocked_issues_dialog({"blocked_issues": ["M1-1"]})
 

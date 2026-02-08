@@ -785,6 +785,45 @@ class TestHistoryEndpoints:
         assert len(mock_orch.state.session_history) == 0
         assert 1 not in mock_orch.state.completed_today
 
+    def test_get_history_dedupes_to_latest_per_issue(self):
+        """History endpoint returns only the latest entry for each issue."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=1,
+                title="Issue 1 (old)",
+                agent_type="agent:web",
+                status="failed",
+                runtime_minutes=10,
+            ),
+            SessionHistoryEntry(
+                issue_number=1,
+                title="Issue 1 (latest)",
+                agent_type="agent:web",
+                status="blocked",
+                runtime_minutes=3,
+            ),
+            SessionHistoryEntry(
+                issue_number=2,
+                title="Issue 2",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=8,
+            ),
+        ]
+
+        set_orchestrator(mock_orch)
+
+        client = TestClient(app)
+        response = client.get("/api/history")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["count"] == 2
+        issue1_entries = [e for e in payload["history"] if e["issue_number"] == 1]
+        assert len(issue1_entries) == 1
+        assert issue1_entries[0]["status"] == "blocked"
+
 
 class TestDebugEndpoint:
     """Test the GET /api/debug endpoint."""
@@ -1375,6 +1414,8 @@ class TestApiTimelineEndpoint:
                     level="phase",
                     summary=None,
                     parent_key="session:issue-123",
+                    run_id="20260206-000000Z",
+                    run_dir="/tmp/worktree/.issue-orchestrator/sessions/20260206-000000Z__issue-123",
                     artifacts=[TimelineArtifact("worktree", "Worktree", "/tmp/worktree")],
                 ),
                 TimelineEvent(
@@ -1390,6 +1431,7 @@ class TestApiTimelineEndpoint:
                     parent_key="session:issue-123",
                     artifacts=[
                         TimelineArtifact("pull_request", "PR", "https://example/pr/1"),
+                        TimelineArtifact("review_comment", "Review Comment", "https://example/pr/1#issuecomment-1"),
                         TimelineArtifact("completion_record", "Completion", "/tmp/worktree/completion.json"),
                     ],
                 ),
@@ -1407,9 +1449,28 @@ class TestApiTimelineEndpoint:
             assert len(payload["events"]) == 2
             assert payload["events"][0]["event"] == "session.started"
             assert payload["events"][0]["artifacts"][0]["type"] == "worktree"
+            assert payload["events"][0]["run_id"] == "20260206-000000Z"
+            assert payload["events"][0]["run_dir"].endswith("__issue-123")
+            action_types = {a["type"] for a in payload["events"][0]["actions"]}
+            assert "open_path" in action_types
+            assert "open_agent_log" in action_types
+            assert "open_session_diagnostics" in action_types
+            start_actions = payload["events"][0]["actions"]
+            assert sum(1 for action in start_actions if action["type"] == "open_session_diagnostics") == 1
+            assert start_actions[-1]["type"] == "open_session_diagnostics"
             completion_artifacts = {a["type"] for a in payload["events"][1]["artifacts"]}
             assert "pull_request" in completion_artifacts
+            assert "review_comment" in completion_artifacts
             assert "completion_record" in completion_artifacts
+            completion_actions = payload["events"][1]["actions"]
+            assert any(
+                action["type"] == "open_url" and "issuecomment" in action.get("url", "")
+                for action in completion_actions
+            )
+            completion_labels = [action["label"] for action in completion_actions]
+            review_index = completion_labels.index("Open Review Comment ↗")
+            diagnostics_index = completion_labels.index("Diagnostics…")
+            assert review_index < diagnostics_index
         finally:
             set_orchestrator(None)
 
@@ -1451,6 +1512,58 @@ class TestApiTimelineEndpoint:
             assert "events" in payload
             assert "loops" in payload
             assert "actions" in payload
+        finally:
+            set_orchestrator(None)
+
+    def test_timeline_filters_label_churn_events(self):
+        """Timeline endpoint omits noisy issue.labels_changed events."""
+        mock_orch = create_mock_orchestrator()
+
+        stream = TimelineStream(
+            issue_number=123,
+            events=[
+                TimelineEvent(
+                    event_id="e1",
+                    timestamp="2026-02-06T00:00:00Z",
+                    event="issue.labels_changed",
+                    issue_number=123,
+                    phase="in_progress",
+                    step="labels_changed",
+                    status="completed",
+                    level="detail",
+                    summary="label update",
+                    parent_key="issue:123",
+                    artifacts=[],
+                ),
+                TimelineEvent(
+                    event_id="e2",
+                    timestamp="2026-02-06T00:01:00Z",
+                    event="session.completed",
+                    issue_number=123,
+                    phase="completed",
+                    step="completed",
+                    status="completed",
+                    level="phase",
+                    summary=None,
+                    parent_key="session:issue-123",
+                    artifacts=[],
+                ),
+            ],
+        )
+        mock_orch.deps.timeline_reader.read.return_value = stream
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/timeline/123")
+            assert response.status_code == 200
+            payload = response.json()
+            assert len(payload["events"]) == 1
+            assert payload["events"][0]["event"] == "session.completed"
+            assert any(
+                action["type"] == "open_session_diagnostics"
+                for action in payload["events"][0]["actions"]
+            )
         finally:
             set_orchestrator(None)
 

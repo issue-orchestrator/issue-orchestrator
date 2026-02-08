@@ -351,6 +351,7 @@ class TestActionApplier:
 
     def test_apply_all(self, applier, mock_labels):
         """Test applying multiple actions."""
+        mock_labels.labels[123] = {"blocked"}
         actions = [
             AddLabelAction(issue_number=123, label="in-progress"),
             AddLabelAction(issue_number=123, label="priority:high"),

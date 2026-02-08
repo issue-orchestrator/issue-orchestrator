@@ -760,6 +760,8 @@ class SessionLauncher:
             "session_id": session_name,
             "worktree_path": str(worktree_path),
             "branch_name": branch_name,
+            "run_id": run.run_id,
+            "run_dir": str(run.run_dir),
             "completion_path": completion_path,
             "completion_path_absolute": str(full_completion_path),
         }))
@@ -985,6 +987,8 @@ class SessionLauncher:
             "pr_number": review.pr_number,
             "issue_number": review.issue_number,
             "session_name": session_name,
+            "run_id": run.run_id,
+            "run_dir": str(run.run_dir),
             "completion_path": completion_path,
             "completion_path_absolute": str(full_completion_path),
         }))
@@ -1270,6 +1274,8 @@ class SessionLauncher:
             "pr_number": pr_number,
             "session_name": session_name,
             "rework_cycle": rework.rework_cycle,
+            "run_id": run.run_id,
+            "run_dir": str(run.run_dir),
             "completion_path": completion_path,
             "completion_path_absolute": str(full_completion_path),
         }))
@@ -1675,6 +1681,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     validation_error_file: Optional[str] = None,
     review_exchange_completed: bool = False,
     blocked_label: Optional[str] = None,
+    blocked_reason: Optional[str] = None,
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
 ) -> None:
@@ -1745,6 +1752,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         diagnostic_path=diagnostic_path,
         review_exchange_completed=review_exchange_completed,
         blocked_label=blocked_label,
+        blocked_reason=blocked_reason,
     )
     if session.worktree_path:
         run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
@@ -2041,6 +2049,7 @@ def process_active_sessions(
             validation_error_file=str(validation_error_file) if validation_error_file else None,
             review_exchange_completed=review_exchange_completed,
             blocked_label=decision.blocked_label,
+            blocked_reason=decision.blocked_reason,
         )
         session_elapsed = time.monotonic() - session_start
         if session_elapsed > 5:

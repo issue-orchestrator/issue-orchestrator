@@ -151,6 +151,7 @@ class EventName(str, Enum):
     REVIEW_TRIAGE_APPROVED = "review.triage_approved"
     REVIEW_MERGED = "review.merged"
     REVIEW_CLOSED = "review.closed"
+    REVIEW_COMMENT_ADDED = "review.comment_added"
     REVIEW_EXCHANGE_STARTED = "review_exchange.started"
     REVIEW_EXCHANGE_ROUND_STARTED = "review_exchange.round_started"
     REVIEW_EXCHANGE_ROUND_COMPLETED = "review_exchange.round_completed"
@@ -225,6 +226,7 @@ class EventName(str, Enum):
     # Labels
     # =========================================================================
     LABELS_SYNCED = "labels.synced"
+    LABEL_MUTATION_SUMMARY = "labels.mutation_summary"
     ISSUE_LABELS_CHANGED = "issue.labels_changed"
     PR_VIEW_CHANGED = "pr.view_changed"
 

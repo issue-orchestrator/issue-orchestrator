@@ -27,6 +27,16 @@ def test_build_issue_timeline_maps_phase_and_step():
                 "completion_path_absolute": "/tmp/worktree/.issue-orchestrator/completion.json",
             },
         ),
+        TimelineRecord(
+            event_id="e4",
+            timestamp="2026-02-06T00:03:00Z",
+            event="review.comment_added",
+            data={
+                "issue_number": 123,
+                "pr_number": 777,
+                "comment_url": "https://example/pr/777#issuecomment-1",
+            },
+        ),
     ]
 
     timeline = build_issue_timeline(123, records)
@@ -38,6 +48,8 @@ def test_build_issue_timeline_maps_phase_and_step():
     assert events[1]["step"] == "pr_created"
     assert events[1]["artifacts"][0]["type"] == "pull_request"
     assert events[2]["artifacts"][0]["type"] == "completion_record"
+    assert events[3]["phase"] == "reviewing"
+    assert events[3]["artifacts"][0]["type"] == "review_comment"
 
     stream = TimelineStream.from_records(123, records)
     grouped = stream.group_by_phase()

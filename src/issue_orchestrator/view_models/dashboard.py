@@ -8,6 +8,7 @@ import json
 from typing import Any, Callable
 
 from ..domain.session_key import TaskKind
+from ..history import latest_history_entries_by_issue
 from ..infra import labels as label_module
 from ..infra.audit import get_issue_dependencies
 from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
@@ -508,7 +509,7 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
     }
     history_items: list[dict[str, Any]] = []
     blocked_items: list[dict[str, Any]] = []
-    for entry in reversed(state.session_history[-50:]):
+    for entry in latest_history_entries_by_issue(state.session_history, limit=50):
         url = entry.pr_url if entry.pr_url else issue_url_for(config, entry.issue_number)
         action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
         status_reason = getattr(entry, "status_reason", None) or status_labels.get(entry.status, entry.status)
