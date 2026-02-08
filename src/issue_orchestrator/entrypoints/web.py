@@ -20,6 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from sse_starlette.sse import EventSourceResponse
 from jinja2 import Environment, FileSystemLoader
 
+from ..history import latest_history_entries_by_issue
 from ..infra.e2e_runner import get_e2e_role
 from ..view_models.dashboard import (
     build_dashboard_view_model,
@@ -1352,17 +1353,7 @@ def _build_timeline_loops(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _latest_history_entries(session_history: list[Any], limit: int = 50) -> list[Any]:
     """Return most recent history entries, deduplicated by issue number."""
-    latest: list[Any] = []
-    seen_issue_numbers: set[int] = set()
-    for entry in reversed(session_history):
-        issue_number = int(entry.issue_number)
-        if issue_number in seen_issue_numbers:
-            continue
-        seen_issue_numbers.add(issue_number)
-        latest.append(entry)
-        if len(latest) >= limit:
-            break
-    return latest
+    return latest_history_entries_by_issue(session_history, limit=limit)
 
 
 def _filter_timeline_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:

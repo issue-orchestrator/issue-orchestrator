@@ -826,22 +826,22 @@ class CompletionProcessor:
                 actions_taken=actions_taken,
                 errors=errors,
             )
-        if action == RequestedAction.POST_COMMENT:
+        elif action == RequestedAction.POST_COMMENT:
             return self._execute_post_comment_action(
                 record=record,
                 issue_number=issue_number,
                 label_target=label_target,
                 actions_taken=actions_taken,
             )
-
-        label_result = self._execute_label_mutation_action(
-            action=action,
-            issue_number=issue_number,
-            label_target=label_target,
-            actions_taken=actions_taken,
-        )
-        if label_result is not None:
-            return label_result
+        else:
+            label_result = self._execute_label_mutation_action(
+                action=action,
+                issue_number=issue_number,
+                label_target=label_target,
+                actions_taken=actions_taken,
+            )
+            if label_result is not None:
+                return label_result
 
         return self._ActionResult()
 

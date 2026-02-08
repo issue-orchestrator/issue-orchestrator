@@ -28,7 +28,7 @@ Usage:
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional, Sequence
+from typing import Callable, Literal, Optional, Sequence
 
 from ..events import EventName
 from ..infra.logging_config import issue_log
@@ -72,6 +72,15 @@ SessionLauncherCallback = Callable[[SessionType, int], Optional[Session]]
 # Type alias for lease_id lookup callback
 # Takes issue_number and returns lease_id if active session exists
 LeaseIdLookup = Callable[[int], str | None]
+LabelMutationStatField = Literal[
+    "label_add_attempted",
+    "label_add_applied",
+    "label_add_noop",
+    "label_remove_attempted",
+    "label_remove_applied",
+    "label_remove_noop",
+    "label_mutation_failed",
+]
 
 
 @dataclass
@@ -277,6 +286,9 @@ class ActionApplier:
             self._record_label_stat(action.issue_number, "label_remove_attempted")
             has_label = self._has_label_safely(action.issue_number, action.label)
             should_skip_remove_noop = False
+            # Remove no-op is reconcile-scoped. In startup/session-launch paths,
+            # cached has_label=False may be stale, so only skip when fresh labels
+            # explicitly confirm the label is absent.
             if has_label is False and self.reconcile and self.fresh_issue_reader is not None:
                 current_labels = self._fetch_current_labels(action.issue_number)
                 should_skip_remove_noop = (
@@ -1020,21 +1032,34 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             payload["issue_key"] = str(issue_number)
         self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, payload))
 
-    def _record_label_stat(self, issue_number: int, field_name: str) -> None:
+    @staticmethod
+    def _increment_label_stat(stats: _LabelMutationStats, field_name: LabelMutationStatField) -> None:
+        if field_name == "label_add_attempted":
+            stats.label_add_attempted += 1
+        elif field_name == "label_add_applied":
+            stats.label_add_applied += 1
+        elif field_name == "label_add_noop":
+            stats.label_add_noop += 1
+        elif field_name == "label_remove_attempted":
+            stats.label_remove_attempted += 1
+        elif field_name == "label_remove_applied":
+            stats.label_remove_applied += 1
+        elif field_name == "label_remove_noop":
+            stats.label_remove_noop += 1
+        else:
+            stats.label_mutation_failed += 1
+
+    def _record_label_stat(self, issue_number: int, field_name: LabelMutationStatField) -> None:
         """Increment label mutation counters for current apply_all batch."""
         if self._active_label_mutation_stats is None:
             return
 
-        setattr(
-            self._active_label_mutation_stats,
-            field_name,
-            getattr(self._active_label_mutation_stats, field_name) + 1,
-        )
+        self._increment_label_stat(self._active_label_mutation_stats, field_name)
 
         issue_stats = self._active_label_mutation_by_issue.setdefault(
             issue_number, _LabelMutationStats()
         )
-        setattr(issue_stats, field_name, getattr(issue_stats, field_name) + 1)
+        self._increment_label_stat(issue_stats, field_name)
 
     def _emit_label_mutation_summary(self) -> None:
         """Emit per-batch label mutation summary event and log line."""
