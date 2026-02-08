@@ -644,6 +644,7 @@ def _fetch_and_update_queue(
     new_queue = _filter_queue(config, state, all_issues)
     _emit_queue_changes(events, state, new_queue)
     state.cached_queue_issues = new_queue
+    prune_issue_refresh_timestamps(state)
     state.queue_last_refresh_at = refresh_started_at
     state.queue_refresh_count += 1
     if full_scan:
@@ -849,9 +850,42 @@ def _update_label_cache(repository_host: RepositoryHost, all_issues: list["Issue
 
 def _filter_queue(config: "Config", state: "OrchestratorState", all_issues: list["Issue"]) -> list["Issue"]:
     """Filter issues for the queue."""
+    all_issues = [issue for issue in all_issues if _matches_fetch_scope(config, issue)]
     exclude = {e.issue_number for e in state.session_history} | {s.issue.number for s in state.active_sessions}
     filtered = [i for i in all_issues if i.number not in exclude]
     return [i for i in filtered if i.number == config.filtering.issue] if config.filtering.issue else filtered
+
+
+def is_issue_in_queue_scope(config: "Config", state: "OrchestratorState", issue: "Issue") -> bool:
+    """Return whether issue belongs in cached queue for current config/state."""
+    return bool(_filter_queue(config, state, [issue]))
+
+
+def prune_issue_refresh_timestamps(state: "OrchestratorState") -> None:
+    """Prune refresh timestamp map to currently relevant issue IDs."""
+    if not state.issue_refresh_timestamps:
+        return
+    keep_numbers = {issue.number for issue in state.cached_queue_issues}
+    keep_numbers.update(session.issue.number for session in state.active_sessions)
+    keep_numbers.update(entry.issue_number for entry in state.session_history)
+    state.issue_refresh_timestamps = {
+        issue_number: refreshed_at
+        for issue_number, refreshed_at in state.issue_refresh_timestamps.items()
+        if issue_number in keep_numbers
+    }
+
+
+def _matches_fetch_scope(config: "Config", issue: "Issue") -> bool:
+    """Apply label/milestone/exclude-label scope checks for a fetched issue."""
+    if config.filtering.label and config.filtering.label not in issue.labels:
+        return False
+    milestones = config.get_filter_milestones()
+    if milestones and issue.milestone not in milestones:
+        return False
+    issue_filter = config.get_issue_filter()
+    if not issue_filter.apply([issue]):
+        return False
+    return True
 
 
 def emit_queue_changes(events: EventSink, state: "OrchestratorState", new_queue: list["Issue"]) -> None:

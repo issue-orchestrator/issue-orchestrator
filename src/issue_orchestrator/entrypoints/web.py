@@ -50,6 +50,7 @@ from ..contracts.ui_openapi_models import (
     SessionDiagnosticsDialogPayload,
     IssueDetailPayload,
 )
+from ..control.orchestrator_support import is_issue_in_queue_scope, prune_issue_refresh_timestamps
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
@@ -794,20 +795,22 @@ async def refresh_issue(issue_number: int) -> JSONResponse:
         return JSONResponse({"error": f"Issue #{issue_number} not found"}, status_code=404)
 
     state = _orchestrator.state
-    updated = False
-    for idx, cached in enumerate(state.cached_queue_issues):
-        if cached.number == issue_number:
-            state.cached_queue_issues[idx] = issue
-            updated = True
-            break
-    if not updated:
+    config = _orchestrator.config
+    was_present = any(cached.number == issue_number for cached in state.cached_queue_issues)
+    state.cached_queue_issues = [cached for cached in state.cached_queue_issues if cached.number != issue_number]
+    in_scope = is_issue_in_queue_scope(config, state, issue)
+    if in_scope:
         state.cached_queue_issues.append(issue)
+        state.issue_refresh_timestamps[issue_number] = time.time()
+    else:
+        state.issue_refresh_timestamps.pop(issue_number, None)
+    prune_issue_refresh_timestamps(state)
 
-    state.issue_refresh_timestamps[issue_number] = time.time()
     return JSONResponse({
-        "status": "refreshed",
+        "status": "refreshed" if in_scope else "out_of_scope",
         "issue_number": issue_number,
-        "updated": updated,
+        "updated": was_present and in_scope,
+        "in_scope": in_scope,
     })
 
 
