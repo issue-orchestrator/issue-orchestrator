@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import json
-import threading
+import time
 
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin, _SessionRecord, _SubprocessRegistry
 from issue_orchestrator.infra.env import ENV_PREFIX
-from tests.unit.threading_helpers import join_or_fail, wait_for_event
 
 
 def test_subprocess_session_writes_log(tmp_path, monkeypatch):
@@ -30,18 +29,12 @@ def test_subprocess_session_writes_log(tmp_path, monkeypatch):
     )
     assert created is True
 
-    completion = threading.Event()
-
-    def wait_for_exit() -> None:
-        while plugin.session_exists(123, "issue-123"):
-            pass
-        completion.set()
-
-    watcher = threading.Thread(target=wait_for_exit)
-    watcher.start()
-    wait_for_event(completion, timeout=2.0, label="subprocess_completion")
-    join_or_fail(watcher, timeout=1.0, label="subprocess_watcher")
-    assert plugin.session_exists(123, "issue-123") is False
+    # Bounded poll for process exit.  Subprocess is a real external system,
+    # so bounded waits with GIL-yielding pauses are acceptable per test policy.
+    deadline = time.monotonic() + 5.0
+    while plugin.session_exists(123, "issue-123"):
+        assert time.monotonic() < deadline, "subprocess did not exit within 5s"
+        time.sleep(0.05)  # yield GIL so watcher thread can drain PTY output
 
     log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "session.log"
     assert log_path.exists(), f"Log file not created at {log_path}"
