@@ -58,6 +58,8 @@ SETUP_LOG ?= $(HOME)/.issue-orchestrator/worktree-setup.log
 
 # Shared playwright browser cache - avoids 250MB re-downloads across worktrees
 export PLAYWRIGHT_BROWSERS_PATH ?= $(HOME)/.cache/ms-playwright
+# Shared VS Code test cache - avoids VS Code binary re-downloads across worktrees
+export IO_VSCODE_TEST_CACHE_PATH ?= $(HOME)/.cache/issue-orchestrator/vscode-test
 
 # uv command - prefer PATH, fall back to default install location
 UV := $(shell command -v uv 2>/dev/null || echo $(HOME)/.local/bin/uv)

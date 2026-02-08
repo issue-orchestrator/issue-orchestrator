@@ -16,10 +16,15 @@ async function main(): Promise<void> {
     path.join(os.tmpdir(), "io-vscode-extensions-")
   );
   const workspacePath = process.env.IO_VSCODE_TEST_WORKSPACE;
+  const cachePath =
+    process.env.IO_VSCODE_TEST_CACHE_PATH ??
+    path.join(os.homedir(), ".cache", "issue-orchestrator", "vscode-test");
+  fs.mkdirSync(cachePath, { recursive: true });
 
   await runTests({
     extensionDevelopmentPath,
     extensionTestsPath,
+    cachePath,
     launchArgs: [
       ...(workspacePath ? [workspacePath] : []),
       "--user-data-dir",

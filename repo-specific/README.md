@@ -6,7 +6,8 @@ These are NOT framework examples - they are our working configuration.
 ## What belongs here
 
 - `prompts/` - Prompts for agents working on this repo
-- Future: scripts, config overrides specific to this repo
+- `scripts/` - Repo-maintainer scripts (not framework/user-facing)
+- `Makefile` - Repo-maintainer targets (for internal profiling/workflows)
 
 ## What does NOT belong here
 
