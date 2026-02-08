@@ -48,6 +48,8 @@ class TestModelDefaults:
         assert m.fetch_layer_max_hot_issues_per_cycle == 40
         assert m.fetch_layer_pr_scan_every_n_refreshes == 2
         assert m.fetch_layer_dependency_scan_every_n_refreshes == 1
+        assert m.fetch_layer_visibility_aware_enabled is False
+        assert m.fetch_layer_selective_sync_planner_enabled is False
         assert m.default_priority_tier == 1
 
     def test_e2e_defaults(self):
@@ -171,6 +173,8 @@ class TestFromConfig:
         cfg.fetch_layer_max_hot_issues_per_cycle = 30
         cfg.fetch_layer_pr_scan_every_n_refreshes = 3
         cfg.fetch_layer_dependency_scan_every_n_refreshes = 2
+        cfg.fetch_layer_visibility_aware_enabled = True
+        cfg.fetch_layer_selective_sync_planner_enabled = True
         cfg.e2e = E2EConfig(
             enabled=True,
             role="executor",
@@ -216,6 +220,8 @@ class TestFromConfig:
         assert conc.fetch_layer_max_hot_issues_per_cycle == 30
         assert conc.fetch_layer_pr_scan_every_n_refreshes == 3
         assert conc.fetch_layer_dependency_scan_every_n_refreshes == 2
+        assert conc.fetch_layer_visibility_aware_enabled is True
+        assert conc.fetch_layer_selective_sync_planner_enabled is True
 
     def test_e2e_tab(self):
         tabs = from_config(self._make_config())

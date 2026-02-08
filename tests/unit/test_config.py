@@ -698,6 +698,8 @@ labels:
         assert config.fetch_layer_max_hot_issues_per_cycle == 40
         assert config.fetch_layer_pr_scan_every_n_refreshes == 2
         assert config.fetch_layer_dependency_scan_every_n_refreshes == 1
+        assert config.fetch_layer_visibility_aware_enabled is False
+        assert config.fetch_layer_selective_sync_planner_enabled is False
 
     def test_flow_refresh_defaults(self):
         """Test flow refresh defaults for lazy visible refresh."""
@@ -795,6 +797,8 @@ ui:
     max_hot_issues_per_cycle: 18
     pr_scan_every_n_refreshes: 4
     dependency_scan_every_n_refreshes: 3
+    visibility_aware_enabled: true
+    selective_sync_planner_enabled: true
 
 worktrees:
   base: /tmp
@@ -815,6 +819,8 @@ agents:
         assert config.fetch_layer_max_hot_issues_per_cycle == 18
         assert config.fetch_layer_pr_scan_every_n_refreshes == 4
         assert config.fetch_layer_dependency_scan_every_n_refreshes == 3
+        assert config.fetch_layer_visibility_aware_enabled is True
+        assert config.fetch_layer_selective_sync_planner_enabled is True
 
     def test_flow_refresh_from_yaml(self, tmp_path):
         """Test loading ui.flow_refresh settings from YAML."""
