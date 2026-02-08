@@ -686,6 +686,31 @@ def _build_backlog_items(state, config) -> list[dict[str, Any]]:
     return cards
 
 
+def _exclude_flow_overlaps(
+    backlog_items: list[dict[str, Any]],
+    queue_items: list[dict[str, Any]],
+    active_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    done_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep flow columns mutually exclusive by removing overlaps from backlog.
+
+    Backlog is the "not yet picked up elsewhere" bucket, so anything already
+    represented in queued/running/blocked/done should not appear there.
+    """
+    occupied_numbers = {
+        int(item["issue_number"])
+        for item in queue_items + active_items + blocked_items + done_items
+        if isinstance(item.get("issue_number"), int)
+    }
+    return [
+        item
+        for item in backlog_items
+        if isinstance(item.get("issue_number"), int)
+        and int(item["issue_number"]) not in occupied_numbers
+    ]
+
+
 def _build_attention_groups(
     blocked_items: list[dict[str, Any]],
     queue_items: list[dict[str, Any]],
@@ -940,6 +965,13 @@ def build_dashboard_view_model(
         history_items, history_blocked = _build_history_items(state, config)
         blocked_items.extend(history_blocked)
         done_items = [item for item in history_items if item.get("status") == "completed"]
+        backlog_items = _exclude_flow_overlaps(
+            backlog_items,
+            queue_items,
+            active_items,
+            blocked_items,
+            done_items,
+        )
         attention_groups, awaiting_merge_items = _build_attention_groups(blocked_items, queue_items, history_items)
         flow_columns = _build_flow_columns(backlog_items, queue_items, active_items, blocked_items, done_items)
 

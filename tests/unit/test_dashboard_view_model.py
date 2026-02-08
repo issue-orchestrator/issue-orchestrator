@@ -153,7 +153,12 @@ def test_view_model_queue_and_blocked_items():
     assert blocked_item["status"] == "blocked"
     assert "blocked" in (blocked_item["blocked_summary"] or "")
     assert "waiting on" in (blocked_item["blocked_summary"] or "")
-    assert view_model.backlog_count == 2
+    assert view_model.backlog_count == 0
+    backlog_numbers = {item["issue_number"] for item in view_model.backlog_items}
+    queue_numbers = {item["issue_number"] for item in view_model.queue_items}
+    blocked_numbers = {item["issue_number"] for item in view_model.blocked_items}
+    assert backlog_numbers.isdisjoint(queue_numbers)
+    assert backlog_numbers.isdisjoint(blocked_numbers)
     assert any(group["id"] == "awaiting-merge" for group in view_model.attention_groups)
 
 
