@@ -200,6 +200,9 @@ def get_session(self, id: str) -> Session:
 - Favor higher-level abstractions when they improve clarity, conciseness, or testability.
 - If callers must rummage across disparate classes/fields to accomplish a task, consider introducing a higher-level port or helper.
 - Entry points should depend on behavior-level ports, not storage or transport details.
+- Abstraction trigger: if implementing one policy requires touching multiple internal fields/classes, stop and introduce or extend a behavior-level abstraction first.
+- Shared state rule: do not mutate shared state collections directly from entrypoints/controllers when policy enforcement is required; route through an owner abstraction with explicit outcomes.
+- Review classification: if this rule is violated, classify as `Correctness Risk` when a concrete invariant can be bypassed, otherwise classify as `Design Smell`.
 
 ## GitHub API Discipline
 
