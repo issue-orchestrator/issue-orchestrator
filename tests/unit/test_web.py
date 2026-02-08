@@ -1740,6 +1740,28 @@ class TestApiTimelineEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_refresh_single_issue_rejects_closed_issue(self):
+        """Closed issues should never be re-admitted to cached queue via refresh."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.filtering.label = "agent:web"
+        mock_orch.state.cached_queue_issues = [create_issue(7, "old title")]
+        mock_orch.state.issue_refresh_timestamps = {7: 100.0}
+        mock_orch.repository_host = MagicMock()
+        closed_issue = create_issue(7, "closed issue", labels=["agent:web"])
+        closed_issue.state = "closed"
+        mock_orch.repository_host.get_issue.return_value = closed_issue
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/7/refresh")
+            assert response.status_code == 200
+            assert response.json()["status"] == "rejected_out_of_scope"
+            assert response.json()["in_scope"] is False
+            assert not any(issue.number == 7 for issue in mock_orch.state.cached_queue_issues)
+            assert 7 not in mock_orch.state.issue_refresh_timestamps
+        finally:
+            set_orchestrator(None)
+
 
 class TestKillSessionEndpoint:
     """Test the POST /api/kill/{issue_number} endpoint."""
