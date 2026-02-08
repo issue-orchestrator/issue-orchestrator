@@ -826,38 +826,80 @@ class CompletionProcessor:
                 actions_taken=actions_taken,
                 errors=errors,
             )
-        elif action == RequestedAction.POST_COMMENT:
-            if record.comment_body:
-                comment_url = self.pr_adapter.add_comment(label_target, record.comment_body)
-                actions_taken.append(f"Posted comment to #{label_target}")
-                # If comment target differs from issue number, this is a PR-scoped review comment.
-                if label_target != issue_number:
-                    self._emit_review_comment_added(
-                        issue_number=issue_number,
-                        pr_number=label_target,
-                        comment_url=comment_url,
-                        comment_body=record.comment_body,
-                    )
-        elif action == RequestedAction.ADD_BLOCKED_LABEL:
-            label = self._get_label("blocked")
-            self.label_adapter.add_label(issue_number, label)
-            actions_taken.append(f"Added '{label}' label")
-        elif action == RequestedAction.ADD_NEEDS_HUMAN_LABEL:
-            label = self._get_label("needs_human")
-            self.label_adapter.add_label(issue_number, label)
-            actions_taken.append(f"Added '{label}' label")
-        elif action == RequestedAction.ADD_CODE_REVIEWED_LABEL:
-            label = self._get_label("code_reviewed")
-            self.label_adapter.add_label(label_target, label)
-            actions_taken.append(f"Added '{label}' label to #{label_target}")
-        elif action == RequestedAction.ADD_NEEDS_REWORK_LABEL:
-            label = self._get_label("needs_rework")
-            self.label_adapter.add_label(label_target, label)
-            actions_taken.append(f"Added '{label}' label to #{label_target}")
-        elif action == RequestedAction.REMOVE_CODE_REVIEW_LABEL:
-            label = self._get_label("code_review")
-            self.label_adapter.remove_label(label_target, label)
-            actions_taken.append(f"Removed '{label}' label from #{label_target}")
+        if action == RequestedAction.POST_COMMENT:
+            return self._execute_post_comment_action(
+                record=record,
+                issue_number=issue_number,
+                label_target=label_target,
+                actions_taken=actions_taken,
+            )
+
+        label_result = self._execute_label_mutation_action(
+            action=action,
+            issue_number=issue_number,
+            label_target=label_target,
+            actions_taken=actions_taken,
+        )
+        if label_result is not None:
+            return label_result
+
+        return self._ActionResult()
+
+    def _execute_post_comment_action(
+        self,
+        *,
+        record: CompletionRecord,
+        issue_number: int,
+        label_target: int,
+        actions_taken: list[str],
+    ) -> "_ActionResult":
+        """Execute post-comment action with optional review comment event."""
+        if not record.comment_body:
+            return self._ActionResult()
+
+        comment_url = self.pr_adapter.add_comment(label_target, record.comment_body)
+        actions_taken.append(f"Posted comment to #{label_target}")
+        # If comment target differs from issue number, this is a PR-scoped review comment.
+        if label_target != issue_number:
+            self._emit_review_comment_added(
+                issue_number=issue_number,
+                pr_number=label_target,
+                comment_url=comment_url,
+                comment_body=record.comment_body,
+            )
+        return self._ActionResult()
+
+    def _execute_label_mutation_action(
+        self,
+        *,
+        action: RequestedAction,
+        issue_number: int,
+        label_target: int,
+        actions_taken: list[str],
+    ) -> "_ActionResult | None":
+        """Execute label add/remove action variants."""
+        label_actions: dict[RequestedAction, tuple[str, int, str]] = {
+            RequestedAction.ADD_BLOCKED_LABEL: ("blocked", issue_number, "add"),
+            RequestedAction.ADD_NEEDS_HUMAN_LABEL: ("needs_human", issue_number, "add"),
+            RequestedAction.ADD_CODE_REVIEWED_LABEL: ("code_reviewed", label_target, "add"),
+            RequestedAction.ADD_NEEDS_REWORK_LABEL: ("needs_rework", label_target, "add"),
+            RequestedAction.REMOVE_CODE_REVIEW_LABEL: ("code_review", label_target, "remove"),
+        }
+        config = label_actions.get(action)
+        if config is None:
+            return None
+
+        label_key, target_number, operation = config
+        label = self._get_label(label_key)
+        if operation == "add":
+            self.label_adapter.add_label(target_number, label)
+            if target_number == issue_number:
+                actions_taken.append(f"Added '{label}' label")
+            else:
+                actions_taken.append(f"Added '{label}' label to #{target_number}")
+        else:
+            self.label_adapter.remove_label(target_number, label)
+            actions_taken.append(f"Removed '{label}' label from #{target_number}")
 
         return self._ActionResult()
 

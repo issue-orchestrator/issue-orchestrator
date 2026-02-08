@@ -12,7 +12,7 @@ import subprocess
 import webbrowser
 from pathlib import Path
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.staticfiles import StaticFiles
@@ -1383,6 +1383,101 @@ def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -
     return decorated
 
 
+def _timeline_event_recommended_actions(
+    *,
+    event_name: str,
+    issue_number: int,
+    add_action: Callable[[dict[str, Any], str], None],
+) -> None:
+    """Add event-specific suggested actions."""
+    if event_name in _TIMELINE_START_EVENTS:
+        add_action(
+            {"type": "open_agent_log", "label": "View Agent UI Log", "issue_number": issue_number},
+            f"agent:{issue_number}",
+        )
+        add_action(
+            {"type": "view_claude_log", "label": "View Claude Log", "issue_number": issue_number},
+            f"claude:{issue_number}",
+        )
+    if event_name.startswith("validation."):
+        add_action(
+            {"type": "open_orchestrator_log", "label": "View Orchestrator Log", "issue_number": issue_number},
+            f"orchestrator:{issue_number}",
+        )
+    if event_name in _TIMELINE_FAILURE_EVENTS:
+        add_action(
+            {
+                "type": "open_session_diagnostics",
+                "label": "Diagnostics…",
+                "issue_number": issue_number,
+            },
+            f"diagnostics:{issue_number}",
+        )
+
+
+def _timeline_event_artifact_actions(
+    *,
+    event: dict[str, Any],
+    issue_number: int,
+    add_action: Callable[[dict[str, Any], str], None],
+) -> None:
+    """Add actions derived from timeline event artifacts and run directory."""
+    for artifact in event.get("artifacts", []):
+        if not isinstance(artifact, dict):
+            continue
+        artifact_type = str(artifact.get("type") or "")
+        label = str(artifact.get("label") or artifact_type or "Artifact")
+        value = str(artifact.get("value") or "")
+        if not value:
+            continue
+        if value.startswith("http://") or value.startswith("https://"):
+            add_action(
+                {"type": "open_url", "label": f"Open {label} ↗", "url": value},
+                value,
+            )
+            continue
+        if artifact_type in _TIMELINE_ARTIFACT_PATH_TYPES:
+            add_action(
+                {"type": "open_path", "label": f"Open {label}", "path": value},
+                value,
+            )
+
+    run_dir = event.get("run_dir")
+    if isinstance(run_dir, str) and run_dir:
+        add_action(
+            {"type": "open_path", "label": "Open Run Dir", "path": run_dir},
+            run_dir,
+        )
+
+
+def _timeline_event_default_actions(
+    *,
+    issue_number: int,
+    add_action: Callable[[dict[str, Any], str], None],
+) -> None:
+    """Add default diagnostics and log actions shown for every timeline event."""
+    add_action(
+        {"type": "open_agent_log", "label": "View Agent UI Log", "issue_number": issue_number},
+        f"agent:{issue_number}",
+    )
+    add_action(
+        {"type": "view_claude_log", "label": "View Claude Log", "issue_number": issue_number},
+        f"claude:{issue_number}",
+    )
+    add_action(
+        {"type": "open_orchestrator_log", "label": "View Orchestrator Log", "issue_number": issue_number},
+        f"orchestrator:{issue_number}",
+    )
+    add_action(
+        {
+            "type": "open_session_diagnostics",
+            "label": "Diagnostics…",
+            "issue_number": issue_number,
+        },
+        f"diagnostics:{issue_number}",
+    )
+
+
 def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -1396,80 +1491,19 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
         seen.add(key)
         actions.append(action)
 
-    # Event-type recommendations first to make common actions obvious.
-    if event_name in _TIMELINE_START_EVENTS:
-        _add_action(
-            {"type": "open_agent_log", "label": "View Agent UI Log", "issue_number": issue_number},
-            f"agent:{issue_number}",
-        )
-        _add_action(
-            {"type": "view_claude_log", "label": "View Claude Log", "issue_number": issue_number},
-            f"claude:{issue_number}",
-        )
-    if event_name.startswith("validation."):
-        _add_action(
-            {"type": "open_orchestrator_log", "label": "View Orchestrator Log", "issue_number": issue_number},
-            f"orchestrator:{issue_number}",
-        )
-    if event_name in _TIMELINE_FAILURE_EVENTS:
-        _add_action(
-            {
-                "type": "open_session_diagnostics",
-                "label": "Diagnostics…",
-                "issue_number": issue_number,
-            },
-            f"diagnostics:{issue_number}",
-        )
-
-    for artifact in event.get("artifacts", []):
-        if not isinstance(artifact, dict):
-            continue
-        artifact_type = str(artifact.get("type") or "")
-        label = str(artifact.get("label") or artifact_type or "Artifact")
-        value = str(artifact.get("value") or "")
-        if not value:
-            continue
-        if value.startswith("http://") or value.startswith("https://"):
-            _add_action(
-                {"type": "open_url", "label": f"Open {label} ↗", "url": value},
-                value,
-            )
-            continue
-        if artifact_type in _TIMELINE_ARTIFACT_PATH_TYPES:
-            _add_action(
-                {"type": "open_path", "label": f"Open {label}", "path": value},
-                value,
-            )
-
-    run_dir = event.get("run_dir")
-    if isinstance(run_dir, str) and run_dir:
-        _add_action(
-            {"type": "open_path", "label": "Open Run Dir", "path": run_dir},
-            run_dir,
-        )
-
-    # Structured quick actions for session debugging.
-    _add_action(
-        {"type": "open_agent_log", "label": "View Agent UI Log", "issue_number": issue_number},
-        f"agent:{issue_number}",
+    _timeline_event_recommended_actions(
+        event_name=event_name,
+        issue_number=issue_number,
+        add_action=_add_action,
     )
-    _add_action(
-        {"type": "view_claude_log", "label": "View Claude Log", "issue_number": issue_number},
-        f"claude:{issue_number}",
+    _timeline_event_artifact_actions(
+        event=event,
+        issue_number=issue_number,
+        add_action=_add_action,
     )
-    _add_action(
-        {"type": "open_orchestrator_log", "label": "View Orchestrator Log", "issue_number": issue_number},
-        f"orchestrator:{issue_number}",
-    )
-
-    # Always offer diagnostics drilldown from any timeline event.
-    _add_action(
-        {
-            "type": "open_session_diagnostics",
-            "label": "Diagnostics…",
-            "issue_number": issue_number,
-        },
-        f"diagnostics:{issue_number}",
+    _timeline_event_default_actions(
+        issue_number=issue_number,
+        add_action=_add_action,
     )
     return actions
 
