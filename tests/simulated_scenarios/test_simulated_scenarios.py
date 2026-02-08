@@ -160,7 +160,7 @@ def test_processing_failure_push_error_marks_blocked_failed(scenario_repo: Path)
         .run()
 
 
-def test_session_crash_marks_blocked_needs_human(scenario_repo: Path):
+def test_session_crash_marks_for_conservative_auto_retry(scenario_repo: Path):
     def _disable_grace_period(config) -> None:
         config.session_grace_period_seconds = 0
         config.session_log_activity_seconds = 0
@@ -171,8 +171,7 @@ def test_session_crash_marks_blocked_needs_human(scenario_repo: Path):
         .review_exchange(mode="via-draft-pr") \
         .configure(_disable_grace_period) \
         .wait_for_event(EventName.SESSION_FAILED) \
-        .expect_issue_label("blocked-needs-human") \
-        .expect_issue_comment_contains("Session Needs Investigation") \
+        .expect_issue_comment_contains("Session Interrupted") \
         .run()
 
 
