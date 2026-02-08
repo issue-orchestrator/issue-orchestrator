@@ -307,6 +307,38 @@ def _attach_refresh_meta(items: list[dict[str, Any]], state, config, now_ts: flo
         if not isinstance(issue_number, int):
             continue
         item.update(_refresh_meta_for_issue(state, config, issue_number, now_ts))
+
+
+def _refresh_meta(state, config, issue_number: int) -> dict[str, Any]:
+    refreshed_at = state.issue_refresh_timestamps.get(issue_number, 0.0)
+    queue_interval = config.queue_refresh_seconds if config else 600
+    full_scan_interval = config.fetch_layer_full_scan_interval_seconds if config else 1800
+    if queue_interval > 0:
+        stale_after = max(queue_interval * 2, 120)
+    else:
+        stale_after = max(full_scan_interval, 300)
+
+    if refreshed_at <= 0:
+        return {
+            "refresh_age_seconds": None,
+            "refresh_age_label": "not refreshed",
+            "is_stale": True,
+        }
+
+    age_seconds = max(0, int(time.time() - refreshed_at))
+    if age_seconds >= 3600:
+        age_label = f"{age_seconds // 3600}h"
+    elif age_seconds >= 60:
+        age_label = f"{age_seconds // 60}m"
+    else:
+        age_label = f"{age_seconds}s"
+    return {
+        "refresh_age_seconds": age_seconds,
+        "refresh_age_label": age_label,
+        "is_stale": age_seconds >= stale_after,
+    }
+
+
 def _pending_issue_numbers(state) -> dict[str, set[int]]:
     pending_review_numbers = {r.issue_number for r in state.pending_reviews} | {
         r.issue_number for r in state.discovered_reviews
@@ -480,6 +512,7 @@ def _build_queue_items(
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
             "merge_pending": label_module.is_pr_pending(issue.labels),
+            **_refresh_meta(state, config, issue.number),
         }
         if is_blocked:
             blocked_items.append(item)
