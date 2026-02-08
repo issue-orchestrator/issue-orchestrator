@@ -127,11 +127,6 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--no-vscode",
-        action="store_true",
-        help="Skip test-vscode from profiling runs",
-    )
-    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print commands without executing them",
@@ -290,7 +285,6 @@ def main() -> int:
     args = parse_args()
     make_bin = args.make_bin
     repo_root = args.repo_root.resolve()
-    include_vscode = not args.no_vscode
     if args.output is not None:
         output_path = args.output if args.output.is_absolute() else repo_root / args.output
     else:
@@ -301,7 +295,7 @@ def main() -> int:
         target_list = [target.strip() for target in args.targets.split(",") if target.strip()]
     else:
         target_list = discover_validate_targets(make_bin)
-    if include_vscode and "test-vscode" not in target_list:
+    if "test-vscode" not in target_list:
         target_list.append("test-vscode")
 
     target_results: list[CommandResult] = []
@@ -330,7 +324,6 @@ def main() -> int:
             "make_bin": make_bin,
             "repo_root": str(repo_root),
             "jobs": args.jobs,
-            "include_vscode": include_vscode,
             "dry_run": args.dry_run,
             "targets": target_list,
             "method": "isolated_cold_worktree_with_full_worktree_setup",
