@@ -269,3 +269,27 @@ The work isn't done when it *appears* done. The work is done when you've verifie
 2. Fix the underlying issue (not just the symptom)
 3. Verify the fix actually solves the problem
 4. Never dismiss failures as "someone else's job"
+
+### Final Abstraction Pass (Required)
+
+Before finishing any review or code change, run one final pass focused on abstraction integrity.
+
+Check for:
+1. Policy scattered across multiple call sites that should have one owner abstraction.
+2. Entry points/controllers touching storage/state internals directly instead of owner APIs.
+3. Shared mutable state writes outside the owning boundary.
+4. Callers requiring knowledge of multiple internals to complete one task.
+5. Cross-path rule drift where the same rule is enforced differently by path.
+
+Decision rule:
+- If an abstraction issue is found, implement the abstraction fix in this PR by default.
+- Deferral is allowed only when the abstraction fix is a substantial undertaking that would materially expand scope or risk.
+- If deferred, a follow-up issue must be created immediately with clear scope, named owner, due milestone/date, risk statement, and link from the PR/review.
+
+Review output requirement:
+- Reviewers must list abstraction findings as implementation-required unless explicitly deferred under the decision rule above.
+- If none exist, state: `Final abstraction pass: no issues found.`
+
+Coding output requirement:
+- Coders must state which abstraction findings were implemented in this PR.
+- If any were deferred, include the follow-up issue link and required metadata listed above.
