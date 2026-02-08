@@ -7,6 +7,20 @@ function hideSettingsMenu() {
 let terminalBackend = 'tmux';
 let currentCommitSha = null;
 let viewModel = null;
+const issueRefreshInFlight = new Set();
+const issueRefreshLastAttempt = new Map();
+let flowRefreshObserver = null;
+const flowRefreshPrefsModal = document.getElementById('flowRefreshPrefsModal');
+const FLOW_REFRESH_OVERRIDE_KEY = 'issue-orchestrator.flow-refresh.override.v1';
+
+function applyDashboardTheme() {
+    const storedTheme = localStorage.getItem('theme') || 'system';
+    let effectiveTheme = storedTheme;
+    if (storedTheme === 'system') {
+        effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    document.documentElement.setAttribute('data-theme', effectiveTheme);
+}
 fetch('/api/info')
     .then(res => res.json())
     .then(data => {
@@ -206,6 +220,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
         isPaused = !!viewModel.paused;
         updateStatusBadgeFromViewModel(viewModel);
         updatePauseMenuFromViewModel(viewModel);
+        updateRefreshStatusFromViewModel(viewModel);
 
         if (reloadOnListChange && viewModel.startup_status === 'complete') {
             await refreshIssueRows(viewModel);
@@ -216,7 +231,9 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    applyDashboardTheme();
     updateActionHints();
+    initFlowLazyVisibleRefresh();
     refreshViewModel({ reloadOnListChange: false });
     const nextRun = document.getElementById('e2eNextRun');
     if (nextRun && nextRun.dataset.nextRunReason) {
@@ -228,6 +245,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (formatted) {
             nextRun.textContent = formatted;
         }
+    }
+});
+
+document.addEventListener('change', (event) => {
+    if (event.target?.id === 'flowRefreshOverrideEnabled') {
+        setFlowRefreshInputsEnabled(Boolean(event.target.checked));
     }
 });
 
@@ -473,7 +496,15 @@ async function refreshFromGitHub() {
     try {
         const res = await fetch('/api/refresh', { method: 'POST' });
         if (res.ok) {
-            showToast('Refreshed from GitHub');
+            const data = await res.json();
+            if (data.refresh?.requested || data.refresh?.in_progress) {
+                const statusText = document.getElementById('refreshStatusText');
+                if (statusText) {
+                    statusText.textContent = data.refresh?.in_progress ? 'Refreshing from GitHub...' : 'Refresh requested...';
+                }
+            }
+            showToast('Refresh requested from GitHub');
+            setTimeout(() => refreshViewModel({ reloadOnListChange: false }), 1200);
         } else {
             showToast('Refresh failed', true);
         }
@@ -481,6 +512,266 @@ async function refreshFromGitHub() {
         console.error('Refresh failed:', e);
         showToast('Refresh failed', true);
     }
+}
+
+function currentRefreshConfig() {
+    const refresh = window.dashboardData?.refresh || {};
+    const serverConfig = {
+        enabled: Boolean(refresh.flowLazyEnabled),
+        staleSeconds: Number(refresh.flowStaleSeconds || 900),
+        cooldownSeconds: Number(refresh.flowCooldownSeconds || 120),
+    };
+    const override = getFlowRefreshOverride();
+    if (!override?.enabled) {
+        return {
+            ...serverConfig,
+            source: 'yaml',
+        };
+    }
+    return {
+        enabled: Boolean(override.flowLazyEnabled),
+        staleSeconds: Number(override.flowStaleSeconds || serverConfig.staleSeconds),
+        cooldownSeconds: Number(override.flowCooldownSeconds ?? serverConfig.cooldownSeconds),
+        source: 'override',
+    };
+}
+
+function getFlowRefreshOverride() {
+    const raw = localStorage.getItem(FLOW_REFRESH_OVERRIDE_KEY);
+    if (!raw) return null;
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        return {
+            enabled: Boolean(parsed.enabled),
+            flowLazyEnabled: Boolean(parsed.flowLazyEnabled),
+            flowStaleSeconds: Math.max(60, Number(parsed.flowStaleSeconds || 900)),
+            flowCooldownSeconds: Math.max(0, Number(parsed.flowCooldownSeconds || 120)),
+        };
+    } catch {
+        return null;
+    }
+}
+
+function updateRefreshStatusFromViewModel(vm) {
+    const refresh = vm?.dashboard_data?.refresh;
+    if (!refresh) return;
+    window.dashboardData = window.dashboardData || {};
+    window.dashboardData.refresh = refresh;
+
+    const statusText = document.getElementById('refreshStatusText');
+    const statusMeta = document.getElementById('refreshStatusMeta');
+    if (statusText) {
+        if (refresh.inProgress) {
+            statusText.textContent = 'Refreshing from GitHub...';
+        } else if (refresh.requested) {
+            statusText.textContent = 'Refresh requested...';
+        } else {
+            statusText.textContent = `Last GitHub sync: ${refresh.lastRefreshLabel || 'unknown'}`;
+        }
+    }
+    if (statusMeta) {
+        const cfg = currentRefreshConfig();
+        const source = cfg.source === 'override' ? 'ui override' : 'yaml';
+        if (cfg.enabled) {
+            statusMeta.textContent = `· lazy visible refresh on (stale>${cfg.staleSeconds}s, ${source})`;
+        } else {
+            statusMeta.textContent = `· lazy visible refresh off (${source})`;
+        }
+    }
+}
+
+function updateIssueCardFreshness(issueNumber, freshness) {
+    const cards = document.querySelectorAll(
+        `.issue-card[data-issue="${issueNumber}"], .attention-item[data-issue="${issueNumber}"], .history-item[data-issue="${issueNumber}"]`
+    );
+    cards.forEach((card) => {
+        if (typeof freshness.last_refreshed_age_seconds === 'number') {
+            card.dataset.lastRefreshAgeSeconds = String(freshness.last_refreshed_age_seconds);
+        }
+        card.dataset.stale = freshness.is_stale ? 'true' : 'false';
+        const statusText = card.querySelector('.card-refresh-line span');
+        if (statusText) {
+            statusText.textContent = `GitHub ${freshness.last_refreshed_label || 'unknown'}`;
+            statusText.classList.remove('refresh-fresh', 'refresh-stale');
+            statusText.classList.add(freshness.is_stale ? 'refresh-stale' : 'refresh-fresh');
+        }
+        const stalePill = card.querySelector('.refresh-pill');
+        if (freshness.is_stale && !stalePill) {
+            const line = card.querySelector('.card-refresh-line');
+            if (line) {
+                const pill = document.createElement('span');
+                pill.className = 'refresh-pill';
+                pill.textContent = 'stale';
+                if (freshness.stale_reason) {
+                    pill.title = freshness.stale_reason;
+                }
+                line.appendChild(pill);
+            }
+        } else if (!freshness.is_stale && stalePill) {
+            stalePill.remove();
+        } else if (freshness.is_stale && stalePill && freshness.stale_reason) {
+            stalePill.title = freshness.stale_reason;
+        }
+    });
+}
+
+async function refreshIssueCard(issueNumber, triggerEl = null, options = {}) {
+    const now = Date.now();
+    const cfg = currentRefreshConfig();
+    const cooldownMs = Math.max(0, cfg.cooldownSeconds) * 1000;
+    const lastAttempt = issueRefreshLastAttempt.get(issueNumber) || 0;
+    if (!options.force && now - lastAttempt < cooldownMs) {
+        return;
+    }
+    if (issueRefreshInFlight.has(issueNumber)) {
+        return;
+    }
+
+    issueRefreshLastAttempt.set(issueNumber, now);
+    issueRefreshInFlight.add(issueNumber);
+    if (triggerEl) {
+        triggerEl.disabled = true;
+    }
+
+    try {
+        const res = await fetch(`/api/issues/${issueNumber}/refresh`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+            if (!options.silent) {
+                showToast(data.error || `Refresh failed for #${issueNumber}`, true);
+            }
+            return;
+        }
+        updateIssueCardFreshness(issueNumber, {
+            is_stale: false,
+            stale_reason: '',
+            last_refreshed_age_seconds: 0,
+            last_refreshed_label: 'just now',
+        });
+        if (!options.silent) {
+            showToast(`Refreshed issue #${issueNumber}`);
+        }
+    } catch (error) {
+        if (!options.silent) {
+            showToast(`Refresh failed for #${issueNumber}`, true);
+        }
+    } finally {
+        issueRefreshInFlight.delete(issueNumber);
+        if (triggerEl) {
+            triggerEl.disabled = false;
+        }
+    }
+}
+
+function maybeRefreshVisibleCard(card) {
+    const issueNumber = Number(card.dataset.issue);
+    if (!Number.isInteger(issueNumber)) {
+        return;
+    }
+    if (card.dataset.stale !== 'true') {
+        return;
+    }
+    const cfg = currentRefreshConfig();
+    if (!cfg.enabled) {
+        return;
+    }
+    refreshIssueCard(issueNumber, null, { silent: true });
+}
+
+function initFlowLazyVisibleRefresh() {
+    if (flowRefreshObserver) {
+        flowRefreshObserver.disconnect();
+        flowRefreshObserver = null;
+    }
+    const panel = document.getElementById('panel-flow');
+    if (!panel) return;
+    const cfg = currentRefreshConfig();
+    if (!cfg.enabled) return;
+
+    const cards = panel.querySelectorAll('.issue-card[data-issue]');
+    if (!cards.length) return;
+    flowRefreshObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            if (entry.isIntersecting && entry.intersectionRatio >= 0.4) {
+                maybeRefreshVisibleCard(entry.target);
+            }
+        }
+    }, { threshold: [0.4] });
+    cards.forEach((card) => flowRefreshObserver.observe(card));
+}
+
+function setFlowRefreshInputsEnabled(enabled) {
+    const ids = ['flowRefreshEnabled', 'flowRefreshStaleSeconds', 'flowRefreshCooldownSeconds'];
+    ids.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !enabled;
+    });
+}
+
+function openFlowRefreshPrefs() {
+    hideSettingsMenu();
+    const refresh = window.dashboardData?.refresh || {};
+    const override = getFlowRefreshOverride();
+    const overrideEnabledEl = document.getElementById('flowRefreshOverrideEnabled');
+    const enabledEl = document.getElementById('flowRefreshEnabled');
+    const staleEl = document.getElementById('flowRefreshStaleSeconds');
+    const cooldownEl = document.getElementById('flowRefreshCooldownSeconds');
+    if (!overrideEnabledEl || !enabledEl || !staleEl || !cooldownEl || !flowRefreshPrefsModal) return;
+
+    const useOverride = Boolean(override?.enabled);
+    const base = currentRefreshConfig();
+    overrideEnabledEl.checked = useOverride;
+    enabledEl.checked = useOverride ? Boolean(override.flowLazyEnabled) : Boolean(refresh.flowLazyEnabled);
+    staleEl.value = String(useOverride ? Number(override.flowStaleSeconds) : Number(base.staleSeconds || 900));
+    cooldownEl.value = String(useOverride ? Number(override.flowCooldownSeconds) : Number(base.cooldownSeconds || 120));
+    setFlowRefreshInputsEnabled(useOverride);
+    flowRefreshPrefsModal.classList.add('visible');
+}
+
+function closeFlowRefreshPrefs(e) {
+    if (!e || e.target === flowRefreshPrefsModal) {
+        flowRefreshPrefsModal?.classList.remove('visible');
+    }
+}
+
+function saveFlowRefreshPrefs() {
+    const overrideEnabledEl = document.getElementById('flowRefreshOverrideEnabled');
+    const enabledEl = document.getElementById('flowRefreshEnabled');
+    const staleEl = document.getElementById('flowRefreshStaleSeconds');
+    const cooldownEl = document.getElementById('flowRefreshCooldownSeconds');
+    if (!overrideEnabledEl || !enabledEl || !staleEl || !cooldownEl) return;
+
+    if (!overrideEnabledEl.checked) {
+        localStorage.removeItem(FLOW_REFRESH_OVERRIDE_KEY);
+        updateRefreshStatusFromViewModel(viewModel);
+        initFlowLazyVisibleRefresh();
+        closeFlowRefreshPrefs();
+        showToast('Flow refresh override cleared');
+        return;
+    }
+
+    const staleSeconds = Math.max(60, Number(staleEl.value || 900));
+    const cooldownSeconds = Math.max(0, Number(cooldownEl.value || 120));
+    const payload = {
+        enabled: true,
+        flowLazyEnabled: Boolean(enabledEl.checked),
+        flowStaleSeconds: staleSeconds,
+        flowCooldownSeconds: cooldownSeconds,
+    };
+    localStorage.setItem(FLOW_REFRESH_OVERRIDE_KEY, JSON.stringify(payload));
+    updateRefreshStatusFromViewModel(viewModel);
+    initFlowLazyVisibleRefresh();
+    closeFlowRefreshPrefs();
+    showToast('Flow refresh preferences saved');
+}
+
+function resetFlowRefreshPrefs() {
+    localStorage.removeItem(FLOW_REFRESH_OVERRIDE_KEY);
+    updateRefreshStatusFromViewModel(viewModel);
+    initFlowLazyVisibleRefresh();
+    closeFlowRefreshPrefs();
+    showToast('Flow refresh preferences reset');
 }
 
 // Shutdown state - used to cancel polling when "Shutdown now" is clicked
@@ -627,7 +918,7 @@ function switchTab(tab) {
 }
 
 // Keyboard navigation for tabs (accessibility)
-const tabOrder = ['flow', 'attention', 'history'];
+const tabOrder = ['flow', 'attention', 'history', 'e2e'];
 document.querySelectorAll('.board-tabs .tab').forEach(tabBtn => {
     tabBtn.addEventListener('keydown', (e) => {
         const currentTab = tabBtn.id.replace('tab-', '');
@@ -3819,6 +4110,13 @@ async function showE2ETriage() {
         closeE2ETriageModal();
         showToast('Failed to load triage data: ' + err.message, true);
     }
+}
+
+async function triageE2ERun(runId = null) {
+    if (runId) {
+        e2eLastRun = { ...(e2eLastRun || {}), id: runId };
+    }
+    return showE2ETriage();
 }
 
 function renderE2ETriage(data) {

@@ -89,6 +89,12 @@ def create_mock_orchestrator():
     mock_deps.publish_executor = mock_executor
     mock_deps.timeline_reader = MagicMock()
     mock_orch.deps = mock_deps
+    mock_orch.scheduler = MagicMock()
+    mock_orch.scheduler.sort_by_priority.side_effect = lambda issues: issues
+    mock_orch.scheduler.dependency_evaluator = None
+    mock_orch.repository_host = MagicMock()
+    mock_orch.repository_host.get_issue.return_value = None
+    mock_orch.repository_host.update_label_cache = MagicMock()
 
     return mock_orch
 
@@ -1306,7 +1312,43 @@ class TestRefreshEndpoint:
 
             assert response.status_code == 200
             assert response.json()["status"] == "refresh_requested"
+            assert "refresh" in response.json()
             mock_orch.request_refresh.assert_called_once()
+        finally:
+            set_orchestrator(None)
+
+    def test_single_issue_refresh_updates_cache(self):
+        """Refreshing one issue updates local cache and freshness state."""
+        mock_orch = create_mock_orchestrator()
+        issue = create_issue(77, "Refresh me")
+        mock_orch.repository_host.get_issue.return_value = issue
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/77/refresh")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["status"] == "ok"
+            assert payload["issue_number"] == 77
+            assert payload["is_stale"] is False
+            assert payload["last_refreshed_label"] == "just now"
+            assert 77 in mock_orch.state.issue_last_refreshed_at
+            assert any(i.number == 77 for i in mock_orch.state.cached_queue_issues)
+        finally:
+            set_orchestrator(None)
+
+    def test_single_issue_refresh_not_found(self):
+        """Refreshing a missing issue returns 404."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.repository_host.get_issue.return_value = None
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/999/refresh")
+            assert response.status_code == 404
+            assert "not found" in response.json()["error"].lower()
         finally:
             set_orchestrator(None)
 

@@ -292,7 +292,7 @@ class RetryConfig:
 class InterruptedSessionRetryConfig:
     """Auto-retry settings for sessions that exit without completion."""
 
-    enabled: bool = False
+    enabled: bool = True
     retry_coding: bool = True
     retry_review: bool = True
     coding_guard_label: str = "io:auto-retried-interrupted-coding"
@@ -866,6 +866,10 @@ def _load_ui_section(config: "Config", ui_section: dict) -> None:
     config.control_api_port = ui_section.get("control_api_port", 19080)
     config.queue_refresh_seconds = ui_section.get("queue_refresh_seconds", 600)
     config.instances = ui_section.get("instances", 1)
+    flow_refresh_section = ui_section.get("flow_refresh", {}) or {}
+    config.flow_refresh_enabled = flow_refresh_section.get("enabled", True)
+    config.flow_refresh_stale_seconds = flow_refresh_section.get("stale_seconds", 900)
+    config.flow_refresh_cooldown_seconds = flow_refresh_section.get("cooldown_seconds", 120)
 
 
 def _load_observability_section(config: "Config", observability_section: dict) -> None:
@@ -930,7 +934,7 @@ def _load_retry_section(config: "Config", retry_data: dict) -> None:
             validation_error_file=retry_data.get("validation_error_file", "validation-errors.txt"),
             retry_prompt_template=retry_data.get("retry_prompt_template"),
             interrupted_sessions=InterruptedSessionRetryConfig(
-                enabled=interrupted_data.get("enabled", False),
+                enabled=interrupted_data.get("enabled", True),
                 retry_coding=interrupted_data.get("retry_coding", True),
                 retry_review=interrupted_data.get("retry_review", True),
                 coding_guard_label=interrupted_data.get(
@@ -1091,6 +1095,10 @@ class Config:
     web_port: int = 8080  # Port for web dashboard
     control_api_port: int = 19080  # Port for control API (always available, 0 = disabled)
     queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
+    # Flow UI lazy refresh policy (visible stale cards only)
+    flow_refresh_enabled: bool = True
+    flow_refresh_stale_seconds: int = 900
+    flow_refresh_cooldown_seconds: int = 120
 
     # Multi-instance support (for multi-orchestrator coordination)
     instances: int = 1  # Number of orchestrator instances to spawn (CC manages this)
@@ -1689,6 +1697,15 @@ class Config:
             ui_dict["queue_refresh_seconds"] = self.queue_refresh_seconds
         if self.instances != 1:
             ui_dict["instances"] = self.instances
+        flow_refresh_dict: dict = {}
+        if self.flow_refresh_enabled is not True:
+            flow_refresh_dict["enabled"] = self.flow_refresh_enabled
+        if self.flow_refresh_stale_seconds != 900:
+            flow_refresh_dict["stale_seconds"] = self.flow_refresh_stale_seconds
+        if self.flow_refresh_cooldown_seconds != 120:
+            flow_refresh_dict["cooldown_seconds"] = self.flow_refresh_cooldown_seconds
+        if flow_refresh_dict:
+            ui_dict["flow_refresh"] = flow_refresh_dict
         if ui_dict:
             result["ui"] = ui_dict
 

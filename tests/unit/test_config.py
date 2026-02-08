@@ -693,6 +693,13 @@ labels:
         config = Config()
         assert config.queue_refresh_seconds == 600
 
+    def test_flow_refresh_defaults(self):
+        """Test flow refresh defaults for lazy visible refresh."""
+        config = Config()
+        assert config.flow_refresh_enabled is True
+        assert config.flow_refresh_stale_seconds == 900
+        assert config.flow_refresh_cooldown_seconds == 120
+
     def test_github_cache_ttl_seconds_default(self):
         """Test that github_cache_ttl_seconds defaults to 300."""
         config = Config()
@@ -786,6 +793,30 @@ agents:
         config = Config.load(config_file)
 
         assert config.queue_refresh_seconds == 300
+
+    def test_flow_refresh_from_yaml(self, tmp_path):
+        """Test loading ui.flow_refresh settings from YAML."""
+        config_content = """
+ui:
+  flow_refresh:
+    enabled: false
+    stale_seconds: 1800
+    cooldown_seconds: 45
+
+worktrees:
+  base: /tmp
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        assert config.flow_refresh_enabled is False
+        assert config.flow_refresh_stale_seconds == 1800
+        assert config.flow_refresh_cooldown_seconds == 45
 
     def test_github_cache_ttl_seconds_from_yaml(self, tmp_path):
         """Test loading github_cache_ttl_seconds from YAML."""
@@ -1532,7 +1563,7 @@ class TestInterruptedSessionRetryConfig:
 
     def test_defaults(self):
         config = Config()
-        assert config.retry.interrupted_sessions.enabled is False
+        assert config.retry.interrupted_sessions.enabled is True
         assert config.retry.interrupted_sessions.retry_coding is True
         assert config.retry.interrupted_sessions.retry_review is True
         assert config.retry.interrupted_sessions.coding_guard_label == "io:auto-retried-interrupted-coding"

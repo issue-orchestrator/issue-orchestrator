@@ -1104,6 +1104,11 @@ class OrchestratorState:
     observed_completions: list["ObservedCompletion"] = field(default_factory=list)  # Completions detected this tick
     pending_publish_jobs: dict[str, "PublishJob"] = field(default_factory=dict)  # job_id -> job (queued)
     running_publish_jobs: dict[str, "PublishJob"] = field(default_factory=dict)  # job_id -> job (in progress)
+    # Queue refresh/freshness tracking for dashboard UX and lazy refresh behavior
+    queue_last_refresh_at: float = 0.0  # Epoch seconds of last queue refresh completion
+    queue_refresh_in_progress: bool = False  # True while refresh is actively fetching from GitHub
+    queue_refresh_requested: bool = False  # True when a manual refresh has been requested
+    issue_last_refreshed_at: dict[int, float] = field(default_factory=dict)  # issue_number -> epoch seconds
 
 
 @dataclass

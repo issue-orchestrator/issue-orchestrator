@@ -161,3 +161,42 @@ def test_issue_detail_drawer_is_rendered(jinja_env):
     assert drawer.get("role") == "dialog"
     assert drawer.get("aria-modal") == "true"
     assert drawer.get("aria-labelledby") == "issueDetailTitle"
+
+
+def test_flow_refresh_preferences_modal_is_rendered(jinja_env):
+    config = make_config()
+    state = OrchestratorState(startup_status="complete")
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="flow",
+        e2e_status_provider=e2e_disabled,
+    )
+    soup = render_dashboard(jinja_env, vm)
+    modal = soup.select_one("#flowRefreshPrefsModal")
+    assert modal is not None
+    assert "Flow refresh preferences" in soup.text
+    assert soup.select_one("#flowRefreshOverrideEnabled") is not None
+
+
+def test_e2e_tab_and_panels_render(jinja_env):
+    config = make_config()
+    config.e2e.enabled = True
+    state = OrchestratorState(startup_status="complete")
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="e2e",
+        e2e_status_provider=lambda _: {
+            "enabled": True,
+            "running": False,
+            "needs_attention": True,
+            "untriaged_count": 2,
+            "last_run": {"id": 9, "status": "failed", "relative_time": "3m ago"},
+            "next_run": {"next_run_reason": "interval", "next_run_at": "2026-02-08T20:00:00Z"},
+            "failed_tests": [],
+        },
+    )
+    soup = render_dashboard(jinja_env, vm)
+    assert soup.select_one("#tab-e2e.active") is not None
+    assert soup.select_one("#panel-e2e") is not None
+    assert soup.select_one("#e2eHeaderBadge") is not None
+    assert soup.select_one("#e2eControls") is not None
