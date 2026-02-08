@@ -7,6 +7,7 @@ Writes JSON to ORCHESTRATOR_GH_AUDIT_FILE (or /tmp/gh-audit-<pid>.json).
 from __future__ import annotations
 
 import atexit
+from collections import deque
 import json
 import logging
 import os
@@ -54,6 +55,15 @@ _call_id = 0
 _calls: dict[int, dict[str, Any]] = {}
 _context = threading.local()
 _atexit_registered = False
+_live_window_seconds = 60
+_live_recent_calls: deque[float] = deque(maxlen=2000)
+_live_stats: dict[str, Any] = {
+    "total_calls": 0,
+    "errors": 0,
+    "by_caller": {},
+    "by_command": {},
+    "last_rate_limit_from_headers": None,
+}
 
 
 def set_event_sink(sink) -> None:
@@ -117,9 +127,58 @@ def reset_stats() -> None:
             "events": [],
             "last_rate_limit": None,
             "last_rate_limit_checked_at": None,
+            "last_rate_limit_from_headers": None,
         })
         _calls.clear()
         _call_id = 0
+        _live_recent_calls.clear()
+        _live_stats.update({
+            "total_calls": 0,
+            "errors": 0,
+            "by_caller": {},
+            "by_command": {},
+            "last_rate_limit_from_headers": None,
+        })
+
+
+def record_live_call(
+    *,
+    command: str,
+    caller: str,
+    error: str | None = None,
+    rate_limit: dict[str, Any] | None = None,
+) -> None:
+    """Record lightweight always-on GH usage metrics for UI visibility.
+
+    This is independent of audit file/event emission and is safe to call on every GH request.
+    """
+    now = time.time()
+    with _lock:
+        _live_recent_calls.append(now)
+        _live_stats["total_calls"] = int(_live_stats.get("total_calls", 0)) + 1
+        _live_stats["by_caller"][caller] = _live_stats["by_caller"].get(caller, 0) + 1
+        _live_stats["by_command"][command] = _live_stats["by_command"].get(command, 0) + 1
+        if error:
+            _live_stats["errors"] = int(_live_stats.get("errors", 0)) + 1
+        if rate_limit is not None:
+            _live_stats["last_rate_limit_from_headers"] = {**rate_limit, "updated_at": now}
+
+
+def get_live_usage_snapshot() -> dict[str, Any]:
+    """Return always-on GH usage summary for dashboard display."""
+    now = time.time()
+    with _lock:
+        while _live_recent_calls and now - _live_recent_calls[0] > _live_window_seconds:
+            _live_recent_calls.popleft()
+        by_caller = dict(_live_stats.get("by_caller", {}))
+        top_callers = sorted(by_caller.items(), key=lambda kv: kv[1], reverse=True)[:5]
+        return {
+            "total_calls": int(_live_stats.get("total_calls", 0)),
+            "errors": int(_live_stats.get("errors", 0)),
+            "calls_per_minute": len(_live_recent_calls),
+            "top_callers": [{"caller": caller, "count": count} for caller, count in top_callers],
+            "last_rate_limit_from_headers": _live_stats.get("last_rate_limit_from_headers"),
+        }
 
 
 class AuditReason:
@@ -410,7 +469,7 @@ def record(
     bytes_returned: int | None = None,
     items_returned: int | None = None,
     full_scan: bool | None = None,
-    rate_limit: dict[str, int] | None = None,
+    rate_limit: dict[str, Any] | None = None,
 ) -> None:
     if not _ENABLED:
         return

@@ -639,6 +639,7 @@ class Orchestrator:
     def request_refresh(self, inflight_stable_ids: set[str] | None = None) -> None:
         with self._state_lock:
             self._refresh_requested = True
+            self.state.queue_refresh_requested = True
             self._plan_applier.request_refresh(
                 inflight_stable_ids,
                 self._inflight_stable_ids,

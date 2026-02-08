@@ -153,8 +153,82 @@ def test_view_model_queue_and_blocked_items():
     assert blocked_item["status"] == "blocked"
     assert "blocked" in (blocked_item["blocked_summary"] or "")
     assert "waiting on" in (blocked_item["blocked_summary"] or "")
-    assert view_model.backlog_count == 2
+    assert view_model.backlog_count == 0
+    backlog_numbers = {item["issue_number"] for item in view_model.backlog_items}
+    queue_numbers = {item["issue_number"] for item in view_model.queue_items}
+    blocked_numbers = {item["issue_number"] for item in view_model.blocked_items}
+    assert backlog_numbers.isdisjoint(queue_numbers)
+    assert backlog_numbers.isdisjoint(blocked_numbers)
+    assert all(group["id"] != "awaiting-merge" for group in view_model.attention_groups)
+
+
+def test_view_model_includes_refresh_freshness_metadata():
+    config = _make_config()
+    config.flow_refresh_stale_seconds = 60
+    issue = Issue(number=21, title="Stale card", labels=["agent:web"])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+    )
+    state.queue_last_refresh_at = datetime.now().timestamp() - 300
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queued_col = next(col for col in view_model.flow_columns if col["id"] == "queued")
+    assert queued_col["items"]
+    card = queued_col["items"][0]
+    assert card["issue_number"] == 21
+    assert card["is_stale"] is True
+    assert "ago" in card["last_refreshed_label"]
+    refresh_meta = view_model.dashboard_data()["refresh"]
+    assert refresh_meta["flowLazyEnabled"] is True
+    assert refresh_meta["flowStaleSeconds"] == 60
+    assert refresh_meta["freshnessMode"] == "balanced"
+    assert refresh_meta["apiBudget"] == "medium"
+    assert refresh_meta["attentionPriority"] == "strict"
+
+    gh_usage = view_model.dashboard_data()["githubUsage"]
+    assert "total_calls" in gh_usage
+    assert "calls_per_minute" in gh_usage
+
+
+def test_pr_pending_issue_not_shown_in_queued_flow_column():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+
+    pr_pending_issue = Issue(
+        number=4072,
+        title="PR pending merge",
+        labels=["agent:web", "pr-pending"],
+    )
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[pr_pending_issue],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queued_col = next(col for col in view_model.flow_columns if col["id"] == "queued")
+    assert queued_col["count"] == 0
+    assert all(item["issue_number"] != 4072 for item in queued_col["items"])
     assert any(group["id"] == "awaiting-merge" for group in view_model.attention_groups)
+    awaiting_merge_group = next(group for group in view_model.attention_groups if group["id"] == "awaiting-merge")
+    assert any(item["issue_number"] == 4072 for item in awaiting_merge_group["items"])
 
 
 def test_view_model_history_routing():
@@ -226,6 +300,9 @@ def test_view_model_e2e_items_from_provider():
     assert view_model.issues == view_model.e2e_items
     assert any(item.get("e2e_running") for item in view_model.e2e_items)
     assert any(item.get("status") == "needs_attention" for item in view_model.e2e_items)
+    e2e_vm = view_model.e2e_status.get("view_model", {})
+    assert e2e_vm.get("badge", {}).get("state") in {"failed", "running", "passed", "idle"}
+    assert isinstance(e2e_vm.get("runs"), list)
 
 
 def test_view_model_api_endpoint():

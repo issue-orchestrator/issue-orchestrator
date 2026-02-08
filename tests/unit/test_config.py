@@ -693,6 +693,16 @@ labels:
         config = Config()
         assert config.queue_refresh_seconds == 600
 
+    def test_flow_refresh_defaults(self):
+        """Test flow refresh defaults for lazy visible refresh."""
+        config = Config()
+        assert config.flow_freshness_mode == "balanced"
+        assert config.flow_api_budget == "medium"
+        assert config.flow_attention_priority == "strict"
+        assert config.flow_refresh_enabled is True
+        assert config.flow_refresh_stale_seconds == 900
+        assert config.flow_refresh_cooldown_seconds == 120
+
     def test_github_cache_ttl_seconds_default(self):
         """Test that github_cache_ttl_seconds defaults to 300."""
         config = Config()
@@ -786,6 +796,63 @@ agents:
         config = Config.load(config_file)
 
         assert config.queue_refresh_seconds == 300
+
+    def test_flow_refresh_from_yaml(self, tmp_path):
+        """Test loading ui.flow_refresh settings from YAML."""
+        config_content = """
+ui:
+  flow_refresh:
+    freshness_mode: aggressive
+    api_budget: low
+    attention_priority: normal
+    enabled: false
+    stale_seconds: 1800
+    cooldown_seconds: 45
+
+worktrees:
+  base: /tmp
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        assert config.flow_freshness_mode == "aggressive"
+        assert config.flow_api_budget == "low"
+        assert config.flow_attention_priority == "normal"
+        assert config.flow_refresh_enabled is False
+        assert config.flow_refresh_stale_seconds == 1800
+        assert config.flow_refresh_cooldown_seconds == 45
+
+    def test_flow_refresh_high_level_defaults_drive_advanced_defaults(self, tmp_path):
+        """High-level flow refresh dials set default low-level values when not explicitly provided."""
+        config_content = """
+ui:
+  flow_refresh:
+    freshness_mode: economy
+    api_budget: low
+    attention_priority: strict
+
+worktrees:
+  base: /tmp
+
+agents:
+  agent:test:
+    prompt: /tmp/prompt.txt
+"""
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(config_content)
+
+        config = Config.load(config_file)
+        assert config.flow_freshness_mode == "economy"
+        assert config.flow_api_budget == "low"
+        assert config.flow_attention_priority == "strict"
+        assert config.flow_refresh_enabled is True
+        assert config.flow_refresh_stale_seconds > 900
+        assert config.flow_refresh_cooldown_seconds > 120
 
     def test_github_cache_ttl_seconds_from_yaml(self, tmp_path):
         """Test loading github_cache_ttl_seconds from YAML."""
@@ -1525,6 +1592,41 @@ provider_resilience:
         assert config.provider_resilience.short_retry.jitter is False
         assert config.provider_resilience.circuit_breaker.cooldown_seconds == 900
         assert config.provider_resilience.circuit_breaker.max_cooldowns == 3
+
+
+class TestInterruptedSessionRetryConfig:
+    """Tests for interrupted-session retry config parsing."""
+
+    def test_defaults(self):
+        config = Config()
+        assert config.retry.interrupted_sessions.enabled is True
+        assert config.retry.interrupted_sessions.retry_coding is True
+        assert config.retry.interrupted_sessions.retry_review is True
+        assert config.retry.interrupted_sessions.coding_guard_label == "io:auto-retried-interrupted-coding"
+        assert config.retry.interrupted_sessions.review_guard_label == "io:auto-retried-interrupted-review"
+
+    def test_parsing(self, tmp_path):
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:backend:
+    prompt: {prompt}
+retry:
+  interrupted_sessions:
+    enabled: true
+    retry_coding: false
+    retry_review: true
+    coding_guard_label: "io:custom-coding-guard"
+    review_guard_label: "io:custom-review-guard"
+""")
+        config = Config.load(config_file)
+        assert config.retry.interrupted_sessions.enabled is True
+        assert config.retry.interrupted_sessions.retry_coding is False
+        assert config.retry.interrupted_sessions.retry_review is True
+        assert config.retry.interrupted_sessions.coding_guard_label == "io:custom-coding-guard"
+        assert config.retry.interrupted_sessions.review_guard_label == "io:custom-review-guard"
 
 
 class TestCleanupConfig:

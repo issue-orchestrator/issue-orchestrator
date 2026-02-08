@@ -11,6 +11,7 @@ from ..domain.session_key import TaskKind
 from ..infra import labels as label_module
 from ..infra.audit import get_issue_dependencies
 from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
+from ..infra import gh_audit
 
 QUEUE_PAGE_SIZE = 20
 E2E_PAGE_SIZE = 15
@@ -112,6 +113,7 @@ class DashboardViewModel:
         }
 
     def dashboard_data(self) -> dict[str, Any]:
+        github_usage = gh_audit.get_live_usage_snapshot()
         return {
             "startupComplete": self.startup_status == "complete",
             "paused": self.paused,
@@ -124,6 +126,20 @@ class DashboardViewModel:
             "e2eLastRun": self.e2e_status.get("last_run"),
             "agents": self.agent_names,
             "scope": self.scope_summary,
+            "refresh": {
+                "inProgress": bool(self.scope_summary.get("queue_refresh_in_progress", False)),
+                "requested": bool(self.scope_summary.get("queue_refresh_requested", False)),
+                "lastRefreshAt": self.scope_summary.get("queue_last_refresh_at", 0.0),
+                "lastRefreshAgeSeconds": self.scope_summary.get("queue_last_refresh_age_seconds", -1),
+                "lastRefreshLabel": self.scope_summary.get("queue_last_refresh_label", "unknown"),
+                "flowLazyEnabled": bool(self.scope_summary.get("flow_refresh_enabled", True)),
+                "flowStaleSeconds": int(self.scope_summary.get("flow_refresh_stale_seconds", 900)),
+                "flowCooldownSeconds": int(self.scope_summary.get("flow_refresh_cooldown_seconds", 120)),
+                "freshnessMode": str(self.scope_summary.get("flow_freshness_mode", "balanced")),
+                "apiBudget": str(self.scope_summary.get("flow_api_budget", "medium")),
+                "attentionPriority": str(self.scope_summary.get("flow_attention_priority", "strict")),
+            },
+            "githubUsage": github_usage,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -255,6 +271,50 @@ def _relative_time(dt_str: str) -> str:
         return f"{minutes}m ago" if minutes > 0 else "just now"
     except (ValueError, TypeError):
         return ""
+
+
+def _format_age_seconds(seconds: float | int | None) -> str:
+    if seconds is None:
+        return "never"
+    if seconds < 60:
+        return f"{int(seconds)}s"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h"
+    return f"{int(seconds // 86400)}d"
+
+
+def _refresh_meta_for_issue(state, config, issue_number: int, now_ts: float) -> dict[str, Any]:
+    per_issue = state.issue_last_refreshed_at.get(issue_number)
+    fallback = state.queue_last_refresh_at if state.queue_last_refresh_at > 0 else None
+    last_refreshed_at = per_issue or fallback
+    age_seconds = (now_ts - last_refreshed_at) if last_refreshed_at else None
+    stale_threshold = max(60, int(getattr(config, "flow_refresh_stale_seconds", 900)))
+    is_stale = age_seconds is None or age_seconds > stale_threshold
+    freshness_label = f"{_format_age_seconds(age_seconds)} ago" if age_seconds is not None else "never refreshed"
+    stale_reason = (
+        "Not refreshed from GitHub yet"
+        if age_seconds is None
+        else f"Older than {_format_age_seconds(stale_threshold)} stale threshold"
+        if is_stale
+        else ""
+    )
+    return {
+        "last_refreshed_at": last_refreshed_at or 0.0,
+        "last_refreshed_age_seconds": age_seconds if age_seconds is not None else -1,
+        "last_refreshed_label": freshness_label,
+        "is_stale": is_stale,
+        "stale_reason": stale_reason,
+    }
+
+
+def _attach_refresh_meta(items: list[dict[str, Any]], state, config, now_ts: float) -> None:
+    for item in items:
+        issue_number = item.get("issue_number")
+        if not isinstance(issue_number, int):
+            continue
+        item.update(_refresh_meta_for_issue(state, config, issue_number, now_ts))
 
 
 def _pending_issue_numbers(state) -> dict[str, set[int]]:
@@ -428,6 +488,7 @@ def _build_queue_items(
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            "merge_pending": label_module.is_pr_pending(issue.labels),
         }
         if is_blocked:
             blocked_items.append(item)
@@ -641,7 +702,7 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
         badges.append("dependency")
     if "human" in blocked_lower:
         badges.append("human")
-    if item.get("flow_stage") == "review":
+    if item.get("merge_pending"):
         badges.append("merge")
     return {
         "issue_number": item.get("issue_number"),
@@ -656,6 +717,10 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
         "issue_url": item.get("issue_url") or item.get("url") or "",
         "focus_hint": "Focus issue",
         "github_hint": "Open in GitHub",
+        "last_refreshed_label": item.get("last_refreshed_label", "unknown"),
+        "is_stale": bool(item.get("is_stale", False)),
+        "stale_reason": item.get("stale_reason", ""),
+        "last_refreshed_age_seconds": item.get("last_refreshed_age_seconds", -1),
     }
 
 
@@ -686,12 +751,37 @@ def _build_backlog_items(state, config) -> list[dict[str, Any]]:
     return cards
 
 
+def _exclude_flow_overlaps(
+    backlog_items: list[dict[str, Any]],
+    queue_items: list[dict[str, Any]],
+    active_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    done_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep flow columns mutually exclusive by removing overlaps from backlog.
+
+    Backlog is the "not yet picked up elsewhere" bucket, so anything already
+    represented in queued/running/blocked/done should not appear there.
+    """
+    occupied_numbers = {
+        int(item["issue_number"])
+        for item in queue_items + active_items + blocked_items + done_items
+        if isinstance(item.get("issue_number"), int)
+    }
+    return [
+        item
+        for item in backlog_items
+        if isinstance(item.get("issue_number"), int)
+        and int(item["issue_number"]) not in occupied_numbers
+    ]
+
+
 def _build_attention_groups(
     blocked_items: list[dict[str, Any]],
     queue_items: list[dict[str, Any]],
     history_items: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    awaiting_merge = [item for item in queue_items + blocked_items if item.get("flow_stage") == "review"]
+    awaiting_merge = [item for item in queue_items + blocked_items if item.get("merge_pending")]
     dependency_blocked = [
         item for item in blocked_items
         if "dependency" in (item.get("blocked_summary") or "").lower()
@@ -745,6 +835,7 @@ def _build_flow_columns(
     blocked_items: list[dict[str, Any]],
     done_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    queued_items = [item for item in queue_items if item.get("flow_stage") != "review"]
     return [
         {
             "id": "backlog",
@@ -755,8 +846,8 @@ def _build_flow_columns(
         {
             "id": "queued",
             "title": "Queued",
-            "count": len(queue_items),
-            "items": [_compact_card(item, "queued") for item in queue_items[:12]],
+            "count": len(queued_items),
+            "items": [_compact_card(item, "queued") for item in queued_items[:12]],
         },
         {
             "id": "running",
@@ -882,6 +973,61 @@ def _get_e2e_status(config) -> dict[str, Any]:
     }
 
 
+def _build_e2e_view_model(
+    e2e_status: dict[str, Any],
+    e2e_items: list[dict[str, Any]],
+    e2e_total: int,
+    e2e_page: int,
+    e2e_total_pages: int,
+    agents: list[str],
+) -> dict[str, Any]:
+    """Build dedicated E2E tab view model (UI-facing, template-ready)."""
+    last_run = e2e_status.get("last_run") or {}
+    next_run = e2e_status.get("next_run") or {}
+    running = bool(e2e_status.get("running"))
+    untriaged_count = int(e2e_status.get("untriaged_count", 0) or 0)
+    needs_attention = bool(e2e_status.get("needs_attention"))
+    badge_count = untriaged_count if untriaged_count > 0 else e2e_total
+    badge_state = (
+        "running"
+        if running
+        else "failed"
+        if (last_run.get("status") == "failed" or needs_attention)
+        else "passed"
+        if last_run.get("status") == "passed"
+        else "idle"
+    )
+    badge_icon = "⟳" if badge_state == "running" else "✗" if badge_state == "failed" else "✓" if badge_state == "passed" else "○"
+
+    return {
+        "badge": {
+            "count": badge_count,
+            "state": badge_state,
+            "icon": badge_icon,
+        },
+        "summary": {
+            "running": running,
+            "needs_attention": needs_attention,
+            "untriaged_count": untriaged_count,
+            "last_status": last_run.get("status", "unknown"),
+            "last_run_label": last_run.get("relative_time") or last_run.get("started_at") or "No runs yet",
+            "next_run_at": next_run.get("next_run_at", ""),
+            "next_run_reason": next_run.get("next_run_reason", ""),
+        },
+        "controls": {
+            "can_start": not running,
+            "can_stop": running,
+        },
+        "runs": e2e_items,
+        "pagination": {
+            "page": e2e_page,
+            "total_pages": e2e_total_pages,
+            "total": e2e_total,
+        },
+        "agents": agents,
+    }
+
+
 def _normalize_tab(active_tab: str) -> str:
     if active_tab == "work":
         return "flow"
@@ -939,7 +1085,22 @@ def build_dashboard_view_model(
         blocked_items.extend(queue_blocked)
         history_items, history_blocked = _build_history_items(state, config)
         blocked_items.extend(history_blocked)
+
+        now_ts = datetime.now(timezone.utc).timestamp()
+        _attach_refresh_meta(active_items, state, config, now_ts)
+        _attach_refresh_meta(queue_items, state, config, now_ts)
+        _attach_refresh_meta(blocked_items, state, config, now_ts)
+        _attach_refresh_meta(history_items, state, config, now_ts)
+        _attach_refresh_meta(backlog_items, state, config, now_ts)
+
         done_items = [item for item in history_items if item.get("status") == "completed"]
+        backlog_items = _exclude_flow_overlaps(
+            backlog_items,
+            queue_items,
+            active_items,
+            blocked_items,
+            done_items,
+        )
         attention_groups, awaiting_merge_items = _build_attention_groups(blocked_items, queue_items, history_items)
         flow_columns = _build_flow_columns(backlog_items, queue_items, active_items, blocked_items, done_items)
 
@@ -950,6 +1111,15 @@ def build_dashboard_view_model(
     e2e_total = len(e2e_items)
 
     e2e_items_paginated, e2e_total_pages, e2e_page = _paginate(e2e_items, e2e_page, E2E_PAGE_SIZE)
+    e2e_status = dict(e2e_status)
+    e2e_status["view_model"] = _build_e2e_view_model(
+        e2e_status,
+        e2e_items_paginated,
+        e2e_total,
+        e2e_page,
+        e2e_total_pages,
+        list((config.agents if config else {}).keys()),
+    )
     issues = _select_issues_for_tab(
         active_tab, active_items, queue_items, blocked_items, e2e_items_paginated, history_items
     )
@@ -971,12 +1141,32 @@ def build_dashboard_view_model(
     queue_refresh_seconds = config.queue_refresh_seconds if config else 600
     if config:
         milestones = config.get_filter_milestones()
+        queue_last_refresh_age = (
+            max(0.0, datetime.now(timezone.utc).timestamp() - state.queue_last_refresh_at)
+            if state and state.queue_last_refresh_at > 0
+            else -1
+        )
         scope_summary = {
             "repo_open_total": queue_total,
             "in_scope_total": len(backlog_items),
             "filter_label": config.filtering.label or "",
             "filter_milestones": milestones,
             "exclude_labels": list(config.filtering.exclude_labels),
+            "queue_last_refresh_at": state.queue_last_refresh_at if state else 0.0,
+            "queue_last_refresh_age_seconds": queue_last_refresh_age,
+            "queue_last_refresh_label": (
+                f"{_format_age_seconds(queue_last_refresh_age)} ago"
+                if queue_last_refresh_age >= 0
+                else "never"
+            ),
+            "queue_refresh_in_progress": bool(state.queue_refresh_in_progress) if state else False,
+            "queue_refresh_requested": bool(state.queue_refresh_requested) if state else False,
+            "flow_refresh_enabled": bool(config.flow_refresh_enabled),
+            "flow_refresh_stale_seconds": int(config.flow_refresh_stale_seconds),
+            "flow_refresh_cooldown_seconds": int(config.flow_refresh_cooldown_seconds),
+            "flow_freshness_mode": str(config.flow_freshness_mode),
+            "flow_api_budget": str(config.flow_api_budget),
+            "flow_attention_priority": str(config.flow_attention_priority),
         }
     else:
         scope_summary = {
@@ -985,6 +1175,17 @@ def build_dashboard_view_model(
             "filter_label": "",
             "filter_milestones": [],
             "exclude_labels": [],
+            "queue_last_refresh_at": 0.0,
+            "queue_last_refresh_age_seconds": -1,
+            "queue_last_refresh_label": "never",
+            "queue_refresh_in_progress": False,
+            "queue_refresh_requested": False,
+            "flow_refresh_enabled": True,
+            "flow_refresh_stale_seconds": 900,
+            "flow_refresh_cooldown_seconds": 120,
+            "flow_freshness_mode": "balanced",
+            "flow_api_budget": "medium",
+            "flow_attention_priority": "strict",
         }
 
     return DashboardViewModel(

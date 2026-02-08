@@ -144,6 +144,96 @@ class CompletionHandler:
         self._session_output = session_output
         self._remove_session_machine = remove_session_machine_fn
 
+    def _interrupted_retry_mode(self, session: Session) -> str | None:
+        """Map session type to interrupted-retry mode."""
+        if session.terminal_id.startswith("issue-") or session.terminal_id.startswith("rework-"):
+            return "coding"
+        if session.terminal_id.startswith("review-"):
+            return "review"
+        return None
+
+    def _interrupted_retry_guard_label(self, mode: str) -> str:
+        retry_cfg = self.config.retry.interrupted_sessions
+        if mode == "coding":
+            return retry_cfg.coding_guard_label
+        return retry_cfg.review_guard_label
+
+    def _is_interrupted_retry_enabled(self, mode: str) -> bool:
+        retry_cfg = self.config.retry.interrupted_sessions
+        if not retry_cfg.enabled:
+            return False
+        if mode == "coding":
+            return retry_cfg.retry_coding
+        if mode == "review":
+            return retry_cfg.retry_review
+        return False
+
+    def _issue_has_label(self, issue_number: int, label: str) -> bool:
+        """Best-effort label check from GitHub to guard retry loops."""
+        try:
+            issue = self.repository_host.get_issue(issue_number)
+            if not issue:
+                return False
+            return label in issue.labels
+        except Exception as exc:
+            logger.warning(
+                "[COMPLETION] Failed to read labels for issue #%d while evaluating interrupted retry: %s",
+                issue_number,
+                exc,
+            )
+            return False
+
+    def _generate_interrupted_retry_actions(
+        self,
+        session: Session,
+        expected: ExpectedState,
+    ) -> list[Action] | None:
+        """Generate auto-retry actions for interrupted sessions when configured."""
+        mode = self._interrupted_retry_mode(session)
+        if mode is None or not self._is_interrupted_retry_enabled(mode):
+            return None
+
+        guard_label = self._interrupted_retry_guard_label(mode)
+        if self._issue_has_label(session.issue.number, guard_label):
+            logger.info(
+                "[COMPLETION] Interrupted auto-retry skipped for issue #%d (%s): guard label already present (%s)",
+                session.issue.number,
+                mode,
+                guard_label,
+            )
+            return None
+
+        session_kind = session.terminal_id.split("-", 1)[0]
+        actions: list[Action] = [
+            AddLabelAction(
+                issue_number=session.issue.number,
+                label=guard_label,
+                reason=f"interrupted {mode} session auto-retry guard",
+                expected=expected,
+            ),
+            AddCommentAction(
+                number=session.issue.number,
+                comment=(
+                    f"🔁 **{session_kind.capitalize()} Session Interrupted**\n\n"
+                    f"The {session_kind} session exited without a completion record (`agent-done`).\n\n"
+                    f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                    f"- Session: `{session.terminal_id}`\n\n"
+                    "Auto-retry is enabled, so this will be retried on the next scheduler cycle.\n"
+                    f"A guard label (`{guard_label}`) was added to prevent retry loops."
+                ),
+                reason=f"Notify interrupted {mode} session auto-retry",
+                expected=expected,
+            ),
+        ]
+        if session.terminal_id.startswith("issue-"):
+            actions.append(RemoveLabelAction(
+                issue_number=session.issue.number,
+                label=self.config.get_label_in_progress(),
+                reason="Interrupted issue session - releasing claim for auto-retry",
+                expected=expected,
+            ))
+        return actions
+
     def _is_triage_session(self, session: Session) -> bool:
         """Check if this session is a triage review session."""
         if not self.config.triage_review_agent:
@@ -885,6 +975,9 @@ class CompletionHandler:
         expected: ExpectedState,
     ) -> list[Action]:
         """Generate actions when session failed without agent-done."""
+        if retry_actions := self._generate_interrupted_retry_actions(session, expected):
+            return retry_actions
+
         issue_number = session.issue.number
         in_progress_label = self.config.get_label_in_progress()
         is_issue_session = session.terminal_id.startswith("issue-")
@@ -908,6 +1001,7 @@ class CompletionHandler:
                             f"- Session: `{session.terminal_id}`\n\n"
                             f"**Possible causes:**\n"
                             f"- Agent crashed or was interrupted\n"
+                            f"- Orchestrator shutdown/restart interrupted the session lifecycle\n"
                             f"- Agent ignored the mandatory `agent-done` requirement\n"
                             f"- Infrastructure issue prevented completion\n\n"
                             f"This issue has been marked as `{labels.BLOCKED_NEEDS_HUMAN}` for investigation.\n"
@@ -931,6 +1025,7 @@ class CompletionHandler:
                             f"**This is unexpected** - `agent-done` is mandatory.\n\n"
                             f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                             f"- Session: `{session.terminal_id}`\n\n"
+                            f"Possible causes include orchestrator shutdown/restart, agent crash, or workflow interruption.\n\n"
                             f"The PR remains pending; please investigate what happened.",
                     reason=f"Notify about {session_kind} session needing investigation",
                     expected=expected,

@@ -7,6 +7,27 @@ function hideSettingsMenu() {
 let terminalBackend = 'tmux';
 let currentCommitSha = null;
 let viewModel = null;
+const issueRefreshInFlight = new Set();
+const issueRefreshLastAttempt = new Map();
+let flowRefreshObserver = null;
+const flowRefreshPrefsModal = document.getElementById('flowRefreshPrefsModal');
+const FLOW_REFRESH_OVERRIDE_KEY = 'issue-orchestrator.flow-refresh.override.v1';
+const GH_USAGE_UI_PREF_KEY = 'issue-orchestrator.github-usage.ui.v1';
+const FLOW_FRESHNESS_PRESETS = {
+    aggressive: { enabled: true, staleSeconds: 180, cooldownSeconds: 30 },
+    balanced: { enabled: true, staleSeconds: 900, cooldownSeconds: 120 },
+    economy: { enabled: true, staleSeconds: 3600, cooldownSeconds: 300 },
+};
+const FLOW_BUDGET_MULTIPLIER = { low: 1.7, medium: 1.0, high: 0.6 };
+
+function applyDashboardTheme() {
+    const storedTheme = localStorage.getItem('theme') || 'system';
+    let effectiveTheme = storedTheme;
+    if (storedTheme === 'system') {
+        effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    }
+    document.documentElement.setAttribute('data-theme', effectiveTheme);
+}
 fetch('/api/info')
     .then(res => res.json())
     .then(data => {
@@ -206,6 +227,8 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
         isPaused = !!viewModel.paused;
         updateStatusBadgeFromViewModel(viewModel);
         updatePauseMenuFromViewModel(viewModel);
+        updateRefreshStatusFromViewModel(viewModel);
+        renderGitHubUsage();
 
         if (reloadOnListChange && viewModel.startup_status === 'complete') {
             await refreshIssueRows(viewModel);
@@ -216,7 +239,11 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+    applyDashboardTheme();
     updateActionHints();
+    initFlowLazyVisibleRefresh();
+    applyGitHubUsagePrefs();
+    renderGitHubUsage();
     refreshViewModel({ reloadOnListChange: false });
     const nextRun = document.getElementById('e2eNextRun');
     if (nextRun && nextRun.dataset.nextRunReason) {
@@ -228,6 +255,12 @@ document.addEventListener('DOMContentLoaded', () => {
         if (formatted) {
             nextRun.textContent = formatted;
         }
+    }
+});
+
+document.addEventListener('change', (event) => {
+    if (event.target?.id === 'flowRefreshOverrideEnabled') {
+        setFlowRefreshInputsEnabled(Boolean(event.target.checked));
     }
 });
 
@@ -473,7 +506,15 @@ async function refreshFromGitHub() {
     try {
         const res = await fetch('/api/refresh', { method: 'POST' });
         if (res.ok) {
-            showToast('Refreshed from GitHub');
+            const data = await res.json();
+            if (data.refresh?.requested || data.refresh?.in_progress) {
+                const statusText = document.getElementById('refreshStatusText');
+                if (statusText) {
+                    statusText.textContent = data.refresh?.in_progress ? 'Refreshing from GitHub...' : 'Refresh requested...';
+                }
+            }
+            showToast('Refresh requested from GitHub');
+            setTimeout(() => refreshViewModel({ reloadOnListChange: false }), 1200);
         } else {
             showToast('Refresh failed', true);
         }
@@ -481,6 +522,422 @@ async function refreshFromGitHub() {
         console.error('Refresh failed:', e);
         showToast('Refresh failed', true);
     }
+}
+
+function deriveFlowConfig(strategy) {
+    const normalizedMode = ['aggressive', 'balanced', 'economy'].includes(strategy.freshnessMode)
+        ? strategy.freshnessMode
+        : 'balanced';
+    const normalizedBudget = ['low', 'medium', 'high'].includes(strategy.apiBudget)
+        ? strategy.apiBudget
+        : 'medium';
+    const normalizedAttention = ['strict', 'normal'].includes(strategy.attentionPriority)
+        ? strategy.attentionPriority
+        : 'strict';
+    const preset = FLOW_FRESHNESS_PRESETS[normalizedMode];
+    const multiplier = FLOW_BUDGET_MULTIPLIER[normalizedBudget];
+    const hasCustomStale = Number.isFinite(Number(strategy.flowStaleSeconds));
+    const hasCustomCooldown = Number.isFinite(Number(strategy.flowCooldownSeconds));
+    const staleBase = hasCustomStale ? Number(strategy.flowStaleSeconds) : preset.staleSeconds * multiplier;
+    const cooldownBase = hasCustomCooldown ? Number(strategy.flowCooldownSeconds) : preset.cooldownSeconds * multiplier;
+    return {
+        enabled: strategy.flowLazyEnabled ?? Boolean(preset.enabled),
+        staleSeconds: Math.max(60, Math.round(staleBase)),
+        cooldownSeconds: Math.max(0, Math.round(cooldownBase)),
+        freshnessMode: normalizedMode,
+        apiBudget: normalizedBudget,
+        attentionPriority: normalizedAttention,
+    };
+}
+
+function serverRefreshStrategy() {
+    const refresh = window.dashboardData?.refresh || {};
+    return {
+        flowLazyEnabled: Boolean(refresh.flowLazyEnabled),
+        flowStaleSeconds: Number(refresh.flowStaleSeconds || 900),
+        flowCooldownSeconds: Number(refresh.flowCooldownSeconds || 120),
+        freshnessMode: String(refresh.freshnessMode || 'balanced'),
+        apiBudget: String(refresh.apiBudget || 'medium'),
+        attentionPriority: String(refresh.attentionPriority || 'strict'),
+    };
+}
+
+function currentRefreshConfig() {
+    const server = deriveFlowConfig(serverRefreshStrategy());
+    const override = getFlowRefreshOverride();
+    if (!override?.enabled) {
+        return { ...server, source: 'yaml' };
+    }
+    const combined = deriveFlowConfig({
+        flowLazyEnabled: override.flowLazyEnabled,
+        flowStaleSeconds: Number(override.flowStaleSeconds),
+        flowCooldownSeconds: Number(override.flowCooldownSeconds),
+        freshnessMode: override.freshnessMode || server.freshnessMode,
+        apiBudget: override.apiBudget || server.apiBudget,
+        attentionPriority: override.attentionPriority || server.attentionPriority,
+    });
+    return { ...combined, source: 'override' };
+}
+
+function getFlowRefreshOverride() {
+    const raw = localStorage.getItem(FLOW_REFRESH_OVERRIDE_KEY);
+    if (!raw) return null;
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        return {
+            enabled: Boolean(parsed.enabled),
+            flowLazyEnabled: Boolean(parsed.flowLazyEnabled),
+            flowStaleSeconds: Math.max(60, Number(parsed.flowStaleSeconds || 900)),
+            flowCooldownSeconds: Math.max(0, Number(parsed.flowCooldownSeconds || 120)),
+            freshnessMode: ['aggressive', 'balanced', 'economy'].includes(parsed.freshnessMode) ? parsed.freshnessMode : 'balanced',
+            apiBudget: ['low', 'medium', 'high'].includes(parsed.apiBudget) ? parsed.apiBudget : 'medium',
+            attentionPriority: ['strict', 'normal'].includes(parsed.attentionPriority) ? parsed.attentionPriority : 'strict',
+        };
+    } catch {
+        return null;
+    }
+}
+
+function formatResetLabel(resetEpochSeconds) {
+    if (!resetEpochSeconds || !Number.isFinite(resetEpochSeconds)) return '-';
+    const delta = Math.max(0, Math.floor(resetEpochSeconds - Date.now() / 1000));
+    const mins = Math.floor(delta / 60);
+    const secs = delta % 60;
+    return `${mins}m ${secs}s`;
+}
+
+function getGitHubUsagePrefs() {
+    const raw = localStorage.getItem(GH_USAGE_UI_PREF_KEY);
+    if (!raw) {
+        return { hidden: false, expanded: false };
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        return {
+            hidden: Boolean(parsed.hidden),
+            expanded: Boolean(parsed.expanded),
+        };
+    } catch {
+        return { hidden: false, expanded: false };
+    }
+}
+
+function saveGitHubUsagePrefs(prefs) {
+    localStorage.setItem(GH_USAGE_UI_PREF_KEY, JSON.stringify({
+        hidden: Boolean(prefs.hidden),
+        expanded: Boolean(prefs.expanded),
+    }));
+}
+
+function applyGitHubUsagePrefs() {
+    const prefs = getGitHubUsagePrefs();
+    const wrap = document.getElementById('ghUsageWrap');
+    const panel = document.getElementById('ghUsagePanel');
+    const pill = document.getElementById('ghUsagePill');
+    if (!wrap || !panel || !pill) return;
+    wrap.style.display = prefs.hidden ? 'none' : '';
+    panel.classList.toggle('visible', !prefs.hidden && prefs.expanded);
+    pill.setAttribute('aria-expanded', (!prefs.hidden && prefs.expanded) ? 'true' : 'false');
+}
+
+function toggleGitHubUsagePanel() {
+    const prefs = getGitHubUsagePrefs();
+    prefs.hidden = false;
+    prefs.expanded = !prefs.expanded;
+    saveGitHubUsagePrefs(prefs);
+    applyGitHubUsagePrefs();
+}
+
+function setGitHubUsageHidden(hidden) {
+    const prefs = getGitHubUsagePrefs();
+    prefs.hidden = Boolean(hidden);
+    if (prefs.hidden) {
+        prefs.expanded = false;
+    }
+    saveGitHubUsagePrefs(prefs);
+    applyGitHubUsagePrefs();
+}
+
+function renderGitHubUsage() {
+    const usage = window.dashboardData?.githubUsage || {};
+    const rate = usage.last_rate_limit_from_headers || {};
+    const remaining = Number(rate.remaining);
+    const limit = Number(rate.limit);
+    const callsPerMinute = Number(usage.calls_per_minute || 0);
+    const totalCalls = Number(usage.total_calls || 0);
+    const errors = Number(usage.errors || 0);
+    const summary = document.getElementById('ghUsageSummary');
+    const cpmEl = document.getElementById('ghUsageCallsPerMinute');
+    const totalEl = document.getElementById('ghUsageTotalCalls');
+    const errEl = document.getElementById('ghUsageErrors');
+    const limitEl = document.getElementById('ghUsageRateLimit');
+    const resetEl = document.getElementById('ghUsageReset');
+
+    if (summary) {
+        if (Number.isFinite(remaining) && Number.isFinite(limit) && limit > 0) {
+            summary.textContent = `${remaining.toLocaleString()}/${limit.toLocaleString()}`;
+        } else {
+            summary.textContent = `${totalCalls.toLocaleString()} calls`;
+        }
+    }
+    if (cpmEl) cpmEl.textContent = callsPerMinute.toLocaleString();
+    if (totalEl) totalEl.textContent = totalCalls.toLocaleString();
+    if (errEl) errEl.textContent = errors.toLocaleString();
+    if (limitEl) {
+        if (Number.isFinite(remaining) && Number.isFinite(limit) && limit > 0) {
+            const used = Number.isFinite(Number(rate.used)) ? Number(rate.used) : Math.max(0, limit - remaining);
+            const resource = rate.resource ? ` (${String(rate.resource)})` : '';
+            limitEl.textContent = `${used.toLocaleString()} used · ${remaining.toLocaleString()} left${resource}`;
+        } else {
+            limitEl.textContent = 'No rate header yet';
+        }
+    }
+    if (resetEl) {
+        resetEl.textContent = formatResetLabel(Number(rate.reset || 0));
+    }
+}
+
+function updateRefreshStatusFromViewModel(vm) {
+    const refresh = vm?.dashboard_data?.refresh;
+    if (!refresh) return;
+    window.dashboardData = window.dashboardData || {};
+    window.dashboardData.refresh = refresh;
+
+    const statusText = document.getElementById('refreshStatusText');
+    const statusMeta = document.getElementById('refreshStatusMeta');
+    if (statusText) {
+        if (refresh.inProgress) {
+            statusText.textContent = 'Refreshing from GitHub...';
+        } else if (refresh.requested) {
+            statusText.textContent = 'Refresh requested...';
+        } else {
+            statusText.textContent = `Last GitHub sync: ${refresh.lastRefreshLabel || 'unknown'}`;
+        }
+    }
+    if (statusMeta) {
+        const cfg = currentRefreshConfig();
+        const source = cfg.source === 'override' ? 'browser' : 'yaml';
+        if (cfg.enabled) {
+            statusMeta.textContent = `· ${cfg.freshnessMode}/${cfg.apiBudget}/${cfg.attentionPriority} · stale>${cfg.staleSeconds}s · ${source}`;
+        } else {
+            statusMeta.textContent = `· lazy visible refresh off (${source})`;
+        }
+    }
+}
+
+function updateIssueCardFreshness(issueNumber, freshness) {
+    const cards = document.querySelectorAll(
+        `.issue-card[data-issue="${issueNumber}"], .attention-item[data-issue="${issueNumber}"], .history-item[data-issue="${issueNumber}"]`
+    );
+    cards.forEach((card) => {
+        if (typeof freshness.last_refreshed_age_seconds === 'number') {
+            card.dataset.lastRefreshAgeSeconds = String(freshness.last_refreshed_age_seconds);
+        }
+        card.dataset.stale = freshness.is_stale ? 'true' : 'false';
+        const statusText = card.querySelector('.card-refresh-line span');
+        if (statusText) {
+            statusText.textContent = `GitHub ${freshness.last_refreshed_label || 'unknown'}`;
+            statusText.classList.remove('refresh-fresh', 'refresh-stale');
+            statusText.classList.add(freshness.is_stale ? 'refresh-stale' : 'refresh-fresh');
+        }
+        const stalePill = card.querySelector('.refresh-pill');
+        if (freshness.is_stale && !stalePill) {
+            const line = card.querySelector('.card-refresh-line');
+            if (line) {
+                const pill = document.createElement('span');
+                pill.className = 'refresh-pill';
+                pill.textContent = 'stale';
+                if (freshness.stale_reason) {
+                    pill.title = freshness.stale_reason;
+                }
+                line.appendChild(pill);
+            }
+        } else if (!freshness.is_stale && stalePill) {
+            stalePill.remove();
+        } else if (freshness.is_stale && stalePill && freshness.stale_reason) {
+            stalePill.title = freshness.stale_reason;
+        }
+    });
+}
+
+async function refreshIssueCard(issueNumber, triggerEl = null, options = {}) {
+    const now = Date.now();
+    const cfg = currentRefreshConfig();
+    const cooldownMs = Math.max(0, cfg.cooldownSeconds) * 1000;
+    const lastAttempt = issueRefreshLastAttempt.get(issueNumber) || 0;
+    if (!options.force && now - lastAttempt < cooldownMs) {
+        return;
+    }
+    if (issueRefreshInFlight.has(issueNumber)) {
+        return;
+    }
+
+    issueRefreshLastAttempt.set(issueNumber, now);
+    issueRefreshInFlight.add(issueNumber);
+    if (triggerEl) {
+        triggerEl.disabled = true;
+    }
+
+    try {
+        const res = await fetch(`/api/issues/${issueNumber}/refresh`, { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) {
+            if (!options.silent) {
+                showToast(data.error || `Refresh failed for #${issueNumber}`, true);
+            }
+            return;
+        }
+        updateIssueCardFreshness(issueNumber, {
+            is_stale: false,
+            stale_reason: '',
+            last_refreshed_age_seconds: 0,
+            last_refreshed_label: 'just now',
+        });
+        if (!options.silent) {
+            showToast(`Refreshed issue #${issueNumber}`);
+        }
+    } catch (error) {
+        if (!options.silent) {
+            showToast(`Refresh failed for #${issueNumber}`, true);
+        }
+    } finally {
+        issueRefreshInFlight.delete(issueNumber);
+        if (triggerEl) {
+            triggerEl.disabled = false;
+        }
+    }
+}
+
+function maybeRefreshVisibleCard(card) {
+    const issueNumber = Number(card.dataset.issue);
+    if (!Number.isInteger(issueNumber)) {
+        return;
+    }
+    if (card.dataset.stale !== 'true') {
+        return;
+    }
+    const cfg = currentRefreshConfig();
+    if (!cfg.enabled) {
+        return;
+    }
+    refreshIssueCard(issueNumber, null, { silent: true });
+}
+
+function initFlowLazyVisibleRefresh() {
+    if (flowRefreshObserver) {
+        flowRefreshObserver.disconnect();
+        flowRefreshObserver = null;
+    }
+    const cfg = currentRefreshConfig();
+    if (!cfg.enabled) return;
+    const selectors = ['#panel-flow .issue-card[data-issue]'];
+    if (cfg.attentionPriority === 'strict') {
+        selectors.push('#panel-attention .attention-item[data-issue]');
+    }
+    const cards = document.querySelectorAll(selectors.join(', '));
+    if (!cards.length) return;
+    flowRefreshObserver = new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+            if (entry.isIntersecting && entry.intersectionRatio >= 0.4) {
+                maybeRefreshVisibleCard(entry.target);
+            }
+        }
+    }, { threshold: [0.4] });
+    cards.forEach((card) => flowRefreshObserver.observe(card));
+}
+
+function setFlowRefreshInputsEnabled(enabled) {
+    const ids = [
+        'flowRefreshEnabled',
+        'flowRefreshStaleSeconds',
+        'flowRefreshCooldownSeconds',
+        'flowFreshnessMode',
+        'flowApiBudget',
+        'flowAttentionPriority',
+    ];
+    ids.forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = !enabled;
+    });
+}
+
+function openFlowRefreshPrefs() {
+    hideSettingsMenu();
+    const refresh = window.dashboardData?.refresh || {};
+    const override = getFlowRefreshOverride();
+    const overrideEnabledEl = document.getElementById('flowRefreshOverrideEnabled');
+    const enabledEl = document.getElementById('flowRefreshEnabled');
+    const staleEl = document.getElementById('flowRefreshStaleSeconds');
+    const cooldownEl = document.getElementById('flowRefreshCooldownSeconds');
+    const freshnessModeEl = document.getElementById('flowFreshnessMode');
+    const apiBudgetEl = document.getElementById('flowApiBudget');
+    const attentionPriorityEl = document.getElementById('flowAttentionPriority');
+    if (!overrideEnabledEl || !enabledEl || !staleEl || !cooldownEl || !freshnessModeEl || !apiBudgetEl || !attentionPriorityEl || !flowRefreshPrefsModal) return;
+
+    const useOverride = Boolean(override?.enabled);
+    const base = currentRefreshConfig();
+    overrideEnabledEl.checked = useOverride;
+    const server = serverRefreshStrategy();
+    enabledEl.checked = useOverride ? Boolean(override.flowLazyEnabled) : Boolean(server.flowLazyEnabled);
+    staleEl.value = String(useOverride ? Number(override.flowStaleSeconds) : Number(base.staleSeconds || 900));
+    cooldownEl.value = String(useOverride ? Number(override.flowCooldownSeconds) : Number(base.cooldownSeconds || 120));
+    freshnessModeEl.value = useOverride ? String(override.freshnessMode || 'balanced') : String(server.freshnessMode || 'balanced');
+    apiBudgetEl.value = useOverride ? String(override.apiBudget || 'medium') : String(server.apiBudget || 'medium');
+    attentionPriorityEl.value = useOverride ? String(override.attentionPriority || 'strict') : String(server.attentionPriority || 'strict');
+    setFlowRefreshInputsEnabled(useOverride);
+    flowRefreshPrefsModal.classList.add('visible');
+}
+
+function closeFlowRefreshPrefs(e) {
+    if (!e || e.target === flowRefreshPrefsModal) {
+        flowRefreshPrefsModal?.classList.remove('visible');
+    }
+}
+
+function saveFlowRefreshPrefs() {
+    const overrideEnabledEl = document.getElementById('flowRefreshOverrideEnabled');
+    const enabledEl = document.getElementById('flowRefreshEnabled');
+    const staleEl = document.getElementById('flowRefreshStaleSeconds');
+    const cooldownEl = document.getElementById('flowRefreshCooldownSeconds');
+    const freshnessModeEl = document.getElementById('flowFreshnessMode');
+    const apiBudgetEl = document.getElementById('flowApiBudget');
+    const attentionPriorityEl = document.getElementById('flowAttentionPriority');
+    if (!overrideEnabledEl || !enabledEl || !staleEl || !cooldownEl || !freshnessModeEl || !apiBudgetEl || !attentionPriorityEl) return;
+
+    if (!overrideEnabledEl.checked) {
+        localStorage.removeItem(FLOW_REFRESH_OVERRIDE_KEY);
+        updateRefreshStatusFromViewModel(viewModel);
+        initFlowLazyVisibleRefresh();
+        closeFlowRefreshPrefs();
+        showToast('Flow refresh override cleared');
+        return;
+    }
+
+    const staleSeconds = Math.max(60, Number(staleEl.value || 900));
+    const cooldownSeconds = Math.max(0, Number(cooldownEl.value || 120));
+    const payload = {
+        enabled: true,
+        flowLazyEnabled: Boolean(enabledEl.checked),
+        flowStaleSeconds: staleSeconds,
+        flowCooldownSeconds: cooldownSeconds,
+        freshnessMode: ['aggressive', 'balanced', 'economy'].includes(freshnessModeEl.value) ? freshnessModeEl.value : 'balanced',
+        apiBudget: ['low', 'medium', 'high'].includes(apiBudgetEl.value) ? apiBudgetEl.value : 'medium',
+        attentionPriority: ['strict', 'normal'].includes(attentionPriorityEl.value) ? attentionPriorityEl.value : 'strict',
+    };
+    localStorage.setItem(FLOW_REFRESH_OVERRIDE_KEY, JSON.stringify(payload));
+    updateRefreshStatusFromViewModel(viewModel);
+    initFlowLazyVisibleRefresh();
+    closeFlowRefreshPrefs();
+    showToast('Flow refresh preferences saved');
+}
+
+function resetFlowRefreshPrefs() {
+    localStorage.removeItem(FLOW_REFRESH_OVERRIDE_KEY);
+    updateRefreshStatusFromViewModel(viewModel);
+    initFlowLazyVisibleRefresh();
+    closeFlowRefreshPrefs();
+    showToast('Flow refresh preferences reset');
 }
 
 // Shutdown state - used to cancel polling when "Shutdown now" is clicked
@@ -627,7 +1084,7 @@ function switchTab(tab) {
 }
 
 // Keyboard navigation for tabs (accessibility)
-const tabOrder = ['flow', 'attention', 'history'];
+const tabOrder = ['flow', 'attention', 'history', 'e2e'];
 document.querySelectorAll('.board-tabs .tab').forEach(tabBtn => {
     tabBtn.addEventListener('keydown', (e) => {
         const currentTab = tabBtn.id.replace('tab-', '');
@@ -3819,6 +4276,13 @@ async function showE2ETriage() {
         closeE2ETriageModal();
         showToast('Failed to load triage data: ' + err.message, true);
     }
+}
+
+async function triageE2ERun(runId = null) {
+    if (runId) {
+        e2eLastRun = { ...(e2eLastRun || {}), id: runId };
+    }
+    return showE2ETriage();
 }
 
 function renderE2ETriage(data) {

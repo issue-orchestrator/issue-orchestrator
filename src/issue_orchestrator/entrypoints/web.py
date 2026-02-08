@@ -9,6 +9,7 @@ import re
 import signal
 import socket
 import subprocess
+import time
 import webbrowser
 from pathlib import Path
 from collections.abc import Iterator
@@ -745,7 +746,108 @@ async def refresh(request: Request) -> JSONResponse:
         pass  # Ignore malformed body, proceed with empty set
 
     _orchestrator.request_refresh(inflight_stable_ids=inflight_stable_ids)
-    return JSONResponse({"status": "refresh_requested"})
+    return JSONResponse({
+        "status": "refresh_requested",
+        "refresh": {
+            "requested": True,
+            "in_progress": bool(_orchestrator.state.queue_refresh_in_progress),
+        },
+    })
+
+
+def _issue_matches_scope(config, issue) -> bool:
+    """Check whether an issue belongs to current configured scope."""
+    if issue.state == "closed":
+        return False
+    if config.filtering.issue and issue.number != config.filtering.issue:
+        return False
+    if config.filtering.label and config.filtering.label not in issue.labels:
+        return False
+    milestones = config.get_filter_milestones()
+    if milestones and (issue.milestone not in milestones):
+        return False
+    if any(label in issue.labels for label in config.filtering.exclude_labels):
+        return False
+    return True
+
+
+@app.post("/api/issues/{issue_number}/refresh")
+async def refresh_single_issue(issue_number: int) -> JSONResponse:
+    """Refresh a single issue from GitHub and update local queue cache."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    state = _orchestrator.state
+    config = _orchestrator.config
+    repository_host = _orchestrator.repository_host
+    now = time.time()
+
+    previous_refresh_state = state.queue_refresh_in_progress
+    state.queue_refresh_in_progress = True
+    try:
+        issue = repository_host.get_issue(issue_number)
+        if not issue:
+            return JSONResponse({"error": f"Issue #{issue_number} not found"}, status_code=404)
+
+        in_scope = _issue_matches_scope(config, issue)
+        repository_host.update_label_cache(issue.number, list(issue.labels))
+        state.issue_last_refreshed_at[issue.number] = now
+
+        # Update dependency status for this issue only (if dependency evaluator is active).
+        dep_eval = getattr(_orchestrator.scheduler, "dependency_evaluator", None)
+        dep_problem = None
+        if dep_eval and issue.body:
+            report = dep_eval.evaluate(
+                issue_number=issue.number,
+                issue_body=issue.body,
+                source_milestone=issue.milestone,
+            )
+            if not report.runnable:
+                from ..domain.models import DependencyProblem
+
+                dep_problem = DependencyProblem(
+                    issue_number=issue.number,
+                    issue_title=issue.title,
+                    blocked_by=[
+                        (d.issue_number, d.title, d.state)
+                        for d in report.blocking_dependencies
+                    ],
+                    summary=report.summary(),
+                )
+        if dep_problem:
+            state.dependency_problems[issue.number] = dep_problem
+        else:
+            state.dependency_problems.pop(issue.number, None)
+
+        # Update cached queue snapshot with refreshed issue if it belongs in scope.
+        active_numbers = {s.issue.number for s in state.active_sessions}
+        history_numbers = {entry.issue_number for entry in state.session_history}
+        existing = [i for i in state.cached_queue_issues if i.number != issue_number]
+        if (
+            in_scope
+            and issue.number not in active_numbers
+            and issue.number not in history_numbers
+        ):
+            existing.append(issue)
+        state.cached_queue_issues = _orchestrator.scheduler.sort_by_priority(existing)
+
+        return JSONResponse({
+            "status": "ok",
+            "issue_number": issue.number,
+            "last_refreshed_at": now,
+            "last_refreshed_label": "just now",
+            "is_stale": False,
+            "stale_reason": "",
+            "last_refreshed_age_seconds": 0,
+            "in_scope": in_scope,
+            "dependency_blocked": dep_problem is not None,
+            "refresh": {
+                "in_progress": bool(state.queue_refresh_in_progress),
+                "requested": bool(state.queue_refresh_requested),
+            },
+        })
+    finally:
+        state.queue_refresh_in_progress = previous_refresh_state
 
 
 @app.post("/api/kill/{issue_number}")

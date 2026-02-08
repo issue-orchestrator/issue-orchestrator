@@ -104,11 +104,16 @@ def create_test_session(
     )
 
 
-def make_repository_host(prs: list[Any] | None = None, pr_info: Any | None = None) -> SimpleNamespace:
+def make_repository_host(
+    prs: list[Any] | None = None,
+    pr_info: Any | None = None,
+    issue_info: Any | None = None,
+) -> SimpleNamespace:
     """Create a mock repository host."""
     return SimpleNamespace(
         get_prs_for_branch=lambda _branch: prs or [],
         get_pr=lambda _pr_number: pr_info,
+        get_issue=lambda _issue_number: issue_info,
         set_pr_draft=Mock(),
     )
 
@@ -1022,6 +1027,7 @@ class TestLabelActionGeneration:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """Failure (no completion) generates blocked-needs-human label for investigation."""
+        config.retry.interrupted_sessions.enabled = False
         issue = make_issue(number=456)
         session = create_test_session(issue, agent_config, tmp_worktree)
         handler = make_handler(config)
@@ -1066,6 +1072,83 @@ class TestLabelActionGeneration:
             for a in actions
         )
         assert not any(isinstance(a, RemoveLabelAction) for a in actions)
+
+    def test_failure_auto_retry_enabled_for_issue_adds_guard_label(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Interrupted issue session auto-retries once when enabled."""
+        config.retry.interrupted_sessions.enabled = True
+        issue = make_issue(number=456)
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-456")
+        repository_host = make_repository_host(
+            issue_info=SimpleNamespace(labels=["agent:test"])
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(session, SessionStatus.FAILED)
+
+        add_label = next((a for a in result.actions if isinstance(a, AddLabelAction)), None)
+        comment = next((a for a in result.actions if isinstance(a, AddCommentAction)), None)
+        remove_label = next((a for a in result.actions if isinstance(a, RemoveLabelAction)), None)
+
+        assert add_label is not None
+        assert add_label.label == config.retry.interrupted_sessions.coding_guard_label
+        assert comment is not None
+        assert "Auto-retry is enabled" in comment.comment
+        assert remove_label is not None
+        assert remove_label.label == config.get_label_in_progress()
+        assert not any(
+            isinstance(a, AddLabelAction) and a.label == labels.BLOCKED_NEEDS_HUMAN
+            for a in result.actions
+        )
+
+    def test_failure_auto_retry_guard_label_prevents_loop(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Guard label disables repeat auto-retries and falls back to blocked-needs-human."""
+        config.retry.interrupted_sessions.enabled = True
+        guard = config.retry.interrupted_sessions.coding_guard_label
+        issue = make_issue(number=456)
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-456")
+        repository_host = make_repository_host(
+            issue_info=SimpleNamespace(labels=["agent:test", guard])
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(session, SessionStatus.FAILED)
+
+        add_labels = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
+        assert labels.BLOCKED_NEEDS_HUMAN in add_labels
+        assert guard not in add_labels
+
+    def test_failure_auto_retry_enabled_for_review_adds_review_guard(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Interrupted review session auto-retries with review guard label."""
+        config.retry.interrupted_sessions.enabled = True
+        issue = make_issue(number=789)
+        session = create_test_session(
+            issue,
+            agent_config,
+            tmp_worktree,
+            terminal_id="review-123",
+            task_kind=TaskKind.REVIEW,
+        )
+        repository_host = make_repository_host(
+            issue_info=SimpleNamespace(labels=["agent:test"])
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(session, SessionStatus.FAILED)
+
+        add_label = next((a for a in result.actions if isinstance(a, AddLabelAction)), None)
+        comment = next((a for a in result.actions if isinstance(a, AddCommentAction)), None)
+
+        assert add_label is not None
+        assert add_label.label == config.retry.interrupted_sessions.review_guard_label
+        assert comment is not None
+        assert "Auto-retry is enabled" in comment.comment
+        assert not any(isinstance(a, RemoveLabelAction) for a in result.actions)
 
     def test_completed_only_removes_in_progress_label(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
@@ -1381,6 +1464,7 @@ class TestStatusSessionTypeMatrix:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """FAILED issue session: adds blocked-needs-human, comment, removes in-progress."""
+        config.retry.interrupted_sessions.enabled = False
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="issue-1"
         )
@@ -1400,6 +1484,7 @@ class TestStatusSessionTypeMatrix:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """FAILED review session: only adds comment, no labels."""
+        config.retry.interrupted_sessions.enabled = False
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="review-1"
         )
@@ -1414,6 +1499,7 @@ class TestStatusSessionTypeMatrix:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """FAILED rework session: only adds comment, no labels."""
+        config.retry.interrupted_sessions.enabled = False
         session = create_test_session(
             make_issue(), agent_config, tmp_worktree, terminal_id="rework-1"
         )
@@ -1622,6 +1708,7 @@ class TestIntegrationBehaviors:
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
         """Failed session correctly updates state, emits events, and generates actions."""
+        config.retry.interrupted_sessions.enabled = False
         events = InMemoryEventSink()
         issue = make_issue()
         issue_machine = IssueStateMachine(issue, initial_state=IssueState.IN_PROGRESS)

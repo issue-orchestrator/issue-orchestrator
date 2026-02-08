@@ -28,12 +28,30 @@
                 {% endif %}
             </div>
             <div class="controls">
-                <button class="settings-btn" onclick="toggleSettingsMenu(event)" aria-label="Open menu" aria-haspopup="true">Menu</button>
+                <div class="gh-usage-wrap" id="ghUsageWrap">
+                    <button class="gh-usage-pill" id="ghUsagePill" onclick="toggleGitHubUsagePanel()" aria-expanded="false" aria-controls="ghUsagePanel">
+                        <span class="gh-usage-label">GH</span>
+                        <span class="gh-usage-summary" id="ghUsageSummary">Usage</span>
+                    </button>
+                    <section class="gh-usage-panel" id="ghUsagePanel" aria-label="GitHub API usage">
+                        <div class="gh-usage-row"><span class="label">Calls/min</span><span class="value" id="ghUsageCallsPerMinute">-</span></div>
+                        <div class="gh-usage-row"><span class="label">Total calls</span><span class="value" id="ghUsageTotalCalls">-</span></div>
+                        <div class="gh-usage-row"><span class="label">Errors</span><span class="value" id="ghUsageErrors">-</span></div>
+                        <div class="gh-usage-row"><span class="label">Rate limit</span><span class="value" id="ghUsageRateLimit">-</span></div>
+                        <div class="gh-usage-row"><span class="label">Resets</span><span class="value" id="ghUsageReset">-</span></div>
+                        <div class="gh-usage-actions">
+                            <button class="issue-action-btn" onclick="setGitHubUsageHidden(true)">Hide</button>
+                        </div>
+                    </section>
+                </div>
+                <button class="settings-btn settings-icon-btn" onclick="toggleSettingsMenu(event)" aria-label="Open actions menu" aria-haspopup="true">☰</button>
                 <div class="settings-menu" id="settingsMenu" role="menu" aria-label="Actions menu">
                     <button class="settings-menu-item" id="pauseResumeItem" onclick="togglePause()" role="menuitem">
                         {% if paused %}<span aria-hidden="true">▶</span> Resume{% else %}<span aria-hidden="true">⏸</span> Pause{% endif %}
                     </button>
                     <button class="settings-menu-item" onclick="refreshFromGitHub()" role="menuitem"><span aria-hidden="true">🔄</span> Refresh from GitHub</button>
+                    <button class="settings-menu-item" onclick="openFlowRefreshPrefs()" role="menuitem"><span aria-hidden="true">⚡</span> Flow refresh preferences</button>
+                    <button class="settings-menu-item" onclick="setGitHubUsageHidden(false)" role="menuitem"><span aria-hidden="true">📊</span> Show GitHub usage</button>
                     <button class="settings-menu-item" onclick="window.location.href='/settings'" role="menuitem"><span aria-hidden="true">⚙</span> Settings</button>
                 </div>
             </div>
@@ -60,6 +78,27 @@
                 <span class="scope-label">Counts</span>
                 <span class="scope-value">In scope: {{ scope_summary.in_scope_total }} · Backlog: {{ backlog_count }} · Running: {{ active_count }} · Awaiting merge: {{ awaiting_merge_count }}</span>
             </div>
+            <div class="scope-line">
+                <span class="scope-label">Refresh</span>
+                <span class="scope-value">
+                    <span id="refreshStatusText">
+                        {% if scope_summary.queue_refresh_in_progress %}
+                            Refreshing from GitHub...
+                        {% elif scope_summary.queue_refresh_requested %}
+                            Refresh requested...
+                        {% else %}
+                            Last GitHub sync: {{ scope_summary.queue_last_refresh_label }}
+                        {% endif %}
+                    </span>
+                    <span id="refreshStatusMeta" class="refresh-meta">
+                        {% if scope_summary.flow_refresh_enabled %}
+                            · lazy visible refresh on (stale>{{ scope_summary.flow_refresh_stale_seconds }}s)
+                        {% else %}
+                            · lazy visible refresh off
+                        {% endif %}
+                    </span>
+                </span>
+            </div>
         </section>
 
         <nav class="board-tabs" role="tablist" aria-label="Dashboard sections">
@@ -74,6 +113,15 @@
                 History
                 <span class="tab-badge {% if history_count == 0 %}empty{% endif %}">{{ history_count }}</span>
             </button>
+            <button class="tab {% if active_tab == 'e2e' %}active{% endif %}" id="tab-e2e" onclick="switchTab('e2e')" role="tab" aria-controls="panel-e2e" aria-selected="{% if active_tab == 'e2e' %}true{% else %}false{% endif %}">
+                E2E
+                {% set e2e_vm = e2e_status.view_model if e2e_status and e2e_status.view_model else {} %}
+                {% set e2e_badge = e2e_vm.badge if e2e_vm.badge else {} %}
+                <span id="e2eHeaderBadge" class="tab-badge {{ e2e_badge.state if e2e_badge.state else '' }} {% if (e2e_badge.count or 0) == 0 %}empty{% endif %}">
+                    <span class="status-icon" aria-hidden="true">{{ e2e_badge.icon if e2e_badge.icon else '○' }}</span>
+                    {{ e2e_badge.count if e2e_badge.count is not none else e2e_total }}
+                </span>
+            </button>
         </nav>
 
         <main id="mainContent">
@@ -85,18 +133,27 @@
                     <div class="column-cards">
                         {% if column["items"] %}
                             {% for card in column["items"] %}
-                            <div class="issue-card" data-issue="{{ card.issue_number }}">
+                            <div class="issue-card" data-issue="{{ card.issue_number }}" data-stale="{{ 'true' if card.is_stale else 'false' }}" data-last-refresh-age-seconds="{{ card.last_refreshed_age_seconds }}">
                                 <div class="card-top">
                                     <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Focus issue #{{ card.issue_number }}">
                                         #{{ card.issue_number }} {{ card.title }}
                                     </button>
-                                    {% if card.issue_url %}
-                                    <a class="card-gh" href="{{ card.issue_url }}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">↗</a>
-                                    {% endif %}
+                                    <div class="card-actions">
+                                        <button class="card-refresh-btn" onclick="refreshIssueCard({{ card.issue_number }}, this);event.stopPropagation();" title="Refresh issue #{{ card.issue_number }} from GitHub" aria-label="Refresh issue #{{ card.issue_number }}">⟳</button>
+                                        {% if card.issue_url %}
+                                        <a class="card-gh" href="{{ card.issue_url }}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">↗</a>
+                                        {% endif %}
+                                    </div>
                                 </div>
                                 <div class="card-line">
                                     {% if card.phase %}{{ card.phase }}{% else %}{{ card.state_label }}{% endif %}
                                     {% if card.phase_age %} · {{ card.phase_age }}{% endif %}
+                                </div>
+                                <div class="card-line card-muted card-refresh-line">
+                                    <span class="{% if card.is_stale %}refresh-stale{% else %}refresh-fresh{% endif %}">GitHub {{ card.last_refreshed_label }}</span>
+                                    {% if card.is_stale %}
+                                    <span class="refresh-pill" title="{{ card.stale_reason or 'Issue may be stale' }}">stale</span>
+                                    {% endif %}
                                 </div>
                                 {% if card.blocked_summary %}
                                 <div class="card-line card-muted">{{ card.blocked_summary }}</div>
@@ -128,11 +185,18 @@
                         <p>{{ group["description"] }}</p>
                         <div class="attention-items">
                             {% for card in group["items"] %}
-                            <div class="attention-item" data-issue="{{ card.issue_number }}">
+                            <div class="attention-item" data-issue="{{ card.issue_number }}" data-stale="{{ 'true' if card.is_stale else 'false' }}" data-last-refresh-age-seconds="{{ card.last_refreshed_age_seconds }}">
                                 <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Focus issue #{{ card.issue_number }}">#{{ card.issue_number }} {{ card.title }}</button>
                                 {% if card.blocked_summary %}<div class="card-line card-muted">{{ card.blocked_summary }}</div>{% endif %}
+                                <div class="card-line card-muted card-refresh-line">
+                                    <span class="{% if card.is_stale %}refresh-stale{% else %}refresh-fresh{% endif %}">GitHub {{ card.last_refreshed_label }}</span>
+                                    {% if card.is_stale %}
+                                    <span class="refresh-pill" title="{{ card.stale_reason or 'Issue may be stale' }}">stale</span>
+                                    {% endif %}
+                                </div>
                                 <div class="attention-actions">
                                     <button class="issue-action-btn" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();">Focus</button>
+                                    <button class="issue-action-btn" onclick="refreshIssueCard({{ card.issue_number }}, this);event.stopPropagation();">Refresh</button>
                                     {% if card.issue_url %}
                                     <a class="issue-action-btn" href="{{ card.issue_url }}" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
                                     {% endif %}
@@ -146,24 +210,96 @@
                     <div class="empty-state">Nothing needs attention right now.</div>
                 {% endif %}
             </section>
-            {% else %}
+            {% elif active_tab == 'history' %}
             <section class="history-list" id="panel-history" role="tabpanel" aria-labelledby="tab-history" aria-label="Issue history">
                 {% set history_combined = history_items + blocked_items %}
                 {% if history_combined %}
                     {% for issue in history_combined %}
-                    <article class="history-item">
+                    <article class="history-item" data-issue="{{ issue.issue_number }}" data-stale="{{ 'true' if issue.is_stale else 'false' }}" data-last-refresh-age-seconds="{{ issue.last_refreshed_age_seconds }}">
                         <div class="card-top">
                             <button class="card-focus" onclick="openIssueDetail({{ issue.issue_number }}, this);event.stopPropagation();" title="Focus issue #{{ issue.issue_number }}">#{{ issue.issue_number }} {{ issue.title }}</button>
-                            {% if issue.issue_url %}
-                            <a class="card-gh" href="{{ issue.issue_url }}" target="_blank" rel="noopener noreferrer">↗</a>
-                            {% endif %}
+                            <div class="card-actions">
+                                <button class="card-refresh-btn" onclick="refreshIssueCard({{ issue.issue_number }}, this);event.stopPropagation();" title="Refresh issue #{{ issue.issue_number }} from GitHub" aria-label="Refresh issue #{{ issue.issue_number }}">⟳</button>
+                                {% if issue.issue_url %}
+                                <a class="card-gh" href="{{ issue.issue_url }}" target="_blank" rel="noopener noreferrer">↗</a>
+                                {% endif %}
+                            </div>
                         </div>
                         <div class="card-line">{{ issue.detail_label }}{% if issue.time %} · {{ issue.time }}{% endif %}</div>
+                        <div class="card-line card-muted card-refresh-line">
+                            <span class="{% if issue.is_stale %}refresh-stale{% else %}refresh-fresh{% endif %}">GitHub {{ issue.last_refreshed_label }}</span>
+                            {% if issue.is_stale %}
+                            <span class="refresh-pill" title="{{ issue.stale_reason or 'Issue may be stale' }}">stale</span>
+                            {% endif %}
+                        </div>
                     </article>
                     {% endfor %}
                 {% else %}
                     <div class="empty-state">No history yet.</div>
                 {% endif %}
+            </section>
+            {% else %}
+            <section class="e2e-board" id="panel-e2e" role="tabpanel" aria-labelledby="tab-e2e" aria-label="E2E dashboard">
+                {% set e2e_vm = e2e_status.view_model if e2e_status and e2e_status.view_model else {} %}
+                {% set e2e_summary = e2e_vm.summary if e2e_vm.summary else {} %}
+                {% set e2e_controls = e2e_vm.controls if e2e_vm.controls else {} %}
+                {% set e2e_runs = e2e_vm.runs if e2e_vm.runs else e2e_items %}
+                <article class="e2e-summary-card">
+                    <div class="e2e-summary-header">
+                        <h2>E2E Status</h2>
+                        <div id="e2eControls">
+                            {% if e2e_controls.can_stop %}
+                            <button class="issue-action-btn stop-btn" onclick="stopE2E()" id="e2eStopBtn"><span aria-hidden="true">⏹</span> Stop E2E</button>
+                            <span class="e2e-progress-text">Running...</span>
+                            {% else %}
+                            <button class="issue-action-btn start-btn" onclick="startE2E()" id="e2eStartBtn"><span aria-hidden="true">▶</span> Start E2E</button>
+                            <span class="e2e-last-run">Last run: {{ e2e_summary.last_run_label if e2e_summary.last_run_label else 'No runs yet' }}</span>
+                            {% endif %}
+                        </div>
+                    </div>
+                    <div class="e2e-meta-grid">
+                        <div class="e2e-meta"><span class="label">Untriaged</span><span class="value">{{ e2e_summary.untriaged_count if e2e_summary.untriaged_count is not none else 0 }}</span></div>
+                        <div class="e2e-meta"><span class="label">Needs Attention</span><span class="value">{% if e2e_summary.needs_attention %}Yes{% else %}No{% endif %}</span></div>
+                        <div class="e2e-meta"><span class="label">Last Status</span><span class="value">{{ e2e_summary.last_status if e2e_summary.last_status else 'unknown' }}</span></div>
+                        <div class="e2e-meta" id="e2eNextRun" data-next-run-at="{{ e2e_summary.next_run_at if e2e_summary.next_run_at else '' }}" data-next-run-reason="{{ e2e_summary.next_run_reason if e2e_summary.next_run_reason else '' }}">
+                            <span class="label">Next Run</span>
+                            <span class="value">{{ e2e_summary.next_run_reason if e2e_summary.next_run_reason else '-' }}</span>
+                        </div>
+                    </div>
+                    <div class="e2e-actions-row">
+                        <button class="issue-action-btn" onclick="showE2EStats()">Stats</button>
+                        <button class="issue-action-btn" onclick="showFlakyTestsList()">Flaky Analysis</button>
+                        <button class="issue-action-btn" onclick="showQuarantineViewer()">Quarantine</button>
+                        <button class="issue-action-btn" onclick="showE2EDiagnosis()">Last Run Diagnosis</button>
+                    </div>
+                </article>
+                <article class="e2e-runs-card">
+                    <h2>Run History <span class="count">{{ e2e_total }}</span></h2>
+                    <div class="e2e-runs-list">
+                        {% if e2e_runs %}
+                            {% for run in e2e_runs %}
+                            <div class="e2e-run-item">
+                                {% if run.e2e_run_id %}
+                                <button class="card-focus" onclick="showUnifiedRunView({{ run.e2e_run_id }});event.stopPropagation();">{{ run.title }}</button>
+                                {% else %}
+                                <span class="card-focus">{{ run.title }}</span>
+                                {% endif %}
+                                <div class="card-line card-muted">{{ run.status }}{% if run.relative_time %} · {{ run.relative_time }}{% endif %}</div>
+                                <div class="attention-actions">
+                                    {% if run.e2e_run_id %}
+                                    <button class="issue-action-btn" onclick="showUnifiedRunView({{ run.e2e_run_id }});event.stopPropagation();">Open run</button>
+                                    {% endif %}
+                                    {% if e2e_status.last_run and run.e2e_run_id and e2e_status.last_run.id == run.e2e_run_id and e2e_summary.needs_attention %}
+                                    <button class="issue-action-btn" onclick="triageE2ERun();event.stopPropagation();">Triage</button>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            {% endfor %}
+                        {% else %}
+                            <div class="empty-state">No E2E run history.</div>
+                        {% endif %}
+                    </div>
+                </article>
             </section>
             {% endif %}
         </main>
@@ -194,6 +330,139 @@
             </div>
             <div class="modal-body" id="timelineModalContent">
                 <div class="timeline-loading">Loading timeline...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="flowRefreshPrefsModal" onclick="closeFlowRefreshPrefs(event)">
+        <div class="modal" onclick="event.stopPropagation()" style="max-width: 520px;">
+            <div class="modal-header">
+                <h2>Flow Refresh Preferences</h2>
+                <button class="modal-close" onclick="closeFlowRefreshPrefs()" aria-label="Close preferences">&times;</button>
+            </div>
+            <div class="modal-body">
+                <label class="prefs-row">
+                    <input type="checkbox" id="flowRefreshOverrideEnabled">
+                    Override YAML defaults in this browser
+                </label>
+                <label class="prefs-row">
+                    Freshness mode
+                    <select id="flowFreshnessMode">
+                        <option value="aggressive">Aggressive</option>
+                        <option value="balanced">Balanced</option>
+                        <option value="economy">Economy</option>
+                    </select>
+                </label>
+                <label class="prefs-row">
+                    API budget
+                    <select id="flowApiBudget">
+                        <option value="low">Low</option>
+                        <option value="medium">Medium</option>
+                        <option value="high">High</option>
+                    </select>
+                </label>
+                <label class="prefs-row">
+                    Attention priority
+                    <select id="flowAttentionPriority">
+                        <option value="strict">Strict</option>
+                        <option value="normal">Normal</option>
+                    </select>
+                </label>
+                <label class="prefs-row">
+                    <input type="checkbox" id="flowRefreshEnabled">
+                    Lazy refresh when stale cards become visible
+                </label>
+                <label class="prefs-row">
+                    Stale threshold (seconds)
+                    <input type="number" id="flowRefreshStaleSeconds" min="60" step="30">
+                </label>
+                <label class="prefs-row">
+                    Refresh cooldown (seconds)
+                    <input type="number" id="flowRefreshCooldownSeconds" min="0" step="5">
+                </label>
+            </div>
+            <div class="modal-body" style="display:flex; gap:8px; justify-content:flex-end;">
+                <button class="issue-action-btn" onclick="resetFlowRefreshPrefs()">Reset</button>
+                <button class="issue-action-btn" onclick="closeFlowRefreshPrefs()">Cancel</button>
+                <button class="issue-action-btn active" onclick="saveFlowRefreshPrefs()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="e2eDiagnosisModal" onclick="if(event.target===this) closeE2EDiagnosisModal();">
+        <div class="modal modal-large" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>E2E Run Details</h2>
+                <button class="modal-close" onclick="closeE2EDiagnosisModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="e2eDiagnosisContent">
+                <div class="timeline-loading">Loading...</div>
+            </div>
+            <div class="modal-body" style="display:none;">
+                <select id="e2eDiagnosisAgent"></select>
+                <button id="e2eCreateIssueBtn"></button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="e2eStatsModal" onclick="if(event.target===this) closeE2EStatsModal();">
+        <div class="modal" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>E2E Stats</h2>
+                <button class="modal-close" onclick="closeE2EStatsModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="e2eStatsContent">
+                <div class="timeline-loading">Loading stats...</div>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="e2eTriageModal" onclick="if(event.target===this) closeE2ETriageModal();">
+        <div class="modal modal-large" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>E2E Triage</h2>
+                <button class="modal-close" onclick="closeE2ETriageModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="e2eTriageContent">
+                <div class="timeline-loading">Loading triage...</div>
+            </div>
+            <div class="modal-body" style="display:flex;gap:8px;justify-content:flex-end;">
+                <select id="e2eTriageAgent" class="issue-action-btn">
+                    <option value="">Select agent...</option>
+                    {% for agent in agents %}
+                    <option value="{{ agent }}">{{ agent }}</option>
+                    {% endfor %}
+                </select>
+                <button class="issue-action-btn" id="e2eSyncBtn" onclick="syncE2EIssues()">Sync Issues</button>
+                <button class="issue-action-btn active" id="e2eCreateIssuesBtn" onclick="createE2EIssues()">Create Issues</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-overlay" id="e2eQuarantineModal" onclick="if(event.target===this) closeQuarantineModal();">
+        <div class="modal modal-large" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2>Quarantine Manager</h2>
+                <button class="modal-close" onclick="closeQuarantineModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="quarantineLoading">
+                <div class="timeline-loading">Loading quarantine list...</div>
+            </div>
+            <div class="modal-body" id="quarantineContent" style="display:none;">
+                <div class="card-line card-muted" id="quarantineFile"></div>
+                <div class="card-line"><strong id="quarantineCount">0 tests quarantined</strong></div>
+                <section id="quarantineFlakySection">
+                    <h3>Flaky Suggestions</h3>
+                    <div id="quarantineFlakyList"></div>
+                </section>
+                <section>
+                    <h3>Current Quarantine</h3>
+                    <div id="quarantineCurrentList"></div>
+                </section>
+            </div>
+            <div class="modal-body" style="display:flex;gap:8px;justify-content:flex-end;">
+                <button class="issue-action-btn" onclick="closeQuarantineModal()">Close</button>
+                <button class="issue-action-btn active" id="quarantineSaveBtn" onclick="saveQuarantineChanges()">Save Changes</button>
             </div>
         </div>
     </div>

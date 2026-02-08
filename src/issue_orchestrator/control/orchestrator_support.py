@@ -604,34 +604,43 @@ def _fetch_and_update_queue(
 
     manual_refresh = refresh_requested
     required_stable_ids = set(inflight_stable_ids.keys()) if inflight_stable_ids else None
+    state.queue_refresh_in_progress = True
+    state.queue_refresh_requested = False
 
-    if required_stable_ids:
-        logger.info("[FETCH] %s refresh with %d required inflight IDs: %s", "Manual" if manual_refresh else "Scheduled", len(required_stable_ids), sorted(required_stable_ids))
-    else:
-        logger.info("[FETCH] %s refresh", "Manual" if manual_refresh else "Scheduled")
+    try:
+        if required_stable_ids:
+            logger.info("[FETCH] %s refresh with %d required inflight IDs: %s", "Manual" if manual_refresh else "Scheduled", len(required_stable_ids), sorted(required_stable_ids))
+        else:
+            logger.info("[FETCH] %s refresh", "Manual" if manual_refresh else "Scheduled")
 
-    reason = gh_audit.AuditReason.QUEUE_REFRESH_MANUAL if manual_refresh else gh_audit.AuditReason.QUEUE_REFRESH_SCHEDULED
-    scope = gh_audit.AuditScope.MANUAL if manual_refresh else gh_audit.AuditScope.PERIODIC
-    with gh_audit.context(reason=reason, scope=scope):
-        all_issues = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
+        reason = gh_audit.AuditReason.QUEUE_REFRESH_MANUAL if manual_refresh else gh_audit.AuditReason.QUEUE_REFRESH_SCHEDULED
+        scope = gh_audit.AuditScope.MANUAL if manual_refresh else gh_audit.AuditScope.PERIODIC
+        with gh_audit.context(reason=reason, scope=scope):
+            all_issues = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
 
-    _process_inflight_ids(required_stable_ids, all_issues, inflight_stable_ids)
-    _update_label_cache(repository_host, all_issues)
+        refreshed_at = time.time()
+        _process_inflight_ids(required_stable_ids, all_issues, inflight_stable_ids)
+        _update_label_cache(repository_host, all_issues)
+        for issue in all_issues:
+            state.issue_last_refreshed_at[issue.number] = refreshed_at
 
-    github_workflow.scan_needs_code_review_prs(state)
-    github_workflow.scan_needs_rework_prs(state)
-    _, dep_blocked = scheduler.get_available_issues(all_issues)
-    github_workflow.update_dependency_problems(state, dep_blocked)
+        github_workflow.scan_needs_code_review_prs(state)
+        github_workflow.scan_needs_rework_prs(state)
+        _, dep_blocked = scheduler.get_available_issues(all_issues)
+        github_workflow.update_dependency_problems(state, dep_blocked)
 
-    new_queue = _filter_queue(config, state, all_issues)
-    _emit_queue_changes(events, state, new_queue)
-    state.cached_queue_issues = new_queue
+        new_queue = _filter_queue(config, state, all_issues)
+        _emit_queue_changes(events, state, new_queue)
+        state.cached_queue_issues = new_queue
+        state.queue_last_refresh_at = refreshed_at
 
-    if state.failed_this_cycle:
-        logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", state.failed_this_cycle)
-        state.failed_this_cycle.clear()
+        if state.failed_this_cycle:
+            logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", state.failed_this_cycle)
+            state.failed_this_cycle.clear()
 
-    return time.time(), False
+        return refreshed_at, False
+    finally:
+        state.queue_refresh_in_progress = False
 
 
 def _process_inflight_ids(required_stable_ids: set[str] | None, all_issues: list["Issue"], inflight_stable_ids: dict[str, float]) -> None:
