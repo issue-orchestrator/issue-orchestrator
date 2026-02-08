@@ -122,7 +122,8 @@ class TestAddLabelAction:
 
         result = applier.apply(action)
 
-        assert result.result_type == ActionResultType.SKIPPED
+        assert result.success
+        assert result.details["no_op"] is True
         mock_labels.add_label.assert_not_called()
 
 
@@ -152,12 +153,15 @@ class TestRemoveLabelAction:
 
     def test_remove_label_noop_when_already_absent(self, applier, mock_labels):
         """Skip remove_label mutation when label is already absent."""
+        applier.reconcile = True
+        applier.fresh_issue_reader.read_issue_labels.return_value = []
         mock_labels.has_label.return_value = False
         action = RemoveLabelAction(issue_number=123, label="in-progress")
 
         result = applier.apply(action)
 
-        assert result.result_type == ActionResultType.SKIPPED
+        assert result.success
+        assert result.details["no_op"] is True
         mock_labels.remove_label.assert_not_called()
 
 

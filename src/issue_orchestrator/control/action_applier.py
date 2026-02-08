@@ -244,7 +244,12 @@ class ActionApplier:
                     issue_log(action.issue_number, "No-op add_label (already present): %s"),
                     action.label,
                 )
-                return ActionResult.skip(action, f"Label already present: {action.label}")
+                return ActionResult.ok(
+                    action,
+                    issue_number=action.issue_number,
+                    label=action.label,
+                    no_op=True,
+                )
             self.labels.add_label(action.issue_number, action.label)
             self._record_label_stat(action.issue_number, "label_add_applied")
             logger.info(issue_log(action.issue_number, "Label added: %s"), action.label)
@@ -271,13 +276,24 @@ class ActionApplier:
         try:
             self._record_label_stat(action.issue_number, "label_remove_attempted")
             has_label = self._has_label_safely(action.issue_number, action.label)
-            if has_label is False:
+            should_skip_remove_noop = False
+            if has_label is False and self.reconcile and self.fresh_issue_reader is not None:
+                current_labels = self._fetch_current_labels(action.issue_number)
+                should_skip_remove_noop = (
+                    current_labels is not None and action.label not in current_labels
+                )
+            if should_skip_remove_noop:
                 self._record_label_stat(action.issue_number, "label_remove_noop")
                 logger.debug(
                     issue_log(action.issue_number, "No-op remove_label (already absent): %s"),
                     action.label,
                 )
-                return ActionResult.skip(action, f"Label already absent: {action.label}")
+                return ActionResult.ok(
+                    action,
+                    issue_number=action.issue_number,
+                    label=action.label,
+                    no_op=True,
+                )
             self.labels.remove_label(action.issue_number, action.label)
             self._record_label_stat(action.issue_number, "label_remove_applied")
             logger.info(issue_log(action.issue_number, "Label removed: %s"), action.label)
