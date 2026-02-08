@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Profile validate bottlenecks using isolated cold runs."""
+"""Profile validate bottlenecks using isolated cold runs.
+
+Each run executes in a detached HEAD worktree rooted at the current committed
+revision. Uncommitted local changes are intentionally excluded for reproducible
+baselines.
+"""
 
 from __future__ import annotations
 
@@ -115,7 +120,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help=(
             "Write JSON report to this path "
-            "(default: .issue-orchestrator/diagnostics/validate-profile-<timestamp>.json)"
+            "(default: <repo-root>/.issue-orchestrator/diagnostics/validate-profile-<timestamp>.json)"
         ),
     )
     parser.add_argument(
@@ -144,9 +149,9 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def default_output_path() -> Path:
+def default_output_path(repo_root: Path) -> Path:
     ts = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
-    return Path(".issue-orchestrator/diagnostics") / f"validate-profile-{ts}.json"
+    return repo_root / ".issue-orchestrator/diagnostics" / f"validate-profile-{ts}.json"
 
 
 def collect_failures(results: list[CommandResult]) -> list[CommandResult]:
@@ -206,13 +211,13 @@ def ensure_worktree_runtime(base_repo: Path, worktree: Path, include_vscode: boo
     base_venv = base_repo / ".venv"
     wt_venv = worktree / ".venv"
     if base_venv.exists() and not wt_venv.exists():
-        wt_venv.symlink_to(base_venv)
+        wt_venv.symlink_to(base_venv.resolve())
 
     if include_vscode:
         base_nm = base_repo / "packages" / "vscode" / "node_modules"
         wt_nm = worktree / "packages" / "vscode" / "node_modules"
         if base_nm.exists() and not wt_nm.exists():
-            wt_nm.symlink_to(base_nm)
+            wt_nm.symlink_to(base_nm.resolve())
 
 
 def run_in_isolated_worktree(
@@ -228,11 +233,19 @@ def run_in_isolated_worktree(
     worktree = tmp_dir / "wt"
     try:
         add_cmd = ["git", "-C", str(repo_root), "worktree", "add", "--detach", str(worktree), "HEAD"]
-        _ = run_command(
+        add_result = run_command(
             name=f"{name}:worktree-add",
             command=add_cmd,
             dry_run=dry_run,
         )
+        if add_result.exit_code != 0:
+            return CommandResult(
+                name=name,
+                command=add_cmd,
+                wall_seconds=add_result.wall_seconds,
+                exit_code=add_result.exit_code,
+                worktree_path=str(worktree),
+            )
         ensure_worktree_runtime(repo_root, worktree, include_vscode=include_vscode, dry_run=dry_run)
 
         make_cmd = [make_bin]
@@ -264,7 +277,10 @@ def main() -> int:
     make_bin = args.make_bin
     repo_root = args.repo_root.resolve()
     include_vscode = not args.no_vscode
-    output_path = args.output or default_output_path()
+    if args.output is not None:
+        output_path = args.output if args.output.is_absolute() else repo_root / args.output
+    else:
+        output_path = default_output_path(repo_root)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if args.targets:
@@ -306,6 +322,7 @@ def main() -> int:
             "dry_run": args.dry_run,
             "targets": target_list,
             "method": "isolated_cold_worktree",
+            "profiled_ref": "HEAD (detached worktrees; uncommitted changes excluded)",
         },
         "target_runs": [asdict(result) for result in target_results],
         "validate_raw_run": asdict(validate_raw_result),
