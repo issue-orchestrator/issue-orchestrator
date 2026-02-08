@@ -824,10 +824,13 @@ async def refresh_issue(issue_number: int) -> JSONResponse:
     config = _orchestrator.config
     queue_cache = QueueCache(config, state)
     outcome = queue_cache.upsert_refreshed_issue(issue)
+    refreshed_at = time.time()
     if outcome.status == QueueMutationStatus.ACCEPTED:
-        state.issue_refresh_timestamps[issue_number] = time.time()
+        state.issue_refresh_timestamps[issue_number] = refreshed_at
+        state.issue_last_refreshed_at[issue_number] = refreshed_at
     else:
         state.issue_refresh_timestamps.pop(issue_number, None)
+        state.issue_last_refreshed_at.pop(issue_number, None)
     queue_cache.prune_refresh_timestamps()
 
     return JSONResponse({
@@ -835,6 +838,10 @@ async def refresh_issue(issue_number: int) -> JSONResponse:
         "issue_number": issue_number,
         "updated": outcome.updated,
         "in_scope": outcome.in_queue,
+        "last_refreshed_label": "just now",
+        "last_refreshed_age_seconds": 0,
+        "is_stale": False,
+        "stale_reason": "",
     })
 
 
