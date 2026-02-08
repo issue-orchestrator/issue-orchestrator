@@ -2778,6 +2778,9 @@ agents:
         # Labels should not be present since all defaults
         assert "labels" not in result
 
+        # Retry should not be present since interrupted-session retry defaults are minimal
+        assert "retry" not in result
+
     def test_save_writes_yaml(self, tmp_path):
         """Test save() writes valid YAML to file."""
         prompt_file = tmp_path / "prompt.txt"

@@ -802,72 +802,67 @@ async def refresh_single_issue(issue_number: int) -> JSONResponse:
     repository_host = _orchestrator.repository_host
     now = time.time()
 
-    previous_refresh_state = state.queue_refresh_in_progress
-    state.queue_refresh_in_progress = True
-    try:
-        issue = repository_host.get_issue(issue_number)
-        if not issue:
-            return JSONResponse({"error": f"Issue #{issue_number} not found"}, status_code=404)
+    issue = repository_host.get_issue(issue_number)
+    if not issue:
+        return JSONResponse({"error": f"Issue #{issue_number} not found"}, status_code=404)
 
-        in_scope = _issue_matches_scope(config, issue)
-        repository_host.update_label_cache(issue.number, list(issue.labels))
-        state.issue_last_refreshed_at[issue.number] = now
+    in_scope = _issue_matches_scope(config, issue)
+    repository_host.update_label_cache(issue.number, list(issue.labels))
+    state.issue_last_refreshed_at[issue.number] = now
 
-        # Update dependency status for this issue only (if dependency evaluator is active).
-        dep_eval = getattr(_orchestrator.scheduler, "dependency_evaluator", None)
-        dep_problem = None
-        if dep_eval and issue.body:
-            report = dep_eval.evaluate(
+    # Update dependency status for this issue only (if dependency evaluator is active).
+    dep_eval = getattr(_orchestrator.scheduler, "dependency_evaluator", None)
+    dep_problem = None
+    if dep_eval and issue.body:
+        report = dep_eval.evaluate(
+            issue_number=issue.number,
+            issue_body=issue.body,
+            source_milestone=issue.milestone,
+        )
+        if not report.runnable:
+            from ..domain.models import DependencyProblem
+
+            dep_problem = DependencyProblem(
                 issue_number=issue.number,
-                issue_body=issue.body,
-                source_milestone=issue.milestone,
+                issue_title=issue.title,
+                blocked_by=[
+                    (d.issue_number, d.title, d.state)
+                    for d in report.blocking_dependencies
+                ],
+                summary=report.summary(),
             )
-            if not report.runnable:
-                from ..domain.models import DependencyProblem
+    if dep_problem:
+        state.dependency_problems[issue.number] = dep_problem
+    else:
+        state.dependency_problems.pop(issue.number, None)
 
-                dep_problem = DependencyProblem(
-                    issue_number=issue.number,
-                    issue_title=issue.title,
-                    blocked_by=[
-                        (d.issue_number, d.title, d.state)
-                        for d in report.blocking_dependencies
-                    ],
-                    summary=report.summary(),
-                )
-        if dep_problem:
-            state.dependency_problems[issue.number] = dep_problem
-        else:
-            state.dependency_problems.pop(issue.number, None)
+    # Update cached queue snapshot with refreshed issue if it belongs in scope.
+    active_numbers = {s.issue.number for s in state.active_sessions}
+    history_numbers = {entry.issue_number for entry in state.session_history}
+    existing = [i for i in state.cached_queue_issues if i.number != issue_number]
+    if (
+        in_scope
+        and issue.number not in active_numbers
+        and issue.number not in history_numbers
+    ):
+        existing.append(issue)
+    state.cached_queue_issues = _orchestrator.scheduler.sort_by_priority(existing)
 
-        # Update cached queue snapshot with refreshed issue if it belongs in scope.
-        active_numbers = {s.issue.number for s in state.active_sessions}
-        history_numbers = {entry.issue_number for entry in state.session_history}
-        existing = [i for i in state.cached_queue_issues if i.number != issue_number]
-        if (
-            in_scope
-            and issue.number not in active_numbers
-            and issue.number not in history_numbers
-        ):
-            existing.append(issue)
-        state.cached_queue_issues = _orchestrator.scheduler.sort_by_priority(existing)
-
-        return JSONResponse({
-            "status": "ok",
-            "issue_number": issue.number,
-            "last_refreshed_at": now,
-            "last_refreshed_label": "just now",
-            "is_stale": False,
-            "stale_reason": "",
-            "last_refreshed_age_seconds": 0,
-            "in_scope": in_scope,
-            "dependency_blocked": dep_problem is not None,
-            "refresh": {
-                "in_progress": bool(state.queue_refresh_in_progress),
-                "requested": bool(state.queue_refresh_requested),
-            },
-        })
-    finally:
-        state.queue_refresh_in_progress = previous_refresh_state
+    return JSONResponse({
+        "status": "ok",
+        "issue_number": issue.number,
+        "last_refreshed_at": now,
+        "last_refreshed_label": "just now",
+        "is_stale": False,
+        "stale_reason": "",
+        "last_refreshed_age_seconds": 0,
+        "in_scope": in_scope,
+        "dependency_blocked": dep_problem is not None,
+        "refresh": {
+            "in_progress": bool(state.queue_refresh_in_progress),
+            "requested": bool(state.queue_refresh_requested),
+        },
+    })
 
 
 @app.post("/api/kill/{issue_number}")
