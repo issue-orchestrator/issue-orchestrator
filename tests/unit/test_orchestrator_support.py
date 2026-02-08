@@ -22,6 +22,7 @@ from issue_orchestrator.control.orchestrator_support import (
     check_health,
     run_planning_cycle,
     run_tick,
+    _fetch_and_update_queue,
     _track_stale_ticks,
 )
 from issue_orchestrator.control.reconciliation import (
@@ -57,6 +58,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.events import EventName
 from issue_orchestrator.ports import TraceEvent
+from issue_orchestrator.infra.config import Config
 
 
 # =============================================================================
@@ -160,6 +162,112 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = 
         started_at=datetime.now(),
         status=SessionStatus.RUNNING,
     )
+
+
+class TestQueueFetchPlanner:
+    """Tests for queue fetch-layer planner behavior."""
+
+    def _make_config(self) -> Config:
+        config = Config()
+        config.queue_refresh_seconds = 600
+        config.fetch_layer_enabled = True
+        config.fetch_layer_full_scan_interval_seconds = 3600
+        config.fetch_layer_discovery_limit = 10
+        config.fetch_layer_max_hot_issues_per_cycle = 10
+        config.fetch_layer_pr_scan_every_n_refreshes = 2
+        config.fetch_layer_dependency_scan_every_n_refreshes = 1
+        return config
+
+    def test_manual_refresh_uses_full_scan(self, mock_event_sink, mock_repository_host):
+        config = self._make_config()
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+        )
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.fetch_all_issues.return_value = [make_issue(2, labels=["agent:web"])]
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=True,
+            inflight_stable_ids={},
+        )
+
+        github_workflow.fetch_all_issues.assert_called_once()
+        github_workflow.refresh_issues.assert_not_called()
+        assert state.queue_last_refresh_mode == "full"
+        assert state.queue_refresh_count == 1
+        assert state.queue_last_full_scan_at > 0
+
+    def test_scheduled_refresh_uses_incremental_when_full_scan_not_due(
+        self, mock_event_sink, mock_repository_host
+    ):
+        config = self._make_config()
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"]), make_issue(2, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+        )
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.refresh_issues.return_value = [make_issue(1, title="Updated 1", labels=["agent:web"])]
+        github_workflow.fetch_discovery_issues.return_value = [make_issue(3, labels=["agent:web"])]
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=False,
+            inflight_stable_ids={},
+        )
+
+        github_workflow.fetch_all_issues.assert_not_called()
+        github_workflow.refresh_issues.assert_called_once()
+        github_workflow.fetch_discovery_issues.assert_called_once_with(config.filtering.milestone, 10)
+        assert state.queue_last_refresh_mode == "incremental"
+        assert state.queue_refresh_count == 1
+        queue_numbers = {issue.number for issue in state.cached_queue_issues}
+        assert queue_numbers == {1, 2, 3}
+
+    def test_scan_cadence_skips_pr_scans_until_due(self, mock_event_sink, mock_repository_host):
+        config = self._make_config()
+        config.fetch_layer_pr_scan_every_n_refreshes = 3
+        config.fetch_layer_dependency_scan_every_n_refreshes = 2
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+            queue_refresh_count=1,  # next refresh count = 2
+        )
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
+        github_workflow.fetch_discovery_issues.return_value = []
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=False,
+            inflight_stable_ids={},
+        )
+
+        github_workflow.scan_needs_code_review_prs.assert_not_called()
+        github_workflow.scan_needs_rework_prs.assert_not_called()
+        scheduler.get_available_issues.assert_called_once()
 
 
 # =============================================================================

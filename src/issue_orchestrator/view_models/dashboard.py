@@ -127,7 +127,7 @@ class DashboardViewModel:
             "e2eLastRun": self.e2e_status.get("last_run"),
             "agents": self.agent_names,
             "scope": self.scope_summary,
-            "refresh": {
+            "refresh": self.scope_summary.get("refresh", {
                 "inProgress": bool(self.scope_summary.get("queue_refresh_in_progress", False)),
                 "requested": bool(self.scope_summary.get("queue_refresh_requested", False)),
                 "lastRefreshAt": self.scope_summary.get("queue_last_refresh_at", 0.0),
@@ -139,7 +139,7 @@ class DashboardViewModel:
                 "freshnessMode": str(self.scope_summary.get("flow_freshness_mode", "balanced")),
                 "apiBudget": str(self.scope_summary.get("flow_api_budget", "medium")),
                 "attentionPriority": str(self.scope_summary.get("flow_attention_priority", "strict")),
-            },
+            }),
             "githubUsage": github_usage,
         }
 
@@ -1140,6 +1140,18 @@ def build_dashboard_view_model(
     github_repo = repo.split("/")[1] if repo and "/" in repo else ""
 
     queue_refresh_seconds = config.queue_refresh_seconds if config else 600
+    refresh_status = {
+        "mode": state.queue_last_refresh_mode if state else "none",
+        "lastRefreshAt": state.queue_last_refresh_at if state else 0.0,
+        "lastFullScanAt": state.queue_last_full_scan_at if state else 0.0,
+        "refreshCount": state.queue_refresh_count if state else 0,
+        "fetchLayerEnabled": config.fetch_layer_enabled if config else True,
+        "fullScanIntervalSeconds": config.fetch_layer_full_scan_interval_seconds if config else 1800,
+        "discoveryLimit": config.fetch_layer_discovery_limit if config else 25,
+        "maxHotIssuesPerCycle": config.fetch_layer_max_hot_issues_per_cycle if config else 40,
+        "prScanEveryNRefreshes": config.fetch_layer_pr_scan_every_n_refreshes if config else 2,
+        "dependencyScanEveryNRefreshes": config.fetch_layer_dependency_scan_every_n_refreshes if config else 1,
+    }
     if config:
         milestones = config.get_filter_milestones()
         queue_last_refresh_age = (
@@ -1168,6 +1180,7 @@ def build_dashboard_view_model(
             "flow_freshness_mode": str(config.flow_freshness_mode),
             "flow_api_budget": str(config.flow_api_budget),
             "flow_attention_priority": str(config.flow_attention_priority),
+            "refresh": refresh_status,
         }
     else:
         scope_summary = {
@@ -1187,6 +1200,7 @@ def build_dashboard_view_model(
             "flow_freshness_mode": "balanced",
             "flow_api_budget": "medium",
             "flow_attention_priority": "strict",
+            "refresh": refresh_status,
         }
 
     return DashboardViewModel(

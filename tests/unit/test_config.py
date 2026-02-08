@@ -692,6 +692,12 @@ labels:
         """Test that queue_refresh_seconds defaults to 600."""
         config = Config()
         assert config.queue_refresh_seconds == 600
+        assert config.fetch_layer_enabled is True
+        assert config.fetch_layer_full_scan_interval_seconds == 1800
+        assert config.fetch_layer_discovery_limit == 25
+        assert config.fetch_layer_max_hot_issues_per_cycle == 40
+        assert config.fetch_layer_pr_scan_every_n_refreshes == 2
+        assert config.fetch_layer_dependency_scan_every_n_refreshes == 1
 
     def test_flow_refresh_defaults(self):
         """Test flow refresh defaults for lazy visible refresh."""
@@ -782,6 +788,13 @@ agents:
         config_content = """
 ui:
   queue_refresh_seconds: 300
+  fetch_layer:
+    enabled: false
+    full_scan_interval_seconds: 900
+    discovery_limit: 12
+    max_hot_issues_per_cycle: 18
+    pr_scan_every_n_refreshes: 4
+    dependency_scan_every_n_refreshes: 3
 
 worktrees:
   base: /tmp
@@ -796,6 +809,12 @@ agents:
         config = Config.load(config_file)
 
         assert config.queue_refresh_seconds == 300
+        assert config.fetch_layer_enabled is False
+        assert config.fetch_layer_full_scan_interval_seconds == 900
+        assert config.fetch_layer_discovery_limit == 12
+        assert config.fetch_layer_max_hot_issues_per_cycle == 18
+        assert config.fetch_layer_pr_scan_every_n_refreshes == 4
+        assert config.fetch_layer_dependency_scan_every_n_refreshes == 3
 
     def test_flow_refresh_from_yaml(self, tmp_path):
         """Test loading ui.flow_refresh settings from YAML."""

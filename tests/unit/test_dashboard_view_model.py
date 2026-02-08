@@ -89,6 +89,7 @@ def test_view_model_active_session_and_dashboard_data():
     assert dashboard_data["queueRefreshSeconds"] == 600
     assert dashboard_data["agents"] == ["agent:web"]
     assert "scope" in dashboard_data
+    assert dashboard_data["refresh"]["fetchLayerEnabled"] is True
 
 
 def test_view_model_queue_and_blocked_items():
