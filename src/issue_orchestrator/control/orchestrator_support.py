@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 from ..events import EventName, EventContext
 from ..ports import EventSink, TraceEvent, RepositoryHost
 from .actions import AddLabelAction
+from .queue_cache import QueueCache
 from .reconciliation import ReconciliationRequired, get_pause_label
 from .transition_log import log_transition
 from ..domain.models import (
@@ -647,16 +648,9 @@ def _fetch_and_update_queue(
             _, dep_blocked = scheduler.get_available_issues(all_issues)
             github_workflow.update_dependency_problems(state, dep_blocked)
 
-        new_queue = _filter_queue(config, state, all_issues)
+        queue_cache = QueueCache(config, state)
+        new_queue = queue_cache.replace_from_refresh(all_issues)
         _emit_queue_changes(events, state, new_queue)
-        state.cached_queue_issues = new_queue
-        tracked_issue_numbers = {issue.number for issue in state.cached_queue_issues}
-        tracked_issue_numbers.update(session.issue.number for session in state.active_sessions)
-        tracked_issue_numbers.update(entry.issue_number for entry in state.session_history)
-        stale_refresh_keys = [issue_number for issue_number in state.issue_refresh_timestamps if issue_number not in tracked_issue_numbers]
-        for issue_number in stale_refresh_keys:
-            state.issue_refresh_timestamps.pop(issue_number, None)
-            state.issue_last_refreshed_at.pop(issue_number, None)
         state.queue_last_refresh_at = refresh_started_at
         state.queue_refresh_count += 1
         if full_scan:
@@ -860,46 +854,6 @@ def _update_label_cache(repository_host: RepositoryHost, all_issues: list["Issue
             repository_host.update_label_cache(issue.number, list(issue.labels))
         except Exception:
             logger.debug("Failed to update label cache for issue #%s", issue.number, exc_info=True)
-
-
-def _filter_queue(config: "Config", state: "OrchestratorState", all_issues: list["Issue"]) -> list["Issue"]:
-    """Filter issues for the queue."""
-    all_issues = [issue for issue in all_issues if _matches_fetch_scope(config, issue)]
-    exclude = {e.issue_number for e in state.session_history} | {s.issue.number for s in state.active_sessions}
-    filtered = [i for i in all_issues if i.number not in exclude]
-    return [i for i in filtered if i.number == config.filtering.issue] if config.filtering.issue else filtered
-
-
-def is_issue_in_queue_scope(config: "Config", state: "OrchestratorState", issue: "Issue") -> bool:
-    """Return whether issue belongs in cached queue for current config/state."""
-    return bool(_filter_queue(config, state, [issue]))
-
-
-def prune_issue_refresh_timestamps(state: "OrchestratorState") -> None:
-    """Prune refresh timestamp map to currently relevant issue IDs."""
-    if not state.issue_refresh_timestamps:
-        return
-    keep_numbers = {issue.number for issue in state.cached_queue_issues}
-    keep_numbers.update(session.issue.number for session in state.active_sessions)
-    keep_numbers.update(entry.issue_number for entry in state.session_history)
-    state.issue_refresh_timestamps = {
-        issue_number: refreshed_at
-        for issue_number, refreshed_at in state.issue_refresh_timestamps.items()
-        if issue_number in keep_numbers
-    }
-
-
-def _matches_fetch_scope(config: "Config", issue: "Issue") -> bool:
-    """Apply label/milestone/exclude-label scope checks for a fetched issue."""
-    if config.filtering.label and config.filtering.label not in issue.labels:
-        return False
-    milestones = config.get_filter_milestones()
-    if milestones and issue.milestone not in milestones:
-        return False
-    issue_filter = config.get_issue_filter()
-    if not issue_filter.apply([issue]):
-        return False
-    return True
 
 
 def emit_queue_changes(events: EventSink, state: "OrchestratorState", new_queue: list["Issue"]) -> None:

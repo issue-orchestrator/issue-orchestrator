@@ -1719,7 +1719,7 @@ class TestApiTimelineEndpoint:
             client = TestClient(app)
             response = client.post("/api/issues/7/refresh")
             assert response.status_code == 200
-            assert response.json()["status"] == "out_of_scope"
+            assert response.json()["status"] == "rejected_out_of_scope"
             assert response.json()["in_scope"] is False
             assert not any(issue.number == 7 for issue in mock_orch.state.cached_queue_issues)
             assert 7 not in mock_orch.state.issue_refresh_timestamps

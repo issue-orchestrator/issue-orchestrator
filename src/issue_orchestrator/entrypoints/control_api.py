@@ -54,6 +54,7 @@ from fastapi.responses import JSONResponse, HTMLResponse
 from sse_starlette.sse import EventSourceResponse
 
 from ..control.worktree_manager import get_worktree_path
+from ..control.queue_cache import QueueCache
 from ..domain.models import get_completion_path
 from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
@@ -877,7 +878,7 @@ def _update_cached_issue_labels(issue_number: int, labels_to_remove: list[str]) 
 
     def _update() -> None:
         state = orchestrator.state
-        for i, issue in enumerate(state.cached_queue_issues):
+        for issue in state.cached_queue_issues:
             if issue.number == issue_number:
                 # Remove the specified labels from the issue
                 new_labels = tuple(
@@ -887,7 +888,8 @@ def _update_cached_issue_labels(issue_number: int, labels_to_remove: list[str]) 
                 # Create updated issue with new labels (only works for dataclass implementations)
                 if is_dataclass(issue) and not isinstance(issue, type):
                     updated_issue = replace(issue, labels=new_labels)
-                    state.cached_queue_issues[i] = updated_issue
+                    queue_cache = QueueCache(orchestrator.config, state)
+                    queue_cache.upsert_refreshed_issue(updated_issue)
                     logger.debug(
                         "[cache] Updated issue #%d labels: removed %s",
                         issue_number,
@@ -1029,11 +1031,7 @@ async def dismiss_issue(issue_number: int) -> JSONResponse:
                 if entry.issue_number != issue_number
             ]
 
-            # Remove from cached queue (dismissed issues won't be picked up again)
-            orchestrator.state.cached_queue_issues = [
-                issue for issue in orchestrator.state.cached_queue_issues
-                if issue.number != issue_number
-            ]
+            QueueCache(orchestrator.config, orchestrator.state).remove_issue(issue_number)
 
         _with_state_lock(_prune_state)
 
