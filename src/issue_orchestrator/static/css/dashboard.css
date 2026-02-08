@@ -101,6 +101,10 @@ h1 {
 .issue-action-btn:hover {
     border-color: var(--accent);
 }
+.issue-action-btn.active {
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(78, 161, 255, 0.4) inset;
+}
 
 .settings-menu {
     display: none;

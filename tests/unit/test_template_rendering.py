@@ -156,4 +156,8 @@ def test_issue_detail_drawer_is_rendered(jinja_env):
         e2e_status_provider=e2e_disabled,
     )
     soup = render_dashboard(jinja_env, vm)
-    assert soup.select_one("#issueDetailDrawer") is not None
+    drawer = soup.select_one("#issueDetailDrawer")
+    assert drawer is not None
+    assert drawer.get("role") == "dialog"
+    assert drawer.get("aria-modal") == "true"
+    assert drawer.get("aria-labelledby") == "issueDetailTitle"

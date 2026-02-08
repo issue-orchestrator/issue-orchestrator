@@ -471,14 +471,13 @@ class TestDashboardRendering:
         response = client.get("/")
 
         assert response.status_code == 200
-        # Check all tabs are present
-        assert "switchTab('active')" in response.text or "Active" in response.text
-        assert "switchTab('queue')" in response.text or "Queue" in response.text
-        assert "switchTab('blocked')" in response.text or "Blocked" in response.text
+        # Check flow-oriented tabs are present
+        assert "switchTab('flow')" in response.text or "Flow" in response.text
+        assert "switchTab('attention')" in response.text or "Attention" in response.text
         assert "switchTab('history')" in response.text or "History" in response.text
 
-    def test_dashboard_create_issue_form_present(self) -> None:
-        """Dashboard should have the create issue form with all fields."""
+    def test_dashboard_issue_detail_drawer_present(self) -> None:
+        """Dashboard should include issue-detail drawer surface."""
         from issue_orchestrator.entrypoints.web import app
 
         client = TestClient(app)
@@ -486,13 +485,12 @@ class TestDashboardRendering:
         response = client.get("/")
 
         assert response.status_code == 200
-        # Check form elements are present
-        assert "issueTitle" in response.text
-        assert "issueBody" in response.text
-        assert "issueAgent" in response.text
-        assert "issuePriority" in response.text
-        assert "issueMilestone" in response.text
-        assert "refreshAfterCreate" in response.text
+        assert "issueDetailDrawer" in response.text
+        assert "issueDetailTitle" in response.text
+        assert "issueDetailFocusBtn" in response.text
+        assert "issueDetailGitHubBtn" in response.text
+        assert "issueDetailLoopsBtn" in response.text
+        assert "issueDetailRawBtn" in response.text
 
     def test_dashboard_api_endpoints_exist(self) -> None:
         """Dashboard API endpoints should exist."""

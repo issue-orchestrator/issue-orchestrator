@@ -1423,6 +1423,7 @@ const timelineModal = document.getElementById('timelineModal');
 const issueDetailDrawer = document.getElementById('issueDetailDrawer');
 let issueDetailData = null;
 let issueDetailMode = 'loops';
+let lastIssueDetailTrigger = null;
 
 async function openTimelineModal(issueNumber) {
     if (!timelineModal) return;
@@ -1451,13 +1452,23 @@ function closeTimelineModal(e) {
     }
 }
 
-async function openIssueDetail(issueNumber) {
+function getIssueDetailFocusableElements() {
+    if (!issueDetailDrawer) return [];
+    return Array.from(
+        issueDetailDrawer.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
+    ).filter((el) => !el.hasAttribute('disabled') && el.offsetParent !== null);
+}
+
+async function openIssueDetail(issueNumber, triggerEl = null) {
     if (!issueDetailDrawer) return;
+    lastIssueDetailTrigger = triggerEl || document.activeElement;
     issueDetailDrawer.classList.add('visible');
     issueDetailDrawer.setAttribute('aria-hidden', 'false');
     document.getElementById('issueDetailTitle').textContent = `Issue #${issueNumber}`;
     document.getElementById('issueDetailSummary').textContent = 'Loading issue detail...';
     document.getElementById('issueDetailBody').innerHTML = '';
+    const closeBtn = document.getElementById('issueDetailCloseBtn');
+    if (closeBtn) closeBtn.focus();
 
     try {
         const res = await fetch(`/api/issue-detail/${issueNumber}`);
@@ -1478,6 +1489,9 @@ function closeIssueDetail() {
     if (!issueDetailDrawer) return;
     issueDetailDrawer.classList.remove('visible');
     issueDetailDrawer.setAttribute('aria-hidden', 'true');
+    if (lastIssueDetailTrigger && typeof lastIssueDetailTrigger.focus === 'function') {
+        lastIssueDetailTrigger.focus();
+    }
 }
 
 function setIssueDetailMode(mode) {
@@ -1525,6 +1539,28 @@ function renderIssueDetail() {
         </div>
     `).join('') || '<div class="timeline-empty">No loop data recorded.</div>';
 }
+
+document.addEventListener('keydown', (event) => {
+    if (!issueDetailDrawer || !issueDetailDrawer.classList.contains('visible')) return;
+    if (event.key === 'Escape') {
+        event.preventDefault();
+        closeIssueDetail();
+        return;
+    }
+    if (event.key !== 'Tab') return;
+    const focusable = getIssueDetailFocusableElements();
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const current = document.activeElement;
+    if (event.shiftKey && current === first) {
+        event.preventDefault();
+        last.focus();
+    } else if (!event.shiftKey && current === last) {
+        event.preventDefault();
+        first.focus();
+    }
+});
 
 function renderTimeline(container, events, phaseToc = [], loops = []) {
     if (!events || events.length === 0) {

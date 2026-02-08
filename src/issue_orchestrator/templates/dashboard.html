@@ -63,14 +63,14 @@
         </section>
 
         <nav class="board-tabs" role="tablist" aria-label="Dashboard sections">
-            <button class="tab {% if active_tab == 'flow' %}active{% endif %}" id="tab-flow" onclick="switchTab('flow')" role="tab" aria-selected="{% if active_tab == 'flow' %}true{% else %}false{% endif %}">
+            <button class="tab {% if active_tab == 'flow' %}active{% endif %}" id="tab-flow" onclick="switchTab('flow')" role="tab" aria-controls="panel-flow" aria-selected="{% if active_tab == 'flow' %}true{% else %}false{% endif %}">
                 Flow
             </button>
-            <button class="tab {% if active_tab == 'attention' %}active{% endif %}" id="tab-attention" onclick="switchTab('attention')" role="tab" aria-selected="{% if active_tab == 'attention' %}true{% else %}false{% endif %}">
+            <button class="tab {% if active_tab == 'attention' %}active{% endif %}" id="tab-attention" onclick="switchTab('attention')" role="tab" aria-controls="panel-attention" aria-selected="{% if active_tab == 'attention' %}true{% else %}false{% endif %}">
                 Attention
                 <span class="tab-badge {% if blocked_count == 0 and awaiting_merge_count == 0 %}empty{% endif %}">{{ blocked_count + awaiting_merge_count }}</span>
             </button>
-            <button class="tab {% if active_tab == 'history' %}active{% endif %}" id="tab-history" onclick="switchTab('history')" role="tab" aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}">
+            <button class="tab {% if active_tab == 'history' %}active{% endif %}" id="tab-history" onclick="switchTab('history')" role="tab" aria-controls="panel-history" aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}">
                 History
                 <span class="tab-badge {% if history_count == 0 %}empty{% endif %}">{{ history_count }}</span>
             </button>
@@ -78,7 +78,7 @@
 
         <main id="mainContent">
             {% if active_tab == 'flow' %}
-            <section class="kanban-board" aria-label="Flow board">
+            <section class="kanban-board" id="panel-flow" role="tabpanel" aria-labelledby="tab-flow" aria-label="Flow board">
                 {% for column in flow_columns %}
                 <article class="kanban-column" data-column="{{ column.id }}">
                     <h2>{{ column.title }} <span class="count">{{ column.count }}</span></h2>
@@ -87,7 +87,7 @@
                             {% for card in column["items"] %}
                             <div class="issue-card" data-issue="{{ card.issue_number }}">
                                 <div class="card-top">
-                                    <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }});event.stopPropagation();" title="Focus issue #{{ card.issue_number }}">
+                                    <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Focus issue #{{ card.issue_number }}">
                                         #{{ card.issue_number }} {{ card.title }}
                                     </button>
                                     {% if card.issue_url %}
@@ -120,7 +120,7 @@
                 {% endfor %}
             </section>
             {% elif active_tab == 'attention' %}
-            <section class="attention-board" aria-label="Needs attention">
+            <section class="attention-board" id="panel-attention" role="tabpanel" aria-labelledby="tab-attention" aria-label="Needs attention">
                 {% if attention_groups %}
                     {% for group in attention_groups %}
                     <article class="attention-group">
@@ -129,10 +129,10 @@
                         <div class="attention-items">
                             {% for card in group["items"] %}
                             <div class="attention-item" data-issue="{{ card.issue_number }}">
-                                <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }});event.stopPropagation();" title="Focus issue #{{ card.issue_number }}">#{{ card.issue_number }} {{ card.title }}</button>
+                                <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Focus issue #{{ card.issue_number }}">#{{ card.issue_number }} {{ card.title }}</button>
                                 {% if card.blocked_summary %}<div class="card-line card-muted">{{ card.blocked_summary }}</div>{% endif %}
                                 <div class="attention-actions">
-                                    <button class="issue-action-btn" onclick="openIssueDetail({{ card.issue_number }});event.stopPropagation();">Focus</button>
+                                    <button class="issue-action-btn" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();">Focus</button>
                                     {% if card.issue_url %}
                                     <a class="issue-action-btn" href="{{ card.issue_url }}" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
                                     {% endif %}
@@ -147,13 +147,13 @@
                 {% endif %}
             </section>
             {% else %}
-            <section class="history-list" aria-label="Issue history">
+            <section class="history-list" id="panel-history" role="tabpanel" aria-labelledby="tab-history" aria-label="Issue history">
                 {% set history_combined = history_items + blocked_items %}
                 {% if history_combined %}
                     {% for issue in history_combined %}
                     <article class="history-item">
                         <div class="card-top">
-                            <button class="card-focus" onclick="openIssueDetail({{ issue.issue_number }});event.stopPropagation();" title="Focus issue #{{ issue.issue_number }}">#{{ issue.issue_number }} {{ issue.title }}</button>
+                            <button class="card-focus" onclick="openIssueDetail({{ issue.issue_number }}, this);event.stopPropagation();" title="Focus issue #{{ issue.issue_number }}">#{{ issue.issue_number }} {{ issue.title }}</button>
                             {% if issue.issue_url %}
                             <a class="card-gh" href="{{ issue.issue_url }}" target="_blank" rel="noopener noreferrer">↗</a>
                             {% endif %}
@@ -169,10 +169,10 @@
         </main>
     </div>
 
-    <aside class="issue-detail-drawer" id="issueDetailDrawer" aria-hidden="true">
+    <aside class="issue-detail-drawer" id="issueDetailDrawer" role="dialog" aria-modal="true" aria-labelledby="issueDetailTitle" aria-hidden="true" tabindex="-1">
         <div class="issue-detail-header">
             <h2 id="issueDetailTitle">Issue Detail</h2>
-            <button class="modal-close" onclick="closeIssueDetail()">&times;</button>
+            <button class="modal-close" id="issueDetailCloseBtn" onclick="closeIssueDetail()" aria-label="Close issue detail">&times;</button>
         </div>
         <div class="issue-detail-actions">
             <button class="issue-action-btn" id="issueDetailFocusBtn">Focus</button>
@@ -201,18 +201,6 @@
     <script>
       window.dashboardData = {{ dashboard_data | tojson }};
     </script>
-    <!-- Legacy compatibility markers for invariant tests -->
-    <div style="display:none" aria-hidden="true">
-        <button onclick="switchTab('active')">Active</button>
-        <button onclick="switchTab('queue')">Queue</button>
-        <button onclick="switchTab('blocked')">Blocked</button>
-        <input id="issueTitle" type="text">
-        <textarea id="issueBody"></textarea>
-        <select id="issueAgent"></select>
-        <select id="issuePriority"></select>
-        <select id="issueMilestone"></select>
-        <input id="refreshAfterCreate" type="checkbox">
-    </div>
     <script src="/static/js/dashboard.js"></script>
 </body>
 </html>
