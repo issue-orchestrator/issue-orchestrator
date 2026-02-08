@@ -1687,6 +1687,7 @@ class TestApiTimelineEndpoint:
     def test_refresh_single_issue_updates_cached_queue(self):
         """Test single issue refresh updates existing cached issue and timestamp."""
         mock_orch = create_mock_orchestrator()
+        mock_orch.config.filtering.label = "agent:web"
         mock_orch.state.cached_queue_issues = [create_issue(7, "old title")]
         mock_orch.repository_host = MagicMock()
         mock_orch.repository_host.get_issue.return_value = create_issue(7, "new title")
@@ -1695,9 +1696,34 @@ class TestApiTimelineEndpoint:
             client = TestClient(app)
             response = client.post("/api/issues/7/refresh")
             assert response.status_code == 200
+            assert response.json()["status"] == "refreshed"
+            assert response.json()["in_scope"] is True
             assert response.json()["updated"] is True
             assert mock_orch.state.cached_queue_issues[0].title == "new title"
             assert mock_orch.state.issue_refresh_timestamps[7] > 0
+        finally:
+            set_orchestrator(None)
+
+    def test_refresh_single_issue_does_not_inject_out_of_scope_issue(self):
+        """Out-of-scope single refresh should not inject issue into queue."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.filtering.label = "agent:web"
+        mock_orch.state.cached_queue_issues = [create_issue(7, "old title")]
+        mock_orch.state.issue_refresh_timestamps = {7: 100.0, 999: 200.0}
+        mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.get_issue.return_value = create_issue(
+            7, "other scope", labels=["agent:other"]
+        )
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/7/refresh")
+            assert response.status_code == 200
+            assert response.json()["status"] == "out_of_scope"
+            assert response.json()["in_scope"] is False
+            assert not any(issue.number == 7 for issue in mock_orch.state.cached_queue_issues)
+            assert 7 not in mock_orch.state.issue_refresh_timestamps
+            assert 999 not in mock_orch.state.issue_refresh_timestamps
         finally:
             set_orchestrator(None)
 
