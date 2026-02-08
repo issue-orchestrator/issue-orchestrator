@@ -127,19 +127,7 @@ class DashboardViewModel:
             "e2eLastRun": self.e2e_status.get("last_run"),
             "agents": self.agent_names,
             "scope": self.scope_summary,
-            "refresh": {
-                "inProgress": bool(self.scope_summary.get("queue_refresh_in_progress", False)),
-                "requested": bool(self.scope_summary.get("queue_refresh_requested", False)),
-                "lastRefreshAt": self.scope_summary.get("queue_last_refresh_at", 0.0),
-                "lastRefreshAgeSeconds": self.scope_summary.get("queue_last_refresh_age_seconds", -1),
-                "lastRefreshLabel": self.scope_summary.get("queue_last_refresh_label", "unknown"),
-                "flowLazyEnabled": bool(self.scope_summary.get("flow_refresh_enabled", True)),
-                "flowStaleSeconds": int(self.scope_summary.get("flow_refresh_stale_seconds", 900)),
-                "flowCooldownSeconds": int(self.scope_summary.get("flow_refresh_cooldown_seconds", 120)),
-                "freshnessMode": str(self.scope_summary.get("flow_freshness_mode", "balanced")),
-                "apiBudget": str(self.scope_summary.get("flow_api_budget", "medium")),
-                "attentionPriority": str(self.scope_summary.get("flow_attention_priority", "strict")),
-            },
+            "refresh": self.scope_summary.get("refresh", {}),
             "githubUsage": github_usage,
         }
 
@@ -1140,34 +1128,47 @@ def build_dashboard_view_model(
     github_repo = repo.split("/")[1] if repo and "/" in repo else ""
 
     queue_refresh_seconds = config.queue_refresh_seconds if config else 600
+    queue_last_refresh_age = (
+        max(0.0, datetime.now(timezone.utc).timestamp() - state.queue_last_refresh_at)
+        if state and state.queue_last_refresh_at > 0
+        else -1
+    )
+    refresh_status = {
+        "mode": state.queue_last_refresh_mode if state else "none",
+        "lastRefreshAt": state.queue_last_refresh_at if state else 0.0,
+        "lastRefreshAgeSeconds": queue_last_refresh_age,
+        "lastRefreshLabel": (
+            f"{_format_age_seconds(queue_last_refresh_age)} ago"
+            if queue_last_refresh_age >= 0
+            else "never"
+        ),
+        "inProgress": bool(state.queue_refresh_in_progress) if state else False,
+        "requested": bool(state.queue_refresh_requested) if state else False,
+        "lastFullScanAt": state.queue_last_full_scan_at if state else 0.0,
+        "refreshCount": state.queue_refresh_count if state else 0,
+        "fetchLayerEnabled": config.fetch_layer_enabled if config else True,
+        "fullScanIntervalSeconds": config.fetch_layer_full_scan_interval_seconds if config else 1800,
+        "discoveryLimit": config.fetch_layer_discovery_limit if config else 25,
+        "maxHotIssuesPerCycle": config.fetch_layer_max_hot_issues_per_cycle if config else 40,
+        "prScanEveryNRefreshes": config.fetch_layer_pr_scan_every_n_refreshes if config else 2,
+        "dependencyScanEveryNRefreshes": config.fetch_layer_dependency_scan_every_n_refreshes if config else 1,
+        "flowLazyEnabled": bool(config.flow_refresh_enabled) if config else True,
+        "flowStaleSeconds": int(config.flow_refresh_stale_seconds) if config else 900,
+        "flowCooldownSeconds": int(config.flow_refresh_cooldown_seconds) if config else 120,
+        "freshnessMode": str(config.flow_freshness_mode) if config else "balanced",
+        "apiBudget": str(config.flow_api_budget) if config else "medium",
+        "attentionPriority": str(config.flow_attention_priority) if config else "strict",
+    }
     if config:
         milestones = config.get_filter_milestones()
-        queue_last_refresh_age = (
-            max(0.0, datetime.now(timezone.utc).timestamp() - state.queue_last_refresh_at)
-            if state and state.queue_last_refresh_at > 0
-            else -1
-        )
         scope_summary = {
             "repo_open_total": queue_total,
             "in_scope_total": len(backlog_items),
             "filter_label": config.filtering.label or "",
             "filter_milestones": milestones,
             "exclude_labels": list(config.filtering.exclude_labels),
-            "queue_last_refresh_at": state.queue_last_refresh_at if state else 0.0,
-            "queue_last_refresh_age_seconds": queue_last_refresh_age,
-            "queue_last_refresh_label": (
-                f"{_format_age_seconds(queue_last_refresh_age)} ago"
-                if queue_last_refresh_age >= 0
-                else "never"
-            ),
-            "queue_refresh_in_progress": bool(state.queue_refresh_in_progress) if state else False,
-            "queue_refresh_requested": bool(state.queue_refresh_requested) if state else False,
-            "flow_refresh_enabled": bool(config.flow_refresh_enabled),
-            "flow_refresh_stale_seconds": int(config.flow_refresh_stale_seconds),
-            "flow_refresh_cooldown_seconds": int(config.flow_refresh_cooldown_seconds),
-            "flow_freshness_mode": str(config.flow_freshness_mode),
-            "flow_api_budget": str(config.flow_api_budget),
-            "flow_attention_priority": str(config.flow_attention_priority),
+            "refresh_mode": state.queue_last_refresh_mode if state else "none",
+            "refresh": refresh_status,
         }
     else:
         scope_summary = {
@@ -1176,17 +1177,8 @@ def build_dashboard_view_model(
             "filter_label": "",
             "filter_milestones": [],
             "exclude_labels": [],
-            "queue_last_refresh_at": 0.0,
-            "queue_last_refresh_age_seconds": -1,
-            "queue_last_refresh_label": "never",
-            "queue_refresh_in_progress": False,
-            "queue_refresh_requested": False,
-            "flow_refresh_enabled": True,
-            "flow_refresh_stale_seconds": 900,
-            "flow_refresh_cooldown_seconds": 120,
-            "flow_freshness_mode": "balanced",
-            "flow_api_budget": "medium",
-            "flow_attention_priority": "strict",
+            "refresh_mode": "none",
+            "refresh": refresh_status,
         }
 
     return DashboardViewModel(

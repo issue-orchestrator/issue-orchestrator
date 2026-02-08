@@ -1090,6 +1090,10 @@ class OrchestratorState:
     startup_status: str = "pending"  # "pending", "running", "complete"
     startup_message: str = ""  # Current startup task description
     cached_queue_issues: list["IssueProtocol"] = field(default_factory=list)  # Cached queue for instant pagination
+    queue_last_refresh_at: float = 0.0  # Unix timestamp of last queue refresh
+    queue_last_full_scan_at: float = 0.0  # Unix timestamp of last full GitHub scan
+    queue_refresh_count: int = 0  # Number of queue refresh cycles completed
+    queue_last_refresh_mode: str = "none"  # none|full|incremental
     dependency_problems: dict[int, "DependencyProblem"] = field(default_factory=dict)  # Issues blocked by dependencies (to migrate: dict[IssueKey, ...])
     # Discovered facts pending Planner decision
     discovered_reviews: list[DiscoveredReview] = field(default_factory=list)  # Reviews from completions/scans
