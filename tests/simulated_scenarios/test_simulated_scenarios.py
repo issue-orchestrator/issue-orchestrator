@@ -571,7 +571,7 @@ def test_coder_exit_nonzero_emits_error(scenario_repo: Path):
         .run()
 
 
-def test_review_session_no_completion_marks_needs_human(scenario_repo: Path):
+def test_review_session_no_completion_marks_interrupted_retry(scenario_repo: Path):
     def _disable_grace_period(config) -> None:
         config.session_grace_period_seconds = 0
         config.session_log_activity_seconds = 0
@@ -582,5 +582,5 @@ def test_review_session_no_completion_marks_needs_human(scenario_repo: Path):
         .review_exchange(mode="via-draft-pr") \
         .configure(_disable_grace_period) \
         .wait_for_event(EventName.SESSION_FAILED) \
-        .expect_issue_comment_contains("Review Session Needs Investigation") \
+        .expect_issue_comment_contains("Review Session Interrupted") \
         .run()
