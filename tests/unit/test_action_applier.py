@@ -546,7 +546,7 @@ class TestApplyAll:
 
     def test_apply_all_emits_label_mutation_summary(self, applier, mock_labels, caplog):
         """Emit summary event/log with attempted/applied/noop/failed mutation counters."""
-        # add #1 => no-op, remove #2 => no-op, add #3 => failure, remove #4 => applied
+        # add #1 => no-op, remove #2 => applied, add #3 => failure, remove #4 => applied
         mock_labels.has_label.side_effect = [True, False, False, True]
         mock_labels.add_label.side_effect = Exception("boom")
         actions = [
@@ -569,15 +569,15 @@ class TestApplyAll:
         assert payload["label_add_attempted"] == 2
         assert payload["label_remove_attempted"] == 2
         assert payload["label_mutation_attempted"] == 4
-        assert payload["label_mutation_applied"] == 1
-        assert payload["label_mutation_noop"] == 2
+        assert payload["label_mutation_applied"] == 2
+        assert payload["label_mutation_noop"] == 1
         assert payload["label_mutation_failed"] == 1
-        assert payload["noop_ratio"] == 0.5
+        assert payload["noop_ratio"] == 0.25
         assert payload["failure_ratio"] == 0.25
         assert len(payload["per_issue"]) == 2
 
         assert any(
-            "label_mutations attempted=4 applied=1 noop=2 failed=1" in message
+            "label_mutations attempted=4 applied=2 noop=1 failed=1" in message
             for message in caplog.messages
         )
 
