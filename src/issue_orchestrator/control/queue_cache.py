@@ -98,6 +98,8 @@ class QueueCache:
 
 def _matches_scope(config: "Config", issue: "Issue") -> bool:
     """Apply label/milestone/exclude-label scope checks for an issue."""
+    if issue.state.lower() == "closed":
+        return False
     if config.filtering.label and config.filtering.label not in issue.labels:
         return False
     milestones = config.get_filter_milestones()

@@ -133,6 +133,11 @@ class TestClientEventHandlers:
         assert "loadDependencyProblems()" in dashboard_html
         assert "/api/dependency-problems" in dashboard_html
 
+    def test_rebinds_visibility_observers_after_issue_row_refresh(self, dashboard_html):
+        """Row replacement should rebind observers for visibility-based refresh behavior."""
+        assert "initVisibilityObserver();" in dashboard_html
+        assert "initFlowLazyVisibleRefresh();" in dashboard_html
+
     def test_has_update_warning_function(self, dashboard_html):
         """Dashboard has function to update warning icons."""
         assert "updateDependencyWarning" in dashboard_html
