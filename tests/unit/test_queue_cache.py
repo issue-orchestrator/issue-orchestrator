@@ -42,6 +42,21 @@ def test_upsert_rejects_out_of_scope_issue():
     assert state.cached_queue_issues == []
 
 
+def test_upsert_rejects_closed_issue_even_when_filters_match():
+    config = _make_config()
+    config.filtering.label = "agent:web"
+    state = OrchestratorState(cached_queue_issues=[Issue(number=1, title="A", labels=["agent:web"])])
+    cache = QueueCache(config, state)
+
+    outcome = cache.upsert_refreshed_issue(
+        Issue(number=1, title="A closed", labels=["agent:web"], state="closed")
+    )
+
+    assert outcome.status == QueueMutationStatus.REJECTED_OUT_OF_SCOPE
+    assert outcome.in_queue is False
+    assert state.cached_queue_issues == []
+
+
 def test_replace_from_refresh_filters_excluded_history_issue():
     config = _make_config()
     config.filtering.label = "agent:web"

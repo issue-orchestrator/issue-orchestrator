@@ -189,6 +189,8 @@ async function refreshIssueRows(vm) {
 
     ensureEmptyState(vm, rows.length > 0);
     updateActionHints();
+    initVisibilityObserver();
+    initFlowLazyVisibleRefresh();
 }
 
 async function refreshViewModel({ reloadOnListChange = true } = {}) {
@@ -237,6 +239,10 @@ let visibilityPostTimer = null;
 let lastVisibilityPayload = '';
 
 function initVisibilityObserver() {
+    if (visibilityObserver) {
+        visibilityObserver.disconnect();
+        visibilityObserver = null;
+    }
     const enabled = Boolean(window.dashboardData && window.dashboardData.fetchLayerVisibilityAwareEnabled);
     if (!enabled) return;
     const cards = Array.from(document.querySelectorAll('.issue-card[data-issue]'));
