@@ -972,6 +972,7 @@ async function toggleExcluded() {
 
 // Helper to add keyboard support to menu items
 function addKeyboardSupport(element) {
+    if (!element) return;
     element.addEventListener('keydown', (e) => {
         if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
@@ -998,11 +999,32 @@ const menuDepsDivider = document.getElementById('menuDepsDivider');
 const menuDepsLabel = document.getElementById('menuDepsLabel');
 const menuDepsContainer = document.getElementById('menuDepsContainer');
 let currentRow = null;
+const contextMenuEnabled = [
+    contextMenu,
+    menuFocus,
+    menuFinder,
+    menuLog,
+    menuAgentLog,
+    menuInput,
+    menuPrompt,
+    menuKill,
+    menuIssue,
+    menuPR,
+    menuRetry,
+    menuDismiss,
+    menuHistoryDivider,
+    menuDepsDivider,
+    menuDepsLabel,
+    menuDepsContainer,
+].every((el) => el !== null);
 
 // Add keyboard support to all context menu items
-[menuFocus, menuFinder, menuLog, menuAgentLog, menuInput, menuPrompt, menuKill, menuIssue, menuPR, menuRetry, menuDismiss].forEach(addKeyboardSupport);
+if (contextMenuEnabled) {
+    [menuFocus, menuFinder, menuLog, menuAgentLog, menuInput, menuPrompt, menuKill, menuIssue, menuPR, menuRetry, menuDismiss].forEach(addKeyboardSupport);
+}
 
 function showContextMenu(e, row) {
+    if (!contextMenuEnabled) return;
     e.preventDefault();
     currentRow = row;
 
@@ -1098,177 +1120,179 @@ function showContextMenu(e, row) {
 }
 
 // Hide context menu on click elsewhere
-document.addEventListener('click', () => {
-    contextMenu.classList.remove('visible');
-});
+if (contextMenuEnabled) {
+    document.addEventListener('click', () => {
+        contextMenu.classList.remove('visible');
+    });
 
-// Menu actions - must stopPropagation to prevent document click handler from interfering
-menuFocus.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow && !menuFocus.classList.contains('disabled')) {
-        await fetch(`/api/focus/${currentRow.dataset.issue}`, { method: 'POST' });
-    }
-});
-
-menuFinder.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow && !menuFinder.classList.contains('disabled')) {
-        const res = await fetch(`/api/finder/${currentRow.dataset.issue}`, { method: 'POST' });
-        const data = await res.json();
-        console.log('Finder response:', data);
-    }
-});
-
-menuLog.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow) {
-        const issueNumber = currentRow.dataset.issue;
-        const res = await fetch(`/api/log/${issueNumber}`);
-        const data = await res.json();
-
-        if (data.error) {
-            alert(data.error + (data.hint ? '\n\n' + data.hint : ''));
-            return;
+    // Menu actions - must stopPropagation to prevent document click handler from interfering
+    menuFocus.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow && !menuFocus.classList.contains('disabled')) {
+            await fetch(`/api/focus/${currentRow.dataset.issue}`, { method: 'POST' });
         }
+    });
 
-        // Format log content for display
-        let logContent = '';
-        if (data.truncated) {
-            logContent += `<p style="color:#8b949e;margin-bottom:10px;">Showing last ${data.lines.length} of ${data.total_lines} entries...</p>`;
+    menuFinder.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow && !menuFinder.classList.contains('disabled')) {
+            const res = await fetch(`/api/finder/${currentRow.dataset.issue}`, { method: 'POST' });
+            const data = await res.json();
+            console.log('Finder response:', data);
         }
-        logContent += '<pre style="font-size:11px;max-height:400px;overflow:auto;background:#161b22;padding:10px;border-radius:4px;">';
-        for (const line of data.lines) {
-            try {
-                const entry = JSON.parse(line);
-                // Show role and truncated content
-                const role = entry.type || entry.role || 'unknown';
-                // Safely extract content - may be string or object
-                let rawContent = entry.message?.content || entry.content || entry;
-                const content = (typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent)).substring(0, 200);
-                logContent += `<span style="color:#58a6ff;">[${role}]</span> ${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}...\n`;
-            } catch {
-                logContent += line.substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '\n';
+    });
+
+    menuLog.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            const issueNumber = currentRow.dataset.issue;
+            const res = await fetch(`/api/log/${issueNumber}`);
+            const data = await res.json();
+
+            if (data.error) {
+                alert(data.error + (data.hint ? '\n\n' + data.hint : ''));
+                return;
             }
+
+            // Format log content for display
+            let logContent = '';
+            if (data.truncated) {
+                logContent += `<p style="color:#8b949e;margin-bottom:10px;">Showing last ${data.lines.length} of ${data.total_lines} entries...</p>`;
+            }
+            logContent += '<pre style="font-size:11px;max-height:400px;overflow:auto;background:#161b22;padding:10px;border-radius:4px;">';
+            for (const line of data.lines) {
+                try {
+                    const entry = JSON.parse(line);
+                    // Show role and truncated content
+                    const role = entry.type || entry.role || 'unknown';
+                    // Safely extract content - may be string or object
+                    let rawContent = entry.message?.content || entry.content || entry;
+                    const content = (typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent)).substring(0, 200);
+                    logContent += `<span style="color:#58a6ff;">[${role}]</span> ${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}...\n`;
+                } catch {
+                    logContent += line.substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '\n';
+                }
+            }
+            logContent += '</pre>';
+            logContent += `<p style="color:#8b949e;font-size:11px;margin-top:10px;">Log: ${data.log_path}</p>`;
+
+            // Show in modal
+            document.getElementById('modalTitle').textContent = `Session Log #${issueNumber}`;
+            document.getElementById('modalBody').innerHTML = logContent;
+            document.getElementById('modalOverlay').classList.add('visible');
         }
-        logContent += '</pre>';
-        logContent += `<p style="color:#8b949e;font-size:11px;margin-top:10px;">Log: ${data.log_path}</p>`;
+    });
 
-        // Show in modal
-        document.getElementById('modalTitle').textContent = `Session Log #${issueNumber}`;
-        document.getElementById('modalBody').innerHTML = logContent;
-        document.getElementById('modalOverlay').classList.add('visible');
-    }
-});
+    menuAgentLog.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            const issueNumber = currentRow.dataset.issue;
+            await openAgentLog(issueNumber);
+        }
+    });
 
-menuAgentLog.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow) {
-        const issueNumber = currentRow.dataset.issue;
-        await openAgentLog(issueNumber);
-    }
-});
-
-menuInput.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow && !menuInput.classList.contains('disabled')) {
-        const issueNumber = currentRow.dataset.issue;
-        openModal(
-            `Send Input #${issueNumber}`,
-            `
-                <div style="display:flex;flex-direction:column;gap:12px;">
-                    <label for="agentInput" class="form-label">Input</label>
-                    <textarea id="agentInput" class="form-textarea" rows="6" placeholder="Type a message or command (e.g., /exit)"></textarea>
-                    <div style="display:flex;justify-content:flex-end;gap:8px;">
-                        <button class="btn-secondary" onclick="closeModal()">Cancel</button>
-                        <button class="btn-primary" onclick="sendAgentInput(${issueNumber})">Send</button>
+    menuInput.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow && !menuInput.classList.contains('disabled')) {
+            const issueNumber = currentRow.dataset.issue;
+            openModal(
+                `Send Input #${issueNumber}`,
+                `
+                    <div style="display:flex;flex-direction:column;gap:12px;">
+                        <label for="agentInput" class="form-label">Input</label>
+                        <textarea id="agentInput" class="form-textarea" rows="6" placeholder="Type a message or command (e.g., /exit)"></textarea>
+                        <div style="display:flex;justify-content:flex-end;gap:8px;">
+                            <button class="btn-secondary" onclick="closeModal()">Cancel</button>
+                            <button class="btn-primary" onclick="sendAgentInput(${issueNumber})">Send</button>
+                        </div>
                     </div>
-                </div>
-            `
-        );
-    }
-});
+                `
+            );
+        }
+    });
 
-menuPrompt.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow && !menuPrompt.classList.contains('disabled')) {
-        const agentType = currentRow.dataset.agent;
-        const res = await fetch(`/api/prompt/${encodeURIComponent(agentType)}`, { method: 'POST' });
-        const data = await res.json();
-        console.log('Prompt response:', data);
-    }
-});
-
-menuKill.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow) {
-        const issueNumber = currentRow.dataset.issue;
-        const title = currentRow.dataset.title;
-        if (confirm(`Kill session #${issueNumber}: ${title}?\n\nThis will terminate the Claude agent immediately.`)) {
-            const res = await fetch(`/api/kill/${issueNumber}`, { method: 'POST' });
+    menuPrompt.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow && !menuPrompt.classList.contains('disabled')) {
+            const agentType = currentRow.dataset.agent;
+            const res = await fetch(`/api/prompt/${encodeURIComponent(agentType)}`, { method: 'POST' });
             const data = await res.json();
-            if (data.status === 'killed') {
-                location.reload();
-            } else {
-                alert(data.error || 'Failed to kill session');
+            console.log('Prompt response:', data);
+        }
+    });
+
+    menuKill.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            const issueNumber = currentRow.dataset.issue;
+            const title = currentRow.dataset.title;
+            if (confirm(`Kill session #${issueNumber}: ${title}?\n\nThis will terminate the Claude agent immediately.`)) {
+                const res = await fetch(`/api/kill/${issueNumber}`, { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'killed') {
+                    location.reload();
+                } else {
+                    alert(data.error || 'Failed to kill session');
+                }
             }
         }
-    }
-});
+    });
 
-menuIssue.addEventListener('click', (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow) {
-        window.open(currentRow.dataset.issueUrl, '_blank');
-    }
-});
+    menuIssue.addEventListener('click', (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            window.open(currentRow.dataset.issueUrl, '_blank');
+        }
+    });
 
-menuPR.addEventListener('click', (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow && currentRow.dataset.prUrl) {
-        window.open(currentRow.dataset.prUrl, '_blank');
-    }
-});
+    menuPR.addEventListener('click', (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow && currentRow.dataset.prUrl) {
+            window.open(currentRow.dataset.prUrl, '_blank');
+        }
+    });
 
-menuRetry.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow) {
-        const issueNumber = currentRow.dataset.issue;
-        if (confirm(`Retry issue #${issueNumber}? It will be picked up on the next cycle.`)) {
-            const res = await fetch(`/api/retry/${issueNumber}`, { method: 'POST' });
-            const data = await res.json();
-            if (data.retrying) {
-                location.reload();
-            } else {
-                alert(data.error || 'Failed to retry issue');
+    menuRetry.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            const issueNumber = currentRow.dataset.issue;
+            if (confirm(`Retry issue #${issueNumber}? It will be picked up on the next cycle.`)) {
+                const res = await fetch(`/api/retry/${issueNumber}`, { method: 'POST' });
+                const data = await res.json();
+                if (data.retrying) {
+                    location.reload();
+                } else {
+                    alert(data.error || 'Failed to retry issue');
+                }
             }
         }
-    }
-});
+    });
 
-menuDismiss.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    contextMenu.classList.remove('visible');
-    if (currentRow) {
-        const issueNumber = currentRow.dataset.issue;
-        const res = await fetch(`/api/history/dismiss/${issueNumber}`, { method: 'POST' });
-        const data = await res.json();
-        if (data.dismissed) {
-            location.reload();
-        } else {
-            alert(data.error || 'Failed to dismiss');
+    menuDismiss.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            const issueNumber = currentRow.dataset.issue;
+            const res = await fetch(`/api/history/dismiss/${issueNumber}`, { method: 'POST' });
+            const data = await res.json();
+            if (data.dismissed) {
+                location.reload();
+            } else {
+                alert(data.error || 'Failed to dismiss');
+            }
         }
-    }
-});
+    });
+}
 
 // Settings menu
 const settingsMenu = document.getElementById('settingsMenu');
