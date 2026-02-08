@@ -31,13 +31,13 @@ help:
 	@echo "  test-real-gh            Run full real-GitHub suite (dev + review + labels)"
 	@echo "  test-real-gh-plus-e2e   Run real-GitHub suite plus full e2e tests"
 	@echo "  test-real-gh-plus-e2e-subprocess   Same as above but using subprocess backend"
-	@echo "  test-web            Run Playwright web UI tests (headless)"
-	@echo "  test-web-headed     Run Playwright web UI tests (headed, for debugging)"
+	@echo "  test-web            Disabled: legacy e2e_web suite was removed"
+	@echo "  test-web-headed     Disabled: legacy e2e_web suite was removed"
 	@echo "  test-vscode         Run VS Code extension tests (local only, skipped in CI)"
 	@echo "  install-vscode-extensions      Install VS Code extension dev dependencies"
 	@echo "  playwright-install  Install Playwright browser binaries"
 	@echo "  test                Run all tests"
-	@echo "  validate            Parallel validation (~40s): typecheck + lint-arch + unit + integration + web-ui"
+	@echo "  validate            Parallel validation (~40s): typecheck + lint-arch + unit + integration"
 	@echo "  validate-quick      Quick validation (typecheck + unit tests only)"
 	@echo "  validate-full       Full parallel validation: validate + e2e tests"
 	@echo "  verify-hooks-all    Install + live-verify hooks for all supported CLIs"
@@ -333,12 +333,15 @@ endif
 test:
 	$(PYTEST) tests/ -x -q --tb=short $(PYTEST_TIMINGS)
 
-# Playwright browser tests for web UI
+# Legacy Playwright browser tests for web UI were removed.
+# Rebuild Flow-first web e2e tests before re-enabling these targets.
 test-web:
-	$(PYTEST) tests/e2e_web -v --tb=short $(PYTEST_TIMINGS)
+	@echo "tests/e2e_web was removed. Rebuild the Flow-first web e2e suite first."
+	@exit 1
 
 test-web-headed:
-	$(PYTEST) tests/e2e_web -v --tb=short --headed $(PYTEST_TIMINGS)
+	@echo "tests/e2e_web was removed. Rebuild the Flow-first web e2e suite first."
+	@exit 1
 
 # VS Code extension tests (local only). Skipped in GitHub Actions.
 test-vscode:
@@ -376,7 +379,7 @@ validate-raw:
 	@echo "✓ All validations passed!"
 
 # Internal target for parallel execution (excludes test-vscode to avoid VS Code runner flakiness under -j)
-_validate-impl: typecheck lint-arch lint-complexity test-unit test-simulated test-integration test-web
+_validate-impl: typecheck lint-arch lint-complexity test-unit test-simulated test-integration
 
 # Full validation including e2e tests
 validate-full:

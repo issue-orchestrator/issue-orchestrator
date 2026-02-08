@@ -1,6 +1,6 @@
 """Contract defining what the web layer requires from the orchestrator.
 
-This Protocol ensures MockOrchestratorForWeb and the real Orchestrator
+This Protocol ensures test mocks and the real Orchestrator
 stay in sync. The type checker catches drift, and runtime_checkable
 allows isinstance() verification in tests.
 """
