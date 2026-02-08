@@ -1338,6 +1338,22 @@ class TestRefreshEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_single_issue_refresh_does_not_override_queue_refresh_state(self):
+        """Single-issue refresh should not mutate queue refresh lifecycle state."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.state.queue_refresh_in_progress = False
+        issue = create_issue(77, "Refresh me")
+        mock_orch.repository_host.get_issue.return_value = issue
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(app)
+            response = client.post("/api/issues/77/refresh")
+            assert response.status_code == 200
+            assert mock_orch.state.queue_refresh_in_progress is False
+        finally:
+            set_orchestrator(None)
+
     def test_single_issue_refresh_not_found(self):
         """Refreshing a missing issue returns 404."""
         mock_orch = create_mock_orchestrator()

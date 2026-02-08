@@ -1933,8 +1933,8 @@ class Config:
 
         interrupted_dict: dict = {}
         interrupted = self.retry.interrupted_sessions
-        if interrupted.enabled:
-            interrupted_dict["enabled"] = True
+        if interrupted.enabled is not True:
+            interrupted_dict["enabled"] = interrupted.enabled
         if interrupted.retry_coding is not True:
             interrupted_dict["retry_coding"] = interrupted.retry_coding
         if interrupted.retry_review is not True:
