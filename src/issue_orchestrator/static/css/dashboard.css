@@ -10,6 +10,22 @@
     --ok: #46c37b;
     --warn: #f0b24f;
     --danger: #e57878;
+    --scope-bg: rgba(12, 24, 40, 0.72);
+    --tab-bg: rgba(18, 32, 51, 0.6);
+    --tab-badge-text: #081323;
+    --tab-badge-empty-bg: #4f6277;
+    --tab-badge-empty-text: #d3deeb;
+    --e2e-card-bg: rgba(11, 20, 34, 0.82);
+    --overlay-bg: rgba(4, 8, 13, 0.7);
+    --status-running-text: #daf7e8;
+    --status-running-bg: rgba(70, 195, 123, 0.18);
+    --status-running-border: rgba(70, 195, 123, 0.5);
+    --status-paused-text: #ffedcc;
+    --status-paused-bg: rgba(240, 178, 79, 0.18);
+    --status-paused-border: rgba(240, 178, 79, 0.5);
+    --status-starting-text: #d8ebff;
+    --status-starting-bg: rgba(78, 161, 255, 0.2);
+    --status-starting-border: rgba(78, 161, 255, 0.45);
 }
 
 [data-theme="light"] {
@@ -24,6 +40,22 @@
     --ok: #1d8a4a;
     --warn: #a86900;
     --danger: #b3261e;
+    --scope-bg: rgba(220, 233, 248, 0.7);
+    --tab-bg: rgba(220, 233, 248, 0.5);
+    --tab-badge-text: #ffffff;
+    --tab-badge-empty-bg: #b0bfcf;
+    --tab-badge-empty-text: #3a4d63;
+    --e2e-card-bg: rgba(220, 233, 248, 0.5);
+    --overlay-bg: rgba(0, 0, 0, 0.4);
+    --status-running-text: #146b35;
+    --status-running-bg: rgba(29, 138, 74, 0.12);
+    --status-running-border: rgba(29, 138, 74, 0.4);
+    --status-paused-text: #7a5000;
+    --status-paused-bg: rgba(168, 105, 0, 0.12);
+    --status-paused-border: rgba(168, 105, 0, 0.4);
+    --status-starting-text: #1a5cad;
+    --status-starting-bg: rgba(31, 111, 235, 0.12);
+    --status-starting-border: rgba(31, 111, 235, 0.4);
 }
 
 * { box-sizing: border-box; }
@@ -86,19 +118,19 @@ h1 {
     letter-spacing: 0.05em;
 }
 .status-running {
-    color: #daf7e8;
-    background: rgba(70, 195, 123, 0.18);
-    border-color: rgba(70, 195, 123, 0.5);
+    color: var(--status-running-text);
+    background: var(--status-running-bg);
+    border-color: var(--status-running-border);
 }
 .status-paused {
-    color: #ffedcc;
-    background: rgba(240, 178, 79, 0.18);
-    border-color: rgba(240, 178, 79, 0.5);
+    color: var(--status-paused-text);
+    background: var(--status-paused-bg);
+    border-color: var(--status-paused-border);
 }
 .status-starting {
-    color: #d8ebff;
-    background: rgba(78, 161, 255, 0.2);
-    border-color: rgba(78, 161, 255, 0.45);
+    color: var(--status-starting-text);
+    background: var(--status-starting-bg);
+    border-color: var(--status-starting-border);
 }
 
 .controls { position: relative; }
@@ -223,7 +255,7 @@ h1 {
     padding: 10px 12px;
     border: 1px solid var(--border);
     border-radius: 10px;
-    background: rgba(12, 24, 40, 0.72);
+    background: var(--scope-bg);
 }
 .scope-line {
     display: flex;
@@ -244,7 +276,7 @@ h1 {
 }
 .tab {
     border: 1px solid var(--border);
-    background: rgba(18, 32, 51, 0.6);
+    background: var(--tab-bg);
     color: var(--text);
     padding: 8px 12px;
     border-radius: 10px;
@@ -260,7 +292,7 @@ h1 {
 }
 .tab-badge {
     background: var(--accent);
-    color: #081323;
+    color: var(--tab-badge-text);
     font-weight: 700;
     font-size: 11px;
     min-width: 18px;
@@ -268,9 +300,9 @@ h1 {
     padding: 2px 6px;
     border-radius: 999px;
 }
-.tab-badge.empty { background: #4f6277; color: #d3deeb; }
-.tab-badge.running { background: var(--accent); color: #081323; }
-.tab-badge.failed { background: var(--danger); color: #fff; }
+.tab-badge.empty { background: var(--tab-badge-empty-bg); color: var(--tab-badge-empty-text); }
+.tab-badge.running { background: var(--accent); color: var(--tab-badge-text); }
+.tab-badge.failed { background: var(--danger); color: var(--tab-badge-text); }
 .tab-badge .status-icon { margin-right: 4px; }
 
 .kanban-board {
@@ -402,8 +434,8 @@ h1 {
     color: var(--text-muted);
 }
 .badge-stale {
-    border-color: #e09f3e;
-    color: #e09f3e;
+    border-color: var(--warn);
+    color: var(--warn);
 }
 .attention-board {
     display: grid;
@@ -451,7 +483,7 @@ h1 {
 .e2e-runs-card {
     border: 1px solid var(--border);
     border-radius: 12px;
-    background: rgba(11, 20, 34, 0.82);
+    background: var(--e2e-card-bg);
     padding: 10px;
 }
 .e2e-summary-header {
@@ -560,7 +592,7 @@ h1 {
 .modal-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(4, 8, 13, 0.7);
+    background: var(--overlay-bg);
     display: none;
     align-items: center;
     justify-content: center;
@@ -774,9 +806,9 @@ h1 {
     background: color-mix(in srgb, var(--bg-panel) 78%, transparent);
 }
 .diag-chip.is-ok {
-    color: #daf7e8;
-    border-color: rgba(70, 195, 123, 0.5);
-    background: rgba(70, 195, 123, 0.14);
+    color: var(--status-running-text);
+    border-color: var(--status-running-border);
+    background: var(--status-running-bg);
 }
 .diag-chip.is-muted {
     color: var(--text-muted);

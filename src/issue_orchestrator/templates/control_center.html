@@ -2436,11 +2436,11 @@
                 btn.setAttribute('aria-checked', isActive);
             });
 
-            // Push theme to embedded dashboard iframe
+            // Push effective theme to embedded dashboard iframe
             const iframe = document.getElementById('activityIframe');
             if (iframe && iframe.contentWindow) {
                 try {
-                    iframe.contentWindow.postMessage({ type: 'theme', theme: theme }, '*');
+                    iframe.contentWindow.postMessage({ type: 'theme', theme: effectiveTheme }, '*');
                 } catch (e) { /* cross-origin, ignore */ }
             }
         }
@@ -3269,7 +3269,10 @@
                         <button class="btn btn-sm" onclick="loadActivityView('${escapeHtml(repo.path).replace(/'/g, "\\'")}')">Retry</button>
                     `;
                 };
-                iframe.src = `http://localhost:${port}/?embedded=1&theme=${encodeURIComponent(state.theme)}`;
+                const iframeTheme = state.theme === 'system'
+                    ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+                    : state.theme;
+                iframe.src = `http://localhost:${port}/?embedded=1&theme=${encodeURIComponent(iframeTheme)}`;
             } else {
                 loading.innerHTML = `
                     <p>Repository engine is not running.</p>
