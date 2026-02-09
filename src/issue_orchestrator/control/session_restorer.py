@@ -100,11 +100,12 @@ class SessionRestorer:
         import re
 
         # Determine session type and session_name
+        restored_pr_number: int | None = None
         if is_review:
             # Extract PR number from tab name like "#123 Review PR #456"
             pr_match = re.search(r'Review PR #(\d+)', tab_name)
-            pr_number = int(pr_match.group(1)) if pr_match else issue_number
-            session_name = f"review-{pr_number}"
+            restored_pr_number = int(pr_match.group(1)) if pr_match else issue_number
+            session_name = f"review-{restored_pr_number}"
         else:
             session_name = f"issue-{issue_number}"
 
@@ -162,6 +163,7 @@ class SessionRestorer:
             worktree_path=worktree_path,
             branch_name=branch_name,
             agent_label=agent_label_val,
+            pr_number=restored_pr_number,
         )
 
     def _find_worktree(self, issue_number: int) -> tuple[Optional[Path], str]:

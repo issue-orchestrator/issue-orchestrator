@@ -190,6 +190,7 @@ def test_view_model_includes_refresh_freshness_metadata():
     assert "ago" in card["last_refreshed_label"]
     refresh_meta = view_model.dashboard_data()["refresh"]
     assert refresh_meta["flowLazyEnabled"] is True
+    assert refresh_meta["networkSyncSeconds"] == 60
     assert refresh_meta["flowStaleSeconds"] == 60
     assert refresh_meta["freshnessMode"] == "balanced"
     assert refresh_meta["apiBudget"] == "medium"

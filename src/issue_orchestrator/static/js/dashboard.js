@@ -10,8 +10,10 @@ let viewModel = null;
 const issueRefreshInFlight = new Set();
 const issueRefreshLastAttempt = new Map();
 let flowRefreshObserver = null;
+let networkSyncTimer = null;
 const flowRefreshPrefsModal = document.getElementById('flowRefreshPrefsModal');
 const FLOW_REFRESH_OVERRIDE_KEY = 'issue-orchestrator.flow-refresh.override.v1';
+const NETWORK_SYNC_OVERRIDE_KEY = 'issue-orchestrator.network-sync.override.v1';
 const GH_USAGE_UI_PREF_KEY = 'issue-orchestrator.github-usage.ui.v1';
 const FLOW_FRESHNESS_PRESETS = {
     aggressive: { enabled: true, staleSeconds: 180, cooldownSeconds: 30 },
@@ -165,20 +167,23 @@ function ensureEmptyState(vm, hasRows) {
     emptyState.innerHTML = buildEmptyStateHtml(vm);
 }
 
-async function refreshIssueRows(vm) {
+async function refreshIssueRows(vm, rowsOverride = null) {
     const list = document.getElementById('issueList');
     if (!list) return;
 
-    const url = new URL('/api/issue-rows', window.location.origin);
-    const params = new URL(window.location.href).searchParams;
-    if (params.get('tab')) url.searchParams.set('tab', params.get('tab'));
-    if (params.get('page')) url.searchParams.set('page', params.get('page'));
-    if (params.get('e2e_page')) url.searchParams.set('e2e_page', params.get('e2e_page'));
+    let rows = rowsOverride;
+    if (!Array.isArray(rows)) {
+        const url = new URL('/api/issue-rows', window.location.origin);
+        const params = new URL(window.location.href).searchParams;
+        if (params.get('tab')) url.searchParams.set('tab', params.get('tab'));
+        if (params.get('page')) url.searchParams.set('page', params.get('page'));
+        if (params.get('e2e_page')) url.searchParams.set('e2e_page', params.get('e2e_page'));
 
-    const res = await fetch(url.toString());
-    if (!res.ok) return;
-    const data = await res.json();
-    const rows = data.rows || [];
+        const res = await fetch(url.toString());
+        if (!res.ok) return;
+        const data = await res.json();
+        rows = data.rows || [];
+    }
 
     const nextIds = new Set(rows.map(row => String(row.issue_number)));
     const existingGroups = Array.from(list.querySelectorAll('.issue-row-group[data-issue]'));
@@ -216,7 +221,8 @@ async function refreshIssueRows(vm) {
 
 async function refreshViewModel({ reloadOnListChange = true } = {}) {
     try {
-        const url = new URL('/api/view-model', window.location.origin);
+        const endpoint = reloadOnListChange ? '/api/view-model-snapshot' : '/api/view-model';
+        const url = new URL(endpoint, window.location.origin);
         const params = new URL(window.location.href).searchParams;
         if (params.get('tab')) url.searchParams.set('tab', params.get('tab'));
         if (params.get('page')) url.searchParams.set('page', params.get('page'));
@@ -224,16 +230,25 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
 
         const res = await fetch(url.toString());
         if (!res.ok) return;
-        viewModel = await res.json();
+        const payload = await res.json();
+        if (reloadOnListChange) {
+            if (!payload.view_model || !Array.isArray(payload.rows)) {
+                throw new Error('Invalid /api/view-model-snapshot payload shape');
+            }
+            viewModel = payload.view_model;
+        } else {
+            viewModel = payload;
+        }
         window.dashboardData = viewModel.dashboard_data || window.dashboardData;
         isPaused = !!viewModel.paused;
         updateStatusBadgeFromViewModel(viewModel);
         updatePauseMenuFromViewModel(viewModel);
         updateRefreshStatusFromViewModel(viewModel);
+        applyNetworkSyncScheduler();
         renderGitHubUsage();
 
         if (reloadOnListChange && viewModel.startup_status === 'complete') {
-            await refreshIssueRows(viewModel);
+            await refreshIssueRows(viewModel, payload.rows);
         }
     } catch (e) {
         console.error('Failed to refresh view-model:', e);
@@ -246,6 +261,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initFlowLazyVisibleRefresh();
     applyGitHubUsagePrefs();
     renderGitHubUsage();
+    applyNetworkSyncScheduler();
     refreshViewModel({ reloadOnListChange: false });
     initVisibilityObserver();
     const nextRun = document.getElementById('e2eNextRun');
@@ -264,6 +280,9 @@ document.addEventListener('DOMContentLoaded', () => {
 document.addEventListener('change', (event) => {
     if (event.target?.id === 'flowRefreshOverrideEnabled') {
         setFlowRefreshInputsEnabled(Boolean(event.target.checked));
+    }
+    if (event.target?.id === 'networkSyncCadenceSource' || event.target?.id === 'saveCadenceToConfig') {
+        updateCadencePreferenceInputState();
     }
 });
 let visibilityObserver = null;
@@ -753,6 +772,51 @@ function getFlowRefreshOverride() {
     }
 }
 
+function getNetworkSyncOverride() {
+    const raw = localStorage.getItem(NETWORK_SYNC_OVERRIDE_KEY);
+    if (!raw) return null;
+    try {
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== 'object') return null;
+        const seconds = Math.max(5, Number(parsed.seconds || 0));
+        if (!Number.isFinite(seconds)) return null;
+        return { enabled: Boolean(parsed.enabled), seconds };
+    } catch {
+        return null;
+    }
+}
+
+function currentNetworkSyncCadence() {
+    const server = Number(window.dashboardData?.refresh?.networkSyncSeconds || 60);
+    const override = getNetworkSyncOverride();
+    if (!override?.enabled) {
+        return { seconds: Math.max(5, server), source: 'config' };
+    }
+    return { seconds: Math.max(5, Number(override.seconds || server)), source: 'override' };
+}
+
+async function requestNetworkSyncSilently() {
+    try {
+        await fetch('/api/refresh', { method: 'POST' });
+    } catch (err) {
+        console.error('Background network sync request failed:', err);
+    }
+}
+
+function applyNetworkSyncScheduler() {
+    if (networkSyncTimer) {
+        window.clearInterval(networkSyncTimer);
+        networkSyncTimer = null;
+    }
+    const cadence = currentNetworkSyncCadence();
+    if (cadence.source !== 'override') {
+        return;
+    }
+    networkSyncTimer = window.setInterval(() => {
+        requestNetworkSyncSilently();
+    }, cadence.seconds * 1000);
+}
+
 function formatResetLabel(resetEpochSeconds) {
     if (!resetEpochSeconds || !Number.isFinite(resetEpochSeconds)) return '-';
     const delta = Math.max(0, Math.floor(resetEpochSeconds - Date.now() / 1000));
@@ -871,11 +935,12 @@ function updateRefreshStatusFromViewModel(vm) {
     }
     if (statusMeta) {
         const cfg = currentRefreshConfig();
-        const source = cfg.source === 'override' ? 'browser' : 'yaml';
+        const flowSource = cfg.source === 'override' ? 'override' : 'config';
+        const network = currentNetworkSyncCadence();
         if (cfg.enabled) {
-            statusMeta.textContent = `· ${cfg.freshnessMode}/${cfg.apiBudget}/${cfg.attentionPriority} · stale>${cfg.staleSeconds}s · ${source}`;
+            statusMeta.textContent = `· ${cfg.freshnessMode}/${cfg.apiBudget}/${cfg.attentionPriority} · stale>${cfg.staleSeconds}s (${flowSource}) · network ${network.seconds}s (${network.source})`;
         } else {
-            statusMeta.textContent = `· lazy visible refresh off (${source})`;
+            statusMeta.textContent = `· lazy visible refresh off (${flowSource}) · network ${network.seconds}s (${network.source})`;
         }
     }
 }
@@ -1016,10 +1081,62 @@ function setFlowRefreshInputsEnabled(enabled) {
     });
 }
 
+function setNetworkSyncInputEnabled(enabled) {
+    const overrideEl = document.getElementById('networkSyncOverrideSeconds');
+    if (overrideEl) {
+        overrideEl.disabled = !enabled;
+    }
+}
+
+function setFullScanInputEnabled(enabled) {
+    const fullScanEl = document.getElementById('fullScanConfigSeconds');
+    if (fullScanEl) {
+        fullScanEl.disabled = !enabled;
+    }
+}
+
+function updateCadencePreferenceInputState() {
+    const cadenceSourceEl = document.getElementById('networkSyncCadenceSource');
+    const saveCadenceEl = document.getElementById('saveCadenceToConfig');
+    if (!cadenceSourceEl || !saveCadenceEl) return;
+    const saveToConfig = Boolean(saveCadenceEl.checked);
+    setNetworkSyncInputEnabled(saveToConfig || cadenceSourceEl.value === 'override');
+    setFullScanInputEnabled(saveToConfig);
+}
+
+async function saveCadenceSettingsToConfig(networkSyncSeconds, fullScanIntervalSeconds) {
+    const response = await fetch('/api/settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            concurrency: {
+                fetch_layer_network_sync_seconds: networkSyncSeconds,
+                fetch_layer_full_scan_interval_seconds: fullScanIntervalSeconds,
+            },
+        }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+        const detail = typeof result.error === 'string' ? result.error : 'Failed to save cadence settings';
+        throw new Error(detail);
+    }
+    return result;
+}
+
+function openSettingsForRefreshPrefs() {
+    closeFlowRefreshPrefs();
+    window.location.href = '/settings';
+}
+
 function openFlowRefreshPrefs() {
     hideSettingsMenu();
-    const refresh = window.dashboardData?.refresh || {};
     const override = getFlowRefreshOverride();
+    const cadence = currentNetworkSyncCadence();
+    const refresh = window.dashboardData?.refresh || {};
+    const cadenceSourceEl = document.getElementById('networkSyncCadenceSource');
+    const cadenceOverrideEl = document.getElementById('networkSyncOverrideSeconds');
+    const fullScanConfigEl = document.getElementById('fullScanConfigSeconds');
+    const saveCadenceToConfigEl = document.getElementById('saveCadenceToConfig');
     const overrideEnabledEl = document.getElementById('flowRefreshOverrideEnabled');
     const enabledEl = document.getElementById('flowRefreshEnabled');
     const staleEl = document.getElementById('flowRefreshStaleSeconds');
@@ -1027,10 +1144,17 @@ function openFlowRefreshPrefs() {
     const freshnessModeEl = document.getElementById('flowFreshnessMode');
     const apiBudgetEl = document.getElementById('flowApiBudget');
     const attentionPriorityEl = document.getElementById('flowAttentionPriority');
-    if (!overrideEnabledEl || !enabledEl || !staleEl || !cooldownEl || !freshnessModeEl || !apiBudgetEl || !attentionPriorityEl || !flowRefreshPrefsModal) return;
+    if (!cadenceSourceEl || !cadenceOverrideEl || !fullScanConfigEl || !saveCadenceToConfigEl || !overrideEnabledEl || !enabledEl || !staleEl || !cooldownEl || !freshnessModeEl || !apiBudgetEl || !attentionPriorityEl || !flowRefreshPrefsModal) return;
 
     const useOverride = Boolean(override?.enabled);
     const base = currentRefreshConfig();
+    cadenceSourceEl.value = cadence.source;
+    cadenceOverrideEl.value = String(cadence.seconds);
+    fullScanConfigEl.value = String(Number(refresh.fullScanIntervalSeconds || 1800));
+    saveCadenceToConfigEl.checked = false;
+    cadenceSourceEl.onchange = () => updateCadencePreferenceInputState();
+    saveCadenceToConfigEl.onchange = () => updateCadencePreferenceInputState();
+    updateCadencePreferenceInputState();
     overrideEnabledEl.checked = useOverride;
     const server = serverRefreshStrategy();
     enabledEl.checked = useOverride ? Boolean(override.flowLazyEnabled) : Boolean(server.flowLazyEnabled);
@@ -1049,7 +1173,11 @@ function closeFlowRefreshPrefs(e) {
     }
 }
 
-function saveFlowRefreshPrefs() {
+async function saveFlowRefreshPrefs() {
+    const cadenceSourceEl = document.getElementById('networkSyncCadenceSource');
+    const cadenceOverrideEl = document.getElementById('networkSyncOverrideSeconds');
+    const fullScanConfigEl = document.getElementById('fullScanConfigSeconds');
+    const saveCadenceToConfigEl = document.getElementById('saveCadenceToConfig');
     const overrideEnabledEl = document.getElementById('flowRefreshOverrideEnabled');
     const enabledEl = document.getElementById('flowRefreshEnabled');
     const staleEl = document.getElementById('flowRefreshStaleSeconds');
@@ -1057,14 +1185,44 @@ function saveFlowRefreshPrefs() {
     const freshnessModeEl = document.getElementById('flowFreshnessMode');
     const apiBudgetEl = document.getElementById('flowApiBudget');
     const attentionPriorityEl = document.getElementById('flowAttentionPriority');
-    if (!overrideEnabledEl || !enabledEl || !staleEl || !cooldownEl || !freshnessModeEl || !apiBudgetEl || !attentionPriorityEl) return;
+    if (!cadenceSourceEl || !cadenceOverrideEl || !fullScanConfigEl || !saveCadenceToConfigEl || !overrideEnabledEl || !enabledEl || !staleEl || !cooldownEl || !freshnessModeEl || !apiBudgetEl || !attentionPriorityEl) return;
+
+    const networkSyncSeconds = Math.max(5, Number(cadenceOverrideEl.value || 60));
+    const fullScanIntervalSeconds = Math.max(60, Number(fullScanConfigEl.value || 1800));
+    const saveCadenceToConfig = Boolean(saveCadenceToConfigEl.checked);
+
+    if (saveCadenceToConfig) {
+        try {
+            const result = await saveCadenceSettingsToConfig(networkSyncSeconds, fullScanIntervalSeconds);
+            localStorage.removeItem(NETWORK_SYNC_OVERRIDE_KEY);
+            if (window.dashboardData?.refresh) {
+                window.dashboardData.refresh.networkSyncSeconds = networkSyncSeconds;
+                window.dashboardData.refresh.fullScanIntervalSeconds = fullScanIntervalSeconds;
+            }
+            if (viewModel?.dashboard_data?.refresh) {
+                viewModel.dashboard_data.refresh.networkSyncSeconds = networkSyncSeconds;
+                viewModel.dashboard_data.refresh.fullScanIntervalSeconds = fullScanIntervalSeconds;
+            }
+            if (result && result.restart_required) {
+                showToast('Cadence settings saved; restart required for full effect', 'warning');
+            }
+        } catch (err) {
+            showToast(`Failed to save cadence settings: ${err.message}`, 'error');
+            return;
+        }
+    } else if (cadenceSourceEl.value === 'override') {
+        localStorage.setItem(NETWORK_SYNC_OVERRIDE_KEY, JSON.stringify({ enabled: true, seconds: networkSyncSeconds }));
+    } else {
+        localStorage.removeItem(NETWORK_SYNC_OVERRIDE_KEY);
+    }
 
     if (!overrideEnabledEl.checked) {
         localStorage.removeItem(FLOW_REFRESH_OVERRIDE_KEY);
         updateRefreshStatusFromViewModel(viewModel);
+        applyNetworkSyncScheduler();
         initFlowLazyVisibleRefresh();
         closeFlowRefreshPrefs();
-        showToast('Flow refresh override cleared');
+        showToast('Refresh preferences saved');
         return;
     }
 
@@ -1081,14 +1239,17 @@ function saveFlowRefreshPrefs() {
     };
     localStorage.setItem(FLOW_REFRESH_OVERRIDE_KEY, JSON.stringify(payload));
     updateRefreshStatusFromViewModel(viewModel);
+    applyNetworkSyncScheduler();
     initFlowLazyVisibleRefresh();
     closeFlowRefreshPrefs();
-    showToast('Flow refresh preferences saved');
+    showToast('Refresh preferences saved');
 }
 
 function resetFlowRefreshPrefs() {
+    localStorage.removeItem(NETWORK_SYNC_OVERRIDE_KEY);
     localStorage.removeItem(FLOW_REFRESH_OVERRIDE_KEY);
     updateRefreshStatusFromViewModel(viewModel);
+    applyNetworkSyncScheduler();
     initFlowLazyVisibleRefresh();
     closeFlowRefreshPrefs();
     showToast('Flow refresh preferences reset');

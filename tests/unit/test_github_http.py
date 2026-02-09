@@ -84,6 +84,63 @@ def test_list_issues_filters_pull_requests() -> None:
     assert issues[0]["number"] == 1
 
 
+def test_list_issues_since_returns_oldest_watermark_hint() -> None:
+    payload = [
+        {"number": 10, "title": "Newest", "updated_at": "2026-01-02T10:00:00Z"},
+        {"number": 9, "title": "Older", "updated_at": "2026-01-02T09:30:00Z"},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    issues, watermark = client.list_issues_since(since="2026-01-01T00:00:00Z", limit=20)
+
+    assert len(issues) == 2
+    assert watermark == "2026-01-02T09:30:00Z"
+
+
+def test_list_issues_since_paginates_and_respects_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        page = int(request.url.params.get("page", "1"))
+        if page == 1:
+            return httpx.Response(200, json=[
+                {"number": 100, "title": "A", "updated_at": "2026-01-02T10:00:00Z"},
+                {"number": 99, "title": "B", "updated_at": "2026-01-02T09:59:00Z"},
+                {"number": 98, "title": "C", "updated_at": "2026-01-02T09:58:00Z"},
+            ])
+        return httpx.Response(200, json=[
+            {"number": 97, "title": "D", "updated_at": "2026-01-02T09:57:00Z"},
+        ])
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+    issues, watermark = client.list_issues_since(
+        since="2026-01-01T00:00:00Z",
+        limit=3,
+    )
+
+    assert [issue["number"] for issue in issues] == [100, 99, 98]
+    assert watermark == "2026-01-02T09:58:00Z"
+
+
+def test_list_issues_since_default_bypasses_etag_cache() -> None:
+    requests_seen: list[dict[str, str]] = []
+    payload = [{"number": 1, "title": "Issue", "updated_at": "2026-01-02T10:00:00Z"}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_seen.append(dict(request.headers))
+        return httpx.Response(200, json=payload, headers={"ETag": "W/issues-since-etag"})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    client.list_issues_since(since="2026-01-01T00:00:00Z", limit=10)
+    client.list_issues_since(since="2026-01-01T00:00:00Z", limit=10)
+
+    assert len(requests_seen) == 2
+    assert "if-none-match" not in requests_seen[0]
+    assert "if-none-match" not in requests_seen[1]
+
+
 def test_get_token_scopes_from_header() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

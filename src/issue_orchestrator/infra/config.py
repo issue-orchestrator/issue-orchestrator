@@ -891,6 +891,7 @@ def _load_ui_section(config: "Config", ui_section: dict) -> None:
     config.queue_refresh_seconds = ui_section.get("queue_refresh_seconds", 600)
     fetch_layer = ui_section.get("fetch_layer", {})
     config.fetch_layer_enabled = fetch_layer.get("enabled", True)
+    config.fetch_layer_network_sync_seconds = fetch_layer.get("network_sync_seconds", 60)
     config.fetch_layer_full_scan_interval_seconds = fetch_layer.get("full_scan_interval_seconds", 1800)
     config.fetch_layer_discovery_limit = fetch_layer.get("discovery_limit", 25)
     config.fetch_layer_max_hot_issues_per_cycle = fetch_layer.get("max_hot_issues_per_cycle", 40)
@@ -1158,6 +1159,7 @@ class Config:
     queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
     # Fetch-layer optimization for queue refreshes
     fetch_layer_enabled: bool = True
+    fetch_layer_network_sync_seconds: int = 60
     fetch_layer_full_scan_interval_seconds: int = 1800
     fetch_layer_discovery_limit: int = 25
     fetch_layer_max_hot_issues_per_cycle: int = 40
@@ -1501,6 +1503,7 @@ class Config:
                 "queue_refresh_seconds": self.queue_refresh_seconds,
                 "fetch_layer": {
                     "enabled": self.fetch_layer_enabled,
+                    "network_sync_seconds": self.fetch_layer_network_sync_seconds,
                     "full_scan_interval_seconds": self.fetch_layer_full_scan_interval_seconds,
                     "discovery_limit": self.fetch_layer_discovery_limit,
                     "max_hot_issues_per_cycle": self.fetch_layer_max_hot_issues_per_cycle,
@@ -1790,6 +1793,7 @@ class Config:
             ui_dict["queue_refresh_seconds"] = self.queue_refresh_seconds
         if (
             not self.fetch_layer_enabled
+            or self.fetch_layer_network_sync_seconds != 60
             or self.fetch_layer_full_scan_interval_seconds != 1800
             or self.fetch_layer_discovery_limit != 25
             or self.fetch_layer_max_hot_issues_per_cycle != 40
@@ -1800,6 +1804,7 @@ class Config:
         ):
             ui_dict["fetch_layer"] = {
                 "enabled": self.fetch_layer_enabled,
+                "network_sync_seconds": self.fetch_layer_network_sync_seconds,
                 "full_scan_interval_seconds": self.fetch_layer_full_scan_interval_seconds,
                 "discovery_limit": self.fetch_layer_discovery_limit,
                 "max_hot_issues_per_cycle": self.fetch_layer_max_hot_issues_per_cycle,

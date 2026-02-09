@@ -249,6 +249,34 @@ class TestIssueOperations:
         assert mock_http_client.list_issues.call_count == 1
         assert len(issues) == 1
 
+    def test_list_issues_delta_success(self, adapter, mock_http_client):
+        mock_http_client.list_issues_since.return_value = (
+            [
+                {"number": 1, "title": "Issue 1", "labels": [], "state": "open"},
+                {"number": 2, "title": "Issue 2", "labels": [], "state": "closed"},
+            ],
+            "2026-01-01T01:00:00Z",
+        )
+
+        issues, watermark = adapter.list_issues_delta(since="2026-01-01T00:00:00Z", limit=25)
+
+        assert len(issues) == 2
+        assert watermark == "2026-01-01T01:00:00Z"
+        mock_http_client.list_issues_since.assert_called_once_with(
+            since="2026-01-01T00:00:00Z",
+            state="all",
+            limit=25,
+            use_cache=False,
+        )
+
+    def test_list_issues_delta_error_returns_empty(self, adapter, mock_http_client):
+        mock_http_client.list_issues_since.side_effect = GitHubHttpError("boom")
+
+        issues, watermark = adapter.list_issues_delta(since="2026-01-01T00:00:00Z", limit=25)
+
+        assert issues == []
+        assert watermark is None
+
     def test_get_issue_by_key_github_key_numeric(self, adapter, mock_http_client):
         """Test get_issue_by_key with numeric GitHub key."""
         key = GitHubIssueKey(repo="owner/repo", external_id="42")

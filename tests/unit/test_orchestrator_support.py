@@ -171,6 +171,7 @@ class TestQueueFetchPlanner:
         config = Config()
         config.queue_refresh_seconds = 600
         config.fetch_layer_enabled = True
+        config.fetch_layer_network_sync_seconds = 60
         config.fetch_layer_full_scan_interval_seconds = 3600
         config.fetch_layer_discovery_limit = 10
         config.fetch_layer_max_hot_issues_per_cycle = 10
@@ -357,6 +358,137 @@ class TestQueueFetchPlanner:
 
         assert 1 in state.issue_refresh_timestamps
         assert 999 not in state.issue_refresh_timestamps
+
+    def test_delta_sync_updates_watermark_only_after_successful_fetch(
+        self, mock_event_sink, mock_repository_host
+    ):
+        config = self._make_config()
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+            queue_delta_watermark="2026-01-01T00:00:00Z",
+        )
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
+        github_workflow.fetch_delta_issues.return_value = (
+            [make_issue(2, labels=["agent:web"])],
+            "2026-01-01T01:00:00Z",
+        )
+        github_workflow.issue_in_scope.return_value = True
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=False,
+            inflight_stable_ids={},
+        )
+
+        github_workflow.fetch_delta_issues.assert_called_once_with(
+            since="2026-01-01T00:00:00Z",
+            fetch_limit=10,
+        )
+        assert state.queue_delta_watermark == "2026-01-01T01:00:00Z"
+
+    def test_delta_sync_removes_out_of_scope_issue_from_cached_queue(
+        self, mock_event_sink, mock_repository_host
+    ):
+        config = self._make_config()
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(7, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+            queue_delta_watermark="2026-01-01T00:00:00Z",
+        )
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.refresh_issues.return_value = [make_issue(7, labels=["agent:web"])]
+        github_workflow.fetch_delta_issues.return_value = (
+            [make_issue(7, labels=["agent:web"], title="No longer scoped")],
+            "2026-01-01T01:00:00Z",
+        )
+        github_workflow.issue_in_scope.return_value = False
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=False,
+            inflight_stable_ids={},
+        )
+
+        assert all(issue.number != 7 for issue in state.cached_queue_issues)
+
+    def test_run_planning_cycle_uses_network_sync_interval_not_queue_refresh(
+        self, mock_event_sink, mock_repository_host
+    ):
+        config = self._make_config()
+        config.queue_refresh_seconds = 0
+        config.fetch_layer_network_sync_seconds = 120
+        state = OrchestratorState()
+        fact_gatherer = Mock()
+        fact_gatherer.create_snapshot.return_value = Mock()
+        planner = Mock()
+        planner.plan.return_value = Mock(action_count=0, actions=[])
+        github_workflow = Mock()
+
+        last_sync = time.time()
+        next_sync, refresh_requested = run_planning_cycle(
+            config=config,
+            events=mock_event_sink,
+            event_context=Mock(enrich=lambda payload: payload),
+            state=state,
+            fact_gatherer=fact_gatherer,
+            planner=planner,
+            repository_host=mock_repository_host,
+            scheduler=Mock(),
+            github_workflow=github_workflow,
+            apply_plan_fn=Mock(),
+            clear_discovered_facts_fn=Mock(),
+            last_network_sync=last_sync,
+            refresh_requested=False,
+            inflight_stable_ids={},
+        )
+
+        assert next_sync == last_sync
+        assert refresh_requested is False
+        github_workflow.fetch_all_issues.assert_not_called()
+
+    def test_fetch_logs_gh_cost_per_cycle(self, mock_event_sink, mock_repository_host, caplog):
+        import logging
+
+        caplog.set_level(logging.INFO)
+        config = self._make_config()
+        state = OrchestratorState(
+            cached_queue_issues=[make_issue(1, labels=["agent:web"])],
+            queue_last_full_scan_at=time.time(),
+        )
+        scheduler = Mock()
+        scheduler.get_available_issues.return_value = ([], [])
+        github_workflow = Mock()
+        github_workflow.refresh_issues.return_value = [make_issue(1, labels=["agent:web"])]
+        github_workflow.fetch_discovery_issues.return_value = []
+
+        _fetch_and_update_queue(
+            config=config,
+            events=mock_event_sink,
+            state=state,
+            repository_host=mock_repository_host,
+            scheduler=scheduler,
+            github_workflow=github_workflow,
+            refresh_requested=False,
+            inflight_stable_ids={},
+        )
+
+        assert "[FETCH-COST]" in caplog.text
 
 
 # =============================================================================

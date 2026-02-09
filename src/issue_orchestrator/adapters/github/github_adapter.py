@@ -424,6 +424,28 @@ class GitHubAdapter:
             logger.error("Unexpected error listing issues: %s", e)
             return []
 
+    def list_issues_delta(
+        self,
+        *,
+        since: str,
+        limit: int = 100,
+    ) -> tuple["list[Issue]", str | None]:
+        """List issues updated since watermark via repo-wide delta feed."""
+        try:
+            raw_issues, next_watermark = self._client.list_issues_since(
+                since=since,
+                state="all",
+                limit=limit,
+                use_cache=False,
+            )
+            return self._raw_issues_to_issues(raw_issues), next_watermark
+        except GitHubHttpError as e:
+            logger.error("Failed to list issue deltas since %s: %s", since, e)
+            return [], None
+        except Exception as e:
+            logger.error("Unexpected error listing issue deltas since %s: %s", since, e)
+            return [], None
+
     def get_issue(self, issue_number: int) -> "Issue | None":
         """Get a specific issue by number.
 

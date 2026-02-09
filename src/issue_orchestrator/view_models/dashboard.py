@@ -1173,6 +1173,7 @@ def build_dashboard_view_model(
     refresh_status = {
         "mode": state.queue_last_refresh_mode if state else "none",
         "lastRefreshAt": state.queue_last_refresh_at if state else 0.0,
+        "lastNetworkSyncAt": state.queue_last_network_sync_at if state else 0.0,
         "lastRefreshAgeSeconds": queue_last_refresh_age,
         "lastRefreshLabel": (
             f"{_format_age_seconds(queue_last_refresh_age)} ago"
@@ -1182,8 +1183,10 @@ def build_dashboard_view_model(
         "inProgress": bool(state.queue_refresh_in_progress) if state else False,
         "requested": bool(state.queue_refresh_requested) if state else False,
         "lastFullScanAt": state.queue_last_full_scan_at if state else 0.0,
+        "deltaWatermark": state.queue_delta_watermark if state else None,
         "refreshCount": state.queue_refresh_count if state else 0,
         "fetchLayerEnabled": config.fetch_layer_enabled if config else True,
+        "networkSyncSeconds": config.fetch_layer_network_sync_seconds if config else 60,
         "fullScanIntervalSeconds": config.fetch_layer_full_scan_interval_seconds if config else 1800,
         "discoveryLimit": config.fetch_layer_discovery_limit if config else 25,
         "maxHotIssuesPerCycle": config.fetch_layer_max_hot_issues_per_cycle if config else 40,

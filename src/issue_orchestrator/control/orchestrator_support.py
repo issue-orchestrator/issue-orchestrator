@@ -554,17 +554,17 @@ def run_planning_cycle(
     github_workflow: object,
     apply_plan_fn: Callable[["Plan"], None],
     clear_discovered_facts_fn: Callable[[], None],
-    last_issue_fetch: float,
+    last_network_sync: float,
     refresh_requested: bool,
     inflight_stable_ids: dict[str, float],
     observer: object | None = None,
     claim_manager: object | None = None,
 ) -> tuple[float, bool]:
     """Run the planning cycle - extracted from Orchestrator per move map Step 2."""
-    should_fetch = (time.time() - last_issue_fetch >= config.queue_refresh_seconds) or refresh_requested
+    should_fetch = (time.time() - last_network_sync >= config.fetch_layer_network_sync_seconds) or refresh_requested
 
     if should_fetch:
-        last_issue_fetch, refresh_requested = _fetch_and_update_queue(
+        last_network_sync, refresh_requested = _fetch_and_update_queue(
             config, events, state, repository_host, scheduler, github_workflow,
             refresh_requested, inflight_stable_ids,
         )
@@ -587,7 +587,7 @@ def run_planning_cycle(
     _track_stale_ticks(config, events, event_context, state, stale_issues)
     clear_discovered_facts_fn()
 
-    return last_issue_fetch, refresh_requested
+    return last_network_sync, refresh_requested
 
 
 def _fetch_and_update_queue(
@@ -605,6 +605,7 @@ def _fetch_and_update_queue(
 
     refresh_started_at = time.time()
     manual_refresh = refresh_requested
+    gh_usage_before = gh_audit.get_live_usage_snapshot()
     required_stable_ids = set(inflight_stable_ids.keys()) if inflight_stable_ids else None
     state.queue_refresh_in_progress = True
     state.queue_refresh_requested = False
@@ -620,12 +621,14 @@ def _fetch_and_update_queue(
         full_scan = _should_run_full_scan(config, state, manual_refresh, required_stable_ids, refresh_started_at)
         sync_plan = _build_selective_sync_plan(config, state, manual_refresh, full_scan)
         refreshed_numbers: set[int]
+        next_watermark: str | None = state.queue_delta_watermark
         with gh_audit.context(reason=reason, scope=scope):
             if full_scan:
                 all_issues = github_workflow.fetch_all_issues(config.filtering.milestone, required_stable_ids)
                 refreshed_numbers = {issue.number for issue in all_issues}
+                next_watermark = _iso_now_utc()
             else:
-                all_issues, refreshed_numbers = _fetch_incremental_issues(
+                all_issues, refreshed_numbers, next_watermark = _fetch_incremental_issues(
                     config,
                     state,
                     github_workflow,
@@ -652,14 +655,30 @@ def _fetch_and_update_queue(
         new_queue = queue_cache.replace_from_refresh(all_issues)
         _emit_queue_changes(events, state, new_queue)
         state.queue_last_refresh_at = refresh_started_at
+        state.queue_last_network_sync_at = refresh_started_at
         state.queue_refresh_count += 1
         if full_scan:
             state.queue_last_full_scan_at = refresh_started_at
         state.queue_last_refresh_mode = "full" if full_scan else "incremental"
+        state.queue_delta_watermark = next_watermark
 
         if state.failed_this_cycle:
             logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", state.failed_this_cycle)
             state.failed_this_cycle.clear()
+
+        gh_usage_after = gh_audit.get_live_usage_snapshot()
+        gh_calls = int(gh_usage_after.get("total_calls", 0)) - int(gh_usage_before.get("total_calls", 0))
+        gh_errors = int(gh_usage_after.get("errors", 0)) - int(gh_usage_before.get("errors", 0))
+        duration_ms = int((time.time() - refresh_started_at) * 1000)
+        logger.info(
+            "[FETCH-COST] mode=%s trigger=%s gh_calls=%d gh_errors=%d duration_ms=%d refreshed_issues=%d",
+            state.queue_last_refresh_mode,
+            "manual" if manual_refresh else "scheduled",
+            max(0, gh_calls),
+            max(0, gh_errors),
+            max(0, duration_ms),
+            len(refreshed_numbers),
+        )
 
         return refreshed_at, False
     finally:
@@ -748,7 +767,7 @@ def _fetch_incremental_issues(
     github_workflow: object,
     required_stable_ids: set[str] | None,
     sync_plan: _SelectiveSyncPlan,
-) -> tuple[list["Issue"], set[int]]:
+) -> tuple[list["Issue"], set[int], str | None]:
     issue_map = {issue.number: issue for issue in state.cached_queue_issues}
     hot_issue_numbers = _select_hot_issue_numbers(
         state,
@@ -760,14 +779,32 @@ def _fetch_incremental_issues(
     for issue in refreshed:
         issue_map[issue.number] = issue
 
+    next_watermark = state.queue_delta_watermark
     if sync_plan.run_discovery and config.fetch_layer_discovery_limit > 0:
-        discovered = github_workflow.fetch_discovery_issues(
-            config.filtering.milestone,
-            config.fetch_layer_discovery_limit,
-        )
-        for issue in discovered:
-            issue_map[issue.number] = issue
-            refreshed_numbers.add(issue.number)
+        if state.queue_delta_watermark:
+            discovered, delta_watermark = github_workflow.fetch_delta_issues(
+                since=state.queue_delta_watermark,
+                fetch_limit=config.fetch_layer_discovery_limit,
+            )
+            next_watermark = delta_watermark or next_watermark
+            for issue in discovered:
+                in_scope = github_workflow.issue_in_scope(issue)
+                in_open_state = issue.state.lower() == "open"
+                currently_tracked = issue.number in issue_map
+                if in_scope and in_open_state:
+                    issue_map[issue.number] = issue
+                elif currently_tracked:
+                    issue_map.pop(issue.number, None)
+                refreshed_numbers.add(issue.number)
+        else:
+            discovered = github_workflow.fetch_discovery_issues(
+                config.filtering.milestone,
+                config.fetch_layer_discovery_limit,
+            )
+            next_watermark = _iso_now_utc()
+            for issue in discovered:
+                issue_map[issue.number] = issue
+                refreshed_numbers.add(issue.number)
 
     # Ensure required IDs can still be discovered even if they were not in hot/discovery subsets.
     if required_stable_ids:
@@ -776,7 +813,11 @@ def _fetch_incremental_issues(
             issue_map[issue.number] = issue
             refreshed_numbers.add(issue.number)
 
-    return list(issue_map.values()), refreshed_numbers
+    return list(issue_map.values()), refreshed_numbers, next_watermark
+
+
+def _iso_now_utc() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
 def _select_hot_issue_numbers(state: "OrchestratorState", limit: int, visibility_aware_enabled: bool) -> list[int]:

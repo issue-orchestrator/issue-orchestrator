@@ -71,6 +71,38 @@ class GitHubWorkflow:
             fetch_limit=fetch_limit,
         )
 
+    def fetch_delta_issues(
+        self,
+        *,
+        since: str,
+        fetch_limit: int,
+    ) -> tuple[list["Issue"], str | None]:
+        """Fetch repo-wide issue deltas since watermark."""
+        try:
+            return self.repository_host.list_issues_delta(since=since, limit=fetch_limit)
+        except Exception as exc:
+            logger.warning("Delta issue fetch failed since %s: %s", since, exc)
+            return [], None
+
+    def issue_in_scope(self, issue: "Issue") -> bool:
+        """Return True if issue is in current orchestrator queue scope."""
+        labels = set(issue.labels)
+        if self.config.filtering.label and self.config.filtering.label not in labels:
+            return False
+        if not any(agent_label in labels for agent_label in self.config.agents.keys()):
+            return False
+
+        milestones = self.config.get_filter_milestones()
+        if milestones:
+            if issue.milestone is None or issue.milestone not in milestones:
+                return False
+
+        issue_filter = self.config.get_issue_filter()
+        if not issue_filter.is_empty() and not issue_filter.apply([issue]):
+            return False
+
+        return True
+
     def refresh_issues(self, issue_numbers: list[int]) -> list["Issue"]:
         """Refresh a bounded set of issues by number."""
         refreshed: list["Issue"] = []

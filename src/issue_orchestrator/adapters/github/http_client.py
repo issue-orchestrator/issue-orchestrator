@@ -407,6 +407,64 @@ class GitHubHttpClient:
         issues = [item for item in payload if "pull_request" not in item]
         return issues[:limit]
 
+    def list_issues_since(
+        self,
+        *,
+        since: str,
+        state: str = "all",
+        limit: int = 100,
+        use_cache: bool = False,
+    ) -> tuple[list[dict[str, Any]], str | None]:
+        """List issues updated since a watermark using repo-wide delta feed.
+
+        Returns:
+            (issues, next_watermark_hint) where next watermark is the oldest
+            updated_at value from the fetched batch to avoid skipping updates
+            when results are truncated by limit.
+        """
+        per_page = min(100, max(1, limit))
+        page = 1
+        collected: list[dict[str, Any]] = []
+        oldest_updated_at: str | None = None
+
+        while len(collected) < limit:
+            params: dict[str, Any] = {
+                "state": state,
+                "sort": "updated",
+                "direction": "desc",
+                "since": since,
+                "per_page": per_page,
+                "page": page,
+            }
+            payload = self._request_json(
+                "GET",
+                f"/repos/{self._config.repo}/issues",
+                params=params,
+                caller="list_issues_delta",
+                use_cache=use_cache,
+            )
+            if not isinstance(payload, list) or not payload:
+                break
+
+            for item in payload:
+                if not isinstance(item, dict):
+                    continue
+                if "pull_request" in item:
+                    continue
+                collected.append(item)
+                updated_at = item.get("updated_at")
+                if isinstance(updated_at, str):
+                    if oldest_updated_at is None or updated_at < oldest_updated_at:
+                        oldest_updated_at = updated_at
+                if len(collected) >= limit:
+                    break
+
+            if len(payload) < per_page:
+                break
+            page += 1
+
+        return collected[:limit], oldest_updated_at
+
     def get_issue(self, issue_number: int) -> dict[str, Any] | None:
         payload = self._request_json(
             "GET",

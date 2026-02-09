@@ -106,6 +106,20 @@ class ConcurrencySettings(BaseModel):
             "yaml_path": "ui.fetch_layer.enabled",
         },
     )
+    fetch_layer_network_sync_seconds: int = Field(
+        60,
+        title="Network Sync Interval (seconds)",
+        description="How often to run GitHub network sync cycles (independent of control tick)",
+        ge=5,
+        le=3600,
+        json_schema_extra={
+            "doc_examples": ["15", "60", "120"],
+            "doc_notes": "Lower values improve freshness; higher values reduce GitHub API calls.",
+            "section": "Queue",
+            "config_attr": "fetch_layer_network_sync_seconds",
+            "yaml_path": "ui.fetch_layer.network_sync_seconds",
+        },
+    )
     fetch_layer_full_scan_interval_seconds: int = Field(
         1800,
         title="Full Scan Interval (seconds)",

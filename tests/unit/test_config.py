@@ -693,6 +693,7 @@ labels:
         config = Config()
         assert config.queue_refresh_seconds == 600
         assert config.fetch_layer_enabled is True
+        assert config.fetch_layer_network_sync_seconds == 60
         assert config.fetch_layer_full_scan_interval_seconds == 1800
         assert config.fetch_layer_discovery_limit == 25
         assert config.fetch_layer_max_hot_issues_per_cycle == 40
@@ -792,6 +793,7 @@ ui:
   queue_refresh_seconds: 300
   fetch_layer:
     enabled: false
+    network_sync_seconds: 45
     full_scan_interval_seconds: 900
     discovery_limit: 12
     max_hot_issues_per_cycle: 18
@@ -814,6 +816,7 @@ agents:
 
         assert config.queue_refresh_seconds == 300
         assert config.fetch_layer_enabled is False
+        assert config.fetch_layer_network_sync_seconds == 45
         assert config.fetch_layer_full_scan_interval_seconds == 900
         assert config.fetch_layer_discovery_limit == 12
         assert config.fetch_layer_max_hot_issues_per_cycle == 18
