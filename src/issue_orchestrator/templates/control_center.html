@@ -3575,13 +3575,28 @@
         async function confirmShutdown() {
             try {
                 await fetch('/control/shutdown', { method: 'POST' });
-                showToast('Control Center shut down. You can close this tab now.', 'success');
                 document.getElementById('shutdownModal').classList.remove('active');
+                // Try to close the tab; if blocked, show a "closed" landing page
                 setTimeout(() => {
                     window.close();
-                    // Browser may block programmatic close if not opened by script.
-                    showToast('Browser blocked automatic close. Please close this tab manually.', 'warning');
-                }, 700);
+                    // Browser blocked programmatic close — replace page with closed state
+                    setTimeout(() => {
+                        document.body.innerHTML = `
+                            <div style="display:flex;align-items:center;justify-content:center;height:100vh;
+                                        background:var(--bg-main,#0f1722);color:var(--text-primary,#d7e2ef);
+                                        font-family:'Segoe UI','SF Pro Text','Helvetica Neue',sans-serif;text-align:center;">
+                                <div>
+                                    <div style="font-size:48px;margin-bottom:16px;opacity:0.5;">&#x2713;</div>
+                                    <h1 style="font-size:20px;font-weight:600;margin:0 0 8px;">Control Center closed</h1>
+                                    <p style="color:var(--text-secondary,#90a5bf);margin:0;font-size:14px;">
+                                        Repository engines continue running independently.<br>
+                                        You can close this tab.
+                                    </p>
+                                </div>
+                            </div>
+                        `;
+                    }, 200);
+                }, 500);
             } catch (error) {
                 showToast('Failed to close Control Center', 'error');
             }
