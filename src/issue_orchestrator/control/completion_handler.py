@@ -514,6 +514,23 @@ class CompletionHandler:
                     pr_url = pr_infos[0].url
                     pr_number = pr_infos[0].number
                     prs = list(pr_infos)
+                elif session.terminal_id.startswith("review-"):
+                    match = re.match(r"review-(\d+)", session.terminal_id)
+                    if match:
+                        review_pr_number = int(match.group(1))
+                        try:
+                            review_pr = self.repository_host.get_pr(review_pr_number)
+                        except Exception as e:
+                            logger.warning(
+                                "Failed to fetch PR %s for review session fallback: %s",
+                                review_pr_number,
+                                e,
+                            )
+                        else:
+                            if review_pr:
+                                pr_url = review_pr.url
+                                pr_number = review_pr.number
+                                prs = [review_pr]
 
         return pr_url, pr_number, prs
 

@@ -160,6 +160,9 @@ def build_config(
     config.worktree_base = repo_root / ".issue-orchestrator" / "worktrees"
     config.worktree_base.mkdir(parents=True, exist_ok=True)
     config.queue_refresh_seconds = 0
+    # Simulated scenarios advance quickly without wall-clock waits; use
+    # immediate network sync to keep mocked PR/label transitions deterministic.
+    config.fetch_layer_network_sync_seconds = 0
     config.max_concurrent_sessions = 1
     config.review_enabled = True
     config.code_review_agent = "agent:reviewer"
