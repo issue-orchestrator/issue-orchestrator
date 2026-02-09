@@ -206,7 +206,7 @@ show_startup_info() {
 
 # --- Main ---
 stop_all_orchestrators
-[[ "${SKIP_PULL:-}" == "1" ]] || git_pull
+# git_pull skipped — running from worktree for local dev
 ensure_venv
 ensure_deps
 ensure_port_free

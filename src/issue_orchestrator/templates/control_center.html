@@ -681,6 +681,33 @@
             color: var(--accent-purple);
         }
 
+        .repo-card-badge.ready {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--accent-green);
+        }
+
+        .repo-card-badge.legacy {
+            background: rgba(210, 153, 34, 0.15);
+            color: var(--accent-yellow);
+        }
+
+        .repo-card.discovered {
+            border-style: dashed;
+        }
+
+        .discovered-section {
+            margin-top: 24px;
+        }
+
+        .discovered-section-header {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 12px;
+        }
+
         .repo-card-stats {
             display: flex;
             gap: 16px;
@@ -2759,10 +2786,15 @@
         // ============================================
         let deepLinkHandled = false;
 
-        async function loadRepos() {
+        async function loadRepos(silent = false) {
             try {
                 // Load registered repos
                 const response = await fetch('/control/repos');
+                if (!response.ok) {
+                    console.error('Failed to load repos: HTTP', response.status);
+                    if (!silent) showToast('Failed to load repositories', 'error');
+                    return;
+                }
                 const data = await response.json();
                 state.repos = data.repos || [];
 
@@ -2798,7 +2830,7 @@
                 }
             } catch (error) {
                 console.error('Failed to load repos:', error);
-                showToast('Failed to load repositories', 'error');
+                if (!silent) showToast('Failed to load repositories', 'error');
             }
         }
 
@@ -2873,21 +2905,35 @@
 
         function renderRepos() {
             const container = document.getElementById('reposContent');
+            const discovered = state.discoveredRepos || [];
+            const hasRegistered = state.repos.length > 0;
+            const hasDiscovered = discovered.length > 0;
 
-            if (state.repos.length === 0) {
+            if (!hasRegistered && !hasDiscovered) {
                 container.innerHTML = `
                     <div class="empty-state">
                         <svg viewBox="0 0 16 16" aria-hidden="true">
                             <path fill="currentColor" fill-rule="evenodd" d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8zM5 12.25v3.25a.25.25 0 00.4.2l1.45-1.087a.25.25 0 01.3 0L8.6 15.7a.25.25 0 00.4-.2v-3.25a.25.25 0 00-.25-.25h-3.5a.25.25 0 00-.25.25z"/>
                         </svg>
                         <h3>No repositories found</h3>
-                        <p>Run issue-orchestrator from a git repository to get started.</p>
+                        <p>Run issue-orchestrator from a git repository to get started, or click Rescan Repositories.</p>
                     </div>
                 `;
                 return;
             }
 
-            const html = `<div class="repos-grid">${state.repos.map(renderRepoCard).join('')}</div>`;
+            let html = '';
+            if (hasRegistered) {
+                html += `<div class="repos-grid">${state.repos.map(renderRepoCard).join('')}</div>`;
+            }
+            if (hasDiscovered) {
+                html += `
+                    <div class="discovered-section">
+                        <div class="discovered-section-header">Discovered Repositories</div>
+                        <div class="repos-grid">${discovered.map(renderDiscoveredRepoCard).join('')}</div>
+                    </div>
+                `;
+            }
             container.innerHTML = html;
 
             // Attach event listeners
@@ -2907,6 +2953,42 @@
                     showToast(`Default config for ${path.split('/').pop()} set to ${config}`, 'success');
                 });
             });
+        }
+
+        function renderDiscoveredRepoCard(repo) {
+            const isReady = repo.status === 'ready';
+            const isLegacy = repo.status === 'legacy';
+            const badgeClass = isReady ? 'ready' : (isLegacy ? 'legacy' : 'needs-setup');
+            const badgeText = isReady ? 'Ready' : (isLegacy ? 'Legacy config' : 'Needs Setup');
+
+            const configMarkup = repo.configs?.length ? `
+                <div class="repo-card-config">
+                    <span>Config:</span> ${escapeHtml(repo.configs.join(', '))}
+                </div>
+            ` : '';
+
+            let actions = '';
+            if (isReady) {
+                actions = `<button class="btn btn-primary" data-action="register" data-path="${escapeHtml(repo.path)}">Add Repository</button>`;
+            } else {
+                actions = `<button class="btn btn-primary" data-action="setup" data-path="${escapeHtml(repo.path)}">Setup</button>`;
+            }
+
+            return `
+                <div class="repo-card discovered">
+                    <div class="repo-card-header">
+                        <div>
+                            <div class="repo-card-title">${escapeHtml(repo.name)}</div>
+                            <div class="repo-card-path">${escapeHtml(repo.path)}</div>
+                        </div>
+                        <span class="repo-card-badge ${badgeClass}">${badgeText}</span>
+                    </div>
+                    ${configMarkup}
+                    <div class="repo-card-actions">
+                        ${actions}
+                    </div>
+                </div>
+            `;
         }
 
         function renderRepoCard(repo) {
@@ -3128,19 +3210,50 @@
             // Load iframe
             const iframe = document.getElementById('activityIframe');
             const loading = document.getElementById('activityLoading');
-            loading.style.display = 'block';
             iframe.style.display = 'none';
+            iframe.src = 'about:blank';
 
             // Set iframe source to orchestrator dashboard
             const port = getRepoPort(repo);
-            if (port) {
-                iframe.src = `http://localhost:${port}/`;
+            if (port && repoState !== 'not running') {
+                loading.innerHTML = '<div class="spinner"></div><p>Loading activity...</p>';
+                loading.style.display = 'block';
+
+                let loadTimedOut = false;
+                const timeout = setTimeout(() => {
+                    loadTimedOut = true;
+                    loading.innerHTML = `
+                        <p>Engine on port ${port} is not responding.</p>
+                        <button class="btn btn-sm" onclick="loadActivityView('${escapeHtml(repo.path).replace(/'/g, "\\'")}')">Retry</button>
+                    `;
+                }, 8000);
+
                 iframe.onload = () => {
-                    loading.style.display = 'none';
-                    iframe.style.display = 'block';
+                    clearTimeout(timeout);
+                    if (!loadTimedOut) {
+                        loading.style.display = 'none';
+                        iframe.style.display = 'block';
+                    }
                 };
+                iframe.onerror = () => {
+                    clearTimeout(timeout);
+                    loading.innerHTML = `
+                        <p>Failed to connect to engine on port ${port}.</p>
+                        <button class="btn btn-sm" onclick="loadActivityView('${escapeHtml(repo.path).replace(/'/g, "\\'")}')">Retry</button>
+                    `;
+                };
+                iframe.src = `http://localhost:${port}/`;
             } else {
-                loading.innerHTML = '<p>Repository engine is not running.</p>';
+                loading.innerHTML = `
+                    <p>Repository engine is not running.</p>
+                    <button class="btn btn-primary btn-sm" data-action="start" data-path="${escapeHtml(repo.path)}">Start engine</button>
+                    <button class="btn btn-sm" data-action="start-paused" data-path="${escapeHtml(repo.path)}">Start paused</button>
+                `;
+                loading.style.display = 'block';
+                // Attach action handlers to the inline buttons
+                loading.querySelectorAll('[data-action]').forEach(btn => {
+                    btn.addEventListener('click', handleRepoAction);
+                });
             }
         }
 
@@ -3173,6 +3286,30 @@
                 case 'setup':
                     openSetupWizard(path);
                     break;
+                case 'register':
+                    await registerDiscoveredRepo(path);
+                    break;
+            }
+        }
+
+        async function registerDiscoveredRepo(path) {
+            try {
+                const response = await fetch('/control/repos', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path })
+                });
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Failed to register repository');
+                }
+                showToast(`Added ${path.split('/').pop()}`, 'success');
+                // Refresh both lists so it moves from discovered to registered
+                await loadDiscoveredRepos();
+                await loadRepos();
+                renderDropdownMenu();
+            } catch (error) {
+                showToast(error.message, 'error');
             }
         }
 
