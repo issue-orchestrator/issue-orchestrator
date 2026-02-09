@@ -232,7 +232,10 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
         if (!res.ok) return;
         const payload = await res.json();
         if (reloadOnListChange) {
-            viewModel = payload.view_model || payload;
+            if (!payload.view_model || !Array.isArray(payload.rows)) {
+                throw new Error('Invalid /api/view-model-snapshot payload shape');
+            }
+            viewModel = payload.view_model;
         } else {
             viewModel = payload;
         }
@@ -245,7 +248,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
         renderGitHubUsage();
 
         if (reloadOnListChange && viewModel.startup_status === 'complete') {
-            await refreshIssueRows(viewModel, payload.rows || []);
+            await refreshIssueRows(viewModel, payload.rows);
         }
     } catch (e) {
         console.error('Failed to refresh view-model:', e);

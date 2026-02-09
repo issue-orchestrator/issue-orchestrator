@@ -123,6 +123,24 @@ def test_list_issues_since_paginates_and_respects_limit() -> None:
     assert watermark == "2026-01-02T09:58:00Z"
 
 
+def test_list_issues_since_default_bypasses_etag_cache() -> None:
+    requests_seen: list[dict[str, str]] = []
+    payload = [{"number": 1, "title": "Issue", "updated_at": "2026-01-02T10:00:00Z"}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_seen.append(dict(request.headers))
+        return httpx.Response(200, json=payload, headers={"ETag": "W/issues-since-etag"})
+
+    client = _client_with_transport(httpx.MockTransport(handler))
+
+    client.list_issues_since(since="2026-01-01T00:00:00Z", limit=10)
+    client.list_issues_since(since="2026-01-01T00:00:00Z", limit=10)
+
+    assert len(requests_seen) == 2
+    assert "if-none-match" not in requests_seen[0]
+    assert "if-none-match" not in requests_seen[1]
+
+
 def test_get_token_scopes_from_header() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(

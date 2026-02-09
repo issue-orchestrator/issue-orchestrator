@@ -413,7 +413,7 @@ class GitHubHttpClient:
         since: str,
         state: str = "all",
         limit: int = 100,
-        use_cache: bool = True,
+        use_cache: bool = False,
     ) -> tuple[list[dict[str, Any]], str | None]:
         """List issues updated since a watermark using repo-wide delta feed.
 
