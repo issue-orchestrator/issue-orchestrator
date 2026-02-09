@@ -478,61 +478,84 @@ class CompletionHandler:
         pr_number = None
         prs = None
 
-        if status == SessionStatus.COMPLETED:
-            # If we have a pr_url_hint from completion processor, use it (dry-run mode)
-            if pr_url_hint:
-                pr_url = pr_url_hint
-                # Extract PR number from URL
-                match = re.search(r"/pull/(\d+)", pr_url)
-                if match:
-                    pr_number = int(match.group(1))
-                    try:
-                        pr_info = self.repository_host.get_pr(pr_number)
-                        if pr_info:
-                            prs = [pr_info]
-                    except Exception as e:
-                        logger.warning("Failed to fetch PR %s for PR hint: %s", pr_number, e)
-                logger.info(
-                    "[PR_HINT] Using PR from completion processor: %s (number=%s)",
-                    pr_url,
-                    pr_number,
-                    extra=log_context(issue_key=session.key.issue.stable_id(), session_id=session.terminal_id),
-                )
-            else:
-                logger.debug("[ADAPTER] Using GitHubAdapter for get_prs_for_branch")
-                start = time.monotonic()
-                pr_infos = self.repository_host.get_prs_for_branch(session.branch_name)
-                duration = time.monotonic() - start
-                logger.info(
-                    "Fetched PRs for branch in %.2fs: branch=%s count=%d",
-                    duration,
-                    session.branch_name,
-                    len(pr_infos),
-                    extra=log_context(issue_key=session.key.issue.stable_id(), session_id=session.terminal_id),
-                )
-                if pr_infos:
-                    pr_url = pr_infos[0].url
-                    pr_number = pr_infos[0].number
-                    prs = list(pr_infos)
-                elif session.terminal_id.startswith("review-"):
-                    match = re.match(r"review-(\d+)", session.terminal_id)
-                    if match:
-                        review_pr_number = int(match.group(1))
-                        try:
-                            review_pr = self.repository_host.get_pr(review_pr_number)
-                        except Exception as e:
-                            logger.warning(
-                                "Failed to fetch PR %s for review session fallback: %s",
-                                review_pr_number,
-                                e,
-                            )
-                        else:
-                            if review_pr:
-                                pr_url = review_pr.url
-                                pr_number = review_pr.number
-                                prs = [review_pr]
+        if status != SessionStatus.COMPLETED:
+            return pr_url, pr_number, prs
 
+        if pr_url_hint:
+            return self._fetch_pr_info_from_hint(session, pr_url_hint, re)
+
+        return self._fetch_pr_info_from_branch_or_review_fallback(session, re)
+
+    def _fetch_pr_info_from_hint(
+        self,
+        session: Session,
+        pr_url_hint: str,
+        re_module: Any,
+    ) -> tuple[Optional[str], Optional[int], Optional[list[Any]]]:
+        pr_url = pr_url_hint
+        pr_number: Optional[int] = None
+        prs: Optional[list[Any]] = None
+
+        match = re_module.search(r"/pull/(\d+)", pr_url)
+        if match:
+            pr_number = int(match.group(1))
+            try:
+                pr_info = self.repository_host.get_pr(pr_number)
+            except Exception as e:
+                logger.warning("Failed to fetch PR %s for PR hint: %s", pr_number, e)
+            else:
+                if pr_info:
+                    prs = [pr_info]
+
+        logger.info(
+            "[PR_HINT] Using PR from completion processor: %s (number=%s)",
+            pr_url,
+            pr_number,
+            extra=log_context(issue_key=session.key.issue.stable_id(), session_id=session.terminal_id),
+        )
         return pr_url, pr_number, prs
+
+    def _fetch_pr_info_from_branch_or_review_fallback(
+        self,
+        session: Session,
+        re_module: Any,
+    ) -> tuple[Optional[str], Optional[int], Optional[list[Any]]]:
+        logger.debug("[ADAPTER] Using GitHubAdapter for get_prs_for_branch")
+        start = time.monotonic()
+        pr_infos = self.repository_host.get_prs_for_branch(session.branch_name)
+        duration = time.monotonic() - start
+        logger.info(
+            "Fetched PRs for branch in %.2fs: branch=%s count=%d",
+            duration,
+            session.branch_name,
+            len(pr_infos),
+            extra=log_context(issue_key=session.key.issue.stable_id(), session_id=session.terminal_id),
+        )
+        if pr_infos:
+            return pr_infos[0].url, pr_infos[0].number, list(pr_infos)
+
+        if not session.terminal_id.startswith("review-"):
+            return None, None, None
+
+        match = re_module.match(r"review-(\d+)", session.terminal_id)
+        if not match:
+            return None, None, None
+
+        review_pr_number = int(match.group(1))
+        try:
+            review_pr = self.repository_host.get_pr(review_pr_number)
+        except Exception as e:
+            logger.warning(
+                "Failed to fetch PR %s for review session fallback: %s",
+                review_pr_number,
+                e,
+            )
+            return None, None, None
+
+        if review_pr:
+            return review_pr.url, review_pr.number, [review_pr]
+
+        return None, None, None
 
     def _create_history_entry(
         self,
