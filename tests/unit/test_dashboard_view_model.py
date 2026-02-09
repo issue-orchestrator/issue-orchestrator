@@ -329,7 +329,7 @@ def test_view_model_history_routing():
 
     assert 10 in history_numbers
     assert 11 in blocked_numbers
-    assert view_model.history_count == len(view_model.history_items) + len(view_model.blocked_items)
+    assert view_model.history_count == len(view_model.history_items)
 
 
 def test_exclude_flow_overlaps_handles_string_issue_numbers():
