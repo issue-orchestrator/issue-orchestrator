@@ -829,8 +829,15 @@ function renderGitHubUsage() {
     const resetEl = document.getElementById('ghUsageReset');
 
     if (summary) {
+        summary.classList.remove('is-warn', 'is-danger');
         if (Number.isFinite(remaining) && Number.isFinite(limit) && limit > 0) {
-            summary.textContent = `${remaining.toLocaleString()}/${limit.toLocaleString()}`;
+            const pctLeft = (remaining / limit) * 100;
+            if (pctLeft <= 10) {
+                summary.classList.add('is-danger');
+            } else if (pctLeft <= 20) {
+                summary.classList.add('is-warn');
+            }
+            summary.textContent = `${remaining.toLocaleString()} left`;
         } else {
             summary.textContent = `${totalCalls.toLocaleString()} calls`;
         }
@@ -889,28 +896,20 @@ function updateIssueCardFreshness(issueNumber, freshness) {
             card.dataset.lastRefreshAgeSeconds = String(freshness.last_refreshed_age_seconds);
         }
         card.dataset.stale = freshness.is_stale ? 'true' : 'false';
-        const statusText = card.querySelector('.card-refresh-line span');
-        if (statusText) {
-            statusText.textContent = `GitHub ${freshness.last_refreshed_label || 'unknown'}`;
-            statusText.classList.remove('refresh-fresh', 'refresh-stale');
-            statusText.classList.add(freshness.is_stale ? 'refresh-stale' : 'refresh-fresh');
-        }
-        const stalePill = card.querySelector('.refresh-pill');
-        if (freshness.is_stale && !stalePill) {
-            const line = card.querySelector('.card-refresh-line');
-            if (line) {
-                const pill = document.createElement('span');
-                pill.className = 'refresh-pill';
-                pill.textContent = 'stale';
-                if (freshness.stale_reason) {
-                    pill.title = freshness.stale_reason;
-                }
-                line.appendChild(pill);
+        const actionRow = card.querySelector('.card-head-actions') || card.querySelector('.attention-actions');
+        let staleDot = card.querySelector('.stale-dot');
+        if (freshness.is_stale) {
+            if (!staleDot && actionRow) {
+                staleDot = document.createElement('span');
+                staleDot.className = 'stale-dot';
+                actionRow.prepend(staleDot);
             }
-        } else if (!freshness.is_stale && stalePill) {
-            stalePill.remove();
-        } else if (freshness.is_stale && stalePill && freshness.stale_reason) {
-            stalePill.title = freshness.stale_reason;
+            if (staleDot && freshness.stale_reason) {
+                staleDot.title = freshness.stale_reason;
+                staleDot.setAttribute('aria-label', freshness.stale_reason);
+            }
+        } else if (staleDot) {
+            staleDot.remove();
         }
     });
 }
@@ -3262,7 +3261,9 @@ function closeCreateIssueModal() {
 }
 
 // E2E Test Functions
-const REPO_ROOT = window.dashboardData.repoRoot;
+const REPO_ROOT = window.dashboardData?.repoRoot
+    || new URLSearchParams(window.location.search).get('repo_root')
+    || '';
 
 // Mutable state for E2E - updated by polling
 let e2eLastRun = window.dashboardData.e2eLastRun;
@@ -3740,6 +3741,11 @@ function closeE2EDiagnosisModal() {
 async function showE2EStats() {
     const modal = document.getElementById('e2eStatsModal');
     const content = document.getElementById('e2eStatsContent');
+    if (!REPO_ROOT) {
+        content.innerHTML = '<div style="color: var(--danger, #f85149);">Error: no repository selected for E2E stats.</div>';
+        modal.classList.add('visible');
+        return;
+    }
 
     content.innerHTML = '<div class="loading-spinner">Loading stats...</div>';
     modal.classList.add('visible');
@@ -3811,13 +3817,17 @@ function closeE2EStatsModal() {
 async function showFlakyTestsList() {
     // Close stats modal and show flaky tests in a simple alert for now
     closeE2EStatsModal();
+    if (!REPO_ROOT) {
+        openModal('Flaky Analysis', '<p>No repository selected for E2E flaky analysis.</p>');
+        return;
+    }
 
     try {
         const res = await fetch(`/control/e2e/flaky-tests?repo_root=${encodeURIComponent(REPO_ROOT)}`);
         const data = await res.json();
 
         if (!res.ok) {
-            showToast(data.error || 'Failed to load flaky tests', true);
+            openModal('Flaky Analysis', `<p>Failed to load flaky tests: ${escapeHtml(data.error || 'unknown error')}</p>`);
             return;
         }
 

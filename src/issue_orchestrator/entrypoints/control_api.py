@@ -60,6 +60,14 @@ from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
 from ..infra.supervisor import DefaultSupervisorOps, MultiInstanceStatus, SupervisorOps
 from ..control.goal_pilot import GoalPilot
+from ..execution.control_center_actions import (
+    AuditActionRequest,
+    ControlCenterActions,
+    DoctorActionRequest,
+    RefreshActionRequest,
+    RepoActionRequest,
+    TraceActionRequest,
+)
 
 # Path to templates
 _TEMPLATES_DIR = Path(__file__).parent.parent / "templates"
@@ -97,6 +105,7 @@ _orchestrator: "Orchestrator | None" = None
 
 # Supervisor operations (injectable for testing)
 _supervisor: SupervisorOps = DefaultSupervisorOps()
+_control_actions = ControlCenterActions(supervisor=_supervisor)
 
 
 def set_orchestrator(orchestrator: "Orchestrator") -> None:
@@ -134,13 +143,20 @@ def _get_goal_pilot() -> GoalPilot:
 
 def set_supervisor(supervisor: SupervisorOps) -> None:
     """Set the supervisor operations instance (for testing)."""
-    global _supervisor
+    global _supervisor, _control_actions
     _supervisor = supervisor
+    _control_actions = ControlCenterActions(supervisor=_supervisor)
 
 
 def get_supervisor() -> SupervisorOps:
     """Get the supervisor operations instance."""
     return _supervisor
+
+
+def set_control_actions(actions: ControlCenterActions) -> None:
+    """Inject control-center action service (for testing)."""
+    global _control_actions
+    _control_actions = actions
 
 
 # Track orchestrator child PIDs for zombie reaping (used by control_center).
@@ -1143,7 +1159,14 @@ async def control_center_ui() -> HTMLResponse:
             status_code=500,
         )
 
+    from .. import __version__
+    from ..infra.repo_identity import get_repo_head_sha
+
+    commit_sha = get_repo_head_sha(Path.cwd())
+    commit_short = commit_sha[:7] if commit_sha else "unknown"
     content = template_path.read_text()
+    content = content.replace("{{ version }}", __version__)
+    content = content.replace("{{ commit_sha }}", commit_short)
     return HTMLResponse(content)
 
 
@@ -1814,10 +1837,6 @@ async def control_pause(request: Request) -> JSONResponse:
     JSON body:
         repo_root: str - Repository root path
     """
-    import httpx
-
-    sv = get_supervisor()
-
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -1830,26 +1849,8 @@ async def control_pause(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    status_info = sv.status(repo_root)
-    if status_info.state != "running" or status_info.port is None:
-        return JSONResponse({
-            "error": "not_running",
-            "state": status_info.state,
-        }, status_code=400)
-
-    # Forward to running orchestrator
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"http://127.0.0.1:{status_info.port}/api/pause",
-                timeout=10.0,
-            )
-            return JSONResponse(response.json())
-    except Exception as e:
-        return JSONResponse({
-            "error": "passthrough_failed",
-            "detail": str(e),
-        }, status_code=502)
+    result = await _control_actions.pause_cmd.execute(RepoActionRequest(repo_root=repo_root))
+    return JSONResponse(result.payload, status_code=result.status_code)
 
 
 @control_app.post("/control/orchestrator/resume")
@@ -1859,10 +1860,6 @@ async def control_resume(request: Request) -> JSONResponse:
     JSON body:
         repo_root: str - Repository root path
     """
-    import httpx
-
-    sv = get_supervisor()
-
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -1875,26 +1872,8 @@ async def control_resume(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    status_info = sv.status(repo_root)
-    if status_info.state != "running" or status_info.port is None:
-        return JSONResponse({
-            "error": "not_running",
-            "state": status_info.state,
-        }, status_code=400)
-
-    # Forward to running orchestrator
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"http://127.0.0.1:{status_info.port}/api/resume",
-                timeout=10.0,
-            )
-            return JSONResponse(response.json())
-    except Exception as e:
-        return JSONResponse({
-            "error": "passthrough_failed",
-            "detail": str(e),
-        }, status_code=502)
+    result = await _control_actions.resume_cmd.execute(RepoActionRequest(repo_root=repo_root))
+    return JSONResponse(result.payload, status_code=result.status_code)
 
 
 @control_app.post("/control/orchestrator/refresh")
@@ -1905,10 +1884,6 @@ async def control_refresh(request: Request) -> JSONResponse:
         repo_root: str - Repository root path
         inflight_stable_ids: list[str] (optional) - Expected issue IDs
     """
-    import httpx
-
-    sv = get_supervisor()
-
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -1921,31 +1896,13 @@ async def control_refresh(request: Request) -> JSONResponse:
             status_code=400,
         )
 
-    status_info = sv.status(repo_root)
-    if status_info.state != "running" or status_info.port is None:
-        return JSONResponse({
-            "error": "not_running",
-            "state": status_info.state,
-        }, status_code=400)
-
-    # Forward to running orchestrator with optional inflight_stable_ids
-    forward_body = {}
-    if "inflight_stable_ids" in body:
-        forward_body["inflight_stable_ids"] = body["inflight_stable_ids"]
-
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"http://127.0.0.1:{status_info.port}/api/refresh",
-                json=forward_body if forward_body else None,
-                timeout=10.0,
-            )
-            return JSONResponse(response.json())
-    except Exception as e:
-        return JSONResponse({
-            "error": "passthrough_failed",
-            "detail": str(e),
-        }, status_code=502)
+    result = await _control_actions.refresh_cmd.execute(
+        RefreshActionRequest(
+            repo_root=repo_root,
+            inflight_stable_ids=body.get("inflight_stable_ids"),
+        ),
+    )
+    return JSONResponse(result.payload, status_code=result.status_code)
 
 
 @control_app.get("/control/orchestrator/last_failure")
@@ -1986,32 +1943,14 @@ async def control_doctor(repo_root: str = Query(...)) -> JSONResponse:
     Query params:
         repo_root: str - Repository root path
     """
-    from ..infra.config import Config
-    from ..infra.doctor import run_doctor
-    from ..execution.command_runner import LocalCommandRunner
-
     path = _validate_repo_root(repo_root)
     if path is None:
         return JSONResponse(
             {"error": "Invalid or missing repo_root"},
             status_code=400,
         )
-
-    # Try to load config from repo (new location)
-    from ..infra.config import get_config_path, list_configs
-
-    config = None
-    config_path = None
-    available = list_configs(path)
-    if available:
-        config_path = get_config_path(path, available[0])
-        try:
-            config = Config.load(config_path)
-        except Exception:
-            pass
-
-    result = run_doctor(config=config, config_path=config_path, runner=LocalCommandRunner())
-    return JSONResponse(result.to_dict())
+    result = await _control_actions.doctor_cmd.execute(DoctorActionRequest(repo_root=path))
+    return JSONResponse(result.payload, status_code=result.status_code)
 
 
 @control_app.post("/control/orchestrator/ai_diagnose")
@@ -2872,7 +2811,7 @@ async def discover_repos_endpoint(  # noqa: C901 - recursive directory scanning 
         default="",
         description="Comma-separated paths to search (default: ~/dev, ~/projects, ~/code, ~/repos)",
     ),
-    max_depth: int = Query(default=2, description="Max directory depth to search"),
+    max_depth: int = Query(default=3, description="Max directory depth to search"),
 ) -> JSONResponse:
     """Discover git repositories that could be configured with the orchestrator.
 
@@ -2892,6 +2831,7 @@ async def discover_repos_endpoint(  # noqa: C901 - recursive directory scanning 
         paths_to_search = [Path(p.strip()).expanduser() for p in search_paths.split(",")]
     else:
         home = Path.home()
+        cwd = Path.cwd()
         paths_to_search = [
             home / "dev",
             home / "projects",
@@ -2900,7 +2840,20 @@ async def discover_repos_endpoint(  # noqa: C901 - recursive directory scanning 
             home / "src",
             home / "work",
             home / "github",
+            cwd,
+            cwd.parent,
         ]
+
+    # Keep order stable but avoid redundant scans.
+    seen_paths: set[str] = set()
+    deduped_paths: list[Path] = []
+    for path in paths_to_search:
+        key = str(path.expanduser())
+        if key in seen_paths:
+            continue
+        seen_paths.add(key)
+        deduped_paths.append(path)
+    paths_to_search = deduped_paths
 
     # Get already registered repos
     registry = load_registry()
@@ -3500,58 +3453,13 @@ async def tools_audit(
     Returns:
         List of audit entries with issue status and reasons.
     """
-    from ..infra.audit import audit_queue
-    from ..execution.providers import create_repository_host
-    from ..execution.git_working_copy import GitWorkingCopy
-    from ..infra.analysis import extract_issue_branches
-    from ..infra.config import Config
-
     repo_path = _validate_repo_root(repo_root)
     if repo_path is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
-
-    try:
-        config = Config.find_and_load(start_path=repo_path)
-    except FileNotFoundError:
-        return JSONResponse({"error": "Config not found for repo"}, status_code=404)
-
-    if not config.repo:
-        return JSONResponse({"error": "No repository configured"}, status_code=400)
-
-    try:
-        issue_tracker = create_repository_host(config.repo)
-        working_copy = GitWorkingCopy()
-        issue_branches = extract_issue_branches(
-            working_copy.list_remote_branches(config.repo_root)
-        )
-        entries = audit_queue(
-            config,
-            state=None,
-            issue_tracker=issue_tracker,
-            issue_branches=issue_branches,
-        )
-
-        # Filter by issue if specified
-        if issue_number is not None:
-            entries = [e for e in entries if e.issue.number == issue_number]
-
-        return JSONResponse({
-            "entries": [
-                {
-                    "issue_number": e.issue.number,
-                    "title": e.issue.title,
-                    "status": e.status.value,  # SkipReason enum
-                    "reason": e.detail,
-                    "labels": list(e.issue.labels),
-                    "agent": e.issue.agent_type,
-                    "priority": e.issue.priority,
-                }
-                for e in entries
-            ]
-        })
-    except Exception as e:
-        logger.exception("Audit failed")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    result = await _control_actions.audit_cmd.execute(
+        AuditActionRequest(repo_root=repo_path, issue_number=issue_number),
+    )
+    return JSONResponse(result.payload, status_code=result.status_code)
 
 
 @control_app.get("/control/tools/trace")
@@ -3570,52 +3478,13 @@ async def tools_trace(
     Returns:
         List of log entries related to the issue.
     """
-    import re
-
     repo_path = _validate_repo_root(repo_root)
     if repo_path is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
-
-    log_file = repo_path / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log"
-    if not log_file.exists():
-        return JSONResponse({
-            "entries": [],
-            "message": "No log file found. Has the orchestrator run for this repo?",
-        })
-
-    try:
-        content = log_file.read_text()
-        lines = content.splitlines()
-
-        # Find the last startup marker
-        last_start = 0
-        for i, line in enumerate(lines):
-            if "Starting orchestrator" in line:
-                last_start = i
-
-        # Filter entries for this issue
-        pattern = re.compile(
-            rf"\[issue-{issue_number}\]|"
-            rf"issue={issue_number}(?![0-9])|"
-            rf"issue_number={issue_number}(?![0-9])|"
-            rf"issue #{issue_number}(?![0-9])"
-        )
-
-        matches = []
-        for line in lines[last_start:]:
-            if pattern.search(line):
-                matches.append(line)
-                if len(matches) >= limit:
-                    break
-
-        return JSONResponse({
-            "entries": matches,
-            "total": len(matches),
-            "truncated": len(matches) >= limit,
-        })
-    except Exception as e:
-        logger.exception("Trace failed")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    result = await _control_actions.trace_cmd.execute(
+        TraceActionRequest(repo_root=repo_path, issue_number=issue_number, limit=limit),
+    )
+    return JSONResponse(result.payload, status_code=result.status_code)
 
 
 @control_app.post("/control/tools/labels/init")
@@ -3628,9 +3497,6 @@ async def tools_labels_init(request: Request) -> JSONResponse:
     Returns:
         Summary of created/updated labels.
     """
-    from ..execution.providers import create_repository_host
-    from ..infra.config import Config
-
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -3640,94 +3506,8 @@ async def tools_labels_init(request: Request) -> JSONResponse:
     if repo_path is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
-    try:
-        config = Config.find_and_load(start_path=repo_path)
-    except FileNotFoundError:
-        return JSONResponse({"error": "Config not found for repo"}, status_code=404)
-
-    if not config.repo:
-        return JSONResponse({"error": "No repository configured"}, status_code=400)
-
-    try:
-        client = create_repository_host(config.repo)
-
-        # Collect labels to create
-        labels = [
-            config.get_label_in_progress(),
-            config.get_label_blocked(),
-            config.get_label_needs_human(),
-            "priority:high",
-            "priority:medium",
-            "priority:low",
-        ]
-        labels.extend(config.agents.keys())
-
-        created: list[str] = []
-        updated: list[str] = []
-        failed: list[str] = []
-        existing = {label.get("name") for label in client.list_labels() if isinstance(label, dict)}
-
-        for label in labels:
-            try:
-                client.create_label(label, force=True)
-                if label in existing:
-                    updated.append(label)
-                else:
-                    created.append(label)
-            except Exception as exc:
-                logger.warning("Failed to create/update label %s: %s", label, exc)
-                failed.append(label)
-
-        return JSONResponse({
-            "created": created,
-            "updated": updated,
-            "failed": failed,
-        })
-    except Exception as e:
-        logger.exception("Label init failed")
-        return JSONResponse({"error": str(e)}, status_code=500)
-
-
-def _find_stale_worktrees(
-    repo_root: Path,
-    worktree_base: Path,
-    active: set[Path],
-) -> list[dict[str, str]]:
-    """Find stale worktree directories matching the orchestrator naming convention.
-
-    Only considers directories that:
-    1. Match the pattern {repo_name}-{number} (orchestrator worktree convention)
-    2. Have a .git file (worktrees have a file, not a directory)
-    3. Are not in git's active worktree list
-
-    This prevents accidentally identifying unrelated directories as stale.
-    """
-    import re
-
-    stale = []
-    if not worktree_base.exists():
-        return stale
-
-    repo_name = repo_root.name
-    # Pattern: {repo_name}-{issue_number}
-    worktree_pattern = re.compile(rf"^{re.escape(repo_name)}-(\d+)$")
-
-    for entry in worktree_base.iterdir():
-        if not entry.is_dir():
-            continue
-        # Must match our naming convention
-        if not worktree_pattern.match(entry.name):
-            continue
-        # Must have a .git file (worktrees have a .git file, not directory)
-        git_path = entry / ".git"
-        if not git_path.exists() or git_path.is_dir():
-            continue
-        # Must not be in active worktrees
-        if entry in active:
-            continue
-        stale.append({"path": str(entry), "name": entry.name})
-
-    return stale
+    result = await _control_actions.labels_cmd.execute(RepoActionRequest(repo_root=repo_path))
+    return JSONResponse(result.payload, status_code=result.status_code)
 
 
 @control_app.post("/control/tools/worktrees/cleanup")
@@ -3743,9 +3523,6 @@ async def tools_worktrees_cleanup(request: Request) -> JSONResponse:
     Returns:
         List of stale worktrees and instructions for cleanup.
     """
-    from ..execution.git_working_copy import GitWorkingCopy
-    from ..infra.config import Config
-
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -3755,28 +3532,10 @@ async def tools_worktrees_cleanup(request: Request) -> JSONResponse:
     if repo_path is None:
         return JSONResponse({"error": "Invalid repo_root"}, status_code=400)
 
-    try:
-        config = Config.find_and_load(start_path=repo_path)
-    except FileNotFoundError:
-        return JSONResponse({"error": "Config not found for repo"}, status_code=404)
-
-    worktree_base = config.worktree_base
-    if not worktree_base.exists():
-        return JSONResponse({"stale_worktrees": [], "message": "No worktree directory found"})
-
-    try:
-        working_copy = GitWorkingCopy()
-        active = working_copy.list_active_worktrees(repo_path)
-        stale = _find_stale_worktrees(repo_path, worktree_base, active)
-
-        return JSONResponse({
-            "stale_worktrees": stale,
-            "cleanup_command": f"cd {repo_path} && git worktree prune",
-            "message": "Run the cleanup_command in terminal to remove stale worktrees safely.",
-        })
-    except Exception as e:
-        logger.exception("Worktree listing failed")
-        return JSONResponse({"error": str(e)}, status_code=500)
+    result = await _control_actions.stale_worktrees_cmd.execute(
+        RepoActionRequest(repo_root=repo_path),
+    )
+    return JSONResponse(result.payload, status_code=result.status_code)
 
 
 # ======================================================================# E2E Test Runner API

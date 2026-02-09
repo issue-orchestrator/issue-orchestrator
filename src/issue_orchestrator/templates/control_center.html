@@ -1380,8 +1380,9 @@
            ============================================ */
         .toast-container {
             position: fixed;
-            bottom: max(12px, env(safe-area-inset-bottom));
-            right: max(12px, env(safe-area-inset-right));
+            top: max(12px, env(safe-area-inset-top));
+            left: 50%;
+            transform: translateX(-50%);
             z-index: 1000;
             display: flex;
             flex-direction: column;
@@ -1427,6 +1428,7 @@
             .toast-container {
                 left: max(12px, env(safe-area-inset-left));
                 right: max(12px, env(safe-area-inset-right));
+                transform: none;
                 width: auto;
             }
 
@@ -1714,6 +1716,7 @@
 
             <!-- Tools View -->
             <div class="view-container" id="toolsView" role="main">
+                <div class="scope-note" id="toolsScopeNote">Tools scope: no repository selected.</div>
                 <div class="tools-section">
                     <h2 class="tools-section-title">Diagnostics</h2>
                     <div class="tools-grid">
@@ -2151,7 +2154,8 @@
                 </button>
             </div>
             <div class="modal-body">
-                <p>This closes the Control Center window and dashboard server. Repository engines keep running independently.</p>
+                <p id="shutdownSummaryText">This closes the Control Center window and dashboard server. Repository engines keep running independently.</p>
+                <p class="form-hint" id="shutdownRunningText" style="margin-top: 10px;">Checking currently running engines...</p>
             </div>
             <div class="modal-footer">
                 <button class="btn" id="cancelShutdown">Cancel</button>
@@ -2471,6 +2475,7 @@
 
             updateDropdownDisplay();
             updateConfigSelector(repo);
+            updateToolsScopeNote();
             closeDropdown();
         }
 
@@ -2737,6 +2742,7 @@
                 goalPilot: 'Goal Pilot'
             };
             document.getElementById('viewTitle').textContent = titles[viewName] || viewName;
+            updateToolsScopeNote();
 
             // Handle activity view specifics
             if (viewName === 'activity' && repoPath) {
@@ -2770,6 +2776,7 @@
                 updateActiveSummary();
                 updateRecoveryBanner();
                 updateDropdownDisplay();
+                updateToolsScopeNote();
 
                 // Check for deep-link in URL (only on first load)
                 if (!deepLinkHandled) {
@@ -2793,6 +2800,19 @@
                 console.error('Failed to load repos:', error);
                 showToast('Failed to load repositories', 'error');
             }
+        }
+
+        function updateToolsScopeNote() {
+            const el = document.getElementById('toolsScopeNote');
+            if (!el) return;
+            const active = resolveActiveRepo();
+            if (!active?.path) {
+                el.textContent = 'Tools scope: no repository selected.';
+                return;
+            }
+            const hasConfig = repoHasConfig(active.repo, active.source);
+            const configNote = hasConfig ? 'config available' : 'config not found';
+            el.textContent = `Tools scope: ${active.path} (${configNote}).`;
         }
 
         async function loadSystemState() {
@@ -3241,6 +3261,14 @@
         }
 
         async function stopRepo(path) {
+            const repo = state.repos.find(r => r.path === path);
+            const repoName = repo?.name || path;
+            const confirmed = window.confirm(
+                `Stop engine for ${repoName}?\n\n` +
+                'This requests a graceful stop: running sessions are allowed to finish and state is kept. ' +
+                'You can start the engine again from Control Center.'
+            );
+            if (!confirmed) return;
             try {
                 const response = await fetch('/control/orchestrator/stop', {
                     method: 'POST',
@@ -3270,14 +3298,19 @@
         // ============================================
         async function runDoctor(repoPath = null) {
             const modal = document.getElementById('doctorModal');
+            const modalTitle = document.getElementById('doctorModalTitle');
             const results = document.getElementById('doctorResults');
 
             modal.classList.add('active');
-            results.innerHTML = 'Running diagnostics...';
+            // Be explicit about scope: repo diagnostics vs control-center prerequisites.
+            const targetPath = repoPath || state.activeRepo?.path || null;
+            const isRepoScope = Boolean(targetPath);
+            modalTitle.textContent = isRepoScope ? 'Doctor Results - Repository' : 'Doctor Results - Control Center';
+            results.innerHTML = isRepoScope
+                ? `<div class="doctor-check info">Scope: Repository<br><code>${escapeHtml(targetPath || '')}</code></div><div class="doctor-check info">Running diagnostics...</div>`
+                : '<div class="doctor-check info">Scope: Control Center prerequisites (no repository selected)</div><div class="doctor-check info">Running diagnostics...</div>';
 
             try {
-                // Use the active repo or first available repo for doctor check
-                const targetPath = repoPath || state.activeRepo?.path || state.repos[0]?.path;
                 const url = targetPath
                     ? `/control/orchestrator/doctor?repo_root=${encodeURIComponent(targetPath)}`
                     : '/control/setup/prereqs';
@@ -3343,14 +3376,39 @@
         // Shutdown
         // ============================================
         function showShutdownModal() {
+            const active = state.repos.filter(r => {
+                const s = r.status || {};
+                return s.state === 'running' || s.state === 'partial' || s.paused;
+            });
+            const summary = document.getElementById('shutdownSummaryText');
+            const running = document.getElementById('shutdownRunningText');
+            if (summary) {
+                summary.textContent = 'This closes the Control Center window and dashboard server. Repository engines keep running independently.';
+            }
+            if (running) {
+                if (active.length === 0) {
+                    running.textContent = 'No repository engines are currently running.';
+                } else if (active.length === 1) {
+                    running.textContent = `1 repository engine remains active: ${active[0].name}.`;
+                } else {
+                    const names = active.slice(0, 3).map(r => r.name).join(', ');
+                    const suffix = active.length > 3 ? ` (+${active.length - 3} more)` : '';
+                    running.textContent = `${active.length} repository engines remain active: ${names}${suffix}.`;
+                }
+            }
             document.getElementById('shutdownModal').classList.add('active');
         }
 
         async function confirmShutdown() {
             try {
                 await fetch('/control/shutdown', { method: 'POST' });
-                showToast('Closing Control Center window...', 'success');
-                setTimeout(() => window.close(), 1000);
+                showToast('Control Center shut down. You can close this tab now.', 'success');
+                document.getElementById('shutdownModal').classList.remove('active');
+                setTimeout(() => {
+                    window.close();
+                    // Browser may block programmatic close if not opened by script.
+                    showToast('Browser blocked automatic close. Please close this tab manually.', 'warning');
+                }, 700);
             } catch (error) {
                 showToast('Failed to close Control Center', 'error');
             }
@@ -4345,9 +4403,9 @@
 
             // List Stale Worktrees Tool (read-only, no deletion)
             document.getElementById('cleanupWorktreesTool').addEventListener('click', async () => {
-                const repoPath = getToolRepoPath({ requireConfig: true });
+                const repoPath = getToolRepoPath({ requireConfig: false });
                 if (!repoPath) {
-                    showToast('Select a repository with a config (or run Setup) to scan worktrees', 'warning');
+                    showToast('Select a repository to scan worktrees', 'warning');
                     return;
                 }
 
@@ -4363,11 +4421,6 @@
                     const data = await response.json();
 
                     if (data.error) {
-                        if (data.error === 'Config not found for repo') {
-                            document.getElementById('worktreesContent').innerHTML =
-                                '<div class="error-message">No config found for this repo. Run Setup first.</div>';
-                            return;
-                        }
                         document.getElementById('worktreesContent').innerHTML =
                             `<div class="error-message">${escapeHtml(data.error)}</div>`;
                         return;

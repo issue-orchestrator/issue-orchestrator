@@ -30,14 +30,14 @@
             <div class="controls">
                 <div class="gh-usage-wrap" id="ghUsageWrap">
                     <button class="gh-usage-pill" id="ghUsagePill" onclick="toggleGitHubUsagePanel()" aria-expanded="false" aria-controls="ghUsagePanel">
-                        <span class="gh-usage-label">GH</span>
+                        <span class="gh-usage-label">GH calls</span>
                         <span class="gh-usage-summary" id="ghUsageSummary">Usage</span>
                     </button>
                     <section class="gh-usage-panel" id="ghUsagePanel" aria-label="GitHub API usage">
                         <div class="gh-usage-row"><span class="label">Calls/min</span><span class="value" id="ghUsageCallsPerMinute">-</span></div>
                         <div class="gh-usage-row"><span class="label">Total calls</span><span class="value" id="ghUsageTotalCalls">-</span></div>
                         <div class="gh-usage-row"><span class="label">Errors</span><span class="value" id="ghUsageErrors">-</span></div>
-                        <div class="gh-usage-row"><span class="label">Rate limit</span><span class="value" id="ghUsageRateLimit">-</span></div>
+                        <div class="gh-usage-row"><span class="label">Rate limit (per hour)</span><span class="value" id="ghUsageRateLimit">-</span></div>
                         <div class="gh-usage-row"><span class="label">Resets</span><span class="value" id="ghUsageReset">-</span></div>
                         <div class="gh-usage-actions">
                             <button class="issue-action-btn" onclick="setGitHubUsageHidden(true)">Hide</button>
@@ -138,7 +138,10 @@
                                     <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Focus issue #{{ card.issue_number }}">
                                         #{{ card.issue_number }} {{ card.title }}
                                     </button>
-                                    <div class="card-actions">
+                                    <div class="card-head-actions">
+                                        {% if card.is_stale %}
+                                        <span class="stale-dot" title="{{ card.stale_reason or 'Issue may be stale' }}" aria-label="Issue data may be stale"></span>
+                                        {% endif %}
                                         <button class="card-refresh-btn" onclick="refreshIssueCard({{ card.issue_number }}, this);event.stopPropagation();" title="Refresh issue #{{ card.issue_number }} from GitHub" aria-label="Refresh issue #{{ card.issue_number }}">⟳</button>
                                         {% if card.issue_url %}
                                         <a class="card-gh" href="{{ card.issue_url }}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">↗</a>
@@ -148,12 +151,6 @@
                                 <div class="card-line">
                                     {% if card.phase %}{{ card.phase }}{% else %}{{ card.state_label }}{% endif %}
                                     {% if card.phase_age %} · {{ card.phase_age }}{% endif %}
-                                </div>
-                                <div class="card-line card-muted card-refresh-line">
-                                    <span class="{% if card.is_stale %}refresh-stale{% else %}refresh-fresh{% endif %}">GitHub {{ card.last_refreshed_label }}</span>
-                                    {% if card.is_stale %}
-                                    <span class="refresh-pill" title="{{ card.stale_reason or 'Issue may be stale' }}">stale</span>
-                                    {% endif %}
                                 </div>
                                 {% if card.blocked_summary %}
                                 <div class="card-line card-muted">{{ card.blocked_summary }}</div>
@@ -170,10 +167,6 @@
                                     {% endif %}
                                 </div>
                                 {% endif %}
-                                <div class="card-actions">
-                                    <span class="card-refresh-age">refreshed {{ card.refresh_age_label }}</span>
-                                    <button class="issue-action-btn issue-refresh-btn" onclick="refreshIssueCard({{ card.issue_number }}, event)">Refresh</button>
-                                </div>
                             </div>
                             {% endfor %}
                         {% else %}
@@ -195,12 +188,6 @@
                             <div class="attention-item" data-issue="{{ card.issue_number }}" data-stale="{{ 'true' if card.is_stale else 'false' }}" data-last-refresh-age-seconds="{{ card.last_refreshed_age_seconds }}">
                                 <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Focus issue #{{ card.issue_number }}">#{{ card.issue_number }} {{ card.title }}</button>
                                 {% if card.blocked_summary %}<div class="card-line card-muted">{{ card.blocked_summary }}</div>{% endif %}
-                                <div class="card-line card-muted card-refresh-line">
-                                    <span class="{% if card.is_stale %}refresh-stale{% else %}refresh-fresh{% endif %}">GitHub {{ card.last_refreshed_label }}</span>
-                                    {% if card.is_stale %}
-                                    <span class="refresh-pill" title="{{ card.stale_reason or 'Issue may be stale' }}">stale</span>
-                                    {% endif %}
-                                </div>
                                 <div class="attention-actions">
                                     <button class="issue-action-btn" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();">Focus</button>
                                     <button class="issue-action-btn" onclick="refreshIssueCard({{ card.issue_number }}, this);event.stopPropagation();">Refresh</button>
@@ -225,7 +212,10 @@
                     <article class="history-item" data-issue="{{ issue.issue_number }}" data-stale="{{ 'true' if issue.is_stale else 'false' }}" data-last-refresh-age-seconds="{{ issue.last_refreshed_age_seconds }}">
                         <div class="card-top">
                             <button class="card-focus" onclick="openIssueDetail({{ issue.issue_number }}, this);event.stopPropagation();" title="Focus issue #{{ issue.issue_number }}">#{{ issue.issue_number }} {{ issue.title }}</button>
-                            <div class="card-actions">
+                            <div class="card-head-actions">
+                                {% if issue.is_stale %}
+                                <span class="stale-dot" title="{{ issue.stale_reason or 'Issue may be stale' }}" aria-label="Issue data may be stale"></span>
+                                {% endif %}
                                 <button class="card-refresh-btn" onclick="refreshIssueCard({{ issue.issue_number }}, this);event.stopPropagation();" title="Refresh issue #{{ issue.issue_number }} from GitHub" aria-label="Refresh issue #{{ issue.issue_number }}">⟳</button>
                                 {% if issue.issue_url %}
                                 <a class="card-gh" href="{{ issue.issue_url }}" target="_blank" rel="noopener noreferrer">↗</a>
@@ -233,12 +223,9 @@
                             </div>
                         </div>
                         <div class="card-line">{{ issue.detail_label }}{% if issue.time %} · {{ issue.time }}{% endif %}</div>
-                        <div class="card-line card-muted card-refresh-line">
-                            <span class="{% if issue.is_stale %}refresh-stale{% else %}refresh-fresh{% endif %}">GitHub {{ issue.last_refreshed_label }}</span>
-                            {% if issue.is_stale %}
-                            <span class="refresh-pill" title="{{ issue.stale_reason or 'Issue may be stale' }}">stale</span>
-                            {% endif %}
-                        </div>
+                        {% if issue.status_reason %}
+                        <div class="card-line card-muted">{{ issue.status_reason }}</div>
+                        {% endif %}
                     </article>
                     {% endfor %}
                 {% else %}

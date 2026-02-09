@@ -384,6 +384,9 @@ class Planner:
 
         # PRIORITY ORDER: Reviews > Reworks > Triage > New Issues
         # This ensures completed work (PRs) gets reviewed before starting new work
+        review_launch_count = 0
+        rework_launch_count = 0
+        triage_launch_count = 0
 
         # 2. Plan review launches (highest priority)
         if capacity > 0 and self.review_workflow:
@@ -391,6 +394,7 @@ class Planner:
             actions.extend(review_actions)
             skipped.extend(review_skipped)
             capacity -= len(review_actions)
+            review_launch_count = len(review_actions)
 
         # 3. Plan rework launches
         if capacity > 0 and self.rework_workflow:
@@ -398,6 +402,7 @@ class Planner:
             actions.extend(rework_actions)
             skipped.extend(rework_skipped)
             capacity -= len(rework_actions)
+            rework_launch_count = len(rework_actions)
 
         # 4. Plan triage launches
         if capacity > 0 and self.triage_workflow:
@@ -405,19 +410,19 @@ class Planner:
             actions.extend(triage_actions)
             skipped.extend(triage_skipped)
             capacity -= len(triage_actions)
+            triage_launch_count = len(triage_actions)
 
-        # 5. Plan issue launches (only if no reviews/reworks/triage pending)
-        # This ensures we don't start new work when there's existing work to review
-        has_pending_work = (
-            len(snapshot.pending_reviews) > 0 or
-            len(snapshot.pending_reworks) > 0 or
-            len(snapshot.pending_triage) > 0
-        )
-        if capacity > 0 and not has_pending_work:
+        # 5. Plan issue launches.
+        #
+        # We only block new issue launches when we are actively launching review/rework/triage
+        # in this tick. If pending work exists but cannot be launched (e.g., workflow unavailable
+        # or temporarily skipped), do not starve issue execution.
+        pending_launches_started = (review_launch_count + rework_launch_count + triage_launch_count) > 0
+        if capacity > 0 and not pending_launches_started:
             issue_actions, issue_skipped, _ = self._plan_issues(snapshot, capacity)
             actions.extend(issue_actions)
             skipped.extend(issue_skipped)
-        elif has_pending_work:
+        elif pending_launches_started:
             logger.debug("Planner: skipping new issues - pending work exists "
                         "(reviews=%d, reworks=%d, triage=%d)",
                         len(snapshot.pending_reviews),
