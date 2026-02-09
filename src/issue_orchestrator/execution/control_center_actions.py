@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Optional, Protocol
 
 from ..infra.supervisor import SupervisorOps
-from .orchestrator_http_api import OrchestratorHttpApi
+from .orchestrator_http_api import OrchestratorAsyncHttpApi
 
 
 @dataclass(frozen=True)
@@ -56,16 +56,16 @@ class AsyncCommand(Protocol):
     async def execute(self, request: Any) -> ActionResult: ...
 
 
-def _passthrough_api_call(port: int, op: str, body: Optional[dict[str, Any]] = None) -> ActionResult:
+async def _passthrough_api_call(port: int, op: str, body: Optional[dict[str, Any]] = None) -> ActionResult:
     base_url = f"http://127.0.0.1:{port}"
-    api = OrchestratorHttpApi(base_url_provider=lambda: base_url, timeout_seconds=10.0)
+    api = OrchestratorAsyncHttpApi(base_url_provider=lambda: base_url, timeout_seconds=10.0)
     try:
         if op == "pause":
-            return ActionResult(api.pause())
+            return ActionResult(await api.pause())
         if op == "resume":
-            return ActionResult(api.resume())
+            return ActionResult(await api.resume())
         if op == "refresh":
-            return ActionResult(api.refresh(body.get("inflight_stable_ids", []) if body else []))
+            return ActionResult(await api.refresh(body.get("inflight_stable_ids", []) if body else []))
         return ActionResult({"error": "unsupported_passthrough_operation"}, status_code=500)
     except Exception as exc:
         return ActionResult({
@@ -73,7 +73,7 @@ def _passthrough_api_call(port: int, op: str, body: Optional[dict[str, Any]] = N
             "detail": str(exc),
         }, status_code=502)
     finally:
-        api.close()
+        await api.close()
 
 
 class PauseOrchestratorCommand:
@@ -90,7 +90,7 @@ class PauseOrchestratorCommand:
                 "state": status_info.state,
             }, status_code=400)
 
-        return _passthrough_api_call(status_info.port, "pause")
+        return await _passthrough_api_call(status_info.port, "pause")
 
 
 class ResumeOrchestratorCommand:
@@ -107,7 +107,7 @@ class ResumeOrchestratorCommand:
                 "state": status_info.state,
             }, status_code=400)
 
-        return _passthrough_api_call(status_info.port, "resume")
+        return await _passthrough_api_call(status_info.port, "resume")
 
 
 class RefreshOrchestratorCommand:
@@ -128,7 +128,7 @@ class RefreshOrchestratorCommand:
         if request.inflight_stable_ids is not None:
             forward_body["inflight_stable_ids"] = request.inflight_stable_ids
 
-        return _passthrough_api_call(
+        return await _passthrough_api_call(
             status_info.port,
             "refresh",
             forward_body if forward_body else None,

@@ -11,6 +11,8 @@ import pytest
 from issue_orchestrator.execution.control_center_actions import (
     ListStaleWorktreesCommand,
     PauseOrchestratorCommand,
+    RefreshActionRequest,
+    RefreshOrchestratorCommand,
     RepoActionRequest,
     TraceActionRequest,
     TraceIssueCommand,
@@ -52,6 +54,70 @@ async def test_trace_command_scopes_to_last_start(tmp_path: Path) -> None:
     assert result.status_code == 200
     assert result.payload["entries"] == ["tick issue=4070 in current run"]
     assert result.payload["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_pause_command_uses_async_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    supervisor = MagicMock()
+    supervisor.status.return_value = SupervisorStatus(state="running", port=18080)
+    cmd = PauseOrchestratorCommand(supervisor)
+
+    calls: dict[str, bool] = {"pause": False, "close": False}
+
+    class FakeAsyncApi:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            pass
+
+        async def pause(self) -> dict[str, str]:
+            calls["pause"] = True
+            return {"status": "paused"}
+
+        async def close(self) -> None:
+            calls["close"] = True
+
+    monkeypatch.setattr(
+        "issue_orchestrator.execution.control_center_actions.OrchestratorAsyncHttpApi",
+        FakeAsyncApi,
+    )
+
+    result = await cmd.execute(RepoActionRequest(repo_root=Path("/tmp/repo")))
+
+    assert result.status_code == 200
+    assert result.payload == {"status": "paused"}
+    assert calls == {"pause": True, "close": True}
+
+
+@pytest.mark.asyncio
+async def test_refresh_command_forwards_inflight_ids(monkeypatch: pytest.MonkeyPatch) -> None:
+    supervisor = MagicMock()
+    supervisor.status.return_value = SupervisorStatus(state="running", port=18080)
+    cmd = RefreshOrchestratorCommand(supervisor)
+
+    captured: dict[str, list[str] | None] = {"ids": None}
+
+    class FakeAsyncApi:
+        def __init__(self, *args, **kwargs) -> None:  # noqa: ANN002, ANN003
+            pass
+
+        async def refresh(self, inflight_stable_ids: list[str]) -> dict[str, str]:
+            captured["ids"] = inflight_stable_ids
+            return {"status": "refresh_requested"}
+
+        async def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "issue_orchestrator.execution.control_center_actions.OrchestratorAsyncHttpApi",
+        FakeAsyncApi,
+    )
+
+    result = await cmd.execute(
+        RefreshActionRequest(repo_root=Path("/tmp/repo"), inflight_stable_ids=["I_1", "I_2"]),
+    )
+
+    assert result.status_code == 200
+    assert result.payload == {"status": "refresh_requested"}
+    assert captured["ids"] == ["I_1", "I_2"]
 
 
 @pytest.mark.asyncio
