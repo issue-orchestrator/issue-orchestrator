@@ -1664,17 +1664,6 @@
                     <div class="active-summary" id="activeSummary">0 Running · 0 Paused · 0 Not running</div>
                 </div>
                 <div class="header-actions">
-                    <button class="btn btn-sm" id="rescanReposBtn">Rescan Repositories</button>
-                    <button class="btn btn-icon" id="doctorBtn" title="Run diagnostics" aria-label="Run doctor diagnostics">
-                        <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
-                            <path fill="currentColor" d="M8.5 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm9-3a1 1 0 11-2 0 1 1 0 012 0zM6.5 8a.75.75 0 01.75-.75h.75v3.75H7A.75.75 0 017 9.5h.25v-2H7A.75.75 0 016.5 8zm2.25 3a.75.75 0 010 1.5h-1.5a.75.75 0 010-1.5h1.5z"/>
-                        </svg>
-                    </button>
-                    <button class="btn btn-icon" id="themeToggle" title="Toggle theme" aria-label="Toggle dark/light theme">
-                        <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" id="themeIcon">
-                            <path fill="currentColor" d="M9.598 1.591a.75.75 0 01.785-.175 7 7 0 11-8.967 8.967.75.75 0 01.961-.96 5.5 5.5 0 007.046-7.046.75.75 0 01.175-.786zm1.616 1.945a7 7 0 01-7.678 7.678 5.5 5.5 0 107.678-7.678z"/>
-                        </svg>
-                    </button>
                     <button class="btn btn-danger btn-sm" id="shutdownBtn">
                         Close Control Center
                     </button>
@@ -1718,14 +1707,6 @@
                         </button>
                         <span class="activity-repo-name" id="activityRepoName"></span>
                         <span class="repo-card-badge running" id="activityRepoBadge">Running</span>
-                        <div class="engine-config-inline">
-                            <label for="activityConfigSelect">Config</label>
-                            <select id="activityConfigSelect"></select>
-                            <label class="set-default">
-                                <input type="checkbox" id="activitySetDefaultConfig">
-                                Set as default
-                            </label>
-                        </div>
                     </div>
                     <div class="header-actions">
                         <button class="btn btn-sm" id="pauseResumeBtn">Pause engine</button>
@@ -2140,6 +2121,28 @@
                         </div>
                     </div>
                 </div>
+
+                <div class="settings-section">
+                    <h2 class="settings-section-title">Maintenance</h2>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Rescan Repositories</div>
+                            <div class="settings-item-desc">Scan filesystem for new or changed repositories</div>
+                        </div>
+                        <div class="settings-item-control">
+                            <button class="btn btn-sm" id="rescanReposBtn">Rescan</button>
+                        </div>
+                    </div>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">System Check</div>
+                            <div class="settings-item-desc">Verify Control Center prerequisites and environment</div>
+                        </div>
+                        <div class="settings-item-control">
+                            <button class="btn btn-sm" id="systemCheckBtn">Run</button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </main>
     </div>
@@ -2433,12 +2436,12 @@
                 btn.setAttribute('aria-checked', isActive);
             });
 
-            // Update header theme icon
-            const icon = document.getElementById('themeIcon');
-            if (effectiveTheme === 'dark') {
-                icon.innerHTML = '<path fill="currentColor" d="M9.598 1.591a.75.75 0 01.785-.175 7 7 0 11-8.967 8.967.75.75 0 01.961-.96 5.5 5.5 0 007.046-7.046.75.75 0 01.175-.786zm1.616 1.945a7 7 0 01-7.678 7.678 5.5 5.5 0 107.678-7.678z"/>';
-            } else {
-                icon.innerHTML = '<path fill="currentColor" d="M8 12a4 4 0 100-8 4 4 0 000 8zM8 0a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0V.75A.75.75 0 018 0zm0 13a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 018 13zM3.17 3.17a.75.75 0 011.06 0l1.06 1.06a.75.75 0 11-1.06 1.06L3.17 4.23a.75.75 0 010-1.06zm9.6 9.6a.75.75 0 011.06 0l1.06 1.06a.75.75 0 11-1.06 1.06l-1.06-1.06a.75.75 0 010-1.06zM0 8a.75.75 0 01.75-.75h1.5a.75.75 0 010 1.5H.75A.75.75 0 010 8zm13 0a.75.75 0 01.75-.75h1.5a.75.75 0 010 1.5h-1.5A.75.75 0 0113 8zM3.17 12.77a.75.75 0 010-1.06l1.06-1.06a.75.75 0 111.06 1.06l-1.06 1.06a.75.75 0 01-1.06 0zm9.6-9.6a.75.75 0 010-1.06l1.06-1.06a.75.75 0 111.06 1.06l-1.06 1.06a.75.75 0 01-1.06 0z"/>';
+            // Push theme to embedded dashboard iframe
+            const iframe = document.getElementById('activityIframe');
+            if (iframe && iframe.contentWindow) {
+                try {
+                    iframe.contentWindow.postMessage({ type: 'theme', theme: theme }, '*');
+                } catch (e) { /* cross-origin, ignore */ }
             }
         }
 
@@ -2791,8 +2794,9 @@
                 // Load registered repos
                 const response = await fetch('/control/repos');
                 if (!response.ok) {
-                    console.error('Failed to load repos: HTTP', response.status);
-                    if (!silent) showToast('Failed to load repositories', 'error');
+                    const body = await response.text().catch(() => '');
+                    console.error('Failed to load repos: HTTP', response.status, body);
+                    if (!silent) showToast(`Failed to load repositories (HTTP ${response.status})`, 'error');
                     return;
                 }
                 const data = await response.json();
@@ -2820,6 +2824,10 @@
                     const params = new URLSearchParams(window.location.search);
                     const repoPath = params.get('repo');
                     if (repoPath) {
+                        // Clean the URL so refreshes land on repos view
+                        const cleanUrl = window.location.pathname;
+                        window.history.replaceState({}, '', cleanUrl);
+
                         const repo = state.repos.find(r => r.path === repoPath);
                         const repoState = repo?.status?.state;
                         if (repo && (repoState === 'running' || repo?.status?.paused)) {
@@ -2830,8 +2838,52 @@
                 }
             } catch (error) {
                 console.error('Failed to load repos:', error);
-                if (!silent) showToast('Failed to load repositories', 'error');
+                if (!silent) showToast(`Failed to load repositories: ${error.message}`, 'error');
             }
+        }
+
+        function resolveActiveRepo() {
+            if (!state.activeRepo) return null;
+            const path = state.activeRepo.path || state.activeRepo;
+            const source = state.activeRepo.source || 'registered';
+            let repo = null;
+            if (source === 'discovered') {
+                repo = state.discoveredRepos.find(r => r.path === path) || null;
+            }
+            if (!repo) {
+                repo = state.repos.find(r => r.path === path) || null;
+            }
+            return { path, source, repo };
+        }
+
+        function repoHasConfig(repo, source) {
+            if (!repo) return false;
+            if (repo.configs && repo.configs.length > 0) return true;
+            if (source === 'discovered' && repo.status === 'legacy') return true;
+            if (repo.status && (repo.status.state === 'running' || repo.status.state === 'partial' || repo.status.paused)) {
+                return true;
+            }
+            return false;
+        }
+
+        function getToolRepoPath(options = {}) {
+            const requireConfig = options.requireConfig === true;
+            const active = resolveActiveRepo();
+            if (active) {
+                if (!requireConfig || repoHasConfig(active.repo, active.source)) {
+                    return active.path;
+                }
+            }
+
+            if (requireConfig) {
+                const configured = state.repos.find(r => r.configs && r.configs.length > 0);
+                if (configured) return configured.path;
+                const discoveredConfigured = state.discoveredRepos.find(r => r.configs && r.configs.length > 0);
+                if (discoveredConfigured) return discoveredConfigured.path;
+                return null;
+            }
+
+            return state.repos[0]?.path || null;
         }
 
         function updateToolsScopeNote() {
@@ -3081,27 +3133,20 @@
             const meta = document.getElementById('recoveryBannerMeta');
             if (!banner || !title || !meta) return;
 
-            const active = state.repos.filter(r => {
-                const s = r.status || {};
-                return s.state === 'running' || s.state === 'partial' || s.paused;
-            });
             const orphaned = state.repos.filter(r => r.status?.runtime_health === 'orphaned');
             const staleLocks = state.repos.filter(r => r.status?.runtime_health === 'stale_lock');
             const unresponsive = state.repos.filter(r => r.status?.runtime_health === 'unresponsive');
 
-            const shouldShow = active.length > 0 || orphaned.length > 0 || staleLocks.length > 0 || unresponsive.length > 0;
-            banner.classList.toggle('active', shouldShow);
-            if (!shouldShow) {
-                return;
-            }
+            const needsRecovery = orphaned.length + staleLocks.length + unresponsive.length;
+            banner.classList.toggle('active', needsRecovery > 0);
+            if (needsRecovery === 0) return;
 
-            if (orphaned.length > 0 || staleLocks.length > 0 || unresponsive.length > 0) {
-                title.textContent = 'Recovery attention needed';
-                meta.textContent = `${active.length} active · ${orphaned.length} orphaned · ${staleLocks.length} stale lock · ${unresponsive.length} unresponsive`;
-                return;
-            }
-            title.textContent = `${active.length} engines still running in background`;
-            meta.textContent = 'Reconnect to a running engine or keep working from overview.';
+            const parts = [];
+            if (orphaned.length > 0) parts.push(`${orphaned.length} orphaned`);
+            if (staleLocks.length > 0) parts.push(`${staleLocks.length} stale lock`);
+            if (unresponsive.length > 0) parts.push(`${unresponsive.length} unresponsive`);
+            title.textContent = 'Recovery attention needed';
+            meta.textContent = parts.join(' · ');
         }
 
         function reconnectToActiveEngine() {
@@ -3188,24 +3233,6 @@
             pauseBtn.textContent = isPaused ? 'Resume engine' : 'Pause engine';
             pauseBtn.disabled = repoState === 'not running';
 
-            const activityConfigSelect = document.getElementById('activityConfigSelect');
-            const activitySetDefaultConfig = document.getElementById('activitySetDefaultConfig');
-            if (activityConfigSelect && activitySetDefaultConfig) {
-                const configs = repo.configs || [];
-                if (configs.length > 0) {
-                    activityConfigSelect.innerHTML = configs.map(c =>
-                        `<option value="${escapeHtml(c)}" ${c === state.activeRepo.config ? 'selected' : ''}>${escapeHtml(c)}</option>`
-                    ).join('');
-                    activityConfigSelect.disabled = false;
-                    activitySetDefaultConfig.checked = getDefaultConfig(repo.path) === state.activeRepo.config;
-                    activitySetDefaultConfig.disabled = false;
-                } else {
-                    activityConfigSelect.innerHTML = '<option value="">No config</option>';
-                    activityConfigSelect.disabled = true;
-                    activitySetDefaultConfig.checked = false;
-                    activitySetDefaultConfig.disabled = true;
-                }
-            }
 
             // Load iframe
             const iframe = document.getElementById('activityIframe');
@@ -3242,7 +3269,7 @@
                         <button class="btn btn-sm" onclick="loadActivityView('${escapeHtml(repo.path).replace(/'/g, "\\'")}')">Retry</button>
                     `;
                 };
-                iframe.src = `http://localhost:${port}/`;
+                iframe.src = `http://localhost:${port}/?embedded=1&theme=${encodeURIComponent(state.theme)}`;
             } else {
                 loading.innerHTML = `
                     <p>Repository engine is not running.</p>
@@ -3433,79 +3460,88 @@
         // ============================================
         // Doctor
         // ============================================
-        async function runDoctor(repoPath = null) {
+        function _renderDoctorResults(data) {
+            let html = '';
+            if (data.checks) {
+                const renderExpandable = (check) => {
+                    if (!check.expandable || !check.expandable.per_db) return '';
+                    const rows = Object.entries(check.expandable.per_db)
+                        .map(([label, detail]) => {
+                            const rawStatus = detail.status || 'info';
+                            const statusClass = rawStatus === 'ok'
+                                ? 'ok'
+                                : rawStatus === 'error'
+                                    ? 'error'
+                                    : rawStatus === 'overdue'
+                                        ? 'warning'
+                                        : rawStatus === 'missing'
+                                            ? 'info'
+                                            : rawStatus === 'disabled' || rawStatus === 'skipped'
+                                                ? 'info'
+                                                : 'warning';
+                            const message = detail.detail || '';
+                            return `<div class="doctor-subcheck ${statusClass}">${escapeHtml(label)}: ${escapeHtml(message)}</div>`;
+                        })
+                        .join('');
+                    return rows ? `<div class="doctor-subchecks">${rows}</div>` : '';
+                };
+
+                const renderCheck = (name, check) => {
+                    const status = check.status || (check.ok || check.passed ? 'ok' : 'error');
+                    const icon = status === 'ok' ? '✓' : status === 'warning' ? '!' : status === 'info' ? 'i' : '✗';
+                    const message = check.message || check.detail || (status === 'ok' ? 'OK' : 'Failed');
+                    const subchecks = renderExpandable(check);
+                    html += `<div class="doctor-check ${status === 'ok' ? 'pass' : status === 'warning' ? 'warn' : status === 'info' ? 'warn' : 'fail'}">${icon} ${escapeHtml(name)}: ${escapeHtml(message)}</div>${subchecks}`;
+                };
+
+                if (Array.isArray(data.checks)) {
+                    for (const check of data.checks) {
+                        renderCheck(check.name || 'Check', check);
+                    }
+                } else {
+                    for (const [name, check] of Object.entries(data.checks)) {
+                        renderCheck(name, check);
+                    }
+                }
+            }
+            if (data.all_ok !== undefined) {
+                html += `<div class="doctor-check ${data.all_ok ? 'pass' : 'fail'}">Overall: ${data.all_ok ? 'All checks passed' : 'Some checks failed'}</div>`;
+            }
+            return html || 'All checks passed!';
+        }
+
+        async function runDoctor() {
+            const targetPath = state.activeRepo?.path;
+            if (!targetPath) {
+                showToast('Select a repository first', 'warning');
+                return;
+            }
             const modal = document.getElementById('doctorModal');
             const modalTitle = document.getElementById('doctorModalTitle');
             const results = document.getElementById('doctorResults');
-
             modal.classList.add('active');
-            // Be explicit about scope: repo diagnostics vs control-center prerequisites.
-            const targetPath = repoPath || state.activeRepo?.path || null;
-            const isRepoScope = Boolean(targetPath);
-            modalTitle.textContent = isRepoScope ? 'Doctor Results - Repository' : 'Doctor Results - Control Center';
-            results.innerHTML = isRepoScope
-                ? `<div class="doctor-check info">Scope: Repository<br><code>${escapeHtml(targetPath || '')}</code></div><div class="doctor-check info">Running diagnostics...</div>`
-                : '<div class="doctor-check info">Scope: Control Center prerequisites (no repository selected)</div><div class="doctor-check info">Running diagnostics...</div>';
-
+            modalTitle.textContent = `Doctor — ${targetPath.split('/').pop()}`;
+            results.innerHTML = `<div class="doctor-check info">Running diagnostics for <code>${escapeHtml(targetPath)}</code>...</div>`;
             try {
-                const url = targetPath
-                    ? `/control/orchestrator/doctor?repo_root=${encodeURIComponent(targetPath)}`
-                    : '/control/setup/prereqs';
-                const response = await fetch(url);
-                const data = await response.json();
-
-                let html = '';
-                // Handle doctor endpoint format
-                if (data.checks) {
-                    const renderExpandable = (check) => {
-                        if (!check.expandable || !check.expandable.per_db) return '';
-                        const rows = Object.entries(check.expandable.per_db)
-                            .map(([label, detail]) => {
-                                const rawStatus = detail.status || 'info';
-                                const statusClass = rawStatus === 'ok'
-                                    ? 'ok'
-                                    : rawStatus === 'error'
-                                        ? 'error'
-                                        : rawStatus === 'overdue'
-                                            ? 'warning'
-                                            : rawStatus === 'missing'
-                                                ? 'info'
-                                                : rawStatus === 'disabled' || rawStatus === 'skipped'
-                                                    ? 'info'
-                                                    : 'warning';
-                                const message = detail.detail || '';
-                                return `<div class="doctor-subcheck ${statusClass}">${escapeHtml(label)}: ${escapeHtml(message)}</div>`;
-                            })
-                            .join('');
-                        return rows ? `<div class="doctor-subchecks">${rows}</div>` : '';
-                    };
-
-                    const renderCheck = (name, check) => {
-                        const status = check.status || (check.ok || check.passed ? 'ok' : 'error');
-                        const icon = status === 'ok' ? '✓' : status === 'warning' ? '!' : status === 'info' ? 'i' : '✗';
-                        const message = check.message || check.detail || (status === 'ok' ? 'OK' : 'Failed');
-                        const subchecks = renderExpandable(check);
-                        html += `<div class="doctor-check ${status === 'ok' ? 'pass' : status === 'warning' ? 'warn' : status === 'info' ? 'warn' : 'fail'}">${icon} ${escapeHtml(name)}: ${escapeHtml(message)}</div>${subchecks}`;
-                    };
-
-                    if (Array.isArray(data.checks)) {
-                        for (const check of data.checks) {
-                            renderCheck(check.name || 'Check', check);
-                        }
-                    } else {
-                        for (const [name, check] of Object.entries(data.checks)) {
-                            renderCheck(name, check);
-                        }
-                    }
-                }
-                // Handle prereqs endpoint format
-                if (data.all_ok !== undefined) {
-                    html += `<div class="doctor-check ${data.all_ok ? 'pass' : 'fail'}">Overall: ${data.all_ok ? 'All checks passed' : 'Some checks failed'}</div>`;
-                }
-
-                results.innerHTML = html || 'All checks passed!';
+                const response = await fetch(`/control/orchestrator/doctor?repo_root=${encodeURIComponent(targetPath)}`);
+                results.innerHTML = _renderDoctorResults(await response.json());
             } catch (error) {
                 results.innerHTML = `<div class="doctor-check fail">✗ Failed to run diagnostics: ${escapeHtml(error.message)}</div>`;
+            }
+        }
+
+        async function runSystemCheck() {
+            const modal = document.getElementById('doctorModal');
+            const modalTitle = document.getElementById('doctorModalTitle');
+            const results = document.getElementById('doctorResults');
+            modal.classList.add('active');
+            modalTitle.textContent = 'System Check';
+            results.innerHTML = '<div class="doctor-check info">Checking prerequisites...</div>';
+            try {
+                const response = await fetch('/control/setup/prereqs');
+                results.innerHTML = _renderDoctorResults(await response.json());
+            } catch (error) {
+                results.innerHTML = `<div class="doctor-check fail">✗ Failed to run system check: ${escapeHtml(error.message)}</div>`;
             }
         }
 
@@ -3716,15 +3752,7 @@
                 switchView('repositories');
             });
 
-            // Theme toggle (header button cycles through)
-            document.getElementById('themeToggle').addEventListener('click', () => {
-                const themes = ['system', 'light', 'dark'];
-                const currentIndex = themes.indexOf(state.theme);
-                const nextTheme = themes[(currentIndex + 1) % themes.length];
-                applyTheme(nextTheme);
-            });
-
-            // Theme selector buttons
+            // Theme selector buttons (in Settings view)
             document.querySelectorAll('.theme-btn').forEach(btn => {
                 btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
             });
@@ -3733,26 +3761,9 @@
             document.getElementById('reconnectEnginesBtn').addEventListener('click', reconnectToActiveEngine);
             document.getElementById('cleanupRecoveryBtn').addEventListener('click', cleanRecoveryState);
 
-            document.getElementById('activityConfigSelect').addEventListener('change', (e) => {
-                if (!state.activeRepo?.path) return;
-                state.activeRepo.config = e.target.value;
-                saveRecentRepo(state.activeRepo.path, state.activeRepo.config);
-                document.getElementById('activitySetDefaultConfig').checked =
-                    getDefaultConfig(state.activeRepo.path) === state.activeRepo.config;
-            });
-            document.getElementById('activitySetDefaultConfig').addEventListener('change', (e) => {
-                if (!state.activeRepo?.path || !state.activeRepo?.config) return;
-                if (e.target.checked) {
-                    setDefaultConfigForRepo(state.activeRepo.path, state.activeRepo.config);
-                    showToast(`${state.activeRepo.config} set as default`, 'success');
-                    return;
-                }
-                setDefaultConfigForRepo(state.activeRepo.path, null);
-            });
-
-            // Doctor
-            document.getElementById('doctorBtn').addEventListener('click', runDoctor);
+            // Doctor (Tools view — repo scope) and System Check (Settings — CC scope)
             document.getElementById('doctorTool').addEventListener('click', runDoctor);
+            document.getElementById('systemCheckBtn').addEventListener('click', runSystemCheck);
             document.getElementById('closeDoctorModal').addEventListener('click', () => {
                 document.getElementById('doctorModal').classList.remove('active');
             });
@@ -3770,50 +3781,7 @@
             });
             document.getElementById('confirmShutdown').addEventListener('click', confirmShutdown);
 
-            // Tools - helper to get current repo
-            function resolveActiveRepo() {
-                if (!state.activeRepo) return null;
-                const path = state.activeRepo.path || state.activeRepo;
-                const source = state.activeRepo.source || 'registered';
-                let repo = null;
-                if (source === 'discovered') {
-                    repo = state.discoveredRepos.find(r => r.path === path) || null;
-                }
-                if (!repo) {
-                    repo = state.repos.find(r => r.path === path) || null;
-                }
-                return { path, source, repo };
-            }
-
-            function repoHasConfig(repo, source) {
-                if (!repo) return false;
-                if (repo.configs && repo.configs.length > 0) return true;
-                if (source === 'discovered' && repo.status === 'legacy') return true;
-                if (repo.status && (repo.status.state === 'running' || repo.status.state === 'partial' || repo.status.paused)) {
-                    return true;
-                }
-                return false;
-            }
-
-            function getToolRepoPath(options = {}) {
-                const requireConfig = options.requireConfig === true;
-                const active = resolveActiveRepo();
-                if (active) {
-                    if (!requireConfig || repoHasConfig(active.repo, active.source)) {
-                        return active.path;
-                    }
-                }
-
-                if (requireConfig) {
-                    const configured = state.repos.find(r => r.configs && r.configs.length > 0);
-                    if (configured) return configured.path;
-                    const discoveredConfigured = state.discoveredRepos.find(r => r.configs && r.configs.length > 0);
-                    if (discoveredConfigured) return discoveredConfigured.path;
-                    return null;
-                }
-
-                return state.repos[0]?.path || null;
-            }
+            // Tools - helper to get current repo (defined in outer scope, see below DOMContentLoaded)
 
             // Goal Pilot
             const goalPilotState = {
@@ -4885,9 +4853,9 @@
                 }
             });
 
-            // Refresh repos periodically
+            // Refresh repos periodically (silent — no error toasts on background polls)
             setInterval(() => {
-                loadRepos();
+                loadRepos(true);
                 loadSystemState();
             }, 30000);
         });

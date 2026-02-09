@@ -1261,7 +1261,7 @@ def build_dashboard_view_model(
         active_count=len(active_items),
         queue_count=len(queue_items),
         blocked_count=len(blocked_items),
-        history_count=len(history_items) + len(blocked_items),
+        history_count=len(history_items),
         e2e_count=e2e_total,
         backlog_count=len(backlog_items),
         done_count=len(done_items),

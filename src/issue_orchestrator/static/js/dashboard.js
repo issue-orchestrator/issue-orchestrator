@@ -22,14 +22,31 @@ const FLOW_FRESHNESS_PRESETS = {
 };
 const FLOW_BUDGET_MULTIPLIER = { low: 1.7, medium: 1.0, high: 0.6 };
 
-function applyDashboardTheme() {
-    const storedTheme = localStorage.getItem('theme') || 'system';
+function applyDashboardTheme(theme) {
+    // When embedded in CC iframe, honor ?theme= param or postMessage from parent
+    const urlTheme = new URLSearchParams(window.location.search).get('theme');
+    const storedTheme = theme || urlTheme || localStorage.getItem('theme') || 'system';
     let effectiveTheme = storedTheme;
     if (storedTheme === 'system') {
         effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
     document.documentElement.setAttribute('data-theme', effectiveTheme);
 }
+
+// When embedded in CC iframe, hide dashboard header (CC provides its own)
+if (new URLSearchParams(window.location.search).get('embedded') === '1') {
+    document.addEventListener('DOMContentLoaded', () => {
+        const header = document.querySelector('header');
+        if (header) header.style.display = 'none';
+    });
+}
+
+// Listen for theme changes from parent (CC iframe embedding)
+window.addEventListener('message', (event) => {
+    if (event.data?.type === 'theme') {
+        applyDashboardTheme(event.data.theme);
+    }
+});
 fetch('/api/info')
     .then(res => res.json())
     .then(data => {
@@ -893,18 +910,7 @@ function renderGitHubUsage() {
     const resetEl = document.getElementById('ghUsageReset');
 
     if (summary) {
-        summary.classList.remove('is-warn', 'is-danger');
-        if (Number.isFinite(remaining) && Number.isFinite(limit) && limit > 0) {
-            const pctLeft = (remaining / limit) * 100;
-            if (pctLeft <= 10) {
-                summary.classList.add('is-danger');
-            } else if (pctLeft <= 20) {
-                summary.classList.add('is-warn');
-            }
-            summary.textContent = `${remaining.toLocaleString()} left`;
-        } else {
-            summary.textContent = `${totalCalls.toLocaleString()} calls`;
-        }
+        summary.textContent = `${callsPerMinute}/min`;
     }
     if (cpmEl) cpmEl.textContent = callsPerMinute.toLocaleString();
     if (totalEl) totalEl.textContent = totalCalls.toLocaleString();

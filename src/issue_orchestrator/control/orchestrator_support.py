@@ -640,8 +640,6 @@ def _fetch_and_update_queue(
         _process_inflight_ids(required_stable_ids, all_issues, inflight_stable_ids)
         _update_label_cache(repository_host, all_issues)
         _record_issue_refreshes(state, refreshed_numbers, refreshed_at)
-        for issue in all_issues:
-            state.issue_last_refreshed_at[issue.number] = refreshed_at
 
         if sync_plan.run_pr_scan:
             github_workflow.scan_needs_code_review_prs(state)
