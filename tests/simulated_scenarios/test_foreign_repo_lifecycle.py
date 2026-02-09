@@ -53,9 +53,9 @@ def _init_foreign_repo(tmp_path: Path) -> Path:
         capture_output=True,
     )
 
-    # Ensure the default branch is named "main"
+    # Ensure the default branch is named "main" (-B tolerates init.defaultBranch=main)
     subprocess.run(
-        ["git", "checkout", "-b", "main"],
+        ["git", "checkout", "-B", "main"],
         cwd=str(clone),
         check=True,
         capture_output=True,
@@ -125,42 +125,51 @@ def test_foreign_repo_full_lifecycle(foreign_repo: Path, tmp_path: Path) -> None
         runner=ScriptSessionRunner(),
     )
 
-    # --- Run ---
-    run_until(orch, lambda: not orch.state.active_sessions, max_ticks=15)
+    # --- Run & Assert (try/finally ensures cleanup on assertion failure) ---
+    try:
+        run_until(orch, lambda: not orch.state.active_sessions, max_ticks=15)
 
-    # --- Assertions ---
-    emitted = {e.name for e in events.events}
-    assert EventName.SESSION_STARTED in emitted
-    assert EventName.SESSION_COMPLETED in emitted
-    assert EventName.REVIEW_EXCHANGE_STARTED in emitted
-    assert EventName.REVIEW_EXCHANGE_COMPLETED in emitted
-    assert EventName.ISSUE_PR_CREATED in emitted
+        # --- Assertions ---
+        emitted = {e.name for e in events.events}
+        assert EventName.SESSION_STARTED in emitted
+        assert EventName.SESSION_COMPLETED in emitted
+        assert EventName.REVIEW_EXCHANGE_STARTED in emitted
+        assert EventName.REVIEW_EXCHANGE_COMPLETED in emitted
+        assert EventName.ISSUE_PR_CREATED in emitted
 
-    # PR was created
-    assert repo_host.get_pr(100) is not None, "Expected PR #100 to be created"
+        # PR was created
+        assert repo_host.get_pr(100) is not None, "Expected PR #100 to be created"
 
-    # The worktree was a real git worktree (.git is a file, not a directory)
-    history = orch.state.session_history
-    assert history, "Expected session history to be non-empty"
-    worktree_path = history[0].worktree_path
-    assert worktree_path is not None
-    git_entry = Path(worktree_path) / ".git"
-    assert git_entry.exists(), ".git should exist in worktree"
-    assert git_entry.is_file(), ".git should be a file (worktree), not a directory"
+        # The worktree was a real git worktree: .git is a file whose content
+        # starts with "gitdir:" pointing to a real gitdir path.  This
+        # distinguishes it from TempWorktreeManager which writes a plain
+        # "simulated" string.
+        history = orch.state.session_history
+        assert history, "Expected session history to be non-empty"
+        worktree_path = history[0].worktree_path
+        assert worktree_path is not None
+        git_entry = Path(worktree_path) / ".git"
+        assert git_entry.exists(), ".git should exist in worktree"
+        assert git_entry.is_file(), ".git should be a file (worktree), not a directory"
+        git_content = git_entry.read_text().strip()
+        assert git_content.startswith("gitdir:"), (
+            f".git file should start with 'gitdir:', got: {git_content!r}"
+        )
+        gitdir = Path(git_content.split(":", 1)[1].strip())
+        assert gitdir.is_dir(), f"gitdir path should be a directory: {gitdir}"
 
-    # No self-referential artifacts: foreign repo should NOT have .venv or
-    # src/issue_orchestrator/ in the worktree (those come from venv symlink
-    # and cli_tools sync, which only happen if the source repo has them).
-    wt = Path(worktree_path)
-    venv = wt / ".venv"
-    if venv.exists():
-        # If .venv exists it must be a symlink (installed by finalize), not a real dir
-        assert venv.is_symlink(), ".venv in worktree should be a symlink, not a copy"
-    assert not (wt / "src" / "issue_orchestrator").exists(), (
-        "Foreign repo worktree should not contain src/issue_orchestrator/"
-    )
-
-    # Clean up
-    close = getattr(orch, "close", None)
-    if callable(close):
-        close()
+        # No self-referential artifacts: foreign repo should NOT have .venv or
+        # src/issue_orchestrator/ in the worktree (those come from venv symlink
+        # and cli_tools sync, which only happen if the source repo has them).
+        wt = Path(worktree_path)
+        venv = wt / ".venv"
+        if venv.exists():
+            # If .venv exists it must be a symlink (installed by finalize), not a real dir
+            assert venv.is_symlink(), ".venv in worktree should be a symlink, not a copy"
+        assert not (wt / "src" / "issue_orchestrator").exists(), (
+            "Foreign repo worktree should not contain src/issue_orchestrator/"
+        )
+    finally:
+        close = getattr(orch, "close", None)
+        if callable(close):
+            close()
