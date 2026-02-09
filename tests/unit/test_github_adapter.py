@@ -266,7 +266,7 @@ class TestIssueOperations:
             since="2026-01-01T00:00:00Z",
             state="all",
             limit=25,
-            use_cache=True,
+            use_cache=False,
         )
 
     def test_list_issues_delta_error_returns_empty(self, adapter, mock_http_client):

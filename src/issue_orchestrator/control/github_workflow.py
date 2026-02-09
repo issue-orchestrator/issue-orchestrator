@@ -9,7 +9,7 @@ This module contains workflow methods extracted from the Orchestrator:
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional, Callable, cast
+from typing import TYPE_CHECKING, Optional, Callable
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
@@ -77,21 +77,12 @@ class GitHubWorkflow:
         since: str,
         fetch_limit: int,
     ) -> tuple[list["Issue"], str | None]:
-        """Fetch repo-wide issue deltas since watermark.
-
-        Falls back to bounded discovery when adapter delta API is unavailable.
-        """
-        list_delta = getattr(self.repository_host, "list_issues_delta", None)
-        if callable(list_delta):
-            try:
-                delta_result = cast(tuple[list["Issue"], str | None], list_delta(since=since, limit=fetch_limit))
-                issues, next_watermark = delta_result
-                return issues, next_watermark
-            except Exception as exc:
-                logger.warning("Delta issue fetch failed since %s: %s", since, exc)
-                return [], None
-
-        return self.fetch_discovery_issues(self.config.filtering.milestone, fetch_limit), None
+        """Fetch repo-wide issue deltas since watermark."""
+        try:
+            return self.repository_host.list_issues_delta(since=since, limit=fetch_limit)
+        except Exception as exc:
+            logger.warning("Delta issue fetch failed since %s: %s", since, exc)
+            return [], None
 
     def issue_in_scope(self, issue: "Issue") -> bool:
         """Return True if issue is in current orchestrator queue scope."""

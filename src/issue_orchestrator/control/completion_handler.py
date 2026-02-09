@@ -472,8 +472,6 @@ class CompletionHandler:
         Returns:
             Tuple of (pr_url, pr_number, prs_list)
         """
-        import re
-
         pr_url = None
         pr_number = None
         prs = None
@@ -482,21 +480,20 @@ class CompletionHandler:
             return pr_url, pr_number, prs
 
         if pr_url_hint:
-            return self._fetch_pr_info_from_hint(session, pr_url_hint, re)
+            return self._fetch_pr_info_from_hint(session, pr_url_hint)
 
-        return self._fetch_pr_info_from_branch_or_review_fallback(session, re)
+        return self._fetch_pr_info_from_branch_or_review_fallback(session)
 
     def _fetch_pr_info_from_hint(
         self,
         session: Session,
         pr_url_hint: str,
-        re_module: Any,
     ) -> tuple[Optional[str], Optional[int], Optional[list[Any]]]:
         pr_url = pr_url_hint
         pr_number: Optional[int] = None
         prs: Optional[list[Any]] = None
 
-        match = re_module.search(r"/pull/(\d+)", pr_url)
+        match = re.search(r"/pull/(\d+)", pr_url)
         if match:
             pr_number = int(match.group(1))
             try:
@@ -518,7 +515,6 @@ class CompletionHandler:
     def _fetch_pr_info_from_branch_or_review_fallback(
         self,
         session: Session,
-        re_module: Any,
     ) -> tuple[Optional[str], Optional[int], Optional[list[Any]]]:
         logger.debug("[ADAPTER] Using GitHubAdapter for get_prs_for_branch")
         start = time.monotonic()
@@ -534,20 +530,15 @@ class CompletionHandler:
         if pr_infos:
             return pr_infos[0].url, pr_infos[0].number, list(pr_infos)
 
-        if not session.terminal_id.startswith("review-"):
+        if session.pr_number is None:
             return None, None, None
 
-        match = re_module.match(r"review-(\d+)", session.terminal_id)
-        if not match:
-            return None, None, None
-
-        review_pr_number = int(match.group(1))
         try:
-            review_pr = self.repository_host.get_pr(review_pr_number)
+            review_pr = self.repository_host.get_pr(session.pr_number)
         except Exception as e:
             logger.warning(
                 "Failed to fetch PR %s for review session fallback: %s",
-                review_pr_number,
+                session.pr_number,
                 e,
             )
             return None, None, None

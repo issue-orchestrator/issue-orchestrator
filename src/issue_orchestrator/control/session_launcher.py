@@ -977,6 +977,7 @@ class SessionLauncher:
             branch_name=review.branch_name,
             completion_path=completion_path,
             agent_label=agent_label,
+            pr_number=review.pr_number,
         )
 
         log_transition("review", review.pr_number, "LAUNCHING", "ACTIVE", "session launched")
@@ -1262,6 +1263,7 @@ class SessionLauncher:
             branch_name=branch_name,
             completion_path=completion_path,
             agent_label=rework.agent_type,
+            pr_number=pr_number,
         )
 
         log_transition("rework", issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")

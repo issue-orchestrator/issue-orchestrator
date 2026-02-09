@@ -94,6 +94,12 @@ def create_test_session(
     """Create a test session."""
     issue_key = FakeIssueKey(str(issue.number))
     session_key = SessionKey(issue=issue_key, task=task_kind)
+    pr_number: int | None = None
+    if terminal_id.startswith(("review-", "rework-")):
+        try:
+            pr_number = int(terminal_id.split("-", 1)[1])
+        except (ValueError, IndexError):
+            pr_number = None
     return Session(
         key=session_key,
         issue=issue,
@@ -101,6 +107,7 @@ def create_test_session(
         terminal_id=terminal_id,
         worktree_path=worktree_path,
         branch_name=f"issue-{issue.number}",
+        pr_number=pr_number,
     )
 
 

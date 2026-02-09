@@ -15,11 +15,12 @@ from pathlib import Path
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Callable
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse
 from sse_starlette.sse import EventSourceResponse
 from jinja2 import Environment, FileSystemLoader
+from pydantic import BaseModel, ConfigDict
 
 from ..history import latest_history_entries_by_issue
 from ..infra.e2e_runner import get_e2e_role
@@ -50,6 +51,7 @@ from ..contracts.ui_openapi_models import (
     PhaseDialogPayload,
     SessionDiagnosticsDialogPayload,
     IssueDetailPayload,
+    IssueRowPayload,
 )
 from ..control.queue_cache import QueueCache, QueueMutationStatus
 
@@ -57,6 +59,16 @@ if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
+
+
+class ViewModelSnapshotPayload(BaseModel):
+    """Combined view-model + rendered rows from a single snapshot."""
+
+    model_config = ConfigDict(extra="forbid")
+    view_model: DashboardViewModelPayload
+    rows: list[IssueRowPayload]
+    active_tab: str
+    count: int
 
 # Pattern to match ANSI escape sequences and control characters:
 # - \x1b[...m (SGR - colors, bold, etc.)
@@ -433,11 +445,13 @@ async def get_view_model(
     return DashboardViewModelPayload.model_validate(view_model.to_dict())
 
 
-@app.get("/api/view-model-snapshot")
+@app.get("/api/view-model-snapshot", response_model=ViewModelSnapshotPayload)
 async def get_view_model_snapshot(
-    request: Request,
+    tab: str = Query("flow"),
+    page: int = Query(1, ge=1),
+    e2e_page: int = Query(1, ge=1),
     orchestrator=Depends(get_orchestrator),
-) -> JSONResponse:
+) -> ViewModelSnapshotPayload | JSONResponse:
     """Get view-model and rendered rows from a single snapshot.
 
     This keeps tab counts and rendered list rows in lockstep for UI refreshes.
@@ -445,13 +459,8 @@ async def get_view_model_snapshot(
     if not orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    queue_page = int(request.query_params.get("page", 1))
-    if queue_page < 1:
-        queue_page = 1
-    e2e_page = int(request.query_params.get("e2e_page", 1))
-    if e2e_page < 1:
-        e2e_page = 1
-    active_tab = request.query_params.get("tab", "flow")
+    queue_page = page
+    active_tab = tab
 
     view_model = build_dashboard_view_model(
         orchestrator,
@@ -475,7 +484,7 @@ async def get_view_model_snapshot(
             "html": html,
         })
 
-    return JSONResponse({
+    return ViewModelSnapshotPayload.model_validate({
         "view_model": view_model.to_dict(),
         "rows": rows,
         "active_tab": view_model.active_tab,

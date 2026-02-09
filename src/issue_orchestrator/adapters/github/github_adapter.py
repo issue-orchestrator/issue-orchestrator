@@ -436,7 +436,7 @@ class GitHubAdapter:
                 since=since,
                 state="all",
                 limit=limit,
-                use_cache=True,
+                use_cache=False,
             )
             return self._raw_issues_to_issues(raw_issues), next_watermark
         except GitHubHttpError as e:
