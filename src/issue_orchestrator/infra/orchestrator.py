@@ -87,7 +87,7 @@ class Orchestrator:
     _refresh_requested: bool = field(default=False, init=False)
     _inflight_stable_ids: dict[str, float] = field(default_factory=dict, init=False)  # stable_id -> expires_at (monotonic)
     _INFLIGHT_TTL_SECONDS: float = field(default=90.0, init=False, repr=False)
-    _last_issue_fetch: float = field(default=0.0, init=False)
+    _last_network_sync: float = field(default=0.0, init=False)
     _last_ui_update: float = field(default=0.0, init=False)
     _loop_iteration: int = field(default=0, init=False)
     _ui_update_interval: int = field(default=30, init=False)
@@ -505,7 +505,7 @@ class Orchestrator:
         # new value when the cycle returns.
         refresh_to_process = self._refresh_requested
         self._refresh_requested = False
-        self._last_issue_fetch, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_issue_fetch, refresh_to_process, self._inflight_stable_ids, self.observer, self.deps.claim_manager)
+        self._last_network_sync, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_network_sync, refresh_to_process, self._inflight_stable_ids, self.observer, self.deps.claim_manager)
 
     def _clear_discovered_facts(self) -> None: self._plan_applier.clear_discovered_facts()
     def _emit_heartbeat_if_needed(self) -> None: self._plan_applier.emit_heartbeat_if_needed()
@@ -525,7 +525,7 @@ class Orchestrator:
         ))
 
         self.reconcile_orphaned_pr_labels()
-        self._last_issue_fetch, self._last_ui_update, self._loop_iteration = 0.0, time.time(), 0
+        self._last_network_sync, self._last_ui_update, self._loop_iteration = 0.0, time.time(), 0
 
         while not self._shutdown_requested:
             try:

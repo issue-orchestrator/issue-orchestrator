@@ -203,6 +203,16 @@ ui:
   web_port: 8080
   control_api_port: 19080        # 0 = disabled
   queue_refresh_seconds: 600
+  fetch_layer:
+    enabled: true
+    network_sync_seconds: 60      # Network poll cadence (separate from orchestration tick)
+    full_scan_interval_seconds: 1800
+    discovery_limit: 25
+    max_hot_issues_per_cycle: 40
+    pr_scan_every_n_refreshes: 2
+    dependency_scan_every_n_refreshes: 1
+    visibility_aware_enabled: false
+    selective_sync_planner_enabled: false
   instances: 1                   # Multi-orchestrator instances
   flow_refresh:
     freshness_mode: balanced       # aggressive | balanced | economy

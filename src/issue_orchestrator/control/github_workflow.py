@@ -9,7 +9,7 @@ This module contains workflow methods extracted from the Orchestrator:
 
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional, Callable
+from typing import TYPE_CHECKING, Optional, Callable, cast
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
@@ -70,6 +70,47 @@ class GitHubWorkflow:
             milestone_filter,
             fetch_limit=fetch_limit,
         )
+
+    def fetch_delta_issues(
+        self,
+        *,
+        since: str,
+        fetch_limit: int,
+    ) -> tuple[list["Issue"], str | None]:
+        """Fetch repo-wide issue deltas since watermark.
+
+        Falls back to bounded discovery when adapter delta API is unavailable.
+        """
+        list_delta = getattr(self.repository_host, "list_issues_delta", None)
+        if callable(list_delta):
+            try:
+                delta_result = cast(tuple[list["Issue"], str | None], list_delta(since=since, limit=fetch_limit))
+                issues, next_watermark = delta_result
+                return issues, next_watermark
+            except Exception as exc:
+                logger.warning("Delta issue fetch failed since %s: %s", since, exc)
+                return [], None
+
+        return self.fetch_discovery_issues(self.config.filtering.milestone, fetch_limit), None
+
+    def issue_in_scope(self, issue: "Issue") -> bool:
+        """Return True if issue is in current orchestrator queue scope."""
+        labels = set(issue.labels)
+        if self.config.filtering.label and self.config.filtering.label not in labels:
+            return False
+        if not any(agent_label in labels for agent_label in self.config.agents.keys()):
+            return False
+
+        milestones = self.config.get_filter_milestones()
+        if milestones:
+            if issue.milestone is None or issue.milestone not in milestones:
+                return False
+
+        issue_filter = self.config.get_issue_filter()
+        if not issue_filter.is_empty() and not issue_filter.apply([issue]):
+            return False
+
+        return True
 
     def refresh_issues(self, issue_numbers: list[int]) -> list["Issue"]:
         """Refresh a bounded set of issues by number."""

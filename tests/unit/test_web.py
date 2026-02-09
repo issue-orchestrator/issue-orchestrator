@@ -1293,6 +1293,38 @@ class TestIssueRowsEndpoint:
         finally:
             set_orchestrator(original)
 
+    def test_view_model_snapshot_returns_rows_from_same_snapshot(self):
+        from fastapi.testclient import TestClient
+        from issue_orchestrator.entrypoints import web
+        from issue_orchestrator.entrypoints.web import get_orchestrator, set_orchestrator
+        from issue_orchestrator.domain.models import Issue, OrchestratorState
+        from issue_orchestrator.infra.config import Config
+
+        class OrchestratorStub:
+            def __init__(self):
+                self.state = OrchestratorState(
+                    startup_status="complete",
+                    cached_queue_issues=[Issue(number=11, title="Snapshot Test", labels=["agent:web"])],
+                )
+                self.config = Config()
+                self.config.repo = "test/repo"
+                self.config.repo_root = Path("/tmp/repo")
+                self.shutdown_requested = False
+
+        original = get_orchestrator()
+        set_orchestrator(OrchestratorStub())
+        try:
+            client = TestClient(web.app)
+            response = client.get("/api/view-model-snapshot?tab=queue")
+            assert response.status_code == 200
+            data = response.json()
+            assert "view_model" in data
+            assert data["count"] == 1
+            assert data["rows"][0]["issue_number"] == 11
+            assert data["view_model"]["queue_count"] >= 0
+        finally:
+            set_orchestrator(original)
+
     def test_plugin_manager_emit_with_empty_data(self):
         """Test that emit() works with no data argument."""
         from issue_orchestrator.execution.manager import PluginManager

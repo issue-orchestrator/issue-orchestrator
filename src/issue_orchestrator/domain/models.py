@@ -1091,9 +1091,11 @@ class OrchestratorState:
     startup_message: str = ""  # Current startup task description
     cached_queue_issues: list["IssueProtocol"] = field(default_factory=list)  # Cached queue for instant pagination
     queue_last_refresh_at: float = 0.0  # Unix timestamp of last queue refresh
+    queue_last_network_sync_at: float = 0.0  # Unix timestamp of last network sync attempt
     queue_last_full_scan_at: float = 0.0  # Unix timestamp of last full GitHub scan
     queue_refresh_count: int = 0  # Number of queue refresh cycles completed
     queue_last_refresh_mode: str = "none"  # none|full|incremental
+    queue_delta_watermark: str | None = None  # Last committed watermark for incremental delta sync
     issue_refresh_timestamps: dict[int, float] = field(default_factory=dict)  # issue_number -> unix timestamp of last confirmed refresh
     ui_visible_issue_numbers: list[int] = field(default_factory=list)  # Issue numbers currently visible in Flow UI
     ui_visible_updated_at: float = 0.0  # Unix timestamp when UI visibility hint was last updated

@@ -53,6 +53,24 @@ class IssueTracker(Protocol):
         """
         ...
 
+    def list_issues_delta(
+        self,
+        *,
+        since: str,
+        limit: int = 100,
+    ) -> tuple[list["Issue"], str | None]:
+        """List issues updated since the watermark, returning next watermark hint.
+
+        Args:
+            since: ISO-8601 watermark to query updates since.
+            limit: Maximum number of updated issues to process in this cycle.
+
+        Returns:
+            A tuple of (issues, next_watermark). next_watermark is an ISO timestamp
+            hint that callers can persist after successful processing.
+        """
+        ...
+
     def get_issue(self, issue_number: int) -> "Issue | None":
         """Get a specific issue by number.
 

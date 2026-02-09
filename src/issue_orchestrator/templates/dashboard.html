@@ -348,9 +348,34 @@
                 <button class="modal-close" onclick="closeFlowRefreshPrefs()" aria-label="Close preferences">&times;</button>
             </div>
             <div class="modal-body">
+                <div class="card-line card-muted">
+                    Browser overrides apply only to this browser/session. Permanent changes belong in Settings.
+                </div>
+                <label class="prefs-row">
+                    Network sync cadence source
+                    <select id="networkSyncCadenceSource">
+                        <option value="config">Use config default (persistent)</option>
+                        <option value="override">Browser override (temporary)</option>
+                    </select>
+                </label>
+                <label class="prefs-row">
+                    Network sync cadence (seconds)
+                    <input type="number" id="networkSyncOverrideSeconds" min="5" step="5">
+                </label>
+                <label class="prefs-row">
+                    Full scan interval (seconds)
+                    <input type="number" id="fullScanConfigSeconds" min="60" step="30">
+                </label>
+                <div class="card-line card-muted">
+                    Check "Save cadence values permanently to config" to apply cadence changes globally.
+                </div>
+                <label class="prefs-row">
+                    <input type="checkbox" id="saveCadenceToConfig">
+                    Save cadence values permanently to config (applies to all users)
+                </label>
                 <label class="prefs-row">
                     <input type="checkbox" id="flowRefreshOverrideEnabled">
-                    Override YAML defaults in this browser
+                    Browser override for flow freshness (temporary)
                 </label>
                 <label class="prefs-row">
                     Freshness mode
@@ -389,6 +414,7 @@
                 </label>
             </div>
             <div class="modal-body" style="display:flex; gap:8px; justify-content:flex-end;">
+                <button class="issue-action-btn" onclick="openSettingsForRefreshPrefs()">Open Settings</button>
                 <button class="issue-action-btn" onclick="resetFlowRefreshPrefs()">Reset</button>
                 <button class="issue-action-btn" onclick="closeFlowRefreshPrefs()">Cancel</button>
                 <button class="issue-action-btn active" onclick="saveFlowRefreshPrefs()">Save</button>

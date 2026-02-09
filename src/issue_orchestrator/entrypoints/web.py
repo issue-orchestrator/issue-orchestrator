@@ -433,6 +433,56 @@ async def get_view_model(
     return DashboardViewModelPayload.model_validate(view_model.to_dict())
 
 
+@app.get("/api/view-model-snapshot")
+async def get_view_model_snapshot(
+    request: Request,
+    orchestrator=Depends(get_orchestrator),
+) -> JSONResponse:
+    """Get view-model and rendered rows from a single snapshot.
+
+    This keeps tab counts and rendered list rows in lockstep for UI refreshes.
+    """
+    if not orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    queue_page = int(request.query_params.get("page", 1))
+    if queue_page < 1:
+        queue_page = 1
+    e2e_page = int(request.query_params.get("e2e_page", 1))
+    if e2e_page < 1:
+        e2e_page = 1
+    active_tab = request.query_params.get("tab", "flow")
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=queue_page,
+        active_tab=active_tab,
+        e2e_page=e2e_page,
+    )
+
+    templates = get_templates()
+    row_template = templates.get_template("issue_row.html")
+    rows = []
+    for issue in view_model.issues:
+        html = row_template.render(
+            issue=issue,
+            active_tab=view_model.active_tab,
+            github_owner=view_model.github_owner,
+            github_repo=view_model.github_repo,
+        )
+        rows.append({
+            "issue_number": issue.get("issue_number"),
+            "html": html,
+        })
+
+    return JSONResponse({
+        "view_model": view_model.to_dict(),
+        "rows": rows,
+        "active_tab": view_model.active_tab,
+        "count": len(rows),
+    })
+
+
 @app.get("/api/issue-rows", response_model=IssueRowsPayload)
 async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator)) -> IssueRowsPayload | JSONResponse:
     """Get rendered issue rows for the current view."""
@@ -741,7 +791,7 @@ async def refresh(request: Request) -> JSONResponse:
     """Request an immediate refresh of issues from GitHub.
 
     This triggers the orchestrator to fetch issues on the next loop iteration,
-    bypassing the queue_refresh_seconds interval. Also resets the timer for
+    bypassing the fetch-layer network sync interval. Also resets the timer for
     the next scheduled refresh.
 
     Optional JSON body:

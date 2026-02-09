@@ -4,6 +4,7 @@ This is the full configuration reference auto-generated from the settings schema
 For a short onboarding guide, see `docs/user/configuration.md`.
 
 <!-- BEGIN AUTO-GENERATED CONFIG REFERENCE — regenerate via: pytest tests/unit/test_settings_schema.py::TestDriftDetection::test_config_reference_not_stale -->
+
 # Settings Reference
 
 _Auto-generated from settings schema._
@@ -16,6 +17,7 @@ _Auto-generated from settings schema._
 | `execution.concurrency.session_timeout_minutes` | integer | `45` | Kill sessions after this duration | `30`, `45`, `90` | Lower values fail faster for stuck sessions; higher values help long builds. |
 | `ui.queue_refresh_seconds` | integer | `600` | How often to refresh the issue queue from GitHub (0 = manual only) | `0`, `300`, `600` | Use 0 to disable automatic refreshes and refresh manually in the UI. |
 | `ui.fetch_layer.enabled` | boolean | `True` | Enable incremental refreshes between periodic full scans | `true`, `false` | Disable to force a full GitHub queue scan on every refresh. |
+| `ui.fetch_layer.network_sync_seconds` | integer | `60` | How often to run GitHub network sync cycles (independent of control tick) | `15`, `60`, `120` | Lower values improve freshness; higher values reduce GitHub API calls. |
 | `ui.fetch_layer.full_scan_interval_seconds` | integer | `1800` | Run a full queue scan at this interval even when incremental mode is enabled | `600`, `1800`, `3600` | Lower values discover new work faster; higher values reduce API usage. |
 | `ui.fetch_layer.discovery_limit` | integer | `25` | Max issues fetched per incremental discovery pass | `0`, `25`, `50` | Set to 0 to disable discovery during incremental refreshes. |
 | `ui.fetch_layer.max_hot_issues_per_cycle` | integer | `40` | Max existing queue issues to refresh by direct issue lookup per cycle | `20`, `40`, `100` | Higher values improve freshness but increase API usage. |
@@ -118,4 +120,5 @@ _Auto-generated from settings schema._
 | `worktrees.base` | string | `../` | Directory where git worktrees are created | `../`, `../worktrees`, `/tmp/worktrees` | Relative paths are resolved from the repo root. |
 | `worktrees.base_branch_override` | string (optional) | `None` | Override the base branch for worktree creation (auto-detect if unset) | `main`, `master` | Use when your default branch is not auto-detected correctly. |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch | `delete`, `create_new_branch` | Use create_new_branch to keep the old branch intact. |
+
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->

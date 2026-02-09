@@ -343,7 +343,7 @@ async def refresh(request: Request) -> JSONResponse:
     """Request an immediate refresh of issues from GitHub.
 
     This triggers the orchestrator to fetch issues on the next loop iteration,
-    bypassing the queue_refresh_seconds interval.
+    bypassing the fetch-layer network sync interval.
 
     Optional JSON body:
         inflight_stable_ids: list[str] - Issue IDs that tests expect to discover.

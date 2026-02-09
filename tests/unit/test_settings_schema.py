@@ -43,6 +43,7 @@ class TestModelDefaults:
         assert m.session_timeout_minutes == 45
         assert m.queue_refresh_seconds == 600
         assert m.fetch_layer_enabled is True
+        assert m.fetch_layer_network_sync_seconds == 60
         assert m.fetch_layer_full_scan_interval_seconds == 1800
         assert m.fetch_layer_discovery_limit == 25
         assert m.fetch_layer_max_hot_issues_per_cycle == 40
@@ -168,6 +169,7 @@ class TestFromConfig:
         cfg.session_timeout_minutes = 60
         cfg.queue_refresh_seconds = 300
         cfg.fetch_layer_enabled = False
+        cfg.fetch_layer_network_sync_seconds = 45
         cfg.fetch_layer_full_scan_interval_seconds = 1200
         cfg.fetch_layer_discovery_limit = 15
         cfg.fetch_layer_max_hot_issues_per_cycle = 30
@@ -215,6 +217,7 @@ class TestFromConfig:
         assert conc.session_timeout_minutes == 60
         assert conc.queue_refresh_seconds == 300
         assert conc.fetch_layer_enabled is False
+        assert conc.fetch_layer_network_sync_seconds == 45
         assert conc.fetch_layer_full_scan_interval_seconds == 1200
         assert conc.fetch_layer_discovery_limit == 15
         assert conc.fetch_layer_max_hot_issues_per_cycle == 30

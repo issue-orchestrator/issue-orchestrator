@@ -107,7 +107,7 @@ def _resolve_repo(config: Config) -> str | None:
 
 def _create_github_adapter(repo: str, config: Config) -> GitHubAdapter:
     """Create GitHub adapter with cache and verification service."""
-    cache_ttl = float(max(0, getattr(config, "queue_refresh_seconds", 0)))
+    cache_ttl = float(max(0, getattr(config, "fetch_layer_network_sync_seconds", 0)))
     github_cache = GitHubCache(default_ttl=cache_ttl)
 
     default_budget = VerificationBudget(
