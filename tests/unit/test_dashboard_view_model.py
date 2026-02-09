@@ -18,7 +18,11 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
+from issue_orchestrator.view_models.dashboard import (
+    _exclude_flow_overlaps,
+    _normalize_status_reason,
+    build_dashboard_view_model,
+)
 from issue_orchestrator.contracts.public import DashboardViewModelContract
 
 
@@ -325,6 +329,28 @@ def test_view_model_history_routing():
 
     assert 10 in history_numbers
     assert 11 in blocked_numbers
+    assert view_model.history_count == len(view_model.history_items) + len(view_model.blocked_items)
+
+
+def test_exclude_flow_overlaps_handles_string_issue_numbers():
+    backlog_items = [{"issue_number": 4070, "title": "Backlog"}]
+    queue_items = [{"issue_number": "4070", "title": "Queued"}]
+
+    result = _exclude_flow_overlaps(
+        backlog_items=backlog_items,
+        queue_items=queue_items,
+        active_items=[],
+        blocked_items=[],
+        done_items=[],
+    )
+
+    assert result == []
+
+
+def test_normalize_status_reason_drops_sync_noise() -> None:
+    assert _normalize_status_reason("Synced 10s ago") is None
+    assert _normalize_status_reason(" synced 5m ago ") is None
+    assert _normalize_status_reason("blocked by dependency #100") == "blocked by dependency #100"
 
 
 def test_view_model_history_dedupes_latest_per_issue():

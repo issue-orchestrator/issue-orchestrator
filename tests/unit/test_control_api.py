@@ -23,10 +23,13 @@ from fastapi.testclient import TestClient
 
 from issue_orchestrator.entrypoints.control_api import (
     control_app,
+    get_supervisor,
     set_orchestrator,
     get_orchestrator,
+    set_control_actions,
     set_supervisor,
 )
+from issue_orchestrator.execution.control_center_actions import ActionResult, ControlCenterActions
 from issue_orchestrator.domain.models import OrchestratorState
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.supervisor import (
@@ -963,8 +966,160 @@ class TestSupervisorReconcile:
         assert data["orphaned_detected"][0]["port"] == 19080
         assert str(tmp_path) in data["stopped_orphaned"]
 
+
+@pytest.fixture
+def mock_control_actions():
+    """Inject mocked command-backed actions for endpoint mapping tests."""
+    actions = MagicMock()
+    actions.pause_cmd = MagicMock()
+    actions.pause_cmd.execute = AsyncMock(return_value=ActionResult({"status": "paused"}))
+    actions.resume_cmd = MagicMock()
+    actions.resume_cmd.execute = AsyncMock(return_value=ActionResult({"status": "resumed"}))
+    actions.refresh_cmd = MagicMock()
+    actions.refresh_cmd.execute = AsyncMock(return_value=ActionResult({"status": "refresh_requested"}))
+    actions.doctor_cmd = MagicMock()
+    actions.doctor_cmd.execute = AsyncMock(return_value=ActionResult({"overall": "ok", "checks": []}))
+    actions.audit_cmd = MagicMock()
+    actions.audit_cmd.execute = AsyncMock(return_value=ActionResult({"entries": []}))
+    actions.trace_cmd = MagicMock()
+    actions.trace_cmd.execute = AsyncMock(return_value=ActionResult({"entries": ["ok"], "total": 1, "truncated": False}))
+    actions.labels_cmd = MagicMock()
+    actions.labels_cmd.execute = AsyncMock(return_value=ActionResult({"created": [], "updated": [], "failed": []}))
+    actions.stale_worktrees_cmd = MagicMock()
+    actions.stale_worktrees_cmd.execute = AsyncMock(return_value=ActionResult({"stale_worktrees": [], "message": "ok"}))
+    set_control_actions(actions)
+    yield actions
+    set_control_actions(ControlCenterActions(supervisor=get_supervisor()))
+
+
+class TestActionEndpointMapping:
+    """Ensure endpoints delegate to command-backed action objects."""
+
+    def test_trace_endpoint_delegates_to_command(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        mock_control_actions: MagicMock,
+    ) -> None:
+        response = supervisor_client.get(
+            "/control/tools/trace",
+            params={
+                "repo_root": str(tmp_path),
+                "issue_number": 4070,
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["entries"] == ["ok"]
+        mock_control_actions.trace_cmd.execute.assert_awaited_once()
+
+    def test_worktrees_endpoint_delegates_to_command(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        mock_control_actions: MagicMock,
+    ) -> None:
+        response = supervisor_client.post(
+            "/control/tools/worktrees/cleanup",
+            json={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["message"] == "ok"
+        mock_control_actions.stale_worktrees_cmd.execute.assert_awaited_once()
+
+    def test_pause_endpoint_delegates_to_command(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        mock_control_actions: MagicMock,
+    ) -> None:
+        response = supervisor_client.post(
+            "/control/orchestrator/pause",
+            json={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "paused"
+        mock_control_actions.pause_cmd.execute.assert_awaited_once()
+
+    def test_resume_endpoint_delegates_to_command(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        mock_control_actions: MagicMock,
+    ) -> None:
+        response = supervisor_client.post(
+            "/control/orchestrator/resume",
+            json={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "resumed"
+        mock_control_actions.resume_cmd.execute.assert_awaited_once()
+
+    def test_refresh_endpoint_delegates_to_command(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        mock_control_actions: MagicMock,
+    ) -> None:
+        response = supervisor_client.post(
+            "/control/orchestrator/refresh",
+            json={"repo_root": str(tmp_path), "inflight_stable_ids": ["I_123"]},
+        )
+        assert response.status_code == 200
+        assert response.json()["status"] == "refresh_requested"
+        mock_control_actions.refresh_cmd.execute.assert_awaited_once()
+
+    def test_doctor_endpoint_delegates_to_command(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        mock_control_actions: MagicMock,
+    ) -> None:
+        response = supervisor_client.get(
+            "/control/orchestrator/doctor",
+            params={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        assert response.json()["overall"] == "ok"
+        mock_control_actions.doctor_cmd.execute.assert_awaited_once()
+
+    def test_audit_endpoint_delegates_to_command(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        mock_control_actions: MagicMock,
+    ) -> None:
+        response = supervisor_client.get(
+            "/control/tools/audit",
+            params={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        assert response.json()["entries"] == []
+        mock_control_actions.audit_cmd.execute.assert_awaited_once()
+
+    def test_labels_endpoint_delegates_to_command(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        mock_control_actions: MagicMock,
+    ) -> None:
+        response = supervisor_client.post(
+            "/control/tools/labels/init",
+            json={"repo_root": str(tmp_path)},
+        )
+        assert response.status_code == 200
+        assert response.json()["created"] == []
+        mock_control_actions.labels_cmd.execute.assert_awaited_once()
+
+
+class TestSupervisorReconcileMultiInstance:
     def test_reconcile_multi_instance_handles_stale_and_unresponsive(
-        self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mock_supervisor: MagicMock
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_supervisor: MagicMock,
     ) -> None:
         from issue_orchestrator.entrypoints import control_api
 
@@ -1049,6 +1204,7 @@ class TestSupervisorStart:
 
         assert response.status_code == 400
         assert "Invalid" in response.json()["error"]
+
 
     def test_start_rejects_invalid_port(
         self, supervisor_client: TestClient, tmp_path: Path
@@ -1175,6 +1331,35 @@ class TestSupervisorStart:
         assert data["error"] == "doctor_failed"
         assert data["doctor"]["overall"] == "error"
         mock_supervisor.start.assert_not_called()
+
+
+class TestDiscoverReposEndpoint:
+    def test_discovers_ready_repo_with_config(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        repo = tmp_path / "trustlist"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        config_dir = repo / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "main.yaml").write_text("repo:\n  name: test/trustlist\n")
+
+        monkeypatch.setattr(
+            "issue_orchestrator.infra.repo_registry.load_registry",
+            lambda: SimpleNamespace(repos=[]),
+        )
+
+        response = supervisor_client.get(
+            "/control/repos/discover",
+            params={"search_paths": str(tmp_path), "max_depth": 2},
+        )
+
+        assert response.status_code == 200
+        discovered = response.json()["discovered"]
+        assert any(item["name"] == "trustlist" and item["status"] == "ready" for item in discovered)
 
 
 class TestSupervisorLastFailure:

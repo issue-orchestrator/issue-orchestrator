@@ -179,8 +179,9 @@ h1 {
 .gh-usage-label {
     font-weight: 700;
     color: var(--text-muted);
-    letter-spacing: 0.04em;
 }
+.gh-usage-summary.is-warn { color: var(--warn); font-weight: 700; }
+.gh-usage-summary.is-danger { color: var(--danger); font-weight: 700; }
 .gh-usage-panel {
     display: none;
     position: absolute;
@@ -254,7 +255,8 @@ h1 {
 }
 .tab.active {
     border-color: var(--accent);
-    box-shadow: 0 0 0 1px rgba(78, 161, 255, 0.35) inset;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 38%, transparent) inset;
+    background: color-mix(in srgb, var(--accent) 10%, var(--bg-panel));
 }
 .tab-badge {
     background: var(--accent);
@@ -281,7 +283,7 @@ h1 {
 .kanban-column {
     border: 1px solid var(--border);
     border-radius: 12px;
-    background: rgba(11, 20, 34, 0.82);
+    background: color-mix(in srgb, var(--bg-panel) 85%, var(--bg) 15%);
     min-height: 220px;
     display: flex;
     flex-direction: column;
@@ -317,10 +319,11 @@ h1 {
     justify-content: space-between;
     align-items: flex-start;
 }
-.card-actions {
+.card-head-actions {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    flex-shrink: 0;
 }
 .card-focus {
     border: 0;
@@ -330,12 +333,13 @@ h1 {
     text-align: left;
     padding: 0;
     cursor: pointer;
-    max-width: calc(100% - 22px);
+    flex: 1 1 auto;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-.card-focus:hover { color: #eef5ff; text-decoration: underline; }
+.card-focus:hover { color: var(--accent); text-decoration: underline; }
 .card-gh {
     color: var(--text-muted);
     text-decoration: none;
@@ -360,18 +364,19 @@ h1 {
     opacity: 0.6;
     cursor: wait;
 }
+.stale-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--warn);
+    border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--border));
+}
 .card-line {
     margin-top: 5px;
     font-size: 11px;
     color: var(--text);
 }
 .card-muted { color: var(--text-muted); }
-.card-refresh-line {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-}
 .refresh-fresh { color: var(--text-muted); }
 .refresh-stale { color: var(--warn); }
 .refresh-pill {
@@ -400,22 +405,6 @@ h1 {
     border-color: #e09f3e;
     color: #e09f3e;
 }
-.card-actions {
-    margin-top: 6px;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 8px;
-}
-.card-refresh-age {
-    font-size: 10px;
-    color: var(--text-muted);
-}
-.issue-refresh-btn {
-    font-size: 10px;
-    padding: 3px 7px;
-}
-
 .attention-board {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -424,7 +413,7 @@ h1 {
 .attention-group {
     border: 1px solid var(--border);
     border-radius: 12px;
-    background: rgba(11, 20, 34, 0.82);
+    background: color-mix(in srgb, var(--bg-panel) 85%, var(--bg) 15%);
 }
 .attention-group p {
     margin: 8px 10px;
@@ -523,7 +512,7 @@ h1 {
     top: 0;
     bottom: 0;
     width: min(560px, 92vw);
-    background: #0f1a2a;
+    background: var(--bg-panel);
     border-left: 1px solid var(--border);
     transform: translateX(100%);
     transition: transform 180ms ease;
@@ -583,7 +572,7 @@ h1 {
     max-height: 88vh;
     border: 1px solid var(--border);
     border-radius: 12px;
-    background: #0f1a2a;
+    background: var(--bg-panel);
     display: flex;
     flex-direction: column;
 }
@@ -653,7 +642,7 @@ h1 {
 .timeline-loop-item {
     border: 1px solid var(--border);
     border-radius: 8px;
-    background: rgba(17, 28, 44, 0.85);
+    background: color-mix(in srgb, var(--bg-panel-soft) 90%, transparent);
     padding: 8px;
 }
 .timeline-loop-title {
@@ -680,7 +669,7 @@ h1 {
     border-radius: 8px;
     padding: 7px;
     margin-bottom: 6px;
-    background: rgba(18, 28, 44, 0.7);
+    background: color-mix(in srgb, var(--bg-panel-soft) 82%, transparent);
 }
 .timeline-event-header {
     display: flex;
@@ -703,7 +692,7 @@ h1 {
 .timeline-artifact,
 .timeline-action-btn {
     border: 1px solid var(--border);
-    background: rgba(16, 25, 40, 0.8);
+    background: color-mix(in srgb, var(--bg-panel) 78%, transparent);
     border-radius: 6px;
     color: var(--text-muted);
     font-size: 11px;
@@ -729,7 +718,7 @@ h1 {
     height: 24px;
     border: 1px solid var(--border);
     border-radius: 6px;
-    background: rgba(16, 25, 40, 0.85);
+    background: color-mix(in srgb, var(--bg-panel) 84%, transparent);
     font-size: 14px;
     color: var(--text-muted);
 }
@@ -764,7 +753,7 @@ h1 {
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 10px;
-    background: rgba(18, 28, 44, 0.65);
+    background: color-mix(in srgb, var(--bg-panel-soft) 72%, transparent);
 }
 .diag-header-title {
     font-size: 13px;
@@ -782,7 +771,7 @@ h1 {
     font-size: 11px;
     padding: 2px 8px;
     color: var(--text-muted);
-    background: rgba(16, 25, 40, 0.8);
+    background: color-mix(in srgb, var(--bg-panel) 78%, transparent);
 }
 .diag-chip.is-ok {
     color: #daf7e8;
@@ -801,7 +790,7 @@ h1 {
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 10px;
-    background: rgba(16, 25, 40, 0.55);
+    background: color-mix(in srgb, var(--bg-panel-soft) 66%, transparent);
 }
 .diag-section-title {
     font-size: 12px;
@@ -829,7 +818,7 @@ h1 {
     display: block;
     font-size: 11px;
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    background: rgba(10, 16, 27, 0.85);
+    background: color-mix(in srgb, var(--bg) 78%, var(--bg-panel-soft));
     border: 1px solid var(--border);
     border-radius: 6px;
     padding: 5px 7px;

@@ -467,11 +467,11 @@ def _build_queue_items(
         agent_label = (issue.agent_type or "unknown").replace("agent:", "")
         if is_blocked:
             status = "blocked"
-            status_reason = dep_summary or "blocked"
+            status_reason = _normalize_status_reason(dep_summary) or "blocked"
             detail_label = blocked or "blocked"
         else:
             status = "queue"
-            status_reason = dep_summary
+            status_reason = _normalize_status_reason(dep_summary)
             detail_label = f"agent: {agent_label}"
 
         if issue.number in pending_numbers["rework"]:
@@ -535,7 +535,9 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
     for entry in latest_history_entries_by_issue(state.session_history, limit=50):
         url = entry.pr_url if entry.pr_url else issue_url_for(config, entry.issue_number)
         action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
-        status_reason = getattr(entry, "status_reason", None) or status_labels.get(entry.status, entry.status)
+        status_reason = _normalize_status_reason(getattr(entry, "status_reason", None))
+        if not status_reason:
+            status_reason = status_labels.get(entry.status, entry.status)
 
         flow_stage = "done" if entry.status == "completed" else "in_progress"
         flow_steps = flow_steps_for(flow_stage)
@@ -572,6 +574,18 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             history_items.append(item)
 
     return history_items, blocked_items
+
+
+def _normalize_status_reason(reason: str | None) -> str | None:
+    if reason is None:
+        return None
+    trimmed = reason.strip()
+    if not trimmed:
+        return None
+    # Freshness is represented by stale-dot metadata; avoid duplicating noisy sync text on cards.
+    if trimmed.lower().startswith("synced "):
+        return None
+    return trimmed
 
 
 def _build_e2e_running_items(e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
@@ -789,16 +803,24 @@ def _exclude_flow_overlaps(
     Backlog is the "not yet picked up elsewhere" bucket, so anything already
     represented in queued/running/blocked/done should not appear there.
     """
+    def _to_issue_number(raw: Any) -> int | None:
+        if isinstance(raw, int):
+            return raw
+        if isinstance(raw, str) and raw.isdigit():
+            return int(raw)
+        return None
+
     occupied_numbers = {
-        int(item["issue_number"])
+        issue_number
         for item in queue_items + active_items + blocked_items + done_items
-        if isinstance(item.get("issue_number"), int)
+        for issue_number in [_to_issue_number(item.get("issue_number"))]
+        if issue_number is not None
     }
     return [
         item
         for item in backlog_items
-        if isinstance(item.get("issue_number"), int)
-        and int(item["issue_number"]) not in occupied_numbers
+        for issue_number in [_to_issue_number(item.get("issue_number"))]
+        if issue_number is not None and issue_number not in occupied_numbers
     ]
 
 
@@ -1239,7 +1261,7 @@ def build_dashboard_view_model(
         active_count=len(active_items),
         queue_count=len(queue_items),
         blocked_count=len(blocked_items),
-        history_count=len(history_items),
+        history_count=len(history_items) + len(blocked_items),
         e2e_count=e2e_total,
         backlog_count=len(backlog_items),
         done_count=len(done_items),

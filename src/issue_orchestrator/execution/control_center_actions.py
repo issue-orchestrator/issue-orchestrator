@@ -1,0 +1,377 @@
+"""Command-backed actions for Control Center endpoints.
+
+This module centralizes behavior for UI-triggered actions so endpoint handlers
+are thin adapters and tests can exercise command objects directly.
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Optional, Protocol
+
+from ..infra.supervisor import SupervisorOps
+from .orchestrator_http_api import OrchestratorAsyncHttpApi
+
+
+@dataclass(frozen=True)
+class ActionResult:
+    """Result payload and status code for command execution."""
+
+    payload: dict[str, Any]
+    status_code: int = 200
+
+
+@dataclass(frozen=True)
+class RepoActionRequest:
+    repo_root: Path
+
+
+@dataclass(frozen=True)
+class RefreshActionRequest:
+    repo_root: Path
+    inflight_stable_ids: Optional[list[str]] = None
+
+
+@dataclass(frozen=True)
+class DoctorActionRequest:
+    repo_root: Path
+
+
+@dataclass(frozen=True)
+class AuditActionRequest:
+    repo_root: Path
+    issue_number: int | None = None
+
+
+@dataclass(frozen=True)
+class TraceActionRequest:
+    repo_root: Path
+    issue_number: int
+    limit: int = 100
+
+
+class AsyncCommand(Protocol):
+    async def execute(self, request: Any) -> ActionResult: ...
+
+
+async def _passthrough_api_call(port: int, op: str, body: Optional[dict[str, Any]] = None) -> ActionResult:
+    base_url = f"http://127.0.0.1:{port}"
+    api = OrchestratorAsyncHttpApi(base_url_provider=lambda: base_url, timeout_seconds=10.0)
+    try:
+        if op == "pause":
+            return ActionResult(await api.pause())
+        if op == "resume":
+            return ActionResult(await api.resume())
+        if op == "refresh":
+            return ActionResult(await api.refresh(body.get("inflight_stable_ids", []) if body else []))
+        return ActionResult({"error": "unsupported_passthrough_operation"}, status_code=500)
+    except Exception as exc:
+        return ActionResult({
+            "error": "passthrough_failed",
+            "detail": str(exc),
+        }, status_code=502)
+    finally:
+        await api.close()
+
+
+class PauseOrchestratorCommand:
+    """Pause a running orchestrator via passthrough API."""
+
+    def __init__(self, supervisor: SupervisorOps) -> None:
+        self._supervisor = supervisor
+
+    async def execute(self, request: RepoActionRequest) -> ActionResult:
+        status_info = self._supervisor.status(request.repo_root)
+        if status_info.state != "running" or status_info.port is None:
+            return ActionResult({
+                "error": "not_running",
+                "state": status_info.state,
+            }, status_code=400)
+
+        return await _passthrough_api_call(status_info.port, "pause")
+
+
+class ResumeOrchestratorCommand:
+    """Resume a running orchestrator via passthrough API."""
+
+    def __init__(self, supervisor: SupervisorOps) -> None:
+        self._supervisor = supervisor
+
+    async def execute(self, request: RepoActionRequest) -> ActionResult:
+        status_info = self._supervisor.status(request.repo_root)
+        if status_info.state != "running" or status_info.port is None:
+            return ActionResult({
+                "error": "not_running",
+                "state": status_info.state,
+            }, status_code=400)
+
+        return await _passthrough_api_call(status_info.port, "resume")
+
+
+class RefreshOrchestratorCommand:
+    """Trigger refresh on a running orchestrator via passthrough API."""
+
+    def __init__(self, supervisor: SupervisorOps) -> None:
+        self._supervisor = supervisor
+
+    async def execute(self, request: RefreshActionRequest) -> ActionResult:
+        status_info = self._supervisor.status(request.repo_root)
+        if status_info.state != "running" or status_info.port is None:
+            return ActionResult({
+                "error": "not_running",
+                "state": status_info.state,
+            }, status_code=400)
+
+        forward_body: dict[str, Any] = {}
+        if request.inflight_stable_ids is not None:
+            forward_body["inflight_stable_ids"] = request.inflight_stable_ids
+
+        return await _passthrough_api_call(
+            status_info.port,
+            "refresh",
+            forward_body if forward_body else None,
+        )
+
+
+class DoctorCommand:
+    """Run repository doctor checks."""
+
+    async def execute(self, request: DoctorActionRequest) -> ActionResult:
+        from ..infra.config import Config, get_config_path, list_configs
+        from ..infra.doctor import run_doctor
+        from ..execution.command_runner import LocalCommandRunner
+
+        config = None
+        config_path = None
+        available = list_configs(request.repo_root)
+        if available:
+            config_path = get_config_path(request.repo_root, available[0])
+            try:
+                config = Config.load(config_path)
+            except Exception:
+                config = None
+
+        result = run_doctor(config=config, config_path=config_path, runner=LocalCommandRunner())
+        return ActionResult(dict(result.to_dict()))
+
+
+class AuditIssuesCommand:
+    """Audit queued/blocked issue reasons."""
+
+    async def execute(self, request: AuditActionRequest) -> ActionResult:
+        from ..infra.audit import audit_queue
+        from ..execution.providers import create_repository_host
+        from ..execution.git_working_copy import GitWorkingCopy
+        from ..infra.analysis import extract_issue_branches
+        from ..infra.config import Config
+
+        try:
+            config = Config.find_and_load(start_path=request.repo_root)
+        except FileNotFoundError:
+            return ActionResult({"error": "Config not found for repo"}, status_code=404)
+
+        if not config.repo:
+            return ActionResult({"error": "No repository configured"}, status_code=400)
+
+        try:
+            issue_tracker = create_repository_host(config.repo)
+            working_copy = GitWorkingCopy()
+            issue_branches = extract_issue_branches(
+                working_copy.list_remote_branches(config.repo_root),
+            )
+            entries = audit_queue(
+                config,
+                state=None,
+                issue_tracker=issue_tracker,
+                issue_branches=issue_branches,
+            )
+            if request.issue_number is not None:
+                entries = [entry for entry in entries if entry.issue.number == request.issue_number]
+            return ActionResult({
+                "entries": [
+                    {
+                        "issue_number": entry.issue.number,
+                        "title": entry.issue.title,
+                        "status": entry.status.value,
+                        "reason": entry.detail,
+                        "labels": list(entry.issue.labels),
+                        "agent": entry.issue.agent_type,
+                        "priority": entry.issue.priority,
+                    }
+                    for entry in entries
+                ],
+            })
+        except Exception as exc:
+            return ActionResult({"error": str(exc)}, status_code=500)
+
+
+class TraceIssueCommand:
+    """Load issue trace entries from orchestrator logs."""
+
+    async def execute(self, request: TraceActionRequest) -> ActionResult:
+        log_file = request.repo_root / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log"
+        if not log_file.exists():
+            return ActionResult({
+                "entries": [],
+                "message": "No log file found. Has the orchestrator run for this repo?",
+            })
+
+        try:
+            lines = log_file.read_text().splitlines()
+            last_start = 0
+            for i, line in enumerate(lines):
+                if "Starting orchestrator" in line:
+                    last_start = i
+
+            pattern = re.compile(
+                rf"\[issue-{request.issue_number}\]|"
+                rf"issue={request.issue_number}(?![0-9])|"
+                rf"issue_number={request.issue_number}(?![0-9])|"
+                rf"issue #{request.issue_number}(?![0-9])",
+            )
+            matches: list[str] = []
+            for line in lines[last_start:]:
+                if pattern.search(line):
+                    matches.append(line)
+                    if len(matches) >= request.limit:
+                        break
+            return ActionResult({
+                "entries": matches,
+                "total": len(matches),
+                "truncated": len(matches) >= request.limit,
+            })
+        except Exception as exc:
+            return ActionResult({"error": str(exc)}, status_code=500)
+
+
+def _find_stale_worktrees(repo_root: Path, worktree_base: Path, active: set[Path]) -> list[dict[str, str]]:
+    stale: list[dict[str, str]] = []
+    if not worktree_base.exists():
+        return stale
+
+    repo_name = repo_root.name
+    worktree_pattern = re.compile(rf"^{re.escape(repo_name)}-(\d+)$")
+    for entry in worktree_base.iterdir():
+        if not entry.is_dir():
+            continue
+        if not worktree_pattern.match(entry.name):
+            continue
+        git_path = entry / ".git"
+        if not git_path.exists() or git_path.is_dir():
+            continue
+        if entry in active:
+            continue
+        stale.append({"path": str(entry), "name": entry.name})
+    return stale
+
+
+class ListStaleWorktreesCommand:
+    """List stale orchestrator worktrees (read-only)."""
+
+    async def execute(self, request: RepoActionRequest) -> ActionResult:
+        from ..execution.git_working_copy import GitWorkingCopy
+        from ..infra.config import Config
+
+        fallback_mode = False
+        try:
+            config = Config.find_and_load(start_path=request.repo_root)
+            worktree_base = config.worktree_base
+        except FileNotFoundError:
+            fallback_mode = True
+            worktree_base = request.repo_root.parent
+
+        if not worktree_base.exists():
+            return ActionResult({"stale_worktrees": [], "message": "No worktree directory found"})
+
+        try:
+            working_copy = GitWorkingCopy()
+            active = working_copy.list_active_worktrees(request.repo_root)
+            stale = _find_stale_worktrees(request.repo_root, worktree_base, active)
+            payload: dict[str, Any] = {
+                "stale_worktrees": stale,
+                "cleanup_command": f"cd {request.repo_root} && git worktree prune",
+                "message": "Run the cleanup_command in terminal to remove stale worktrees safely.",
+            }
+            if fallback_mode:
+                payload["scope"] = "repo-parent-fallback"
+                payload["note"] = "No config found; scanned repo parent using worktree naming convention."
+            return ActionResult(payload)
+        except Exception as exc:
+            return ActionResult({"error": str(exc)}, status_code=500)
+
+
+class InitializeLabelsCommand:
+    """Initialize or refresh GitHub labels for a repository."""
+
+    async def execute(self, request: RepoActionRequest) -> ActionResult:
+        from ..execution.providers import create_repository_host
+        from ..infra.config import Config
+
+        try:
+            config = Config.find_and_load(start_path=request.repo_root)
+        except FileNotFoundError:
+            return ActionResult({"error": "Config not found for repo"}, status_code=404)
+
+        if not config.repo:
+            return ActionResult({"error": "No repository configured"}, status_code=400)
+
+        try:
+            client = create_repository_host(config.repo)
+            labels = [
+                config.get_label_in_progress(),
+                config.get_label_blocked(),
+                config.get_label_needs_human(),
+                "priority:high",
+                "priority:medium",
+                "priority:low",
+            ]
+            labels.extend(config.agents.keys())
+            created: list[str] = []
+            updated: list[str] = []
+            failed: list[str] = []
+            existing = {label.get("name") for label in client.list_labels()}
+            for label in labels:
+                try:
+                    client.create_label(label, force=True)
+                    if label in existing:
+                        updated.append(label)
+                    else:
+                        created.append(label)
+                except Exception:
+                    failed.append(label)
+            return ActionResult({
+                "created": created,
+                "updated": updated,
+                "failed": failed,
+            })
+        except Exception as exc:
+            return ActionResult({"error": str(exc)}, status_code=500)
+
+
+class ControlCenterActions:
+    """Owns command objects behind Control Center action endpoints."""
+
+    def __init__(
+        self,
+        supervisor: SupervisorOps,
+        *,
+        pause_cmd: PauseOrchestratorCommand | None = None,
+        resume_cmd: ResumeOrchestratorCommand | None = None,
+        refresh_cmd: RefreshOrchestratorCommand | None = None,
+        doctor_cmd: DoctorCommand | None = None,
+        audit_cmd: AuditIssuesCommand | None = None,
+        trace_cmd: TraceIssueCommand | None = None,
+        labels_cmd: InitializeLabelsCommand | None = None,
+        stale_worktrees_cmd: ListStaleWorktreesCommand | None = None,
+    ) -> None:
+        self.supervisor = supervisor
+        self.pause_cmd: PauseOrchestratorCommand = pause_cmd or PauseOrchestratorCommand(supervisor)
+        self.resume_cmd: ResumeOrchestratorCommand = resume_cmd or ResumeOrchestratorCommand(supervisor)
+        self.refresh_cmd: RefreshOrchestratorCommand = refresh_cmd or RefreshOrchestratorCommand(supervisor)
+        self.doctor_cmd: DoctorCommand = doctor_cmd or DoctorCommand()
+        self.audit_cmd: AuditIssuesCommand = audit_cmd or AuditIssuesCommand()
+        self.trace_cmd: TraceIssueCommand = trace_cmd or TraceIssueCommand()
+        self.labels_cmd: InitializeLabelsCommand = labels_cmd or InitializeLabelsCommand()
+        self.stale_worktrees_cmd: ListStaleWorktreesCommand = stale_worktrees_cmd or ListStaleWorktreesCommand()

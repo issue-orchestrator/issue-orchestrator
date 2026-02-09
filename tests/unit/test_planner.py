@@ -1374,8 +1374,8 @@ class TestActionPriority:
         assert len(launch_actions) == 1
         assert launch_actions[0].session_type == SessionType.REWORK
 
-    def test_no_new_issues_when_pending_reviews_exist(self):
-        """New issue work is blocked when pending reviews exist."""
+    def test_issues_launch_when_pending_reviews_exist_but_no_review_launches(self):
+        """Pending reviews should not starve issue work when review launches are skipped."""
         config = make_config(code_review_agent="agent:reviewer", max_concurrent_sessions=3)
         scheduler = Scheduler(config)
 
@@ -1401,11 +1401,55 @@ class TestActionPriority:
 
         plan = planner.plan(snapshot)
 
-        # Should NOT launch issues because pending_reviews is non-empty
+        # Should launch issues because no review launches were started this tick
         issue_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
             if a.session_type == SessionType.ISSUE
         ]
+        assert len(issue_actions) == 2
+
+    def test_no_new_issues_when_review_launches_started(self):
+        """New issue work remains blocked when review launches are started this tick."""
+        config = make_config(code_review_agent="agent:reviewer", max_concurrent_sessions=3)
+        scheduler = Scheduler(config)
+
+        mock_review_workflow = Mock()
+        mock_review_workflow.is_configured.return_value = True
+        pending_review = PendingReview(
+            issue_key=FakeIssueKey(name="10"),
+            pr_number=100,
+            pr_url="url",
+            branch_name="branch",
+            _issue_number=10,
+        )
+        mock_review_workflow.should_launch_reviews.return_value = Mock(
+            should_launch=True,
+            skip_reason=None,
+            reviews_to_launch=[pending_review],
+        )
+
+        planner = Planner(
+            config=config,
+            scheduler=scheduler,
+            review_workflow=mock_review_workflow,
+        )
+
+        snapshot = make_snapshot(
+            issues=[make_issue(1), make_issue(2)],
+            pending_reviews=[pending_review],
+        )
+
+        plan = planner.plan(snapshot)
+
+        issue_actions = [
+            a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == SessionType.ISSUE
+        ]
+        review_actions = [
+            a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == SessionType.REVIEW
+        ]
+        assert len(review_actions) == 1
         assert len(issue_actions) == 0
 
     def test_issues_launched_when_no_pending_work(self):
@@ -2031,27 +2075,51 @@ class TestMultiplePendingTypesInteraction:
     """Tests for interactions when multiple pending types exist simultaneously."""
 
     def test_all_pending_types_block_new_issues(self):
-        """Any non-empty pending queue blocks new issue launches."""
-        config = make_config(max_concurrent_sessions=5)
-        scheduler = Scheduler(config)
-        planner = Planner(config=config, scheduler=scheduler)
+        """Pending launches block new issues when corresponding workflows are configured."""
+        from tests.conftest import MockEventSink
+        from issue_orchestrator.control.workflows import ReviewWorkflow, TriageWorkflow
 
-        # Only triage pending (no reviews or reworks)
-        pending_triage = PendingTriageReview(issue_number=100, title="Investigate")
+        config = make_config(
+            code_review_agent="agent:reviewer",
+            triage_review_agent="agent:triage",
+            max_concurrent_sessions=5,
+        )
+        scheduler = Scheduler(config)
+        events = MockEventSink()
+        planner = Planner(
+            config=config,
+            scheduler=scheduler,
+            review_workflow=ReviewWorkflow(config=config, events=events),
+            triage_workflow=TriageWorkflow(config=config, events=events),
+        )
+
+        pending_review = PendingReview(
+            issue_key=FakeIssueKey(name="100"),
+            pr_number=200,
+            pr_url="https://example.test/pull/200",
+            branch_name="issue-100",
+            _issue_number=100,
+        )
+        pending_triage = PendingTriageReview(issue_number=101, title="Investigate")
 
         snapshot = make_snapshot(
-            issues=[make_issue(1), make_issue(2)],
+            issues=[make_issue(100), make_issue(1), make_issue(2)],
+            pending_reviews=[pending_review],
             pending_triage=[pending_triage],
         )
 
         plan = planner.plan(snapshot)
 
-        # Issues should NOT be launched because pending_triage is non-empty
+        # Issues should NOT be launched because pending review/triage launches started this tick.
         issue_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
             if a.session_type == SessionType.ISSUE
         ]
         assert len(issue_actions) == 0
+        assert any(
+            a.session_type in {SessionType.REVIEW, SessionType.TRIAGE}
+            for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+        )
 
     def test_capacity_shared_across_all_types(self):
         """Capacity is correctly shared when multiple types launch."""
