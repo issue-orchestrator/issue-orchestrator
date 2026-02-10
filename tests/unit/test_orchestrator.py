@@ -3,9 +3,8 @@
 import asyncio
 import pytest
 import tempfile
-from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call, AsyncMock, PropertyMock
+from unittest.mock import MagicMock, patch, AsyncMock
 from tests.conftest import MockSessionRunner
 from issue_orchestrator.infra.orchestrator import Orchestrator, run_orchestrator
 from issue_orchestrator.domain.models import (
@@ -18,15 +17,14 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
-from issue_orchestrator.infra.config import Config
+
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.observation.observer import SessionObserver
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.worktree_manager import WorktreeInfo, WorktreeReuseOptions
-from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
+
 from issue_orchestrator.events import EventName
 from issue_orchestrator.contracts.public import OrchestratorPausedPayload, OrchestratorResumedPayload
-
 
 class MockWorktreeManager:
     """Mock implementation of WorktreeManager for testing."""
@@ -74,7 +72,6 @@ class MockWorktreeManager:
             return int(parts[0])
         return None
 
-
 def test_pause_emits_event(sample_config):
     orchestrator = create_test_orchestrator(sample_config)
 
@@ -84,7 +81,6 @@ def test_pause_emits_event(sample_config):
     assert len(events) == 1
     assert orchestrator.state.paused is True
     OrchestratorPausedPayload.model_validate(events[0].data)
-
 
 def test_resume_emits_event(sample_config):
     orchestrator = create_test_orchestrator(sample_config)
@@ -96,7 +92,6 @@ def test_resume_emits_event(sample_config):
     assert len(events) == 1
     assert orchestrator.state.paused is False
     OrchestratorResumedPayload.model_validate(events[0].data)
-
 
 def create_test_orchestrator(
     config,
@@ -161,7 +156,6 @@ def create_test_orchestrator(
 
     return Orchestrator(config=config, deps=deps)
 
-
 async def run_loop_one_tick(orchestrator: Orchestrator) -> None:
     """Run exactly one orchestrator tick deterministically."""
     original_tick = orchestrator.tick
@@ -174,7 +168,6 @@ async def run_loop_one_tick(orchestrator: Orchestrator) -> None:
     with patch.object(orchestrator, "tick", side_effect=tick_and_shutdown):
         await orchestrator.run_loop()
 
-
 # Helper functions
 def create_issue(number, title="Test Issue", labels=None, milestone=None):
     """Helper to create Issue objects for testing."""
@@ -186,7 +179,6 @@ def create_issue(number, title="Test Issue", labels=None, milestone=None):
         labels=labels,
         milestone=milestone,
     )
-
 
 def create_session(issue, worktree_path=None, branch_name="feature/test", task=TaskKind.CODE):
     """Helper to create Session objects for testing."""
@@ -208,7 +200,6 @@ def create_session(issue, worktree_path=None, branch_name="feature/test", task=T
         branch_name=branch_name,
     )
 
-
 def create_pr_info(number, title="Test PR", labels=None, branch="feature/test"):
     """Helper to create PRInfo objects for testing."""
     if labels is None:
@@ -222,7 +213,6 @@ def create_pr_info(number, title="Test PR", labels=None, branch="feature/test"):
         state="open",
         labels=labels,
     )
-
 
 class TestOrchestratorInit:
     """Test Orchestrator initialization."""
@@ -250,7 +240,6 @@ class TestOrchestratorInit:
     def test_shutdown_flag_defaults_to_false(self, sample_orchestrator):
         """Test that shutdown_requested is False by default."""
         assert sample_orchestrator.shutdown_requested is False
-
 
 class TestStartup:
     """Test the startup method."""
@@ -393,7 +382,6 @@ class TestStartup:
         # Should NOT launch a session - blocked issues wait for human
         assert len(orchestrator.state.active_sessions) == 0
 
-
 class TestLaunchSession:
     """Test the launch_session method."""
 
@@ -410,7 +398,7 @@ class TestLaunchSession:
         issue = create_issue(1, labels=["agent:web"])
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
-        session = orchestrator.launch_session(issue)
+        _session = orchestrator.launch_session(issue)
 
         assert len(mock_worktree_manager.create_calls) == 1
         assert mock_worktree_manager.create_calls[0]["issue_number"] == 1
@@ -429,7 +417,7 @@ class TestLaunchSession:
         # Proper DI: inject mock adapter instead of patching functions
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
-        session = orchestrator.launch_session(issue)
+        _session = orchestrator.launch_session(issue)
 
         # Verify adapter was called with correct arguments
         assert (1, sample_config.get_label_in_progress()) in mock_repository_host.add_label_calls
@@ -448,7 +436,7 @@ class TestLaunchSession:
         sample_config.ui_mode = "tmux"  # Explicitly test tmux mode
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
-        session = orchestrator.launch_session(issue)
+        _session = orchestrator.launch_session(issue)
 
         # Verify session was created via plugin
         assert len(orchestrator.deps.runner.plugin.create_session_calls) == 1  # type: ignore
@@ -687,7 +675,6 @@ class TestHandleSessionCompletion:
     # Note: Session closing is now handled via CleanupSessionAction in the planner/applier cycle.
     # These tests verify that ImmediateCleanup is recorded; the actual closing is tested in
     # test_action_applier.py where CleanupSessionAction is executed.
-
 
 class TestRunLoop:
     """Test the run_loop method."""
@@ -967,7 +954,7 @@ class TestRunLoop:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
-            call_count = 0
+            _call_count = 0
 
             tick_complete = asyncio.Event()
             original_tick = orchestrator.tick
@@ -987,7 +974,6 @@ class TestRunLoop:
 
             # Should try to launch both (loop may run multiple iterations)
             assert mock_launch.call_count >= 2
-
 
 class TestMaxIssuesToStart:
     """Test the max_issues_to_start limit functionality."""
@@ -1022,7 +1008,7 @@ class TestMaxIssuesToStart:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host)
 
         with patch.object(orchestrator, "launch_session") as mock_launch:
-            call_count = 0
+            _call_count = 0
 
             # Run one iteration
             tick_complete = asyncio.Event()
@@ -1118,7 +1104,7 @@ class TestMaxIssuesToStart:
         runner.plugin.session_exists_override = False
         mock_worktree_manager = MockWorktreeManager()
 
-        issue = create_issue(1, labels=["agent:web"])
+        _issue = create_issue(1, labels=["agent:web"])
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, mock_worktree_manager, runner=runner)
 
         assert orchestrator.state.issues_started_count == 0
@@ -1210,7 +1196,6 @@ class TestMaxIssuesToStart:
             # This means on next tick, we could still launch one more issue
             assert orchestrator.state.issues_started_count == 1
 
-
 class TestControlMethods:
     """Test pause, resume, prioritize methods."""
 
@@ -1282,7 +1267,6 @@ class TestControlMethods:
         event_names = [e.name for e in orchestrator.deps.events.events]  # type: ignore
         assert "orchestrator.shutdown_started" in event_names
         assert "orchestrator.shutdown_completed" in event_names
-
 
 class TestRunOrchestrator:
     """Test the run_orchestrator entry point."""
@@ -1410,7 +1394,6 @@ class TestRunOrchestrator:
         assert signal.SIGINT in call_args_list
         assert signal.SIGTERM in call_args_list
 
-
 class TestGatherTriageFacts:
     """Test the fact_gatherer.gather_triage_facts method for triage review workflow.
 
@@ -1531,11 +1514,9 @@ class TestGatherTriageFacts:
         assert 10 in pr_numbers
         assert 20 in pr_numbers
 
-
 # TestQueueCodeReview removed - queue_code_review method was legacy
 # Code review queueing is now tested via discovered_reviews + Planner pattern
 # See test_planner.py for QueueReviewAction tests
-
 
 class TestLaunchReviewSession:
     """Test the launch_review_session method."""
@@ -1566,7 +1547,7 @@ class TestLaunchReviewSession:
         )
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager, runner=runner)
-        session = orchestrator.launch_review_session(review)
+        _session = orchestrator.launch_review_session(review)
 
         assert len(mock_worktree_manager.create_calls) == 1
         # Should pass branch_name to checkout existing PR branch
@@ -1598,7 +1579,7 @@ class TestLaunchReviewSession:
         )
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager, runner=runner)
-        session = orchestrator.launch_review_session(review)
+        _session = orchestrator.launch_review_session(review)
 
         # Verify session was created via plugin
         assert len(orchestrator.deps.runner.plugin.create_session_calls) == 1  # type: ignore
@@ -1666,7 +1647,7 @@ class TestLaunchReviewSession:
         orchestrator.state.pending_reviews.append(review)
         assert len(orchestrator.state.pending_reviews) == 1
 
-        session = orchestrator.launch_review_session(review)
+        _session = orchestrator.launch_review_session(review)
 
         assert len(orchestrator.state.pending_reviews) == 0
 
@@ -1767,11 +1748,10 @@ class TestLaunchReviewSession:
         )
 
         orchestrator = create_test_orchestrator(sample_config, worktree_manager=mock_worktree_manager, runner=runner)
-        session = orchestrator.launch_review_session(review)
+        _session = orchestrator.launch_review_session(review)
 
         # Should explicitly disable hooks for review sessions
         assert mock_worktree_manager.create_calls[0]["enforce_hooks"] is False
-
 
 class TestHandleSessionCompletionWithCodeReview:
     """Test handle_session_completion triggering code review.
@@ -1795,7 +1775,6 @@ class TestHandleSessionCompletionWithCodeReview:
     ):
         """Test that handle_session_completion stores DiscoveredReview for Planner."""
         from issue_orchestrator.ports.pull_request_tracker import PRInfo
-        from issue_orchestrator.domain.models import DiscoveredReview
 
         sample_config.code_review_agent = "agent:reviewer"
         mock_repository_host.prs["feature/issue-1"] = [
@@ -1906,7 +1885,6 @@ class TestHandleSessionCompletionWithCodeReview:
         # Should not store DiscoveredReview if no PR found
         assert len(orchestrator.state.discovered_reviews) == 0
 
-
 class TestStartupPendingReviews:
     """Test startup recovery for pending code reviews."""
 
@@ -1987,7 +1965,6 @@ class TestStartupPendingReviews:
         # No PRs should be queued when code review is not configured
         assert len(orchestrator.state.pending_reviews) == 0
 
-
 class TestPauseBehavior:
     """Test that pause stops all new work from starting."""
 
@@ -2046,7 +2023,6 @@ class TestPauseBehavior:
             # Should only launch 1 issue (paused after first)
             assert mock_launch.call_count == 1
             assert orchestrator.state.paused is True
-
 
 class TestReconcileOrphanedPrLabels:
     """Test the reconcile_orphaned_pr_labels method.
@@ -2212,7 +2188,6 @@ class TestReconcileOrphanedPrLabels:
         # Should not have added any labels
         assert len(mock_repository_host.add_label_calls) == 0
 
-
 class TestSessionExistsDetection:
     """Test session detection prevents duplicate launches.
 
@@ -2342,7 +2317,6 @@ class TestSessionExistsDetection:
         # Session is restored to active_sessions (prevents infinite loop)
         assert len(orchestrator.state.active_sessions) == 1
 
-
 class TestStateMachineTransitions:
     """Test state machine transitions between pending, active, and completed states."""
 
@@ -2416,7 +2390,6 @@ class TestStateMachineTransitions:
     # process_pending_reviews() was deleted. The workflow layer now handles batching
     # reviews - see test_workflows.py::TestReviewWorkflow::test_should_launch_returns_reviews_up_to_capacity
 
-
 class TestNamingConventions:
     """Tests for centralized naming convention helpers.
 
@@ -2463,7 +2436,6 @@ class TestNamingConventions:
         path = get_worktree_path(sample_config, 123, agent_config)
 
         assert path == tmp_path / "worktrees" / "my-repo-123"
-
 
 class TestDeferredCleanup:
     """Tests for deferred cleanup functionality."""
@@ -2627,7 +2599,6 @@ class TestDeferredCleanup:
         cleanup = orchestrator.state.immediate_cleanups[0]
         assert cleanup.reason == "failed"
 
-
 class TestProcessDeferredCleanups:
     """Tests for processing deferred cleanups."""
 
@@ -2744,7 +2715,6 @@ class TestProcessDeferredCleanups:
 
         # Should not raise, cleanup stays pending
         orchestrator.process_deferred_cleanups()
-
 
 class TestRecoverOrphanedCleanups:
     """Tests for orphaned cleanup recovery on startup."""
@@ -2863,7 +2833,6 @@ class TestRecoverOrphanedCleanups:
 
         # Should not raise
         orchestrator._recover_orphaned_cleanups()  # noqa: SLF001
-
 
 class TestReworkEscalation:
     """Test rework escalation to needs-human after max cycles.
@@ -3047,7 +3016,6 @@ class TestReworkEscalation:
         labels = ["rework-cycle-5"]
         assert scanner._get_rework_cycle_from_labels(labels) == 6  # noqa: SLF001
 
-
 class TestRefreshRequestPreservation:
     """Tests for refresh request preservation during planning cycles.
 
@@ -3089,11 +3057,11 @@ class TestRefreshRequestPreservation:
 
         # Now test the race condition fix:
         # Set up so request_refresh is called DURING the cycle
-        original_impl = orchestrator._run_planning_cycle  # noqa: SLF001, F841
+        _original_impl = orchestrator._run_planning_cycle  # noqa: SLF001, F841
 
         def cycle_with_mid_request():
             # Capture what _run_planning_cycle does internally
-            refresh_to_process = orchestrator._refresh_requested  # noqa: SLF001, F841
+            _refresh_to_process = orchestrator._refresh_requested  # noqa: SLF001, F841
             orchestrator._refresh_requested = False  # noqa: SLF001
 
             # Simulate request_refresh() being called during the impl
@@ -3146,7 +3114,6 @@ class TestRefreshRequestPreservation:
         assert orchestrator._refresh_requested is True  # noqa: SLF001
         assert 'issue-1' in orchestrator._inflight_stable_ids  # noqa: SLF001
         assert 'issue-2' in orchestrator._inflight_stable_ids  # noqa: SLF001
-
 
 class TestAsyncPublishResults:
     """Tests for async publish result handling."""

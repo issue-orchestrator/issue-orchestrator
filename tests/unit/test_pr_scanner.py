@@ -8,7 +8,6 @@ Follows the testing patterns in tests/unit/CLAUDE.md:
 """
 
 import pytest
-from unittest.mock import MagicMock
 
 from issue_orchestrator.control.pr_scanner import PRScanner, ScanResult
 from issue_orchestrator.infra.config import Config
@@ -433,7 +432,7 @@ class TestScanForReworksBasic:
         )
         mock_repository.prs["42-feature"] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(
+        result, _escalations = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )
@@ -776,7 +775,7 @@ class TestEdgeCases:
         )
         mock_repository.prs[""] = [pr]
 
-        result, escalations = scanner.scan_for_reworks(
+        result, _escalations = scanner.scan_for_reworks(
             already_queued=[],
             active_sessions=[],
         )

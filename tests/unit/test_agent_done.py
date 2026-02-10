@@ -7,11 +7,9 @@ The orchestrator handles all side effects (push, PR, comments, labels).
 import argparse
 import json
 import os
-import sys
-import tempfile
-from datetime import datetime
+
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch
 import pytest
 
 from issue_orchestrator.infra.env import ENV_PREFIX
@@ -36,7 +34,6 @@ from issue_orchestrator.domain.models import (
     COMPLETION_RECORD_PATH,
 )
 
-
 class TestAgentStatus:
     """Test the AgentStatus constants."""
 
@@ -47,7 +44,6 @@ class TestAgentStatus:
         assert AgentStatus.NEEDS_HUMAN == "needs_human"
         assert AgentStatus.APPROVED == "approved"
         assert AgentStatus.CHANGES_REQUESTED == "changes_requested"
-
 
 class TestRequiredFields:
     """Test REQUIRED_FIELDS constant."""
@@ -72,7 +68,6 @@ class TestRequiredFields:
         """Test required fields for changes_requested status include risk."""
         assert REQUIRED_FIELDS[AgentStatus.CHANGES_REQUESTED] == ["issues", "risk"]
 
-
 class TestStatusToOutcome:
     """Test STATUS_TO_OUTCOME mapping."""
 
@@ -95,7 +90,6 @@ class TestStatusToOutcome:
     def test_changes_requested_maps_to_review_changes_requested(self):
         """Test changes_requested status maps to REVIEW_CHANGES_REQUESTED outcome."""
         assert STATUS_TO_OUTCOME[AgentStatus.CHANGES_REQUESTED] == CompletionOutcome.REVIEW_CHANGES_REQUESTED
-
 
 class TestStatusToActions:
     """Test STATUS_TO_ACTIONS mapping."""
@@ -135,7 +129,6 @@ class TestStatusToActions:
         assert RequestedAction.REMOVE_CODE_REVIEW_LABEL in actions
         assert RequestedAction.POST_COMMENT in actions
 
-
 class TestDie:
     """Test the die function."""
 
@@ -152,7 +145,6 @@ class TestDie:
         captured = capsys.readouterr()
         assert "ERROR: Test error message" in captured.err
         assert "Use --help for usage information" in captured.err
-
 
 class TestGetSessionId:
     """Test the get_session_id function."""
@@ -172,7 +164,6 @@ class TestGetSessionId:
             assert session_id.startswith("standalone-")
             # Should contain date-time pattern
             assert "-" in session_id
-
 
 class TestValidateFields:
     """Test the validate_fields function."""
@@ -299,7 +290,6 @@ class TestValidateFields:
         args = self._make_args(issues="Security issue")
         with pytest.raises(SystemExit):
             validate_fields(AgentStatus.CHANGES_REQUESTED, args)
-
 
 class TestFormatCommentBody:
     """Test the format_comment_body function."""
@@ -429,7 +419,6 @@ class TestFormatCommentBody:
         assert "`medium`" in comment
         assert "`error_handling`" in comment
 
-
 class TestBuildCompletionRecord:
     """Test the build_completion_record function."""
 
@@ -539,7 +528,6 @@ class TestBuildCompletionRecord:
         assert record.checks_needed == ["tests_added", "error_handling"]
         assert RequestedAction.ADD_NEEDS_REWORK_LABEL in record.requested_actions
 
-
 class TestWriteCompletionRecord:
     """Test the write_completion_record function."""
 
@@ -603,7 +591,6 @@ class TestWriteCompletionRecord:
             if original_completion_path is not None:
                 os.environ[f"{ENV_PREFIX}COMPLETION_PATH"] = original_completion_path
 
-
 class TestWriteMarkerFile:
     """Test the write_marker_file function."""
 
@@ -621,7 +608,6 @@ class TestWriteMarkerFile:
             assert "agent-done completed called at" in content
         finally:
             os.chdir(original_cwd)
-
 
 class TestMain:
     """Test the main function."""
@@ -788,7 +774,6 @@ class TestMain:
         finally:
             os.chdir(original_cwd)
 
-
 class TestShortFlags:
     """Test short flag versions."""
 
@@ -833,7 +818,6 @@ class TestShortFlags:
 
                 captured = capsys.readouterr()
                 assert "Question text" in captured.out
-
 
 class TestCompletionRecordSerialization:
     """Test that completion records can be serialized and deserialized."""
@@ -900,7 +884,6 @@ class TestCompletionRecordSerialization:
         assert restored.blocked_reason == record.blocked_reason
         assert restored.blocked_by == record.blocked_by
         assert restored.when_unblocked == record.when_unblocked
-
 
 class TestAgentGateIntegration:
     """Test agent gate validation integration in the main function."""

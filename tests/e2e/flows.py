@@ -9,7 +9,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Iterable
 
-import httpx
 
 from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey
 from issue_orchestrator.infra import labels as issue_labels
@@ -23,21 +22,27 @@ from issue_orchestrator.testing.asyncdsl import (
     WatcherConfig,
 )
 from issue_orchestrator.testing.support.test_data import close_issue, _ensure_label
-from tests.e2e.conftest import (
+from tests.e2e.fixtures.data_factory import (
     inflight_create,
     inflight_update,
-    register_inflight_issue,
+)
+from tests.e2e.fixtures.github_client import (
+    get_issue_comments,
+)
+from tests.e2e.fixtures.inflight_tracker import (
     ensure_inflight_refresh,
     trigger_refresh,
+    register_inflight_issue,
+)
+from tests.e2e.fixtures.wait_helpers import (
     wait_for_issue_seen,
     wait_for_session_started,
     wait_for_issue_label_snapshot,
-    get_issue_comments,
+)
+from tests.e2e.conftest import (
     OrchestratorProcess,
     _github_adapter,
-    poll_issue_label,
 )
-
 
 def review_timeout_from_config(config, default_s: float = 240.0) -> float:
     """Compute review timeout from agent config (code + review agent)."""
@@ -48,7 +53,6 @@ def review_timeout_from_config(config, default_s: float = 240.0) -> float:
         return float((code_timeout + review_timeout) * 60)
     except Exception:
         return float(default_s)
-
 
 @dataclass
 class OrchestratorRuntime:
@@ -64,7 +68,6 @@ class OrchestratorRuntime:
         if self.orchestrator.is_running():
             self.orchestrator.stop()
 
-
 async def start_orchestrator_runtime(
     orchestrator: OrchestratorProcess,
     control_api_port: int,
@@ -75,7 +78,6 @@ async def start_orchestrator_runtime(
     assert orchestrator.is_running(), "Orchestrator should start"
     watcher, stream = await create_watcher_for_port(control_api_port)
     return OrchestratorRuntime(orchestrator=orchestrator, watcher=watcher, stream=stream)
-
 
 async def create_watcher_for_port(port: int) -> tuple[OrchestratorWatcher, SSEEventStream]:
     stream = SSEEventStream(f"http://localhost:{port}/api/events")
@@ -89,7 +91,6 @@ async def create_watcher_for_port(port: int) -> tuple[OrchestratorWatcher, SSEEv
         config=WatcherConfig(),
     )
     return watcher, stream
-
 
 def close_pr(repo: str, pr_number: int) -> None:
     """Close a PR and delete its branch."""
@@ -105,7 +106,6 @@ def close_pr(repo: str, pr_number: int) -> None:
             adapter.delete_branch(branch)
         except Exception:
             pass
-
 
 def cleanup_test_prs(repo: str, labels: Iterable[str]) -> int:
     """Close test PRs matching any of the provided labels."""
@@ -123,7 +123,6 @@ def cleanup_test_prs(repo: str, labels: Iterable[str]) -> int:
                 close_pr(repo, pr_num)
                 closed_prs.add(pr_num)
     return len(closed_prs)
-
 
 async def wait_for_any_pr_label(
     watcher: OrchestratorWatcher,
@@ -150,7 +149,6 @@ async def wait_for_any_pr_label(
         watcher._notify.clear()  # noqa: SLF001
     raise TimeoutError(f"Timed out waiting for PR labels {labels} on {issue_key}")
 
-
 async def wait_for_issue_with_label(
     watcher: OrchestratorWatcher,
     label: str,
@@ -168,7 +166,6 @@ async def wait_for_issue_with_label(
             pass
         watcher._notify.clear()  # noqa: SLF001
     raise TimeoutError(f"Timed out waiting for issue with label {label}")
-
 
 async def wait_for_rework_progress(
     watcher: OrchestratorWatcher,
@@ -196,7 +193,6 @@ async def wait_for_rework_progress(
         watcher._notify.clear()  # noqa: SLF001
     return False, seen
 
-
 def check_issue_comment(
     repo: str,
     issue_number: int,
@@ -215,7 +211,6 @@ def check_issue_comment(
         if predicate(comment):
             return comment
     return None
-
 
 async def wait_for_issue_comment(
     repo: str,
@@ -245,7 +240,6 @@ async def wait_for_issue_comment(
                 return comment
         await asyncio.sleep(interval_s)
     return None
-
 
 @dataclass
 class E2EFlow:
@@ -432,7 +426,6 @@ class E2EFlow:
             for issue in issues
         ])
 
-
     async def rework_progress(
         self,
         issue: IssueKey,
@@ -461,7 +454,6 @@ class E2EFlow:
         if self.watcher is None:
             raise RuntimeError("Watcher required for this operation")
         return self.watcher
-
 
 def issue_key_for_number(repo: str, issue_number: int) -> IssueKey:
     return GitHubIssueKey(repo=repo, external_id=str(issue_number))

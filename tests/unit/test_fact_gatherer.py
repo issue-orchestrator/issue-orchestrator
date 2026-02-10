@@ -11,17 +11,15 @@ from issue_orchestrator.domain.models import (
     Issue,
     OrchestratorState,
     Session,
-    AgentConfig,
     PendingReview,
-    PendingRework,
+    
     PendingCleanup,
-    PendingTriageReview,
+    
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.ports import PRInfo
 from issue_orchestrator.ports.event_sink import InMemoryEventSink
-
 
 @pytest.fixture
 def mock_config():
@@ -38,7 +36,6 @@ def mock_config():
     config.triage_reviewed_label = None
     return config
 
-
 @pytest.fixture
 def mock_repository_host():
     """Create a mock RepositoryHost."""
@@ -46,7 +43,6 @@ def mock_repository_host():
     host.list_issues.return_value = []
     host.get_prs_with_label.return_value = []
     return host
-
 
 @pytest.fixture
 def sample_issues():
@@ -56,18 +52,15 @@ def sample_issues():
         Issue(number=2, title="Issue 2", labels=["agent:web"]),
     ]
 
-
 @pytest.fixture
 def sample_state():
     """Create a sample orchestrator state."""
     return OrchestratorState()
 
-
 @pytest.fixture
 def fact_gatherer(mock_config, mock_repository_host):
     """Create a FactGatherer instance."""
     return FactGatherer(config=mock_config, repository_host=mock_repository_host)
-
 
 class TestFactGathererCreateSnapshot:
     """Tests for create_snapshot method."""
@@ -140,7 +133,6 @@ class TestFactGathererCreateSnapshot:
 
         assert snapshot.paused is True
 
-
 class TestFactGathererEvents:
     """Tests for fetch-time event emission."""
 
@@ -190,7 +182,6 @@ class TestFactGathererEvents:
         snapshot = fact_gatherer.create_snapshot(sample_state, sample_issues)
 
         assert snapshot.max_issues_to_start is None
-
 
 class TestFactGathererTriageFacts:
     """Tests for gather_triage_facts method."""
@@ -347,7 +338,6 @@ class TestFactGathererTriageFacts:
         assert "test-data" in result.source_labels
         assert "priority:high" in result.source_labels
 
-
 class TestFactGathererCleanupFacts:
     """Tests for gather_cleanup_facts method."""
 
@@ -358,7 +348,6 @@ class TestFactGathererCleanupFacts:
         result = fact_gatherer.gather_cleanup_facts(sample_state)
 
         assert result is None
-
 
     def test_cleanup_facts_returns_none_when_no_review_workflow(
         self, fact_gatherer, sample_state, mock_config
@@ -483,7 +472,6 @@ class TestFactGathererCleanupFacts:
         assert result is not None
         assert result.reviewed_pr_numbers == frozenset()
         assert len(result.pending_cleanups) == 1
-
 
 class TestFactGathererFetchIssues:
     """Tests for fetch_issues method."""

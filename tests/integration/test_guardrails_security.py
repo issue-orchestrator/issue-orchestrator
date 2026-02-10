@@ -326,7 +326,7 @@ class TestHomeIsolation:
     def test_cannot_access_real_home_configs(self, isolated_env):
         """Verify cannot read configs from real home directory."""
         real_home = Path.home()
-        result = run_in_isolation(isolated_env, f'''
+        _result = run_in_isolation(isolated_env, f'''
             python3 -c "
 from pathlib import Path
 config = Path('{real_home}') / '.config' / 'gh' / 'hosts.yml'

@@ -1,6 +1,5 @@
 """Unit tests for data models."""
 
-import pytest
 from datetime import datetime, timedelta
 from pathlib import Path
 from issue_orchestrator.domain.models import (

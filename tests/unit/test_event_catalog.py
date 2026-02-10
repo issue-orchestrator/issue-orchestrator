@@ -1,6 +1,5 @@
 """Unit tests for the event catalog and context system."""
 
-import pytest
 from uuid import UUID
 
 from issue_orchestrator.events import EventName, EventContext

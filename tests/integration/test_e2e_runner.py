@@ -22,16 +22,13 @@ import pytest
 
 from issue_orchestrator.infra.e2e_db import E2EDB
 
-
 # Note: These tests don't use the @pytest.mark.e2e marker because they don't
 # require GitHub activity. They're still run as part of `make test-e2e` since
 # they're in the tests/e2e/ directory. They're fully isolated with temp repos.
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def test_repo(tmp_path: Path) -> Path:
@@ -64,7 +61,6 @@ def test_another_passing():
     (repo / ".issue-orchestrator").mkdir()
 
     return repo
-
 
 @pytest.fixture
 def test_repo_with_retry(tmp_path: Path) -> Path:
@@ -100,7 +96,6 @@ def test_stable():
     (repo / ".issue-orchestrator").mkdir()
     return repo
 
-
 @pytest.fixture
 def test_repo_with_quarantine(tmp_path: Path) -> Path:
     """Create a test repo with a quarantine file."""
@@ -135,7 +130,6 @@ tests/e2e/test_quarantined.py::test_known_flaky
 
     (repo / ".issue-orchestrator").mkdir()
     return repo
-
 
 def run_worker(
     repo_root: Path,
@@ -181,11 +175,9 @@ def run_worker(
         timeout=timeout,
     )
 
-
 # ---------------------------------------------------------------------------
 # Test 1: Worker round-trip
 # ---------------------------------------------------------------------------
-
 
 def test_worker_round_trip(test_repo: Path):
     """Test that worker runs pytest and writes results to DB."""
@@ -220,11 +212,9 @@ def test_worker_round_trip(test_repo: Path):
     assert len(failed) == 1
     assert "test_failing" in failed[0].nodeid
 
-
 # ---------------------------------------------------------------------------
 # Test 2: Retry logic
 # ---------------------------------------------------------------------------
-
 
 def test_worker_retry_logic(test_repo_with_retry: Path):
     """Test that --allow-retry-once retries failed tests."""
@@ -250,7 +240,6 @@ def test_worker_retry_logic(test_repo_with_retry: Path):
     assert flaky["outcome"] == "failed"
     assert flaky["retry_outcome"] == "passed"
 
-
 def test_worker_no_retry_without_flag(test_repo_with_retry: Path):
     """Test that without --allow-retry-once, failed tests stay failed."""
     # Clean up marker file if it exists from previous run
@@ -258,7 +247,7 @@ def test_worker_no_retry_without_flag(test_repo_with_retry: Path):
     if marker.exists():
         marker.unlink()
 
-    result = run_worker(test_repo_with_retry, allow_retry_once=False)
+    _result = run_worker(test_repo_with_retry, allow_retry_once=False)
 
     db = E2EDB(test_repo_with_retry / ".issue-orchestrator" / "e2e.db")
     run = db.latest_run("test-orch")
@@ -275,11 +264,9 @@ def test_worker_no_retry_without_flag(test_repo_with_retry: Path):
     assert flaky["outcome"] == "failed"
     assert flaky["retry_outcome"] is None
 
-
 # ---------------------------------------------------------------------------
 # Test 3: Quarantine
 # ---------------------------------------------------------------------------
-
 
 def test_worker_quarantine(test_repo_with_quarantine: Path):
     """Test that quarantined tests are marked and excluded from failures."""
@@ -318,15 +305,12 @@ def test_worker_quarantine(test_repo_with_quarantine: Path):
     assert any("test_real_failure" in n for n in failed_nodeids)
     assert not any("test_known_flaky" in n for n in failed_nodeids)
 
-
 # ---------------------------------------------------------------------------
 # Test 4: API flow
 # ---------------------------------------------------------------------------
 
-
 def test_api_flow(test_repo: Path):
     """Test the full API flow: start -> status -> run details."""
-    from starlette.testclient import TestClient
 
     # We need to set up the control API with proper config
     # This is more complex as it requires the full app setup
@@ -387,11 +371,9 @@ def test_api_flow(test_repo: Path):
     score = db.compute_signal_score(orchestrator_id)
     assert score["runs_analyzed"] == 1
 
-
 # ---------------------------------------------------------------------------
 # Test 5: Progress tracking
 # ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def test_repo_with_slow_tests(tmp_path: Path) -> Path:
@@ -430,7 +412,6 @@ def test_fourth():
     (repo / ".issue-orchestrator").mkdir()
     return repo
 
-
 def test_progress_tracking(test_repo_with_slow_tests: Path):
     """Test that progress tracking captures total_tests and completion counts."""
     from issue_orchestrator.infra.e2e_runner import E2ERunnerManager
@@ -461,8 +442,8 @@ def test_progress_tracking(test_repo_with_slow_tests: Path):
     # Wait for completion
     timeout = 60
     start_time = time.time()
-    saw_total_tests = False
-    saw_current_test = False
+    _saw_total_tests = False
+    _saw_current_test = False
 
     while time.time() - start_time < timeout:
         status = manager.status(orchestrator_id)
@@ -472,9 +453,9 @@ def test_progress_tracking(test_repo_with_slow_tests: Path):
         # Check for progress during run
         run = db.latest_run(orchestrator_id)
         if run and run.total_tests:
-            saw_total_tests = True
+            _saw_total_tests = True
         if run and run.current_test:
-            saw_current_test = True
+            _saw_current_test = True
 
         time.sleep(0.05)  # Poll frequently
     else:
@@ -505,7 +486,6 @@ def test_progress_tracking(test_repo_with_slow_tests: Path):
     # on fast systems the worker may complete before we poll.
     # The important verification is that total_tests and progress counts
     # are correct AFTER completion, which we checked above.
-
 
 def test_progress_with_failures(test_repo: Path):
     """Test progress tracking with mixed pass/fail results."""

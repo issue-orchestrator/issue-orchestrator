@@ -12,7 +12,7 @@ from issue_orchestrator.control.worktree_context import (
     _escape_claude_project_path,
 )
 from issue_orchestrator.control.worktree import WorktreePreparationError
-from issue_orchestrator.ports.worktree_manager import WorktreeInfo, WorktreeReuseOptions
+from issue_orchestrator.ports.worktree_manager import WorktreeInfo
 
 
 class TestEscapeClaudeProjectPath:

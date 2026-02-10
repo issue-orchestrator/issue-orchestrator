@@ -32,9 +32,8 @@ from issue_orchestrator.testing.support.test_data import (
 from .fixtures import (
     # Core process/tracking
     find_free_port,
-    trigger_refresh,
     register_inflight_issue,
-    ensure_inflight_refresh,
+    
     reset_inflight_tracker,
     get_control_api_port,
     OrchestratorProcess,
@@ -42,12 +41,7 @@ from .fixtures import (
     _keep_artifacts,
     _keep_remote_artifacts,
     _github_adapter,
-    get_issue_comments,
-    wait_with_process_check,
-    FATAL_ERROR_PATTERNS,
-    inflight_create,
-    inflight_update,
-    inflight_close,
+    
     # Timing
     E2ETimingStats,
     # Logging utils
@@ -65,7 +59,7 @@ from .fixtures import (
     DEFAULT_E2E_FILTER_LABEL,
     cleanup_local_worktrees,
     run_cleanup_step,
-    verify_cleanup_items,
+    
     cleanup_remote_branches,
     cleanup_prs,
     ensure_required_pr_labels,
@@ -76,15 +70,13 @@ from .fixtures import (
     usage_units_from_report,
     calls_from_report,
     scope_usage,
-    scope_calls,
+    
     delta_counts,
     log_top_deltas,
     # Wait helpers
-    wait_for_issue_seen,
-    wait_for_session_started,
-    wait_for_issue_label_snapshot,
+    
     # Direct GitHub polling (more efficient than full refresh)
-    poll_issue_label,
+    
 )
 
 logger = logging.getLogger(__name__)
@@ -103,7 +95,6 @@ def e2e_label(logical: str) -> str:
         return logical
     return f"{E2E_TEST_LABEL_PREFIX}{logical}"
 
-
 # ---------------------------------------------------------------------------
 # Pytest Configuration Hooks
 # ---------------------------------------------------------------------------
@@ -115,10 +106,8 @@ def pytest_configure(config):
             config.option.maxfail = 1
             logger.info("[E2E] Fail-fast enabled (maxfail=1)")
 
-
 def pytest_sessionstart(session):
     write_progress("SESSION_START")
-
 
 def pytest_sessionfinish(session, exitstatus):
     write_progress("SESSION_FINISH", extra=f"exitstatus={exitstatus}")
@@ -134,14 +123,12 @@ def pytest_sessionfinish(session, exitstatus):
     if log_files:
         print(f"  [E2E] Latest log: {log_files[0]}", flush=True)
 
-
 def pytest_runtest_logstart(nodeid, location):
     try:
         E2E_CURRENT_TEST.write_text(nodeid)
     except OSError:
         pass
     write_progress("TEST_START", nodeid=nodeid)
-
 
 def pytest_runtest_logreport(report):
     if report.when != "call":
@@ -153,7 +140,6 @@ def pytest_runtest_logreport(report):
         status = "SKIPPED"
     write_progress("TEST_END", nodeid=report.nodeid, extra=f"status={status}")
 
-
 @pytest.hookimpl(tryfirst=True, hookwrapper=True)
 def pytest_runtest_makereport(item, call):
     """Store test result on the node for access in fixtures."""
@@ -161,13 +147,11 @@ def pytest_runtest_makereport(item, call):
     rep = outcome.get_result()
     setattr(item, f"rep_{rep.when}", rep)
 
-
 # ---------------------------------------------------------------------------
 # Global Timing State
 # ---------------------------------------------------------------------------
 
 _timing_stats: E2ETimingStats | None = None
-
 
 # ---------------------------------------------------------------------------
 # Skip Markers
@@ -190,7 +174,6 @@ pytestmark = [
     ),
 ]
 
-
 # ---------------------------------------------------------------------------
 # Session-Scoped Fixtures
 # ---------------------------------------------------------------------------
@@ -208,7 +191,6 @@ def gh_audit_session() -> Generator[None, None, None]:
     )
     gh_audit.reset_stats()
     yield
-
 
 @pytest.fixture(scope="session", autouse=True)
 def kill_stale_orchestrators():
@@ -238,7 +220,6 @@ def kill_stale_orchestrators():
                 except Exception:
                     pass
     yield
-
 
 @pytest.fixture(scope="session", autouse=True)
 def e2e_reconciliation_at_session_start(e2e_worktree_base: Path):
@@ -279,7 +260,6 @@ def e2e_reconciliation_at_session_start(e2e_worktree_base: Path):
     logger.info("=" * 60)
     yield
 
-
 @pytest.fixture(scope="session")
 def e2e_timing_stats() -> E2ETimingStats:
     """Session-scoped timing statistics."""
@@ -287,24 +267,20 @@ def e2e_timing_stats() -> E2ETimingStats:
     _timing_stats = E2ETimingStats()
     return _timing_stats
 
-
 @pytest.fixture(scope="session")
 def repo_name() -> str:
     """Get the repo name for e2e tests."""
     return get_test_repo()
-
 
 @pytest.fixture(scope="session")
 def e2e_project_root() -> Path:
     """Get the project root directory."""
     return Path(__file__).parent.parent.parent
 
-
 @pytest.fixture(scope="session")
 def e2e_session_tmp(tmp_path_factory) -> Path:
     """Session-scoped temp directory for e2e tests."""
     return tmp_path_factory.mktemp("e2e")
-
 
 @pytest.fixture(scope="session")
 def e2e_run_id() -> str:
@@ -314,7 +290,6 @@ def e2e_run_id() -> str:
     a running orchestrator instance.
     """
     return f"e2e-{uuid.uuid4().hex[:8]}"
-
 
 @pytest.fixture(scope="session")
 def e2e_worktree_base(e2e_run_id: str) -> Path:
@@ -326,12 +301,10 @@ def e2e_worktree_base(e2e_run_id: str) -> Path:
     base.mkdir(parents=True, exist_ok=True)
     return base
 
-
 @pytest.fixture(scope="session")
 def filter_label() -> str:
     """Configurable filter label for parallel test runs."""
     return os.environ.get("E2E_FILTER", DEFAULT_E2E_FILTER_LABEL)
-
 
 @pytest.fixture(scope="session")
 def e2e_ui_mode() -> str:
@@ -342,7 +315,6 @@ def e2e_ui_mode() -> str:
     """
     return os.environ.get("E2E_UI_MODE", "web")
 
-
 @pytest.fixture(scope="session")
 def e2e_terminal_adapter() -> str | None:
     """Optional terminal adapter override for e2e tests.
@@ -351,7 +323,6 @@ def e2e_terminal_adapter() -> str | None:
     """
     value = os.environ.get("E2E_TERMINAL_ADAPTER")
     return value if value else None
-
 
 @pytest.fixture(scope="session")
 def e2e_session_config(
@@ -452,7 +423,6 @@ def e2e_session_config(
 
     return config
 
-
 @pytest.fixture(scope="session")
 def e2e_issues(repo_name: str) -> Generator[dict[str, int], None, None]:
     """Create all e2e test issues once at session start."""
@@ -477,7 +447,6 @@ def e2e_issues(repo_name: str) -> Generator[dict[str, int], None, None]:
     yield issues
     print(f"\n[E2E TEARDOWN] Cleaning up test issues...")
     cleanup_test_issues(repo_name)
-
 
 @pytest.fixture(scope="session")
 def e2e_orchestrator(
@@ -529,7 +498,6 @@ def e2e_orchestrator(
     print(f"\n[E2E TEARDOWN] Stopping orchestrator...")
     proc.stop()
 
-
 # ---------------------------------------------------------------------------
 # Test-Scoped Fixtures
 # ---------------------------------------------------------------------------
@@ -553,13 +521,11 @@ def track_test_timing(request, e2e_timing_stats):
         if timing.phases:
             timing.print_phases(indent="    ")
 
-
 @pytest.fixture(autouse=True)
 def e2e_inflight_refresh_guard() -> None:  # type: ignore
     """Reset refresh tracking per test so inflight issues don't leak."""
     reset_inflight_tracker()
     yield  # type: ignore
-
 
 @pytest.fixture(autouse=True)
 def e2e_gh_activity_guard(request) -> None:  # type: ignore
@@ -590,7 +556,7 @@ def e2e_gh_activity_guard(request) -> None:  # type: ignore
         return
 
     delta_usage = usage_units_from_report(after) - usage_units_from_report(before)
-    delta_calls = calls_from_report(after) - calls_from_report(before)
+    _delta_calls = calls_from_report(after) - calls_from_report(before)
     delta_startup_usage = scope_usage(after, "startup") - scope_usage(before, "startup")
     delta_periodic_usage = scope_usage(after, "periodic") - scope_usage(before, "periodic")
     charged_usage = delta_usage - delta_startup_usage - delta_periodic_usage
@@ -608,7 +574,6 @@ def e2e_gh_activity_guard(request) -> None:  # type: ignore
         pytest.fail(f"Test GH activity exceeded limit: {charged_usage} > {max_test_usage}")
     if max_system_usage is not None and system_usage > int(max_system_usage):
         pytest.fail(f"System GH activity exceeded limit: {system_usage} > {max_system_usage}")
-
 
 @pytest.fixture
 async def orchestrator_watcher(
@@ -636,12 +601,10 @@ async def orchestrator_watcher(
         await watcher.close()
         await stream.close()
 
-
 @pytest.fixture
 def test_label(request) -> str:
     """Generate unique label from test name for isolation."""
     return request.node.name
-
 
 @pytest.fixture
 def test_issue_factory(repo_name: str, test_label: str, filter_label: str):
@@ -664,7 +627,6 @@ def test_issue_factory(repo_name: str, test_label: str, filter_label: str):
 
     return create
 
-
 @pytest.fixture
 def e2e_flow(repo_name: str, orchestrator_watcher, filter_label: str):
     """E2EFlow fixture with automatic cleanup on teardown.
@@ -678,7 +640,6 @@ def e2e_flow(repo_name: str, orchestrator_watcher, filter_label: str):
     yield flow
     # Cleanup runs even if test fails
     flow.cleanup_created_issues()
-
 
 @pytest.fixture
 def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mode: str) -> Config:
@@ -721,7 +682,6 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mo
 
     return config
 
-
 @pytest.fixture
 def test_issues(repo_name: str) -> Generator[list[int], None, None]:
     """Create test issues, yield issue numbers, then cleanup."""
@@ -729,7 +689,6 @@ def test_issues(repo_name: str) -> Generator[list[int], None, None]:
     issue_numbers = create_test_issues(repo_name, ["agent:e2e-test"])
     yield issue_numbers
     cleanup_test_issues(repo_name)
-
 
 @pytest.fixture
 def single_test_issue(repo_name: str) -> Generator[dict, None, None]:
@@ -753,7 +712,6 @@ def single_test_issue(repo_name: str) -> Generator[dict, None, None]:
         _github_adapter(repo_name).update_issue_state(issue_number, "closed")
     except Exception:
         pass
-
 
 @pytest.fixture
 def concurrent_test_run(repo_name: str, request) -> Generator[dict, None, None]:
@@ -793,7 +751,6 @@ def concurrent_test_run(repo_name: str, request) -> Generator[dict, None, None]:
         _github_adapter(repo_name).delete_label(run_label)
     except Exception:
         pass
-
 
 @pytest.fixture
 def orchestrator_process(

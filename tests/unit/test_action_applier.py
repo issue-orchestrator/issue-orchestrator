@@ -2,12 +2,11 @@
 
 import logging
 import pytest
-from unittest.mock import MagicMock, Mock
-from pathlib import Path
+from unittest.mock import MagicMock
 
 from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.actions import (
-    ActionType,
+    
     ActionResultType,
     AddLabelAction,
     RemoveLabelAction,
@@ -21,9 +20,8 @@ from issue_orchestrator.control.actions import (
     RemoveWorktreeAction,
 )
 from issue_orchestrator.control.session_manager import SessionType
-from issue_orchestrator.domain.models import Issue, Session, AgentConfig
-from issue_orchestrator.events import EventName
 
+from issue_orchestrator.events import EventName
 
 @pytest.fixture
 def mock_labels():
@@ -31,7 +29,6 @@ def mock_labels():
     labels = MagicMock()
     labels.has_label.return_value = False
     return labels
-
 
 @pytest.fixture
 def mock_sessions():
@@ -41,13 +38,11 @@ def mock_sessions():
     sessions.start.return_value = True
     return sessions
 
-
 @pytest.fixture
 def mock_events():
     """Create a mock EventSink."""
     events = MagicMock()
     return events
-
 
 @pytest.fixture
 def mock_repository_host():
@@ -56,7 +51,6 @@ def mock_repository_host():
     repo.create_issue.return_value = 123
     return repo
 
-
 @pytest.fixture
 def mock_fresh_issue_reader():
     """Create a mock FreshIssueReader."""
@@ -64,13 +58,11 @@ def mock_fresh_issue_reader():
     reader.read_issue_labels.return_value = []
     return reader
 
-
 @pytest.fixture
 def mock_worktree_manager():
     """Create a mock WorktreeManager."""
     wm = MagicMock()
     return wm
-
 
 @pytest.fixture
 def applier(
@@ -91,7 +83,6 @@ def applier(
         fresh_issue_reader=mock_fresh_issue_reader,
         reconcile=False,
     )
-
 
 class TestAddLabelAction:
     """Tests for ADD_LABEL action."""
@@ -125,7 +116,6 @@ class TestAddLabelAction:
         assert result.success
         assert result.details["no_op"] is True
         mock_labels.add_label.assert_not_called()
-
 
 class TestRemoveLabelAction:
     """Tests for REMOVE_LABEL action."""
@@ -163,7 +153,6 @@ class TestRemoveLabelAction:
         assert result.success
         assert result.details["no_op"] is True
         mock_labels.remove_label.assert_not_called()
-
 
 class TestSyncLabelsAction:
     """Tests for SYNC_LABELS action."""
@@ -217,7 +206,6 @@ class TestSyncLabelsAction:
         assert payload["label_remove_attempted"] == 1
         assert payload["label_mutation_applied"] == 2
         assert payload["label_mutation_failed"] == 0
-
 
 class TestLaunchSessionAction:
     """Tests for LAUNCH_SESSION action."""
@@ -302,7 +290,6 @@ class TestLaunchSessionAction:
         assert result.result_type == ActionResultType.SKIPPED
         assert "already running" in result.details.get("skip_reason", "")
 
-
 class TestStopSessionAction:
     """Tests for STOP_SESSION action."""
 
@@ -333,7 +320,6 @@ class TestStopSessionAction:
 
         assert result.result_type == ActionResultType.SKIPPED
 
-
 class TestQueueReviewAction:
     """Tests for QUEUE_REVIEW action."""
 
@@ -350,7 +336,6 @@ class TestQueueReviewAction:
 
         assert result.success
         mock_events.publish.assert_called()
-
 
 class TestEscalateToHumanAction:
     """Tests for ESCALATE_TO_HUMAN action."""
@@ -409,7 +394,6 @@ class TestEscalateToHumanAction:
 
         assert not result.success
 
-
 class TestCreateTriageIssueAction:
     """Tests for CREATE_TRIAGE_ISSUE action."""
 
@@ -445,7 +429,6 @@ class TestCreateTriageIssueAction:
 
         assert not result.success
         assert "No repository_host" in result.error
-
 
 class TestCleanupSessionAction:
     """Tests for CLEANUP_SESSION action."""
@@ -488,7 +471,6 @@ class TestCleanupSessionAction:
         mock_sessions.stop.assert_called_once()
         mock_worktree_manager.remove.assert_not_called()
 
-
 class TestRemoveWorktreeAction:
     """Tests for REMOVE_WORKTREE action."""
 
@@ -510,7 +492,6 @@ class TestRemoveWorktreeAction:
 
         assert not result.success
         assert "No worktree_manager" in result.error
-
 
 class TestApplyAll:
     """Tests for apply_all method."""
@@ -594,7 +575,6 @@ class TestApplyAll:
         ]
         assert summary_events == []
 
-
 class TestReconciliation:
     """Tests for reconciliation behavior."""
 
@@ -629,7 +609,6 @@ class TestReconciliation:
 
         assert result.success
         applier.fresh_issue_reader.read_issue_labels.assert_called_once_with(123)
-
 
 class TestExpectedStateEnforcement:
     """Tests for ExpectedState enforcement via _require_expected."""

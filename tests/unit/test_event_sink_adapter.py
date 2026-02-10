@@ -7,7 +7,7 @@ These tests verify the behavior of event emission:
 """
 
 import logging
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

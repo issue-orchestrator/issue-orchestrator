@@ -24,7 +24,6 @@ from fastapi.testclient import TestClient
 from issue_orchestrator.entrypoints.control_api import control_app
 from issue_orchestrator.infra.repo_lock import acquire_lock, release_lock, AlreadyRunning
 
-
 class TestPhase1LockInvariant:
     """Phase 1: Cannot start a second orchestrator for same repo; stale lock recovers."""
 
@@ -69,7 +68,6 @@ class TestPhase1LockInvariant:
 
         release_lock(tmp_path)
 
-
 class TestPhase2ControlAPIWithoutOrchestrator:
     """Phase 2: Control API status works when orchestrator is not running."""
 
@@ -95,7 +93,6 @@ class TestPhase2ControlAPIWithoutOrchestrator:
         assert response.status_code == 200
         data = response.json()
         assert "repos" in data
-
 
 class TestPhase3ControlCenterUI:
     """Phase 3: UI served by control plane, not by a running orchestrator."""
@@ -149,7 +146,6 @@ class TestPhase3ControlCenterUI:
         assert 'data-theme="light"' in html, "Light theme option not found"
         assert 'data-theme="dark"' in html, "Dark theme option not found"
 
-
 class TestPhase4FailureVisibility:
     """Phase 4: Failures visible via control endpoints when orchestrator is down."""
 
@@ -180,7 +176,6 @@ class TestPhase4FailureVisibility:
         data = response.json()
         assert "overall" in data or "error" in data
 
-
 class TestPhase5AIDiagnoseNoCredentials:
     """Phase 5: AI diagnose does not receive credentials."""
 
@@ -207,7 +202,6 @@ class TestPhase5AIDiagnoseNoCredentials:
         assert "ISSUE_ORCH_GITHUB_TOKEN" not in safe_env
         assert safe_env.get("PATH") == "/usr/bin"
         assert safe_env.get("HOME") == "/home/user"
-
 
 class TestPhase7MultiRepoFromControlCenter:
     """Phase 7: Supervisor manages multiple repos from one control center."""
@@ -239,11 +233,6 @@ class TestPhase7MultiRepoFromControlCenter:
 
     def test_can_register_multiple_repos(self, tmp_path: Path) -> None:
         """Can register multiple repos via control API."""
-        from issue_orchestrator.infra.repo_registry import (
-            load_registry,
-            save_registry,
-            RepoRegistry,
-        )
 
         # Create test repos
         repo1 = tmp_path / "repo1"
@@ -283,7 +272,6 @@ class TestPhase7MultiRepoFromControlCenter:
             paths = [r["path"] for r in repos]
             assert str(repo1.resolve()) in paths
             assert str(repo2.resolve()) in paths
-
 
 class TestSetupWizardEndpoints:
     """Setup wizard API endpoints for GUI configuration."""
@@ -447,7 +435,6 @@ agents:
         assert "agent:new" in content
         assert "agent:old" not in content  # Old config replaced
 
-
 class TestDashboardRendering:
     """Tests that the orchestrator dashboard renders without errors."""
 
@@ -504,7 +491,6 @@ class TestDashboardRendering:
 
         response = client.post("/api/issues", json={"title": "test"})
         assert response.status_code == 503  # No orchestrator, but endpoint exists
-
 
 class TestToolEndpoints:
     """Tests for the dashboard tool endpoints."""

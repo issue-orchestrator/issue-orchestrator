@@ -2,24 +2,20 @@
 
 import json
 from datetime import datetime
-from pathlib import Path
 
 import pytest
 
 from issue_orchestrator.execution.json_store import JsonSessionStore
-
 
 @pytest.fixture
 def store_path(tmp_path):
     """Create a temporary path for the store."""
     return tmp_path / "sessions.json"
 
-
 @pytest.fixture
 def store(store_path):
     """Create a JsonSessionStore instance."""
     return JsonSessionStore(store_path)
-
 
 class TestJsonSessionStore:
     """Tests for JsonSessionStore."""
@@ -230,12 +226,12 @@ class TestJsonSessionStore:
         """Test that multiple saves update the timestamp."""
         store.save_session_state("session-123", 42, "pending")
         state1 = store.get_session_state("session-123")
-        updated_at_1 = state1["updated_at"]
+        _updated_at_1 = state1["updated_at"]
 
         # Save again with different state
         store.save_session_state("session-123", 42, "running")
         state2 = store.get_session_state("session-123")
-        updated_at_2 = state2["updated_at"]
+        _updated_at_2 = state2["updated_at"]
 
         # Timestamp should be different (or same if very fast)
         # At minimum, state should be updated

@@ -9,11 +9,9 @@ and verify the adapter logic without requiring actual terminal processes.
 """
 
 import logging
-from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch, call
+from unittest.mock import MagicMock
 
 import pytest
-
 
 class TestPluggySessionRunner:
     """Tests for PluggySessionRunner which wraps pluggy PluginManager.

@@ -6,22 +6,18 @@ from unittest.mock import MagicMock
 
 from issue_orchestrator.control.workflows.review_workflow import (
     ReviewWorkflow,
-    ReviewDecision,
 )
 from issue_orchestrator.control.workflows.rework_workflow import (
     ReworkWorkflow,
-    ReworkDecision,
-    EscalationDecision,
+    
 )
 from issue_orchestrator.control.workflows.triage_workflow import (
     TriageWorkflow,
-    TriageDecision,
-    BatchTriageDecision,
+    
 )
 from issue_orchestrator.domain.models import PendingReview, PendingRework, PendingTriageReview
 from issue_orchestrator.domain.issue_key import FakeIssueKey
-from issue_orchestrator.ports import NullEventSink, TraceEvent
-
+from issue_orchestrator.ports import TraceEvent
 
 class CollectingEventSink:
     """Event sink that collects events for test assertions."""
@@ -32,7 +28,6 @@ class CollectingEventSink:
     def publish(self, event: TraceEvent) -> None:
         self.events.append(event)
 
-
 def make_pending_review(pr_number: int, issue_number: int) -> PendingReview:
     """Create a PendingReview for testing."""
     return PendingReview(
@@ -42,7 +37,6 @@ def make_pending_review(pr_number: int, issue_number: int) -> PendingReview:
         branch_name=f"issue-{issue_number}",
         _issue_number=issue_number,
     )
-
 
 def make_pending_rework(issue_number: int, pr_number: int = None, rework_cycle: int = 1) -> PendingRework:  # type: ignore
     """Create a PendingRework for testing.
@@ -58,14 +52,12 @@ def make_pending_rework(issue_number: int, pr_number: int = None, rework_cycle: 
         rework_cycle=rework_cycle,
     )
 
-
 def make_pending_triage(issue_number: int, title: str = "Test") -> PendingTriageReview:
     """Create a PendingTriageReview for testing."""
     return PendingTriageReview(
         issue_number=issue_number,
         title=title,
     )
-
 
 class TestReviewWorkflow:
     """Test the ReviewWorkflow class."""
@@ -171,7 +163,6 @@ class TestReviewWorkflow:
         assert workflow.should_escalate(pr_number=1, rework_cycles=3) is True
         assert workflow.should_escalate(pr_number=1, rework_cycles=2) is False
 
-
 class TestReworkWorkflow:
     """Test the ReworkWorkflow class."""
 
@@ -272,7 +263,6 @@ class TestReworkWorkflow:
         assert workflow.get_next_cycle_label(1) == "rework-cycle-2"
         assert workflow.get_next_cycle_label(0) == "rework-cycle-1"
 
-
 class TestBoundedReworkEscalation:
     """Tests proving rework loops are bounded and escalate.
 
@@ -339,7 +329,6 @@ class TestBoundedReworkEscalation:
             # At max: must escalate
             decision = workflow.should_escalate(rework_cycle=max_cycles)
             assert decision.should_escalate
-
 
 class TestTriageWorkflow:
     """Test the TriageWorkflow class."""

@@ -1,7 +1,6 @@
 """Unit tests for the LabelSync module."""
 
 import pytest
-from unittest.mock import MagicMock
 
 from issue_orchestrator.control.label_sync import (
     LabelSync,

@@ -1,7 +1,6 @@
 """Unit tests for E2E runner manager."""
 
 import pytest
-import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -11,8 +10,6 @@ from issue_orchestrator.infra.e2e_runner import (
     get_e2e_runner_manager,
     maybe_trigger_e2e,
 )
-from issue_orchestrator.infra.e2e_db import E2EDB, E2ERun
-
 
 class TestE2ERunnerManager:
     """Test the E2ERunnerManager class."""
@@ -34,7 +31,7 @@ class TestE2ERunnerManager:
 
     def test_start_success(self, manager: E2ERunnerManager, mock_popen, tmp_path: Path):
         """Test successful start of E2E worker."""
-        popen_mock, proc = mock_popen
+        popen_mock, _proc = mock_popen
 
         result = manager.start(
             repo_root=tmp_path,
@@ -56,7 +53,7 @@ class TestE2ERunnerManager:
 
     def test_start_already_running(self, manager: E2ERunnerManager, mock_popen, tmp_path: Path):
         """Test that starting while running raises AlreadyRunning."""
-        popen_mock, proc = mock_popen
+        _popen_mock, _proc = mock_popen
 
         # Start first run
         manager.start(tmp_path, "test-orch", ["tests/e2e"])
@@ -70,7 +67,7 @@ class TestE2ERunnerManager:
 
     def test_start_after_previous_finished(self, manager: E2ERunnerManager, mock_popen, tmp_path: Path):
         """Test starting after previous run finished."""
-        popen_mock, proc = mock_popen
+        _popen_mock, proc = mock_popen
 
         # Start first run
         manager.start(tmp_path, "test-orch", ["tests/e2e"])
@@ -92,7 +89,7 @@ class TestE2ERunnerManager:
 
     def test_status_running(self, manager: E2ERunnerManager, mock_popen, tmp_path: Path):
         """Test status when process is running."""
-        popen_mock, proc = mock_popen
+        _popen_mock, _proc = mock_popen
 
         manager.start(tmp_path, "test-orch", ["tests/e2e"])
 
@@ -104,7 +101,7 @@ class TestE2ERunnerManager:
 
     def test_status_finished(self, manager: E2ERunnerManager, mock_popen, tmp_path: Path):
         """Test status after process finished."""
-        popen_mock, proc = mock_popen
+        _popen_mock, proc = mock_popen
 
         manager.start(tmp_path, "test-orch", ["tests/e2e"])
 
@@ -119,7 +116,7 @@ class TestE2ERunnerManager:
 
     def test_stop_running_process(self, manager: E2ERunnerManager, mock_popen, tmp_path: Path):
         """Test stopping a running process."""
-        popen_mock, proc = mock_popen
+        _popen_mock, proc = mock_popen
         proc.wait.return_value = None
 
         manager.start(tmp_path, "test-orch", ["tests/e2e"])
@@ -156,7 +153,6 @@ class TestE2ERunnerManager:
 
         assert "orch-1" in finished
         assert "orch-2" in finished
-
 
 class TestMaybeTriggerE2E:
     """Test the maybe_trigger_e2e function."""
@@ -294,7 +290,6 @@ class TestMaybeTriggerE2E:
 
         assert result is False
 
-
 class TestGetE2ERunnerManager:
     """Test the singleton getter."""
 
@@ -308,7 +303,6 @@ class TestGetE2ERunnerManager:
         manager2 = get_e2e_runner_manager()
 
         assert manager1 is manager2
-
 
 class TestStopOnFirstFailure:
     """Tests for the stop_on_first_failure configuration."""
@@ -332,7 +326,7 @@ class TestStopOnFirstFailure:
         self, manager: E2ERunnerManager, mock_popen, tmp_path: Path
     ):
         """Test that -x flag is added to pytest_args when stop_on_first_failure=True."""
-        popen_mock, proc = mock_popen
+        popen_mock, _proc = mock_popen
 
         with patch("builtins.open", MagicMock()):
             manager.start(
@@ -357,7 +351,7 @@ class TestStopOnFirstFailure:
         self, manager: E2ERunnerManager, mock_popen, tmp_path: Path
     ):
         """Test that -x flag is NOT added when stop_on_first_failure=False."""
-        popen_mock, proc = mock_popen
+        popen_mock, _proc = mock_popen
 
         with patch("builtins.open", MagicMock()):
             manager.start(
@@ -380,7 +374,7 @@ class TestStopOnFirstFailure:
         self, manager: E2ERunnerManager, mock_popen, tmp_path: Path
     ):
         """Test that -x flag is not duplicated if already in pytest_args."""
-        popen_mock, proc = mock_popen
+        popen_mock, _proc = mock_popen
 
         with patch("builtins.open", MagicMock()):
             manager.start(
@@ -399,7 +393,6 @@ class TestStopOnFirstFailure:
 
         # Should only have one -x
         assert pytest_args.count("-x") == 1
-
 
 class TestLogFileCapture:
     """Tests for log file output capture."""
@@ -422,7 +415,7 @@ class TestLogFileCapture:
             proc.poll.return_value = None
             popen_mock.return_value = proc
 
-            result = manager.start(
+            _result = manager.start(
                 repo_root=tmp_path,
                 orchestrator_id="test-orch",
                 pytest_args=["tests/e2e"],

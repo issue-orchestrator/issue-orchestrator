@@ -6,16 +6,14 @@ Tests are behavior-centric, focusing on invariants, state transitions, and outco
 
 import time
 import pytest
-from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch, PropertyMock
-from typing import Optional
+from unittest.mock import MagicMock, Mock
 
 from issue_orchestrator.control.orchestrator_support import (
     OrchestratorSupport,
     log_transition,
-    init_orchestrator_components,
+    
     pause_issue_for_reconciliation,
     clear_discovered_facts,
     emit_heartbeat_if_needed,
@@ -27,7 +25,7 @@ from issue_orchestrator.control.orchestrator_support import (
 )
 from issue_orchestrator.control.reconciliation import (
     ReconciliationRequired,
-    ExpectedState,
+    
     ExternalSnapshot,
     get_pause_label,
 )
@@ -35,7 +33,7 @@ from issue_orchestrator.control.actions import (
     ActionResult,
     ActionType,
     AddLabelAction,
-    LaunchSessionAction,
+    
 )
 from issue_orchestrator.control.health_gate import HealthGate, HealthDecision
 from issue_orchestrator.domain.models import (
@@ -44,8 +42,7 @@ from issue_orchestrator.domain.models import (
     SessionStatus,
     OrchestratorState,
     PendingReview,
-    PendingRework,
-    PendingTriageReview,
+    
     PendingCleanup,
     DiscoveredReview,
     DiscoveredRework,
@@ -57,14 +54,12 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.events import EventName
-from issue_orchestrator.ports import TraceEvent
-from issue_orchestrator.infra.config import Config
 
+from issue_orchestrator.infra.config import Config
 
 # =============================================================================
 # Test Fixtures and Helpers
 # =============================================================================
-
 
 @pytest.fixture
 def mock_event_sink():
@@ -78,7 +73,6 @@ def mock_event_sink():
     sink.publish = Mock(side_effect=capture_publish)
     return sink
 
-
 @pytest.fixture
 def mock_repository_host():
     """Create a mock RepositoryHost."""
@@ -88,14 +82,12 @@ def mock_repository_host():
     host.create_issue_key = Mock(side_effect=lambda n: FakeIssueKey(name=str(n)))
     return host
 
-
 @pytest.fixture
 def mock_action_applier():
     """Create a mock ActionApplier."""
     applier = MagicMock()
     applier.apply = Mock()
     return applier
-
 
 @pytest.fixture
 def sample_orchestrator_state():
@@ -112,7 +104,6 @@ def sample_orchestrator_state():
         discovered_failures=[],
     )
 
-
 @pytest.fixture
 def sample_event_context():
     """Create a mock EventContext."""
@@ -120,7 +111,6 @@ def sample_event_context():
     ctx.tick_id = 1
     ctx.enrich = Mock(side_effect=lambda d: d)
     return ctx
-
 
 @pytest.fixture
 def sample_agent_config(tmp_path):
@@ -133,7 +123,6 @@ def sample_agent_config(tmp_path):
         timeout_minutes=45,
     )
 
-
 def make_issue(number: int, title: str = "Test Issue", labels: list | None = None) -> Issue:
     """Create a test issue."""
     return Issue(
@@ -142,7 +131,6 @@ def make_issue(number: int, title: str = "Test Issue", labels: list | None = Non
         labels=labels or [],
         state="open",
     )
-
 
 def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = None) -> Session:  # type: ignore
     """Create a test session for an issue."""
@@ -162,7 +150,6 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = 
         started_at=datetime.now(),
         status=SessionStatus.RUNNING,
     )
-
 
 class TestQueueFetchPlanner:
     """Tests for queue fetch-layer planner behavior."""
@@ -490,11 +477,9 @@ class TestQueueFetchPlanner:
 
         assert "[FETCH-COST]" in caplog.text
 
-
 # =============================================================================
 # Tests for log_transition
 # =============================================================================
-
 
 class TestLogTransition:
     """Tests for the log_transition helper function."""
@@ -536,11 +521,9 @@ class TestLogTransition:
         assert "#100" in caplog.text
         assert "extra" in caplog.text
 
-
 # =============================================================================
 # Tests for pause_issue_for_reconciliation
 # =============================================================================
-
 
 class TestPauseIssueForReconciliation:
     """Tests for pause_issue_for_reconciliation function."""
@@ -605,11 +588,9 @@ class TestPauseIssueForReconciliation:
         # Should log error
         assert "Failed to add pause label" in caplog.text
 
-
 # =============================================================================
 # Tests for clear_discovered_facts
 # =============================================================================
-
 
 class TestClearDiscoveredFacts:
     """Tests for clear_discovered_facts function."""
@@ -687,11 +668,9 @@ class TestClearDiscoveredFacts:
         assert sample_orchestrator_state.issues_started_count == 5
         assert len(sample_orchestrator_state.pending_reviews) == 1
 
-
 # =============================================================================
 # Tests for emit_heartbeat_if_needed
 # =============================================================================
-
 
 class TestEmitHeartbeatIfNeeded:
     """Tests for emit_heartbeat_if_needed function."""
@@ -734,11 +713,9 @@ class TestEmitHeartbeatIfNeeded:
         # Should return same timestamp
         assert new_timestamp == last_update
 
-
 # =============================================================================
 # Tests for check_health
 # =============================================================================
-
 
 class TestCheckHealth:
     """Tests for check_health function."""
@@ -781,11 +758,9 @@ class TestCheckHealth:
         assert decision.can_proceed is False
         assert "at_capacity" in decision.reason  # type: ignore
 
-
 # =============================================================================
 # Tests for OrchestratorSupport.apply_plan
 # =============================================================================
-
 
 class TestOrchestratorSupportApplyPlan:
     """Tests for OrchestratorSupport.apply_plan method."""
@@ -957,11 +932,9 @@ class TestOrchestratorSupportApplyPlan:
 
         assert 42 in sample_orchestrator_state.failed_this_cycle
 
-
 # =============================================================================
 # Tests for OrchestratorSupport.clear_discovered_facts method
 # =============================================================================
-
 
 class TestOrchestratorSupportClearDiscoveredFacts:
     """Tests for OrchestratorSupport.clear_discovered_facts method.
@@ -1050,11 +1023,9 @@ class TestOrchestratorSupportClearDiscoveredFacts:
         assert len(sample_orchestrator_state.discovered_failures) == 0
         assert len(sample_orchestrator_state.immediate_cleanups) == 0
 
-
 # =============================================================================
 # Tests for OrchestratorSupport._update_state_after_action
 # =============================================================================
-
 
 class TestUpdateStateAfterAction:
     """Tests for OrchestratorSupport._update_state_after_action method."""
@@ -1223,11 +1194,9 @@ class TestUpdateStateAfterAction:
         triage = support_with_state.state.pending_triage_reviews[0]
         assert triage.issue_number == 999
 
-
 # =============================================================================
 # Tests for run_tick
 # =============================================================================
-
 
 class TestRunTick:
     """Tests for run_tick function."""
@@ -1236,7 +1205,7 @@ class TestRunTick:
         """run_tick increments loop iteration counter."""
         inflight = {}
 
-        new_iteration, should_continue = run_tick(
+        new_iteration, _should_continue = run_tick(
             loop_iteration=5,
             event_context=sample_event_context,
             inflight_stable_ids=inflight,
@@ -1350,11 +1319,9 @@ class TestRunTick:
         # Valid ID should remain
         assert "valid-id" in inflight
 
-
 # =============================================================================
 # Tests for OrchestratorSupport.request_refresh
 # =============================================================================
-
 
 class TestRequestRefresh:
     """Tests for OrchestratorSupport.request_refresh method."""
@@ -1420,16 +1387,13 @@ class TestRequestRefresh:
         # Should log the refresh
         assert "[REFRESH]" in caplog.text
 
-
 # =============================================================================
 # Tests for OrchestratorSupport._check_health
 # =============================================================================
 
-
 # =============================================================================
 # Tests for OrchestratorSupport._immediate_cleanup
 # =============================================================================
-
 
 class TestImmediateCleanup:
     """Tests for OrchestratorSupport._immediate_cleanup method."""
@@ -1505,11 +1469,9 @@ class TestImmediateCleanup:
         # Should not raise
         support_for_cleanup._immediate_cleanup(session, SessionStatus.COMPLETED)  # noqa: SLF001
 
-
 # =============================================================================
 # Tests for _track_stale_ticks
 # =============================================================================
-
 
 class TestTrackStaleTicks:
     """Tests for _track_stale_ticks function."""

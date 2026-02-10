@@ -2,7 +2,7 @@
 
 from pathlib import Path
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from issue_orchestrator.control.scheduler import (
     Scheduler, SchedulerResult, DueDateStrategy, MilestoneNumberStrategy,
     PatternStrategy, NameStrategy, get_milestone_strategy, load_strategy_class,
@@ -1231,7 +1231,7 @@ class TestSchedulerRuntimeAwareGating:
         # Session is for a different issue (issue #2, not #1)
         active_sessions = [_make_test_session(2)]
 
-        available, dep_blocked = scheduler.get_available_issues(
+        available, _dep_blocked = scheduler.get_available_issues(
             issues, active_sessions=active_sessions
         )
 
@@ -1252,7 +1252,7 @@ class TestSchedulerRuntimeAwareGating:
             ),
         ]
 
-        available, dep_blocked = scheduler.get_available_issues(
+        available, _dep_blocked = scheduler.get_available_issues(
             issues, active_sessions=[]
         )
 
@@ -1274,7 +1274,7 @@ class TestSchedulerRuntimeAwareGating:
         ]
 
         # Call without active_sessions parameter (backward compat)
-        available, dep_blocked = scheduler.get_available_issues(issues)
+        available, _dep_blocked = scheduler.get_available_issues(issues)
 
         # Old behavior: in-progress would always block
         # New behavior with None: treat as no sessions, so label is stale
@@ -1293,7 +1293,7 @@ class TestSchedulerRuntimeAwareGating:
         # Session only for issue #1
         active_sessions = [_make_test_session(1)]
 
-        available, dep_blocked = scheduler.get_available_issues(
+        available, _dep_blocked = scheduler.get_available_issues(
             issues, active_sessions=active_sessions
         )
 

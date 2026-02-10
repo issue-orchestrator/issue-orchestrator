@@ -9,7 +9,6 @@ These tests verify the key invariants from the design docs:
 """
 
 import pytest
-from unittest.mock import MagicMock
 
 from issue_orchestrator.domain.dependencies import (
     Dependency,

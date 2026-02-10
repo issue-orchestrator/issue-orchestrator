@@ -1,10 +1,8 @@
 """Unit tests for the worktree module."""
 
-import os
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch, call
-import subprocess
+from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.adapters.worktree.api import (
     slugify,
@@ -23,7 +21,6 @@ from issue_orchestrator.adapters.worktree.api import (
     WorktreeError,
 )
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
-
 
 class TestSlugify:
     """Test the slugify function."""
@@ -89,7 +86,6 @@ class TestSlugify:
         assert len(result) == 40
         assert result == "a" * 40
 
-
 class TestGenerateBranchName:
     """Test the generate_branch_name function."""
 
@@ -125,7 +121,6 @@ class TestGenerateBranchName:
         result = generate_branch_name(99999, "Test")
         assert result.startswith("99999-")
 
-
 class TestBranchSuffix:
     """Test branch suffix generation for recreated worktrees."""
 
@@ -144,7 +139,6 @@ class TestBranchSuffix:
             lambda _repo: ["123-fix", "123-fix-r1"],
         )
         assert next_branch_name(tmp_path, "123-fix-r1") == "123-fix-r2"
-
 
 class TestCreateWorktree:
     """Test the create_worktree function."""
@@ -216,7 +210,7 @@ class TestCreateWorktree:
         mock_run.return_value = MagicMock(returncode=0, stderr="")
 
         # Execute (no worktree_base specified)
-        worktree_path, branch_name, *_ = create_worktree(repo_root, 456, "Fix bug")
+        worktree_path, _branch_name, *_ = create_worktree(repo_root, 456, "Fix bug")
 
         # Verify - should use parent of repo_root as base
         expected_path = tmp_path / "repo-456"
@@ -450,7 +444,7 @@ class TestCreateWorktree:
 
         # Execute with complex title
         complex_title = "Fix bug in @user's profile (100% coverage) 🎉"
-        worktree_path, branch_name, *_ = create_worktree(repo_root, 999, complex_title)
+        _worktree_path, branch_name, *_ = create_worktree(repo_root, 999, complex_title)
 
         # Verify branch name is properly slugified
         assert branch_name == "999-fix-bug-in-user-s-profile-100-coverage"
@@ -473,7 +467,6 @@ class TestCreateWorktree:
         # Execute & Verify
         with pytest.raises(WorktreeError, match="Error creating worktree"):
             create_worktree(repo_root, 123, "Test")
-
 
 class TestRemoveWorktree:
     """Test the remove_worktree function."""
@@ -613,7 +606,6 @@ class TestRemoveWorktree:
         # Verify only worktree removal was called (not branch deletion)
         assert mock_run.call_count == 1
 
-
 class TestFindWorktreeForBranch:
     """Test the find_worktree_for_branch function."""
 
@@ -657,7 +649,6 @@ branch refs/heads/main
 
         result = find_worktree_for_branch(tmp_path, "some-branch")
         assert result is None
-
 
 class TestListWorktrees:
     """Test the list_worktrees function."""
@@ -724,7 +715,6 @@ branch refs/heads/main
         with pytest.raises(WorktreeError, match="Error listing worktrees"):
             list_worktrees(Path("/tmp/repo"))
 
-
 class TestWorktreeExists:
     """Test the worktree_exists function."""
 
@@ -767,7 +757,6 @@ class TestWorktreeExists:
         # Execute & Verify
         with pytest.raises(WorktreeError, match="Failed to list"):
             worktree_exists(Path("/path/to/worktree"), Path("/tmp/repo"))
-
 
 class TestHasUncommittedChanges:
     """Test the has_uncommitted_changes function."""
@@ -868,7 +857,6 @@ class TestHasUncommittedChanges:
         # Verify - untracked files count as uncommitted
         assert result is True
 
-
 class TestGetWorktreeBranch:
     """Test the get_worktree_branch helper function."""
 
@@ -945,7 +933,6 @@ class TestGetWorktreeBranch:
         # Verify - should return None on exception
         assert branch_name is None
 
-
 class TestIntegrationScenarios:
     """Test integration scenarios with multiple operations."""
 
@@ -1017,11 +1004,10 @@ class TestIntegrationScenarios:
         ]
 
         for issue_num, title, expected_branch in edge_cases:
-            worktree_path, branch_name, *_ = create_worktree(
+            _worktree_path, branch_name, *_ = create_worktree(
                 repo_root, issue_num, title, tmp_path / "worktrees"
             )
             assert branch_name == expected_branch
-
 
 class TestInstallHooks:
     """Test the install_hooks function including hook chaining."""
@@ -1186,7 +1172,6 @@ class TestInstallHooks:
         # Verify project hook was copied from custom hooks path
         assert "Custom hooks path hook" in pre_push_project.read_text()
 
-
 class TestInstallClaudeSettings:
     """Tests for install_claude_settings function."""
 
@@ -1231,7 +1216,6 @@ class TestInstallClaudeSettings:
         assert "PreToolUse" in settings["hooks"]
         # New hook added
         assert "Stop" in settings["hooks"]
-
 
 class TestInstallVenvSymlink:
     """Tests for install_venv_symlink function."""
@@ -1326,7 +1310,6 @@ class TestInstallVenvSymlink:
         assert result is True
         assert worktree_venv.is_symlink()
         assert worktree_venv.resolve() == other_venv  # Still points to other_venv
-
 
 class TestCreateWorktreeReuse:
     """Test reuse flow via create_worktree (public API)."""
@@ -1539,7 +1522,6 @@ class TestCreateWorktreeReuse:
             assert uncommitted == 2
             assert commits == 0
 
-
 # =============================================================================
 # Worktree Preparation Tests (control/worktree.py)
 # =============================================================================
@@ -1547,7 +1529,6 @@ class TestCreateWorktreeReuse:
 from issue_orchestrator.control.worktree import Worktree, WorktreePreparationError
 from issue_orchestrator.ports.session_output import SessionOutput
 import json
-
 
 @pytest.fixture
 def worktree_dir(tmp_path: Path) -> Path:
@@ -1558,18 +1539,15 @@ def worktree_dir(tmp_path: Path) -> Path:
     orchestrator_dir.mkdir()
     return worktree
 
-
 @pytest.fixture
 def mock_session_output() -> MagicMock:
     """Create a mock SessionOutput for testing."""
     return MagicMock(spec=SessionOutput)
 
-
 @pytest.fixture
 def worktree(worktree_dir: Path, mock_session_output: MagicMock) -> Worktree:
     """Create a Worktree instance for testing."""
     return Worktree(worktree_dir, issue_number=123, session_output=mock_session_output)
-
 
 class TestWorktreePrepareForSession:
     """Tests for Worktree.prepare_for_session()."""
@@ -1668,7 +1646,6 @@ class TestWorktreePrepareForSession:
         # Verify OSError is chained
         assert exc_info.value.__cause__ is not None
         assert isinstance(exc_info.value.__cause__, OSError)
-
 
 class TestWorktreePreparationError:
     """Tests for the WorktreePreparationError exception."""

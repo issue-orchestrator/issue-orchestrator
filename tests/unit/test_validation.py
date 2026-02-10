@@ -3,9 +3,8 @@
 import json
 import pytest
 import tempfile
-from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+
 import subprocess
 
 from issue_orchestrator.execution import GitWorkingCopy, LocalCommandRunner
@@ -17,12 +16,11 @@ from issue_orchestrator.control.validation import (
     ValidationRunner,
     ValidationCache,
     PublishGate,
-    PublishGateResult,
+    
     AgentGate,
-    AgentGateResult,
+    
     VALIDATION_SCHEMA_VERSION,
 )
-
 
 class TestValidationRecord:
     """Tests for ValidationRecord dataclass."""
@@ -100,7 +98,6 @@ class TestValidationRecord:
         with pytest.raises(AttributeError):
             record.passed = False  # type: ignore
 
-
 class TestValidationRecordStore:
     """Tests for ValidationRecordStore."""
 
@@ -155,7 +152,6 @@ class TestValidationRecordStore:
 
         record = store.read("corrupted")
         assert record is None
-
 
 class TestValidationRunner:
     """Tests for ValidationRunner."""
@@ -268,7 +264,6 @@ class TestValidationRunner:
         assert stored is not None
         assert stored.head_sha == record.head_sha
         assert stored.passed == record.passed
-
 
 class TestValidationCache:
     """Tests for ValidationCache."""
@@ -415,7 +410,6 @@ class TestValidationCache:
     def test_is_valid_hit_nonexistent(self, cache):
         """Test is_valid_hit returns False when no record."""
         assert cache.is_valid_hit("nonexistent") is False
-
 
 class TestPublishGate:
     """Tests for PublishGate facade."""
@@ -571,7 +565,6 @@ class TestPublishGate:
         result2 = gate.check(session_output_dir=session_output_dir)
         assert result2.allowed is False
         assert result2.cache_hit is False  # Re-ran validation, didn't trust cache
-
 
 class TestAgentGate:
     """Tests for AgentGate facade."""

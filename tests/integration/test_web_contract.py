@@ -4,7 +4,6 @@ These tests verify that both the real Orchestrator and MockOrchestratorForWeb
 satisfy the OrchestratorForWeb protocol, catching drift between them.
 """
 
-import pytest
 
 from issue_orchestrator.ports.web_contract import OrchestratorForWeb
 from tests.fixtures.web_contract_mocks import MockOrchestratorForWeb

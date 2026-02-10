@@ -18,6 +18,8 @@ import pytest
 
 from tests.e2e.conftest import (
     e2e_label,
+)
+from tests.e2e.fixtures.inflight_tracker import (
     ensure_inflight_refresh,
 )
 from tests.e2e.flows import (

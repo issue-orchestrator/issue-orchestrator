@@ -1,6 +1,5 @@
 """Tests for E2E role detection logic."""
 
-import pytest
 
 from issue_orchestrator.infra.config import E2EConfig
 from issue_orchestrator.infra.e2e_runner import get_e2e_role

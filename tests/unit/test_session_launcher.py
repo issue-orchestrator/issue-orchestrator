@@ -14,12 +14,11 @@ import os
 import pytest
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
 from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.control.session_launcher import (
     SessionLauncher,
-    LaunchResult,
+    
     detect_existing_work,
     log_transition,
     handle_session_completion,
@@ -46,7 +45,7 @@ from issue_orchestrator.domain.models import (
     PendingReview,
     PendingRework,
     PendingTriageReview,
-    PendingCleanup,
+    
     OrchestratorState,
     SessionHistoryEntry,
     TaskKind,
@@ -59,7 +58,7 @@ from issue_orchestrator.domain.state_machines.review_machine import ReviewStateM
 from issue_orchestrator.ports import (
     WorktreeInfo,
     CommitInfo,
-    NullEventSink,
+    
     TraceEvent,
     CommandResult,
     NullManifestDownloader,
@@ -71,11 +70,9 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.contracts.public import SessionStartedPayload
 
-
 # =============================================================================
 # Mock Adapters - following hexagonal architecture patterns
 # =============================================================================
-
 
 class MockEventSink:
     """Mock EventSink for capturing published events."""
@@ -91,7 +88,6 @@ class MockEventSink:
 
     def clear(self) -> None:
         self.events.clear()
-
 
 class MockRepositoryHost:
     """Mock repository host implementing port interface."""
@@ -122,7 +118,6 @@ class MockRepositoryHost:
 
     def create_issue_key(self, issue_number: int) -> GitHubIssueKey:
         return GitHubIssueKey(repo="test/repo", external_id=str(issue_number))
-
 
 class MockWorktreeManager:
     """Mock worktree manager for testing."""
@@ -162,7 +157,6 @@ class MockWorktreeManager:
     def remove(self, worktree_path: Path) -> None:
         self.remove_calls.append(worktree_path)
 
-
 class MockWorkingCopy:
     """Mock working copy for VCS operations."""
 
@@ -175,7 +169,6 @@ class MockWorkingCopy:
 
     def get_current_branch(self, worktree: Path) -> str | None:
         return self.current_branch
-
 
 class MockCommandRunner:
     """Mock command runner for setup commands."""
@@ -201,7 +194,6 @@ class MockCommandRunner:
             return result
         return CommandResult(returncode=0, stdout="", stderr="", timed_out=False)
 
-
 class MockSessionManager:
     """Mock session manager for terminal operations."""
 
@@ -220,47 +212,39 @@ class MockSessionManager:
     def exists(self, ref) -> bool:
         return ref.name in self.sessions
 
-
 # =============================================================================
 # Fixtures
 # =============================================================================
-
 
 @pytest.fixture
 def tmp_path_factory_fix(tmp_path):
     """Provide tmp_path as a fixture for tests."""
     return tmp_path
 
-
 @pytest.fixture
 def mock_events():
     """Create a mock event sink."""
     return MockEventSink()
-
 
 @pytest.fixture
 def mock_repo_host():
     """Create a mock repository host."""
     return MockRepositoryHost()
 
-
 @pytest.fixture
 def mock_worktree_manager(tmp_path):
     """Create a mock worktree manager."""
     return MockWorktreeManager(tmp_path)
-
 
 @pytest.fixture
 def mock_working_copy():
     """Create a mock working copy."""
     return MockWorkingCopy()
 
-
 @pytest.fixture
 def mock_command_runner():
     """Create a mock command runner."""
     return MockCommandRunner()
-
 
 @pytest.fixture
 def sample_config(tmp_path):
@@ -287,7 +271,6 @@ def sample_config(tmp_path):
     config.setup_worktree = []
     return config
 
-
 @pytest.fixture
 def sample_issue():
     """Create a sample Issue for testing."""
@@ -297,7 +280,6 @@ def sample_issue():
         labels=["agent:web"],
         repo="test/repo",
     )
-
 
 @pytest.fixture
 def sample_agent_config(tmp_path):
@@ -309,7 +291,6 @@ def sample_agent_config(tmp_path):
         model="sonnet",
         timeout_minutes=45,
     )
-
 
 @dataclass
 class LauncherTestBundle:
@@ -325,7 +306,6 @@ class LauncherTestBundle:
     create_session_override: list = field(default_factory=lambda: [None])
     # Injected mocks for test assertions
     action_applier: MagicMock = field(default_factory=MagicMock)
-
 
 @pytest.fixture
 def launcher_bundle(
@@ -413,17 +393,14 @@ def launcher_bundle(
     )
     return bundle
 
-
 @pytest.fixture
 def session_launcher(launcher_bundle: LauncherTestBundle) -> SessionLauncher:
     """Convenience fixture for tests that only need the launcher."""
     return launcher_bundle.launcher
 
-
 # =============================================================================
 # Helper Function Tests
 # =============================================================================
-
 
 class TestDetectExistingWork:
     """Tests for detect_existing_work function - lines 77, 84, 91-93."""
@@ -477,7 +454,6 @@ class TestDetectExistingWork:
 
         assert result is None
 
-
 class TestLogTransition:
     """Tests for log_transition function."""
 
@@ -500,11 +476,9 @@ class TestLogTransition:
 
         assert "[TRANSITION] #123 extra:" in caplog.text
 
-
 # =============================================================================
 # Issue Session Launch Tests
 # =============================================================================
-
 
 class TestLaunchIssueSession:
     """Tests for launch_issue_session method."""
@@ -724,7 +698,6 @@ class TestLaunchIssueSession:
         assert result.success is False
         assert "Dependencies not satisfied" in result.reason
 
-
 class TestLaunchIssueSessionPerSessionWorktree:
     """Tests for per-session worktree mode (lines 264-266)."""
 
@@ -735,11 +708,9 @@ class TestLaunchIssueSessionPerSessionWorktree:
 
             assert result.success is True
 
-
 # =============================================================================
 # Review Session Launch Tests
 # =============================================================================
-
 
 class TestLaunchReviewSession:
     """Tests for launch_review_session method."""
@@ -878,11 +849,9 @@ class TestLaunchReviewSession:
 
             assert result.success is True
 
-
 # =============================================================================
 # Rework Session Launch Tests
 # =============================================================================
-
 
 class TestLaunchReworkSession:
     """Tests for launch_rework_session method (lines 585, 597-599, 604-605, 611-765)."""
@@ -1270,15 +1239,12 @@ class TestLaunchReworkSession:
         copied_data = json.loads(rework_feedback.read_text())
         assert copied_data["review_issues"] == "Copied feedback content"
 
-
 # Note: TestRunSetupCommands class deleted - tested private _run_setup_commands method.
 # Setup command behavior is already tested through test_runs_setup_commands in TestLaunchIssueSession.
-
 
 # =============================================================================
 # Orchestrator Wrapper Function Tests
 # =============================================================================
-
 
 class TestOrchestratorLaunchSession:
     """Tests for orchestrator_launch_session function."""
@@ -1292,7 +1258,6 @@ class TestOrchestratorLaunchSession:
         assert result is not None
         assert len(state.active_sessions) == 1
         assert state.active_sessions[0].terminal_id == "issue-123"
-
 
 class TestOrchestratorLaunchReviewSession:
     """Tests for orchestrator_launch_review_session function (lines 977, 990)."""
@@ -1339,7 +1304,6 @@ class TestOrchestratorLaunchReviewSession:
         # Should have tried to restore
         mock_restorer.restore_sessions.assert_called_once()
 
-
 class TestOrchestratorLaunchReworkSession:
     """Tests for orchestrator_launch_rework_session function."""
 
@@ -1368,11 +1332,9 @@ class TestOrchestratorLaunchReworkSession:
         assert len(state.pending_reworks) == 0
         assert len(state.active_sessions) == 1
 
-
 # =============================================================================
 # Triage Session Tests
 # =============================================================================
-
 
 class TestLaunchTriageSession:
     """Tests for launch_triage_session function (lines 1055-1058)."""
@@ -1409,11 +1371,9 @@ class TestLaunchTriageSession:
         assert launched_issues[0].number == 789
         assert "agent:web" in launched_issues[0].labels
 
-
 # =============================================================================
 # Session Callback Tests
 # =============================================================================
-
 
 class TestSessionLauncherCallback:
     """Tests for session_launcher_callback function."""
@@ -1443,11 +1403,9 @@ class TestSessionLauncherCallback:
 
         assert calls == [("issue", 123), ("review", 456)]
 
-
 # =============================================================================
 # Session Reference Parsing Tests
 # =============================================================================
-
 
 class TestParseSessionRef:
     """Tests for parse_session_ref function (lines 1097-1101)."""
@@ -1470,11 +1428,9 @@ class TestParseSessionRef:
         error_events = [e for e in events.events if "error" in str(e.name).lower()]
         assert len(error_events) == 1
 
-
 # =============================================================================
 # Restore Running Sessions Tests
 # =============================================================================
-
 
 class TestRestoreRunningSessions:
     """Tests for restore_running_sessions function (line 1085)."""
@@ -1493,18 +1449,16 @@ class TestRestoreRunningSessions:
         assert len(active_sessions) == 1
         assert active_sessions[0] == mock_session
 
-
 # =============================================================================
 # Process Active Sessions Tests
 # =============================================================================
-
 
 class TestProcessActiveSessions:
     """Tests for process_active_sessions function (line 1034)."""
 
     def test_skips_running_sessions(self, sample_agent_config, tmp_path):
         """Verify running sessions are skipped."""
-        from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
+        from issue_orchestrator.observation.observation import SessionObservationResult
 
         issue = Issue(number=123, title="Test", labels=["agent:web"])
         issue_key = FakeIssueKey("123")
@@ -1539,11 +1493,9 @@ class TestProcessActiveSessions:
         # Session should still be in active list
         assert len(state.active_sessions) == 1
 
-
 # =============================================================================
 # Session Helper Tests
 # =============================================================================
-
 
 class TestCreateSession:
     """Tests for create_session function."""
@@ -1565,7 +1517,6 @@ class TestCreateSession:
         assert result is True
         assert len(mock_manager.start_calls) == 1
 
-
 class TestSessionExists:
     """Tests for session_exists function."""
 
@@ -1579,7 +1530,6 @@ class TestSessionExists:
 
         assert result is True
 
-
 class TestKillSession:
     """Tests for kill_session function."""
 
@@ -1591,7 +1541,6 @@ class TestKillSession:
         kill_session("issue-123", mock_manager, events)  # type: ignore
 
         assert len(mock_manager.stop_calls) == 1
-
 
 class TestGetSessionMachine:
     """Tests for get_session_machine function."""
@@ -1607,11 +1556,9 @@ class TestGetSessionMachine:
         assert result == expected_machine
         mock_sm_manager.get_session_machine.assert_called_once_with("issue-123", 123, 45)
 
-
 # =============================================================================
 # Handle Session Completion Tests
 # =============================================================================
-
 
 class TestHandleSessionCompletion:
     """Tests for handle_session_completion function."""
@@ -1836,11 +1783,9 @@ class TestHandleSessionCompletion:
         kwargs = mock_completion_handler.process_completion.call_args.kwargs
         assert kwargs["blocked_reason"] == "Waiting for external API"
 
-
 # =============================================================================
 # Environment Isolation Tests
 # =============================================================================
-
 
 class TestEnvironmentIsolation:
     """Test that sessions use proper environment isolation."""
@@ -1859,7 +1804,6 @@ class TestEnvironmentIsolation:
         # Verify command doesn't contain HOME override
         command = launcher_bundle.create_session_calls[0]["cmd"]
         assert "export HOME=" not in command or "HOME=" not in command.split("&&")[0]
-
 
 class TestValidationOutputDir:
     """Test that sessions export VALIDATION_OUTPUT_DIR for output capture."""

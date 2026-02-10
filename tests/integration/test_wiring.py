@@ -8,7 +8,6 @@ Note: We still inject mock adapters (like MockGitHubAdapter) to avoid real
 API calls, but this tests the actual wiring between components.
 """
 
-import asyncio
 import argparse
 import pytest
 from pathlib import Path
@@ -17,13 +16,12 @@ from tempfile import TemporaryDirectory
 
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.domain.models import (
-    Issue, AgentConfig, Session, OrchestratorState, SessionStatus,
+    Issue, AgentConfig, OrchestratorState, 
     CommentHeadings
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 # Import MockGitHubAdapter from conftest (it's available as fixture)
-
 
 class TestOrchestratorWiring:
     """Test that Orchestrator methods are properly wired together."""
@@ -132,7 +130,6 @@ class TestOrchestratorWiring:
         assert session is not None
         assert session.issue.number == 456
 
-
 class TestCLIWiring:
     """Test that CLI commands are wired to correct orchestrator methods."""
 
@@ -198,7 +195,6 @@ class TestCLIWiring:
             # Should complete without error
             assert result == 0 or result is None
 
-
 class TestCommentHeadingsWiring:
     """Test that comment headings are properly loaded and available."""
 
@@ -251,7 +247,6 @@ observability:
         assert "## Problems" in comment
         assert "## PR Link" in comment
         assert "https://github.com/test/repo/pull/123" in comment
-
 
 class TestObserverWiring:
     """Test that observer correctly detects session states."""
@@ -339,21 +334,12 @@ class TestObserverWiring:
         status = observer.check_session(session)
         assert status == SessionStatus.RUNNING
 
-
 class TestSmoke:
     """Smoke tests to verify basic functionality works end-to-end."""
 
     def test_can_import_all_modules(self):
         """Verify all modules can be imported without errors."""
-        from issue_orchestrator.entrypoints import cli
-        from issue_orchestrator.infra import config
-        from issue_orchestrator.entrypoints import dashboard
-        from issue_orchestrator.domain import models
-        from issue_orchestrator.observation import observer
-        from issue_orchestrator.infra import orchestrator
-        from issue_orchestrator.control import scheduler
-        from issue_orchestrator.adapters.worktree import _worktree as worktree
-        from issue_orchestrator import execution
+
 
         # If we get here, all imports succeeded
         assert True

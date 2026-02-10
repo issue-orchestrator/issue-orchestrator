@@ -18,7 +18,6 @@ from typing import Any
 from issue_orchestrator.control.health_gate import (
     HealthGate,
     HealthDecision,
-    RateLimitProvider,
 )
 
 

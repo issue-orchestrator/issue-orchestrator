@@ -8,11 +8,10 @@ These tests verify:
 5. Callback execution
 """
 
-import os
 import threading
-import time
+
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -22,7 +21,6 @@ from src.issue_orchestrator.control.shutdown_manager import (
     shutdown_manager,
 )
 
-
 @pytest.fixture(autouse=True)
 def reset_singleton():
     """Reset the singleton before and after each test."""
@@ -31,13 +29,11 @@ def reset_singleton():
     yield
     manager.reset()
 
-
 @pytest.fixture
 def fresh_manager():
     """Get a fresh shutdown manager for each test."""
     manager = ShutdownManager()
     return manager
-
 
 @pytest.fixture
 def temp_lock_file(tmp_path: Path):
@@ -47,7 +43,6 @@ def temp_lock_file(tmp_path: Path):
     lock_file = state_dir / "lock.json"
     lock_file.write_text('{"pid": 12345, "http_port": 8080}')
     return tmp_path
-
 
 class TestShutdownManagerState:
     """Test state machine transitions."""
@@ -90,7 +85,6 @@ class TestShutdownManagerState:
         assert result1 is True  # First cleanup runs
         assert result2 is False  # Second is a no-op
 
-
 class TestShutdownManagerCallbacks:
     """Test cleanup callback execution."""
 
@@ -121,7 +115,6 @@ class TestShutdownManagerCallbacks:
         assert "first" in called
         assert "third" in called
 
-
 class TestShutdownManagerLockRelease:
     """Test lock file cleanup."""
 
@@ -147,7 +140,6 @@ class TestShutdownManagerLockRelease:
         # Don't initialize - repo_root is None
         # Should not raise
         fresh_manager.cleanup()
-
 
 class TestShutdownManagerThreadSafety:
     """Test thread safety of shutdown manager."""
@@ -188,7 +180,6 @@ class TestShutdownManagerThreadSafety:
         assert results.count(True) == 1
         assert results.count(False) == 9
 
-
 class TestShutdownManagerExit:
     """Test the exit() method."""
 
@@ -220,7 +211,6 @@ class TestShutdownManagerExit:
         # Cleanup only ran once
         assert len(cleanup_count) == 1
 
-
 class TestShutdownManagerSingleton:
     """Test singleton behavior."""
 
@@ -234,7 +224,6 @@ class TestShutdownManagerSingleton:
     def test_global_instance_is_singleton(self):
         """shutdown_manager global is the singleton instance."""
         assert shutdown_manager is ShutdownManager()
-
 
 class TestTimingRaceConditions:
     """Tests for race conditions we've encountered."""

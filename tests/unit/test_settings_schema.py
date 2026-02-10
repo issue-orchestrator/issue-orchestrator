@@ -283,7 +283,7 @@ class TestFromConfig:
         cfg = Config()
         tabs = from_config(cfg)
         assert len(tabs) == 8  # concurrency, e2e, filtering, milestones, review, goal_pilot, hooks, advanced
-        for key, model in tabs.items():
+        for _key, model in tabs.items():
             assert model is not None
 
 

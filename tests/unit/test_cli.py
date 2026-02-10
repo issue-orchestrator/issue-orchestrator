@@ -3,7 +3,7 @@
 import argparse
 import inspect
 from pathlib import Path
-from unittest.mock import Mock, patch, AsyncMock, MagicMock
+from unittest.mock import Mock, patch, AsyncMock
 import pytest
 
 from issue_orchestrator.entrypoints.cli import (
@@ -11,7 +11,6 @@ from issue_orchestrator.entrypoints.cli import (
     cmd_dashboard, cmd_output, cmd_pause, cmd_resume, cmd_next,
     cmd_test_reset, main, setup_logging, _run_test_setup, _load_config
 )
-
 
 @pytest.fixture(autouse=True)
 def mock_run_doctor(monkeypatch):
@@ -23,12 +22,10 @@ def mock_run_doctor(monkeypatch):
     monkeypatch.setattr(doctor, "run_doctor", mock_doctor)
     monkeypatch.setattr(launcher, "run_doctor", mock_doctor)
 
-
 def _run_and_close(coro):
     if inspect.iscoroutine(coro):
         coro.close()
     return None
-
 
 class TestCmdStart:
     """Tests for the start command."""
@@ -54,7 +51,7 @@ class TestCmdStart:
         """Verify that startup() is called before run_loop()."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as _mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         # Setup config
                         mock_config = Mock()
@@ -83,7 +80,7 @@ class TestCmdStart:
                             debug=False,
                         )
 
-                        result = cmd_start(args)
+                        _result = cmd_start(args)
 
                         # Verify asyncio.run was called once
                         # (startup + run_with_dashboard combined in single event loop)
@@ -119,7 +116,7 @@ class TestCmdStart:
                         debug=False,
                     )
 
-                    result = cmd_start(args)
+                    _result = cmd_start(args)
 
                     # Should call asyncio.run once (startup + run_loop combined in single event loop)
                     assert mock_asyncio.run.call_count == 1
@@ -169,7 +166,6 @@ class TestCmdStart:
                                     # Orchestrator should NOT be instantiated for dry-run
                                     mock_build.assert_not_called()
 
-
 class TestCmdStatus:
     """Tests for the status command."""
 
@@ -217,7 +213,6 @@ class TestCmdStatus:
 
             assert result == 0  # Status returns 0 even without config
 
-
 class TestCmdInit:
     """Tests for the init command."""
 
@@ -243,7 +238,6 @@ class TestCmdInit:
                 result = cmd_init(args)
 
                 assert result == 1
-
 
 class TestMain:
     """Tests for the main entry point."""
@@ -298,7 +292,7 @@ class TestMain:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start', '--test-mode']):
-                result = main()
+                _result = main()
 
             # Verify the test_mode argument was passed
             args = mock_cmd_start.call_args[0][0]
@@ -310,7 +304,7 @@ class TestMain:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start', '--dry-run']):
-                result = main()
+                _result = main()
 
             args = mock_cmd_start.call_args[0][0]
             assert args.dry_run is True
@@ -321,7 +315,7 @@ class TestMain:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start', '--milestone', 'v1.0']):
-                result = main()
+                _result = main()
 
             args = mock_cmd_start.call_args[0][0]
             assert args.milestone == 'v1.0'
@@ -332,7 +326,7 @@ class TestMain:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start', '--ui-mode', 'web']):
-                result = main()
+                _result = main()
 
             args = mock_cmd_start.call_args[0][0]
             assert args.ui_mode == 'web'
@@ -343,7 +337,7 @@ class TestMain:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start', '--port', '9000']):
-                result = main()
+                _result = main()
 
             args = mock_cmd_start.call_args[0][0]
             assert args.port == 9000
@@ -354,7 +348,7 @@ class TestMain:
             mock_cmd_attach.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'attach', '123']):
-                result = main()
+                _result = main()
 
             args = mock_cmd_attach.call_args[0][0]
             assert args.issue_number == 123
@@ -365,7 +359,7 @@ class TestMain:
             mock_cmd_switch.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'switch', '456']):
-                result = main()
+                _result = main()
 
             args = mock_cmd_switch.call_args[0][0]
             assert args.issue_number == 456
@@ -376,12 +370,11 @@ class TestMain:
             mock_cmd_output.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'output', '789', '--lines', '50']):
-                result = main()
+                _result = main()
 
             args = mock_cmd_output.call_args[0][0]
             assert args.issue_number == 789
             assert args.lines == 50
-
 
 class TestCmdAttach:
     """Tests for the attach command (deprecated)."""
@@ -392,7 +385,6 @@ class TestCmdAttach:
         result = cmd_attach(args)
         assert result == 1
 
-
 class TestCmdSwitch:
     """Tests for the switch command (deprecated)."""
 
@@ -401,7 +393,6 @@ class TestCmdSwitch:
         args = argparse.Namespace(issue_number=123)
         result = cmd_switch(args)
         assert result == 1
-
 
 class TestCmdDashboard:
     """Tests for the dashboard command (deprecated)."""
@@ -412,7 +403,6 @@ class TestCmdDashboard:
         result = cmd_dashboard(args)
         assert result == 1
 
-
 class TestCmdOutput:
     """Tests for the output command (deprecated)."""
 
@@ -421,7 +411,6 @@ class TestCmdOutput:
         args = argparse.Namespace(issue_number=123, lines=20)
         result = cmd_output(args)
         assert result == 1
-
 
 class TestCmdPauseResume:
     """Tests for pause and resume commands."""
@@ -438,7 +427,6 @@ class TestCmdPauseResume:
         result = cmd_resume(args)
         assert result == 0
 
-
 class TestCmdNext:
     """Tests for the next command."""
 
@@ -447,7 +435,6 @@ class TestCmdNext:
         args = argparse.Namespace(issue_number=789)
         result = cmd_next(args)
         assert result == 0
-
 
 class TestCmdTestReset:
     """Tests for the test-reset command."""
@@ -487,7 +474,6 @@ class TestCmdTestReset:
             result = cmd_test_reset(args)
 
             assert result == 1
-
 
 class TestSetupLogging:
     """Tests for setup_logging function."""
@@ -534,7 +520,7 @@ class TestSetupLogging:
                         setup_logging(repo_root="/tmp/test-repo", level="DEBUG")
 
                         # Verify debug level was set
-                        import logging
+
                         mock_logger.setLevel.assert_called_once()
 
     def test_setup_logging_removes_existing_handlers(self):
@@ -558,13 +544,11 @@ class TestSetupLogging:
                         # Should remove existing handler
                         mock_logger.removeHandler.assert_called_once_with(existing_handler)
 
-
 def _mock_issue(number: int) -> Mock:
     """Create a mock Issue object with the given number."""
     issue = Mock()
     issue.number = number
     return issue
-
 
 class TestRunTestSetup:
     """Tests for _run_test_setup function."""
@@ -607,7 +591,6 @@ class TestRunTestSetup:
             assert result is True
             assert adapter.create_label.called
 
-
 class TestCmdStartAdvanced:
     """Advanced tests for cmd_start covering various scenarios."""
 
@@ -636,7 +619,7 @@ class TestCmdStartAdvanced:
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.cli._run_test_setup') as mock_test_setup:
                 with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
-                    with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                    with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as _mock_dashboard:
                         with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                             mock_config = Mock()
                             mock_config.repo = 'test/repo'
@@ -660,7 +643,7 @@ class TestCmdStartAdvanced:
                                 debug=False,
                             )
 
-                            result = cmd_start(args)
+                            _result = cmd_start(args)
 
                             # Verify test setup was called
                             mock_test_setup.assert_called_once_with(mock_config)
@@ -671,7 +654,7 @@ class TestCmdStartAdvanced:
         """Verify milestone argument overrides config."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as _mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
@@ -695,7 +678,7 @@ class TestCmdStartAdvanced:
                             debug=False,
                         )
 
-                        result = cmd_start(args)
+                        _result = cmd_start(args)
 
                         assert mock_config.filtering.milestone == 'v2.0'
 
@@ -703,7 +686,7 @@ class TestCmdStartAdvanced:
         """Verify milestones argument overrides config."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as _mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
@@ -737,7 +720,7 @@ class TestCmdStartAdvanced:
         """Verify ui_mode argument overrides config."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as _mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
@@ -761,7 +744,7 @@ class TestCmdStartAdvanced:
                             port=8080,
                         )
 
-                        result = cmd_start(args)
+                        _result = cmd_start(args)
 
                         assert mock_config.ui_mode == 'web'
 
@@ -769,7 +752,7 @@ class TestCmdStartAdvanced:
         """Verify queue_refresh argument overrides config."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as _mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
@@ -793,7 +776,7 @@ class TestCmdStartAdvanced:
                             queue_refresh=300,
                         )
 
-                        result = cmd_start(args)
+                        _result = cmd_start(args)
 
                         assert mock_config.queue_refresh_seconds == 300
 
@@ -801,7 +784,7 @@ class TestCmdStartAdvanced:
         """Verify max_issues argument overrides config."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as _mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
@@ -825,7 +808,7 @@ class TestCmdStartAdvanced:
                             max_issues=5,
                         )
 
-                        result = cmd_start(args)
+                        _result = cmd_start(args)
 
                         assert mock_config.filtering.max_to_start == 5
 
@@ -833,7 +816,7 @@ class TestCmdStartAdvanced:
         """Verify web mode launches web dashboard."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.entrypoints.web.run_with_web_dashboard') as mock_web:
+                with patch('issue_orchestrator.entrypoints.web.run_with_web_dashboard') as _mock_web:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
@@ -857,7 +840,7 @@ class TestCmdStartAdvanced:
                             port=8080,
                         )
 
-                        result = cmd_start(args)
+                        _result = cmd_start(args)
 
                         # Verify web dashboard was called (startup now runs in background)
                         assert mock_asyncio.run.call_count >= 1
@@ -866,7 +849,7 @@ class TestCmdStartAdvanced:
         """Verify web mode respects custom port."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.entrypoints.web.run_with_web_dashboard') as mock_web:
+                with patch('issue_orchestrator.entrypoints.web.run_with_web_dashboard') as _mock_web:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
@@ -890,7 +873,7 @@ class TestCmdStartAdvanced:
                             port=9000,
                         )
 
-                        result = cmd_start(args)
+                        _result = cmd_start(args)
 
                         # Should use custom port (startup now runs in background)
                         assert mock_asyncio.run.call_count >= 1
@@ -899,7 +882,7 @@ class TestCmdStartAdvanced:
         """Verify keyboard interrupt is handled gracefully."""
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
-                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as mock_dashboard:
+                with patch('issue_orchestrator.entrypoints.dashboard.run_with_dashboard') as _mock_dashboard:
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_config = Mock()
                         mock_config.agents = {'agent:test': Mock()}
@@ -950,7 +933,6 @@ class TestCmdStartAdvanced:
 
             result = cmd_start(args)
             assert result == 1
-
 
 class TestCmdInitAdvanced:
     """Advanced tests for cmd_init."""
@@ -1003,7 +985,6 @@ class TestCmdInitAdvanced:
                 result = cmd_init(args)
 
                 assert result == 1
-
 
 class TestLoadConfig:
     """Tests for the _load_config helper function."""
@@ -1068,7 +1049,6 @@ agents:
             mock_find.assert_called_once()
             assert result == mock_config
 
-
 class TestConfigCliArgument:
     """Tests for --config CLI argument parsing."""
 
@@ -1078,7 +1058,7 @@ class TestConfigCliArgument:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', '--config', '/path/to/config.yaml', 'start']):
-                result = main()
+                _result = main()
 
             args = mock_cmd_start.call_args[0][0]
             assert args.config == '/path/to/config.yaml'
@@ -1089,7 +1069,7 @@ class TestConfigCliArgument:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', '-c', '/custom/path.yaml', 'start']):
-                result = main()
+                _result = main()
 
             args = mock_cmd_start.call_args[0][0]
             assert args.config == '/custom/path.yaml'
@@ -1100,7 +1080,7 @@ class TestConfigCliArgument:
             mock_cmd_start.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', 'start']):
-                result = main()
+                _result = main()
 
             args = mock_cmd_start.call_args[0][0]
             assert args.config is None
@@ -1111,7 +1091,7 @@ class TestConfigCliArgument:
             mock_cmd_status.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', '--config', '/path/config.yaml', 'status']):
-                result = main()
+                _result = main()
 
             args = mock_cmd_status.call_args[0][0]
             assert args.config == '/path/config.yaml'
@@ -1122,7 +1102,7 @@ class TestConfigCliArgument:
             mock_cmd_init.return_value = 0
 
             with patch('sys.argv', ['issue-orchestrator', '--config', '/path/config.yaml', 'init']):
-                result = main()
+                _result = main()
 
             args = mock_cmd_init.call_args[0][0]
             assert args.config == '/path/config.yaml'
@@ -1162,12 +1142,11 @@ agents:
                 with patch('issue_orchestrator.infra.orchestrator.Orchestrator'):
                     with patch('issue_orchestrator.entrypoints.cli.asyncio') as mock_asyncio:
                         mock_asyncio.run.side_effect = _run_and_close
-                        result = cmd_start(args)
+                        _result = cmd_start(args)
 
                 # Config.load should be called, not find_and_load
                 mock_load.assert_called_once()
                 mock_find.assert_not_called()
-
 
 class TestResolveRepo:
     """Tests for the _resolve_repo helper function."""
@@ -1206,7 +1185,6 @@ class TestResolveRepo:
             with pytest.raises(ValueError, match="Could not determine repository"):
                 _resolve_repo(config)
 
-
 class TestGetRepositoryHost:
     """Tests for the _get_repository_host helper function."""
 
@@ -1236,7 +1214,6 @@ class TestGetRepositoryHost:
 
             result = _get_repository_host(config)
             assert result is None
-
 
 class TestCmdSetup:
     """Tests for the setup command."""
@@ -1273,7 +1250,6 @@ class TestCmdSetup:
 
             mock_wizard.assert_called_once()
             assert result == 0
-
 
 class TestCmdRefresh:
     """Tests for the refresh command."""
@@ -1321,7 +1297,6 @@ class TestCmdRefresh:
 
             assert result == 1
 
-
 class TestCmdRestart:
     """Tests for the restart command."""
 
@@ -1347,7 +1322,7 @@ class TestCmdRestart:
                     mock_start.return_value = 0
 
                     args = argparse.Namespace(port=8080, debug=False, ui_mode=None)
-                    result = cmd_restart(args)
+                    _result = cmd_restart(args)
 
                     mock_start.assert_called_once()
 
@@ -1362,10 +1337,9 @@ class TestCmdRestart:
                 mock_start.return_value = 0
 
                 args = argparse.Namespace(port=8080, debug=False, ui_mode=None)
-                result = cmd_restart(args)
+                _result = cmd_restart(args)
 
                 mock_start.assert_called_once()
-
 
 class TestCmdAudit:
     """Tests for the audit command."""
@@ -1376,7 +1350,7 @@ class TestCmdAudit:
 
         with patch('issue_orchestrator.infra.config.Config.find_and_load') as mock_find:
             with patch('issue_orchestrator.infra.audit.audit_queue') as mock_audit:
-                with patch('issue_orchestrator.infra.audit.print_audit') as mock_print:
+                with patch('issue_orchestrator.infra.audit.print_audit') as _mock_print:
                     with patch('issue_orchestrator.execution.providers.create_repository_host'):
                         with patch('issue_orchestrator.execution.git_working_copy.GitWorkingCopy'):
                             with patch('issue_orchestrator.infra.analysis.extract_issue_branches'):
@@ -1419,7 +1393,6 @@ class TestCmdAudit:
             result = cmd_audit(args)
 
             assert result == 1
-
 
 class TestCmdDoctor:
     """Tests for the doctor command."""
@@ -1469,7 +1442,6 @@ class TestCmdDoctor:
 
             assert result == 0
 
-
 class TestCmdDemo:
     """Tests for the demo command."""
 
@@ -1483,7 +1455,6 @@ class TestCmdDemo:
 
             assert result == 0
 
-
 class TestCmdTrace:
     """Tests for the trace command."""
 
@@ -1491,14 +1462,12 @@ class TestCmdTrace:
         """Verify trace command handles when log file is not found."""
         # This test is minimal because the find_log_file logic is tested through integration
         # The key is that cmd_trace is callable and tested for coverage
-        from issue_orchestrator.entrypoints.cli import cmd_trace
 
         # When log file is not found, cmd_trace should return 1
         # This is a simple smoke test for coverage
         # In practice, this would only happen in a repository without orchestrator running
         # which is tested implicitly through other tests
         pass  # cmd_trace is tested through normal usage patterns
-
 
 class TestCmdAuthStore:
     """Tests for auth store command."""
@@ -1525,7 +1494,6 @@ class TestCmdAuthStore:
 
         assert result == 1
 
-
 class TestCmdAuthClear:
     """Tests for auth clear command."""
 
@@ -1551,7 +1519,6 @@ class TestCmdAuthClear:
 
             assert result == 0
 
-
 class TestCmdKeysList:
     """Tests for keys list command."""
 
@@ -1568,7 +1535,6 @@ class TestCmdKeysList:
 
             assert result == 0
 
-
 class TestCmdKeysSet:
     """Tests for keys set command."""
 
@@ -1576,7 +1542,7 @@ class TestCmdKeysSet:
         """Verify keys set stores key successfully."""
         from issue_orchestrator.entrypoints.cli import _cmd_keys_set
 
-        with patch('issue_orchestrator.infra.ai_keys.store_ai_key') as mock_store:
+        with patch('issue_orchestrator.infra.ai_keys.store_ai_key') as _mock_store:
             args = argparse.Namespace(key_name='anthropic')
 
             with patch('getpass.getpass') as mock_getpass:
@@ -1596,7 +1562,6 @@ class TestCmdKeysSet:
             result = _cmd_keys_set(args)
 
         assert result == 1
-
 
 class TestCmdKeysDelete:
     """Tests for keys delete command."""

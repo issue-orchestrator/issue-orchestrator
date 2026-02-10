@@ -11,24 +11,19 @@ Coverage targets the uncovered lines (151-181, 190) in dependency_evaluator.py.
 """
 
 import pytest
-from unittest.mock import MagicMock
 
 from issue_orchestrator.control.dependency_evaluator import DependencyEvaluator
 from issue_orchestrator.domain.dependencies import (
     Dependency,
     DependencyReport,
     DependencyState,
-    ParsedDependencyRef,
+    
     parse_dependency_refs,
 )
-from issue_orchestrator.domain.issue_key import GitHubIssueKey
-from issue_orchestrator.ports import NullEventSink
-
 
 # =============================================================================
 # Test Fixtures
 # =============================================================================
-
 
 class MockIssueChecker:
     """Mock issue state checker for testing."""
@@ -55,7 +50,6 @@ class MockIssueChecker:
             return self.cross_repo_milestones.get((issue_number, repo), self._default_milestone)
         return self.milestones.get(issue_number, self._default_milestone)
 
-
 class MockIssueResolver:
     """Mock IssueResolver that can resolve external IDs to issue numbers."""
 
@@ -72,7 +66,6 @@ class MockIssueResolver:
     def invalidate(self, key) -> None:
         pass
 
-
 class CollectingEventSink:
     """Event sink that collects events for verification."""
 
@@ -85,27 +78,22 @@ class CollectingEventSink:
     def get_events_by_name(self, name: str) -> list:
         return [e for e in self.events if e.name == name]
 
-
 @pytest.fixture
 def checker():
     return MockIssueChecker()
-
 
 @pytest.fixture
 def events():
     return CollectingEventSink()
 
-
 @pytest.fixture
 def resolver():
     return MockIssueResolver()
-
 
 @pytest.fixture
 def evaluator(checker, events):
     """Basic evaluator without resolver (for issue number refs only)."""
     return DependencyEvaluator(issue_checker=checker, events=events)
-
 
 @pytest.fixture
 def evaluator_with_resolver(checker, events, resolver):
@@ -117,11 +105,9 @@ def evaluator_with_resolver(checker, events, resolver):
         repo="owner/repo",
     )
 
-
 # =============================================================================
 # External ID Resolution Tests (Lines 151-186)
 # =============================================================================
-
 
 class TestExternalIdWithNoResolver:
     """Test external ID references when no resolver is configured (Lines 151-161)."""
@@ -163,7 +149,6 @@ class TestExternalIdWithNoResolver:
         assert not report.runnable
         assert len(report.unknown) == 1
         assert "No resolver configured" in report.unknown[0].error  # type: ignore
-
 
 class TestExternalIdResolution:
     """Test external ID resolution via IssueResolver (Lines 163-186)."""
@@ -254,11 +239,9 @@ class TestExternalIdResolution:
         assert "non-int handle" in dep.error.lower()  # type: ignore
         assert "str" in dep.error  # type: ignore
 
-
 # =============================================================================
 # Dependency Graph Evaluation Behaviors
 # =============================================================================
-
 
 class TestDependencyGraphEvaluation:
     """Test dependency graph evaluation patterns."""
@@ -349,11 +332,9 @@ class TestDependencyGraphEvaluation:
         assert len(blocking) == 2
         assert all(d.blocks_running for d in blocking)
 
-
 # =============================================================================
 # Cross-Repository Dependencies
 # =============================================================================
-
 
 class TestCrossRepoDependencies:
     """Test cross-repository dependency references."""
@@ -403,11 +384,9 @@ class TestCrossRepoDependencies:
         assert dep.repository == "unknown/repo"
         assert dep.issue_number == 999
 
-
 # =============================================================================
 # Blocked Issue Identification
 # =============================================================================
-
 
 class TestBlockedIssueIdentification:
     """Test patterns for identifying blocked issues."""
@@ -454,11 +433,9 @@ class TestBlockedIssueIdentification:
         assert report.has_warnings
         assert "unknown" in report.summary()
 
-
 # =============================================================================
 # State Changes Affecting Dependencies
 # =============================================================================
-
 
 class TestStateChanges:
     """Test re-evaluation when dependency states change."""
@@ -533,11 +510,9 @@ class TestStateChanges:
         )
         assert report_b2.runnable
 
-
 # =============================================================================
 # Event Emission Tests
 # =============================================================================
-
 
 class TestEventEmission:
     """Test that events are properly emitted."""
@@ -580,11 +555,9 @@ class TestEventEmission:
         assert "summary" in event.data
         assert "#10" in event.data["summary"]
 
-
 # =============================================================================
 # Dependency Parsing Edge Cases
 # =============================================================================
-
 
 class TestDependencyParsingEdgeCases:
     """Test edge cases in dependency parsing."""
@@ -621,11 +594,9 @@ class TestDependencyParsingEdgeCases:
         refs = parse_dependency_refs("This issue has no dependencies")
         assert refs == []
 
-
 # =============================================================================
 # Dependency Display Reference
 # =============================================================================
-
 
 class TestDependencyDisplayRef:
     """Test the display_ref property of Dependency."""
@@ -658,11 +629,9 @@ class TestDependencyDisplayRef:
         dep = Dependency(issue_number=None, state=DependencyState.UNKNOWN)
         assert dep.display_ref == "(unknown)"
 
-
 # =============================================================================
 # Report Summary Tests
 # =============================================================================
-
 
 class TestDependencyReportSummary:
     """Test DependencyReport summary generation."""
@@ -716,11 +685,9 @@ class TestDependencyReportSummary:
         assert "missing" in summary
         assert "unknown" in summary
 
-
 # =============================================================================
 # Cross-Milestone Validation Tests
 # =============================================================================
-
 
 class TestCrossMilestoneValidation:
     """Test milestone-scoped dependency validation.

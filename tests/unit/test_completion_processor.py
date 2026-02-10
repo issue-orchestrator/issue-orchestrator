@@ -26,7 +26,6 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.control.review_exchange_loop import ReviewExchangeOutcome
 from issue_orchestrator.control.completion_processor import (
     CompletionProcessor,
-    ProcessingResult,
     LabelAdapter,
     PRAdapter,
     GitAdapter,

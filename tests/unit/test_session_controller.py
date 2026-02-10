@@ -6,18 +6,16 @@ These tests verify the observer/controller separation:
 No external mocking needed - pure logic tests.
 """
 
-import pytest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from datetime import datetime
-from issue_orchestrator.control.session_controller import SessionController, SessionDecision
-from issue_orchestrator.control.completion_processor import CompletionProcessor
-from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
+from issue_orchestrator.control.session_controller import SessionController
+
+from issue_orchestrator.observation.observation import SessionObservationResult
 from issue_orchestrator.domain.models import SessionStatus, CompletionRecord, CompletionOutcome, RequestedAction
 from issue_orchestrator.ports import NullEventSink
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
-
 
 class StubWorkingCopy:
     """Stub WorkingCopy for SessionController tests.
@@ -31,7 +29,6 @@ class StubWorkingCopy:
 
     def get_current_branch(self, worktree: Path) -> str | None:
         return "test-branch"
-
 
 def make_record(outcome: CompletionOutcome, **kwargs) -> CompletionRecord:
     """Helper to create a CompletionRecord with required fields."""
@@ -60,7 +57,6 @@ def make_record(outcome: CompletionOutcome, **kwargs) -> CompletionRecord:
         validation_record_path=kwargs.get("validation_record_path"),
     )
 
-
 class MockCompletionProcessor:
     """Fake completion processor for testing decisions without I/O."""
 
@@ -75,7 +71,6 @@ class MockCompletionProcessor:
 
     def process(self, worktree_path: Path, issue_number: int, issue_title: str, pr_number: int | None = None, completion_path: str | None = None):
         return self.process_result
-
 
 class TestSessionControllerRunning:
     """Tests for RUNNING observation."""
@@ -102,7 +97,6 @@ class TestSessionControllerRunning:
 
         assert decision.status == SessionStatus.RUNNING
         assert not decision.completion_processed
-
 
 class TestSessionControllerTerminated:
     """Tests for TERMINATED observation (session exited)."""
@@ -218,7 +212,6 @@ class TestSessionControllerTerminated:
         assert decision.status == SessionStatus.NEEDS_HUMAN
         assert decision.completion_processed
 
-
 class TestSessionControllerTimeout:
     """Tests for TIMED_OUT observation - the key recovery case."""
 
@@ -319,7 +312,6 @@ class TestSessionControllerTimeout:
         assert decision.recovered_from_timeout
         assert decision.blocked_reason == "External dependency"
 
-
 class TestSessionControllerReviewOutcomes:
     """Tests for review session outcomes."""
 
@@ -376,7 +368,6 @@ class TestSessionControllerReviewOutcomes:
         # Review session completed its job (even if changes requested)
         assert decision.status == SessionStatus.COMPLETED
 
-
 class MockCommandRunner:
     """Mock command runner for testing validation."""
 
@@ -404,7 +395,6 @@ class MockCommandRunner:
             timed_out=self.timed_out,
         )
 
-
 class MockWorkingCopy:
     """Mock WorkingCopy for testing validation caching."""
 
@@ -418,7 +408,6 @@ class MockWorkingCopy:
 
     def get_current_branch(self, worktree: Path) -> str | None:
         return "test-branch"
-
 
 class TestSessionControllerValidationCaching:
     """Tests for validation caching via PublishGate."""

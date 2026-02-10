@@ -1,9 +1,8 @@
 """Tests for ai_diagnose module."""
 
-import json
 import os
 from pathlib import Path
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 import pytest
 
@@ -14,7 +13,6 @@ from issue_orchestrator.infra.ai_diagnose import (
     _get_safe_env,
 )
 from issue_orchestrator.infra.startup_errors import StartupError, write_startup_failure
-
 
 class TestGetSafeEnv:
     """Tests for _get_safe_env function."""
@@ -60,7 +58,6 @@ class TestGetSafeEnv:
         assert safe_env["HOME"] == "/home/user"
         assert safe_env["LANG"] == "en_US.UTF-8"
 
-
 class TestDiagnosticBundle:
     """Tests for DiagnosticBundle dataclass."""
 
@@ -95,7 +92,6 @@ class TestDiagnosticBundle:
         summary = bundle.to_summary()
 
         assert "No recent failures recorded" in summary
-
 
 class TestCreateDiagnosticBundle:
     """Tests for create_diagnostic_bundle function."""
@@ -178,7 +174,6 @@ class TestCreateDiagnosticBundle:
 
         content = summary_path.read_text()
         assert "Diagnostic Bundle" in content
-
 
 class TestDiagnoseResult:
     """Tests for DiagnoseResult dataclass."""

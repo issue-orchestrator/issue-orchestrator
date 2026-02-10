@@ -1,6 +1,5 @@
 """Unit tests for stale claim detection in the Planner."""
 
-import pytest
 
 from issue_orchestrator.control.planner import (
     Planner,

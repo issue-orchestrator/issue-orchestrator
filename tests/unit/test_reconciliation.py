@@ -137,7 +137,7 @@ class TestExpectedState:
         expected = ExpectedState(required_pr_state="open")
         snapshot = ExternalSnapshot.for_pr(1, set(), "open")
 
-        satisfied, reason = expected.is_satisfied_by(snapshot)
+        satisfied, _reason = expected.is_satisfied_by(snapshot)
 
         assert satisfied
 

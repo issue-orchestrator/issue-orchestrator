@@ -134,7 +134,6 @@ def dual_orchestrators(
 ) -> Generator[tuple[OrchestratorProcess, OrchestratorProcess], None, None]:
     """Start two orchestrator instances for claim testing."""
     import shutil
-    from pathlib import Path
 
     config_a, config_b = dual_orchestrator_configs
 

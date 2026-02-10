@@ -10,7 +10,6 @@ from unittest.mock import Mock
 
 import pytest
 
-
 def _hook_env(env: dict[str, str] | None) -> dict[str, str]:
     merged = os.environ.copy()
     if env:
@@ -19,7 +18,6 @@ def _hook_env(env: dict[str, str] | None) -> dict[str, str]:
         repo_root = Path(__file__).resolve().parents[2]
         merged["ORCHESTRATOR_HOOK_PYTHONPATH"] = str(repo_root / "src")
     return merged
-
 
 def run_hook_test(
     hook_script: Path,
@@ -53,7 +51,6 @@ def run_hook_test(
         return (False, "") if return_stderr else False
     except Exception:
         return (True, "") if return_stderr else True
-
 
 def run_cursor_hook_test(
     hook_script: Path,
@@ -93,7 +90,6 @@ def run_cursor_hook_test(
         return (False, "") if return_output else False
     except Exception:
         return (True, "") if return_output else True
-
 
 def run_copilot_hook_test(
     hook_script: Path,
@@ -138,7 +134,6 @@ def run_copilot_hook_test(
     except Exception:
         return (True, "") if return_output else True
 
-
 from issue_orchestrator.infra.hooks.hooks import (
     AiAgentType,
     UnsupportedAiAgentError,
@@ -155,17 +150,15 @@ from issue_orchestrator.infra.hooks.hooks import (
     TEMPLATES_DIR,
 )
 from issue_orchestrator.infra.hooks.block_no_verify import (
-    HookDecision,
     evaluate_command,
     evaluate_raw_input,
     extract_command_from_input,
-    format_copilot_response,
+    
     format_cursor_response,
 )
 
-
 @pytest.fixture(autouse=True)
-def _fast_verify_hook_cases(monkeypatch):
+def _fast_verify_hook_cases(monkeypatch):  # pyright: ignore[reportUnusedFunction]
     """Speed up verify_hooks by skipping full subprocess-based test matrix."""
 
     def _fast_cases(self, hook_script: Path, checks_passed: list, checks_failed: list) -> None:
@@ -174,7 +167,6 @@ def _fast_verify_hook_cases(monkeypatch):
 
     for adapter_cls in (ClaudeCodeAdapter, CursorAdapter, GeminiAdapter, CopilotAdapter, CodexAdapter):
         monkeypatch.setattr(adapter_cls, "_run_hook_test_cases", _fast_cases, raising=False)
-
 
 class TestAiAgentType:
     """Tests for AiAgentType enum."""
@@ -188,7 +180,6 @@ class TestAiAgentType:
     def test_all_types_have_values(self):
         for agent_type in AiAgentType:
             assert agent_type.value is not None
-
 
 class TestDetectAiAgent:
     """Tests for detect_ai_agent function."""
@@ -240,7 +231,6 @@ class TestDetectAiAgent:
         assert detect_ai_agent("gh") == AiAgentType.UNKNOWN
         assert detect_ai_agent("gh pr list") == AiAgentType.UNKNOWN
 
-
 class TestGetAdapter:
     """Tests for get_adapter function."""
 
@@ -260,7 +250,6 @@ class TestGetAdapter:
         adapter = get_adapter(AiAgentType.UNKNOWN)
         assert isinstance(adapter, UnsupportedAdapter)
 
-
 class TestUnsupportedAiAgentError:
     """Tests for UnsupportedAiAgentError exception."""
 
@@ -273,7 +262,6 @@ class TestUnsupportedAiAgentError:
         error = UnsupportedAiAgentError(AiAgentType.AIDER, "reason here")
         assert error.agent_type == AiAgentType.AIDER
         assert error.reason == "reason here"
-
 
 class TestVerificationResult:
     """Tests for VerificationResult dataclass."""
@@ -297,7 +285,6 @@ class TestVerificationResult:
         )
         assert "✗" in result.summary
         assert "2 checks failed" in result.summary
-
 
 class TestClaudeCodeAdapter:
     """Tests for ClaudeCodeAdapter."""
@@ -534,7 +521,6 @@ class TestClaudeCodeAdapter:
         decision = evaluate_command("gh pr view 123")
         assert decision.allowed
 
-
 class TestCursorAdapter:
     """Tests for CursorAdapter."""
 
@@ -687,7 +673,6 @@ class TestCursorAdapter:
         decision = evaluate_command("gh pr view 123")
         assert decision.allowed
 
-
 class TestGeminiAdapter:
     """Tests for GeminiAdapter.
 
@@ -767,7 +752,6 @@ class TestGeminiAdapter:
         adapter.install_hooks(temp_project)
         decision = evaluate_command("git push origin main")
         assert decision.allowed
-
 
 class TestCopilotAdapter:
     """Tests for CopilotAdapter.
@@ -850,7 +834,6 @@ class TestCopilotAdapter:
         decision = evaluate_command("gh pr merge 123")
         assert not decision.allowed
 
-
 class TestCodexAdapter:
     """Tests for CodexAdapter.
 
@@ -922,7 +905,6 @@ class TestCodexAdapter:
         assert not result.success
         assert any("execpolicy_cli_available" in check for check in result.checks_failed)
 
-
 class TestUnsupportedAdapter:
     """Tests for UnsupportedAdapter."""
 
@@ -948,7 +930,6 @@ class TestUnsupportedAdapter:
 
     def test_is_installed_always_false(self, adapter, temp_project):
         assert not adapter.is_installed(temp_project)
-
 
 class TestDetectAgentsFromConfig:
     """Tests for detect_agents_from_config function."""
@@ -991,7 +972,6 @@ class TestDetectAgentsFromConfig:
         result = detect_agents_from_config(mock_config)
 
         assert result["agent:test"] == AiAgentType.UNKNOWN
-
 
 class TestParseHookInput:
     """Tests for parse_hook_input.py (extract_command function)."""
@@ -1036,7 +1016,6 @@ class TestParseHookInput:
     def test_non_string_command_returns_empty(self):
         raw = json.dumps({"tool_input": {"command": 42}})
         assert self.extract_command(raw) == ""
-
 
 class TestCopilotParseHookInput:
     """Tests for Copilot's parse_hook_input.py (nested toolArgs JSON format).
@@ -1116,7 +1095,6 @@ class TestCopilotParseHookInput:
         """Test Copilot script also handles Cursor format for compatibility."""
         raw = json.dumps({"command": "git log"})
         assert self.extract_command(raw) == "git log"
-
 
 class TestHookScriptIntegration:
     """Minimal end-to-end coverage for hook shell scripts."""
@@ -1204,14 +1182,12 @@ class TestTemplatesExist:
         template = TEMPLATES_DIR / "codex" / "orchestrator.rules"
         assert template.exists(), f"Template not found: {template}"
 
-
 # =============================================================================
 # DI-Based Agent Hook Verification
 # =============================================================================
 # These tests use dependency injection to verify hooks for all supported agents.
 # The list of agents to test can be configured, allowing the same test suite
 # to run against any set of agents (from config, for CI, or for development).
-
 
 # Default list of all supported agent types with hooks (excludes AIDER/UNKNOWN)
 SUPPORTED_AGENTS_WITH_HOOKS: list[AiAgentType] = [
@@ -1222,7 +1198,6 @@ SUPPORTED_AGENTS_WITH_HOOKS: list[AiAgentType] = [
     # CODEX omitted from default list as it requires special HOME handling
 ]
 
-
 def get_agent_test_runner(agent_type: AiAgentType):
     """Get the appropriate hook test function for an agent type.
 
@@ -1232,7 +1207,6 @@ def get_agent_test_runner(agent_type: AiAgentType):
     if agent_type in (AiAgentType.CLAUDE_CODE, AiAgentType.GEMINI, AiAgentType.CURSOR, AiAgentType.COPILOT):
         return lambda _hook_script, command: not evaluate_command(command).allowed
     raise ValueError(f"No test runner for {agent_type}")
-
 
 def get_agent_hook_path(agent_type: AiAgentType, project_root: Path) -> Path:
     """Get the hook script path for an agent type.
@@ -1249,7 +1223,6 @@ def get_agent_hook_path(agent_type: AiAgentType, project_root: Path) -> Path:
         return project_root / ".github" / "hooks" / "block-no-verify.sh"
     else:
         raise ValueError(f"No hook path for {agent_type}")
-
 
 class TestAgentHooksParametrized:
     """Parametrized tests for all supported AI agents.
@@ -1333,7 +1306,6 @@ class TestAgentHooksParametrized:
         """Verify is_installed returns True after installation."""
         adapter, _, project_root, _ = agent_setup
         assert adapter.is_installed(project_root), f"{adapter.agent_type.value}: is_installed returned False"
-
 
 class TestAgentHooksFromConfig:
     """Tests that verify hooks for agents detected from config.

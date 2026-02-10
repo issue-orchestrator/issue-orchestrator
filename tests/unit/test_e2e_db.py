@@ -1,21 +1,19 @@
 """Unit tests for E2E database layer."""
 
 import pytest
-import tempfile
-from datetime import datetime, timezone
+
 from pathlib import Path
 
 from issue_orchestrator.infra.e2e_db import (
     E2EDB,
     AlreadyRunning,
-    E2ERun,
+    
     TestStability,
     _categorize_test,
     _compute_stability,
     load_quarantine_list,
     save_quarantine_list,
 )
-
 
 class TestE2EDB:
     """Test the E2EDB SQLite layer."""
@@ -177,7 +175,7 @@ class TestE2EDB:
 
     def test_cancel_running(self, db: E2EDB):
         """Test canceling a running test."""
-        run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"], None, None)
+        _run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"], None, None)
 
         db.cancel_running("test-orch")
 
@@ -226,7 +224,7 @@ class TestE2EDB:
     def test_db_path_creates_parent_dirs(self, tmp_path: Path):
         """Test that E2EDB creates parent directories if needed."""
         db_path = tmp_path / "subdir" / "nested" / "e2e.db"
-        db = E2EDB(db_path)
+        _db = E2EDB(db_path)
 
         assert db_path.exists()
 
@@ -243,7 +241,7 @@ class TestE2EDB:
 
     def test_start_run_with_worker_pid(self, db: E2EDB):
         """Test starting a run with worker_pid."""
-        run_id = db.start_run(
+        _run_id = db.start_run(
             repo_root="/test/repo",
             orchestrator_id="test-orch",
             pytest_args=["tests/e2e"],
@@ -286,7 +284,7 @@ class TestE2EDB:
 
     def test_orphan_detection_alive_process_raises(self, db: E2EDB, monkeypatch):
         """Test that running run with alive process still raises AlreadyRunning."""
-        run1 = db.start_run("/test/repo", "test-orch", ["tests/e2e"], worker_pid=99999)
+        _run1 = db.start_run("/test/repo", "test-orch", ["tests/e2e"], worker_pid=99999)
 
         # Mock _is_process_alive to return True (process is alive)
         monkeypatch.setattr(db, "_is_process_alive", lambda pid: True)
@@ -581,7 +579,6 @@ class TestE2EDB:
         db.resolve_failure_issue("test::failure2", "passed")
         assert db.get_unresolved_failure_count(100) == 0
 
-
 class TestFlipRateStability:
     """Test flip-rate stability detection via _compute_stability and DB methods."""
 
@@ -805,7 +802,6 @@ class TestFlipRateStability:
         # Window of 3 should only see the most recent 3 runs
         stability = db.get_test_stability("test::window", window_runs=3, flake_threshold_percent=20.0)
         assert stability.run_count == 3
-
 
 class TestQuarantineListFunctions:
     """Test quarantine list utility functions."""

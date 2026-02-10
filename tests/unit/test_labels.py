@@ -1,6 +1,5 @@
 """Tests for the centralized labels module."""
 
-import pytest
 
 from issue_orchestrator.infra.labels import (
     # Constants
@@ -10,7 +9,7 @@ from issue_orchestrator.infra.labels import (
     BLOCKED_NEEDS_HUMAN,
     LEGACY_NEEDS_HUMAN,
     LEGACY_FAILED,
-    BLOCKING_PREFIX,
+    
     BLOCKING_COLON_PREFIX,
     # Functions
     is_blocking,
@@ -21,7 +20,6 @@ from issue_orchestrator.infra.labels import (
     requires_human_any,
     pick_blocking_label,
 )
-
 
 class TestIsBlocking:
     """Test is_blocking function."""
@@ -50,7 +48,6 @@ class TestIsBlocking:
         """Empty string should not block."""
         assert not is_blocking("")
 
-
 class TestIsBlockingAny:
     """Test is_blocking_any function."""
 
@@ -68,7 +65,6 @@ class TestIsBlockingAny:
         """Empty list should return False."""
         assert not is_blocking_any([])
 
-
 class TestGetBlockingLabels:
     """Test get_blocking_labels function."""
 
@@ -83,7 +79,6 @@ class TestGetBlockingLabels:
         labels = ["bug", "enhancement"]
         assert get_blocking_labels(labels) == []
 
-
 class TestIsInProgress:
     """Test is_in_progress function."""
 
@@ -94,7 +89,6 @@ class TestIsInProgress:
     def test_false_when_not_present(self):
         """Should return False when in-progress not present."""
         assert not is_in_progress(["bug", "enhancement"])
-
 
 class TestRequiresHuman:
     """Test requires_human functions."""
@@ -117,7 +111,6 @@ class TestRequiresHuman:
         """Should detect human-required labels in list."""
         assert requires_human_any(["bug", BLOCKED_NEEDS_HUMAN])
         assert not requires_human_any(["bug", BLOCKED_FAILED])
-
 
 class TestPickBlockingLabel:
     """Test pick_blocking_label function."""

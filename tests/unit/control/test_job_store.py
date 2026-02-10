@@ -151,7 +151,7 @@ class TestSetWorktreeId:
 
     def test_creates_parent_directories(self, sample_worktree: Path):
         """Verify creates .issue-orchestrator directory if needed."""
-        result = set_worktree_id(sample_worktree, "wt-test-id")
+        _result = set_worktree_id(sample_worktree, "wt-test-id")
 
         marker_path = sample_worktree / WORKTREE_ID_MARKER
         assert marker_path.exists()

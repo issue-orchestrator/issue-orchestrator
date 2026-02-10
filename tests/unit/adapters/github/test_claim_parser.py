@@ -1,8 +1,6 @@
 """Unit tests for adapters/github/claim_parser.py."""
 
-from datetime import datetime, timedelta
-
-import pytest
+from datetime import datetime
 
 from issue_orchestrator.adapters.github.claim_parser import (
     extract_all_claims,
@@ -10,7 +8,6 @@ from issue_orchestrator.adapters.github.claim_parser import (
     parse_claim_comment,
 )
 from issue_orchestrator.domain.claim import Claim
-
 
 class TestParseClaimComment:
     """Tests for parse_claim_comment function."""
@@ -119,7 +116,6 @@ priority: 1000
         assert isinstance(claim.started_at, datetime)
         assert isinstance(claim.expires_at, datetime)
 
-
 class TestFormatClaimComment:
     """Tests for format_claim_comment function."""
 
@@ -164,7 +160,6 @@ class TestFormatClaimComment:
         # Datetime comparison (may have microsecond differences)
         assert abs((parsed.started_at - original.started_at).total_seconds()) < 1
         assert abs((parsed.expires_at - original.expires_at).total_seconds()) < 1
-
 
 class TestExtractAllClaims:
     """Tests for extract_all_claims function."""

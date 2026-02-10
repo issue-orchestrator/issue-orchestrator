@@ -4,7 +4,6 @@ These tests verify the planner's pure policy logic without any external dependen
 The planner decides "should we?" - no mocks for tmux/GitHub needed.
 """
 
-import pytest
 from pathlib import Path
 from unittest.mock import Mock, MagicMock
 
@@ -38,7 +37,6 @@ from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
 from issue_orchestrator.ports import InMemoryProviderCircuitStore
 
-
 def make_config(**kwargs) -> Config:
     """Create a test config with sensible defaults."""
     defaults = {
@@ -47,7 +45,6 @@ def make_config(**kwargs) -> Config:
     }
     defaults.update(kwargs)
     return Config(**defaults)
-
 
 def make_issue(number: int, title: str = "Test issue", **kwargs) -> Issue:
     """Create a test issue."""
@@ -63,7 +60,6 @@ def make_issue(number: int, title: str = "Test issue", **kwargs) -> Issue:
     }
     defaults.update(kwargs)
     return Issue(**defaults)
-
 
 def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
     """Create a test session for an issue."""
@@ -86,7 +82,6 @@ def make_session(issue: Issue, task: TaskKind = TaskKind.CODE) -> Session:
         status=SessionStatus.RUNNING,
     )
 
-
 def make_snapshot(
     issues: list[Issue] | None = None,
     active_sessions: list[Session] | None = None,
@@ -107,7 +102,6 @@ def make_snapshot(
         **kwargs,
     )
 
-
 class TestPlanEmpty:
     """Tests for empty plan scenarios."""
 
@@ -126,7 +120,6 @@ class TestPlanEmpty:
 
         assert plan.action_count == 0
         assert len(plan.skipped) == 0
-
 
 class TestProviderResilienceLabels:
     def test_removes_label_when_review_rework_triage_providers_recover(self):
@@ -208,7 +201,6 @@ class TestProviderResilienceLabels:
 
         assert plan.action_count == 0
 
-
 class TestPlanIssues:
     """Tests for issue planning logic."""
 
@@ -266,7 +258,6 @@ class TestPlanIssues:
         assert plan.action_count == 1
         assert plan.actions[0].number == 2  # type: ignore
 
-
 class TestObservedCompletionLabels:
     """Tests for immediate label projection on observed completions."""
 
@@ -323,7 +314,6 @@ class TestObservedCompletionLabels:
         # Should only plan 1 more issue (max=2, started=1)
         assert plan.action_count == 1
 
-
 class TestPlanReviews:
     """Tests for review planning with workflow."""
 
@@ -361,7 +351,6 @@ class TestPlanReviews:
         review_actions = [a for a in plan.actions if a.session_type == SessionType.REVIEW]  # type: ignore
         assert len(review_actions) == 1
         assert review_actions[0].number == 100  # type: ignore
-
 
 class TestPlanHelpers:
     """Tests for Plan and snapshot helper methods."""
@@ -401,7 +390,6 @@ class TestPlanHelpers:
         assert item.item_type == "issue"
         assert item.number == 42
         assert "blocked" in item.reason
-
 
 class TestExplainSkip:
     """Tests for the explain_skip method."""
@@ -452,7 +440,6 @@ class TestExplainSkip:
         reason = planner.explain_skip(2, snapshot)
 
         assert "capacity" in reason.lower()
-
 
 class TestPlanDiscoveredReviews:
     """Tests for Planner's _plan_discovered_reviews method.
@@ -613,7 +600,6 @@ class TestPlanDiscoveredReviews:
         assert action.expected is not None
         # Should forbid the pause label
         assert "io:needs-reconcile" in action.expected.forbidden_labels
-
 
 class TestPlanTriageIssueCreation:
     """Tests for Planner's _plan_triage_issue_creation method.
@@ -885,7 +871,6 @@ class TestPlanTriageIssueCreation:
         # Should pick lowest milestone number (1 = M1)
         assert action.milestone == 1  # type: ignore
 
-
 class TestPlanDiscoveredReworks:
     """Tests for Planner's _plan_discovered_reworks method.
 
@@ -960,7 +945,6 @@ class TestPlanDiscoveredReworks:
         queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REWORK]
         assert len(queue_actions) == 0
 
-
 class TestPlanDiscoveredEscalations:
     """Tests for Planner's _plan_discovered_escalations method.
 
@@ -1013,7 +997,6 @@ class TestPlanDiscoveredEscalations:
 
         escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
         assert len(escalate_actions) == 0
-
 
 class TestPlanDiscoveredFailures:
     """Tests for Planner's _plan_discovered_failures method.
@@ -1161,7 +1144,6 @@ class TestPlanDiscoveredFailures:
         triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
         assert len(triage_actions) == 0
 
-
 class TestPlanCleanups:
     """Tests for Planner's _plan_cleanups method.
 
@@ -1274,7 +1256,6 @@ class TestPlanCleanups:
         assert cleanup_actions[0].close_tabs is False  # type: ignore
         assert cleanup_actions[0].remove_worktrees is True  # type: ignore
 
-
 # =============================================================================
 # BEHAVIOR-CENTRIC TESTS: Priority and Action Ordering
 # =============================================================================
@@ -1326,7 +1307,6 @@ class TestActionPriority:
 
     def test_reworks_take_priority_over_triage(self):
         """Reworks are launched before triage when both are available."""
-        from tests.conftest import MockEventSink
 
         config = make_config(
             code_review_agent="agent:reviewer",
@@ -1473,7 +1453,6 @@ class TestActionPriority:
             if a.session_type == SessionType.ISSUE  # type: ignore
         ]
         assert len(issue_actions) == 2
-
 
 class TestEdgeCases:
     """Tests for edge cases and unusual input combinations."""
@@ -1667,7 +1646,6 @@ class TestEdgeCases:
 
     def test_max_capacity_reached_mid_planning(self):
         """Actions respect capacity even when multiple types compete."""
-        from tests.conftest import MockEventSink
 
         config = make_config(
             code_review_agent="agent:reviewer",
@@ -1720,7 +1698,6 @@ class TestEdgeCases:
         launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
         assert len(launch_actions) == 2
         assert all(a.session_type == SessionType.REVIEW for a in launch_actions)  # type: ignore
-
 
 class TestPlanQueueActionsOnlyPhase:
     """Tests that queue actions (Phase 1) happen even at capacity.
@@ -1860,7 +1837,6 @@ class TestPlanQueueActionsOnlyPhase:
         cleanup_actions = [a for a in plan.actions if a.action_type == ActionType.CLEANUP_SESSION]
         assert len(cleanup_actions) == 1
 
-
 class TestReworkEscalationWithinReworkPlanning:
     """Tests for escalation detection during rework planning phase."""
 
@@ -1943,7 +1919,6 @@ class TestReworkEscalationWithinReworkPlanning:
         assert len(escalate_actions) == 0
         assert launch_actions[0].number == 42  # type: ignore
 
-
 class TestSnapshotFromState:
     """Tests for OrchestratorSnapshot.from_state factory method."""
 
@@ -2011,7 +1986,6 @@ class TestSnapshotFromState:
         assert snapshot.triage_facts is not None
         assert snapshot.cleanup_facts is not None
 
-
 class TestActionReasonMessages:
     """Tests that action reason messages are informative."""
 
@@ -2069,7 +2043,6 @@ class TestActionReasonMessages:
         # Reason should include priority and milestone info
         reason = launch_actions[0].reason
         assert "milestone=M1" in reason or "P1" in reason
-
 
 class TestMultiplePendingTypesInteraction:
     """Tests for interactions when multiple pending types exist simultaneously."""
@@ -2187,7 +2160,6 @@ class TestMultiplePendingTypesInteraction:
         # No issue launches (pending work exists)
         issue_launches = [a for a in launch_actions if a.session_type == SessionType.ISSUE]  # type: ignore
         assert len(issue_launches) == 0
-
 
 class TestPlanStaleInProgressCleanup:
     """Tests for planner's stale in-progress label cleanup.

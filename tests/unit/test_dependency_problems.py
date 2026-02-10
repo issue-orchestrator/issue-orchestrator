@@ -173,7 +173,7 @@ class TestDependencyProblemsAPI:
 
     def test_empty_problems(self, app_client):
         """Empty problems returns empty dict."""
-        client, mock_orch = app_client
+        client, _mock_orch = app_client
 
         response = client.get("/api/dependency-problems")
 

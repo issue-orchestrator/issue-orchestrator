@@ -463,7 +463,7 @@ class TestEventsSinceEndpoint:
 
         mock_orch.event_hub.get_since.return_value = []
 
-        response = client.get("/api/events_since")
+        _response = client.get("/api/events_since")
 
         mock_orch.event_hub.get_since.assert_called_once_with(0)
 
@@ -605,7 +605,7 @@ class TestSnapshotEndpoint:
 
     def test_snapshot_returns_500_on_error(self, client_with_orchestrator):
         """Snapshot endpoint returns 500 when snapshot building fails."""
-        client, mock_orch = client_with_orchestrator
+        client, _mock_orch = client_with_orchestrator
 
         with patch("issue_orchestrator.entrypoints.control_api.asyncio.to_thread") as mock_to_thread:
             mock_to_thread.side_effect = Exception("Build failed")
@@ -1672,7 +1672,7 @@ class TestResumeIssueEndpoint:
         self, client_with_orchestrator, tmp_path
     ):
         """Returns 404 when worktree does not exist."""
-        client, mock_orch = client_with_orchestrator
+        client, _mock_orch = client_with_orchestrator
 
         with patch(
             "issue_orchestrator.entrypoints.control_api.get_worktree_path"
@@ -1690,7 +1690,7 @@ class TestResumeIssueEndpoint:
         self, client_with_orchestrator, tmp_path
     ):
         """Returns 404 when completion.json does not exist."""
-        client, mock_orch = client_with_orchestrator
+        client, _mock_orch = client_with_orchestrator
 
         # Create worktree without completion.json
         worktree = tmp_path / "repo-123"
@@ -1875,7 +1875,7 @@ class TestDebugSessionEndpoint:
         self, client_with_orchestrator, tmp_path
     ):
         """Returns 404 when worktree does not exist."""
-        client, mock_orch = client_with_orchestrator
+        client, _mock_orch = client_with_orchestrator
 
         with patch(
             "issue_orchestrator.entrypoints.control_api.get_worktree_path"

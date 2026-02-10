@@ -13,7 +13,7 @@ import json
 import pytest
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, MagicMock
 
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.domain.models import (
@@ -25,14 +25,13 @@ from issue_orchestrator.domain.models import (
     RequestedAction,
     AgentConfig,
 )
-from issue_orchestrator.ports import TraceEvent, NullEventSink
-from issue_orchestrator.control.session_controller import SessionController, SessionDecision
+from issue_orchestrator.ports import TraceEvent
+from issue_orchestrator.control.session_controller import SessionController
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
-
 
 def make_completion_record(
     outcome: CompletionOutcome,
@@ -50,14 +49,12 @@ def make_completion_record(
         **kwargs,
     )
 
-
 def write_completion_to_worktree(worktree: Path, record: CompletionRecord) -> None:
     """Write completion record to worktree."""
     record_dir = worktree / ".issue-orchestrator"
     record_dir.mkdir(parents=True, exist_ok=True)
     record_path = record_dir / "completion.json"
     record_path.write_text(json.dumps(record.to_dict()))
-
 
 @pytest.fixture
 def test_config(tmp_path):
@@ -72,7 +69,6 @@ def test_config(tmp_path):
     config.dangerous = DangerousConfig(allow_unsupported_agents=True)
     return config
 
-
 @pytest.fixture
 def mock_label_adapter():
     """Mock label adapter for CompletionProcessor."""
@@ -80,7 +76,6 @@ def mock_label_adapter():
     adapter.add_label = Mock()
     adapter.remove_label = Mock()
     return adapter
-
 
 @pytest.fixture
 def mock_pr_adapter():
@@ -91,7 +86,6 @@ def mock_pr_adapter():
     adapter.create_pr = Mock(return_value=MagicMock(number=42, url="https://github.com/owner/repo/pull/42"))
     adapter.add_comment = Mock()
     return adapter
-
 
 @pytest.fixture
 def mock_git_adapter():
@@ -105,7 +99,6 @@ def mock_git_adapter():
     adapter.list_branch_names = Mock(return_value=["issue-123"])
     return adapter
 
-
 class MockEventSink:
     """Mock event sink that collects events for assertions."""
 
@@ -115,12 +108,10 @@ class MockEventSink:
     def publish(self, event: TraceEvent) -> None:
         self.events.append(event)
 
-
 @pytest.fixture
 def mock_event_sink():
     """Create a mock event sink for testing."""
     return MockEventSink()
-
 
 @pytest.fixture
 def completion_processor(mock_label_adapter, mock_pr_adapter, mock_git_adapter):
@@ -132,7 +123,6 @@ def completion_processor(mock_label_adapter, mock_pr_adapter, mock_git_adapter):
         session_output=FileSystemSessionOutput(),
     )
 
-
 class StubWorkingCopy:
     """Stub WorkingCopy for testing."""
 
@@ -141,7 +131,6 @@ class StubWorkingCopy:
 
     def get_current_branch(self, worktree):
         return "test-branch"
-
 
 @pytest.fixture
 def session_controller(completion_processor, mock_event_sink):
@@ -152,7 +141,6 @@ def session_controller(completion_processor, mock_event_sink):
         session_output=FileSystemSessionOutput(),
         working_copy=StubWorkingCopy(),  # type: ignore
     )
-
 
 @pytest.fixture
 def session_with_worktree(tmp_path):
@@ -198,7 +186,6 @@ def session_with_worktree(tmp_path):
             agent_config=agent_config,
         )
     return _create
-
 
 class TestSessionControllerDecision:
     """Tests for SessionController.decide_outcome method."""
@@ -379,7 +366,6 @@ class TestSessionControllerDecision:
         assert decision.status == SessionStatus.COMPLETED  # Review session completed its job
         mock_label_adapter.add_label.assert_called_once_with(session.issue.number, "needs-rework")
         mock_label_adapter.remove_label.assert_called_once_with(session.issue.number, "code-review")
-
 
 class TestEventEmission:
     """Tests for trace event emission during completion processing."""

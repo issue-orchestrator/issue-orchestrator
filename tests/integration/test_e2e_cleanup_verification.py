@@ -1,6 +1,5 @@
-import pytest
 
-from tests.e2e.conftest import verify_cleanup_items
+from tests.e2e.fixtures.cleanup import verify_cleanup_items
 
 
 def test_cleanup_verify_retries_until_consistent():

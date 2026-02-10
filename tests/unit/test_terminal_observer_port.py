@@ -3,7 +3,7 @@
 import pytest
 
 from issue_orchestrator.domain import ProcessState
-from issue_orchestrator.ports import TerminalObserver, NullTerminalObserver
+from issue_orchestrator.ports import NullTerminalObserver
 
 
 class TestNullTerminalObserver:

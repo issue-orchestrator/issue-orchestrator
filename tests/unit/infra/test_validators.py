@@ -5,7 +5,6 @@ Tests each validator in isolation with mock config objects.
 
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-import pytest
 
 from issue_orchestrator.infra.validators import (
     AgentValidator,

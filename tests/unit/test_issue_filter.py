@@ -1,6 +1,5 @@
 """Unit tests for IssueLabelFilter."""
 
-import pytest
 from unittest.mock import MagicMock
 
 from issue_orchestrator.domain.issue_filter import IssueLabelFilter

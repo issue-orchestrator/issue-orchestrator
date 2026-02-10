@@ -19,7 +19,6 @@ from issue_orchestrator.ports import PRInfo
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 
-
 @pytest.fixture
 def mock_config():
     """Create a mock config for testing."""
@@ -33,12 +32,10 @@ def mock_config():
     config.ui_mode = "tmux"
     return config
 
-
 @pytest.fixture
 def mock_session_output():
     """Create a mock SessionOutput port."""
     return MagicMock(spec=SessionOutput)
-
 
 @pytest.fixture
 def mock_session_runner():
@@ -51,7 +48,6 @@ def mock_session_runner():
     runner.send_to_session_by_name.return_value = False
     return runner
 
-
 @pytest.fixture
 def mock_repository_host():
     """Create a mock RepositoryHost port."""
@@ -61,14 +57,12 @@ def mock_repository_host():
     host.remove_label.return_value = None
     return host
 
-
 @pytest.fixture
 def mock_fresh_issue_reader():
     """Create a mock FreshIssueReader port."""
     reader = MagicMock()
     reader.read_issue_labels.return_value = []
     return reader
-
 
 @pytest.fixture
 def monitor(mock_config, mock_session_runner, mock_repository_host, mock_fresh_issue_reader):
@@ -81,7 +75,6 @@ def monitor(mock_config, mock_session_runner, mock_repository_host, mock_fresh_i
         session_output=FileSystemSessionOutput(),
     )
 
-
 @pytest.fixture
 def monitor_with_machines(mock_config, mock_session_runner, mock_repository_host, mock_fresh_issue_reader):
     """Create a SessionObserver instance with mock session machines for testing."""
@@ -93,7 +86,6 @@ def monitor_with_machines(mock_config, mock_session_runner, mock_repository_host
         fresh_issue_reader=mock_fresh_issue_reader,
         session_output=FileSystemSessionOutput(),
     )
-
 
 @pytest.fixture
 def sample_session(sample_agent_config, tmp_path):
@@ -114,7 +106,6 @@ def sample_session(sample_agent_config, tmp_path):
         worktree_path=tmp_path / "worktree",
         branch_name="issue-123-test",
     )
-
 
 class TestSessionObserverInit:
     """Test SessionObserver initialization."""
@@ -146,7 +137,6 @@ class TestSessionObserverInit:
     # Note: Tests for private port storage (_session_runner, _repository_host) removed
     # because they test implementation details. The behavior is tested through the
     # public methods like observe_session and check_session.
-
 
 class TestCheckSession:
     """Test check_session method."""
@@ -306,7 +296,6 @@ class TestCheckSession:
 
         assert status == SessionStatus.FAILED
 
-
 class TestCheckAllSessions:
     """Test check_all_sessions method."""
 
@@ -339,7 +328,6 @@ class TestCheckAllSessions:
 
         assert 123 in result
         assert 456 in result
-
 
 class TestHandleCompletion:
     """Test handle_completion method.
@@ -406,7 +394,6 @@ class TestHandleCompletion:
     # Tests for config-based tab closing behavior are in test_planner.py and
     # test_action_applier.py where CleanupSessionAction is tested.
 
-
 class TestSessionObserverIntegration:
     """Integration tests for SessionObserver."""
 
@@ -447,10 +434,8 @@ class TestSessionObserverIntegration:
         mock_session_runner.kill_session.assert_not_called()
         mock_repository_host.remove_label.assert_not_called()
 
-
 # Note: TestExtractSessionNumber class removed - it tested private method
 # _extract_session_number. Session name parsing is an implementation detail.
-
 
 class TestObserveSession:
     """Test observe_session method - the main observation loop."""
@@ -610,8 +595,7 @@ class TestObserveSession:
         If the session log was modified recently, the session is clearly active
         and shouldn't be terminated just because terminal session detection failed.
         """
-        import os
-        import time
+
         from datetime import datetime, timedelta
         from issue_orchestrator.observation.observation import SessionObservation
 
@@ -693,7 +677,6 @@ class TestObserveSession:
         """Test that observe_session emits event when completion.json is detected."""
         import json
         from issue_orchestrator.events import EventName
-        from issue_orchestrator.ports import TraceEvent
 
         mock_events = MagicMock()
         monitor = SessionObserver(
@@ -727,14 +710,11 @@ class TestObserveSession:
         event = call_args[0][0]
         assert event.name == EventName.OBSERVATION_COMPLETION_DETECTED
 
-
 # Note: TestReadLogTail class was removed as it tested private method _read_log_tail.
 # Log reading is an implementation detail.
 
-
 # Note: TestPortDelegation class removed - it tested private methods for handling
 # None ports. The fallback behavior is implicitly tested via the public methods.
-
 
 class TestCheckSessionExceptionHandling:
     """Test exception handling in check_session."""
@@ -767,7 +747,6 @@ class TestCheckSessionExceptionHandling:
         # Should not raise, should use fallback (empty labels -> FAILED)
         status = monitor.check_session(sample_session)
         assert status == SessionStatus.FAILED
-
 
 class TestCheckAllSessionsExceptionHandling:
     """Test exception handling in check_all_sessions."""
@@ -805,7 +784,6 @@ class TestCheckAllSessionsExceptionHandling:
         assert result[123] == SessionStatus.FAILED
         assert 456 in result
 
-
 class TestObserveSessionExceptionHandling:
     """Test exception handling in observe_session."""
 
@@ -827,10 +805,8 @@ class TestObserveSessionExceptionHandling:
         # exit_sent should remain False since PR check failed
         assert sample_session.exit_sent is False
 
-
 # Note: TestEmitNoOutputEdgeCases class is at the end of this file with noqa: SLF001 comments
 # to suppress private member access warnings, since it tests user-facing idle detection behavior.
-
 
 class TestCheckSessionPRLookupOnExit:
     """Test PR lookup exception handling after session exits."""
@@ -854,14 +830,13 @@ class TestCheckSessionPRLookupOnExit:
         mock_fresh_issue_reader.read_issue_labels.assert_called()
         assert status == SessionStatus.FAILED
 
-
 class TestTerminalObserverIntegration:
     """Tests for TerminalObserver integration in observe_session."""
 
     @pytest.fixture
     def mock_terminal_observer(self):
         """Create a mock TerminalObserver."""
-        from issue_orchestrator.domain import ProcessState, ProcessExitInfo
+        from issue_orchestrator.domain import ProcessState
         observer = MagicMock()
         observer.get_process_state.return_value = ProcessState.UNKNOWN
         observer.get_exit_info.return_value = None
@@ -1019,7 +994,6 @@ class TestTerminalObserverIntegration:
         assert observation_event is not None
         assert observation_event.data.get("exit_code") == 1
         assert observation_event.data.get("exit_signal") is None
-
 
 class TestEmitNoOutputIfStale:
     """Test _emit_no_output_if_stale method for detecting idle sessions.
@@ -1188,7 +1162,6 @@ class TestEmitNoOutputIfStale:
         monitor._emit_no_output_if_stale(sample_session)  # noqa: SLF001
 
         assert mock_events.publish.call_count == first_call_count  # No new calls
-
 
 class TestEmitNoOutputEdgeCases:
     """Test edge cases in _emit_no_output_if_stale.

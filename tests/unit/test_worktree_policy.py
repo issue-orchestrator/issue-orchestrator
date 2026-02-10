@@ -1,17 +1,11 @@
 """Unit tests for the worktree policy module."""
 
-import pytest
-from pathlib import Path
+
 from unittest.mock import MagicMock, patch
 
 from issue_orchestrator.adapters.worktree.worktree_policy import (
     ValidateOrDeletePolicy,
 )
-from issue_orchestrator.ports.worktree_policy import (
-    ValidationResult,
-    SyncResult,
-)
-
 
 class TestValidateOrDeletePolicy:
     """Test the ValidateOrDeletePolicy class."""
@@ -90,7 +84,6 @@ class TestValidateOrDeletePolicy:
 
         assert result.can_reuse is True
 
-
 class TestSyncRemoteRefs:
     """Test remote ref syncing."""
 
@@ -161,7 +154,6 @@ class TestSyncRemoteRefs:
         assert result.success is False
         assert "stale remote tracking ref" in result.reason
 
-
 class TestDeleteWorktree:
     """Test worktree deletion."""
 
@@ -198,5 +190,3 @@ class TestDeleteWorktree:
 
         assert result is True
         assert not worktree.exists()
-
-

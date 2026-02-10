@@ -8,14 +8,11 @@ from unittest.mock import patch
 from issue_orchestrator.ports.git import GitError, GitResult
 
 from issue_orchestrator.execution.sandbox_verify import (
-    VerificationResult,
-    SandboxVerificationResult,
     verify_git_push_fails,
     verify_env_vars_absent,
     verify_home_isolated,
     verify_sandbox,
 )
-
 
 class TestVerifyGitPushFails:
     """Tests for git push verification."""
@@ -53,7 +50,6 @@ class TestVerifyGitPushFails:
             assert result.passed is False
             assert result.critical is False  # Warning, not critical
 
-
 class TestVerifyEnvVarsAbsent:
     """Tests for environment variable verification."""
 
@@ -70,7 +66,6 @@ class TestVerifyEnvVarsAbsent:
             result = verify_env_vars_absent()
             assert result.passed is False
             assert "GH_TOKEN" in result.message
-
 
 class TestVerifyHomeIsolated:
     """Tests for HOME isolation verification."""
@@ -93,7 +88,6 @@ class TestVerifyHomeIsolated:
             result = verify_home_isolated(temp_worktree)
             assert result.passed is False
             assert result.critical is False  # This is a warning
-
 
 class TestVerifySandbox:
     """Tests for full sandbox verification."""

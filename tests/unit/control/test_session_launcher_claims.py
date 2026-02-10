@@ -2,14 +2,13 @@
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from issue_orchestrator.domain.claim import ClaimResult, ClaimState
-from issue_orchestrator.domain.lease_config import LeaseConfig
-from issue_orchestrator.domain.models import Session, SessionStatus
 
+from issue_orchestrator.domain.models import SessionStatus
 
 class MockClaimManager:
     """Mock ClaimManager for testing."""
@@ -50,7 +49,6 @@ class MockClaimManager:
     def get_current_claim(self, issue_number: int):
         return None
 
-
 class MockEventSink:
     """Mock event sink for testing."""
 
@@ -59,7 +57,6 @@ class MockEventSink:
 
     def publish(self, event):
         self.events.append((event.event_type, event.data))
-
 
 class MockIssue:
     """Mock issue for testing."""
@@ -72,7 +69,6 @@ class MockIssue:
         self.body = "Test issue body"
         self.key = MagicMock()
         self.key.stable_id.return_value = f"issue-{number}"
-
 
 class TestSessionLauncherClaimAcquisition:
     """Tests for claim acquisition in SessionLauncher.launch_issue_session."""
@@ -275,7 +271,6 @@ class TestSessionLauncherClaimAcquisition:
         # Verify claim was released
         assert len(mock_claim_manager.release_claim_calls) == 1
         assert mock_claim_manager.release_claim_calls[0][0] == issue.number
-
 
 class TestSessionCompletionClaimRelease:
     """Tests for claim release on session completion."""

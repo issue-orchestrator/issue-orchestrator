@@ -12,7 +12,6 @@ Uses fake clocks (no real sleeps) for deterministic testing.
 
 from __future__ import annotations
 
-import time
 from typing import Any
 from unittest.mock import patch
 
@@ -21,7 +20,7 @@ import pytest
 from issue_orchestrator.execution.verification_service import (
     DEFAULT_GH_BUDGET,
     DefaultVerificationService,
-    create_verification_service_from_config,
+    
 )
 from issue_orchestrator.ports.verification import (
     ErrorClassification,
@@ -29,15 +28,12 @@ from issue_orchestrator.ports.verification import (
     VerificationResult,
 )
 
-
 # --- Fixtures ---
-
 
 @pytest.fixture
 def service() -> DefaultVerificationService:
     """Create a verification service with default settings."""
     return DefaultVerificationService()
-
 
 @pytest.fixture
 def fast_budget() -> VerificationBudget:
@@ -50,7 +46,6 @@ def fast_budget() -> VerificationBudget:
         backoff_factor=2.0,
         jitter_ms=0,
     )
-
 
 class FakeClock:
     """Fake clock for deterministic time control in tests."""
@@ -68,9 +63,7 @@ class FakeClock:
         """Fake sleep that advances the clock."""
         self._now += seconds
 
-
 # --- Test Helpers ---
-
 
 def make_check_fn(
     results: list[tuple[bool, Any]],
@@ -91,7 +84,6 @@ def make_check_fn(
 
     return check, calls
 
-
 def make_failing_check(
     exceptions: list[Exception],
 ) -> tuple[callable, list[int]]:  # type: ignore
@@ -108,9 +100,7 @@ def make_failing_check(
 
     return check, calls
 
-
 # --- Success Path Tests ---
-
 
 class TestVerifyConditionSuccess:
     """Tests for successful verification scenarios."""
@@ -158,9 +148,7 @@ class TestVerifyConditionSuccess:
         assert observed == "complete"
         assert len(calls) == 3
 
-
 # --- Retry Exhaustion Tests ---
-
 
 class TestVerifyConditionRetryExhaustion:
     """Tests for bounded retry behavior."""
@@ -227,7 +215,7 @@ class TestVerifyConditionRetryExhaustion:
 
             mock_sleep.side_effect = advance_on_sleep
 
-            result, observed = service.verify_condition(
+            result, _observed = service.verify_condition(
                 operation="test_op",
                 target="target-1",
                 check=check_with_time_advance,
@@ -236,9 +224,7 @@ class TestVerifyConditionRetryExhaustion:
 
         assert result == VerificationResult.TIMED_OUT
 
-
 # --- Error Classification Tests ---
-
 
 class TestErrorClassification:
     """Tests for error classification logic."""
@@ -292,7 +278,7 @@ class TestErrorClassification:
             clock = FakeClock()
             mock_time.side_effect = clock.monotonic
 
-            result, observed = service.verify_condition(
+            result, _observed = service.verify_condition(
                 operation="test_op",
                 target="target-1",
                 check=check,
@@ -314,7 +300,7 @@ class TestErrorClassification:
             clock = FakeClock()
             mock_time.side_effect = clock.monotonic
 
-            result, observed = service.verify_condition(
+            result, _observed = service.verify_condition(
                 operation="test_op",
                 target="target-1",
                 check=check,
@@ -349,9 +335,7 @@ class TestErrorClassification:
         assert observed == "recovered"
         assert len(calls) == 3
 
-
 # --- Circuit Breaker Tests ---
-
 
 class TestCircuitBreaker:
     """Tests for circuit breaker state machine."""
@@ -538,9 +522,7 @@ class TestCircuitBreaker:
 
             assert not service.is_circuit_open
 
-
 # --- Backoff Behavior Tests ---
-
 
 class TestBackoffBehavior:
     """Tests for exponential backoff timing."""
@@ -639,15 +621,12 @@ class TestBackoffBehavior:
         assert sleep_calls[3] == pytest.approx(0.25, rel=0.01)  # Still capped
         assert sleep_calls[4] == pytest.approx(0.25, rel=0.01)  # Still capped
 
-
 # --- Config Factory Tests ---
 # Note: Tests for create_verification_service_from_config were removed because they
 # accessed internal _default_budget state. The factory's behavior is tested through
 # the verification behavior tests above (e.g., verify_condition with different budgets).
 
-
 # --- Default Budget Tests ---
-
 
 class TestDefaultBudget:
     """Tests for default budget configuration."""
@@ -695,9 +674,7 @@ class TestDefaultBudget:
         assert result == VerificationResult.FAILED_RETRYABLE
         assert len(calls) == 2  # Only 2 attempts from custom budget
 
-
 # --- Jitter Tests ---
-
 
 class TestJitterBehavior:
     """Tests for jitter in backoff timing."""

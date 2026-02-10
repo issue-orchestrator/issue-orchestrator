@@ -880,7 +880,7 @@ class TestReviewStateMachine:
         machine.start_review()
 
         # Do 10 rework cycles
-        for i in range(10):
+        for _i in range(10):
             machine.request_changes()
             assert machine.can_transition('queue_rework') is True
             machine.queue_rework()

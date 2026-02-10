@@ -12,42 +12,37 @@ rather than implementation details.
 """
 
 import pytest
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Optional
-from unittest.mock import MagicMock, Mock
+from typing import Any
+from unittest.mock import Mock
 
 from issue_orchestrator.infra.config import (
     Config,
-    CleanupConfig,
-    CleanupWithTriage,
-    CleanupWithoutTriage,
+    
 )
-from issue_orchestrator.control.completion_handler import CompletionHandler, CompletionResult
+from issue_orchestrator.control.completion_handler import CompletionHandler
 from issue_orchestrator.control.actions import (
     AddLabelAction,
     RemoveLabelAction,
     AddCommentAction,
-    ActionType,
+    
 )
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.domain.state_machines.issue_machine import IssueStateMachine, IssueState
 from issue_orchestrator.domain.state_machines.session_machine import SessionStateMachine, SessionState
 from issue_orchestrator.domain.state_machines.review_machine import ReviewStateMachine, ReviewState
-from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus, PendingCleanup
-from issue_orchestrator.ports import NullEventSink, InMemoryEventSink, TraceEvent
+from issue_orchestrator.domain.models import AgentConfig, Issue, Session, SessionStatus
+from issue_orchestrator.ports import NullEventSink, InMemoryEventSink
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.events import EventName
 from issue_orchestrator.contracts.public import SessionCompletedPayload
 from issue_orchestrator.infra import labels
 
-
 # =============================================================================
 # Test Fixtures
 # =============================================================================
-
 
 @pytest.fixture
 def config() -> Config:
@@ -56,14 +51,12 @@ def config() -> Config:
     cfg.repo = "owner/repo"
     return cfg
 
-
 @pytest.fixture
 def tmp_worktree(tmp_path: Path) -> Path:
     """Create a temporary worktree directory."""
     worktree = tmp_path / "worktree"
     worktree.mkdir()
     return worktree
-
 
 @pytest.fixture
 def agent_config(tmp_path: Path) -> AgentConfig:
@@ -73,7 +66,6 @@ def agent_config(tmp_path: Path) -> AgentConfig:
         timeout_minutes=45,
     )
 
-
 def make_issue(number: int = 1, title: str = "Test issue", labels: list[str] | None = None, repo: str = "owner/repo") -> Issue:
     """Create a test issue."""
     return Issue(
@@ -82,7 +74,6 @@ def make_issue(number: int = 1, title: str = "Test issue", labels: list[str] | N
         labels=labels or ["agent:test"],
         repo=repo,
     )
-
 
 def create_test_session(
     issue: Issue,
@@ -110,7 +101,6 @@ def create_test_session(
         pr_number=pr_number,
     )
 
-
 def make_repository_host(
     prs: list[Any] | None = None,
     pr_info: Any | None = None,
@@ -123,7 +113,6 @@ def make_repository_host(
         get_issue=lambda _issue_number: issue_info,
         set_pr_draft=Mock(),
     )
-
 
 def make_handler(
     config: Config,
@@ -146,11 +135,9 @@ def make_handler(
         session_output=session_output if session_output is not None else Mock(spec=SessionOutput),
     )
 
-
 # =============================================================================
 # Test: History Entry Creation
 # =============================================================================
-
 
 class TestHistoryEntryCreation:
     """Tests for history entry creation on session completion."""
@@ -270,11 +257,9 @@ class TestHistoryEntryCreation:
         assert result.history_entry.status == "completed"
         assert "PR created" in result.history_entry.status_reason  # type: ignore
 
-
 # =============================================================================
 # Test: Event Emission
 # =============================================================================
-
 
 class TestEventEmission:
     """Tests for trace event emission during completion processing."""
@@ -383,11 +368,9 @@ class TestEventEmission:
         assert event.data["pr_number"] == 42
         assert event.data["labels"] == ["some-label"]
 
-
 # =============================================================================
 # Test: State Machine Transitions
 # =============================================================================
-
 
 class TestStateMachineTransitions:
     """Tests for state machine transitions during completion processing."""
@@ -537,11 +520,9 @@ class TestStateMachineTransitions:
 
         assert session_machine.get_state() == SessionState.TIMED_OUT
 
-
 # =============================================================================
 # Test: Review Session Machine Transitions
 # =============================================================================
-
 
 class TestReviewMachineTransitions:
     """Tests for review state machine transitions on review session completion."""
@@ -636,11 +617,9 @@ class TestReviewMachineTransitions:
         result = handler.process_completion(session, SessionStatus.COMPLETED)
         assert result is not None
 
-
 # =============================================================================
 # Test: PR Detection and Handling
 # =============================================================================
-
 
 class TestPRDetection:
     """Tests for PR detection from completed sessions."""
@@ -714,11 +693,9 @@ class TestPRDetection:
         assert result.pr_url == "http://pr/1"
         assert result.pr_number == 1
 
-
 # =============================================================================
 # Test: Cleanup Strategy Determination
 # =============================================================================
-
 
 class TestCleanupStrategy:
     """Tests for cleanup strategy determination."""
@@ -849,11 +826,9 @@ class TestCleanupStrategy:
         assert cleanup.terminal_id == "issue-123"
         assert cleanup.branch_name == "issue-123"
 
-
 # =============================================================================
 # Test: Review Queue Decision
 # =============================================================================
-
 
 class TestReviewQueueDecision:
     """Tests for code review queueing decisions."""
@@ -969,11 +944,9 @@ class TestReviewQueueDecision:
 
         assert result.should_queue_review is False
 
-
 # =============================================================================
 # Test: Label Action Generation
 # =============================================================================
-
 
 class TestLabelActionGeneration:
     """Tests for label/comment action generation on completion."""
@@ -1342,11 +1315,9 @@ class TestLabelActionGeneration:
         # No actions for review sessions
         assert len(result.actions) == 0
 
-
 # =============================================================================
 # Test: Comprehensive Status × Session Type Coverage Matrix
 # =============================================================================
-
 
 class TestStatusSessionTypeMatrix:
     """Comprehensive tests covering all SessionStatus × session type combinations.
@@ -1583,11 +1554,9 @@ class TestStatusSessionTypeMatrix:
         assert "Timed Out" in result.actions[0].comment
         assert "rework" in result.actions[0].comment.lower()
 
-
 # =============================================================================
 # Test: Edge Cases and Error Handling
 # =============================================================================
-
 
 class TestEdgeCases:
     """Tests for edge cases and error handling."""
@@ -1671,11 +1640,9 @@ class TestEdgeCases:
         # pending_cleanup can be None
         assert isinstance(result.actions, tuple)
 
-
 # =============================================================================
 # Test: Integration of Multiple Behaviors
 # =============================================================================
-
 
 class TestIntegrationBehaviors:
     """Tests that verify multiple behaviors work together correctly."""

@@ -147,7 +147,7 @@ class TestLabelDetection:
 
         flow = E2EFlow(repo=repo_name, watcher=orchestrator_watcher, fail_on_blocked_failed=True)
         issue = test_issue_factory("[E2E] Blocked label detection test")
-        issue_number = int(issue.stable_id())
+        _issue_number = int(issue.stable_id())
 
         # Wait for issue to appear in snapshots before updating labels
         await flow.issue_seen(issue, timeout_s=60)

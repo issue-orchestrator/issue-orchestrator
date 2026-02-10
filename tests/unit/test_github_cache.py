@@ -1,6 +1,5 @@
 """Unit tests for GitHub cache implementation."""
 
-from unittest.mock import MagicMock
 
 import pytest
 

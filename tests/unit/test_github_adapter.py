@@ -11,7 +11,7 @@ HTTP client layer and testing:
 """
 
 import pytest
-from unittest.mock import MagicMock, Mock, patch, call
+from unittest.mock import MagicMock, patch
 from issue_orchestrator.adapters.github import GitHubAdapter
 from issue_orchestrator.adapters.github.cache import GitHubCache
 from issue_orchestrator.adapters.github.http_client import GitHubHttpError
@@ -19,8 +19,7 @@ from issue_orchestrator.adapters.github.github_issue import GitHubIssue
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
-from issue_orchestrator.ports.verification import VerificationResult, FailureType
-
+from issue_orchestrator.ports.verification import VerificationResult
 
 @pytest.fixture
 def mock_config():
@@ -37,12 +36,10 @@ def mock_config():
     config.gh_write_verify_jitter_ms = 0
     return config
 
-
 @pytest.fixture
 def mock_http_client():
     """Create a mock HTTP client."""
     return MagicMock()
-
 
 @pytest.fixture
 def mock_verification_service():
@@ -52,12 +49,10 @@ def mock_verification_service():
     service.verify_condition.return_value = (VerificationResult.SUCCESS, None)
     return service
 
-
 @pytest.fixture
 def cache():
     """Create a cache for testing."""
     return GitHubCache(default_ttl=60.0)
-
 
 @pytest.fixture
 def adapter(mock_config, mock_http_client, mock_verification_service, cache):
@@ -70,7 +65,6 @@ def adapter(mock_config, mock_http_client, mock_verification_service, cache):
         http_client=mock_http_client,
         verify_writes=True,
     )
-
 
 class TestInitialization:
     """Test adapter initialization."""
@@ -104,7 +98,6 @@ class TestInitialization:
         adapter.add_label(42, "bug")
         # Verify that the injected service was used
         mock_verification_service.verify_condition.assert_called()
-
 
 class TestIssueOperations:
     """Test issue-related operations."""
@@ -340,7 +333,6 @@ class TestIssueOperations:
 
         assert issue_number is None
 
-
 class TestLabelOperations:
     """Test label-related operations."""
 
@@ -527,7 +519,6 @@ class TestLabelOperations:
         adapter.invalidate_label_cache(42)
 
         assert cache.get_issue_labels(42) is None
-
 
 class TestPROperations:
     """Test PR-related operations."""
@@ -861,7 +852,6 @@ class TestPROperations:
         assert cached is not None
         assert cached["number"] == 10
 
-
 class TestCacheBehavior:
     """Test caching behavior."""
 
@@ -977,7 +967,6 @@ class TestCacheBehavior:
         assert cached is not None
         assert cached["number"] == 30
 
-
 class TestWriteVerification:
     """Test write verification behavior through public API."""
 
@@ -1029,7 +1018,6 @@ class TestWriteVerification:
         assert exc_info.value.is_issue_local()
         assert exc_info.value.issue_number == 42
         assert "Failed to verify write" in str(exc_info.value)
-
 
 class TestRepositoryOperations:
     """Test repository-related operations."""
@@ -1253,7 +1241,6 @@ class TestRepositoryOperations:
         scopes = adapter.get_token_scopes()
 
         assert scopes == ["repo", "read:org"]
-
 
 class TestEdgeCases:
     """Test edge cases and error handling through public API."""

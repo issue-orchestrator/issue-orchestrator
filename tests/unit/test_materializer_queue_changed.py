@@ -1,6 +1,5 @@
 """Tests for MaterializedView handling of queue.changed events."""
 
-import pytest
 from issue_orchestrator.testing.asyncdsl.materializer import MaterializedView
 
 

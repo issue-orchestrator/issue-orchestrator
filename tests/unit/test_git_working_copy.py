@@ -7,42 +7,29 @@ import pytest
 
 from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
 from issue_orchestrator.ports.git import GitError, GitResult
-from issue_orchestrator.ports.working_copy import (
-    BranchStatus,
-    CommitInfo,
-    PreflightResult,
-    PushResult,
-    RebaseResult,
-)
-
 
 def git_result(stdout: str = "", stderr: str = "", returncode: int = 0) -> GitResult:
     return GitResult(argv=["git"], returncode=returncode, stdout=stdout, stderr=stderr)
-
 
 def git_error(*_args, **kwargs) -> GitError:
     stdout = kwargs.get("stdout", "")
     stderr = kwargs.get("stderr", "")
     return GitError(git_result(stdout=stdout, stderr=stderr, returncode=1))
 
-
 @pytest.fixture
 def mock_git():
     """Create a mock Git client for injection."""
     return MagicMock()
-
 
 @pytest.fixture
 def git_wc(mock_git):
     """Create a GitWorkingCopy instance with injected mock Git client."""
     return GitWorkingCopy(git=mock_git)
 
-
 @pytest.fixture
 def worktree_path(tmp_path):
     """Create a temporary worktree path."""
     return tmp_path / "worktree"
-
 
 class TestGetCurrentBranch:
     """Tests for get_current_branch method."""
@@ -89,7 +76,6 @@ class TestGetCurrentBranch:
 
             assert branch is None
 
-
 class TestGetHeadSha:
     """Tests for get_head_sha method."""
 
@@ -120,7 +106,6 @@ class TestGetHeadSha:
             sha = git_wc.get_head_sha(worktree_path)
 
             assert sha is None
-
 
 class TestGetBranchStatus:
     """Tests for get_branch_status method."""
@@ -185,7 +170,6 @@ class TestGetBranchStatus:
 
             assert status is None
 
-
 class TestHasUncommittedChanges:
     """Tests for has_uncommitted_changes method."""
 
@@ -225,7 +209,6 @@ class TestHasUncommittedChanges:
             has_changes = git_wc.has_uncommitted_changes(worktree_path)
 
             assert has_changes is True  # Safer to assume dirty
-
 
 class TestGetCommitsAheadOfMain:
     """Tests for get_commits_ahead_of_main method."""
@@ -296,7 +279,6 @@ class TestGetCommitsAheadOfMain:
             # Should skip malformed line
             assert len(commits) == 2
 
-
 class TestFetch:
     """Tests for fetch method."""
 
@@ -334,7 +316,6 @@ class TestFetch:
             result = git_wc.fetch(worktree_path)
 
             assert result is False
-
 
 class TestListRemoteBranches:
     """Tests for list_remote_branches method."""
@@ -379,7 +360,6 @@ class TestListRemoteBranches:
 
             assert branches == []
 
-
 class TestIsGitRepo:
     """Tests for is_git_repo method."""
 
@@ -409,7 +389,6 @@ class TestIsGitRepo:
             result = git_wc.is_git_repo(worktree_path)
 
             assert result is False
-
 
 class TestGetConfigValue:
     """Tests for get_config_value method."""
@@ -454,7 +433,6 @@ class TestGetConfigValue:
             value = git_wc.get_config_value(worktree_path, "nonexistent.key")
 
             assert value is None
-
 
 class TestGetCommitsAheadCount:
     """Tests for get_commits_ahead_count method."""
@@ -530,7 +508,6 @@ class TestGetCommitsAheadCount:
 
             assert count == 0
 
-
 class TestGetLastCommitDate:
     """Tests for get_last_commit_date method."""
 
@@ -575,7 +552,6 @@ class TestGetLastCommitDate:
             date = git_wc.get_last_commit_date(worktree_path, "feature-branch")
 
             assert date is None
-
 
 class TestRebaseOnBranch:
     """Tests for rebase_on_branch method."""
@@ -640,7 +616,6 @@ class TestRebaseOnBranch:
 
         assert result.success is False
         assert result.conflicts is None or result.conflicts == []
-
 
 class TestPush:
     """Tests for push method."""
@@ -864,7 +839,6 @@ class TestPush:
             push_args = mock_run.call_args_list[2][0][1]
             assert "upstream" in push_args
 
-
 class TestGetIssueNumberFromBranch:
     """Tests for get_issue_number_from_branch method."""
 
@@ -936,7 +910,6 @@ class TestGetIssueNumberFromBranch:
             assert issue_num is None
             mock_extract.assert_not_called()
 
-
 class TestGetWorktreeRoot:
     """Tests for get_worktree_root method."""
 
@@ -966,7 +939,6 @@ class TestGetWorktreeRoot:
             root = git_wc.get_worktree_root(worktree_path)
 
             assert root is None
-
 
 class TestCommitAll:
     """Tests for commit_all method."""
@@ -1050,7 +1022,6 @@ class TestCommitAll:
             result = git_wc.commit_all(worktree_path, "Test commit")
 
             assert result is False
-
 
 class TestPushPreflight:
     """Tests for push_preflight method."""
@@ -1219,7 +1190,6 @@ class TestPushPreflight:
                 assert "fetch" in fetch_args
                 assert "upstream" in fetch_args
 
-
 class TestPushFetchFailureStopsProcessing:
     """Test that fetch failures stop processing early."""
 
@@ -1262,7 +1232,6 @@ class TestPushFetchFailureStopsProcessing:
                 assert "Failed to update tracking refs" in result.error
                 # Only 1 call - dry-run push was never attempted
                 assert mock_run.call_count == 1
-
 
 class TestPushClearsStaleRemoteTrackingRef:
     """Ensure stale remote-tracking refs are cleared for first-push cases."""

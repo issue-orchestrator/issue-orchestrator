@@ -18,7 +18,6 @@ from issue_orchestrator.infra.repo_registry import (
     remove_repo,
     save_registry,
     _config_dir,
-    _repos_file,
 )
 
 

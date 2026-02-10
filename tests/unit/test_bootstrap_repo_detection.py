@@ -16,7 +16,6 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.env import ENV_PREFIX
 from issue_orchestrator.ports import NullEventSink, NullSessionRunner
 
-
 class TestRepoAutoDetection:
     """Tests for auto-detecting repo from git remote."""
 
@@ -77,7 +76,6 @@ class TestRepoAutoDetection:
             mock_git.return_value.run.return_value = mock_result
             with pytest.raises(GitRepoError, match="Unrecognized GitHub remote"):
                 get_repo_from_git()
-
 
 class TestBootstrapRepoResolution:
     """Tests for bootstrap.py repo resolution logic."""
@@ -143,7 +141,6 @@ class TestBootstrapRepoResolution:
         for snippet in expected_snippets:
             assert snippet in error_msg, f"Expected '{snippet}' in error message"
 
-
 class TestDependencies:
     """Tests for the Dependencies container class."""
 
@@ -169,7 +166,6 @@ class TestDependencies:
         assert deps.events is event_sink
         assert deps.runner is session_runner
         assert deps.github is None
-
 
 class TestCheckGithubTokenScopes:
     """Tests for _check_github_token_scopes function."""
@@ -263,7 +259,6 @@ class TestCheckGithubTokenScopes:
             _check_github_token_scopes(config, github_adapter)
             mock_logger.info.assert_called()
             assert "unavailable" in mock_logger.info.call_args[0][0].lower()
-
 
 class TestBuildOrchestratorForTesting:
     """Tests for build_orchestrator_for_testing function."""
@@ -475,7 +470,6 @@ class TestBuildOrchestratorForTesting:
 
             mock_guard.assert_called_once()
 
-
 class TestBuildOrchestrator:
     """Tests for build_orchestrator function (main composition root)."""
 
@@ -509,7 +503,7 @@ class TestBuildOrchestrator:
         """Uses repo from config when available."""
         with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
             with patch("issue_orchestrator.entrypoints.bootstrap.create_plugin_manager"):
-                with patch("issue_orchestrator.entrypoints.bootstrap.get_repo_from_git") as mock_get_repo:
+                with patch("issue_orchestrator.entrypoints.bootstrap.get_repo_from_git") as _mock_get_repo:
                     with patch("issue_orchestrator.entrypoints.bootstrap.GitHubAdapter") as mock_adapter:
                         with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
                             # Should NOT call get_repo_from_git when config.repo is set
@@ -594,7 +588,7 @@ class TestBuildOrchestrator:
                     with patch("issue_orchestrator.entrypoints.bootstrap.EventHub"):
                         mock_pm = MagicMock()
                         mock_pm_factory.return_value = mock_pm
-                        initial_call_count = mock_pm.register.call_count
+                        _initial_call_count = mock_pm.register.call_count
 
                         try:
                             build_orchestrator(minimal_config, enable_sse=False)

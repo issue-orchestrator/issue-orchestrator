@@ -13,7 +13,7 @@ from issue_orchestrator.control.session_manager import (
     review_session_context,
     rework_session_context,
 )
-from issue_orchestrator.ports import NullEventSink, TraceEvent
+from issue_orchestrator.ports import TraceEvent
 
 
 class CollectingEventSink:

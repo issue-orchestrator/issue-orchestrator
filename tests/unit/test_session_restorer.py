@@ -11,17 +11,13 @@ Tests use mock adapters at port boundaries, not internal patches.
 
 import logging
 from pathlib import Path
-from typing import Optional
 from unittest.mock import MagicMock
-
-import pytest
 
 from issue_orchestrator.control.session_restorer import SessionRestorer
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.domain.session_key import TaskKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.ports.session_runner import DiscoveredSession
-
 
 class MockRepositoryHost:
     """Mock RepositoryHost for testing SessionRestorer.
@@ -37,7 +33,6 @@ class MockRepositoryHost:
         """Return issue from test data."""
         return self.issues.get(issue_number)
 
-
 class MockWorkingCopy:
     """Mock WorkingCopy for testing SessionRestorer.
 
@@ -51,7 +46,6 @@ class MockWorkingCopy:
     def get_current_branch(self, worktree: Path) -> str | None:
         """Return configured branch name for worktree."""
         return self.branches.get(worktree)
-
 
 def make_discovered_session(
     issue_number: int,
@@ -70,7 +64,6 @@ def make_discovered_session(
         is_review=is_review,
     )
 
-
 def make_config(
     agents: dict[str, AgentConfig] | None = None,
     repo: str = "test/repo",
@@ -82,7 +75,6 @@ def make_config(
         config.agents = agents
     return config
 
-
 def make_agent_config(
     tmp_path: Path,
 ) -> AgentConfig:
@@ -92,7 +84,6 @@ def make_agent_config(
     return AgentConfig(
         prompt_path=prompt,
     )
-
 
 class TestRestoreSessionsBasic:
     """Tests for basic session restoration behavior."""
@@ -232,7 +223,6 @@ class TestRestoreSessionsBasic:
         # Only first one is restored; second is skipped as duplicate
         assert len(restored) == 1
 
-
 class TestOrphanedSessionHandling:
     """Tests for handling sessions without corresponding worktrees."""
 
@@ -260,7 +250,6 @@ class TestOrphanedSessionHandling:
 
         # Warning logged
         assert "Could not find worktree" in caplog.text
-
 
 class TestErrorRecovery:
     """Tests for error handling during session restoration."""
@@ -328,7 +317,6 @@ class TestErrorRecovery:
 
         # Exception logged
         assert "Failed to restore session for issue #123" in caplog.text
-
 
 class TestStateValidation:
     """Tests for state validation during restoration."""
@@ -448,7 +436,6 @@ class TestStateValidation:
         assert len(restored) == 1
         assert restored[0].agent_config == agent_config
 
-
 class TestBranchNameResolution:
     """Tests for branch name resolution from worktrees."""
 
@@ -478,7 +465,6 @@ class TestBranchNameResolution:
         assert len(restored) == 1
         assert restored[0].branch_name == "unknown"
         assert "Failed to get branch name" in caplog.text
-
 
 class TestWorktreeFinding:
     """Tests for worktree discovery logic."""

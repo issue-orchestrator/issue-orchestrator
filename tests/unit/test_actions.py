@@ -5,7 +5,6 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from issue_orchestrator.control.actions import (
-    Action,
     ActionType,
     ActionResult,
     ActionResultType,
@@ -17,9 +16,8 @@ from issue_orchestrator.control.actions import (
     EscalateToHumanAction,
 )
 from issue_orchestrator.control.action_applier import ActionApplier
-from issue_orchestrator.control.session_manager import SessionManager, SessionRef, SessionType
-from issue_orchestrator.ports import NullEventSink, TraceEvent
-
+from issue_orchestrator.control.session_manager import SessionManager, SessionType
+from issue_orchestrator.ports import TraceEvent
 
 class CollectingEventSink:
     """Event sink that collects events for test assertions."""
@@ -29,7 +27,6 @@ class CollectingEventSink:
 
     def publish(self, event: TraceEvent) -> None:
         self.events.append(event)
-
 
 class MockLabelSet:
     """Mock LabelSet for testing."""
@@ -53,7 +50,6 @@ class MockLabelSet:
 
     def has_label(self, issue_number: int, label: str) -> bool:
         return issue_number in self.labels and label in self.labels[issue_number]
-
 
 class MockSessionRunner:
     """Mock SessionRunner for testing."""
@@ -104,7 +100,6 @@ class MockSessionRunner:
 
     def on_orchestrator_shutdown(self) -> None:
         pass
-
 
 class TestActionDataclasses:
     """Test the Action dataclasses."""
@@ -167,7 +162,6 @@ class TestActionDataclasses:
         with pytest.raises(AttributeError):
             action.issue_number = 456  # type: ignore
 
-
 class TestActionResult:
     """Test the ActionResult dataclass."""
 
@@ -198,7 +192,6 @@ class TestActionResult:
         assert not result.success
         assert result.result_type == ActionResultType.SKIPPED
         assert "Already exists" in result.details["skip_reason"]
-
 
 class TestActionApplier:
     """Test the ActionApplier class."""

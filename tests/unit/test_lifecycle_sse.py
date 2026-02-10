@@ -6,14 +6,10 @@ These tests verify the behavior of SSE event broadcasting:
 - Import failures are handled gracefully
 """
 
-import asyncio
 import logging
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from issue_orchestrator.execution.lifecycle_sse import LifecycleSSEPlugin
-
 
 class TestLifecycleSSEPlugin:
     """Test LifecycleSSEPlugin broadcasts events via SSE."""

@@ -16,13 +16,10 @@ from issue_orchestrator.entrypoints.cli_tools.setup_wizard import (
     wizard_existing_project,
     run_wizard,
     write_config,
-    Prompter,
-    ConsolePrompter,
     DetectedState,
     FileCollector,
     PlannedWrite,
 )
-
 
 class MockPrompter:
     """Mock prompter for testing wizard flows."""
@@ -67,7 +64,6 @@ class MockPrompter:
     def choice(self, question: str, choices: list[str], allow_custom: bool = False) -> str:
         return self._get_answer(question)
 
-
 class TestCreateStarterPrompt:
     """Test the create_starter_prompt function."""
 
@@ -101,7 +97,6 @@ class TestCreateStarterPrompt:
 
         content = prompt_path.read_text()
         assert "Frontend-Ui Agent Prompt" in content
-
 
 class TestCreateTriageReviewPrompt:
     """Test the create_triage_review_prompt function."""
@@ -195,7 +190,6 @@ class TestCreateTriageReviewPrompt:
 
         assert prompt_path.exists()
 
-
 class TestDetectRepo:
     """Test the detect_repo function."""
 
@@ -243,7 +237,6 @@ class TestDetectRepo:
         repo = detect_repo()
 
         assert repo is None
-
 
 class TestCheckPrerequisites:
     """Test the check_prerequisites function."""
@@ -294,7 +287,6 @@ class TestCheckPrerequisites:
 
         assert checks["github_auth"] is False
 
-
 class TestFetchGithubLabels:
     """Test the fetch_github_labels function."""
 
@@ -329,7 +321,6 @@ class TestFetchGithubLabels:
 
         assert labels == []
 
-
 class TestFindExistingConfig:
     """Test the find_existing_config function."""
 
@@ -352,7 +343,7 @@ class TestFindExistingConfig:
         config_file = config_dir / "custom.yaml"
         config_file.write_text("repo:\n  name: owner/repo")
 
-        path, config = find_existing_config(tmp_path)
+        path, _config = find_existing_config(tmp_path)
 
         assert path == config_file
 
@@ -379,7 +370,6 @@ class TestFindExistingConfig:
 
         assert path == default_config
         assert config["repo"]["name"] == "default/repo"  # type: ignore
-
 
 class TestScanExistingRepo:
     """Test the scan_existing_repo function."""
@@ -416,7 +406,6 @@ class TestScanExistingRepo:
         assert state.repo is None
         assert state.github_labels == []
         assert state.agent_labels == []
-
 
 class TestWizardNewProject:
     """Test the wizard_new_project function."""
@@ -738,7 +727,6 @@ class TestWizardNewProject:
         # Check that "You need at least one agent!" was printed
         assert any("at least one agent" in msg for msg in prompter.printed)
 
-
 class TestWizardExistingProject:
     """Test the wizard_existing_project function."""
 
@@ -978,7 +966,6 @@ class TestWizardExistingProject:
 
         assert config["repo"]["name"] == "manual/repo"
 
-
 class TestRunWizard:
     """Test the run_wizard function."""
 
@@ -1164,7 +1151,6 @@ class TestRunWizard:
                 with pytest.raises(SystemExit):
                     run_wizard(target_path=target, prompter=prompter)
 
-
 class TestFileCollector:
     """Test the FileCollector class for dry-run mode."""
 
@@ -1196,7 +1182,6 @@ class TestFileCollector:
         assert len(collector.labels) == 1
         assert collector.labels[0] == ("agent:test", "FF0000", "Test agent label")
 
-
 class TestPlannedWrite:
     """Test the PlannedWrite dataclass."""
 
@@ -1217,7 +1202,6 @@ class TestPlannedWrite:
         write = PlannedWrite(Path("/tmp/test.txt"), "hello 世界", "create")
         # 'hello ' is 6 bytes, '世界' is 6 bytes (2 chars * 3 bytes each in UTF-8)
         assert write.size_display() == "12 B"
-
 
 class TestDryRunMode:
     """Test dry-run mode for setup wizard functions."""

@@ -1,14 +1,13 @@
 """Unit tests for adapters/github/claim_adapter.py."""
 
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
 from issue_orchestrator.adapters.github.claim_adapter import GitHubClaimAdapter
-from issue_orchestrator.domain.claim import Claim, ClaimState
+from issue_orchestrator.domain.claim import ClaimState
 from issue_orchestrator.domain.lease_config import LeaseConfig
-
 
 class MockHttpClient:
     """Mock GitHub HTTP client for testing."""
@@ -24,7 +23,6 @@ class MockHttpClient:
 
     def get_issue_comments(self, issue_number: int) -> list[dict]:
         return self.comments
-
 
 class MockLabelAdapter:
     """Mock label adapter for testing."""
@@ -42,16 +40,13 @@ class MockLabelAdapter:
         self.remove_label_calls.append((issue_number, label))
         self.labels.get(issue_number, set()).discard(label)
 
-
 @pytest.fixture
 def mock_client():
     return MockHttpClient()
 
-
 @pytest.fixture
 def mock_labels():
     return MockLabelAdapter()
-
 
 @pytest.fixture
 def adapter(mock_client, mock_labels):
@@ -61,7 +56,6 @@ def adapter(mock_client, mock_labels):
         config=LeaseConfig.for_testing(),
         label_adapter=mock_labels,
     )
-
 
 class TestAttemptClaim:
     """Tests for attempt_claim method."""
@@ -118,7 +112,6 @@ class TestAttemptClaim:
         assert result.state == ClaimState.UNCLAIMED
         assert "Network error" in result.error  # type: ignore
 
-
 class TestReleaseClaim:
     """Tests for release_claim method."""
 
@@ -134,7 +127,6 @@ class TestReleaseClaim:
         issue_num, label = mock_labels.remove_label_calls[0]
         assert issue_num == 42
         assert label == "io:claimed"
-
 
 class TestCheckWinner:
     """Tests for check_winner method."""
@@ -175,7 +167,6 @@ priority: {higher_priority}
         )
 
         assert is_winner is False
-
 
 class TestRenewClaim:
     """Tests for renew_claim method."""

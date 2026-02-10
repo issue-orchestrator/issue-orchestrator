@@ -8,13 +8,10 @@ import pytest
 
 from issue_orchestrator.agent_runner import AgentRunner, RunResult, RunSpec
 from issue_orchestrator.control.validation_retry import (
-    RETRY_PROMPT_TEMPLATE,
-    ValidationResult,
     ValidationRetryController,
 )
 from issue_orchestrator.infra.config import RetryConfig
 from issue_orchestrator.execution.command_runner import LocalCommandRunner
-
 
 @pytest.fixture
 def retry_config() -> RetryConfig:
@@ -24,24 +21,20 @@ def retry_config() -> RetryConfig:
         validation_error_file="validation-errors.txt",
     )
 
-
 @pytest.fixture
 def mock_runner() -> MagicMock:
     """Create a mock AgentRunner."""
     return MagicMock(spec=AgentRunner)
-
 
 @pytest.fixture
 def command_runner() -> LocalCommandRunner:
     """Create a real command runner for validation tests."""
     return LocalCommandRunner()
 
-
 @pytest.fixture
 def controller(mock_runner: MagicMock, retry_config: RetryConfig, command_runner: LocalCommandRunner) -> ValidationRetryController:
     """Create a controller with mocked dependencies."""
     return ValidationRetryController(runner=mock_runner, config=retry_config, command_runner=command_runner)
-
 
 @pytest.fixture
 def successful_run_result(tmp_path: Path) -> RunResult:
@@ -57,7 +50,6 @@ def successful_run_result(tmp_path: Path) -> RunResult:
         command=["agent", "run"],
     )
 
-
 @pytest.fixture
 def failed_run_result(tmp_path: Path) -> RunResult:
     """Create a failed run result."""
@@ -72,7 +64,6 @@ def failed_run_result(tmp_path: Path) -> RunResult:
         command=["agent", "run"],
     )
 
-
 @pytest.fixture
 def timeout_run_result(tmp_path: Path) -> RunResult:
     """Create a timeout run result."""
@@ -86,7 +77,6 @@ def timeout_run_result(tmp_path: Path) -> RunResult:
         timed_out=True,
         command=["agent", "run"],
     )
-
 
 class TestValidationRetryController:
     """Tests for ValidationRetryController."""
@@ -346,7 +336,6 @@ class TestValidationRetryController:
         assert str(error_file) in prompt
         assert "codebase was working before" in prompt
 
-
 class TestRunValidationCommand:
     """Tests for run_validation_command()."""
 
@@ -357,7 +346,7 @@ class TestRunValidationCommand:
     ) -> None:
         """Test successful validation command."""
         # Create a simple passing command
-        exit_code, stdout, stderr = controller.run_validation_command(
+        exit_code, stdout, _stderr = controller.run_validation_command(
             working_dir=tmp_path,
             validation_cmd=f"{sys.executable} -c \"print('pass')\"",
             timeout_seconds=30,
@@ -372,7 +361,7 @@ class TestRunValidationCommand:
         tmp_path: Path,
     ) -> None:
         """Test failed validation command."""
-        exit_code, stdout, stderr = controller.run_validation_command(
+        exit_code, _stdout, stderr = controller.run_validation_command(
             working_dir=tmp_path,
             validation_cmd=f"{sys.executable} -c \"import sys; print('fail', file=sys.stderr); sys.exit(1)\"",
             timeout_seconds=30,
@@ -397,7 +386,7 @@ class TestRunValidationCommand:
             timed_out=True,
         )
 
-        exit_code, stdout, stderr = controller.run_validation_command(
+        exit_code, _stdout, stderr = controller.run_validation_command(
             working_dir=tmp_path,
             validation_cmd=f"{sys.executable} -c \"import time; time.sleep(10)\"",
             timeout_seconds=1,
@@ -405,7 +394,6 @@ class TestRunValidationCommand:
 
         assert exit_code == -1
         assert "timed out" in stderr.lower()
-
 
 class TestWriteValidationErrors:
     """Tests for write_validation_errors()."""

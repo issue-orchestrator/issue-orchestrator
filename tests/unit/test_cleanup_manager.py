@@ -8,16 +8,14 @@ Tests focus on behavior:
 """
 
 import logging
-import time
 from dataclasses import dataclass
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 import pytest
 
 from issue_orchestrator.control.cleanup_manager import CleanupManager
 from issue_orchestrator.domain.models import PendingCleanup
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
-
 
 @dataclass
 class CleanupManagerBundle:
@@ -29,9 +27,7 @@ class CleanupManagerBundle:
     get_worktree_path: MagicMock
     get_session_name: MagicMock
 
-
 # --- Helpers ---
-
 
 def make_pending_cleanup(
     issue_number: int,
@@ -51,9 +47,7 @@ def make_pending_cleanup(
         worktree_path=worktree_path or Path(f"/tmp/worktree-{issue_number}"),
     )
 
-
 # --- Fixtures ---
-
 
 @pytest.fixture
 def mock_config():
@@ -70,14 +64,12 @@ def mock_config():
     config.agents = {}
     return config
 
-
 @pytest.fixture
 def mock_repository_host():
     """Create a mock repository host."""
     host = MagicMock()
     host.get_prs_with_label.return_value = []
     return host
-
 
 @pytest.fixture
 def mock_worktree_manager():
@@ -86,7 +78,6 @@ def mock_worktree_manager():
     mgr.extract_issue_number.return_value = None
     mgr.remove.return_value = None
     return mgr
-
 
 @pytest.fixture
 def cleanup_manager_bundle(mock_config, mock_repository_host, mock_worktree_manager):
@@ -114,15 +105,12 @@ def cleanup_manager_bundle(mock_config, mock_repository_host, mock_worktree_mana
         get_session_name=get_session_name,
     )
 
-
 @pytest.fixture
 def cleanup_manager(cleanup_manager_bundle):
     """Convenience fixture returning just the manager."""
     return cleanup_manager_bundle.manager
 
-
 # --- Test: Throttling ---
-
 
 class TestTriageIssueThrottling:
     """Test throttling logic for triage issue creation failures."""
@@ -149,9 +137,7 @@ class TestTriageIssueThrottling:
 
         assert cleanup_manager.should_retry_triage_issue(cooldown_seconds=60) is True
 
-
 # --- Test: Process Deferred Cleanups ---
-
 
 class TestProcessDeferredCleanups:
     """Test deferred cleanup processing."""
@@ -425,9 +411,7 @@ class TestProcessDeferredCleanups:
         assert len(result) == 1
         assert result[0].pr_number == 457
 
-
 # --- Test: Orphaned Cleanup Recovery ---
-
 
 class TestRecoverOrphanedCleanups:
     """Test orphaned cleanup recovery at startup."""

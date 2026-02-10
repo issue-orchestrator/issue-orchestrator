@@ -1,6 +1,5 @@
 """Tests for audit module functionality."""
 
-import pytest
 from unittest.mock import MagicMock
 
 from issue_orchestrator.infra.audit import (

@@ -4,7 +4,6 @@ These tests verify that we can actually execute Claude Code commands
 and that the command escaping works correctly in real shells.
 """
 
-import os
 import pytest
 
 pytestmark = [
@@ -20,11 +19,9 @@ from pathlib import Path
 
 from issue_orchestrator.infra.env import ENV_PREFIX
 
-
 def is_claude_available() -> bool:
     """Check if claude CLI is available in PATH."""
     return shutil.which("claude") is not None
-
 
 def _run_claude(
     argv: list[str],
@@ -51,7 +48,6 @@ def _run_claude(
             f"stderr (truncated): {stderr}"
         ) from exc
 
-
 @pytest.fixture
 def require_claude():
     """Fixture that fails fast if Claude CLI is not installed."""
@@ -60,7 +56,6 @@ def require_claude():
             "Claude CLI not found!\n"
             "Install Claude: https://claude.ai/download"
         )
-
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
 class TestClaudeExecution:
@@ -115,7 +110,6 @@ class TestClaudeExecution:
         assert result.returncode == 0, f"Command failed: {result.stderr}"
         assert "hello" in result.stdout.lower(), f"Expected 'hello' in output: {result.stdout}"
 
-
     def test_claude_read_file_with_bypass_permissions(self):
         """Test that Claude can read files when permissions are bypassed.
 
@@ -152,7 +146,6 @@ class TestClaudeExecution:
         This mimics what the orchestrator does when agents read their instructions.
         """
         import tempfile
-        import os
 
         # Create a directory structure like docs/10-ai/
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -177,7 +170,6 @@ class TestClaudeExecution:
             assert result.returncode == 0, f"Claude failed: {result.stderr}"
             assert "YES" in result.stdout.upper() or "agent" in result.stdout.lower(), \
                 f"Claude couldn't read the file: {result.stdout}"
-
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
 class TestClaudeWithEnvironmentIsolation:
@@ -258,7 +250,6 @@ class TestClaudeWithEnvironmentIsolation:
             or "login" in combined_output.lower()
         ), f"Expected auth failure with isolated HOME, but got: {combined_output}"
 
-
 class TestShellEscaping:
     """Test POSIX single-quote escaping used by terminal adapters.
 
@@ -325,7 +316,6 @@ class TestShellEscaping:
         assert result.returncode == 0
         # The output should contain the original text (with quotes resolved)
         assert "single" in result.stdout or "double" in result.stdout
-
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
 class TestClaudeViaAdapterPath:
@@ -497,7 +487,6 @@ class TestClaudeViaAdapterPath:
             or "login" in combined.lower()
         )
         assert auth_failed, f"Expected auth failure with HOME isolation, got: {combined}"
-
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
 class TestAgentDoneInvocation:
@@ -705,7 +694,6 @@ class TestAgentDoneInvocation:
         This documents the bug behavior to ensure we don't regress.
         Without the `cd` fix, agent-done would use cwd (main repo).
         """
-        import json
 
         # Same setup as above
         main_repo = tmp_path / "main-repo"
@@ -730,7 +718,7 @@ class TestAgentDoneInvocation:
         # NO cd - simulates the bug
         cmd = 'agent-done completed --implementation "test" --problems "none"'
 
-        result = subprocess.run(
+        _result = subprocess.run(
             ["bash", "-c", cmd],
             capture_output=True,
             text=True,

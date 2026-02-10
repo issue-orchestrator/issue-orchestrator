@@ -5,19 +5,16 @@ with the ActionApplier and actual (mocked) adapters.
 """
 
 import pytest
-from unittest.mock import MagicMock, patch, call
 
 from issue_orchestrator.control.action_applier import ActionApplier
 from issue_orchestrator.control.actions import SyncLabelsAction
 from issue_orchestrator.control.reconciliation import (
-    ExternalSnapshot,
-    ExpectedState,
+    
     ReconciliationRequired,
 )
 from issue_orchestrator.ports import EventSink, TraceEvent
 from issue_orchestrator.ports.label_set import LabelSet
 from issue_orchestrator.ports.fresh_issue_reader import FreshIssueReader
-
 
 class MockLabelSet(LabelSet):
     """Mock LabelSet that tracks calls."""
@@ -34,7 +31,6 @@ class MockLabelSet(LabelSet):
 
     def list_labels(self, issue_number: int) -> list[str]:
         return []
-
 
 class MockFreshIssueReader(FreshIssueReader):
     """Mock FreshIssueReader that returns configurable label state."""
@@ -53,8 +49,6 @@ class MockFreshIssueReader(FreshIssueReader):
     def set_labels(self, issue_number: int, labels: list[str]) -> None:
         self._labels_by_issue[issue_number] = labels
 
-
-
 class MockEventSink(EventSink):
     """Mock EventSink that captures published events."""
 
@@ -63,7 +57,6 @@ class MockEventSink(EventSink):
 
     def publish(self, event: TraceEvent) -> None:
         self.events.append(event)
-
 
 class MockSessionManager:
     """Mock SessionManager for ActionApplier."""
@@ -76,7 +69,6 @@ class MockSessionManager:
 
     def stop(self, ref):
         pass
-
 
 class TestReconciliationIntegration:
     """Integration tests for reconciliation in ActionApplier."""
@@ -238,7 +230,6 @@ class TestReconciliationIntegration:
         # Mutations should proceed
         assert (789, "in-progress") in label_set.add_calls
 
-
 class TestReconciliationSimulatedRaceCondition:
     """Tests simulating race conditions with external changes."""
 
@@ -342,7 +333,6 @@ class TestReconciliationSimulatedRaceCondition:
         assert (2, "in-progress") in label_set.add_calls
         assert (3, "needs-review") in label_set.add_calls
 
-
 class TestReconciliationEventTracing:
     """Tests for reconciliation event tracing."""
 
@@ -380,7 +370,6 @@ class TestReconciliationEventTracing:
         for event in recon_events:
             assert "issue_number" in event.data
             assert event.data["issue_number"] == 42
-
 
 class TestOrchestratorReconciliationCatch:
     """Integration tests for orchestrator catching ReconciliationRequired.

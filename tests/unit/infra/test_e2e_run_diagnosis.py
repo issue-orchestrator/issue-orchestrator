@@ -2,9 +2,7 @@
 
 import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from issue_orchestrator.infra.e2e_run_diagnosis import (
     E2ERunDiagnosis,
@@ -16,7 +14,6 @@ from issue_orchestrator.infra.e2e_run_diagnosis import (
 )
 from issue_orchestrator.infra.e2e_db import E2ERun
 from issue_orchestrator.infra.issue_diagnostics import DiagnosticReference
-
 
 class TestE2ERunDiagnosis:
     """Tests for E2ERunDiagnosis dataclass."""
@@ -68,7 +65,6 @@ class TestE2ERunDiagnosis:
         assert d["warnings"] == ["High failure rate"]
         assert d["suggestions"] == ["Check environment"]
 
-
 class TestReadLogContent:
     """Tests for _read_log_content function."""
 
@@ -94,7 +90,6 @@ class TestReadLogContent:
         assert exists is True
         assert content == "line 1\nline 2\nline 3\n"
 
-
 class TestBuildWarningsAndSuggestions:
     """Tests for _build_warnings_and_suggestions function."""
 
@@ -118,7 +113,7 @@ class TestBuildWarningsAndSuggestions:
         run = MagicMock(spec=E2ERun)
         run.status = "failed"
 
-        warnings, suggestions = _build_warnings_and_suggestions(
+        warnings, _suggestions = _build_warnings_and_suggestions(
             run,
             failed_count=25,
             flaky_count=0,
@@ -162,7 +157,7 @@ class TestBuildWarningsAndSuggestions:
         run = MagicMock(spec=E2ERun)
         run.status = "failed"
 
-        warnings, suggestions = _build_warnings_and_suggestions(
+        warnings, _suggestions = _build_warnings_and_suggestions(
             run,
             failed_count=0,
             flaky_count=0,
@@ -170,7 +165,6 @@ class TestBuildWarningsAndSuggestions:
         )
 
         assert any("No tests were collected" in w for w in warnings)
-
 
 class TestCreateE2ERunDiagnosis:
     """Tests for create_e2e_run_diagnosis function."""
@@ -241,7 +235,6 @@ class TestCreateE2ERunDiagnosis:
         assert diagnosis.log_content == "test log content\n"
         assert len(diagnosis.failed_tests) == 1
 
-
 class TestWriteE2EDiagnostic:
     """Tests for write_e2e_diagnostic function."""
 
@@ -281,7 +274,6 @@ class TestWriteE2EDiagnostic:
         assert content["type"] == "e2e_run_diagnosis"
         assert content["run_id"] == 42
         assert content["diagnosis"]["status"] == "failed"
-
 
 class TestGenerateDiagnosticIssueBody:
     """Tests for generate_diagnostic_issue_body function."""

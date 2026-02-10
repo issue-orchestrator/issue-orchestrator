@@ -11,18 +11,15 @@ and verify the system handles them appropriately.
 import pytest
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, MagicMock
 
-from issue_orchestrator.infra.config import Config, DangerousConfig
+from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import (
-    Issue,
-    Session,
-    SessionStatus,
+    
     CompletionRecord,
     CompletionOutcome,
     RequestedAction,
-    AgentConfig,
-    PendingReview,
+    
 )
 from issue_orchestrator.ports import TraceEvent
 from issue_orchestrator.control.completion_processor import CompletionProcessor
@@ -30,7 +27,6 @@ from issue_orchestrator.control.pr_scanner import PRScanner
 from issue_orchestrator.domain.issue_key import GitHubIssueKey
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
-
 
 class MockEventSink:
     """Mock event sink that collects events for assertions."""
@@ -40,7 +36,6 @@ class MockEventSink:
 
     def publish(self, event: TraceEvent) -> None:
         self.events.append(event)
-
 
 def make_completion_record(
     outcome: CompletionOutcome,
@@ -58,7 +53,6 @@ def make_completion_record(
         **kwargs,
     )
 
-
 def write_completion_to_worktree(worktree: Path, record: CompletionRecord) -> None:
     """Write completion record to worktree."""
     record_dir = worktree / ".issue-orchestrator"
@@ -67,12 +61,10 @@ def write_completion_to_worktree(worktree: Path, record: CompletionRecord) -> No
     import json
     record_path.write_text(json.dumps(record.to_dict()))
 
-
 @pytest.fixture
 def mock_event_sink():
     """Create a mock event sink for testing."""
     return MockEventSink()
-
 
 @pytest.fixture
 def mock_label_adapter():
@@ -81,7 +73,6 @@ def mock_label_adapter():
     adapter.add_label = Mock()
     adapter.remove_label = Mock()
     return adapter
-
 
 @pytest.fixture
 def mock_git_adapter():
@@ -94,7 +85,6 @@ def mock_git_adapter():
     adapter.create_branch_from_current = Mock()
     adapter.list_branch_names = Mock(return_value=["issue-123"])
     return adapter
-
 
 class TestPRAlreadyExistsHandling:
     """Tests for handling 'PR already exists' errors."""
@@ -240,7 +230,6 @@ class TestPRAlreadyExistsHandling:
         # Cleanup should have happened
         assert not record_path.exists()
 
-
 class TestPRScannerSessionFiltering:
     """Tests for PR scanner's filtering of active sessions."""
 
@@ -335,7 +324,6 @@ class TestPRScannerSessionFiltering:
         assert len(results) == 1
         assert results[0].pr_number == 42
 
-
 class TestReviewLaunchLoopPrevention:
     """Tests for preventing the infinite review launch loop.
 
@@ -427,7 +415,6 @@ class TestReviewLaunchLoopPrevention:
 
         # Should not find the PR again
         assert len(results2) == 0
-
 
 class TestLaunchResultKeepQueued:
     """Tests for the keep_queued flag in LaunchResult.

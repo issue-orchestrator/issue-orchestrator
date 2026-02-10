@@ -1,7 +1,6 @@
 """Tests for validation retry state management."""
 
-import json
-import pytest
+
 from pathlib import Path
 
 from issue_orchestrator.infra.validation_state import (
@@ -17,7 +16,6 @@ from issue_orchestrator.infra.validation_state import (
     VALIDATION_ERRORS_FILE,
     RETRY_PROMPT_FILE,
 )
-
 
 class TestValidationState:
     """Tests for ValidationState dataclass."""
@@ -54,7 +52,6 @@ class TestValidationState:
 
         state = ValidationState(retry_count=5, max_retries=3)
         assert state.retries_remaining == 0  # Never negative
-
 
 class TestReadWriteState:
     """Tests for reading/writing validation state."""
@@ -123,7 +120,6 @@ class TestReadWriteState:
         state = read_validation_state(worktree)
         assert state is None
 
-
 class TestWriteValidationErrors:
     """Tests for writing validation error output."""
 
@@ -146,7 +142,6 @@ class TestWriteValidationErrors:
         assert "Exit code: 1" in content
         assert "FAILED: test_foo.py::test_bar" in content
         assert "Running tests..." in content
-
 
 class TestWriteRetryPrompt:
     """Tests for writing retry prompt."""
@@ -270,7 +265,6 @@ class TestWriteRetryPrompt:
         assert "agent-done blocked" in content
         assert "cannot fix" in content.lower() or "unable" in content.lower()
 
-
 class TestClearValidationState:
     """Tests for clearing validation state."""
 
@@ -306,7 +300,6 @@ class TestClearValidationState:
         # Should not raise
         clear_validation_state(worktree)
 
-
 class TestHasPendingRetry:
     """Tests for crash recovery detection."""
 
@@ -337,7 +330,6 @@ class TestHasPendingRetry:
 
         assert has_pending_retry(worktree) is False
 
-
 class TestGetRetryPromptPath:
     """Tests for getting retry prompt path."""
 
@@ -358,7 +350,6 @@ class TestGetRetryPromptPath:
         path = get_retry_prompt_path(worktree)
         assert path is not None
         assert path.exists()
-
 
 class TestCrashRecoveryScenarios:
     """Integration tests for crash recovery scenarios."""

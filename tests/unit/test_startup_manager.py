@@ -9,12 +9,8 @@ from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import (
     Issue,
     OrchestratorState,
-    Session,
-    AgentConfig,
-    PendingReview,
-    PendingTriageReview,
+    
 )
-
 
 @pytest.fixture
 def mock_config(tmp_path):
@@ -33,12 +29,10 @@ def mock_config(tmp_path):
     config.dangerous.allow_unsupported_agents = True
     return config
 
-
 @pytest.fixture
 def mock_events():
     """Create a mock EventSink."""
     return MagicMock()
-
 
 @pytest.fixture
 def mock_runner():
@@ -48,7 +42,6 @@ def mock_runner():
     runner.discover_running_sessions.return_value = []
     return runner
 
-
 @pytest.fixture
 def mock_repository_host():
     """Create a mock RepositoryHost."""
@@ -57,7 +50,6 @@ def mock_repository_host():
     repo.get_prs_with_label.return_value = []
     return repo
 
-
 @pytest.fixture
 def mock_action_applier():
     """Create a mock ActionApplier."""
@@ -65,18 +57,15 @@ def mock_action_applier():
     applier.apply = MagicMock()
     return applier
 
-
 @pytest.fixture
 def mock_issue_branches_fn():
     """Create a mock issue branches provider."""
     return MagicMock(return_value={})
 
-
 @pytest.fixture
 def sample_state():
     """Create a sample orchestrator state."""
     return OrchestratorState()
-
 
 @pytest.fixture
 def startup_manager(
@@ -100,7 +89,6 @@ def startup_manager(
         launch_session_fn=lambda issue: None,
         update_queue_cache_fn=lambda: None,
     )
-
 
 class TestStartupManagerBasic:
     """Basic tests for StartupManager."""
@@ -138,7 +126,6 @@ class TestStartupManagerBasic:
         calls = mock_events.publish.call_args_list
         assert any("orchestrator.ready" in str(call) for call in calls)
 
-
 class TestStartupManagerCleanup:
     """Tests for cleanup during startup."""
 
@@ -165,7 +152,6 @@ class TestStartupManagerCleanup:
         await startup_manager.run_startup(sample_state)
 
         mock_runner.discover_running_sessions.assert_called_once()
-
 
 class TestStartupManagerInProgressIssues:
     """Tests for handling in-progress issues."""
@@ -235,7 +221,6 @@ class TestStartupManagerInProgressIssues:
         assert any(isinstance(a, AddLabelAction) and a.label == "pr-pending" for a in actions)
         assert any(isinstance(a, RemoveLabelAction) and a.label == "in-progress" for a in actions)
 
-
 class TestStartupManagerCodeReviewRecovery:
     """Tests for code review recovery."""
 
@@ -269,7 +254,6 @@ class TestStartupManagerCodeReviewRecovery:
         assert len(sample_state.pending_reviews) == 1
         assert sample_state.pending_reviews[0].pr_number == 10
 
-
 class TestStartupManagerTriageRecovery:
     """Tests for triage review recovery."""
 
@@ -296,7 +280,6 @@ class TestStartupManagerTriageRecovery:
 
         assert len(sample_state.pending_triage_reviews) == 1
         assert sample_state.pending_triage_reviews[0].issue_number == 100
-
 
 class TestStartupManagerResumePartialWork:
     """Tests for resuming partial work."""
@@ -338,7 +321,6 @@ class TestStartupManagerResumePartialWork:
         # The session should have been launched (check via callback)
         # Since we mocked the callback, we verify state wasn't modified with label removal
         mock_action_applier.apply.assert_not_called()
-
 
 class TestStartupManagerValidationRetryRecovery:
     """Tests for validation retry state recovery."""

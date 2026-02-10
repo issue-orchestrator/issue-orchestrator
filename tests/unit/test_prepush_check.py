@@ -4,7 +4,6 @@ import pytest
 import tempfile
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
 
 from issue_orchestrator.entrypoints.cli_tools.prepush_check import (
     load_validation_cmd,
@@ -38,7 +37,7 @@ class TestLoadValidationCmd:
         config_path = config_dir / "default.yaml"
         config_path.write_text("some_key: value\n")
 
-        cmd, timeout, dirty_check = load_validation_cmd(temp_worktree)
+        cmd, _timeout, dirty_check = load_validation_cmd(temp_worktree)
         assert cmd is None
         assert dirty_check == "tracked"
 
