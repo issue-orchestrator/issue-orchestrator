@@ -2089,6 +2089,7 @@ async function toggleExcluded() {
     // Listen for specific events that should trigger refresh
     // Events use canonical names from events/catalog.py (dot notation)
     // Note: startup_complete is broadcast directly (not via TraceEvent) so keeps underscore
+    // Events that trigger a full refresh (may add/remove cards)
     const refreshEvents = [
         'session.started',     // EventName.SESSION_STARTED
         'session.completed',   // EventName.SESSION_COMPLETED
@@ -2102,6 +2103,12 @@ async function toggleExcluded() {
             // Slight delay to let server state settle
             setTimeout(() => refreshViewModel({ reloadOnListChange: true }), 200);
         });
+    });
+
+    // Tick events: refresh view model to update runtime minutes on cards
+    // (without reloading the list since card membership doesn't change on ticks)
+    evtSource.addEventListener('tick.completed', function(e) {
+        refreshViewModel({ reloadOnListChange: false });
     });
 
     // Listen for shutdown event (show shutdown message instead of reload)

@@ -676,13 +676,7 @@ Timestamp: {self._now_iso()}
         run_dir = self.find_run_dir(worktree_path, session_name=session_name)
         if not run_dir:
             return None
-
-        for filename in (SESSION_LOG_NAME, PANE_LOG_NAME):
-            candidate = run_dir / filename
-            if candidate.exists():
-                return candidate
-
-        return run_dir / SESSION_LOG_NAME
+        return self._find_log_in_run_dir(run_dir)
 
     def attach_claude_log(
         self,
@@ -1095,11 +1089,24 @@ Timestamp: {self._now_iso()}
         run_dir = self.find_run_dir(worktree_path)
         if not run_dir:
             return None
+        return self._find_log_in_run_dir(run_dir)
 
+    def _find_log_in_run_dir(self, run_dir: Path) -> Path | None:
+        """Find the best log file in a run directory.
+
+        Checks session.log and pane.log first (terminal backends), then falls
+        back to provider-runner/stdout.log (subprocess backend where
+        AgentRunner redirects stdout to file instead of the PTY).
+        """
         for filename in (SESSION_LOG_NAME, PANE_LOG_NAME):
             candidate = run_dir / filename
-            if candidate.exists():
+            if candidate.exists() and candidate.stat().st_size > 0:
                 return candidate
+
+        # Subprocess backend: agent output goes to provider-runner/stdout.log
+        provider_stdout = run_dir / "provider-runner" / "stdout.log"
+        if provider_stdout.exists() and provider_stdout.stat().st_size > 0:
+            return provider_stdout
 
         return None
 

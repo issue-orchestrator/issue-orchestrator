@@ -229,11 +229,12 @@ def _find_last_event(
 # ---------------------------------------------------------------------------
 
 # Events that are noise in the journey — too low-level for user narrative
-_JOURNEY_SKIP_PREFIXES = ("observation.", "cleanup.", "tick.", "orchestrator.", "apply.", "worktree.", "completion.")
+_JOURNEY_SKIP_PREFIXES = ("observation.", "cleanup.", "tick.", "orchestrator.", "apply.", "worktree.", "completion.", "stale.", "pr.")
 _JOURNEY_SKIP_EVENTS = frozenset({
     "issue.labels_changed",
     "issue.claimed",
     "session.processing_completed",
+    "session.no_output",
 })
 
 # Event name → narrative template.  {summary} is replaced with event summary.
@@ -260,6 +261,8 @@ _NARRATIVE_MAP: dict[str, str] = {
     "triage.launching": "Triage review launching",
     "validation.started": "Validation started",
     "validation.completed": "Validation passed",
+    "session.validation_retry_needed": "Validation failed — retrying",
+    "review.comment_added": "Review comment posted{_summary}",
 }
 
 
