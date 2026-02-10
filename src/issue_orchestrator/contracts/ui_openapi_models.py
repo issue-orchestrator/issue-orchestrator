@@ -48,16 +48,13 @@ class DashboardViewModelPayload(BaseModel):
     active_session_count: int
     active_tab: str
     agents: list[str]
-    attention_groups: list[dict[str, Any]]
     awaiting_merge_count: int
     awaiting_merge_items: list[IssueItemPayload]
-    backlog_count: int
-    backlog_items: list[IssueItemPayload]
     blocked_count: int
     blocked_items: list[IssueItemPayload]
+    completed_count: int
+    completed_items: list[IssueItemPayload]
     dashboard_data: DashboardDataPayload
-    done_count: int
-    done_items: list[IssueItemPayload]
     e2e_count: int
     e2e_items: list[IssueItemPayload]
     e2e_page: int
@@ -67,7 +64,6 @@ class DashboardViewModelPayload(BaseModel):
     flow_columns: list[dict[str, Any]]
     github_owner: str
     github_repo: str
-    history_count: int
     history_items: list[IssueItemPayload]
     issues: list[IssueItemPayload]
     paused: bool
@@ -119,11 +115,17 @@ class InfoDialogPayload(BaseModel):
 class IssueDetailPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actions: list[dict[str, Any]]
+    blocked_detail: dict[str, Any] | None
+    cycles: list[dict[str, Any]]
     events: list[dict[str, Any]]
     issue_number: int
     issue_url: str
-    loops: list[dict[str, Any]]
+    journey_steps: list[dict[str, Any]]
     phase_toc: list[dict[str, Any]]
+    previous_cycles: list[dict[str, Any]]
+    previous_cycles_count: int
+    raw_events_count: int
+    status_explanation: str
     summary: dict[str, Any]
     title: str
 

@@ -571,13 +571,32 @@
         }
 
         .scope-note {
-            margin-bottom: 12px;
+            margin-top: 16px;
             font-size: 12px;
             color: var(--text-secondary);
             border: 1px solid var(--border-color);
             border-radius: 8px;
             background: var(--bg-card);
             padding: 10px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        .scope-note-dismiss {
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 16px;
+            line-height: 1;
+            padding: 2px 6px;
+            border-radius: 4px;
+            flex-shrink: 0;
+        }
+        .scope-note-dismiss:hover {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
         }
 
         .recovery-banner {
@@ -803,45 +822,6 @@
         /* ============================================
            Activity View (Embedded Dashboard)
            ============================================ */
-        .activity-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 12px 24px;
-            border-bottom: 1px solid var(--border-subtle);
-            background: var(--bg-card);
-        }
-
-        .activity-repo-info {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-
-        .activity-repo-name {
-            font-size: 16px;
-            font-weight: 600;
-        }
-
-        .engine-config-inline {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-
-        .engine-config-inline select {
-            padding: 4px 8px;
-            border-radius: 4px;
-            border: 1px solid var(--border-color);
-            background: var(--bg-input);
-            color: var(--text-primary);
-            font-size: 12px;
-            min-width: 140px;
-        }
-
         .activity-iframe-container {
             flex: 1;
             position: relative;
@@ -879,6 +859,239 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+
+        /* ============================================
+           Consolidated Activity Header
+           ============================================ */
+        .consolidated-header {
+            display: none;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--border-subtle);
+            background: var(--bg-card);
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            min-height: 44px;
+        }
+        .consolidated-header.active { display: flex; }
+
+        .consolidated-breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-primary);
+            flex: 1;
+            min-width: 0;
+        }
+        .consolidated-breadcrumb .back-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .consolidated-breadcrumb .back-btn:hover {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
+        }
+        .consolidated-breadcrumb .back-btn:active {
+            transform: scale(0.92);
+        }
+        .consolidated-breadcrumb .separator {
+            color: var(--text-muted);
+            font-weight: 400;
+        }
+        .consolidated-breadcrumb .breadcrumb-label {
+            color: var(--text-secondary);
+        }
+        .consolidated-breadcrumb .breadcrumb-repo {
+            font-weight: 600;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .consolidated-actions {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+        .consolidated-actions .icon-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 16px;
+            position: relative;
+        }
+        .consolidated-actions .icon-btn:hover,
+        .consolidated-actions .icon-btn.active {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
+        }
+        .consolidated-actions .icon-btn:active {
+            transform: scale(0.92);
+        }
+
+        /* Scope Info Popover */
+        .scope-popover {
+            position: absolute;
+            top: calc(100% + 4px);
+            right: 0;
+            min-width: 280px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            padding: 10px 12px;
+            z-index: 200;
+            display: none;
+            font-size: 12px;
+        }
+        .scope-popover.visible { display: block; }
+        .scope-popover-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 3px 0;
+        }
+        .scope-popover-row .label { color: var(--text-muted); }
+        .scope-popover-row .value { color: var(--text-primary); font-weight: 500; }
+
+        /* Action Menu Dropdown */
+        .action-menu {
+            position: absolute;
+            top: calc(100% + 4px);
+            right: 0;
+            min-width: 210px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            padding: 4px 0;
+            z-index: 200;
+            display: none;
+        }
+        .action-menu.visible { display: block; }
+        .action-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            padding: 7px 12px;
+            border: none;
+            background: transparent;
+            color: var(--text-primary);
+            font-size: 13px;
+            cursor: pointer;
+            text-align: left;
+        }
+        .action-menu-item:hover { background: var(--bg-card-hover); }
+        .action-menu-item:active { background: var(--border-color); }
+        .action-menu-item .menu-icon { width: 16px; text-align: center; flex-shrink: 0; }
+        .action-menu-divider { height: 1px; background: var(--border-subtle); margin: 4px 0; }
+        .config-menu-row {
+            cursor: default;
+            gap: 8px;
+        }
+        .config-menu-row:hover { background: transparent; }
+        .config-menu-row label { font-size: 13px; color: var(--text-primary); }
+        .config-menu-row select {
+            flex: 1;
+            padding: 3px 6px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-input);
+            color: var(--text-primary);
+            font-size: 12px;
+        }
+
+        /* ============================================
+           Activity Footer Status Bar
+           ============================================ */
+        .activity-footer {
+            display: none;
+            align-items: center;
+            gap: 12px;
+            padding: 5px 16px;
+            border-top: 1px solid var(--border-subtle);
+            background: var(--bg-card);
+            font-size: 12px;
+            color: var(--text-secondary);
+            flex-shrink: 0;
+        }
+        .activity-footer.active { display: flex; }
+        .activity-footer .footer-sep { color: var(--text-muted); }
+        .activity-footer .footer-repo {
+            font-weight: 500;
+            color: var(--text-primary);
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: max-width 0.2s ease;
+        }
+        .activity-footer .footer-repo.expanded {
+            max-width: none;
+        }
+        .activity-footer .footer-config { color: var(--text-secondary); }
+
+        /* ============================================
+           Maximize Mode
+           ============================================ */
+        /* Hide sidebar and consolidated header when viewing a repo's dashboard — dashboard takes over */
+        body.repo-focused .sidebar { display: none; }
+        body.repo-focused .main-content { margin-left: 0; }
+        body.repo-focused .consolidated-header { display: none !important; }
+        body.maximized .sidebar { display: none; }
+        body.maximized .main-content { margin-left: 0; }
+        body.maximized .consolidated-header { display: none !important; }
+        body.maximized .activity-footer { display: none !important; }
+        body.maximized .header { display: none !important; }
+        body.maximized #activityView.active {
+            position: fixed;
+            inset: 0;
+            z-index: 500;
+        }
+        .maximize-exit-btn {
+            position: fixed;
+            top: 12px;
+            right: 12px;
+            z-index: 600;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            font-size: 18px;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            box-shadow: var(--shadow);
+            opacity: 0.7;
+            transition: opacity 0.15s;
+        }
+        .maximize-exit-btn:hover { opacity: 1; }
+        body.maximized .maximize-exit-btn { display: flex; }
 
         /* ============================================
            Tools View
@@ -1672,9 +1885,6 @@
 
             <!-- Repositories View -->
             <div class="view-container active" id="repositoriesView" role="main" aria-labelledby="viewTitle">
-                <div class="scope-note">
-                    Closing this window does not stop repository engines running on this machine.
-                </div>
                 <div class="recovery-banner" id="recoveryBanner">
                     <div>
                         <div class="recovery-banner-title" id="recoveryBannerTitle">Running engines detected</div>
@@ -1693,32 +1903,88 @@
                         </div>
                     </div>
                 </div>
+                <div class="scope-note" id="scopeNote" style="display:none;">
+                    Closing this window does not stop repository engines running on this machine.
+                    <button class="scope-note-dismiss" id="dismissScopeNote" aria-label="Dismiss this notice" title="Don't show again">&times;</button>
+                </div>
             </div>
 
             <!-- Activity View (Embedded Dashboard) -->
             <div class="view-container" id="activityView" role="main">
-                <div class="activity-header">
-                    <div class="activity-repo-info">
-                        <button class="btn btn-sm" id="backToRepos" aria-label="Back to repositories">
+                <!-- Consolidated Header -->
+                <div class="consolidated-header" id="consolidatedHeader">
+                    <div class="consolidated-breadcrumb">
+                        <button class="back-btn" id="consolidatedBack" aria-label="Back to repository engines" title="Back to repository engines">
                             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
                                 <path fill="currentColor" fill-rule="evenodd" d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z"/>
                             </svg>
-                            Back to repository engines
                         </button>
-                        <span class="activity-repo-name" id="activityRepoName"></span>
-                        <span class="repo-card-badge running" id="activityRepoBadge">Running</span>
+                        <span class="breadcrumb-label">Control Center</span>
+                        <span class="separator" aria-hidden="true">›</span>
+                        <span class="breadcrumb-repo" id="consolidatedRepoName"></span>
+                        <span class="repo-card-badge running" id="consolidatedBadge">Running</span>
                     </div>
-                    <div class="header-actions">
-                        <button class="btn btn-sm" id="pauseResumeBtn">Pause engine</button>
-                        <button class="btn btn-danger btn-sm" id="stopRepoBtn">Stop engine</button>
+                    <div class="consolidated-actions">
+                        <div style="position:relative;">
+                            <button class="icon-btn" id="scopeInfoBtn" aria-label="Scope information" title="Scope info">
+                                <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                                    <path fill="currentColor" d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1v4.25a.75.75 0 01-1.5 0V8.5h-.25A.75.75 0 016.5 7.75zM8 6a1 1 0 110-2 1 1 0 010 2z"/>
+                                </svg>
+                            </button>
+                            <div class="scope-popover" id="scopePopover">
+                                <div class="scope-popover-row"><span class="label">Scope</span><span class="value" id="scopePopoverScope">--</span></div>
+                                <div class="scope-popover-row" id="scopePopoverExcludeRow" style="display:none;"><span class="label">Exclude</span><span class="value" id="scopePopoverExclude">--</span></div>
+                                <div class="scope-popover-row"><span class="label">Repo</span><span class="value" id="scopePopoverRepo">--</span></div>
+                                <div class="scope-popover-row"><span class="label">In scope</span><span class="value" id="scopePopoverTotal">--</span></div>
+                                <div class="scope-popover-row"><span class="label">Queued</span><span class="value" id="scopePopoverQueued">--</span></div>
+                                <div class="scope-popover-row"><span class="label">Running</span><span class="value" id="scopePopoverRunning">--</span></div>
+                                <div class="scope-popover-row"><span class="label">Awaiting merge</span><span class="value" id="scopePopoverMerge">--</span></div>
+                                <div class="scope-popover-row"><span class="label">Blocked</span><span class="value" id="scopePopoverBlocked">--</span></div>
+                                <div class="scope-popover-row"><span class="label">Last sync</span><span class="value" id="scopePopoverSync">--</span></div>
+                            </div>
+                        </div>
+                        <div style="position:relative;">
+                            <button class="icon-btn" id="actionMenuBtn" aria-label="Actions menu" title="Actions">
+                                <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                                    <path fill="currentColor" d="M1 2.75A.75.75 0 011.75 2h12.5a.75.75 0 110 1.5H1.75A.75.75 0 011 2.75zm0 5A.75.75 0 011.75 7h12.5a.75.75 0 110 1.5H1.75A.75.75 0 011 7.75zM1.75 12h12.5a.75.75 0 110 1.5H1.75a.75.75 0 110-1.5z"/>
+                                </svg>
+                            </button>
+                            <div class="action-menu" id="actionMenu">
+                                <div class="action-menu-config" id="menuConfigWrap" style="display:none;">
+                                    <div class="action-menu-item config-menu-row">
+                                        <span class="menu-icon">📋</span>
+                                        <label for="menuConfigSelect">Config</label>
+                                        <select id="menuConfigSelect" onclick="event.stopPropagation();"></select>
+                                    </div>
+                                    <div class="action-menu-divider"></div>
+                                </div>
+                                <button class="action-menu-item" id="menuCloseCC"><span class="menu-icon">✕</span> Close Control Center</button>
+                            </div>
+                        </div>
+                        <button class="icon-btn" id="maximizeBtn" aria-label="Maximize dashboard" title="Maximize">
+                            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                                <path fill="currentColor" d="M3.75 2A1.75 1.75 0 002 3.75v8.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0014 12.25v-8.5A1.75 1.75 0 0012.25 2h-8.5zm-.25 1.75a.25.25 0 01.25-.25h8.5a.25.25 0 01.25.25v8.5a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25v-8.5z"/>
+                            </svg>
+                        </button>
                     </div>
                 </div>
+                <!-- Dashboard Iframe -->
                 <div class="activity-iframe-container">
                     <div class="activity-loading" id="activityLoading">
                         <div class="spinner"></div>
                         <p>Loading activity...</p>
                     </div>
                     <iframe id="activityIframe" title="Repository engine activity dashboard"></iframe>
+                </div>
+                <!-- Footer Status Bar -->
+                <div class="activity-footer" id="activityFooter">
+                    <span id="footerRepo" class="footer-repo" title="" onclick="this.classList.toggle('expanded'); this.textContent = this.classList.contains('expanded') ? (this.dataset.full || this.textContent) : (this.dataset.short || this.textContent);">--</span>
+                    <span class="footer-sep" aria-hidden="true">&middot;</span>
+                    <span id="footerConfig" class="footer-config">--</span>
+                    <span class="footer-sep" aria-hidden="true">&middot;</span>
+                    <span id="footerGHUsage">GH --/min</span>
+                    <span class="footer-sep" aria-hidden="true">&middot;</span>
+                    <span id="footerSync">Sync --</span>
                 </div>
             </div>
 
@@ -2144,6 +2410,7 @@
                     </div>
                 </div>
             </div>
+            <button class="maximize-exit-btn" id="maximizeExitBtn" aria-label="Exit maximize" title="Exit maximize">&times;</button>
         </main>
     </div>
 
@@ -2380,7 +2647,8 @@
             discoveredLoadedAt: 0,
             currentView: 'repositories',
             activeRepo: null,  // { path, config, source: 'registered'|'discovered' }
-            theme: localStorage.getItem('theme') || 'system'
+            theme: localStorage.getItem('theme') || 'system',
+            dashboardStatus: null
         };
 
         const DISCOVERED_STALE_MS = 5 * 60 * 1000;
@@ -2746,6 +3014,14 @@
         function switchView(viewName, repoPath = null) {
             state.currentView = viewName;
 
+            // Exit maximize mode when leaving activity view
+            if (viewName !== 'activity') {
+                document.body.classList.remove('maximized');
+                document.body.classList.remove('repo-focused');
+            } else {
+                document.body.classList.add('repo-focused');
+            }
+
             // Update nav items
             document.querySelectorAll('.nav-item[data-view]').forEach(item => {
                 const isActive = item.dataset.view === viewName;
@@ -2761,6 +3037,26 @@
             const viewContainer = document.getElementById(viewName + 'View');
             if (viewContainer) {
                 viewContainer.classList.add('active');
+            }
+
+            // Toggle headers: consolidated for activity, global for everything else
+            const globalHeader = document.querySelector('.header');
+            const consolidatedHeader = document.getElementById('consolidatedHeader');
+            const activityFooter = document.getElementById('activityFooter');
+            const subtitle = document.querySelector('.header-subtitle');
+            const activeSummary = document.getElementById('activeSummary');
+
+            if (viewName === 'activity') {
+                globalHeader.style.display = 'none';
+                consolidatedHeader.classList.add('active');
+                activityFooter.classList.add('active');
+            } else {
+                globalHeader.style.display = '';
+                consolidatedHeader.classList.remove('active');
+                activityFooter.classList.remove('active');
+                // Only show subtitle + summary in repos view
+                if (subtitle) subtitle.style.display = viewName === 'repositories' ? '' : 'none';
+                if (activeSummary) activeSummary.style.display = viewName === 'repositories' ? '' : 'none';
             }
 
             // Update header title
@@ -2783,6 +3079,114 @@
                 goalPilotLoadRuns();
             }
         }
+
+        // ============================================
+        // Consolidated Header Utilities
+        // ============================================
+        function closeConsolidatedDropdowns() {
+            const popover = document.getElementById('scopePopover');
+            const menu = document.getElementById('actionMenu');
+            if (popover) popover.classList.remove('visible');
+            if (menu) menu.classList.remove('visible');
+            document.getElementById('scopeInfoBtn')?.classList.remove('active');
+            document.getElementById('actionMenuBtn')?.classList.remove('active');
+        }
+
+        function toggleMaximize() {
+            document.body.classList.toggle('maximized');
+            closeConsolidatedDropdowns();
+        }
+
+        // Footer sync label — recomputes "Xm ago" locally every 5s
+        function formatSyncAge(epochSeconds) {
+            if (!epochSeconds) return 'never';
+            const ageSec = Math.max(0, Math.floor(Date.now() / 1000 - epochSeconds));
+            if (ageSec < 5) return 'just now';
+            if (ageSec < 60) return ageSec + 's ago';
+            if (ageSec < 3600) return Math.floor(ageSec / 60) + 'm ago';
+            return Math.floor(ageSec / 3600) + 'h ago';
+        }
+
+        function updateFooterSync(refresh) {
+            const el = document.getElementById('footerSync');
+            if (!el) return;
+            if (refresh?.inProgress) {
+                el.textContent = 'Syncing...';
+            } else if (refresh?.lastRefreshAt) {
+                el.textContent = 'Sync ' + formatSyncAge(refresh.lastRefreshAt);
+            } else {
+                el.textContent = 'Sync ' + (refresh?.lastRefreshLabel || '--');
+            }
+        }
+
+        // Tick the sync age every 5s so it stays fresh
+        setInterval(() => {
+            if (state.dashboardStatus?.refresh) {
+                updateFooterSync(state.dashboardStatus.refresh);
+            }
+        }, 5000);
+
+        // Listen for messages from embedded dashboard iframe
+        window.addEventListener('message', (event) => {
+            if (!event.data?.type) return;
+            // Dashboard requests navigation back to repositories
+            if (event.data.type === 'cc-back-to-repos') {
+                switchView('repositories');
+                return;
+            }
+            if (event.data.type !== 'dashboard-status') return;
+            const p = event.data.payload;
+            if (!p) return;
+
+            // Cache for scope popover
+            state.dashboardStatus = p;
+
+            // Update footer
+            const footerGH = document.getElementById('footerGHUsage');
+            const footerSync = document.getElementById('footerSync');
+            const footerRepo = document.getElementById('footerRepo');
+            const footerConfig = document.getElementById('footerConfig');
+
+            if (footerRepo && p.scope.repo) {
+                const repoShort = p.scope.repo.length > 30 ? '...' + p.scope.repo.slice(-27) : p.scope.repo;
+                footerRepo.dataset.full = p.scope.repo;
+                footerRepo.dataset.short = repoShort;
+                footerRepo.title = p.scope.repo;
+                if (!footerRepo.classList.contains('expanded')) footerRepo.textContent = repoShort;
+                else footerRepo.textContent = p.scope.repo;
+            }
+            if (footerConfig && state.activeRepo && state.activeRepo.config) {
+                footerConfig.textContent = state.activeRepo.config;
+            }
+            if (footerGH) footerGH.textContent = 'GH ' + p.ghUsage.callsPerMinute + '/min';
+            updateFooterSync(p.refresh);
+
+            // Update consolidated badge from live dashboard data
+            const badge = document.getElementById('consolidatedBadge');
+            if (badge) {
+                if (p.shutdownRequested) {
+                    badge.textContent = 'Stopping...';
+                    badge.className = 'repo-card-badge paused';
+                } else if (p.paused) {
+                    badge.textContent = 'Paused';
+                    badge.className = 'repo-card-badge paused';
+                } else if (p.startupStatus !== 'complete') {
+                    badge.textContent = 'Starting...';
+                    badge.className = 'repo-card-badge paused';
+                } else {
+                    badge.textContent = 'Running';
+                    badge.className = 'repo-card-badge running';
+                }
+            }
+        });
+
+        // Escape key exits maximize mode
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && document.body.classList.contains('maximized')) {
+                e.stopPropagation();
+                document.body.classList.remove('maximized');
+            }
+        });
 
         // ============================================
         // Repository Loading
@@ -3221,17 +3625,49 @@
             const repoState = getRepoState(repo);
             const isPaused = repoState === 'paused';
 
-            // Update header info
-            document.getElementById('activityRepoName').textContent = repo.name;
-            const badge = document.getElementById('activityRepoBadge');
+            // Update consolidated header
+            document.getElementById('consolidatedRepoName').textContent = repo.name;
+            // Populate footer context immediately
+            const footerRepo = document.getElementById('footerRepo');
+            const footerConfig = document.getElementById('footerConfig');
+            if (footerRepo) {
+                const repoShort = repo.name.length > 30 ? '...' + repo.name.slice(-27) : repo.name;
+                footerRepo.dataset.full = repo.path;
+                footerRepo.dataset.short = repoShort;
+                footerRepo.textContent = repoShort;
+                footerRepo.title = repo.path;
+                footerRepo.classList.remove('expanded');
+            }
+            if (footerConfig && state.activeRepo.config) {
+                footerConfig.textContent = state.activeRepo.config;
+            }
+            const badge = document.getElementById('consolidatedBadge');
             badge.textContent = isPaused ? 'Paused' : (repoState === 'running' ? 'Running' : 'Not running');
             const badgeClass = isPaused ? 'paused' : (repoState === 'running' ? 'running' : 'stopped');
             badge.className = `repo-card-badge ${badgeClass}`;
 
-            // Update pause/resume button
-            const pauseBtn = document.getElementById('pauseResumeBtn');
-            pauseBtn.textContent = isPaused ? 'Resume engine' : 'Pause engine';
-            pauseBtn.disabled = repoState === 'not running';
+            // Update menu pause/resume label
+            const menuPR = document.getElementById('menuPauseResume');
+            if (menuPR) {
+                menuPR.innerHTML = isPaused
+                    ? '<span class="menu-icon">▶</span> Resume engine'
+                    : '<span class="menu-icon">⏸</span> Pause engine';
+            }
+
+            // Update config selector in menu
+            const configSelect = document.getElementById('menuConfigSelect');
+            const configWrap = document.getElementById('menuConfigWrap');
+            if (configSelect && configWrap) {
+                const configs = repo.configs || [];
+                if (configs.length > 1) {
+                    configSelect.innerHTML = configs.map(c =>
+                        `<option value="${escapeHtml(c)}" ${c === state.activeRepo.config ? 'selected' : ''}>${escapeHtml(c)}</option>`
+                    ).join('');
+                    configWrap.style.display = '';
+                } else {
+                    configWrap.style.display = 'none';
+                }
+            }
 
 
             // Load iframe
@@ -3260,6 +3696,13 @@
                     if (!loadTimedOut) {
                         loading.style.display = 'none';
                         iframe.style.display = 'block';
+                        // Send repo display name to dashboard for embedded header
+                        try {
+                            iframe.contentWindow.postMessage({
+                                type: 'cc-repo-info',
+                                repoName: repo.name,
+                            }, '*');
+                        } catch (e) { /* cross-origin */ }
                     }
                 };
                 iframe.onerror = () => {
@@ -3765,8 +4208,8 @@
                 item.addEventListener('click', () => switchView(item.dataset.view));
             });
 
-            // Back to repos from activity
-            document.getElementById('backToRepos').addEventListener('click', () => {
+            // Back to repos from consolidated header
+            document.getElementById('consolidatedBack').addEventListener('click', () => {
                 switchView('repositories');
             });
 
@@ -3778,6 +4221,15 @@
             document.getElementById('rescanReposBtn').addEventListener('click', rescanRepos);
             document.getElementById('reconnectEnginesBtn').addEventListener('click', reconnectToActiveEngine);
             document.getElementById('cleanupRecoveryBtn').addEventListener('click', cleanRecoveryState);
+
+            // Scope note (dismissible)
+            if (!localStorage.getItem('cc-scope-note-dismissed')) {
+                document.getElementById('scopeNote').style.display = '';
+            }
+            document.getElementById('dismissScopeNote').addEventListener('click', () => {
+                document.getElementById('scopeNote').style.display = 'none';
+                localStorage.setItem('cc-scope-note-dismissed', '1');
+            });
 
             // Doctor (Tools view — repo scope) and System Check (Settings — CC scope)
             document.getElementById('doctorTool').addEventListener('click', runDoctor);
@@ -4833,24 +5285,77 @@
                 else if (setupWizardState.step === 3) await loadSetupStep3();
             });
 
-            // Pause/Resume in activity view
-            document.getElementById('pauseResumeBtn').addEventListener('click', async () => {
-                if (!state.activeRepo?.path) return;
-                const repo = state.repos.find(r => r.path === state.activeRepo.path);
-                if (!repo) return;
-                if (getRepoState(repo) === 'paused') {
-                    await resumeRepo(repo.path);
-                } else {
-                    await pauseRepo(repo.path);
-                }
-                loadActivityView(repo.path);
+            // Consolidated header menu actions (CC-level only; engine actions are in the dashboard)
+            document.getElementById('menuCloseCC').addEventListener('click', () => {
+                closeConsolidatedDropdowns();
+                showShutdownModal();
             });
 
-            // Stop from activity view
-            document.getElementById('stopRepoBtn').addEventListener('click', async () => {
-                if (state.activeRepo) {
-                    await stopRepo(state.activeRepo.path);
+            // Scope info popover toggle
+            document.getElementById('scopeInfoBtn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                const popover = document.getElementById('scopePopover');
+                const btn = document.getElementById('scopeInfoBtn');
+                const wasVisible = popover.classList.contains('visible');
+                closeConsolidatedDropdowns();
+                if (!wasVisible) {
+                    popover.classList.add('visible');
+                    btn.classList.add('active');
+                    const s = state.dashboardStatus;
+                    if (s) {
+                        // Build scope string: milestones + optional label filter
+                        let scopeStr = s.scope.filterMilestones?.length
+                            ? 'milestones=' + s.scope.filterMilestones.join(',')
+                            : 'milestones=all';
+                        if (s.scope.filterLabel) scopeStr += ', label=' + s.scope.filterLabel;
+                        document.getElementById('scopePopoverScope').textContent = scopeStr;
+
+                        // Exclude labels (only show row if present)
+                        const excludeRow = document.getElementById('scopePopoverExcludeRow');
+                        if (s.scope.excludeLabels?.length) {
+                            document.getElementById('scopePopoverExclude').textContent = s.scope.excludeLabels.join(', ');
+                            excludeRow.style.display = '';
+                        } else {
+                            excludeRow.style.display = 'none';
+                        }
+
+                        document.getElementById('scopePopoverRepo').textContent = s.scope.repo || '--';
+                        document.getElementById('scopePopoverTotal').textContent = s.scope.inScopeTotal;
+                        document.getElementById('scopePopoverQueued').textContent = s.counts.queued;
+                        document.getElementById('scopePopoverRunning').textContent = s.counts.running;
+                        document.getElementById('scopePopoverMerge').textContent = s.counts.awaitingMerge;
+                        document.getElementById('scopePopoverBlocked').textContent = s.counts.blocked;
+                        document.getElementById('scopePopoverSync').textContent =
+                            s.refresh.lastRefreshAt ? formatSyncAge(s.refresh.lastRefreshAt) : (s.refresh.lastRefreshLabel || '--');
+                    }
                 }
+            });
+
+            // Action menu toggle
+            document.getElementById('actionMenuBtn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                const menu = document.getElementById('actionMenu');
+                const btn = document.getElementById('actionMenuBtn');
+                const wasVisible = menu.classList.contains('visible');
+                closeConsolidatedDropdowns();
+                if (!wasVisible) {
+                    menu.classList.add('visible');
+                    btn.classList.add('active');
+                }
+            });
+
+            // Close consolidated dropdowns on outside click
+            document.addEventListener('click', closeConsolidatedDropdowns);
+
+            // Maximize toggle
+            document.getElementById('maximizeBtn').addEventListener('click', toggleMaximize);
+            document.getElementById('maximizeExitBtn').addEventListener('click', toggleMaximize);
+
+            // Config selector in action menu
+            document.getElementById('menuConfigSelect').addEventListener('change', async (e) => {
+                if (!state.activeRepo?.path) return;
+                state.activeRepo.config = e.target.value;
+                setDefaultConfig(state.activeRepo.path, e.target.value);
             });
 
             // Close modals on backdrop click

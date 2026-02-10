@@ -44,16 +44,6 @@
                         </div>
                     </section>
                 </div>
-                <button class="settings-btn settings-icon-btn" onclick="toggleSettingsMenu(event)" aria-label="Open actions menu" aria-haspopup="true">☰</button>
-                <div class="settings-menu" id="settingsMenu" role="menu" aria-label="Actions menu">
-                    <button class="settings-menu-item" id="pauseResumeItem" onclick="togglePause()" role="menuitem">
-                        {% if paused %}<span aria-hidden="true">▶</span> Resume{% else %}<span aria-hidden="true">⏸</span> Pause{% endif %}
-                    </button>
-                    <button class="settings-menu-item" onclick="refreshFromGitHub()" role="menuitem"><span aria-hidden="true">🔄</span> Refresh from GitHub</button>
-                    <button class="settings-menu-item" onclick="openFlowRefreshPrefs()" role="menuitem"><span aria-hidden="true">⚡</span> Flow refresh preferences</button>
-                    <button class="settings-menu-item" onclick="setGitHubUsageHidden(false)" role="menuitem"><span aria-hidden="true">📊</span> Show GitHub usage</button>
-                    <button class="settings-menu-item" onclick="window.location.href='/settings'" role="menuitem"><span aria-hidden="true">⚙</span> Settings</button>
-                </div>
             </div>
         </header>
 
@@ -76,7 +66,7 @@
             </div>
             <div class="scope-line">
                 <span class="scope-label">Counts</span>
-                <span class="scope-value">In scope: {{ scope_summary.in_scope_total }} · Backlog: {{ backlog_count }} · Running: {{ active_count }} · Awaiting merge: {{ awaiting_merge_count }}</span>
+                <span class="scope-value">In scope: {{ scope_summary.in_scope_total }} · Queued: {{ queue_count }} · Running: {{ active_count }} · Blocked: {{ blocked_count }} · Awaiting merge: {{ awaiting_merge_count }}</span>
             </div>
             <div class="scope-line">
                 <span class="scope-label">Refresh</span>
@@ -102,16 +92,22 @@
         </section>
 
         <nav class="board-tabs" role="tablist" aria-label="Dashboard sections">
-            <button class="tab {% if active_tab == 'flow' %}active{% endif %}" id="tab-flow" onclick="switchTab('flow')" role="tab" aria-controls="panel-flow" aria-selected="{% if active_tab == 'flow' %}true{% else %}false{% endif %}">
-                Flow
+            <!-- Embedded-only: back button + repo info (shown when inside CC iframe) -->
+            <button class="embedded-back" id="embeddedBack" aria-label="Back to repositories" style="display:none;">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                    <path fill="currentColor" fill-rule="evenodd" d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z"/>
+                </svg>
             </button>
-            <button class="tab {% if active_tab == 'attention' %}active{% endif %}" id="tab-attention" onclick="switchTab('attention')" role="tab" aria-controls="panel-attention" aria-selected="{% if active_tab == 'attention' %}true{% else %}false{% endif %}">
-                Attention
-                <span class="tab-badge {% if blocked_count == 0 and awaiting_merge_count == 0 %}empty{% endif %}">{{ blocked_count + awaiting_merge_count }}</span>
+            <span class="embedded-repo" id="embeddedRepoName" style="display:none;"></span>
+            <span class="embedded-badge status-badge status-running" id="embeddedBadge" style="display:none;">Running</span>
+            <button class="embedded-scope-btn" id="embeddedScopeBtn" aria-label="Toggle scope info" style="display:none;">
+                <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                    <path fill="currentColor" d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1v4.25a.75.75 0 01-1.5 0V8.5h-.25A.75.75 0 016.5 7.75zM8 6a1 1 0 110-2 1 1 0 010 2z"/>
+                </svg>
             </button>
-            <button class="tab {% if active_tab == 'history' %}active{% endif %}" id="tab-history" onclick="switchTab('history')" role="tab" aria-controls="panel-history" aria-selected="{% if active_tab == 'history' %}true{% else %}false{% endif %}">
-                History
-                <span class="tab-badge {% if history_count == 0 %}empty{% endif %}">{{ history_count }}</span>
+            <span class="embedded-sep" style="display:none;" aria-hidden="true"></span>
+            <button class="tab {% if active_tab != 'e2e' %}active{% endif %}" id="tab-kanban" onclick="switchTab('kanban')" role="tab" aria-controls="panel-kanban" aria-selected="{% if active_tab != 'e2e' %}true{% else %}false{% endif %}">
+                Kanban
             </button>
             <button class="tab {% if active_tab == 'e2e' %}active{% endif %}" id="tab-e2e" onclick="switchTab('e2e')" role="tab" aria-controls="panel-e2e" aria-selected="{% if active_tab == 'e2e' %}true{% else %}false{% endif %}">
                 E2E
@@ -122,14 +118,36 @@
                     {{ e2e_badge.count if e2e_badge.count is not none else e2e_total }}
                 </span>
             </button>
+            <div class="tab-spacer"></div>
+            <div class="tab-menu-wrap">
+                <button class="tab-menu-btn" onclick="toggleSettingsMenu(event)" aria-label="Dashboard actions" aria-haspopup="true">&#x2630;</button>
+                <div class="settings-menu" id="settingsMenu" role="menu" aria-label="Dashboard actions">
+                    <button class="settings-menu-item" id="pauseResumeItem" onclick="togglePause()" role="menuitem">
+                        {% if paused %}<span aria-hidden="true">&#x25B6;</span> Resume{% else %}<span aria-hidden="true">&#x23F8;</span> Pause{% endif %}
+                    </button>
+                    <button class="settings-menu-item" onclick="refreshFromGitHub()" role="menuitem"><span aria-hidden="true">&#x1F504;</span> Refresh from GitHub</button>
+                    <button class="settings-menu-item" onclick="openFlowRefreshPrefs()" role="menuitem"><span aria-hidden="true">&#x26A1;</span> Flow refresh preferences</button>
+                    <button class="settings-menu-item" onclick="setGitHubUsageHidden(false)" role="menuitem"><span aria-hidden="true">&#x1F4CA;</span> Show GitHub usage</button>
+                    <button class="settings-menu-item" onclick="window.location.href='/settings'" role="menuitem"><span aria-hidden="true">&#x2699;</span> Settings</button>
+                </div>
+            </div>
         </nav>
 
         <main id="mainContent">
-            {% if active_tab == 'flow' %}
-            <section class="kanban-board" id="panel-flow" role="tabpanel" aria-labelledby="tab-flow" aria-label="Flow board">
+            {% if active_tab != 'e2e' %}
+            <section class="kanban-board" id="panel-kanban" role="tabpanel" aria-labelledby="tab-kanban" aria-label="Kanban board">
                 {% for column in flow_columns %}
-                <article class="kanban-column" data-column="{{ column.id }}">
-                    <h2>{{ column.title }} <span class="count">{{ column.count }}</span></h2>
+                <article class="kanban-column {% if column.expandable %}expandable{% endif %}"
+                         data-column="{{ column.id }}"
+                         data-expanded="false">
+                    <h2 ondblclick="toggleColumnExpand('{{ column.id }}')">
+                        {% if column.expandable %}
+                        <button class="column-expand-btn" onclick="toggleColumnExpand('{{ column.id }}');event.stopPropagation();" aria-label="Expand {{ column.title }}">
+                            <span class="expand-chevron">&#x25B8;</span>
+                        </button>
+                        {% endif %}
+                        {{ column.title }} <span class="count">{{ column.count }}</span>
+                    </h2>
                     <div class="column-cards">
                         {% if column["items"] %}
                             {% for card in column["items"] %}
@@ -142,15 +160,16 @@
                                         {% if card.is_stale %}
                                         <span class="stale-dot" title="{{ card.stale_reason or 'Issue may be stale' }}" aria-label="Issue data may be stale"></span>
                                         {% endif %}
-                                        <button class="card-refresh-btn" onclick="refreshIssueCard({{ card.issue_number }}, this);event.stopPropagation();" title="Refresh issue #{{ card.issue_number }} from GitHub" aria-label="Refresh issue #{{ card.issue_number }}">⟳</button>
+                                        <button class="card-refresh-btn" onclick="refreshIssueCard({{ card.issue_number }}, this);event.stopPropagation();" title="Refresh issue #{{ card.issue_number }} from GitHub" aria-label="Refresh issue #{{ card.issue_number }}">&#x27F3;</button>
                                         {% if card.issue_url %}
-                                        <a class="card-gh" href="{{ card.issue_url }}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">↗</a>
+                                        <a class="card-gh" href="{{ card.issue_url }}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">&#x2197;</a>
                                         {% endif %}
+                                        <button class="card-detail-chevron" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="View details" aria-label="View issue #{{ card.issue_number }} details">&#x25B8;</button>
                                     </div>
                                 </div>
                                 <div class="card-line">
                                     {% if card.phase %}{{ card.phase }}{% else %}{{ card.state_label }}{% endif %}
-                                    {% if card.phase_age %} · {{ card.phase_age }}{% endif %}
+                                    {% if card.phase_age %} &middot; {{ card.phase_age }}{% endif %}
                                 </div>
                                 {% if card.blocked_summary %}
                                 <div class="card-line card-muted">{{ card.blocked_summary }}</div>
@@ -173,64 +192,32 @@
                             <div class="column-empty">No items</div>
                         {% endif %}
                     </div>
+                    {% if column.expandable %}
+                    <div class="column-expanded" style="display:none;">
+                        {% if column.id == 'blocked' %}
+                        <div class="column-filter-bar">
+                            <button class="filter-btn active" data-filter="all" onclick="filterBlockedColumn('all', this)">All</button>
+                            <button class="filter-btn" data-filter="new" onclick="filterBlockedColumn('new', this)">New</button>
+                            <button class="filter-btn" data-filter="viewed" onclick="filterBlockedColumn('viewed', this)">Viewed</button>
+                        </div>
+                        {% endif %}
+                        <div class="expanded-cards-list"></div>
+                        <div class="bulk-action-bar" style="display:none;">
+                            <span class="selected-count">0 selected</span>
+                            {% if column.id == 'blocked' %}
+                            <button class="issue-action-btn" onclick="bulkUnblock()">Unblock</button>
+                            <button class="issue-action-btn" onclick="bulkMarkViewed()">Mark Viewed</button>
+                            <button class="issue-action-btn" onclick="bulkClearViewed()">Clear Viewed</button>
+                            {% elif column.id == 'awaiting-merge' %}
+                            <button class="issue-action-btn" onclick="bulkOpenPRs()">Open PRs</button>
+                            {% elif column.id == 'queued' %}
+                            <button class="issue-action-btn" onclick="bulkDeprioritize()">Deprioritize</button>
+                            {% endif %}
+                        </div>
+                    </div>
+                    {% endif %}
                 </article>
                 {% endfor %}
-            </section>
-            {% elif active_tab == 'attention' %}
-            <section class="attention-board" id="panel-attention" role="tabpanel" aria-labelledby="tab-attention" aria-label="Needs attention">
-                {% if attention_groups %}
-                    {% for group in attention_groups %}
-                    <article class="attention-group">
-                        <h2>{{ group["title"] }} <span class="count">{{ group["items"]|length }}</span></h2>
-                        <p>{{ group["description"] }}</p>
-                        <div class="attention-items">
-                            {% for card in group["items"] %}
-                            <div class="attention-item" data-issue="{{ card.issue_number }}" data-stale="{{ 'true' if card.is_stale else 'false' }}" data-last-refresh-age-seconds="{{ card.last_refreshed_age_seconds }}">
-                                <button class="card-focus" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="Focus issue #{{ card.issue_number }}">#{{ card.issue_number }} {{ card.title }}</button>
-                                {% if card.blocked_summary %}<div class="card-line card-muted">{{ card.blocked_summary }}</div>{% endif %}
-                                <div class="attention-actions">
-                                    <button class="issue-action-btn" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();">Focus</button>
-                                    <button class="issue-action-btn" onclick="refreshIssueCard({{ card.issue_number }}, this);event.stopPropagation();">Refresh</button>
-                                    {% if card.issue_url %}
-                                    <a class="issue-action-btn" href="{{ card.issue_url }}" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
-                                    {% endif %}
-                                </div>
-                            </div>
-                            {% endfor %}
-                        </div>
-                    </article>
-                    {% endfor %}
-                {% else %}
-                    <div class="empty-state">Nothing needs attention right now.</div>
-                {% endif %}
-            </section>
-            {% elif active_tab == 'history' %}
-            <section class="history-list" id="panel-history" role="tabpanel" aria-labelledby="tab-history" aria-label="Issue history">
-                {% set history_combined = history_items + blocked_items %}
-                {% if history_combined %}
-                    {% for issue in history_combined %}
-                    <article class="history-item" data-issue="{{ issue.issue_number }}" data-stale="{{ 'true' if issue.is_stale else 'false' }}" data-last-refresh-age-seconds="{{ issue.last_refreshed_age_seconds }}">
-                        <div class="card-top">
-                            <button class="card-focus" onclick="openIssueDetail({{ issue.issue_number }}, this);event.stopPropagation();" title="Focus issue #{{ issue.issue_number }}">#{{ issue.issue_number }} {{ issue.title }}</button>
-                            <div class="card-head-actions">
-                                {% if issue.is_stale %}
-                                <span class="stale-dot" title="{{ issue.stale_reason or 'Issue may be stale' }}" aria-label="Issue data may be stale"></span>
-                                {% endif %}
-                                <button class="card-refresh-btn" onclick="refreshIssueCard({{ issue.issue_number }}, this);event.stopPropagation();" title="Refresh issue #{{ issue.issue_number }} from GitHub" aria-label="Refresh issue #{{ issue.issue_number }}">⟳</button>
-                                {% if issue.issue_url %}
-                                <a class="card-gh" href="{{ issue.issue_url }}" target="_blank" rel="noopener noreferrer">↗</a>
-                                {% endif %}
-                            </div>
-                        </div>
-                        <div class="card-line">{{ issue.detail_label }}{% if issue.time %} · {{ issue.time }}{% endif %}</div>
-                        {% if issue.status_reason %}
-                        <div class="card-line card-muted">{{ issue.status_reason }}</div>
-                        {% endif %}
-                    </article>
-                    {% endfor %}
-                {% else %}
-                    <div class="empty-state">No history yet.</div>
-                {% endif %}
             </section>
             {% else %}
             <section class="e2e-board" id="panel-e2e" role="tabpanel" aria-labelledby="tab-e2e" aria-label="E2E dashboard">
@@ -305,16 +292,31 @@
             <button class="modal-close" id="issueDetailCloseBtn" onclick="closeIssueDetail()" aria-label="Close issue detail">&times;</button>
         </div>
         <div class="issue-detail-actions">
+            <button class="issue-action-btn" id="issueDetailUnblockBtn" style="display:none;" onclick="unblockFromDrawer()">Unblock</button>
             <button class="issue-action-btn" id="issueDetailFocusBtn">Focus</button>
             <a class="issue-action-btn" id="issueDetailGitHubBtn" href="#" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
-            <div class="issue-detail-toggle">
-                <button class="issue-action-btn" id="issueDetailLoopsBtn" onclick="setIssueDetailMode('loops')">Loops</button>
-                <button class="issue-action-btn" id="issueDetailRawBtn" onclick="setIssueDetailMode('raw')">Raw events</button>
-            </div>
         </div>
-        <div class="issue-detail-summary" id="issueDetailSummary"></div>
-        <div class="issue-detail-body" id="issueDetailBody"></div>
+        <div class="issue-detail-status" id="issueDetailStatus"></div>
+        <div class="issue-detail-journey" id="issueDetailJourney"></div>
+        <details class="issue-detail-section" id="issueDetailPrevCycles" style="display:none;">
+            <summary id="issueDetailPrevCyclesSummary">Previous cycles</summary>
+            <div id="issueDetailPrevCyclesBody"></div>
+        </details>
+        <details class="issue-detail-section" id="issueDetailRawEvents">
+            <summary id="issueDetailRawEventsSummary">Raw events</summary>
+            <div id="issueDetailRawEventsBody"></div>
+        </details>
     </aside>
+
+    <div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
+        <div class="modal modal-large" onclick="event.stopPropagation()">
+            <div class="modal-header">
+                <h2 id="modalTitle">Detail</h2>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+        </div>
+    </div>
 
     <div class="modal-overlay" id="timelineModal" onclick="closeTimelineModal(event)">
         <div class="modal modal-large timeline-modal" onclick="event.stopPropagation()">

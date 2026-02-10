@@ -374,7 +374,7 @@ class CompletionHandler:
         )
 
         # Emit trace events
-        self._emit_trace_events(session, status, pr_url, pr_number)
+        self._emit_trace_events(session, status, pr_url, pr_number, blocked_reason=blocked_reason)
 
         # Update state machines
         self._update_state_machines(session, status, pr_url)
@@ -592,21 +592,19 @@ class CompletionHandler:
         status: SessionStatus,
         pr_url: Optional[str],
         pr_number: Optional[int],
+        *,
+        blocked_reason: Optional[str] = None,
     ) -> None:
         """Emit trace events for session completion."""
-        status_reasons = {
-            SessionStatus.COMPLETED: "PR created successfully",
-            SessionStatus.BLOCKED: "Agent marked issue as blocked",
-            SessionStatus.NEEDS_HUMAN: "Agent requested human input",
-            SessionStatus.TIMED_OUT: f"Exceeded {session.agent_config.timeout_minutes} min timeout",
-            SessionStatus.FAILED: "Session ended without PR or status update",
-        }
-        status_reason = status_reasons.get(status, "Unknown")
+        agent = session.agent_label
+        task = session.key.task.value if session.key else None
 
         if status == SessionStatus.COMPLETED:
             self.events.publish(TraceEvent(EventName.SESSION_COMPLETED, {
                 "issue_number": session.issue.number,
                 "session_id": session.terminal_id,
+                "agent": agent,
+                "task": task,
                 "pr_url": pr_url,
                 "runtime_minutes": session.runtime_minutes,
             }))
@@ -617,21 +615,28 @@ class CompletionHandler:
                     "pr_number": pr_number,
                 }))
         elif status == SessionStatus.FAILED or status == SessionStatus.TIMED_OUT:
+            reason = f"Exceeded {session.agent_config.timeout_minutes} min timeout" if status == SessionStatus.TIMED_OUT else "Session ended without PR or status update"
             self.events.publish(TraceEvent(EventName.SESSION_FAILED, {
                 "issue_number": session.issue.number,
                 "session_id": session.terminal_id,
-                "error": status_reason,
+                "agent": agent,
+                "task": task,
+                "error": reason,
                 "runtime_minutes": session.runtime_minutes,
             }))
         elif status == SessionStatus.BLOCKED:
             self.events.publish(TraceEvent(EventName.ISSUE_BLOCKED, {
                 "issue_number": session.issue.number,
-                "reason": status_reason,
+                "agent": agent,
+                "task": task,
+                "reason": blocked_reason or "Agent marked issue as blocked",
             }))
         elif status == SessionStatus.NEEDS_HUMAN:
             self.events.publish(TraceEvent(EventName.ISSUE_NEEDS_HUMAN, {
                 "issue_number": session.issue.number,
-                "reason": status_reason,
+                "agent": agent,
+                "task": task,
+                "reason": blocked_reason or "Agent requested human input",
             }))
 
     def _update_state_machines(

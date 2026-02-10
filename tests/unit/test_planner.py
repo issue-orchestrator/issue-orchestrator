@@ -1408,8 +1408,8 @@ class TestActionPriority:
         ]
         assert len(issue_actions) == 2
 
-    def test_no_new_issues_when_review_launches_started(self):
-        """New issue work remains blocked when review launches are started this tick."""
+    def test_reviews_get_priority_but_remaining_capacity_goes_to_issues(self):
+        """Reviews consume capacity first, remaining slots go to new issues."""
         config = make_config(code_review_agent="agent:reviewer", max_concurrent_sessions=3)
         scheduler = Scheduler(config)
 
@@ -1449,6 +1449,52 @@ class TestActionPriority:
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
             if a.session_type == SessionType.REVIEW
         ]
+        # Review gets 1 slot, remaining 2 slots go to issues
+        assert len(review_actions) == 1
+        assert len(issue_actions) == 2
+
+    def test_no_issues_when_reviews_exhaust_capacity(self):
+        """When reviews consume all capacity, no issues are launched."""
+        config = make_config(code_review_agent="agent:reviewer", max_concurrent_sessions=1)
+        scheduler = Scheduler(config)
+
+        mock_review_workflow = Mock()
+        mock_review_workflow.is_configured.return_value = True
+        pending_review = PendingReview(
+            issue_key=FakeIssueKey(name="10"),
+            pr_number=100,
+            pr_url="url",
+            branch_name="branch",
+            _issue_number=10,
+        )
+        mock_review_workflow.should_launch_reviews.return_value = Mock(
+            should_launch=True,
+            skip_reason=None,
+            reviews_to_launch=[pending_review],
+        )
+
+        planner = Planner(
+            config=config,
+            scheduler=scheduler,
+            review_workflow=mock_review_workflow,
+        )
+
+        snapshot = make_snapshot(
+            issues=[make_issue(1)],
+            pending_reviews=[pending_review],
+        )
+
+        plan = planner.plan(snapshot)
+
+        issue_actions = [
+            a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == SessionType.ISSUE
+        ]
+        review_actions = [
+            a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type == SessionType.REVIEW
+        ]
+        # Review takes the only slot, no room for issues
         assert len(review_actions) == 1
         assert len(issue_actions) == 0
 
@@ -2074,8 +2120,8 @@ class TestActionReasonMessages:
 class TestMultiplePendingTypesInteraction:
     """Tests for interactions when multiple pending types exist simultaneously."""
 
-    def test_all_pending_types_block_new_issues(self):
-        """Pending launches block new issues when corresponding workflows are configured."""
+    def test_pending_work_gets_priority_remaining_capacity_goes_to_issues(self):
+        """Pending review/triage consume slots first, remaining capacity goes to issues."""
         from tests.conftest import MockEventSink
         from issue_orchestrator.control.workflows import ReviewWorkflow, TriageWorkflow
 
@@ -2110,16 +2156,19 @@ class TestMultiplePendingTypesInteraction:
 
         plan = planner.plan(snapshot)
 
-        # Issues should NOT be launched because pending review/triage launches started this tick.
         issue_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
             if a.session_type == SessionType.ISSUE
         ]
-        assert len(issue_actions) == 0
-        assert any(
-            a.session_type in {SessionType.REVIEW, SessionType.TRIAGE}
-            for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-        )
+        review_triage_actions = [
+            a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
+            if a.session_type in {SessionType.REVIEW, SessionType.TRIAGE}
+        ]
+        # Review + triage get 2 slots, issue 100 excluded (has pending review),
+        # issues 1 and 2 get the remaining 3 slots
+        assert len(review_triage_actions) == 2
+        assert len(issue_actions) == 2
+        assert {a.number for a in issue_actions} == {1, 2}
 
     def test_capacity_shared_across_all_types(self):
         """Capacity is correctly shared when multiple types launch."""

@@ -37,9 +37,11 @@ class TimelineEvent:
     artifacts: list[TimelineArtifact]
     run_id: str | None = None
     run_dir: str | None = None
+    agent: str | None = None
+    task: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "event_id": self.event_id,
             "timestamp": self.timestamp,
             "event": self.event,
@@ -54,6 +56,11 @@ class TimelineEvent:
             "run_dir": self.run_dir,
             "artifacts": [a.to_dict() for a in self.artifacts],
         }
+        if self.agent:
+            d["agent"] = self.agent
+        if self.task:
+            d["task"] = self.task
+        return d
 
 
 @dataclass(frozen=True)
@@ -97,6 +104,8 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
     run_id = _run_id_from_data(data)
     run_dir = _run_dir_from_data(data)
     artifacts = _artifacts_from_data(data)
+    agent = data.get("agent") if isinstance(data.get("agent"), str) else None
+    task = data.get("task") if isinstance(data.get("task"), str) else None
     return TimelineEvent(
         event_id=record.event_id,
         timestamp=record.timestamp,
@@ -111,6 +120,8 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         run_id=run_id,
         run_dir=run_dir,
         artifacts=artifacts,
+        agent=agent,
+        task=task,
     )
 
 

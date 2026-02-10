@@ -88,30 +88,39 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
 
     soup = render_dashboard(jinja_env, vm)
 
-    assert soup.select_one("#tab-flow.active") is not None
+    assert soup.select_one("#tab-kanban.active") is not None
     columns = soup.select(".kanban-column")
     assert len(columns) == 5
+    column_ids = [col["data-column"] for col in columns]
+    assert column_ids == ["queued", "running", "blocked", "awaiting-merge", "completed"]
     assert "milestones=M7" in soup.select_one(".scope-summary").text
 
 
-def test_attention_view_renders_groups(jinja_env):
+def test_kanban_blocked_column_is_expandable(jinja_env):
     config = make_config()
     config.agents = {"agent:web": make_agent_config()}
     blocked = Issue(number=210, title="Blocked merge", labels=["agent:web", "blocked-needs-human"])
     state = OrchestratorState(startup_status="complete", cached_queue_issues=[blocked])
     vm = build_dashboard_view_model(
         OrchestratorStub(state=state, config=config),
-        active_tab="attention",
+        active_tab="kanban",
         e2e_status_provider=e2e_disabled,
     )
 
     soup = render_dashboard(jinja_env, vm)
 
-    assert soup.select_one("#tab-attention.active") is not None
-    assert soup.select_one(".attention-group") is not None
+    blocked_col = soup.select_one('[data-column="blocked"]')
+    assert blocked_col is not None
+    assert "expandable" in blocked_col.get("class", [])
+    assert blocked_col.select_one(".column-expand-btn") is not None
+    # Blocked column has triage filter bar
+    assert blocked_col.select_one(".column-filter-bar") is not None
+    filter_btns = blocked_col.select(".filter-btn")
+    assert len(filter_btns) == 3
+    assert [btn.text.strip() for btn in filter_btns] == ["All", "New", "Viewed"]
 
 
-def test_history_view_renders_items(jinja_env):
+def test_kanban_completed_column_session_scoped(jinja_env):
     config = make_config()
     state = OrchestratorState(
         startup_status="complete",
@@ -121,14 +130,16 @@ def test_history_view_renders_items(jinja_env):
     )
     vm = build_dashboard_view_model(
         OrchestratorStub(state=state, config=config),
-        active_tab="history",
+        active_tab="kanban",
         e2e_status_provider=e2e_disabled,
     )
 
     soup = render_dashboard(jinja_env, vm)
 
-    assert soup.select_one("#tab-history.active") is not None
-    assert soup.select_one(".history-item") is not None
+    completed_col = soup.select_one('[data-column="completed"]')
+    assert completed_col is not None
+    assert "expandable" in completed_col.get("class", [])
+    assert completed_col.select_one(".count").text.strip() == "1"
 
 
 def test_status_badge_shows_running(jinja_env):
@@ -192,6 +203,25 @@ def test_github_usage_pill_is_rendered(jinja_env):
     soup = render_dashboard(jinja_env, vm)
     assert soup.select_one("#ghUsagePill") is not None
     assert soup.select_one("#ghUsagePanel") is not None
+
+
+def test_embedded_header_elements_in_tab_bar(jinja_env):
+    config = make_config()
+    state = OrchestratorState(startup_status="complete")
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="flow",
+        e2e_status_provider=e2e_disabled,
+    )
+    soup = render_dashboard(jinja_env, vm)
+    # Embedded header elements exist in the tab bar (hidden by default, shown by JS when embedded)
+    tab_bar = soup.select_one(".board-tabs")
+    assert tab_bar.select_one("#embeddedBack") is not None
+    assert tab_bar.select_one("#embeddedRepoName") is not None
+    assert tab_bar.select_one("#embeddedBadge") is not None
+    assert tab_bar.select_one("#embeddedScopeBtn") is not None
+    # They're hidden by default (style="display:none;")
+    assert tab_bar.select_one("#embeddedBack")["style"] == "display:none;"
 
 
 def test_e2e_tab_and_panels_render(jinja_env):

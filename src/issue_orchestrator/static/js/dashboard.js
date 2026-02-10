@@ -33,18 +33,63 @@ function applyDashboardTheme(theme) {
     document.documentElement.setAttribute('data-theme', effectiveTheme);
 }
 
-// When embedded in CC iframe, hide dashboard header (CC provides its own)
-if (new URLSearchParams(window.location.search).get('embedded') === '1') {
+// When embedded in CC iframe, hide dashboard header and show embedded header in tab bar
+const isEmbedded = new URLSearchParams(window.location.search).get('embedded') === '1';
+if (isEmbedded) {
     document.addEventListener('DOMContentLoaded', () => {
+        // Hide standalone header (dashboard owns the header via tab bar now)
         const header = document.querySelector('header');
         if (header) header.style.display = 'none';
+        // Hide scope-summary by default (toggled via (i) button as dropdown)
+        const scopeSummary = document.querySelector('.scope-summary');
+        if (scopeSummary) scopeSummary.classList.add('scope-embedded');
+        // Show embedded header elements in tab bar
+        document.querySelectorAll('.embedded-back, .embedded-repo, .embedded-badge, .embedded-scope-btn, .embedded-sep').forEach(el => {
+            el.style.display = '';
+        });
+        // Populate repo name from server-rendered data
+        const repoEl = document.getElementById('embeddedRepoName');
+        if (repoEl) repoEl.textContent = window.dashboardData?.repo || '';
+        // Back button → tell parent CC to go back to repositories
+        document.getElementById('embeddedBack')?.addEventListener('click', () => {
+            window.parent.postMessage({ type: 'cc-back-to-repos' }, '*');
+        });
+        // (i) scope button → toggle scope-summary as a dropdown below tab bar
+        document.getElementById('embeddedScopeBtn')?.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const scope = document.querySelector('.scope-summary');
+            if (scope) scope.classList.toggle('scope-open');
+        });
+        // Click anywhere (including inside scope) closes scope, except the (i) button itself
+        document.addEventListener('click', (e) => {
+            const scope = document.querySelector('.scope-summary');
+            if (scope?.classList.contains('scope-open') && !e.target.closest('.embedded-scope-btn')) {
+                scope.classList.remove('scope-open');
+            }
+        });
     });
 }
 
-// Listen for theme changes from parent (CC iframe embedding)
+// Listen for messages from parent (CC iframe embedding)
 window.addEventListener('message', (event) => {
-    if (event.data?.type === 'theme') {
-        applyDashboardTheme(event.data.theme);
+    if (!event.data?.type) return;
+    switch (event.data.type) {
+        case 'theme':
+            applyDashboardTheme(event.data.theme);
+            break;
+        case 'cc-refresh-from-github':
+            refreshFromGitHub();
+            break;
+        case 'cc-open-flow-prefs':
+            openFlowRefreshPrefs();
+            break;
+        case 'cc-repo-info':
+            // Parent CC sends repo display name and config info
+            if (event.data.repoName) {
+                const el = document.getElementById('embeddedRepoName');
+                if (el) el.textContent = event.data.repoName;
+            }
+            break;
     }
 });
 fetch('/api/info')
@@ -101,8 +146,7 @@ function cssEscape(value) {
 }
 
 function updateStatusBadgeFromViewModel(vm) {
-    const badge = document.querySelector('.status-badge');
-    if (!badge || !vm) return;
+    if (!vm) return;
 
     const startupComplete = vm.startup_status === 'complete';
     const shutdownRequested = vm.shutdown_requested;
@@ -129,8 +173,11 @@ function updateStatusBadgeFromViewModel(vm) {
         className = 'status-badge status-paused';
     }
 
-    badge.textContent = text;
-    badge.className = className;
+    // Update all status badges (standalone header + embedded tab bar)
+    document.querySelectorAll('.status-badge').forEach(badge => {
+        badge.textContent = text;
+        badge.className = className;
+    });
 }
 
 function updatePauseMenuFromViewModel(vm) {
@@ -263,6 +310,70 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
         updateRefreshStatusFromViewModel(viewModel);
         applyNetworkSyncScheduler();
         renderGitHubUsage();
+
+        // Post status to parent CC when embedded
+        if (isEmbedded && viewModel) {
+            const usage = window.dashboardData?.githubUsage || {};
+            const rate = usage.last_rate_limit_from_headers || {};
+            const refresh = window.dashboardData?.refresh || {};
+            const scope = window.dashboardData?.scope || {};
+            window.parent.postMessage({
+                type: 'dashboard-status',
+                payload: {
+                    ghUsage: {
+                        callsPerMinute: Number(usage.calls_per_minute || 0),
+                        totalCalls: Number(usage.total_calls || 0),
+                        remaining: Number(rate.remaining || 0),
+                        limit: Number(rate.limit || 0),
+                    },
+                    refresh: {
+                        lastRefreshLabel: refresh.lastRefreshLabel || 'unknown',
+                        lastRefreshAt: Number(refresh.lastRefreshAt || 0),
+                        inProgress: Boolean(refresh.inProgress),
+                        requested: Boolean(refresh.requested),
+                    },
+                    scope: {
+                        repo: window.dashboardData?.repo || '',
+                        inScopeTotal: Number(scope.in_scope_total || 0),
+                        filterMilestones: scope.filter_milestones || [],
+                        filterLabel: scope.filter_label || '',
+                        excludeLabels: scope.exclude_labels || [],
+                    },
+                    counts: {
+                        queued: Number(viewModel.queue_count || 0),
+                        running: Number(viewModel.active_count || 0),
+                        blocked: Number(viewModel.blocked_count || 0),
+                        awaitingMerge: Number(viewModel.awaiting_merge_count || 0),
+                        completed: Number(viewModel.completed_count || 0),
+                    },
+                    paused: Boolean(viewModel.paused),
+                    shutdownRequested: Boolean(viewModel.shutdown_requested),
+                    startupStatus: viewModel.startup_status || '',
+                },
+            }, '*');
+        }
+
+        // Update kanban column counts and compact cards from fresh view model
+        if (viewModel.flow_columns) {
+            for (const col of viewModel.flow_columns) {
+                const colEl = document.querySelector(`[data-column="${col.id}"]`);
+                if (!colEl) continue;
+                const countEl = colEl.querySelector('.count');
+                if (countEl) countEl.textContent = col.count;
+
+                // Rebuild compact cards (skip if column is expanded — it has its own refresh)
+                if (colEl.dataset.expanded !== 'true') {
+                    const cardsEl = colEl.querySelector('.column-cards');
+                    if (cardsEl) renderCompactCards(cardsEl, col.items || []);
+                }
+            }
+        }
+
+        // If a column is expanded, refresh its content
+        const expandedCol = document.querySelector('.kanban-column.expanded');
+        if (expandedCol) {
+            loadExpandedColumn(expandedCol.dataset.column);
+        }
 
         if (reloadOnListChange && viewModel.startup_status === 'complete') {
             await refreshIssueRows(viewModel, payload.rows);
@@ -408,17 +519,17 @@ async function openAgentLog(issueNumber) {
     logIssue = issueNumber;
     const logContent = `
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:#8b949e;">
+            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);">
                 <input type="checkbox" id="logFollowToggle" checked>
                 Follow
             </label>
             <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="refreshAgentLog(${issueNumber}, true)">Refresh</button>
-            <span id="logStatus" style="font-size:11px;color:#8b949e;"></span>
+            <span id="logStatus" style="font-size:11px;color:var(--text-muted);"></span>
         </div>
-        <div id="logScroll" style="max-height:420px;overflow:auto;background:#161b22;padding:10px;border-radius:4px;">
+        <div id="logScroll" style="max-height:420px;overflow:auto;background:var(--bg);padding:10px;border-radius:4px;">
             <pre id="logPre" style="font-size:11px;white-space:pre-wrap;margin:0;"></pre>
         </div>
-        <div style="color:#8b949e;font-size:11px;margin-top:10px;">Log: <span id="logPath"></span></div>
+        <div style="color:var(--text-muted);font-size:11px;margin-top:10px;">Log: <span id="logPath"></span></div>
     `;
 
     document.getElementById('modalTitle').textContent = `Agent UI Log #${issueNumber}`;
@@ -1291,8 +1402,8 @@ function showShutdownModal(activeSessions) {
             </div>
             <div class="modal-body" id="shutdownModalBody">
                 <p><strong>${activeSessions.length} agent(s) currently working:</strong></p>
-                <ul style="margin: 12px 0; padding-left: 20px; color: #c9d1d9;">${sessionList}</ul>
-                <p style="color: #8b949e; font-size: 0.9em;">
+                <ul style="margin: 12px 0; padding-left: 20px; color: var(--text);">${sessionList}</ul>
+                <p style="color: var(--text-muted); font-size: 0.9em;">
                     "Wait" will stop new work and shutdown when agents finish.<br>
                     "Shutdown now" will interrupt agents immediately.
                 </p>
@@ -1324,7 +1435,7 @@ async function shutdownWait() {
         <div style="text-align: center; padding: 20px;">
             <div class="loading-spinner" style="margin: 0 auto 16px;"></div>
             <p id="shutdownWaitStatus">Waiting for sessions to complete...</p>
-            <p style="color: #8b949e; font-size: 0.9em; margin-top: 12px;">
+            <p style="color: var(--text-muted); font-size: 0.9em; margin-top: 12px;">
                 No new work will be started. Shutdown will happen automatically when all agents finish.
             </p>
         </div>
@@ -1391,7 +1502,7 @@ async function executeShutdown() {
     } catch (err) {
         // Expected - server dies before responding
     }
-    document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;color:#8b949e;flex-direction:column;gap:12px;"><span>Orchestrator stopped.</span><span style="font-size:0.9em;">You can close this tab.</span></div>';
+    document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;color:var(--text-muted);flex-direction:column;gap:12px;"><span>Orchestrator stopped.</span><span style="font-size:0.9em;">You can close this tab.</span></div>';
 }
 
 // Tab switching
@@ -1403,7 +1514,7 @@ function switchTab(tab) {
 }
 
 // Keyboard navigation for tabs (accessibility)
-const tabOrder = ['flow', 'attention', 'history', 'e2e'];
+const tabOrder = ['kanban', 'e2e'];
 document.querySelectorAll('.board-tabs .tab').forEach(tabBtn => {
     tabBtn.addEventListener('keydown', (e) => {
         const currentTab = tabBtn.id.replace('tab-', '');
@@ -1438,6 +1549,363 @@ document.querySelectorAll('.board-tabs .tab').forEach(tabBtn => {
         }
     });
 });
+
+// ── Blocked triage: viewed state (localStorage) ──
+
+const VIEWED_ISSUES_KEY = 'issue-orchestrator.blocked-viewed.v1';
+
+function getViewedIssues() {
+    try {
+        return new Set(JSON.parse(localStorage.getItem(VIEWED_ISSUES_KEY) || '[]'));
+    } catch { return new Set(); }
+}
+
+function setViewedIssues(issueNumbers) {
+    localStorage.setItem(VIEWED_ISSUES_KEY, JSON.stringify([...issueNumbers]));
+}
+
+function markIssuesViewed(numbers) {
+    const viewed = getViewedIssues();
+    numbers.forEach(n => viewed.add(n));
+    setViewedIssues(viewed);
+}
+
+function clearIssuesViewed(numbers) {
+    const viewed = getViewedIssues();
+    numbers.forEach(n => viewed.delete(n));
+    setViewedIssues(viewed);
+}
+
+// ── Kanban column expand/collapse ──
+
+function renderCompactCards(container, items) {
+    // Build a fingerprint from issue numbers to detect actual changes
+    const newIds = items.map(c => c.issue_number).join(',');
+    const existingCards = container.querySelectorAll('.issue-card[data-issue]');
+    const oldIds = Array.from(existingCards).map(el => el.dataset.issue).join(',');
+
+    // Same issue set — update card text in place to avoid DOM jitter
+    if (newIds === oldIds && items.length > 0) {
+        for (const card of items) {
+            const el = container.querySelector(`.issue-card[data-issue="${card.issue_number}"]`);
+            if (!el) continue;
+            const phaseLine = card.phase || card.state_label || '';
+            const ageStr = card.phase_age ? ` \u00b7 ${card.phase_age}` : '';
+            const lineEl = el.querySelector('.card-line');
+            if (lineEl) lineEl.innerHTML = `${phaseLine}${ageStr}`;
+        }
+        return;
+    }
+
+    if (!items.length) {
+        container.innerHTML = '<div class="column-empty">No items</div>';
+        return;
+    }
+    container.innerHTML = items.map(card => {
+        const n = card.issue_number;
+        const staleAttr = card.is_stale ? 'true' : 'false';
+        const staleDot = card.is_stale
+            ? `<span class="stale-dot" title="${card.stale_reason || 'Issue may be stale'}" aria-label="Issue data may be stale"></span>`
+            : '';
+        const staleBadge = card.is_stale
+            ? '<span class="badge badge-stale" title="Data may be stale">stale</span>'
+            : '';
+        const ghLink = card.issue_url
+            ? `<a class="card-gh" href="${card.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">&#x2197;</a>`
+            : '';
+        const phaseLine = card.phase || card.state_label || '';
+        const ageStr = card.phase_age ? ` &middot; ${card.phase_age}` : '';
+        let detailLine = '';
+        if (card.blocked_summary) {
+            detailLine = `<div class="card-line card-muted">${card.blocked_summary}</div>`;
+        } else if (card.summary) {
+            detailLine = `<div class="card-line card-muted">${card.summary}</div>`;
+        }
+        const badges = (card.badges || []).map(b => `<span class="badge">${b}</span>`).join('');
+        const badgesDiv = (badges || staleBadge)
+            ? `<div class="card-badges">${badges}${staleBadge}</div>`
+            : '';
+        return `<div class="issue-card" data-issue="${n}" data-stale="${staleAttr}" data-last-refresh-age-seconds="${card.last_refreshed_age_seconds || 0}">
+            <div class="card-top">
+                <button class="card-focus" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="Focus issue #${n}">
+                    #${n} ${card.title}
+                </button>
+                <div class="card-head-actions">
+                    ${staleDot}
+                    <button class="card-refresh-btn" onclick="refreshIssueCard(${n}, this);event.stopPropagation();" title="Refresh issue #${n} from GitHub" aria-label="Refresh issue #${n}">&#x27F3;</button>
+                    ${ghLink}
+                    <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
+                </div>
+            </div>
+            <div class="card-line">${phaseLine}${ageStr}</div>
+            ${detailLine}
+            ${badgesDiv}
+        </div>`;
+    }).join('');
+}
+
+function toggleColumnExpand(columnId) {
+    const col = document.querySelector(`[data-column="${columnId}"]`);
+    if (!col) return;
+    const isExpanded = col.dataset.expanded === 'true';
+
+    // Collapse all first — also clear stale checkbox/bulk state
+    document.querySelectorAll('.kanban-column').forEach(c => {
+        c.classList.remove('expanded', 'collapsed-peer');
+        c.dataset.expanded = 'false';
+        const expanded = c.querySelector('.column-expanded');
+        const cards = c.querySelector('.column-cards');
+        if (expanded) expanded.style.display = 'none';
+        if (cards) cards.style.display = '';
+        // Reset checkboxes and bulk bar so stale state doesn't flash on re-expand
+        c.querySelectorAll('.card-checkbox:checked').forEach(cb => { cb.checked = false; });
+        const bar = c.querySelector('.bulk-action-bar');
+        if (bar) { bar.style.display = 'none'; bar.querySelector('.selected-count').textContent = '0 selected'; }
+    });
+
+    if (!isExpanded) {
+        col.classList.add('expanded');
+        col.dataset.expanded = 'true';
+        const expanded = col.querySelector('.column-expanded');
+        const cards = col.querySelector('.column-cards');
+        if (expanded) expanded.style.display = '';
+        if (cards) cards.style.display = 'none';
+        // Collapse peers
+        document.querySelectorAll('.kanban-column:not(.expanded)').forEach(c => {
+            c.classList.add('collapsed-peer');
+        });
+        loadExpandedColumn(columnId);
+    }
+}
+
+async function loadExpandedColumn(columnId) {
+    const col = document.querySelector(`[data-column="${columnId}"]`);
+    if (!col) return;
+    const expandedList = col.querySelector('.expanded-cards-list');
+    if (!expandedList) return;
+
+    // Force-hide bulk bar immediately (fresh cards will have no selections)
+    const bulkBar = col.querySelector('.bulk-action-bar');
+    if (bulkBar) bulkBar.style.display = 'none';
+
+    try {
+        const resp = await fetch(`/api/view-model?tab=${columnId}`);
+        if (!resp.ok) return;
+        const vm = await resp.json();
+        // Determine which items to show based on column
+        let items = [];
+        if (columnId === 'queued') items = vm.queue_items || [];
+        else if (columnId === 'blocked') items = vm.blocked_items || [];
+        else if (columnId === 'awaiting-merge') items = vm.awaiting_merge_items || [];
+        else if (columnId === 'completed') items = vm.completed_items || [];
+
+        const viewed = columnId === 'blocked' ? getViewedIssues() : new Set();
+
+        expandedList.innerHTML = items.map(item => {
+            const isViewed = viewed.has(item.issue_number);
+            const n = item.issue_number;
+            return `
+            <div class="expanded-card${isViewed ? ' viewed' : ''}" data-issue="${n}" data-viewed="${isViewed}">
+                <input type="checkbox" class="card-checkbox" onchange="updateBulkBar('${columnId}')">
+                <div class="card-content">
+                    <button class="card-focus" onclick="openIssueDetail(${n}, this);event.stopPropagation();"
+                            title="Focus issue #${n}">
+                        #${n} ${item.title || ''}
+                    </button>
+                    <div class="card-line card-muted">${item.detail_label || item.status || ''}</div>
+                </div>
+                <div class="card-actions">
+                    ${columnId === 'blocked' ? `<button class="card-action-btn" onclick="unblockSingle(${n}, this);event.stopPropagation();" title="Unblock issue #${n}">Unblock</button>` : ''}
+                    ${item.issue_url ? `<a class="card-gh" href="${item.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">↗</a>` : ''}
+                    ${item.pr_url ? `<a class="card-action-btn" href="${item.pr_url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">PR</a>` : ''}
+                    <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
+                </div>
+            </div>`;
+        }).join('');
+
+        // Update "N new" badge on blocked column header
+        if (columnId === 'blocked') {
+            updateBlockedNewCount(col, items, viewed);
+            applyBlockedFilter(col);
+        }
+    } catch (e) {
+        console.error('Failed to load expanded column:', e);
+        expandedList.innerHTML = '<div class="column-empty">Failed to load items</div>';
+    }
+}
+
+function updateBlockedNewCount(col, items, viewed) {
+    const newCount = items.filter(item => !viewed.has(item.issue_number)).length;
+    let badge = col.querySelector('.new-count-badge');
+    if (newCount > 0) {
+        if (!badge) {
+            badge = document.createElement('span');
+            badge.className = 'new-count-badge';
+            const h2 = col.querySelector('h2');
+            if (h2) h2.appendChild(badge);
+        }
+        badge.textContent = `${newCount} new`;
+    } else if (badge) {
+        badge.remove();
+    }
+}
+
+function applyBlockedFilter(col) {
+    if (!col) col = document.querySelector('[data-column="blocked"]');
+    if (!col) return;
+    const activeBtn = col.querySelector('.filter-btn.active');
+    const filter = activeBtn ? activeBtn.dataset.filter : 'all';
+    const cards = col.querySelectorAll('.expanded-card');
+    cards.forEach(card => {
+        const isViewed = card.dataset.viewed === 'true';
+        if (filter === 'all') card.style.display = '';
+        else if (filter === 'new') card.style.display = isViewed ? 'none' : '';
+        else if (filter === 'viewed') card.style.display = isViewed ? '' : 'none';
+    });
+}
+
+function filterBlockedColumn(filter, btn) {
+    const col = document.querySelector('[data-column="blocked"]');
+    if (!col) return;
+    col.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    applyBlockedFilter(col);
+}
+
+function updateBulkBar(columnId) {
+    const col = document.querySelector(`[data-column="${columnId}"]`);
+    if (!col) return;
+    const checked = col.querySelectorAll('.card-checkbox:checked');
+    const bar = col.querySelector('.bulk-action-bar');
+    if (!bar) return;
+    bar.style.display = checked.length > 0 ? 'flex' : 'none';
+    const countEl = bar.querySelector('.selected-count');
+    if (countEl) countEl.textContent = `${checked.length} selected`;
+}
+
+function getSelectedIssueNumbers(columnId) {
+    const col = document.querySelector(`[data-column="${columnId}"]`);
+    if (!col) return [];
+    return Array.from(col.querySelectorAll('.expanded-card'))
+        .filter(card => card.querySelector('.card-checkbox:checked'))
+        .map(card => Number(card.dataset.issue))
+        .filter(n => !isNaN(n));
+}
+
+async function unblockSingle(issueNumber, btn) {
+    if (!confirm(`Unblock issue #${issueNumber} and move it back to queued?`)) return;
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await fetch('/api/bulk-retry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ issue_numbers: [issueNumber] }),
+        });
+        if (resp.ok) {
+            showToast(`Unblocked #${issueNumber} → Queued`);
+            await refreshViewModel();
+        }
+    } catch (e) {
+        console.error('Unblock failed:', e);
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function bulkUnblock() {
+    const numbers = getSelectedIssueNumbers('blocked');
+    if (!numbers.length) return;
+    if (!confirm(`Unblock ${numbers.length} issue(s) and move them back to queued?`)) return;
+    try {
+        const resp = await fetch('/api/bulk-retry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ issue_numbers: numbers }),
+        });
+        if (resp.ok) {
+            showToast(`Unblocking ${numbers.length} issue(s) → Queued`);
+            await refreshViewModel();
+        }
+    } catch (e) {
+        console.error('Bulk unblock failed:', e);
+    }
+}
+
+function bulkMarkViewed() {
+    const numbers = getSelectedIssueNumbers('blocked');
+    if (!numbers.length) return;
+    markIssuesViewed(numbers);
+    // Update card visuals immediately
+    const col = document.querySelector('[data-column="blocked"]');
+    if (col) {
+        numbers.forEach(n => {
+            const card = col.querySelector(`.expanded-card[data-issue="${n}"]`);
+            if (card) { card.classList.add('viewed'); card.dataset.viewed = 'true'; }
+        });
+        updateBlockedNewCount(col, getAllBlockedItems(col), getViewedIssues());
+        applyBlockedFilter(col);
+    }
+    // Deselect checkboxes
+    uncheckAll('blocked');
+    showToast(`Marked ${numbers.length} issue(s) as viewed`);
+}
+
+function bulkClearViewed() {
+    const numbers = getSelectedIssueNumbers('blocked');
+    if (!numbers.length) return;
+    clearIssuesViewed(numbers);
+    const col = document.querySelector('[data-column="blocked"]');
+    if (col) {
+        numbers.forEach(n => {
+            const card = col.querySelector(`.expanded-card[data-issue="${n}"]`);
+            if (card) { card.classList.remove('viewed'); card.dataset.viewed = 'false'; }
+        });
+        updateBlockedNewCount(col, getAllBlockedItems(col), getViewedIssues());
+        applyBlockedFilter(col);
+    }
+    uncheckAll('blocked');
+    showToast(`Cleared viewed status for ${numbers.length} issue(s)`);
+}
+
+function getAllBlockedItems(col) {
+    return Array.from(col.querySelectorAll('.expanded-card'))
+        .map(card => ({ issue_number: Number(card.dataset.issue) }));
+}
+
+function uncheckAll(columnId) {
+    const col = document.querySelector(`[data-column="${columnId}"]`);
+    if (!col) return;
+    col.querySelectorAll('.card-checkbox:checked').forEach(cb => { cb.checked = false; });
+    updateBulkBar(columnId);
+}
+
+function bulkOpenPRs() {
+    const col = document.querySelector('[data-column="awaiting-merge"]');
+    if (!col) return;
+    const cards = Array.from(col.querySelectorAll('.expanded-card'))
+        .filter(card => card.querySelector('.card-checkbox:checked'));
+    cards.forEach(card => {
+        const link = card.querySelector('.card-gh');
+        if (link && link.href) window.open(link.href, '_blank');
+    });
+}
+
+async function bulkDeprioritize() {
+    const numbers = getSelectedIssueNumbers('queued');
+    if (!numbers.length) return;
+    try {
+        const resp = await fetch('/api/bulk-deprioritize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ issue_numbers: numbers }),
+        });
+        if (resp.ok) {
+            showToast(`Deprioritized ${numbers.length} issue(s)`);
+            await refreshViewModel();
+        }
+    } catch (e) {
+        console.error('Bulk deprioritize failed:', e);
+    }
+}
 
 // Pagination (preserves current tab)
 function goToPage(page) {
@@ -1648,7 +2116,7 @@ async function toggleExcluded() {
         }
         // After a brief delay, show shutdown message
         setTimeout(() => {
-            document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column;gap:16px;color:#8b949e;"><div style="font-size:48px;">👋</div><h2 style="color:#fff;">Orchestrator Stopped</h2><p>You can close this tab or wait for it to restart.</p></div>';
+            document.body.innerHTML = '<div style="display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column;gap:16px;color:var(--text-muted);"><div style="font-size:48px;">👋</div><h2 style="color:var(--text);">Orchestrator Stopped</h2><p>You can close this tab or wait for it to restart.</p></div>';
         }, 500);
     });
 
@@ -1936,9 +2404,9 @@ if (contextMenuEnabled) {
             // Format log content for display
             let logContent = '';
             if (data.truncated) {
-                logContent += `<p style="color:#8b949e;margin-bottom:10px;">Showing last ${data.lines.length} of ${data.total_lines} entries...</p>`;
+                logContent += `<p style="color:var(--text-muted);margin-bottom:10px;">Showing last ${data.lines.length} of ${data.total_lines} entries...</p>`;
             }
-            logContent += '<pre style="font-size:11px;max-height:400px;overflow:auto;background:#161b22;padding:10px;border-radius:4px;">';
+            logContent += '<pre style="font-size:11px;max-height:400px;overflow:auto;background:var(--bg);padding:10px;border-radius:4px;">';
             for (const line of data.lines) {
                 try {
                     const entry = JSON.parse(line);
@@ -1947,13 +2415,13 @@ if (contextMenuEnabled) {
                     // Safely extract content - may be string or object
                     let rawContent = entry.message?.content || entry.content || entry;
                     const content = (typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent)).substring(0, 200);
-                    logContent += `<span style="color:#58a6ff;">[${role}]</span> ${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}...\n`;
+                    logContent += `<span style="color:var(--accent);">[${role}]</span> ${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}...\n`;
                 } catch {
                     logContent += line.substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '\n';
                 }
             }
             logContent += '</pre>';
-            logContent += `<p style="color:#8b949e;font-size:11px;margin-top:10px;">Log: ${data.log_path}</p>`;
+            logContent += `<p style="color:var(--text-muted);font-size:11px;margin-top:10px;">Log: ${data.log_path}</p>`;
 
             // Show in modal
             document.getElementById('modalTitle').textContent = `Session Log #${issueNumber}`;
@@ -2198,7 +2666,7 @@ async function openPhaseModal(issueNumber, flowStepKey) {
             document.getElementById('phaseValidation').textContent =
                 phase.validation_passed ? 'Passed' : 'Failed';
             document.getElementById('phaseValidation').style.color =
-                phase.validation_passed ? '#3fb950' : '#f85149';
+                phase.validation_passed ? 'var(--ok)' : 'var(--danger)';
         } else {
             validationRow.style.display = 'none';
         }
@@ -2222,8 +2690,8 @@ function closePhaseModal(e) {
 const timelineModal = document.getElementById('timelineModal');
 const issueDetailDrawer = document.getElementById('issueDetailDrawer');
 let issueDetailData = null;
-let issueDetailMode = 'loops';
 let lastIssueDetailTrigger = null;
+let journeyFilter = 'last-run'; // 'last-run' or 'all'
 
 async function openTimelineModal(issueNumber) {
     if (!timelineModal) return;
@@ -2239,7 +2707,7 @@ async function openTimelineModal(issueNumber) {
             return;
         }
         const data = await res.json();
-        renderTimeline(content, data.events || [], data.phase_toc || [], data.loops || []);
+        renderTimeline(content, data.events || [], data.phase_toc || [], data.cycles || []);
     } catch (err) {
         console.error('Failed to load timeline:', err);
         content.innerHTML = '<div class="timeline-empty">Failed to load timeline.</div>';
@@ -2265,23 +2733,27 @@ async function openIssueDetail(issueNumber, triggerEl = null) {
     issueDetailDrawer.classList.add('visible');
     issueDetailDrawer.setAttribute('aria-hidden', 'false');
     document.getElementById('issueDetailTitle').textContent = `Issue #${issueNumber}`;
-    document.getElementById('issueDetailSummary').textContent = 'Loading issue detail...';
-    document.getElementById('issueDetailBody').innerHTML = '';
+    document.getElementById('issueDetailStatus').textContent = 'Loading issue detail...';
+    document.getElementById('issueDetailStatus').className = 'issue-detail-status';
+    document.getElementById('issueDetailJourney').innerHTML = '';
+    const prevCycles = document.getElementById('issueDetailPrevCycles');
+    if (prevCycles) prevCycles.style.display = 'none';
+    const rawEvents = document.getElementById('issueDetailRawEvents');
+    if (rawEvents) rawEvents.removeAttribute('open');
     const closeBtn = document.getElementById('issueDetailCloseBtn');
     if (closeBtn) closeBtn.focus();
 
     try {
         const res = await fetch(`/api/issue-detail/${issueNumber}`);
         if (!res.ok) {
-            document.getElementById('issueDetailSummary').textContent = 'Issue detail unavailable.';
+            document.getElementById('issueDetailStatus').textContent = 'Issue detail unavailable.';
             return;
         }
         issueDetailData = await res.json();
-        issueDetailMode = 'loops';
         renderIssueDetail();
     } catch (err) {
         console.error('Failed to load issue detail:', err);
-        document.getElementById('issueDetailSummary').textContent = 'Failed to load issue detail.';
+        document.getElementById('issueDetailStatus').textContent = 'Failed to load issue detail.';
     }
 }
 
@@ -2294,30 +2766,230 @@ function closeIssueDetail() {
     }
 }
 
-function setIssueDetailMode(mode) {
-    issueDetailMode = mode;
-    renderIssueDetail();
+async function unblockFromDrawer() {
+    if (!issueDetailData) return;
+    const n = issueDetailData.issue_number;
+    if (!confirm(`Unblock issue #${n} and move it back to queued?`)) return;
+    const btn = document.getElementById('issueDetailUnblockBtn');
+    if (btn) btn.disabled = true;
+    try {
+        const resp = await fetch('/api/bulk-retry', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ issue_numbers: [n] }),
+        });
+        if (resp.ok) {
+            showToast(`Unblocked #${n} → Queued`);
+            closeIssueDetail();
+            await refreshViewModel();
+        }
+    } catch (e) {
+        console.error('Unblock from drawer failed:', e);
+        if (btn) btn.disabled = false;
+    }
+}
+
+function filterJourneySteps(steps, filter) {
+    if (filter === 'all' || steps.length === 0) return steps;
+    // "last-run": find the last session.started and show everything from there
+    for (let i = steps.length - 1; i >= 0; i--) {
+        if (steps[i].event === 'session.started') return steps.slice(i);
+    }
+    // No session boundary — show last 10
+    return steps.slice(-10);
+}
+
+function renderJourneySteps(container, allSteps) {
+    const steps = filterJourneySteps(allSteps, journeyFilter);
+    const isLastRun = journeyFilter === 'last-run';
+    const isAll = journeyFilter === 'all';
+
+    // Filter selector
+    let html = `<div class="journey-filter">
+        <button class="journey-filter-btn ${isLastRun ? 'active' : ''}" onclick="setJourneyFilter('last-run')">Last run</button>
+        <button class="journey-filter-btn ${isAll ? 'active' : ''}" onclick="setJourneyFilter('all')">All</button>
+    </div>`;
+
+    if (steps.length === 0) {
+        html += '<div class="timeline-empty">No activity recorded.</div>';
+        container.innerHTML = html;
+        return;
+    }
+
+    // Group by day and render with day headers
+    let currentDay = '';
+    const issueNum = issueDetailData ? issueDetailData.issue_number : null;
+    for (const s of steps) {
+        if (s.day && s.day !== currentDay) {
+            currentDay = s.day;
+            html += `<div class="journey-day-header">${escapeHtml(formatJourneyDay(s.day))}</div>`;
+        }
+        const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
+        const actions = journeyStepActions(s, issueNum);
+        html += `<div class="journey-step ${statusClass}">
+            <span class="journey-time">${escapeHtml(s.time_label || '')}</span>
+            <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
+            ${actions}
+        </div>`;
+    }
+    container.innerHTML = html;
+}
+
+function setJourneyFilter(filter) {
+    journeyFilter = filter;
+    if (issueDetailData) {
+        const journeyEl = document.getElementById('issueDetailJourney');
+        if (journeyEl) renderJourneySteps(journeyEl, issueDetailData.journey_steps || []);
+    }
+}
+
+function formatJourneyDay(dayStr) {
+    try {
+        const d = new Date(dayStr + 'T00:00:00');
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const diff = Math.floor((today - d) / 86400000);
+        if (diff === 0) return 'Today';
+        if (diff === 1) return 'Yesterday';
+        return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    } catch (e) {
+        return dayStr;
+    }
+}
+
+function journeyStepActions(step, issueNumber) {
+    if (!issueNumber) return '';
+    const ev = step.event || '';
+    // Session events: show transcript link
+    if (ev === 'session.started' || ev === 'session.completed' || ev === 'session.failed' || ev === 'session.blocked') {
+        return `<button class="journey-action" onclick="openAgentLog(${issueNumber})" title="View transcript">transcript</button>`;
+    }
+    // Review events: show feedback link
+    if (ev === 'review.changes_requested' || ev === 'review.approved' || ev === 'review.started') {
+        return `<button class="journey-action" onclick="openReviewFeedback(${issueNumber})" title="View review feedback">feedback</button>`;
+    }
+    return '';
+}
+
+async function openReviewFeedback(issueNumber) {
+    document.getElementById('modalTitle').textContent = `Review Feedback #${issueNumber}`;
+    document.getElementById('modalBody').innerHTML = '<div class="timeline-loading">Loading review feedback...</div>';
+    document.getElementById('modalOverlay').classList.add('visible');
+
+    try {
+        const res = await fetch(`/api/failure-diagnosis/${issueNumber}`);
+        const data = await res.json();
+        const feedback = data.review_feedback || [];
+        if (feedback.length > 0) {
+            let html = '';
+            for (const fb of feedback) {
+                html += `<div style="margin-bottom:12px;">
+                    <div style="font-weight:600;font-size:12px;margin-bottom:4px;">Cycle ${escapeHtml(String(fb.cycle || '?'))}</div>
+                    <pre style="font-size:11px;white-space:pre-wrap;background:var(--bg);padding:10px;border-radius:4px;margin:0;max-height:300px;overflow:auto;">${escapeHtml(fb.content || '')}</pre>
+                </div>`;
+            }
+            document.getElementById('modalBody').innerHTML = html;
+            return;
+        }
+
+        // No local feedback — try to show the reviewer's completion summary from events
+        let html = '';
+        if (issueDetailData) {
+            const events = issueDetailData.events || [];
+            const reviewEvents = events.filter(e =>
+                e.event === 'review.changes_requested' || e.event === 'review.approved'
+            );
+            if (reviewEvents.length > 0) {
+                html += '<div style="margin-bottom:8px;font-size:12px;color:var(--text-muted);">From timeline events:</div>';
+                for (const evt of reviewEvents) {
+                    const label = evt.event === 'review.approved' ? 'Approved' : 'Changes Requested';
+                    const time = evt.timestamp ? new Date(evt.timestamp).toLocaleString() : '';
+                    html += `<div style="margin-bottom:10px;padding:8px;background:var(--bg);border-radius:4px;">
+                        <div style="font-weight:600;font-size:12px;">${escapeHtml(label)} ${time ? `<span style="font-weight:400;color:var(--text-muted);">${escapeHtml(time)}</span>` : ''}</div>
+                        ${evt.summary ? `<div style="font-size:12px;margin-top:4px;">${escapeHtml(evt.summary)}</div>` : ''}
+                    </div>`;
+                }
+            }
+
+            // Link to PR if available
+            const prEvent = events.find(e => e.event === 'issue.pr_created');
+            const prArtifact = prEvent && (prEvent.artifacts || []).find(a => a.type === 'pull_request');
+            if (prArtifact && prArtifact.value) {
+                html += `<div style="margin-top:8px;"><a href="${escapeHtml(prArtifact.value)}" target="_blank" rel="noopener noreferrer" class="issue-action-btn">View PR on GitHub ↗</a></div>`;
+            }
+        }
+
+        if (!html) {
+            html = '<div class="timeline-empty">No review feedback found. Worktree may have been cleaned up.</div>';
+        }
+        document.getElementById('modalBody').innerHTML = html;
+    } catch (err) {
+        document.getElementById('modalBody').innerHTML = `<div class="timeline-empty">Failed to load feedback: ${escapeHtml(err.message)}</div>`;
+    }
 }
 
 function renderIssueDetail() {
     if (!issueDetailData) return;
-    const title = issueDetailData.title || `Issue #${issueDetailData.issue_number}`;
+    const d = issueDetailData;
+    const title = d.title || `Issue #${d.issue_number}`;
     document.getElementById('issueDetailTitle').textContent = title;
-    document.getElementById('issueDetailGitHubBtn').href = issueDetailData.issue_url || '#';
-    document.getElementById('issueDetailFocusBtn').onclick = () => openTimelineModal(issueDetailData.issue_number);
-    const summary = issueDetailData.summary || {};
-    document.getElementById('issueDetailSummary').textContent =
-        `Status: ${summary.status || 'unknown'} · Last: ${summary.last_event || 'none'} · Events: ${summary.event_count || 0}`;
+    document.getElementById('issueDetailGitHubBtn').href = d.issue_url || '#';
+    document.getElementById('issueDetailFocusBtn').onclick = () => openTimelineModal(d.issue_number);
 
-    const loopsBtn = document.getElementById('issueDetailLoopsBtn');
-    const rawBtn = document.getElementById('issueDetailRawBtn');
-    loopsBtn.classList.toggle('active', issueDetailMode === 'loops');
-    rawBtn.classList.toggle('active', issueDetailMode === 'raw');
+    // Show Unblock button only for blocked issues
+    const unblockBtn = document.getElementById('issueDetailUnblockBtn');
+    const summary = d.summary || {};
+    const isBlocked = (summary.status || '').toLowerCase().includes('blocked');
+    if (unblockBtn) {
+        unblockBtn.style.display = isBlocked ? '' : 'none';
+        unblockBtn.disabled = false;
+    }
 
-    const body = document.getElementById('issueDetailBody');
-    if (issueDetailMode === 'raw') {
-        const events = issueDetailData.events || [];
-        body.innerHTML = events.map(evt => `
+    // Status explanation with color-coded border
+    const statusEl = document.getElementById('issueDetailStatus');
+    const statusText = d.status_explanation || `Status: ${summary.status || 'unknown'}`;
+    statusEl.textContent = statusText;
+    statusEl.className = 'issue-detail-status';
+    if (isBlocked) statusEl.classList.add('status-blocked');
+    else if ((summary.status || '').toLowerCase().includes('done') || (summary.status || '').toLowerCase().includes('completed')) statusEl.classList.add('status-done');
+    else if ((summary.status || '').toLowerCase().includes('running') || (summary.status || '').toLowerCase().includes('in_progress')) statusEl.classList.add('status-running');
+    else statusEl.classList.add('status-queued');
+
+    // Journey steps with "Last run / All" filter
+    const journeyEl = document.getElementById('issueDetailJourney');
+    const allSteps = d.journey_steps || [];
+    renderJourneySteps(journeyEl, allSteps);
+
+    // Previous cycles (collapsed)
+    const prevSection = document.getElementById('issueDetailPrevCycles');
+    const prevCycles = d.previous_cycles || [];
+    const prevCount = d.previous_cycles_count || prevCycles.length;
+    if (prevCount > 0) {
+        prevSection.style.display = '';
+        document.getElementById('issueDetailPrevCyclesSummary').textContent = `Previous cycles (${prevCount})`;
+        document.getElementById('issueDetailPrevCyclesBody').innerHTML = prevCycles.map(c => `
+            <div class="prev-cycle-card">
+                <strong>Cycle ${escapeHtml(String(c.cycle || '?'))}</strong>
+                ${c.duration_label ? ` · ${escapeHtml(c.duration_label)}` : ''}
+                ${c.outcome ? ` · ${formatStatus(c.outcome)}` : ''}
+                ${c.pr_url ? ` · <a href="${escapeHtml(c.pr_url)}" target="_blank" rel="noopener noreferrer">PR</a>` : ''}
+                ${c.summary ? `<div class="timeline-summary">${escapeHtml(c.summary)}</div>` : ''}
+            </div>
+        `).join('');
+    } else {
+        prevSection.style.display = 'none';
+    }
+
+    // Raw events (collapsed, lazy-rendered on open)
+    const rawSection = document.getElementById('issueDetailRawEvents');
+    const rawBody = document.getElementById('issueDetailRawEventsBody');
+    const rawCount = d.raw_events_count || (d.events || []).length;
+    document.getElementById('issueDetailRawEventsSummary').textContent = `Raw events (${rawCount})`;
+    rawBody.innerHTML = '';
+    rawSection.ontoggle = function () {
+        if (!rawSection.open || rawBody.children.length > 0) return;
+        const events = d.events || [];
+        rawBody.innerHTML = events.map(evt => `
             <div class="timeline-event ${evt.status || ''}">
                 <div class="timeline-event-header">
                     <span>${escapeHtml(formatStepLabel(evt.step || evt.event || 'event'))}</span>
@@ -2327,17 +2999,7 @@ function renderIssueDetail() {
                 ${evt.summary ? `<div class="timeline-summary">${escapeHtml(evt.summary)}</div>` : ''}
             </div>
         `).join('') || '<div class="timeline-empty">No events recorded.</div>';
-        return;
-    }
-
-    const loops = issueDetailData.loops || [];
-    body.innerHTML = loops.map(loop => `
-        <div class="timeline-loop-item">
-            <div class="timeline-loop-title">Loop ${loop.loop}</div>
-            <div class="timeline-loop-phases">${(loop.phases || []).map(formatPhaseLabel).join(' → ')}</div>
-            <div class="timeline-loop-status">${formatStatus(loop.status)}</div>
-        </div>
-    `).join('') || '<div class="timeline-empty">No loop data recorded.</div>';
+    };
 }
 
 document.addEventListener('keydown', (event) => {
@@ -2362,7 +3024,7 @@ document.addEventListener('keydown', (event) => {
     }
 });
 
-function renderTimeline(container, events, phaseToc = [], loops = []) {
+function renderTimeline(container, events, phaseToc = [], cycles = []) {
     if (!events || events.length === 0) {
         container.innerHTML = '<div class="timeline-empty">No timeline events recorded yet.</div>';
         return;
@@ -2379,12 +3041,12 @@ function renderTimeline(container, events, phaseToc = [], loops = []) {
         group.events.push(event);
     }
 
-    const loopHtml = loops.length > 0
-        ? `<div class=\"timeline-loop-list\">${loops.map(loop => `
+    const cycleHtml = cycles.length > 0
+        ? `<div class=\"timeline-loop-list\">${cycles.map(c => `
             <div class=\"timeline-loop-item\">
-                <div class=\"timeline-loop-title\">Loop ${loop.loop}</div>
-                <div class=\"timeline-loop-phases\">${(loop.phases || []).map(formatPhaseLabel).join(' → ')}</div>
-                <div class=\"timeline-loop-status\">${formatStatus(loop.status)}</div>
+                <div class=\"timeline-loop-title\">Cycle ${c.cycle}</div>
+                <div class=\"timeline-loop-phases\">${(c.phases || []).map(formatPhaseLabel).join(' → ')}</div>
+                <div class=\"timeline-loop-status\">${formatStatus(c.status)}</div>
             </div>
         `).join('')}</div>`
         : '';
@@ -2423,7 +3085,7 @@ function renderTimeline(container, events, phaseToc = [], loops = []) {
     }).join('');
 
     const affordanceHint = '<div class="timeline-actions-hint">Use the ⋯ button on any event for actions and diagnostics.</div>';
-    container.innerHTML = `${tocHtml}${loopHtml}${affordanceHint}<div class=\"timeline-continuum\">${continuumHtml}</div>`;
+    container.innerHTML = `${tocHtml}${cycleHtml}${affordanceHint}<div class=\"timeline-continuum\">${continuumHtml}</div>`;
     if (!container.dataset.timelineBound) {
         container.addEventListener('click', (event) => {
             const target = event.target.closest('.timeline-artifact');
@@ -3329,7 +3991,7 @@ async function loadMilestones() {
                 const option = document.createElement('option');
                 option.value = m.number;
                 option.textContent = `${m.title}`;
-                option.style.color = '#8b949e';
+                option.style.color = 'var(--text-muted)';
                 select.appendChild(option);
             }
         }
@@ -3882,10 +4544,10 @@ function renderE2EDiagnosis(diagnosis) {
         html += `
             <div class="diagnosis-section">
                 <h3>Log File</h3>
-                <p style="color: #8b949e;">Log file: <code>${escapeHtml(diagnosis.log_path)}</code>
+                <p style="color: var(--text-muted);">Log file: <code>${escapeHtml(diagnosis.log_path)}</code>
                     <button class="btn-secondary btn-sm" onclick="openPath('${escapeHtml(diagnosis.log_path)}')">Open</button>
                 </p>
-                <p style="color: #d29922;">${diagnosis.log_exists ? 'Log content not loaded' : 'Log file not found'}</p>
+                <p style="color: var(--warn);">${diagnosis.log_exists ? 'Log content not loaded' : 'Log file not found'}</p>
             </div>
         `;
     }
@@ -3909,7 +4571,7 @@ async function showE2EStats() {
     const modal = document.getElementById('e2eStatsModal');
     const content = document.getElementById('e2eStatsContent');
     if (!REPO_ROOT) {
-        content.innerHTML = '<div style="color: var(--danger, #f85149);">Error: no repository selected for E2E stats.</div>';
+        content.innerHTML = '<div style="color: var(--danger);">Error: no repository selected for E2E stats.</div>';
         modal.classList.add('visible');
         return;
     }
@@ -3922,7 +4584,7 @@ async function showE2EStats() {
         const data = await res.json();
 
         if (!res.ok) {
-            content.innerHTML = `<div style="color: #f85149;">Error: ${escapeHtml(data.error || data.detail || 'Failed to load stats')}</div>`;
+            content.innerHTML = `<div style="color: var(--danger);">Error: ${escapeHtml(data.error || data.detail || 'Failed to load stats')}</div>`;
             return;
         }
 
@@ -3973,7 +4635,7 @@ async function showE2EStats() {
 
         content.innerHTML = html;
     } catch (err) {
-        content.innerHTML = `<div style="color: #f85149;">Error: ${escapeHtml(err.message)}</div>`;
+        content.innerHTML = `<div style="color: var(--danger);">Error: ${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -4041,7 +4703,7 @@ async function openTestFailureDetail(nodeid) {
         const data = await res.json();
 
         if (!res.ok) {
-            content.innerHTML = `<div style="color: #f85149;">Error: ${escapeHtml(data.error || data.detail || 'Failed to load test details')}</div>`;
+            content.innerHTML = `<div style="color: var(--danger);">Error: ${escapeHtml(data.error || data.detail || 'Failed to load test details')}</div>`;
             return;
         }
 
@@ -4065,7 +4727,7 @@ async function openTestFailureDetail(nodeid) {
         // Render the test failure details
         renderTestFailureDetail(currentTestFailure);
     } catch (err) {
-        content.innerHTML = `<div style="color: #f85149;">Failed to load test details: ${escapeHtml(err.message)}</div>`;
+        content.innerHTML = `<div style="color: var(--danger);">Failed to load test details: ${escapeHtml(err.message)}</div>`;
     }
 }
 
@@ -4088,9 +4750,9 @@ function renderTestFailureDetail(data) {
     let historyHtml = '';
     if (data.history && data.history.length > 0) {
         const icons = data.history.map(h => {
-            if (h.outcome === 'passed') return '<span style="color: #3fb950;">✓</span>';
-            if (h.outcome === 'failed' || h.outcome === 'error') return '<span style="color: #f85149;">✗</span>';
-            return '<span style="color: #8b949e;">○</span>';
+            if (h.outcome === 'passed') return '<span style="color: var(--ok);">✓</span>';
+            if (h.outcome === 'failed' || h.outcome === 'error') return '<span style="color: var(--danger);">✗</span>';
+            return '<span style="color: var(--text-muted);">○</span>';
         }).reverse().join(' ');
 
         const summary = data.history_summary;
@@ -4101,18 +4763,18 @@ function renderTestFailureDetail(data) {
 
         let flakyWarning = '';
         if (data.category === 'flaky') {
-            flakyWarning = `<span style="color: #d29922; margin-left: 8px;">⚠ Flaky (${data.flip_rate_percent}% flip rate)</span>`;
+            flakyWarning = `<span style="color: var(--warn); margin-left: 8px;">⚠ Flaky (${data.flip_rate_percent}% flip rate)</span>`;
         } else if (data.category === 'consistently_failing') {
-            flakyWarning = `<span style="color: #f85149; margin-left: 8px;">⚠ Consistently failing</span>`;
+            flakyWarning = `<span style="color: var(--danger); margin-left: 8px;">⚠ Consistently failing</span>`;
         } else if (data.category === 'new_failure') {
-            flakyWarning = `<span style="color: #58a6ff; margin-left: 8px;">● New failure</span>`;
+            flakyWarning = `<span style="color: var(--accent); margin-left: 8px;">● New failure</span>`;
         } else if (data.category === 'recovered') {
-            flakyWarning = `<span style="color: #3fb950; margin-left: 8px;">↑ Recovered</span>`;
+            flakyWarning = `<span style="color: var(--ok); margin-left: 8px;">↑ Recovered</span>`;
         }
 
         historyHtml = `
-            <div class="test-failure-section" style="background: #161b22; padding: 12px; border-radius: 6px; margin-bottom: 16px;">
-                <div style="font-size: 13px; color: #8b949e; margin-bottom: 4px;">History (last ${data.history.length} runs):</div>
+            <div class="test-failure-section" style="background: var(--bg); padding: 12px; border-radius: 6px; margin-bottom: 16px;">
+                <div style="font-size: 13px; color: var(--text-muted); margin-bottom: 4px;">History (last ${data.history.length} runs):</div>
                 <div style="font-size: 16px; letter-spacing: 2px;">${icons}${passRateText}</div>
                 ${flakyWarning}
             </div>
@@ -4123,12 +4785,12 @@ function renderTestFailureDetail(data) {
     let existingIssueHtml = '';
     if (data.existing_issue) {
         existingIssueHtml = `
-            <div class="test-failure-section" style="background: #1f3d1f; padding: 12px; border-radius: 6px; margin-bottom: 16px; border: 1px solid #238636;">
-                <span style="color: #3fb950;">✓</span>
+            <div class="test-failure-section" style="background: var(--status-running-bg); padding: 12px; border-radius: 6px; margin-bottom: 16px; border: 1px solid var(--status-running-border);">
+                <span style="color: var(--ok);">✓</span>
                 <span>Issue already exists: </span>
                 <a href="https://github.com/${window.dashboardData.githubOwner}/${window.dashboardData.githubRepo}/issues/${data.existing_issue.github_issue_number}"
-                   target="_blank" style="color: #58a6ff;">#${data.existing_issue.github_issue_number}</a>
-                ${data.existing_issue.resolution ? `<span style="color: #8b949e;"> (${data.existing_issue.resolution})</span>` : ''}
+                   target="_blank" style="color: var(--accent);">#${data.existing_issue.github_issue_number}</a>
+                ${data.existing_issue.resolution ? `<span style="color: var(--text-muted);"> (${data.existing_issue.resolution})</span>` : ''}
             </div>
         `;
     }
@@ -4154,7 +4816,7 @@ function renderTestFailureDetail(data) {
     html += `
         <div class="test-failure-section">
             <h3>Error</h3>
-            <div class="test-failure-error">${test.longrepr ? escapeHtml(test.longrepr) : '<span style="color: #8b949e;">No error details available</span>'}</div>
+            <div class="test-failure-error">${test.longrepr ? escapeHtml(test.longrepr) : '<span style="color: var(--text-muted);">No error details available</span>'}</div>
         </div>
     `;
 
@@ -4163,7 +4825,7 @@ function renderTestFailureDetail(data) {
         const lineCount = data.log_excerpt.split('\\n').length;
         html += `
             <details class="test-failure-section">
-                <summary style="cursor: pointer; color: #58a6ff; font-size: 14px; font-weight: 600;">
+                <summary style="cursor: pointer; color: var(--accent); font-size: 14px; font-weight: 600;">
                     Test Logs (${lineCount} lines)
                 </summary>
                 <pre class="test-failure-traceback" style="margin-top: 8px;">${escapeHtml(data.log_excerpt)}</pre>
@@ -4173,9 +4835,9 @@ function renderTestFailureDetail(data) {
 
     // "What to do" section with Diagnose button
     html += `
-        <div class="test-failure-section" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid #21262d;">
+        <div class="test-failure-section" style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border);">
             <h3>What To Do</h3>
-            <p style="color: #8b949e; font-size: 13px; margin-bottom: 12px;">
+            <p style="color: var(--text-muted); font-size: 13px; margin-bottom: 12px;">
                 Get AI-powered analysis to help understand this failure and suggest fixes.
             </p>
             <button class="btn-primary" onclick="diagnoseCurrentTest()" style="display: flex; align-items: center; gap: 6px;">
@@ -4707,7 +5369,7 @@ function renderE2ETriage(data) {
                 <div class="count">${flakyFailures.length}</div>
                 <div class="label">Flaky</div>
             </div>
-            <div class="triage-summary-stat" style="${consistentFailures.length > 0 ? 'color: #f85149;' : ''}">
+            <div class="triage-summary-stat" style="${consistentFailures.length > 0 ? 'color: var(--danger);' : ''}">
                 <div class="count">${consistentFailures.length}</div>
                 <div class="label">Consistent</div>
             </div>
@@ -4744,8 +5406,8 @@ function renderE2ETriage(data) {
                     <div class="triage-badges">
                         ${hasIssue ? `<span class="triage-badge existing">Issue #${failure.existing_issue.github_issue_number}</span>` : '<span class="triage-badge new">New</span>'}
                         ${failure.category === 'flaky' ? `<span class="triage-badge flaky">Flaky (${failure.flip_rate_percent}%)</span>` : ''}
-                        ${failure.category === 'consistently_failing' ? '<span class="triage-badge" style="background: #f85149; color: #fff;">Consistent</span>' : ''}
-                        ${failure.category === 'new_failure' ? '<span class="triage-badge" style="background: #58a6ff; color: #fff;">New failure</span>' : ''}
+                        ${failure.category === 'consistently_failing' ? '<span class="triage-badge" style="background: var(--danger); color: var(--tab-badge-text);">Consistent</span>' : ''}
+                        ${failure.category === 'new_failure' ? '<span class="triage-badge" style="background: var(--accent); color: var(--tab-badge-text);">New failure</span>' : ''}
                         ${failure.duration_seconds ? `<span class="triage-badge">${failure.duration_seconds.toFixed(1)}s</span>` : ''}
                     </div>
                     ${failure.longrepr ? `<div class="triage-longrepr">${escapeHtml(failure.longrepr.substring(0, 500))}${failure.longrepr.length > 500 ? '...' : ''}</div>` : ''}
@@ -5161,14 +5823,14 @@ async function showUnifiedRunView(runId) {
         const data = await res.json();
 
         if (!res.ok) {
-            content.innerHTML = `<div style="color: #f85149; padding: 20px;">Error: ${escapeHtml(data.error || data.detail || 'Failed to load run details')}</div>`;
+            content.innerHTML = `<div style="color: var(--danger); padding: 20px;">Error: ${escapeHtml(data.error || data.detail || 'Failed to load run details')}</div>`;
             return;
         }
 
         unifiedRunData = data;
         renderUnifiedRunView(data, runId);
     } catch (err) {
-        content.innerHTML = `<div style="color: #f85149; padding: 20px;">Failed to load run details: ${escapeHtml(err.message)}</div>`;
+        content.innerHTML = `<div style="color: var(--danger); padding: 20px;">Failed to load run details: ${escapeHtml(err.message)}</div>`;
     }
 }
 

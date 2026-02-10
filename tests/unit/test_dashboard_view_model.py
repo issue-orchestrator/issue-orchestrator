@@ -85,8 +85,8 @@ def test_view_model_active_session_and_dashboard_data():
     assert view_model.active_items[0]["flow_stage"] == "review"
     assert view_model.active_items[0]["action_hint"] == "Click to view agent UI log"
     assert view_model.flow_columns
-    assert view_model.flow_columns[2]["id"] == "running"
-    assert view_model.flow_columns[2]["count"] == 1
+    assert view_model.flow_columns[1]["id"] == "running"
+    assert view_model.flow_columns[1]["count"] == 1
 
     dashboard_data = view_model.dashboard_data()
     assert dashboard_data["paused"] is False
@@ -158,13 +158,9 @@ def test_view_model_queue_and_blocked_items():
     assert blocked_item["status"] == "blocked"
     assert "blocked" in (blocked_item["blocked_summary"] or "")
     assert "waiting on" in (blocked_item["blocked_summary"] or "")
-    assert view_model.backlog_count == 0
-    backlog_numbers = {item["issue_number"] for item in view_model.backlog_items}
-    queue_numbers = {item["issue_number"] for item in view_model.queue_items}
-    blocked_numbers = {item["issue_number"] for item in view_model.blocked_items}
-    assert backlog_numbers.isdisjoint(queue_numbers)
-    assert backlog_numbers.isdisjoint(blocked_numbers)
-    assert all(group["id"] != "awaiting-merge" for group in view_model.attention_groups)
+    # Dependency-blocked items (issue #2) stay in blocked because they also have
+    # the "blocked" label — only pure dependency blocks stay in queued
+    assert view_model.blocked_count == 1
 
 
 def test_view_model_includes_refresh_freshness_metadata():
@@ -232,9 +228,7 @@ def test_pr_pending_issue_not_shown_in_queued_flow_column():
     queued_col = next(col for col in view_model.flow_columns if col["id"] == "queued")
     assert queued_col["count"] == 0
     assert all(item["issue_number"] != 4072 for item in queued_col["items"])
-    assert any(group["id"] == "awaiting-merge" for group in view_model.attention_groups)
-    awaiting_merge_group = next(group for group in view_model.attention_groups if group["id"] == "awaiting-merge")
-    assert any(item["issue_number"] == 4072 for item in awaiting_merge_group["items"])
+    assert any(item["issue_number"] == 4072 for item in view_model.awaiting_merge_items)
 
 
 def test_view_model_includes_refresh_staleness_meta():
@@ -324,12 +318,11 @@ def test_view_model_history_routing():
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
 
-    history_numbers = {item["issue_number"] for item in view_model.history_items}
     blocked_numbers = {item["issue_number"] for item in view_model.blocked_items}
 
-    assert 10 in history_numbers
+    # Both failed (#10) and needs_human (#11) now go to blocked column
+    assert 10 in blocked_numbers
     assert 11 in blocked_numbers
-    assert view_model.history_count == len(view_model.history_items)
 
 
 def test_exclude_flow_overlaps_handles_string_issue_numbers():
@@ -341,7 +334,7 @@ def test_exclude_flow_overlaps_handles_string_issue_numbers():
         queue_items=queue_items,
         active_items=[],
         blocked_items=[],
-        done_items=[],
+        completed_items=[],
     )
 
     assert result == []

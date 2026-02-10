@@ -758,6 +758,8 @@ class SessionLauncher:
         self.events.publish(TraceEvent(EventName.SESSION_STARTED, {
             "issue_number": issue.number,
             "session_id": session_name,
+            "agent": issue.agent_type,
+            "task": "code",
             "worktree_path": str(worktree_path),
             "branch_name": branch_name,
             "run_id": run.run_id,
@@ -987,6 +989,8 @@ class SessionLauncher:
         self.events.publish(TraceEvent(EventName.REVIEW_STARTED, {
             "pr_number": review.pr_number,
             "issue_number": review.issue_number,
+            "agent": agent_label,
+            "task": "review",
             "session_name": session_name,
             "run_id": run.run_id,
             "run_dir": str(run.run_dir),

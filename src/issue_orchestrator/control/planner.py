@@ -412,22 +412,23 @@ class Planner:
             capacity -= len(triage_actions)
             triage_launch_count = len(triage_actions)
 
-        # 5. Plan issue launches.
+        # 5. Plan issue launches with remaining capacity.
         #
-        # We only block new issue launches when we are actively launching review/rework/triage
-        # in this tick. If pending work exists but cannot be launched (e.g., workflow unavailable
-        # or temporarily skipped), do not starve issue execution.
-        pending_launches_started = (review_launch_count + rework_launch_count + triage_launch_count) > 0
-        if capacity > 0 and not pending_launches_started:
+        # Reviews/reworks/triage get priority (they consumed capacity above),
+        # but any leftover capacity goes to new issues. We never starve issue
+        # launches just because review/rework/triage actions were planned.
+        if capacity > 0:
+            pending_work_planned = review_launch_count + rework_launch_count + triage_launch_count
+            if pending_work_planned:
+                logger.info(
+                    "Planner: pending work consumed %d slot(s) "
+                    "(reviews=%d, reworks=%d, triage=%d), %d slot(s) remain for issues",
+                    pending_work_planned, review_launch_count,
+                    rework_launch_count, triage_launch_count, capacity,
+                )
             issue_actions, issue_skipped, _ = self._plan_issues(snapshot, capacity)
             actions.extend(issue_actions)
             skipped.extend(issue_skipped)
-        elif pending_launches_started:
-            logger.debug("Planner: skipping new issues - pending work exists "
-                        "(reviews=%d, reworks=%d, triage=%d)",
-                        len(snapshot.pending_reviews),
-                        len(snapshot.pending_reworks),
-                        len(snapshot.pending_triage))
 
         return Plan(actions=tuple(actions), skipped=tuple(skipped))
 
@@ -969,11 +970,13 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             capacity = min(capacity, remaining)
 
         # Get available issues (not blocked, not in-progress with running session)
+        snapshot_issue_count = len(snapshot.issues)
         available, dependency_blocked = self.scheduler.get_available_issues(
             list(snapshot.issues),
             check_dependencies=self.dependency_evaluator is not None,
             active_sessions=list(snapshot.active_sessions),
         )
+        scheduler_filtered = snapshot_issue_count - len(available) - len(dependency_blocked)
 
         # Record dependency-blocked items and add cross-milestone labels
         for issue, reason in dependency_blocked:
@@ -1008,13 +1011,19 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 filtered.append(issue)
             available = filtered
 
-        # Filter out issues already being worked on, just completed, or failed this cycle
-        issues_with_pending_reviews = {r.issue_number for r in snapshot.discovered_reviews}
-        issues_with_pending_reworks = {r.issue_number for r in snapshot.discovered_reworks}
+        # Filter out issues already being worked on, just completed, or failed this cycle.
+        # Include both discovered (new this tick) and pending (queued for launch) reviews/reworks
+        # to prevent launching a code session for an issue that already has review/rework work.
+        issues_with_reviews = {r.issue_number for r in snapshot.discovered_reviews}
+        issues_with_reviews.update(r.issue_number for r in snapshot.pending_reviews)
+        issues_with_reworks = {r.issue_number for r in snapshot.discovered_reworks}
+        issues_with_reworks.update(
+            n for r in snapshot.pending_reworks if (n := r.resolve_issue_number()) is not None
+        )
         excluded_issues = (
             snapshot.active_issue_numbers |
-            issues_with_pending_reviews |
-            issues_with_pending_reworks |
+            issues_with_reviews |
+            issues_with_reworks |
             snapshot.failed_this_cycle |  # Skip issues that failed until cache refresh
             snapshot.session_history_issue_numbers  # Skip issues with completed sessions
         )
@@ -1023,15 +1032,23 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             if issue.number not in excluded_issues
         ]
 
-        # Log if we're skipping issues due to recent failure
-        skipped_due_to_failure = [i for i in available if i.number in snapshot.failed_this_cycle]
-        for issue in skipped_due_to_failure:
-            skipped.append(SkippedItem(
-                item_type="issue",
-                number=issue.number,
-                reason="failed this cycle - waiting for cache refresh",
-            ))
-            logger.info(issue_log(issue.number, "Skipped: reason=failed_this_cycle"))
+        # Log per-issue exclusion reasons for diagnostics
+        for issue in available:
+            if issue.number in snapshot.active_issue_numbers:
+                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="active session running"))
+                logger.info(issue_log(issue.number, "Skipped: reason=active_session"))
+            elif issue.number in issues_with_reviews:
+                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="pending review"))
+                logger.info(issue_log(issue.number, "Skipped: reason=pending_review"))
+            elif issue.number in issues_with_reworks:
+                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="pending rework"))
+                logger.info(issue_log(issue.number, "Skipped: reason=pending_rework"))
+            elif issue.number in snapshot.failed_this_cycle:
+                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="failed this cycle - waiting for cache refresh"))
+                logger.info(issue_log(issue.number, "Skipped: reason=failed_this_cycle"))
+            elif issue.number in snapshot.session_history_issue_numbers:
+                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="session completed this run"))
+                logger.info(issue_log(issue.number, "Skipped: reason=session_history"))
 
         # Pick next batch based on priority
         to_launch = self.scheduler.pick_next_batch(
@@ -1054,6 +1071,18 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 working_dir="",  # Orchestrator will fill in
                 reason=f"scheduled: priority={priority_reason}",
             ))
+
+        # Pipeline funnel summary for diagnostics
+        snapshot_numbers = sorted(i.number for i in snapshot.issues)
+        available_numbers = sorted(i.number for i in available)
+        eligible_numbers = sorted(i.number for i in not_active)
+        launching_numbers = sorted(i.number for i in to_launch[:capacity])
+        logger.info(
+            "[PLAN] Issue pipeline: snapshot=%s → scheduler=%s (filtered=%d, dep_blocked=%d) "
+            "→ eligible=%s → launching=%s (capacity=%d)",
+            snapshot_numbers, available_numbers, scheduler_filtered,
+            len(dependency_blocked), eligible_numbers, launching_numbers, capacity,
+        )
 
         return actions, skipped, len(actions)
 

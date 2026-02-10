@@ -1558,7 +1558,7 @@ class TestApiTimelineEndpoint:
             assert payload["title"] == "Detail Issue"
             assert "summary" in payload
             assert "events" in payload
-            assert "loops" in payload
+            assert "cycles" in payload
             assert "actions" in payload
         finally:
             set_orchestrator(None)
@@ -2561,14 +2561,14 @@ class TestTriggerServerShutdown:
 
 
 class TestDashboardWithProblems:
-    """Test dashboard with problem items in history tab."""
+    """Test dashboard shows problem items in the kanban blocked column."""
 
     def test_dashboard_with_failed_session(self):
-        """Test dashboard displays failed sessions in history tab."""
+        """Test dashboard displays failed sessions in the blocked column."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
-        # Add a failed session to history
+        # Add a failed session to history — goes to blocked column
         failed_entry = SessionHistoryEntry(
             issue_number=1,
             title="Failed Issue",
@@ -2581,7 +2581,7 @@ class TestDashboardWithProblems:
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
-            response = client.get("/?tab=history")
+            response = client.get("/?tab=kanban")
 
             assert response.status_code == 200
             assert "Failed Issue" in response.text
@@ -2589,7 +2589,7 @@ class TestDashboardWithProblems:
             set_orchestrator(None)
 
     def test_dashboard_with_blocked_session(self):
-        """Test dashboard displays blocked sessions in history tab."""
+        """Test dashboard displays blocked sessions in the blocked column."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
@@ -2605,7 +2605,7 @@ class TestDashboardWithProblems:
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
-            response = client.get("/?tab=history")
+            response = client.get("/?tab=kanban")
 
             assert response.status_code == 200
             assert "Blocked Issue" in response.text
@@ -2613,7 +2613,7 @@ class TestDashboardWithProblems:
             set_orchestrator(None)
 
     def test_dashboard_with_timed_out_session(self):
-        """Test dashboard displays timed out sessions in history tab."""
+        """Test dashboard displays timed out sessions in the blocked column."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
@@ -2629,7 +2629,7 @@ class TestDashboardWithProblems:
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
-            response = client.get("/?tab=history")
+            response = client.get("/?tab=kanban")
 
             assert response.status_code == 200
             assert "Timeout Issue" in response.text
