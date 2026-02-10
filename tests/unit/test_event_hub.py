@@ -5,9 +5,9 @@ from issue_orchestrator.ports import TraceEvent
 def test_event_hub_stats_and_replay_counts() -> None:
     hub = EventHub(max_events=2)
 
-    hub.publish(TraceEvent("tick.started", {"tick_id": 1}).with_event_id(1))
-    hub.publish(TraceEvent("tick.started", {"tick_id": 2}).with_event_id(2))
-    hub.publish(TraceEvent("tick.started", {"tick_id": 3}).with_event_id(3))
+    hub.publish(TraceEvent("tick.started", {"tick_id": 1}).with_event_id(1))  # type: ignore
+    hub.publish(TraceEvent("tick.started", {"tick_id": 2}).with_event_id(2))  # type: ignore
+    hub.publish(TraceEvent("tick.started", {"tick_id": 3}).with_event_id(3))  # type: ignore
 
     stats = hub.stats()
     assert stats["buffer_size"] == 2

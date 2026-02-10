@@ -481,8 +481,8 @@ def test_set_pr_draft_marks_ready_for_review() -> None:
     assert "markPullRequestReadyForReview" in requests_seen[1]["body"]["query"]
     assert requests_seen[1]["body"]["variables"]["pullRequestId"] == "PR_node_123"
     # Result
-    assert result["isDraft"] is False
-    assert result["number"] == 42
+    assert result["isDraft"] is False  # type: ignore
+    assert result["number"] == 42  # type: ignore
 
 
 def test_set_pr_draft_converts_to_draft() -> None:
@@ -515,7 +515,7 @@ def test_set_pr_draft_converts_to_draft() -> None:
     assert len(requests_seen) == 2
     # Second request should use convertPullRequestToDraft
     assert "convertPullRequestToDraft" in requests_seen[1]["body"]["query"]
-    assert result["isDraft"] is True
+    assert result["isDraft"] is True  # type: ignore
 
 
 def test_set_pr_draft_raises_on_pr_not_found() -> None:

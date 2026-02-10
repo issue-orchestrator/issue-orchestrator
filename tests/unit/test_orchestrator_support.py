@@ -144,7 +144,7 @@ def make_issue(number: int, title: str = "Test Issue", labels: list | None = Non
     )
 
 
-def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = None) -> Session:
+def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = None) -> Session:  # type: ignore
     """Create a test session for an issue."""
     issue_key = FakeIssueKey(name=str(issue.number))
     session_key = SessionKey(issue=issue_key, task=task)
@@ -766,7 +766,7 @@ class TestCheckHealth:
         )
 
         assert decision.can_proceed is False
-        assert "paused" in decision.reason
+        assert "paused" in decision.reason  # type: ignore
 
     def test_returns_blocked_when_at_capacity(self):
         """check_health returns blocked when at maximum capacity."""
@@ -779,7 +779,7 @@ class TestCheckHealth:
         )
 
         assert decision.can_proceed is False
-        assert "at_capacity" in decision.reason
+        assert "at_capacity" in decision.reason  # type: ignore
 
 
 # =============================================================================
@@ -1532,7 +1532,7 @@ class TestTrackStaleTicks:
             events=mock_event_sink,
             event_context=sample_event_context,
             state=sample_orchestrator_state,
-            stale_issues=stale_issues,
+            stale_issues=stale_issues,  # type: ignore
         )
 
         # Both issues should have tick count of 1
@@ -1552,7 +1552,7 @@ class TestTrackStaleTicks:
                 events=mock_event_sink,
                 event_context=sample_event_context,
                 state=sample_orchestrator_state,
-                stale_issues=stale_issues,
+                stale_issues=stale_issues,  # type: ignore
             )
 
         # Tick count should be 3

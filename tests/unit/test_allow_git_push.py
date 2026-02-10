@@ -9,7 +9,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "src" / "issue_orchestrator" / "templates" / "hooks" / "claude"))
 
-from allow_git_push import is_dry_run_no_verify_push  # noqa: E402
+from allow_git_push import is_dry_run_no_verify_push  # noqa: E402  # type: ignore
 
 
 @pytest.mark.parametrize("command", [

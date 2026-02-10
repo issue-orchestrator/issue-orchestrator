@@ -91,7 +91,7 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
     assert soup.select_one("#tab-flow.active") is not None
     columns = soup.select(".kanban-column")
     assert len(columns) == 5
-    assert "milestones=M7" in soup.select_one(".scope-summary").text
+    assert "milestones=M7" in soup.select_one(".scope-summary").text  # type: ignore
 
 
 def test_attention_view_renders_groups(jinja_env):

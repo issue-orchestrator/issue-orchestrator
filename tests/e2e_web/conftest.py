@@ -59,7 +59,7 @@ class UvicornTestServer:
 
 
 @pytest.fixture
-def web_server() -> dict[str, object]:
+def web_server() -> dict[str, object]:  # type: ignore
     """Run the dashboard app with a deterministic mock orchestrator."""
     orchestrator = FlowWebMockOrchestrator()
     orchestrator.add_queue_issue(408, "Flow smoke item")
@@ -72,7 +72,7 @@ def web_server() -> dict[str, object]:
     server = UvicornTestServer("127.0.0.1", port)
     server.start()
     try:
-        yield {
+        yield {  # type: ignore
             "url": f"http://127.0.0.1:{port}",
             "orchestrator": orchestrator,
         }

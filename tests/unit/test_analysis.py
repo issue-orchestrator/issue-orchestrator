@@ -413,7 +413,7 @@ class TestAnalyzeAllIssues:
         check_session = Mock()
 
         result = analyze_all_issues(
-            issues, "owner/repo", {1: "1-issue-1"}, check_session
+            issues, "owner/repo", {1: "1-issue-1"}, check_session  # type: ignore
         )
 
         assert len(result) == 2
@@ -447,7 +447,7 @@ class TestAnalyzeAllIssues:
 
         check_session = Mock()
 
-        analyze_all_issues(issues, "owner/repo", branches, check_session)
+        analyze_all_issues(issues, "owner/repo", branches, check_session)  # type: ignore
 
         # Same branches dict passed to both analyze calls
         for call in mock_analyze.call_args_list:

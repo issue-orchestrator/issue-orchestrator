@@ -121,26 +121,26 @@ class TestSessionObserverInit:
 
     def test_init_with_config(self, mock_config):
         """Test initializing monitor with config."""
-        monitor = SessionObserver(mock_config, mock_session_output)
+        monitor = SessionObserver(mock_config, mock_session_output)  # type: ignore
         assert monitor.config == mock_config
         assert monitor.session_machines == {}
 
     def test_init_stores_config(self, mock_config):
         """Test that config is properly stored."""
-        monitor = SessionObserver(mock_config, mock_session_output)
+        monitor = SessionObserver(mock_config, mock_session_output)  # type: ignore
         assert monitor.config.repo == "owner/repo"
         assert monitor.config.max_concurrent_sessions == 3
 
     def test_init_with_session_machines(self, mock_config):
         """Test initializing monitor with session machines."""
         machines = {"issue-1": MagicMock(), "issue-2": MagicMock()}
-        monitor = SessionObserver(mock_config, mock_session_output, session_machines=machines)
+        monitor = SessionObserver(mock_config, mock_session_output, session_machines=machines)  # type: ignore
         assert monitor.config == mock_config
         assert monitor.session_machines == machines
 
     def test_init_session_machines_defaults_to_empty_dict(self, mock_config):
         """Test that session_machines defaults to empty dict when None."""
-        monitor = SessionObserver(mock_config, mock_session_output, session_machines=None)
+        monitor = SessionObserver(mock_config, mock_session_output, session_machines=None)  # type: ignore
         assert monitor.session_machines == {}
 
     # Note: Tests for private port storage (_session_runner, _repository_host) removed

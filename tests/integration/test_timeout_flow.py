@@ -74,7 +74,7 @@ class StubWorkingCopy:
     def get_head_sha(self, worktree: Path) -> str | None:
         return "abc1234567890"
 
-    def get_current_branch(self, worktree: Path) -> str | None:
+    def get_current_branch(self, worktree: Path) -> str | None:  # type: ignore
         return "test-branch"
 
     def rebase_on_branch(self, worktree: Path, target: str = "origin/main"):
@@ -128,7 +128,7 @@ def test_timeout_observation_and_decision(tmp_path):
         config=config,
         session_output=session_output,
         events=events,
-        session_runner=StubSessionRunner(),
+        session_runner=StubSessionRunner(),  # type: ignore
         repository_host=None,
     )
 
@@ -140,14 +140,14 @@ def test_timeout_observation_and_decision(tmp_path):
     completion_processor = CompletionProcessor(
         label_adapter=StubLabelAdapter(),
         pr_adapter=StubPrAdapter(),
-        git_adapter=StubGitAdapter(),
+        git_adapter=StubGitAdapter(),  # type: ignore
         session_output=session_output,
     )
     controller = SessionController(
         completion_processor=completion_processor,
         events=events,
         session_output=session_output,
-        working_copy=StubWorkingCopy(),
+        working_copy=StubWorkingCopy(),  # type: ignore
     )
 
     decision = controller.decide_outcome(

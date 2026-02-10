@@ -37,7 +37,7 @@ class TestWaitWithProcessCheck:
         result = wait_with_process_check(
             condition,
             timeout=10,
-            interval=0.01,  # Fast polling for test
+            interval=0.01,  # Fast polling for test  # type: ignore
             description="test",
         )
 
@@ -50,8 +50,8 @@ class TestWaitWithProcessCheck:
 
         result = wait_with_process_check(
             condition,
-            timeout=0.05,
-            interval=0.01,
+            timeout=0.05,  # type: ignore
+            interval=0.01,  # type: ignore
             description="test",
         )
 
@@ -72,7 +72,7 @@ class TestWaitWithProcessCheck:
                 condition,
                 timeout=10,
                 orchestrator=orchestrator,
-                interval=0.01,
+                interval=0.01,  # type: ignore
                 description="test condition",
             )
 
@@ -92,7 +92,7 @@ class TestWaitWithProcessCheck:
             condition,
             timeout=10,
             orchestrator=orchestrator,
-            interval=0.01,
+            interval=0.01,  # type: ignore
             description="test",
         )
 
@@ -108,7 +108,7 @@ class TestWaitWithProcessCheck:
             condition,
             timeout=10,
             orchestrator=None,
-            interval=0.01,
+            interval=0.01,  # type: ignore
             description="test",
         )
 

@@ -150,7 +150,7 @@ def session_controller(completion_processor, mock_event_sink):
         completion_processor=completion_processor,
         events=mock_event_sink,
         session_output=FileSystemSessionOutput(),
-        working_copy=StubWorkingCopy(),
+        working_copy=StubWorkingCopy(),  # type: ignore
     )
 
 

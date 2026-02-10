@@ -292,14 +292,14 @@ class TestJobStoreSaveJob:
         job_store.save_job(sample_job)
 
         record = job_store.get_job(sample_job.job_id)
-        assert record.worktree_id == wt_id
+        assert record.worktree_id == wt_id  # type: ignore
 
     def test_stores_metadata(self, job_store: JobStore, sample_job: PublishJob):
         """Verify metadata is stored as JSON."""
         job_store.save_job(sample_job)
 
         record = job_store.get_job(sample_job.job_id)
-        metadata = json.loads(record.metadata_json)
+        metadata = json.loads(record.metadata_json)  # type: ignore
 
         assert metadata["issue_title"] == sample_job.issue_title
         assert metadata["outcome"] == sample_job.outcome
@@ -313,7 +313,7 @@ class TestJobStoreSaveJob:
         job_store.save_job(sample_job)
 
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "queued"
+        assert record.status == "queued"  # type: ignore
 
     def test_sets_created_at(self, job_store: JobStore, sample_job: PublishJob):
         """Verify created_at timestamp is set."""
@@ -322,7 +322,7 @@ class TestJobStoreSaveJob:
         after = time.time()
 
         record = job_store.get_job(sample_job.job_id)
-        assert before <= record.created_at <= after
+        assert before <= record.created_at <= after  # type: ignore
 
 
 # ============================================================================
@@ -343,7 +343,7 @@ class TestJobStoreMarkStarted:
 
         assert result is True
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "running"
+        assert record.status == "running"  # type: ignore
 
     def test_sets_started_at(self, job_store: JobStore, sample_job: PublishJob):
         """Verify started_at timestamp is set."""
@@ -354,8 +354,8 @@ class TestJobStoreMarkStarted:
         after = time.time()
 
         record = job_store.get_job(sample_job.job_id)
-        assert record.started_at is not None
-        assert before <= record.started_at <= after
+        assert record.started_at is not None  # type: ignore
+        assert before <= record.started_at <= after  # type: ignore
 
     def test_returns_false_for_nonexistent(self, job_store: JobStore):
         """Verify returns False for nonexistent job."""
@@ -391,9 +391,9 @@ class TestJobStoreMarkSucceeded:
 
         assert result is True
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "succeeded"
-        assert record.pr_url == "https://github.com/owner/repo/pull/42"
-        assert record.pr_number == 42
+        assert record.status == "succeeded"  # type: ignore
+        assert record.pr_url == "https://github.com/owner/repo/pull/42"  # type: ignore
+        assert record.pr_number == 42  # type: ignore
 
     def test_sets_finished_at(self, job_store: JobStore, sample_job: PublishJob):
         """Verify finished_at timestamp is set."""
@@ -405,8 +405,8 @@ class TestJobStoreMarkSucceeded:
         after = time.time()
 
         record = job_store.get_job(sample_job.job_id)
-        assert record.finished_at is not None
-        assert before <= record.finished_at <= after
+        assert record.finished_at is not None  # type: ignore
+        assert before <= record.finished_at <= after  # type: ignore
 
     def test_can_succeed_from_queued(
         self, job_store: JobStore, sample_job: PublishJob
@@ -418,7 +418,7 @@ class TestJobStoreMarkSucceeded:
 
         assert result is True
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "succeeded"
+        assert record.status == "succeeded"  # type: ignore
 
 
 class TestJobStoreMarkFailed:
@@ -439,9 +439,9 @@ class TestJobStoreMarkFailed:
 
         assert result is True
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "failed"
-        assert record.error_message == "Git push failed"
-        assert json.loads(record.errors_json) == ["Network error", "Retry limit exceeded"]
+        assert record.status == "failed"  # type: ignore
+        assert record.error_message == "Git push failed"  # type: ignore
+        assert json.loads(record.errors_json) == ["Network error", "Retry limit exceeded"]  # type: ignore
 
     def test_sets_finished_at(self, job_store: JobStore, sample_job: PublishJob):
         """Verify finished_at timestamp is set."""
@@ -452,8 +452,8 @@ class TestJobStoreMarkFailed:
         after = time.time()
 
         record = job_store.get_job(sample_job.job_id)
-        assert record.finished_at is not None
-        assert before <= record.finished_at <= after
+        assert record.finished_at is not None  # type: ignore
+        assert before <= record.finished_at <= after  # type: ignore
 
 
 class TestJobStoreMarkWorktreeCleaned:
@@ -469,7 +469,7 @@ class TestJobStoreMarkWorktreeCleaned:
 
         assert count == 1
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "worktree_gone"
+        assert record.status == "worktree_gone"  # type: ignore
 
     def test_only_marks_non_terminal_jobs(
         self, job_store: JobStore, sample_job: PublishJob, sample_worktree: Path
@@ -483,7 +483,7 @@ class TestJobStoreMarkWorktreeCleaned:
 
         assert count == 0
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "succeeded"
+        assert record.status == "succeeded"  # type: ignore
 
     def test_returns_zero_for_unknown_worktree(self, job_store: JobStore):
         """Verify returns 0 for unknown worktree."""
@@ -620,8 +620,8 @@ class TestJobStoreValidateWorktrees:
 
         assert count == 1
         record = job_store.get_job(job.job_id)
-        assert record.status == "worktree_gone"
-        assert "missing" in record.error_message.lower()
+        assert record.status == "worktree_gone"  # type: ignore
+        assert "missing" in record.error_message.lower()  # type: ignore
 
     def test_marks_identity_mismatch_as_gone(
         self, job_store: JobStore, sample_worktree: Path
@@ -644,8 +644,8 @@ class TestJobStoreValidateWorktrees:
 
         assert count == 1
         record = job_store.get_job(job.job_id)
-        assert record.status == "worktree_gone"
-        assert "mismatch" in record.error_message.lower()
+        assert record.status == "worktree_gone"  # type: ignore
+        assert "mismatch" in record.error_message.lower()  # type: ignore
 
     def test_preserves_valid_worktrees(
         self, job_store: JobStore, sample_job: PublishJob
@@ -657,7 +657,7 @@ class TestJobStoreValidateWorktrees:
 
         assert count == 0
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "queued"
+        assert record.status == "queued"  # type: ignore
 
     def test_skips_terminal_jobs(
         self, job_store: JobStore, sample_job: PublishJob, sample_worktree: Path

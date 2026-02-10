@@ -217,9 +217,9 @@ class TestIssueStateMachine:
         machine.claim()
         machine.start(data={"session_id": "session-123"})
 
-        assert machine.last_transition.event_name == "issue.started"
-        assert machine.last_transition.entity_id == 123
-        assert machine.last_transition.data == {"session_id": "session-123"}
+        assert machine.last_transition.event_name == "issue.started"  # type: ignore
+        assert machine.last_transition.entity_id == 123  # type: ignore
+        assert machine.last_transition.data == {"session_id": "session-123"}  # type: ignore
 
     def test_transition_result_on_block(self):
         """Test that TransitionResult is stored when blocking."""
@@ -229,9 +229,9 @@ class TestIssueStateMachine:
         machine.start()
         machine.block(data={"reason": "waiting for dependency"})
 
-        assert machine.last_transition.event_name == "issue.blocked"
-        assert machine.last_transition.entity_id == 123
-        assert machine.last_transition.data == {"reason": "waiting for dependency"}
+        assert machine.last_transition.event_name == "issue.blocked"  # type: ignore
+        assert machine.last_transition.entity_id == 123  # type: ignore
+        assert machine.last_transition.data == {"reason": "waiting for dependency"}  # type: ignore
 
     def test_transition_result_on_needs_human(self):
         """Test that TransitionResult is stored when needs_human."""
@@ -241,9 +241,9 @@ class TestIssueStateMachine:
         machine.start()
         machine.needs_human(data={"reason": "complex decision required"})
 
-        assert machine.last_transition.event_name == "issue.needs_human"
-        assert machine.last_transition.entity_id == 123
-        assert machine.last_transition.data == {"reason": "complex decision required"}
+        assert machine.last_transition.event_name == "issue.needs_human"  # type: ignore
+        assert machine.last_transition.entity_id == 123  # type: ignore
+        assert machine.last_transition.data == {"reason": "complex decision required"}  # type: ignore
 
     def test_transition_result_on_unblock(self):
         """Test that TransitionResult is stored when unblocking."""
@@ -254,9 +254,9 @@ class TestIssueStateMachine:
         machine.block()
         machine.unblock(data={"resolved_by": "human"})
 
-        assert machine.last_transition.event_name == "issue.unblocked"
-        assert machine.last_transition.entity_id == 123
-        assert machine.last_transition.data == {"resolved_by": "human"}
+        assert machine.last_transition.event_name == "issue.unblocked"  # type: ignore
+        assert machine.last_transition.entity_id == 123  # type: ignore
+        assert machine.last_transition.data == {"resolved_by": "human"}  # type: ignore
 
     def test_transition_result_on_pr_created(self):
         """Test that TransitionResult is stored when PR is created."""
@@ -266,9 +266,9 @@ class TestIssueStateMachine:
         machine.start()
         machine.pr_created(data={"pr_number": 456})
 
-        assert machine.last_transition.event_name == "issue.pr_created"
-        assert machine.last_transition.entity_id == 123
-        assert machine.last_transition.data == {"pr_number": 456}
+        assert machine.last_transition.event_name == "issue.pr_created"  # type: ignore
+        assert machine.last_transition.entity_id == 123  # type: ignore
+        assert machine.last_transition.data == {"pr_number": 456}  # type: ignore
 
     def test_transition_result_on_pr_rejected(self):
         """Test that TransitionResult is stored when PR is closed."""
@@ -279,9 +279,9 @@ class TestIssueStateMachine:
         machine.pr_created()
         machine.pr_closed(data={"reason": "changes requested"})
 
-        assert machine.last_transition.event_name == "issue.pr_rejected"
-        assert machine.last_transition.entity_id == 123
-        assert machine.last_transition.data == {"reason": "changes requested"}
+        assert machine.last_transition.event_name == "issue.pr_rejected"  # type: ignore
+        assert machine.last_transition.entity_id == 123  # type: ignore
+        assert machine.last_transition.data == {"reason": "changes requested"}  # type: ignore
 
     def test_transition_result_on_completed(self):
         """Test that TransitionResult is stored when PR is merged."""
@@ -292,9 +292,9 @@ class TestIssueStateMachine:
         machine.pr_created()
         machine.pr_merged(data={"merged_by": "bot"})
 
-        assert machine.last_transition.event_name == "issue.completed"
-        assert machine.last_transition.entity_id == 123
-        assert machine.last_transition.data == {"merged_by": "bot"}
+        assert machine.last_transition.event_name == "issue.completed"  # type: ignore
+        assert machine.last_transition.entity_id == 123  # type: ignore
+        assert machine.last_transition.data == {"merged_by": "bot"}  # type: ignore
 
     def test_transition_result_on_release(self):
         """Test that TransitionResult is stored when releasing."""
@@ -303,9 +303,9 @@ class TestIssueStateMachine:
         machine.claim()
         machine.release(data={"reason": "agent failed"})
 
-        assert machine.last_transition.event_name == "issue.released"
-        assert machine.last_transition.entity_id == 123
-        assert machine.last_transition.data == {"reason": "agent failed"}
+        assert machine.last_transition.event_name == "issue.released"  # type: ignore
+        assert machine.last_transition.entity_id == 123  # type: ignore
+        assert machine.last_transition.data == {"reason": "agent failed"}  # type: ignore
 
     def test_can_transition_returns_true_for_valid(self):
         """Test that can_transition returns True for valid transitions."""
@@ -617,10 +617,10 @@ class TestSessionStateMachine:
         machine.launch()
         machine.started()
 
-        assert machine.last_transition.event_name == "session.started"
-        assert machine.last_transition.entity_id == 456
-        assert machine.last_transition.data["session_id"] == "session-123"
-        assert "started_at" in machine.last_transition.data
+        assert machine.last_transition.event_name == "session.started"  # type: ignore
+        assert machine.last_transition.entity_id == 456  # type: ignore
+        assert machine.last_transition.data["session_id"] == "session-123"  # type: ignore
+        assert "started_at" in machine.last_transition.data  # type: ignore
 
     def test_transition_result_on_slow(self):
         """Test that TransitionResult is stored on slow with runtime."""
@@ -633,10 +633,10 @@ class TestSessionStateMachine:
         machine.started()
         machine.mark_slow()
 
-        assert machine.last_transition.event_name == "session.slow"
-        assert machine.last_transition.entity_id == 456
-        assert machine.last_transition.data["session_id"] == "session-123"
-        assert "runtime_minutes" in machine.last_transition.data
+        assert machine.last_transition.event_name == "session.slow"  # type: ignore
+        assert machine.last_transition.entity_id == 456  # type: ignore
+        assert machine.last_transition.data["session_id"] == "session-123"  # type: ignore
+        assert "runtime_minutes" in machine.last_transition.data  # type: ignore
 
     def test_transition_result_on_completed(self):
         """Test that TransitionResult is stored on completed with runtime."""
@@ -649,9 +649,9 @@ class TestSessionStateMachine:
         machine.started()
         machine.complete()
 
-        assert machine.last_transition.event_name == "session.completed"
-        assert machine.last_transition.entity_id == 456
-        assert "runtime_minutes" in machine.last_transition.data
+        assert machine.last_transition.event_name == "session.completed"  # type: ignore
+        assert machine.last_transition.entity_id == 456  # type: ignore
+        assert "runtime_minutes" in machine.last_transition.data  # type: ignore
 
     def test_transition_result_on_failed(self):
         """Test that TransitionResult is stored on failed."""
@@ -663,8 +663,8 @@ class TestSessionStateMachine:
         machine.launch()
         machine.fail(data={"error": "test error"})
 
-        assert machine.last_transition.event_name == "session.failed"
-        assert machine.last_transition.data["error"] == "test error"
+        assert machine.last_transition.event_name == "session.failed"  # type: ignore
+        assert machine.last_transition.data["error"] == "test error"  # type: ignore
 
     def test_transition_result_on_timed_out(self):
         """Test that TransitionResult is stored on timed_out."""
@@ -679,9 +679,9 @@ class TestSessionStateMachine:
         machine.started_at = datetime.now() - timedelta(minutes=61)
         machine.check_timeout()
 
-        assert machine.last_transition.event_name == "session.timeout"
-        assert "runtime_minutes" in machine.last_transition.data
-        assert "timeout_minutes" in machine.last_transition.data
+        assert machine.last_transition.event_name == "session.timeout"  # type: ignore
+        assert "runtime_minutes" in machine.last_transition.data  # type: ignore
+        assert "timeout_minutes" in machine.last_transition.data  # type: ignore
 
     def test_transition_result_on_blocked(self):
         """Test that TransitionResult is stored on blocked."""
@@ -694,7 +694,7 @@ class TestSessionStateMachine:
         machine.started()
         machine.block()
 
-        assert machine.last_transition.event_name == "session.blocked"
+        assert machine.last_transition.event_name == "session.blocked"  # type: ignore
 
     def test_transition_result_on_needs_human(self):
         """Test that TransitionResult is stored on needs_human."""
@@ -707,7 +707,7 @@ class TestSessionStateMachine:
         machine.started()
         machine.needs_human()
 
-        assert machine.last_transition.event_name == "session.needs_human"
+        assert machine.last_transition.event_name == "session.needs_human"  # type: ignore
 
     def test_get_runtime_info(self):
         """Test getting runtime information."""
@@ -1017,8 +1017,8 @@ class TestReviewStateMachine:
         machine.start_review()
         machine.approve()
 
-        assert machine.last_transition.event_name == "review.approved"
-        assert machine.last_transition.entity_id == 123
+        assert machine.last_transition.event_name == "review.approved"  # type: ignore
+        assert machine.last_transition.entity_id == 123  # type: ignore
 
     def test_transition_result_on_changes_requested(self):
         """Test that TransitionResult is stored on changes_requested with rework count."""
@@ -1030,9 +1030,9 @@ class TestReviewStateMachine:
         machine.start_review()
         machine.request_changes()
 
-        assert machine.last_transition.event_name == "review.changes_requested"
-        assert machine.last_transition.entity_id == 123
-        assert machine.last_transition.data["rework_count"] == 1
+        assert machine.last_transition.event_name == "review.changes_requested"  # type: ignore
+        assert machine.last_transition.entity_id == 123  # type: ignore
+        assert machine.last_transition.data["rework_count"] == 1  # type: ignore
 
     def test_transition_result_on_rework_started(self):
         """Test that TransitionResult is stored on rework started."""
@@ -1046,8 +1046,8 @@ class TestReviewStateMachine:
         machine.queue_rework()
         machine.start_rework()
 
-        assert machine.last_transition.event_name == "review.rework_started"
-        assert machine.last_transition.data["rework_count"] == 1
+        assert machine.last_transition.event_name == "review.rework_started"  # type: ignore
+        assert machine.last_transition.data["rework_count"] == 1  # type: ignore
 
     def test_transition_result_on_rework_completed(self):
         """Test that TransitionResult is stored on rework completed."""
@@ -1062,7 +1062,7 @@ class TestReviewStateMachine:
         machine.start_rework()
         machine.complete_rework()
 
-        assert machine.last_transition.event_name == "review.rework_completed"
+        assert machine.last_transition.event_name == "review.rework_completed"  # type: ignore
 
     def test_transition_result_on_triage_review_started(self):
         """Test that TransitionResult is stored on triage review started."""
@@ -1075,7 +1075,7 @@ class TestReviewStateMachine:
         machine.approve()
         machine.request_triage_review()
 
-        assert machine.last_transition.event_name == "review.triage_started"
+        assert machine.last_transition.event_name == "review.triage_started"  # type: ignore
 
     def test_transition_result_on_triage_approved(self):
         """Test that TransitionResult is stored on triage approved."""
@@ -1089,7 +1089,7 @@ class TestReviewStateMachine:
         machine.request_triage_review()
         machine.triage_reviewed()
 
-        assert machine.last_transition.event_name == "review.triage_approved"
+        assert machine.last_transition.event_name == "review.triage_approved"  # type: ignore
 
     def test_transition_result_on_merged(self):
         """Test that TransitionResult is stored on merged with rework count."""
@@ -1106,8 +1106,8 @@ class TestReviewStateMachine:
         machine.approve()
         machine.merge()
 
-        assert machine.last_transition.event_name == "review.merged"
-        assert machine.last_transition.data["rework_count"] == 1
+        assert machine.last_transition.event_name == "review.merged"  # type: ignore
+        assert machine.last_transition.data["rework_count"] == 1  # type: ignore
 
     def test_transition_result_on_closed(self):
         """Test that TransitionResult is stored on closed."""
@@ -1119,7 +1119,7 @@ class TestReviewStateMachine:
         machine.start_review()
         machine.close()
 
-        assert machine.last_transition.event_name == "review.closed"
+        assert machine.last_transition.event_name == "review.closed"  # type: ignore
 
     def test_get_rework_info(self):
         """Test getting rework information."""
@@ -1223,11 +1223,11 @@ class TestReviewStateMachine:
         machine.request_changes()
         machine.escalate()
 
-        assert machine.last_transition.event_name == "review.escalated"
-        assert machine.last_transition.entity_id == 123
-        assert machine.last_transition.data["issue_number"] == 456
-        assert machine.last_transition.data["rework_count"] == 2
-        assert machine.last_transition.data["max_rework_cycles"] == 1
+        assert machine.last_transition.event_name == "review.escalated"  # type: ignore
+        assert machine.last_transition.entity_id == 123  # type: ignore
+        assert machine.last_transition.data["issue_number"] == 456  # type: ignore
+        assert machine.last_transition.data["rework_count"] == 2  # type: ignore
+        assert machine.last_transition.data["max_rework_cycles"] == 1  # type: ignore
 
     def test_cannot_close_from_escalated(self):
         """Test that escalated state cannot be closed (needs human resolution)."""

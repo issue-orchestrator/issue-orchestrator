@@ -237,7 +237,7 @@ def test_pr_pending_issue_not_shown_in_queued_flow_column():
     assert any(item["issue_number"] == 4072 for item in awaiting_merge_group["items"])
 
 
-def test_view_model_includes_refresh_staleness_meta():
+def test_view_model_includes_refresh_staleness_meta():  # type: ignore
     config = _make_config()
     agent_config = _make_agent_config()
     config.agents = {"agent:web": agent_config}

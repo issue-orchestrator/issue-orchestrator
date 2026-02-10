@@ -242,7 +242,7 @@ def test_worker_retry_logic(test_repo_with_retry: Path):
 
     # Check the flaky test has retry_outcome
     details = db.run_details(run.id)
-    results = {r["nodeid"].split("::")[-1]: r for r in details["results"]}
+    results = {r["nodeid"].split("::")[-1]: r for r in details["results"]}  # type: ignore
 
     flaky = results.get("test_flaky")
     assert flaky is not None
@@ -268,7 +268,7 @@ def test_worker_no_retry_without_flag(test_repo_with_retry: Path):
 
     # Check no retry_outcome
     details = db.run_details(run.id)
-    results = {r["nodeid"].split("::")[-1]: r for r in details["results"]}
+    results = {r["nodeid"].split("::")[-1]: r for r in details["results"]}  # type: ignore
 
     flaky = results.get("test_flaky")
     assert flaky is not None
@@ -297,7 +297,7 @@ def test_worker_quarantine(test_repo_with_quarantine: Path):
 
     # Check test results
     details = db.run_details(run.id)
-    results = {r["nodeid"].split("::")[-1]: r for r in details["results"]}
+    results = {r["nodeid"].split("::")[-1]: r for r in details["results"]}  # type: ignore
 
     # Quarantined test should be marked
     quarantined = results.get("test_known_flaky")

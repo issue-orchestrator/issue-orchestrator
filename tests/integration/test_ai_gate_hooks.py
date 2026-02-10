@@ -22,12 +22,12 @@ pytestmark = [
 ]
 
 @pytest.fixture(autouse=True, scope="module")
-def _hook_pythonpath() -> None:
+def _hook_pythonpath() -> None:  # type: ignore
     """Ensure hook scripts can import issue_orchestrator when running in temp repos."""
     repo_root = Path(__file__).resolve().parents[2]
     prior = os.environ.get("ORCHESTRATOR_HOOK_PYTHONPATH")
     os.environ["ORCHESTRATOR_HOOK_PYTHONPATH"] = str(repo_root / "src")
-    yield
+    yield  # type: ignore
     if prior is None:
         os.environ.pop("ORCHESTRATOR_HOOK_PYTHONPATH", None)
     else:

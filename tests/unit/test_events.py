@@ -57,13 +57,13 @@ class TestEvent:
         )
 
         with pytest.raises(Exception):  # FrozenInstanceError
-            event.entity_id = 456
+            event.entity_id = 456  # type: ignore
 
     def test_event_validates_event_type(self):
         """Test that invalid event types are rejected."""
         with pytest.raises(ValueError, match="event_type must be one of"):
             Event(
-                event_type="invalid",
+                event_type="invalid",  # type: ignore
                 entity_id=123
             )
 

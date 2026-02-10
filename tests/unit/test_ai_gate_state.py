@@ -122,7 +122,7 @@ class TestAiGateState:
 
         state = AiGateState.from_dict(data)
 
-        assert state.last_check.year == 2024
+        assert state.last_check.year == 2024  # type: ignore
         assert state.last_results["claude-code"].success is True
 
     def test_from_dict_empty(self):

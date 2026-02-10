@@ -33,32 +33,32 @@ class ScenarioContext:
 
     @property
     def worktree(self) -> Path | None:
-        history = getattr(self.orch.state, "session_history", [])
+        history = getattr(self.orch.state, "session_history", [])  # type: ignore
         if not history:
-            active = getattr(self.orch.state, "active_sessions", [])
+            active = getattr(self.orch.state, "active_sessions", [])  # type: ignore
             if active:
                 worktree = getattr(active[0], "worktree_path", None)
                 if worktree:
                     return Path(worktree)
-            pending = getattr(self.orch.state, "pending_validation_retries", [])
+            pending = getattr(self.orch.state, "pending_validation_retries", [])  # type: ignore
             if pending:
                 return Path(pending[0].worktree_path)
             return None
         return history[0].worktree_path
 
     def events_since_baseline(self) -> list:
-        return list(self.events.events[self.event_baseline:])
+        return list(self.events.events[self.event_baseline:])  # type: ignore
 
     def timeline_since_baseline(self) -> list:
-        stream = self.timeline_reader.read(self.issue_number)
+        stream = self.timeline_reader.read(self.issue_number)  # type: ignore
         return list(stream.events[self.timeline_baseline:])
 
     def restart(self) -> "ScenarioContext":
         orch, repo_host, events, timeline_reader = build_orchestrator(
             self.repo_root,
-            list(self.repo_host.issues),
-            self.config,
-            repo_host=self.repo_host,
+            list(self.repo_host.issues),  # type: ignore
+            self.config,  # type: ignore
+            repo_host=self.repo_host,  # type: ignore
         )
         return ScenarioContext(
             orch=orch,
@@ -181,7 +181,7 @@ class Scenario:
 
     def expect_pr(self, *, created: bool = True, draft: bool | None = None, number: int = 100) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            pr = ctx.repo_host.get_pr(number)
+            pr = ctx.repo_host.get_pr(number)  # type: ignore
             if created:
                 assert pr is not None
                 if draft is not None:
@@ -322,13 +322,13 @@ class Scenario:
 
     def expect_issue_label(self, label: str) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            labels = ctx.repo_host.get_issue_labels(ctx.issue_number)
+            labels = ctx.repo_host.get_issue_labels(ctx.issue_number)  # type: ignore
             assert label in labels
         return self._add_expectation(_assert)
 
     def expect_issue_lacks_label(self, label: str) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            labels = ctx.repo_host.get_issue_labels(ctx.issue_number)
+            labels = ctx.repo_host.get_issue_labels(ctx.issue_number)  # type: ignore
             assert label not in labels
         return self._add_expectation(_assert)
 
@@ -342,29 +342,29 @@ class Scenario:
 
     def expect_pending_validation_retries(self, count: int) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            assert len(ctx.orch.state.pending_validation_retries) == count
+            assert len(ctx.orch.state.pending_validation_retries) == count  # type: ignore
         return self._add_expectation(_assert)
 
     def expect_pending_reviews(self, count: int) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            assert len(ctx.orch.state.pending_reviews) == count
+            assert len(ctx.orch.state.pending_reviews) == count  # type: ignore
         return self._add_expectation(_assert)
 
     def expect_pending_reworks(self, count: int) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            assert len(ctx.orch.state.pending_reworks) == count
+            assert len(ctx.orch.state.pending_reworks) == count  # type: ignore
         return self._add_expectation(_assert)
 
     def expect_pr_label(self, label: str, *, pr_number: int = 100) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            pr = ctx.repo_host.get_pr(pr_number)
+            pr = ctx.repo_host.get_pr(pr_number)  # type: ignore
             assert pr is not None
             assert label in pr.labels
         return self._add_expectation(_assert)
 
     def expect_pr_lacks_label(self, label: str, *, pr_number: int = 100) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            pr = ctx.repo_host.get_pr(pr_number)
+            pr = ctx.repo_host.get_pr(pr_number)  # type: ignore
             assert pr is not None
             assert label not in pr.labels
         return self._add_expectation(_assert)
@@ -381,7 +381,7 @@ class Scenario:
         def _assert(ctx: ScenarioContext) -> None:
             assert any(
                 entry.status_reason in expected or entry.status in expected
-                for entry in ctx.orch.state.session_history
+                for entry in ctx.orch.state.session_history  # type: ignore
             )
         return self._add_expectation(_assert)
 
@@ -431,7 +431,7 @@ class Scenario:
             config,
             reconcile=self.reconcile,
             fresh_labels=self.fresh_labels,
-            working_copy=self._working_copy_override,
+            working_copy=self._working_copy_override,  # type: ignore
             lease_renewer=self._lease_renewer_override,
         )
         if self._repo_host_mutator is not None:

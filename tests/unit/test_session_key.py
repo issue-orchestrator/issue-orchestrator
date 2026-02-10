@@ -202,7 +202,7 @@ class TestSessionKeyImmutability:
         key = SessionKey(issue=issue, task=TaskKind.CODE)
 
         with pytest.raises(AttributeError):
-            key.task = TaskKind.REVIEW
+            key.task = TaskKind.REVIEW  # type: ignore
 
     def test_cannot_modify_issue(self):
         """SessionKey.issue cannot be modified."""
@@ -210,4 +210,4 @@ class TestSessionKeyImmutability:
         key = SessionKey(issue=issue, task=TaskKind.CODE)
 
         with pytest.raises(AttributeError):
-            key.issue = FakeIssueKey("M1-012")
+            key.issue = FakeIssueKey("M1-012")  # type: ignore

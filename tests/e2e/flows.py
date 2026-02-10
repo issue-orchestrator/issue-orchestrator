@@ -272,7 +272,7 @@ class E2EFlow:
             return None
         # Extract port from snapshot provider URL (e.g., http://localhost:19080/api/snapshot)
         # noqa: SLF001 - E2E test infrastructure needs port from provider for control API
-        url = self.watcher._snapshot_provider.url  # noqa: SLF001
+        url = self.watcher._snapshot_provider.url  # noqa: SLF001  # type: ignore
         from urllib.parse import urlparse
         parsed = urlparse(url)
         return parsed.port
@@ -362,7 +362,7 @@ class E2EFlow:
 
     async def event(
         self,
-        event_type: str | "EventName",
+        event_type: str | "EventName",  # type: ignore
         predicate: Callable[[dict], bool] | None = None,
         timeout_s: float = 60,
     ) -> None:
@@ -372,7 +372,7 @@ class E2EFlow:
     async def issue_event(
         self,
         issue: IssueKey,
-        event_type: str | "EventName",
+        event_type: str | "EventName",  # type: ignore
         predicate: Callable[[dict], bool] | None = None,
         timeout_s: float = 60,
     ) -> None:

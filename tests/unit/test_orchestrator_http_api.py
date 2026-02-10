@@ -47,7 +47,7 @@ def test_request_refreshes_base_url_on_request_error():
     api = OrchestratorHttpApi(
         base_url_provider=lambda: "http://old",
         refresh_base_url=lambda: "http://new",
-        client=FlakyClient(),
+        client=FlakyClient(),  # type: ignore
     )
 
     assert api.status() == {"ok": True}
@@ -80,7 +80,7 @@ def test_client_requests_are_serialized():
     client = ConcurrencyClient()
     api = OrchestratorHttpApi(
         base_url_provider=lambda: "http://test",
-        client=client,
+        client=client,  # type: ignore
     )
 
     def worker():
@@ -118,7 +118,7 @@ async def test_async_request_refreshes_base_url_on_request_error():
     api = OrchestratorAsyncHttpApi(
         base_url_provider=lambda: "http://old",
         refresh_base_url=lambda: "http://new",
-        client=FlakyAsyncClient(),
+        client=FlakyAsyncClient(),  # type: ignore
     )
 
     assert await api.status() == {"ok": True}
@@ -152,7 +152,7 @@ async def test_async_client_allows_concurrent_requests():
     client = AsyncConcurrencyClient()
     api = OrchestratorAsyncHttpApi(
         base_url_provider=lambda: "http://test",
-        client=client,
+        client=client,  # type: ignore
     )
 
     task1 = asyncio.create_task(api.status())

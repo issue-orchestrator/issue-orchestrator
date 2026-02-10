@@ -34,7 +34,7 @@ def test_queue_changed_event_payload_shape():
         Issue(number=2, title="New", labels=[]),
     ]
 
-    emit_queue_changes(events, state, new_queue)
+    emit_queue_changes(events, state, new_queue)  # type: ignore
 
     matches = events.get_events_by_name(EventName.QUEUE_CHANGED)
     assert len(matches) == 1
@@ -145,7 +145,7 @@ def test_stale_persistent_detected_payload_shape():
     config.stale_escalation_ticks = 2
     stale_issues = [Issue(number=7, title="Stale", labels=["in-progress"])]
 
-    track_stale_ticks(config, events, context, state, stale_issues=stale_issues)
+    track_stale_ticks(config, events, context, state, stale_issues=stale_issues)  # type: ignore
 
     persistent = events.get_events_by_name(EventName.PERSISTENT_STALE_DETECTED)
     assert len(persistent) == 1

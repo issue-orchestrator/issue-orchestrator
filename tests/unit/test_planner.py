@@ -176,7 +176,7 @@ class TestProviderResilienceLabels:
         plan = planner.plan(snapshot)
 
         removed = [a for a in plan.actions if getattr(a, "action_type", None) == ActionType.REMOVE_LABEL]
-        removed_numbers = {a.issue_number for a in removed}
+        removed_numbers = {a.issue_number for a in removed}  # type: ignore
         assert removed_numbers == {1, 2, 3}
 
     def test_empty_plan_when_at_capacity(self):
@@ -264,7 +264,7 @@ class TestPlanIssues:
 
         # Should only plan issue 2, not issue 1 (already active)
         assert plan.action_count == 1
-        assert plan.actions[0].number == 2
+        assert plan.actions[0].number == 2  # type: ignore
 
 
 class TestObservedCompletionLabels:
@@ -358,9 +358,9 @@ class TestPlanReviews:
         plan = planner.plan(snapshot)
 
         # Should have review launch action
-        review_actions = [a for a in plan.actions if a.session_type == SessionType.REVIEW]
+        review_actions = [a for a in plan.actions if a.session_type == SessionType.REVIEW]  # type: ignore
         assert len(review_actions) == 1
-        assert review_actions[0].number == 100
+        assert review_actions[0].number == 100  # type: ignore
 
 
 class TestPlanHelpers:
@@ -479,7 +479,7 @@ class TestPlanDiscoveredReviews:
 
         snapshot = make_snapshot(
             discovered_reviews=(discovered,),
-            pending_reviews=(),  # Not already queued
+            pending_reviews=(),  # Not already queued  # type: ignore
         )
 
         plan = planner.plan(snapshot)
@@ -488,10 +488,10 @@ class TestPlanDiscoveredReviews:
         queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REVIEW]
         assert len(queue_actions) == 1
         action = queue_actions[0]
-        assert action.issue_number == 42
-        assert action.pr_number == 100
-        assert action.pr_url == "https://github.com/test/repo/pull/100"
-        assert action.branch_name == "feature/issue-42"
+        assert action.issue_number == 42  # type: ignore
+        assert action.pr_number == 100  # type: ignore
+        assert action.pr_url == "https://github.com/test/repo/pull/100"  # type: ignore
+        assert action.branch_name == "feature/issue-42"  # type: ignore
 
     def test_skips_already_queued_reviews(self):
         """Planner skips discovered reviews that are already in pending_reviews."""
@@ -520,7 +520,7 @@ class TestPlanDiscoveredReviews:
 
         snapshot = make_snapshot(
             discovered_reviews=(discovered,),
-            pending_reviews=(already_pending,),
+            pending_reviews=(already_pending,),  # type: ignore
         )
 
         plan = planner.plan(snapshot)
@@ -564,7 +564,7 @@ class TestPlanDiscoveredReviews:
 
         snapshot = make_snapshot(
             discovered_reviews=(discovered,),
-            pending_reviews=(),
+            pending_reviews=(),  # type: ignore
         )
 
         plan = planner.plan(snapshot)
@@ -596,7 +596,7 @@ class TestPlanDiscoveredReviews:
 
         snapshot = make_snapshot(
             discovered_reviews=(discovered,),
-            pending_reviews=(),
+            pending_reviews=(),  # type: ignore
         )
 
         plan = planner.plan(snapshot)
@@ -604,7 +604,7 @@ class TestPlanDiscoveredReviews:
         # Find the AddLabelAction for pr-pending
         add_label_actions = [
             a for a in plan.actions
-            if a.action_type == ActionType.ADD_LABEL and a.label == "pr-pending"
+            if a.action_type == ActionType.ADD_LABEL and a.label == "pr-pending"  # type: ignore
         ]
         assert len(add_label_actions) == 1
         action = add_label_actions[0]
@@ -652,9 +652,9 @@ class TestPlanTriageIssueCreation:
         create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
         assert len(create_actions) == 1
         action = create_actions[0]
-        assert "Triage Batch Review" in action.title
-        assert action.pr_count == 3
-        assert "agent:triage" in action.labels
+        assert "Triage Batch Review" in action.title  # type: ignore
+        assert action.pr_count == 3  # type: ignore
+        assert "agent:triage" in action.labels  # type: ignore
 
     def test_no_triage_issue_below_threshold(self):
         """Planner produces no CreateTriageIssueAction when below threshold."""
@@ -760,7 +760,7 @@ class TestPlanTriageIssueCreation:
 
         create_actions = [a for a in plan.actions if a.action_type == ActionType.CREATE_TRIAGE_ISSUE]
         assert len(create_actions) == 1
-        body = create_actions[0].body
+        body = create_actions[0].body  # type: ignore
         assert "PR #10" in body
         assert "Fix bug A" in body
         assert "PR #20" in body
@@ -807,11 +807,11 @@ class TestPlanTriageIssueCreation:
         action = create_actions[0]
 
         # Should have agent label, explicit labels, and inherited labels
-        assert "agent:triage" in action.labels
-        assert "needs-batch-review" in action.labels
-        assert "io-e2e-test-data" in action.labels  # Inherited (was in source_labels)
-        assert "team:backend" not in action.labels  # Not inherited (not in source_labels)
-        assert action.title.startswith("[P2-000]")
+        assert "agent:triage" in action.labels  # type: ignore
+        assert "needs-batch-review" in action.labels  # type: ignore
+        assert "io-e2e-test-data" in action.labels  # Inherited (was in source_labels)  # type: ignore
+        assert "team:backend" not in action.labels  # Not inherited (not in source_labels)  # type: ignore
+        assert action.title.startswith("[P2-000]")  # type: ignore
 
     def test_triage_issue_inherits_milestone_latest(self):
         """Planner picks latest milestone from source issues."""
@@ -847,7 +847,7 @@ class TestPlanTriageIssueCreation:
         action = create_actions[0]
 
         # Should pick highest milestone number (3 = M3)
-        assert action.milestone == 3
+        assert action.milestone == 3  # type: ignore
 
     def test_triage_issue_inherits_milestone_earliest(self):
         """Planner picks earliest milestone from source issues."""
@@ -883,7 +883,7 @@ class TestPlanTriageIssueCreation:
         action = create_actions[0]
 
         # Should pick lowest milestone number (1 = M1)
-        assert action.milestone == 1
+        assert action.milestone == 1  # type: ignore
 
 
 class TestPlanDiscoveredReworks:
@@ -912,7 +912,7 @@ class TestPlanDiscoveredReworks:
 
         snapshot = make_snapshot(
             discovered_reworks=(discovered,),
-            pending_reworks=(),  # Not already queued
+            pending_reworks=(),  # Not already queued  # type: ignore
         )
 
         plan = planner.plan(snapshot)
@@ -921,8 +921,8 @@ class TestPlanDiscoveredReworks:
         queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REWORK]
         assert len(queue_actions) == 1
         action = queue_actions[0]
-        assert action.issue_number == 42
-        assert action.rework_cycle == 2
+        assert action.issue_number == 42  # type: ignore
+        assert action.rework_cycle == 2  # type: ignore
 
     def test_skips_already_queued_reworks(self):
         """Planner skips discovered reworks that are already in pending_reworks."""
@@ -951,7 +951,7 @@ class TestPlanDiscoveredReworks:
 
         snapshot = make_snapshot(
             discovered_reworks=(discovered,),
-            pending_reworks=(already_pending,),
+            pending_reworks=(already_pending,),  # type: ignore
         )
 
         plan = planner.plan(snapshot)
@@ -993,9 +993,9 @@ class TestPlanDiscoveredEscalations:
         escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
         assert len(escalate_actions) == 1
         action = escalate_actions[0]
-        assert action.issue_number == 42
-        assert action.pr_number == 100
-        assert action.rework_cycles == 2  # rework_cycle - 1
+        assert action.issue_number == 42  # type: ignore
+        assert action.pr_number == 100  # type: ignore
+        assert action.rework_cycles == 2  # rework_cycle - 1  # type: ignore
 
     def test_no_escalate_actions_when_no_discovered_escalations(self):
         """Planner produces no escalate actions when no discovered escalations."""
@@ -1050,8 +1050,8 @@ class TestPlanDiscoveredFailures:
         triage_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_TRIAGE]
         assert len(triage_actions) == 1
         action = triage_actions[0]
-        assert action.issue_number == 42
-        assert "failed" in action.title
+        assert action.issue_number == 42  # type: ignore
+        assert "failed" in action.title  # type: ignore
 
     def test_no_triage_action_when_disabled(self):
         """Planner produces no triage actions when triage_review_on_failure is disabled."""
@@ -1196,12 +1196,12 @@ class TestPlanCleanups:
         cleanup_actions = [a for a in plan.actions if a.action_type == ActionType.CLEANUP_SESSION]
         assert len(cleanup_actions) == 1
         action = cleanup_actions[0]
-        assert action.issue_number == 42
-        assert action.pr_number == 100
-        assert action.terminal_id == "session-42"
-        assert action.worktree_path == "/tmp/worktree-42"
-        assert action.close_tabs is True
-        assert action.remove_worktrees is True
+        assert action.issue_number == 42  # type: ignore
+        assert action.pr_number == 100  # type: ignore
+        assert action.terminal_id == "session-42"  # type: ignore
+        assert action.worktree_path == "/tmp/worktree-42"  # type: ignore
+        assert action.close_tabs is True  # type: ignore
+        assert action.remove_worktrees is True  # type: ignore
 
     def test_no_cleanup_when_pr_not_reviewed(self):
         """Planner produces no CleanupSessionAction when PR is not reviewed."""
@@ -1271,8 +1271,8 @@ class TestPlanCleanups:
 
         cleanup_actions = [a for a in plan.actions if a.action_type == ActionType.CLEANUP_SESSION]
         assert len(cleanup_actions) == 1
-        assert cleanup_actions[0].close_tabs is False
-        assert cleanup_actions[0].remove_worktrees is True
+        assert cleanup_actions[0].close_tabs is False  # type: ignore
+        assert cleanup_actions[0].remove_worktrees is True  # type: ignore
 
 
 # =============================================================================
@@ -1321,8 +1321,8 @@ class TestActionPriority:
         # Should launch review, NOT issue (only 1 slot available)
         launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
         assert len(launch_actions) == 1
-        assert launch_actions[0].session_type == SessionType.REVIEW
-        assert launch_actions[0].number == 100
+        assert launch_actions[0].session_type == SessionType.REVIEW  # type: ignore
+        assert launch_actions[0].number == 100  # type: ignore
 
     def test_reworks_take_priority_over_triage(self):
         """Reworks are launched before triage when both are available."""
@@ -1372,7 +1372,7 @@ class TestActionPriority:
         # Should launch rework (priority over triage)
         launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
         assert len(launch_actions) == 1
-        assert launch_actions[0].session_type == SessionType.REWORK
+        assert launch_actions[0].session_type == SessionType.REWORK  # type: ignore
 
     def test_issues_launch_when_pending_reviews_exist_but_no_review_launches(self):
         """Pending reviews should not starve issue work when review launches are skipped."""
@@ -1404,7 +1404,7 @@ class TestActionPriority:
         # Should launch issues because no review launches were started this tick
         issue_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == SessionType.ISSUE
+            if a.session_type == SessionType.ISSUE  # type: ignore
         ]
         assert len(issue_actions) == 2
 
@@ -1443,11 +1443,11 @@ class TestActionPriority:
 
         issue_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == SessionType.ISSUE
+            if a.session_type == SessionType.ISSUE  # type: ignore
         ]
         review_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == SessionType.REVIEW
+            if a.session_type == SessionType.REVIEW  # type: ignore
         ]
         assert len(review_actions) == 1
         assert len(issue_actions) == 0
@@ -1470,7 +1470,7 @@ class TestActionPriority:
         # Should launch issues since nothing else is pending
         issue_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == SessionType.ISSUE
+            if a.session_type == SessionType.ISSUE  # type: ignore
         ]
         assert len(issue_actions) == 2
 
@@ -1525,7 +1525,7 @@ class TestEdgeCases:
         # Also produces AddLabel actions for pr-pending
         label_actions = [
             a for a in plan.actions
-            if a.action_type == ActionType.ADD_LABEL and a.label == "pr-pending"
+            if a.action_type == ActionType.ADD_LABEL and a.label == "pr-pending"  # type: ignore
         ]
         assert len(label_actions) == 3
 
@@ -1551,7 +1551,7 @@ class TestEdgeCases:
         # Should have AddLabelAction for pr-pending but NO QueueReviewAction
         label_actions = [
             a for a in plan.actions
-            if a.action_type == ActionType.ADD_LABEL and a.label == "pr-pending"
+            if a.action_type == ActionType.ADD_LABEL and a.label == "pr-pending"  # type: ignore
         ]
         assert len(label_actions) == 1
 
@@ -1629,12 +1629,12 @@ class TestEdgeCases:
 
         issue_launches = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == SessionType.ISSUE
+            if a.session_type == SessionType.ISSUE  # type: ignore
         ]
 
         # Issue 42 is excluded (in discovered_reviews)
         # Issue 43 could be launched, but check what numbers actually launched
-        launched_numbers = {a.number for a in issue_launches}
+        launched_numbers = {a.number for a in issue_launches}  # type: ignore
         assert 42 not in launched_numbers, "Issue 42 should not be launched (has discovered review)"
 
         # Issue 43 may or may not launch depending on whether pending_reviews
@@ -1663,7 +1663,7 @@ class TestEdgeCases:
 
         escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
         assert len(escalate_actions) == 2
-        assert {a.issue_number for a in escalate_actions} == {1, 2}
+        assert {a.issue_number for a in escalate_actions} == {1, 2}  # type: ignore
 
     def test_max_capacity_reached_mid_planning(self):
         """Actions respect capacity even when multiple types compete."""
@@ -1719,7 +1719,7 @@ class TestEdgeCases:
         # Should launch exactly 2 sessions (max capacity), all reviews (higher priority)
         launch_actions = plan.actions_of_type(ActionType.LAUNCH_SESSION)
         assert len(launch_actions) == 2
-        assert all(a.session_type == SessionType.REVIEW for a in launch_actions)
+        assert all(a.session_type == SessionType.REVIEW for a in launch_actions)  # type: ignore
 
 
 class TestPlanQueueActionsOnlyPhase:
@@ -1764,7 +1764,7 @@ class TestPlanQueueActionsOnlyPhase:
 
         label_actions = [
             a for a in plan.actions
-            if a.action_type == ActionType.ADD_LABEL and a.label == "pr-pending"
+            if a.action_type == ActionType.ADD_LABEL and a.label == "pr-pending"  # type: ignore
         ]
         assert len(label_actions) == 1
 
@@ -1897,12 +1897,12 @@ class TestReworkEscalationWithinReworkPlanning:
         escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
         launch_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == SessionType.REWORK
+            if a.session_type == SessionType.REWORK  # type: ignore
         ]
 
         assert len(escalate_actions) == 1
         assert len(launch_actions) == 0
-        assert escalate_actions[0].issue_number == 42
+        assert escalate_actions[0].issue_number == 42  # type: ignore
 
     def test_rework_launches_when_under_max_cycles(self):
         """Rework is launched when under max cycles."""
@@ -1935,13 +1935,13 @@ class TestReworkEscalationWithinReworkPlanning:
         # Should launch, not escalate
         launch_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == SessionType.REWORK
+            if a.session_type == SessionType.REWORK  # type: ignore
         ]
         escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
 
         assert len(launch_actions) == 1
         assert len(escalate_actions) == 0
-        assert launch_actions[0].number == 42
+        assert launch_actions[0].number == 42  # type: ignore
 
 
 class TestSnapshotFromState:
@@ -2113,11 +2113,11 @@ class TestMultiplePendingTypesInteraction:
         # Issues should NOT be launched because pending review/triage launches started this tick.
         issue_actions = [
             a for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
-            if a.session_type == SessionType.ISSUE
+            if a.session_type == SessionType.ISSUE  # type: ignore
         ]
         assert len(issue_actions) == 0
         assert any(
-            a.session_type in {SessionType.REVIEW, SessionType.TRIAGE}
+            a.session_type in {SessionType.REVIEW, SessionType.TRIAGE}  # type: ignore
             for a in plan.actions_of_type(ActionType.LAUNCH_SESSION)
         )
 
@@ -2179,13 +2179,13 @@ class TestMultiplePendingTypesInteraction:
         assert len(launch_actions) == 3
 
         # Priority order: review first, then rework, then triage
-        types = [a.session_type for a in launch_actions]
+        types = [a.session_type for a in launch_actions]  # type: ignore
         assert types[0] == SessionType.REVIEW
         assert types[1] == SessionType.REWORK
         assert types[2] == SessionType.TRIAGE
 
         # No issue launches (pending work exists)
-        issue_launches = [a for a in launch_actions if a.session_type == SessionType.ISSUE]
+        issue_launches = [a for a in launch_actions if a.session_type == SessionType.ISSUE]  # type: ignore
         assert len(issue_launches) == 0
 
 
@@ -2232,8 +2232,8 @@ class TestPlanStaleInProgressCleanup:
         # Should have a RemoveLabel action for issue #1
         remove_actions = plan.actions_of_type(ActionType.REMOVE_LABEL)
         assert len(remove_actions) == 1
-        assert remove_actions[0].issue_number == 1
-        assert remove_actions[0].label == "in-progress"
+        assert remove_actions[0].issue_number == 1  # type: ignore
+        assert remove_actions[0].label == "in-progress"  # type: ignore
         assert "stale" in remove_actions[0].reason.lower()
 
     def test_multiple_stale_issues_generate_multiple_actions(self):
@@ -2259,7 +2259,7 @@ class TestPlanStaleInProgressCleanup:
         assert len(remove_actions) == 3
 
         # Verify all issue numbers are covered
-        issue_numbers = {a.issue_number for a in remove_actions}
+        issue_numbers = {a.issue_number for a in remove_actions}  # type: ignore
         assert issue_numbers == {1, 2, 3}
 
     def test_stale_cleanup_runs_when_paused(self):

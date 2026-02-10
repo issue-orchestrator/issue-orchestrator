@@ -112,7 +112,7 @@ class TestTriageManifest:
             "data_dir": "some-dir",
             "prs": [],
         }
-        manifest = TriageManifest.from_dict(data)
+        manifest = TriageManifest.from_dict(data)  # type: ignore
 
         assert manifest.session_type == "triage"
         assert manifest.generated_at == "2025-01-21T12:00:00Z"
@@ -138,7 +138,7 @@ class TestTriageManifest:
                 }
             ],
         }
-        manifest = TriageManifest.from_dict(data)
+        manifest = TriageManifest.from_dict(data)  # type: ignore
 
         assert len(manifest.prs) == 1
         pr = manifest.prs[0]
@@ -159,7 +159,7 @@ class TestTriageManifest:
                 }
             ],
         }
-        manifest = TriageManifest.from_dict(data)
+        manifest = TriageManifest.from_dict(data)  # type: ignore
 
         pr = manifest.prs[0]
         assert pr.files.diff == ""

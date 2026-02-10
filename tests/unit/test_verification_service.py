@@ -74,7 +74,7 @@ class FakeClock:
 
 def make_check_fn(
     results: list[tuple[bool, Any]],
-) -> tuple[callable, list[int]]:
+) -> tuple[callable, list[int]]:  # type: ignore
     """Create a check function that returns pre-defined results.
 
     Returns the check function and a list to track call counts.
@@ -94,7 +94,7 @@ def make_check_fn(
 
 def make_failing_check(
     exceptions: list[Exception],
-) -> tuple[callable, list[int]]:
+) -> tuple[callable, list[int]]:  # type: ignore
     """Create a check function that raises pre-defined exceptions."""
     calls = []
 

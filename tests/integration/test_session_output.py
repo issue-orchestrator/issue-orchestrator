@@ -108,7 +108,7 @@ def test_session_output_manifest_and_validation_pointer(tmp_path: Path) -> None:
     processor = CompletionProcessor(
         label_adapter=DummyLabelAdapter(),
         pr_adapter=DummyPRAdapter(),
-        git_adapter=DummyGitAdapter(),
+        git_adapter=DummyGitAdapter(),  # type: ignore
         event_bus=None,
         session_output=session_output,
     )
@@ -226,7 +226,7 @@ def test_review_completion_writes_feedback_file(tmp_path: Path) -> None:
     processor = CompletionProcessor(
         label_adapter=DummyLabelAdapter(),
         pr_adapter=DummyPRAdapter(),
-        git_adapter=DummyGitAdapter(),
+        git_adapter=DummyGitAdapter(),  # type: ignore
         event_bus=None,
         session_output=session_output,
     )
@@ -273,7 +273,7 @@ def test_feedback_file_not_written_for_approved(tmp_path: Path) -> None:
     processor = CompletionProcessor(
         label_adapter=DummyLabelAdapter(),
         pr_adapter=DummyPRAdapter(),
-        git_adapter=DummyGitAdapter(),
+        git_adapter=DummyGitAdapter(),  # type: ignore
         event_bus=None,
         session_output=session_output,
     )

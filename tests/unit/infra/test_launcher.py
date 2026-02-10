@@ -107,8 +107,8 @@ class TestLaunchSubprocess:
         )
         assert result.launched is True
         assert result.status == "ok"
-        assert result.supervisor["pid"] == 42
-        assert result.supervisor["port"] == 8080
+        assert result.supervisor["pid"] == 42  # type: ignore
+        assert result.supervisor["port"] == 8080  # type: ignore
 
     def test_launch_blocked_by_doctor_error(self, mock_config, tmp_path):
         sv = _mock_supervisor()
@@ -135,7 +135,7 @@ class TestLaunchSubprocess:
         )
         assert result.launched is False
         assert result.status == "launch_error"
-        assert "port in use" in result.error
+        assert "port in use" in result.error  # type: ignore
 
     def test_launch_multi_instance(self, mock_config, tmp_path):
         mock_config.instances = 3
@@ -148,8 +148,8 @@ class TestLaunchSubprocess:
             tmp_path, mock_config, doctor_fn=_ok_doctor, supervisor_ops=sv
         )
         assert result.launched is True
-        assert "instances" in result.supervisor
-        assert len(result.supervisor["instances"]) == 2
+        assert "instances" in result.supervisor  # type: ignore
+        assert len(result.supervisor["instances"]) == 2  # type: ignore
 
     def test_launch_multi_instance_with_instance_id_starts_single(
         self, mock_config, tmp_path
@@ -168,4 +168,4 @@ class TestLaunchSubprocess:
         assert result.launched is True
         sv.start.assert_called_once()
         sv.start_instances.assert_not_called()
-        assert result.supervisor["pid"] == 42
+        assert result.supervisor["pid"] == 42  # type: ignore

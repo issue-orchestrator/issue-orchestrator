@@ -80,7 +80,7 @@ class TestQueueChangeEvents:
         events = MagicMock(spec=EventSink)
         state = OrchestratorState()
         issues = [self.make_issue(1), self.make_issue(2)]
-        state.cached_queue_issues = issues
+        state.cached_queue_issues = issues  # type: ignore
 
         plan_applier = MagicMock(spec=OrchestratorSupport)
         plan_applier.state = state

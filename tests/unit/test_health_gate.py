@@ -77,7 +77,7 @@ class TestHealthDecisionFactoryMethods:
         decision = HealthDecision.ok()
 
         with pytest.raises(AttributeError):
-            decision.can_proceed = False
+            decision.can_proceed = False  # type: ignore
 
 
 # ============================================================================
@@ -152,8 +152,8 @@ class TestCapacityConstraintBehavior:
 
         assert decision.can_proceed is False
         assert decision.reason == "at_capacity"
-        assert decision.details["active_sessions"] == 3
-        assert decision.details["max_concurrent"] == 3
+        assert decision.details["active_sessions"] == 3  # type: ignore
+        assert decision.details["max_concurrent"] == 3  # type: ignore
 
     def test_over_capacity_blocks_new_sessions(self):
         """When over max capacity, no new sessions can be launched."""
@@ -219,8 +219,8 @@ class TestRateLimitBehavior:
 
         assert decision.can_proceed is False
         assert decision.reason == "rate_limit_low"
-        assert decision.details["remaining"] == 50
-        assert decision.details["threshold"] == 100
+        assert decision.details["remaining"] == 50  # type: ignore
+        assert decision.details["threshold"] == 100  # type: ignore
 
     def test_rate_limit_at_threshold_blocks(self):
         """Rate limit exactly at threshold blocks (threshold is minimum required)."""
@@ -508,8 +508,8 @@ class TestEdgeCases:
 
         assert decision.can_proceed is False
         assert decision.reason == "rate_limit_low"
-        assert decision.details["remaining"] == 500
-        assert decision.details["threshold"] == 1000
+        assert decision.details["remaining"] == 500  # type: ignore
+        assert decision.details["threshold"] == 1000  # type: ignore
 
     def test_rate_limit_zero_remaining_blocks(self):
         """Zero remaining API calls blocks new sessions."""
@@ -526,7 +526,7 @@ class TestEdgeCases:
 
         assert decision.can_proceed is False
         assert decision.reason == "rate_limit_low"
-        assert decision.details["remaining"] == 0
+        assert decision.details["remaining"] == 0  # type: ignore
 
 
 # ============================================================================

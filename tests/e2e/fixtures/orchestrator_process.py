@@ -55,7 +55,7 @@ class OrchestratorProcess:
         self._stop_logging = False
         self._log_file: Path | None = None
         self._orchestrator_log_file: Path | None = None
-        self._log_handle: "open | None" = None
+        self._log_handle: "open | None" = None  # type: ignore
         self._config_path: Path | None = None
         self._last_log_time: float | None = None
 
@@ -236,21 +236,21 @@ class OrchestratorProcess:
         print(f"  {'='*60}\n", flush=True)
 
         # Write header to log file
-        self._log_handle.write(f"E2E Test Run: {timestamp}\n")
-        self._log_handle.write(f"Orchestrator file: {orchestrator_log_file}\n")
-        self._log_handle.write(f"Worktrees: {worktree_dir}\n")
-        self._log_handle.write(f"Claude logs: {claude_logs}\n")
-        self._log_handle.write(f"Keep artifacts: {_keep_artifacts()}\n")
-        self._log_handle.write(f"Keep remote: {_keep_remote_artifacts()}\n")
-        self._log_handle.write(f"E2E_KEEP_ARTIFACTS: {os.environ.get('E2E_KEEP_ARTIFACTS', '')}\n")
-        self._log_handle.write(f"E2E_KEEP_REMOTE_ARTIFACTS: {os.environ.get('E2E_KEEP_REMOTE_ARTIFACTS', '')}\n")
-        self._log_handle.write(f"E2E_CONTROL_API_PORT: {os.environ.get('E2E_CONTROL_API_PORT', '')}\n")
+        self._log_handle.write(f"E2E Test Run: {timestamp}\n")  # type: ignore
+        self._log_handle.write(f"Orchestrator file: {orchestrator_log_file}\n")  # type: ignore
+        self._log_handle.write(f"Worktrees: {worktree_dir}\n")  # type: ignore
+        self._log_handle.write(f"Claude logs: {claude_logs}\n")  # type: ignore
+        self._log_handle.write(f"Keep artifacts: {_keep_artifacts()}\n")  # type: ignore
+        self._log_handle.write(f"Keep remote: {_keep_remote_artifacts()}\n")  # type: ignore
+        self._log_handle.write(f"E2E_KEEP_ARTIFACTS: {os.environ.get('E2E_KEEP_ARTIFACTS', '')}\n")  # type: ignore
+        self._log_handle.write(f"E2E_KEEP_REMOTE_ARTIFACTS: {os.environ.get('E2E_KEEP_REMOTE_ARTIFACTS', '')}\n")  # type: ignore
+        self._log_handle.write(f"E2E_CONTROL_API_PORT: {os.environ.get('E2E_CONTROL_API_PORT', '')}\n")  # type: ignore
         if os.environ.get("E2E_CLAUDE_ARGS"):
-            self._log_handle.write(f"E2E_CLAUDE_ARGS: {os.environ.get('E2E_CLAUDE_ARGS')}\n")
+            self._log_handle.write(f"E2E_CLAUDE_ARGS: {os.environ.get('E2E_CLAUDE_ARGS')}\n")  # type: ignore
         if os.environ.get("E2E_CLAUDE_PROMPT_MODE"):
-            self._log_handle.write(f"E2E_CLAUDE_PROMPT_MODE: {os.environ.get('E2E_CLAUDE_PROMPT_MODE')}\n")
-        self._log_handle.write("=" * 60 + "\n\n")
-        self._log_handle.flush()
+            self._log_handle.write(f"E2E_CLAUDE_PROMPT_MODE: {os.environ.get('E2E_CLAUDE_PROMPT_MODE')}\n")  # type: ignore
+        self._log_handle.write("=" * 60 + "\n\n")  # type: ignore
+        self._log_handle.flush()  # type: ignore
 
         # Prefer project .venv (has e2e deps like fastapi); fall back to pytest venv
         preferred_bin = self.project_root / ".venv" / "bin" / "issue-orchestrator"
@@ -307,8 +307,8 @@ class OrchestratorProcess:
             print(f"  [E2E] E2E_DRY_RUN_PUSH={env['E2E_DRY_RUN_PUSH']}", flush=True)
 
         print(f"  [E2E] Starting orchestrator: {' '.join(cmd)}", flush=True)
-        self._log_handle.write(f"Command: {' '.join(cmd)}\n\n")
-        self._log_handle.flush()
+        self._log_handle.write(f"Command: {' '.join(cmd)}\n\n")  # type: ignore
+        self._log_handle.flush()  # type: ignore
 
         self.process = subprocess.Popen(
             cmd,

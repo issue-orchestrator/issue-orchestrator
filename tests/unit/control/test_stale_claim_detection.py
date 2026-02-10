@@ -87,7 +87,7 @@ class TestStaleClaims:
             if a.action_type == ActionType.REMOVE_LABEL
         ]
         assert len(remove_actions) == 1
-        assert remove_actions[0].label == labels.IO_CLAIMED
+        assert remove_actions[0].label == labels.IO_CLAIMED  # type: ignore
 
         # Check add label action
         add_actions = [
@@ -95,7 +95,7 @@ class TestStaleClaims:
             if a.action_type == ActionType.ADD_LABEL
         ]
         assert len(add_actions) == 1
-        assert add_actions[0].label == labels.BLOCKED_STALE_CLAIM
+        assert add_actions[0].label == labels.BLOCKED_STALE_CLAIM  # type: ignore
 
     def test_adds_stale_claim_label(self):
         """Adds blocked:stale-claim label to stale claimed issues."""
@@ -118,7 +118,7 @@ class TestStaleClaims:
             and getattr(a, "issue_number", None) == 123
         ]
         assert len(add_label_actions) == 1
-        assert add_label_actions[0].label == labels.BLOCKED_STALE_CLAIM
+        assert add_label_actions[0].label == labels.BLOCKED_STALE_CLAIM  # type: ignore
 
     def test_removes_claimed_label(self):
         """Removes io:claimed label from stale claimed issues."""
@@ -141,7 +141,7 @@ class TestStaleClaims:
             and getattr(a, "issue_number", None) == 456
         ]
         assert len(remove_label_actions) == 1
-        assert remove_label_actions[0].label == labels.IO_CLAIMED
+        assert remove_label_actions[0].label == labels.IO_CLAIMED  # type: ignore
 
     def test_ignores_valid_claims(self):
         """Does not plan actions for issues not in stale_claim_issues."""

@@ -343,7 +343,7 @@ class TestFindExistingConfig:
         path, config = find_existing_config(tmp_path)
 
         assert path == config_file
-        assert config["repo"]["name"] == "owner/repo"
+        assert config["repo"]["name"] == "owner/repo"  # type: ignore
 
     def test_finds_config_in_hidden_dir(self, tmp_path):
         """Test finding config in .issue-orchestrator/config directory."""
@@ -378,7 +378,7 @@ class TestFindExistingConfig:
         path, config = find_existing_config(tmp_path)
 
         assert path == default_config
-        assert config["repo"]["name"] == "default/repo"
+        assert config["repo"]["name"] == "default/repo"  # type: ignore
 
 
 class TestScanExistingRepo:

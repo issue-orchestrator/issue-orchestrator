@@ -142,7 +142,7 @@ class TestExternalIdWithNoResolver:
         dep = report.unknown[0]
         assert dep.external_id == "M1-001"
         assert dep.state == DependencyState.UNKNOWN
-        assert "No resolver configured" in dep.error
+        assert "No resolver configured" in dep.error  # type: ignore
 
     def test_external_id_with_resolver_but_no_repo_returns_unknown(self, checker, events, resolver):
         """External ID with resolver but no repo configured returns UNKNOWN."""
@@ -162,7 +162,7 @@ class TestExternalIdWithNoResolver:
 
         assert not report.runnable
         assert len(report.unknown) == 1
-        assert "No resolver configured" in report.unknown[0].error
+        assert "No resolver configured" in report.unknown[0].error  # type: ignore
 
 
 class TestExternalIdResolution:
@@ -251,8 +251,8 @@ class TestExternalIdResolution:
         assert len(report.unknown) == 1
         dep = report.unknown[0]
         assert dep.external_id == "M4-001"
-        assert "non-int handle" in dep.error.lower()
-        assert "str" in dep.error
+        assert "non-int handle" in dep.error.lower()  # type: ignore
+        assert "str" in dep.error  # type: ignore
 
 
 # =============================================================================

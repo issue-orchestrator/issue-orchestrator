@@ -139,7 +139,7 @@ def make_handler(
     return CompletionHandler(
         config=config,
         events=events if events is not None else NullEventSink(),
-        repository_host=repository_host if repository_host is not None else make_repository_host(),
+        repository_host=repository_host if repository_host is not None else make_repository_host(),  # type: ignore
         get_issue_machine_fn=lambda _issue: issue_machine,
         get_session_machine_fn=lambda _terminal_id: session_machine,
         get_review_machine_fn=lambda _pr_number: review_machine,
@@ -186,7 +186,7 @@ class TestHistoryEntryCreation:
 
         assert result.history_entry.pr_url is None
         assert result.history_entry.status == "failed"
-        assert "without PR" in result.history_entry.status_reason
+        assert "without PR" in result.history_entry.status_reason  # type: ignore
 
     def test_timed_out_session_records_timeout_info(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
@@ -200,8 +200,8 @@ class TestHistoryEntryCreation:
         result = handler.process_completion(session, SessionStatus.TIMED_OUT)
 
         assert result.history_entry.status == "timed_out"
-        assert "30" in result.history_entry.status_reason
-        assert "timeout" in result.history_entry.status_reason.lower()
+        assert "30" in result.history_entry.status_reason  # type: ignore
+        assert "timeout" in result.history_entry.status_reason.lower()  # type: ignore
 
     def test_blocked_session_records_blocked_reason(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
@@ -214,7 +214,7 @@ class TestHistoryEntryCreation:
         result = handler.process_completion(session, SessionStatus.BLOCKED)
 
         assert result.history_entry.status == "blocked"
-        assert "blocked" in result.history_entry.status_reason.lower()
+        assert "blocked" in result.history_entry.status_reason.lower()  # type: ignore
 
     def test_needs_human_session_records_reason(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
@@ -227,7 +227,7 @@ class TestHistoryEntryCreation:
         result = handler.process_completion(session, SessionStatus.NEEDS_HUMAN)
 
         assert result.history_entry.status == "needs_human"
-        assert "human" in result.history_entry.status_reason.lower()
+        assert "human" in result.history_entry.status_reason.lower()  # type: ignore
 
     def test_completed_with_critical_errors_records_failed_status(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
@@ -250,7 +250,7 @@ class TestHistoryEntryCreation:
 
         # History should show FAILED, not COMPLETED
         assert result.history_entry.status == "failed"
-        assert "push" in result.history_entry.status_reason.lower() or "pr" in result.history_entry.status_reason.lower()
+        assert "push" in result.history_entry.status_reason.lower() or "pr" in result.history_entry.status_reason.lower()  # type: ignore
 
     def test_completed_without_errors_records_completed_status(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
@@ -268,7 +268,7 @@ class TestHistoryEntryCreation:
         result = handler.process_completion(session, SessionStatus.COMPLETED)
 
         assert result.history_entry.status == "completed"
-        assert "PR created" in result.history_entry.status_reason
+        assert "PR created" in result.history_entry.status_reason  # type: ignore
 
 
 # =============================================================================

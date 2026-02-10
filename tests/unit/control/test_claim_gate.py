@@ -34,7 +34,7 @@ class TestVerifyBeforeWrite:
         """Returns True when we are the current winner."""
         claim_manager = MockClaimManager(is_winner=True)
         events = MockEventSink()
-        gate = ClaimGate(claim_manager, events)
+        gate = ClaimGate(claim_manager, events)  # type: ignore
 
         result = gate.verify_before_write(
             issue_number=42,
@@ -50,7 +50,7 @@ class TestVerifyBeforeWrite:
         """Returns False when we are not the current winner."""
         claim_manager = MockClaimManager(is_winner=False)
         events = MockEventSink()
-        gate = ClaimGate(claim_manager, events)
+        gate = ClaimGate(claim_manager, events)  # type: ignore
 
         result = gate.verify_before_write(
             issue_number=42,
@@ -65,7 +65,7 @@ class TestVerifyBeforeWrite:
         """Returns True when lease_id is None (no claim system)."""
         claim_manager = MockClaimManager(is_winner=False)
         events = MockEventSink()
-        gate = ClaimGate(claim_manager, events)
+        gate = ClaimGate(claim_manager, events)  # type: ignore
 
         result = gate.verify_before_write(
             issue_number=42,
@@ -81,7 +81,7 @@ class TestVerifyBeforeWrite:
         """Emits CLAIM_LOST_BEFORE_WRITE event when claim is lost."""
         claim_manager = MockClaimManager(is_winner=False)
         events = MockEventSink()
-        gate = ClaimGate(claim_manager, events)
+        gate = ClaimGate(claim_manager, events)  # type: ignore
 
         result = gate.verify_before_write(
             issue_number=42,
@@ -102,7 +102,7 @@ class TestVerifyBeforeWrite:
         """Does not emit event when we are the winner."""
         claim_manager = MockClaimManager(is_winner=True)
         events = MockEventSink()
-        gate = ClaimGate(claim_manager, events)
+        gate = ClaimGate(claim_manager, events)  # type: ignore
 
         result = gate.verify_before_write(
             issue_number=42,
@@ -121,7 +121,7 @@ class TestVerifyOrRaise:
         """Does not raise when we are the current winner."""
         claim_manager = MockClaimManager(is_winner=True)
         events = MockEventSink()
-        gate = ClaimGate(claim_manager, events)
+        gate = ClaimGate(claim_manager, events)  # type: ignore
 
         # Should not raise
         gate.verify_or_raise(
@@ -134,7 +134,7 @@ class TestVerifyOrRaise:
         """Raises ClaimLostError when we are not the winner."""
         claim_manager = MockClaimManager(is_winner=False)
         events = MockEventSink()
-        gate = ClaimGate(claim_manager, events)
+        gate = ClaimGate(claim_manager, events)  # type: ignore
 
         with pytest.raises(ClaimLostError) as exc_info:
             gate.verify_or_raise(
@@ -152,7 +152,7 @@ class TestVerifyOrRaise:
         """Does not raise when lease_id is None."""
         claim_manager = MockClaimManager(is_winner=False)
         events = MockEventSink()
-        gate = ClaimGate(claim_manager, events)
+        gate = ClaimGate(claim_manager, events)  # type: ignore
 
         # Should not raise even though is_winner=False
         gate.verify_or_raise(

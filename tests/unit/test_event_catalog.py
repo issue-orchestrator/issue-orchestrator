@@ -114,8 +114,8 @@ class TestInMemoryEventSink:
         """publish() should store events for inspection."""
         sink = InMemoryEventSink()
 
-        event1 = TraceEvent("tick.started", {"tick_id": 1})
-        event2 = TraceEvent("tick.completed", {"tick_id": 1})
+        event1 = TraceEvent("tick.started", {"tick_id": 1})  # type: ignore
+        event2 = TraceEvent("tick.completed", {"tick_id": 1})  # type: ignore
 
         sink.publish(event1)
         sink.publish(event2)
@@ -127,7 +127,7 @@ class TestInMemoryEventSink:
     def test_has_event_returns_true_when_present(self):
         """has_event() should return True if event was published."""
         sink = InMemoryEventSink()
-        sink.publish(TraceEvent("tick.started", {}))
+        sink.publish(TraceEvent("tick.started", {}))  # type: ignore
 
         assert sink.has_event("tick.started") is True
         assert sink.has_event("tick.completed") is False
@@ -135,9 +135,9 @@ class TestInMemoryEventSink:
     def test_get_events_filters_by_name(self):
         """get_events() should return only events with matching name."""
         sink = InMemoryEventSink()
-        sink.publish(TraceEvent("tick.started", {"tick_id": 1}))
-        sink.publish(TraceEvent("tick.completed", {"tick_id": 1}))
-        sink.publish(TraceEvent("tick.started", {"tick_id": 2}))
+        sink.publish(TraceEvent("tick.started", {"tick_id": 1}))  # type: ignore
+        sink.publish(TraceEvent("tick.completed", {"tick_id": 1}))  # type: ignore
+        sink.publish(TraceEvent("tick.started", {"tick_id": 2}))  # type: ignore
 
         started = sink.get_events("tick.started")
 
@@ -147,9 +147,9 @@ class TestInMemoryEventSink:
     def test_last_event_returns_most_recent(self):
         """last_event() should return the most recent matching event."""
         sink = InMemoryEventSink()
-        sink.publish(TraceEvent("tick.started", {"tick_id": 1}))
-        sink.publish(TraceEvent("tick.completed", {"tick_id": 1}))
-        sink.publish(TraceEvent("tick.started", {"tick_id": 2}))
+        sink.publish(TraceEvent("tick.started", {"tick_id": 1}))  # type: ignore
+        sink.publish(TraceEvent("tick.completed", {"tick_id": 1}))  # type: ignore
+        sink.publish(TraceEvent("tick.started", {"tick_id": 2}))  # type: ignore
 
         last = sink.last_event("tick.started")
 
@@ -159,16 +159,16 @@ class TestInMemoryEventSink:
     def test_last_event_returns_none_when_not_found(self):
         """last_event() should return None if no matching event."""
         sink = InMemoryEventSink()
-        sink.publish(TraceEvent("tick.started", {}))
+        sink.publish(TraceEvent("tick.started", {}))  # type: ignore
 
         assert sink.last_event("tick.completed") is None
 
     def test_event_names_returns_ordered_list(self):
         """event_names() should return names in order."""
         sink = InMemoryEventSink()
-        sink.publish(TraceEvent("orchestrator.started", {}))
-        sink.publish(TraceEvent("tick.started", {}))
-        sink.publish(TraceEvent("tick.completed", {}))
+        sink.publish(TraceEvent("orchestrator.started", {}))  # type: ignore
+        sink.publish(TraceEvent("tick.started", {}))  # type: ignore
+        sink.publish(TraceEvent("tick.completed", {}))  # type: ignore
 
         names = sink.event_names()
 
@@ -177,8 +177,8 @@ class TestInMemoryEventSink:
     def test_clear_removes_all_events(self):
         """clear() should remove all collected events."""
         sink = InMemoryEventSink()
-        sink.publish(TraceEvent("tick.started", {}))
-        sink.publish(TraceEvent("tick.completed", {}))
+        sink.publish(TraceEvent("tick.started", {}))  # type: ignore
+        sink.publish(TraceEvent("tick.completed", {}))  # type: ignore
 
         sink.clear()
 
@@ -188,7 +188,7 @@ class TestInMemoryEventSink:
     def test_events_returns_copy(self):
         """events property should return a copy, not the internal list."""
         sink = InMemoryEventSink()
-        sink.publish(TraceEvent("tick.started", {}))
+        sink.publish(TraceEvent("tick.started", {}))  # type: ignore
 
         events = sink.events
         events.clear()  # Modify the returned list

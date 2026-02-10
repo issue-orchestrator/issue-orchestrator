@@ -84,10 +84,10 @@ class TestSessionControllerRunning:
         """A running session should stay running."""
         processor = MockCompletionProcessor()
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
+            working_copy=StubWorkingCopy(),  # type: ignore
         )
 
         observation = SessionObservationResult.running(runtime_minutes=5.0)
@@ -112,10 +112,10 @@ class TestSessionControllerTerminated:
         processor = MockCompletionProcessor()
         processor.completion_record = None  # No completion record
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
+            working_copy=StubWorkingCopy(),  # type: ignore
         )
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
@@ -141,10 +141,10 @@ class TestSessionControllerTerminated:
             requested_actions=[RequestedAction.CREATE_PR],
         )
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
+            working_copy=StubWorkingCopy(),  # type: ignore
         )
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
@@ -170,10 +170,10 @@ class TestSessionControllerTerminated:
             blocked_reason="Waiting for API",
         )
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
+            working_copy=StubWorkingCopy(),  # type: ignore
         )
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
@@ -199,10 +199,10 @@ class TestSessionControllerTerminated:
             question="What API should I use?",
         )
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
+            working_copy=StubWorkingCopy(),  # type: ignore
         )
 
         observation = SessionObservationResult.terminated(runtime_minutes=10.0)
@@ -227,10 +227,10 @@ class TestSessionControllerTimeout:
         processor = MockCompletionProcessor()
         processor.completion_record = None  # No completion record
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
+            working_copy=StubWorkingCopy(),  # type: ignore
         )
 
         observation = SessionObservationResult.timed_out(
@@ -260,10 +260,10 @@ class TestSessionControllerTimeout:
             requested_actions=[RequestedAction.CREATE_PR],
         )
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
+            working_copy=StubWorkingCopy(),  # type: ignore
         )
 
         observation = SessionObservationResult.timed_out(
@@ -294,10 +294,10 @@ class TestSessionControllerTimeout:
             blocked_reason="External dependency",
         )
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
+            working_copy=StubWorkingCopy(),  # type: ignore
         )
 
         observation = SessionObservationResult.timed_out(
@@ -331,10 +331,10 @@ class TestSessionControllerReviewOutcomes:
             summary="LGTM",
         )
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
+            working_copy=StubWorkingCopy(),  # type: ignore
         )
 
         observation = SessionObservationResult.terminated(runtime_minutes=5.0)
@@ -357,10 +357,10 @@ class TestSessionControllerReviewOutcomes:
             summary="Needs work",
         )
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
+            working_copy=StubWorkingCopy(),  # type: ignore
         )
 
         observation = SessionObservationResult.terminated(runtime_minutes=5.0)
@@ -436,11 +436,11 @@ class TestSessionControllerValidationCaching:
         working_copy = MockWorkingCopy(head_sha="deadbeef1234567890")
 
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=working_copy,
-            command_runner=command_runner,
+            working_copy=working_copy,  # type: ignore
+            command_runner=command_runner,  # type: ignore
             validation_cmd="make test",
             validation_timeout_seconds=60,
         )
@@ -483,11 +483,11 @@ class TestSessionControllerValidationCaching:
         working_copy = MockWorkingCopy(head_sha="deadbeef1234567890")
 
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=working_copy,
-            command_runner=command_runner,
+            working_copy=working_copy,  # type: ignore
+            command_runner=command_runner,  # type: ignore
             validation_cmd="make test",
             validation_timeout_seconds=60,
         )
@@ -524,11 +524,11 @@ class TestSessionControllerValidationCaching:
 
         # No validation_cmd
         controller = SessionController(
-            completion_processor=processor,
+            completion_processor=processor,  # type: ignore
             events=NullEventSink(),
             session_output=FileSystemSessionOutput(),
-            working_copy=working_copy,
-            command_runner=command_runner,
+            working_copy=working_copy,  # type: ignore
+            command_runner=command_runner,  # type: ignore
             # validation_cmd not set
         )
 

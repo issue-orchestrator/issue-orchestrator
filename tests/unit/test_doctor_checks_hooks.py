@@ -123,7 +123,7 @@ class TestAiGate:
         assert result.status == "error"
         assert "Failed" in result.detail
         assert "2d ago" in result.detail
-        assert result.expandable["ran"] is False
+        assert result.expandable["ran"] is False  # type: ignore
 
     def test_ai_gate_cached_failure_warns_when_allowed(self, tmp_path, monkeypatch):
         """Test that cached failures show warning when dangerous_allow_failure=True."""
@@ -157,7 +157,7 @@ class TestAiGate:
         assert result is not None
         assert result.status == "warning"
         assert "allowed by config" in result.detail
-        assert result.expandable["ran"] is False
+        assert result.expandable["ran"] is False  # type: ignore
 
     def test_ai_gate_stale_runs_test_ai_gate(self, tmp_path, monkeypatch):
         """Test that stale AI gate test runs AI gate test."""
@@ -316,8 +316,8 @@ class TestAiGate:
         )
 
         assert result is not None
-        assert result.expandable["ran"] is True
-        assert result.expandable["triggered_by"] == "first run"
+        assert result.expandable["ran"] is True  # type: ignore
+        assert result.expandable["triggered_by"] == "first run"  # type: ignore
 
     def test_ai_gate_expandable_details(self, tmp_path, monkeypatch):
         """Test expandable details are populated correctly."""
@@ -350,7 +350,7 @@ class TestAiGate:
             hooks_ok=True,
         )
 
-        assert result.expandable is not None
-        assert "claude-code" in result.expandable["agents_tested"]
-        assert result.expandable["results"]["claude-code"]["success"] is True
-        assert "Blocked" in result.expandable["results"]["claude-code"]["message"]
+        assert result.expandable is not None  # type: ignore
+        assert "claude-code" in result.expandable["agents_tested"]  # type: ignore
+        assert result.expandable["results"]["claude-code"]["success"] is True  # type: ignore
+        assert "Blocked" in result.expandable["results"]["claude-code"]["message"]  # type: ignore

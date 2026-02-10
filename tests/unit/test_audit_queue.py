@@ -50,7 +50,7 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.BLOCKED
-        assert "blocked" in entry.detail
+        assert "blocked" in entry.detail  # type: ignore
 
     def test_blocked_failed_label_skips_issue(self, sample_config):
         """Issue with 'blocked-failed' label should be skipped.
@@ -74,7 +74,7 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.BLOCKED
-        assert labels.BLOCKED_FAILED in entry.detail
+        assert labels.BLOCKED_FAILED in entry.detail  # type: ignore
 
     def test_blocked_needs_human_label_returns_needs_human(self, sample_config):
         """Issue with 'blocked-needs-human' label should return NEEDS_HUMAN reason."""
@@ -94,7 +94,7 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.NEEDS_HUMAN
-        assert labels.BLOCKED_NEEDS_HUMAN in entry.detail
+        assert labels.BLOCKED_NEEDS_HUMAN in entry.detail  # type: ignore
 
     def test_blocked_cross_milestone_label_skips_issue(self, sample_config):
         """Issue with 'blocked-cross-milestone' label should be skipped."""
@@ -114,7 +114,7 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.BLOCKED
-        assert labels.BLOCKED_CROSS_MILESTONE in entry.detail
+        assert labels.BLOCKED_CROSS_MILESTONE in entry.detail  # type: ignore
 
     def test_legacy_needs_human_label_skips_issue(self, sample_config):
         """Issue with legacy 'needs-human' label should be skipped."""
@@ -154,7 +154,7 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.BLOCKED
-        assert "blocked-custom-reason" in entry.detail
+        assert "blocked-custom-reason" in entry.detail  # type: ignore
 
 
 class TestActiveSessionFiltering:

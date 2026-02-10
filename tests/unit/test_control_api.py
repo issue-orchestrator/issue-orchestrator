@@ -94,13 +94,13 @@ def client_with_orchestrator(mock_orchestrator):
     try:
         yield TestClient(control_app), mock_orchestrator
     finally:
-        set_orchestrator(None)
+        set_orchestrator(None)  # type: ignore
 
 
 @pytest.fixture
 def client_without_orchestrator():
     """Create a test client without an orchestrator."""
-    set_orchestrator(None)
+    set_orchestrator(None)  # type: ignore
     return TestClient(control_app)
 
 
@@ -188,7 +188,7 @@ class TestEventHubNotInitialized:
             assert response.status_code == 503
             assert response.json()["error"] == "Event hub not initialized"
         finally:
-            set_orchestrator(None)
+            set_orchestrator(None)  # type: ignore
 
     def test_events_since_returns_503_when_event_hub_none(self, mock_orchestrator):
         """GET /api/events_since returns 503 when event_hub is None."""
@@ -201,7 +201,7 @@ class TestEventHubNotInitialized:
             assert response.status_code == 503
             assert response.json()["error"] == "Event hub not initialized"
         finally:
-            set_orchestrator(None)
+            set_orchestrator(None)  # type: ignore
 
     def test_snapshot_returns_503_when_event_hub_none(self, mock_orchestrator):
         """GET /api/snapshot returns 503 when event_hub is None."""
@@ -214,7 +214,7 @@ class TestEventHubNotInitialized:
             assert response.status_code == 503
             assert response.json()["error"] == "Event hub not initialized"
         finally:
-            set_orchestrator(None)
+            set_orchestrator(None)  # type: ignore
 
 
 # --- Test: State Transition Endpoints ---
@@ -502,7 +502,7 @@ class TestHealthEndpoint:
 
     def test_health_returns_degraded_when_orchestrator_not_initialized(self):
         """Health endpoint returns 503 when orchestrator is not initialized."""
-        set_orchestrator(None)
+        set_orchestrator(None)  # type: ignore
         client = TestClient(control_app)
 
         response = client.get("/api/health")
@@ -631,7 +631,7 @@ class TestOrchestratorAccessors:
         try:
             assert get_orchestrator() is mock
         finally:
-            set_orchestrator(None)
+            set_orchestrator(None)  # type: ignore
 
         assert get_orchestrator() is None
 
@@ -639,7 +639,7 @@ class TestOrchestratorAccessors:
         """set_orchestrator(None) clears the orchestrator."""
         mock = MagicMock()
         set_orchestrator(mock)
-        set_orchestrator(None)
+        set_orchestrator(None)  # type: ignore
 
         assert get_orchestrator() is None
 
@@ -688,7 +688,7 @@ class TestControlAPIServer:
                 assert get_orchestrator() is mock_orchestrator
 
                 # Clean up
-                set_orchestrator(None)
+                set_orchestrator(None)  # type: ignore
 
     @pytest.mark.asyncio
     async def test_stop_signals_server_exit(self, mock_orchestrator):
@@ -2651,7 +2651,7 @@ class TestE2ETriageEndpoint:
             assert sub2["resolution"] == "passed"
             assert sub2["url"] == "https://github.com/owner/repo/issues/102"
         finally:
-            set_orchestrator(None)
+            set_orchestrator(None)  # type: ignore
 
 
 class TestE2ESyncIssuesEndpoint:
@@ -2677,11 +2677,11 @@ class TestE2ESyncIssuesEndpoint:
         """Create a test client with orchestrator for sync endpoint."""
         set_orchestrator(mock_orchestrator_with_tracker)
         yield TestClient(control_app)
-        set_orchestrator(None)
+        set_orchestrator(None)  # type: ignore
 
     def test_sync_returns_503_when_no_orchestrator(self, tmp_path):
         """Should return 503 when orchestrator is not running."""
-        set_orchestrator(None)
+        set_orchestrator(None)  # type: ignore
         client = TestClient(control_app)
         response = client.post(
             "/control/e2e/sync-issues/1",
@@ -2814,7 +2814,7 @@ class TestE2EQuarantineModifyEndpoint:
         mock.config.e2e.quarantine_file = "tests/e2e/quarantine.txt"
         set_orchestrator(mock)
         yield TestClient(control_app)
-        set_orchestrator(None)
+        set_orchestrator(None)  # type: ignore
 
     def test_quarantine_modify_returns_400_for_invalid_repo_root(self, quarantine_client):
         """Invalid repo_root should return 400."""
@@ -2906,7 +2906,7 @@ class TestE2EFlakyTestsEndpoint:
         mock.config.e2e.quarantine_file = "tests/e2e/quarantine.txt"
         set_orchestrator(mock)
         yield TestClient(control_app)
-        set_orchestrator(None)
+        set_orchestrator(None)  # type: ignore
 
     def test_flaky_returns_400_for_invalid_repo_root(self, flaky_client):
         """Invalid repo_root should return 400."""

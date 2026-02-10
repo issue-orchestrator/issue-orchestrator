@@ -126,7 +126,7 @@ priority: {higher_priority}
         mock_client.comments.append({"body": competing_claim})
 
         # Run convergence - should fail because we're not the winner
-        converged = adapter.run_convergence(issue_number=42, lease_id=result.lease_id)
+        converged = adapter.run_convergence(issue_number=42, lease_id=result.lease_id)  # type: ignore
 
         assert converged is False
 
@@ -185,7 +185,7 @@ priority: {higher_priority}
 
         adapter._fetch_all_claims = controlled_fetch  # noqa: SLF001
 
-        converged = adapter.run_convergence(issue_number=42, lease_id=our_lease_id)
+        converged = adapter.run_convergence(issue_number=42, lease_id=our_lease_id)  # type: ignore
 
         # Should eventually converge after competing claim is removed
         assert converged is True
@@ -246,7 +246,7 @@ class TestConvergenceWithMockedTime:
         result = adapter.attempt_claim(issue_number=42)
 
         # Run convergence
-        converged = adapter.run_convergence(issue_number=42, lease_id=result.lease_id)
+        converged = adapter.run_convergence(issue_number=42, lease_id=result.lease_id)  # type: ignore
 
         assert converged is True
         # Verify randint was called with correct jitter bounds
@@ -293,7 +293,7 @@ priority: {higher_priority}
 ```"""})
 
         # Run convergence - should timeout
-        converged = adapter.run_convergence(issue_number=42, lease_id=result.lease_id)
+        converged = adapter.run_convergence(issue_number=42, lease_id=result.lease_id)  # type: ignore
 
         assert converged is False
 
@@ -333,7 +333,7 @@ priority: {b_priority}
 
         # A's convergence should fail
         converged_a = adapter_a.run_convergence(
-            issue_number=42, lease_id=result_a.lease_id
+            issue_number=42, lease_id=result_a.lease_id  # type: ignore
         )
 
         assert converged_a is False

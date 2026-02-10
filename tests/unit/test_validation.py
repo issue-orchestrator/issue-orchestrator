@@ -719,6 +719,6 @@ class TestAgentGate:
 
         # Verify record was written (new API uses just sha)
         store = ValidationRecordStore(temp_worktree)
-        stored = store.read(result.record.head_sha)
+        stored = store.read(result.record.head_sha)  # type: ignore
         assert stored is not None
         assert stored.passed is True

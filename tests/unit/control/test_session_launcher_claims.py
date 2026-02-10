@@ -173,7 +173,7 @@ class TestSessionLauncherClaimAcquisition:
                 )
 
                 issue = MockIssue()
-                result = launcher.launch_issue_session(issue, [])
+                result = launcher.launch_issue_session(issue, [])  # type: ignore
 
                 # Verify claim happens before worktree
                 claim_idx = next(
@@ -224,7 +224,7 @@ class TestSessionLauncherClaimAcquisition:
         )
 
         issue = MockIssue()
-        result = launcher.launch_issue_session(issue, [])
+        result = launcher.launch_issue_session(issue, [])  # type: ignore
 
         assert result.success is False
         assert "claim" in result.reason.lower()
@@ -268,7 +268,7 @@ class TestSessionLauncherClaimAcquisition:
         )
 
         issue = MockIssue()
-        result = launcher.launch_issue_session(issue, [])
+        result = launcher.launch_issue_session(issue, [])  # type: ignore
 
         assert result.success is False
         assert "convergence" in result.reason.lower()

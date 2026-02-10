@@ -438,7 +438,7 @@ class TestFinderEndpoint:
                 # Mock the path exists check on the session's worktree_path
                 session.worktree_path = MagicMock()
                 session.worktree_path.exists.return_value = True
-                session.worktree_path.__str__.return_value = str(worktree_path)
+                session.worktree_path.__str__.return_value = str(worktree_path)  # type: ignore
 
                 client = TestClient(app)
                 response = client.post("/api/finder/1")
@@ -519,7 +519,7 @@ class TestPromptEndpoint:
         prompt_path = MagicMock()
         prompt_path.exists.return_value = True
         prompt_path.is_absolute.return_value = True
-        prompt_path.__str__.return_value = "/tmp/prompt.txt"
+        prompt_path.__str__.return_value = "/tmp/prompt.txt"  # type: ignore
         mock_orch.config.agents["agent:web"].prompt_path = prompt_path
 
         with patch("os.uname") as mock_uname:
@@ -543,7 +543,7 @@ class TestPromptEndpoint:
         prompt_path = MagicMock()
         prompt_path.exists.return_value = True
         prompt_path.is_absolute.return_value = True
-        prompt_path.__str__.return_value = "/tmp/prompt.txt"
+        prompt_path.__str__.return_value = "/tmp/prompt.txt"  # type: ignore
         mock_orch.config.agents["agent:web"].prompt_path = prompt_path
 
         with patch("os.uname") as mock_uname:
@@ -1091,7 +1091,7 @@ class TestSSEFunctionality:
         from issue_orchestrator.entrypoints.web import app
 
         # Check the endpoint is registered by looking at routes
-        routes = [route.path for route in app.routes]
+        routes = [route.path for route in app.routes]  # type: ignore
         assert "/api/events" in routes
 
     @pytest.mark.asyncio
@@ -1175,7 +1175,7 @@ class TestSSEFunctionality:
         monkeypatch.setattr(web.shutdown_manager, "exit", lambda: None)
 
         orchestrator = OrchestratorStub(tmp_path)
-        await web.run_with_web_dashboard(orchestrator, port=0, open_browser=False)
+        await web.run_with_web_dashboard(orchestrator, port=0, open_browser=False)  # type: ignore
 
         assert captured["event_type"] == "startup_complete"
         assert "elapsed_seconds" in captured["data"]
@@ -1242,11 +1242,11 @@ class TestSSEEventStreamFormat:
 
         with swapped_event_subscribers(NotifyingSet(ready)):
             request = DummyRequest()
-            response = await web.events(request)
+            response = await web.events(request)  # type: ignore
             iterator = response.body_iterator
 
             async def read_chunk():
-                return await iterator.__anext__()
+                return await iterator.__anext__()  # type: ignore
 
             read_task = asyncio.create_task(read_chunk())
             await ready.wait()
@@ -1255,8 +1255,8 @@ class TestSSEEventStreamFormat:
             chunk = await read_task
             request.connected = False
 
-            assert chunk["event"] == "session.started"
-            payload = json.loads(chunk["data"])
+            assert chunk["event"] == "session.started"  # type: ignore
+            payload = json.loads(chunk["data"])  # type: ignore
             assert payload == {"issue_number": 123, "status": "active"}
 
 
@@ -2747,7 +2747,7 @@ class TestDashboardWithSlowSessions:
         issue = create_issue(1, "Slow Issue")
         session = create_session(issue)
         # Set start_time to 60 minutes ago (over 45 min timeout)
-        session.start_time = datetime.now() - timedelta(minutes=60)
+        session.start_time = datetime.now() - timedelta(minutes=60)  # type: ignore
         mock_orch.state.active_sessions = [session]
 
         set_orchestrator(mock_orch)

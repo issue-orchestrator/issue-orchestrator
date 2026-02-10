@@ -106,7 +106,7 @@ class TestAttemptClaim:
         mock_client.add_comment = MagicMock(side_effect=Exception("Network error"))
 
         adapter = GitHubClaimAdapter(
-            client=mock_client,
+            client=mock_client,  # type: ignore
             claimant_id="test-orchestrator",
             config=LeaseConfig.for_testing(),
             label_adapter=mock_labels,
@@ -116,7 +116,7 @@ class TestAttemptClaim:
 
         assert result.success is False
         assert result.state == ClaimState.UNCLAIMED
-        assert "Network error" in result.error
+        assert "Network error" in result.error  # type: ignore
 
 
 class TestReleaseClaim:

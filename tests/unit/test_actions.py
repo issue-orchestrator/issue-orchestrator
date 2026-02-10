@@ -165,7 +165,7 @@ class TestActionDataclasses:
         action = AddLabelAction(issue_number=123, label="test")
 
         with pytest.raises(AttributeError):
-            action.issue_number = 456
+            action.issue_number = 456  # type: ignore
 
 
 class TestActionResult:

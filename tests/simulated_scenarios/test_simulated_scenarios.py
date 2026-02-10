@@ -9,7 +9,7 @@ from .scenario_dsl import scenario, script
 
 
 class FailingPushWorkingCopy(StubWorkingCopy):
-    def push(
+    def push(  # type: ignore
         self,
         worktree,
         remote: str = "origin",
@@ -180,15 +180,17 @@ def test_grace_period_keeps_session_running(scenario_repo: Path):
         config.session_grace_period_seconds = 300
         config.session_log_activity_seconds = 0
 
-    ctx = scenario("grace_period_running", scenario_repo) \
-        .coder(script("coder_no_completion.sh")) \
-        .reviewer(script("reviewer_ok.sh", prompt=True)) \
-        .review_exchange(mode="via-draft-pr") \
-        .configure(_configure_grace_period) \
-        .wait_for(lambda orch: len(orch.state.active_sessions) == 1, max_ticks=1) \
+    ctx = (
+        scenario("grace_period_running", scenario_repo)
+        .coder(script("coder_no_completion.sh"))
+        .reviewer(script("reviewer_ok.sh", prompt=True))
+        .review_exchange(mode="via-draft-pr")
+        .configure(_configure_grace_period)
+        .wait_for(lambda orch: len(orch.state.active_sessions) == 1, max_ticks=1)  # type: ignore
         .run()
+    )
 
-    assert len(ctx.orch.state.active_sessions) == 1
+    assert len(ctx.orch.state.active_sessions) == 1  # type: ignore
 
 
 def test_claim_loss_marks_blocked_and_comment(scenario_repo: Path):
@@ -203,7 +205,7 @@ def test_claim_loss_marks_blocked_and_comment(scenario_repo: Path):
         .configure(_configure_grace_period) \
         .use_lease_renewer(LeaseRenewerOnce()) \
         .wait_for(
-            lambda orch: label_module.BLOCKED_CLAIM_LOST in orch.deps.repository_host.get_issue_labels(1),
+            lambda orch: label_module.BLOCKED_CLAIM_LOST in orch.deps.repository_host.get_issue_labels(1),  # type: ignore
             max_ticks=3,
         ) \
         .expect_issue_label(label_module.BLOCKED_CLAIM_LOST) \
@@ -351,8 +353,8 @@ def test_review_queue_approved_flow_updates_pr_labels(scenario_repo: Path):
         .review_exchange(mode="via-draft-pr") \
         .wait_for(
             lambda orch: (
-                orch.deps.repository_host.get_pr(100) is not None
-                and "code-reviewed" in orch.deps.repository_host.get_pr(100).labels
+                orch.deps.repository_host.get_pr(100) is not None  # type: ignore
+                and "code-reviewed" in orch.deps.repository_host.get_pr(100).labels  # type: ignore
             ),
             max_ticks=12,
         ) \
@@ -369,8 +371,8 @@ def test_review_changes_requested_queues_rework(scenario_repo: Path):
         .review_exchange(mode="via-draft-pr") \
         .wait_for(
             lambda orch: (
-                orch.deps.repository_host.get_pr(100) is not None
-                and "needs-rework" in orch.deps.repository_host.get_pr(100).labels
+                orch.deps.repository_host.get_pr(100) is not None  # type: ignore
+                and "needs-rework" in orch.deps.repository_host.get_pr(100).labels  # type: ignore
             ),
             max_ticks=12,
         ) \
@@ -387,8 +389,8 @@ def test_review_rework_then_approved(scenario_repo: Path):
         .review_exchange(mode="via-draft-pr") \
         .wait_for(
             lambda orch: (
-                orch.deps.repository_host.get_pr(100) is not None
-                and "code-reviewed" in orch.deps.repository_host.get_pr(100).labels
+                orch.deps.repository_host.get_pr(100) is not None  # type: ignore
+                and "code-reviewed" in orch.deps.repository_host.get_pr(100).labels  # type: ignore
             ),
             max_ticks=16,
         ) \
@@ -411,7 +413,7 @@ def test_completion_outcome_blocked_sets_label_and_event(scenario_repo: Path):
         ) \
         .expect_latest_timeline_event(
             EventName.ISSUE_BLOCKED,
-            predicate=lambda event: event.issue_number == 1,
+            predicate=lambda event: event.issue_number == 1,  # type: ignore
         ) \
         .run()
 
@@ -428,7 +430,7 @@ def test_completion_outcome_needs_human_sets_label_and_event(scenario_repo: Path
         ) \
         .expect_latest_timeline_event(
             EventName.ISSUE_NEEDS_HUMAN,
-            predicate=lambda event: event.issue_number == 1,
+            predicate=lambda event: event.issue_number == 1,  # type: ignore
         ) \
         .run()
 
@@ -493,9 +495,9 @@ def test_restart_recovery_uses_labels_not_memory(scenario_repo: Path):
 
     restarted = ctx.restart()
     from .conftest import run_until_pending_reviews
-    run_until_pending_reviews(restarted.orch, 1, max_ticks=8)
+    run_until_pending_reviews(restarted.orch, 1, max_ticks=8)  # type: ignore
 
-    assert len(restarted.orch.state.pending_reviews) == 1
+    assert len(restarted.orch.state.pending_reviews) == 1  # type: ignore
 
 
 def test_review_exchange_stops_on_no_progress(scenario_repo: Path):

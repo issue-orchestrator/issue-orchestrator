@@ -1,10 +1,9 @@
 """Shared fixtures and configuration for tests."""
 
-import os
 import pytest
 from pathlib import Path
 from typing import Optional
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import MagicMock
 from issue_orchestrator.domain.models import AgentConfig, Issue, Session
 from issue_orchestrator.infra.config import Config, DangerousConfig
 from issue_orchestrator.infra.hooks.hookspec import hookimpl
@@ -272,7 +271,7 @@ class MockTerminalPlugin:
         self.session_exists_calls = []
         self.kill_session_calls = []
         # Control behavior for tests
-        self.session_exists_override = None  # Set to True/False to override
+        self.session_exists_override: bool | None = None  # Set to True/False to override
 
     @hookimpl
     def create_session(
@@ -551,7 +550,7 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.events import EventHub
     from issue_orchestrator.execution.git_working_copy import GitWorkingCopy
     from issue_orchestrator.execution.command_runner import LocalCommandRunner
-    from unittest.mock import MagicMock, AsyncMock
+    from unittest.mock import MagicMock
 
     if working_copy is None:
         working_copy = GitWorkingCopy()
@@ -906,8 +905,10 @@ def make_session(sample_agent_config, tmp_path):
 
         if worktree_path is None:
             worktree_path = tmp_path / f"worktree-{issue_number}"
+            assert isinstance(worktree_path, Path)
             worktree_path.mkdir(parents=True, exist_ok=True)
 
+        assert isinstance(worktree_path, Path)
         return Session(
             key=session_key,
             issue=issue,

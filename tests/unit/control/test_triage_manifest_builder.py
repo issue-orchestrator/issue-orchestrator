@@ -38,7 +38,7 @@ class TestTriageManifestBuilder:
     def test_build_empty_when_no_prs(self):
         """Returns empty manifest when no PRs have the code-reviewed label."""
         host = MockRepositoryHost(prs=[])
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host)  # type: ignore
 
         manifest = builder.build(data_dir="triage-data")
 
@@ -67,7 +67,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host)  # type: ignore
 
         manifest = builder.build(data_dir="session/triage-data")
 
@@ -95,7 +95,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host)  # type: ignore
 
         manifest = builder.build(data_dir="data")
 
@@ -122,7 +122,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host)  # type: ignore
 
         manifest = builder.build(data_dir="data")
 
@@ -149,7 +149,7 @@ class TestTriageManifestBuilder:
         ]
         host = MockRepositoryHost(prs=prs)
         builder = TriageManifestBuilder(
-            host,
+            host,  # type: ignore
             code_reviewed_label="my-reviewed",
             triage_reviewed_label="my-triaged",
             triage_failed_label="my-failed",
@@ -166,7 +166,7 @@ class TestTriageManifestBuilder:
     def test_build_sets_generated_at(self):
         """Sets generated_at timestamp."""
         host = MockRepositoryHost(prs=[])
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host)  # type: ignore
 
         manifest = builder.build(data_dir="data")
 
@@ -187,7 +187,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host)  # type: ignore
 
         manifest = builder.build(data_dir="data")
 
@@ -240,7 +240,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)
+        builder = TriageManifestBuilder(host)  # type: ignore
 
         manifest = builder.build(data_dir="data")
 

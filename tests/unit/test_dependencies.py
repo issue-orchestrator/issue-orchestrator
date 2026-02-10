@@ -400,7 +400,7 @@ class TestPriorityAndDependenciesTogether:
         )
 
         # Verify dependencies are extracted from body
-        deps = parse_dependencies(issue.body)
+        deps = parse_dependencies(issue.body)  # type: ignore
         assert deps == [(10, None), (20, None)], "Should parse both dependencies"
 
         # Verify dependency evaluator blocks when deps are open
@@ -411,7 +411,7 @@ class TestPriorityAndDependenciesTogether:
         evaluator = DependencyEvaluator(issue_checker=checker, events=NullEventSink())
         report = evaluator.evaluate(
             issue_number=issue.number,
-            issue_body=issue.body,
+            issue_body=issue.body,  # type: ignore
             source_milestone="M1",
         )
 

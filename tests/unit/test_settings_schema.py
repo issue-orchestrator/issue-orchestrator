@@ -38,7 +38,7 @@ class TestModelDefaults:
     """Each model should construct with its declared defaults."""
 
     def test_concurrency_defaults(self):
-        m = ConcurrencySettings()
+        m = ConcurrencySettings()  # type: ignore
         assert m.max_concurrent_sessions == 3
         assert m.session_timeout_minutes == 45
         assert m.queue_refresh_seconds == 600
@@ -54,7 +54,7 @@ class TestModelDefaults:
         assert m.default_priority_tier == 1
 
     def test_e2e_defaults(self):
-        m = E2ESettings()
+        m = E2ESettings()  # type: ignore
         assert m.enabled is False
         assert m.role == "auto"
         assert m.pytest_args == "tests/e2e -v"
@@ -62,7 +62,7 @@ class TestModelDefaults:
         assert m.stop_on_first_failure is False
 
     def test_filtering_defaults(self):
-        m = FilteringSettings()
+        m = FilteringSettings()  # type: ignore
         assert m.label is None
         assert m.milestones == ""
         assert m.exclude_labels == ""
@@ -70,19 +70,19 @@ class TestModelDefaults:
         assert m.max_to_start == 0
 
     def test_review_defaults(self):
-        m = ReviewSettings()
+        m = ReviewSettings()  # type: ignore
         assert m.enabled is False
         assert m.default_reviewer is None
         assert m.max_rework_cycles == 10
 
     def test_goal_pilot_defaults(self):
-        m = GoalPilotSettings()
+        m = GoalPilotSettings()  # type: ignore
         assert m.enabled is False
         assert m.agent is None
         assert m.approval_policy == "journeys_only"
 
     def test_advanced_defaults(self):
-        m = AdvancedSettings()
+        m = AdvancedSettings()  # type: ignore
         assert m.web_port == 8080
         assert m.control_api_port == 19080
         assert m.worktree_branch_on_recreate == "delete"
@@ -99,59 +99,59 @@ class TestValidation:
 
     def test_max_concurrent_sessions_min(self):
         with pytest.raises(ValidationError):
-            ConcurrencySettings(max_concurrent_sessions=0)
+            ConcurrencySettings(max_concurrent_sessions=0)  # type: ignore
 
     def test_max_concurrent_sessions_max(self):
         with pytest.raises(ValidationError):
-            ConcurrencySettings(max_concurrent_sessions=21)
+            ConcurrencySettings(max_concurrent_sessions=21)  # type: ignore
 
     def test_session_timeout_min(self):
         with pytest.raises(ValidationError):
-            ConcurrencySettings(session_timeout_minutes=4)
+            ConcurrencySettings(session_timeout_minutes=4)  # type: ignore
 
     def test_session_timeout_max(self):
         with pytest.raises(ValidationError):
-            ConcurrencySettings(session_timeout_minutes=181)
+            ConcurrencySettings(session_timeout_minutes=181)  # type: ignore
 
     def test_e2e_role_enum(self):
         with pytest.raises(ValidationError):
-            E2ESettings(role="invalid")
+            E2ESettings(role="invalid")  # type: ignore
 
     def test_e2e_auto_run_interval_max(self):
         with pytest.raises(ValidationError):
-            E2ESettings(auto_run_interval_minutes=1441)
+            E2ESettings(auto_run_interval_minutes=1441)  # type: ignore
 
     def test_filtering_fetch_limit_min(self):
         with pytest.raises(ValidationError):
-            FilteringSettings(fetch_limit=0)
+            FilteringSettings(fetch_limit=0)  # type: ignore
 
     def test_default_priority_tier_max(self):
         with pytest.raises(ValidationError):
-            ConcurrencySettings(default_priority_tier=10)
+            ConcurrencySettings(default_priority_tier=10)  # type: ignore
 
     def test_review_max_rework_max(self):
         with pytest.raises(ValidationError):
-            ReviewSettings(max_rework_cycles=11)
+            ReviewSettings(max_rework_cycles=11)  # type: ignore
 
     def test_web_port_min(self):
         with pytest.raises(ValidationError):
-            AdvancedSettings(web_port=1023)
+            AdvancedSettings(web_port=1023)  # type: ignore
 
     def test_web_port_max(self):
         with pytest.raises(ValidationError):
-            AdvancedSettings(web_port=65536)
+            AdvancedSettings(web_port=65536)  # type: ignore
 
     def test_worktree_branch_on_recreate_enum(self):
         with pytest.raises(ValidationError):
-            AdvancedSettings(worktree_branch_on_recreate="invalid")
+            AdvancedSettings(worktree_branch_on_recreate="invalid")  # type: ignore
 
     def test_valid_values_accepted(self):
         """Boundary values should be accepted."""
-        m = ConcurrencySettings(max_concurrent_sessions=1, session_timeout_minutes=5)
+        m = ConcurrencySettings(max_concurrent_sessions=1, session_timeout_minutes=5)  # type: ignore
         assert m.max_concurrent_sessions == 1
         assert m.session_timeout_minutes == 5
 
-        m2 = AdvancedSettings(web_port=1024, control_api_port=0)
+        m2 = AdvancedSettings(web_port=1024, control_api_port=0)  # type: ignore
         assert m2.web_port == 1024
         assert m2.control_api_port == 0
 
@@ -326,7 +326,7 @@ class TestApplyTo:
 
         tabs = from_config(cfg)
         # Change the web port
-        tabs["advanced"] = AdvancedSettings(
+        tabs["advanced"] = AdvancedSettings(  # type: ignore
             web_port=9090,
             control_api_port=cfg.control_api_port,
             worktree_base=str(cfg.worktree_base),
@@ -347,7 +347,7 @@ class TestApplyTo:
         """Comma-separated string should be split into list."""
         cfg = Config()
         tabs = from_config(cfg)
-        tabs["filtering"] = FilteringSettings(
+        tabs["filtering"] = FilteringSettings(  # type: ignore
             milestones="M1, M2, M3",
             exclude_labels="skip, test",
         )
@@ -361,7 +361,7 @@ class TestApplyTo:
         """Space-separated string should be split into list."""
         cfg = Config()
         tabs = from_config(cfg)
-        tabs["e2e"] = E2ESettings(pytest_args="tests/e2e -v --timeout=30")
+        tabs["e2e"] = E2ESettings(pytest_args="tests/e2e -v --timeout=30")  # type: ignore
         apply_to(tabs, cfg)
         assert cfg.e2e.pytest_args == ["tests/e2e", "-v", "--timeout=30"]
 
@@ -369,9 +369,9 @@ class TestApplyTo:
         """Empty strings should produce empty lists."""
         cfg = Config()
         tabs = from_config(cfg)
-        tabs["filtering"] = FilteringSettings(milestones="", exclude_labels="")
+        tabs["filtering"] = FilteringSettings(milestones="", exclude_labels="")  # type: ignore
         tabs["milestones"] = MilestonesSettings(order="")
-        tabs["e2e"] = E2ESettings(pytest_args="")
+        tabs["e2e"] = E2ESettings(pytest_args="")  # type: ignore
         apply_to(tabs, cfg)
         assert cfg.filtering.milestones == []
         assert cfg.filtering.exclude_labels == []
@@ -382,8 +382,8 @@ class TestApplyTo:
         """None optional strings should be written as None."""
         cfg = Config()
         tabs = from_config(cfg)
-        tabs["filtering"] = FilteringSettings(label=None)
-        tabs["review"] = ReviewSettings(default_reviewer=None, triage_agent=None)
+        tabs["filtering"] = FilteringSettings(label=None)  # type: ignore
+        tabs["review"] = ReviewSettings(default_reviewer=None, triage_agent=None)  # type: ignore
         apply_to(tabs, cfg)
         assert cfg.filtering.label is None
         assert cfg.code_review_agent is None
