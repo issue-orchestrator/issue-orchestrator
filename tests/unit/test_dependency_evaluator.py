@@ -128,8 +128,7 @@ class TestExternalIdWithNoResolver:
         dep = report.unknown[0]
         assert dep.external_id == "M1-001"
         assert dep.state == DependencyState.UNKNOWN
-        assert "No resolver configured" in dep.error  # type: ignore
-
+        assert "No resolver configured" in dep.error  # type: ignore - Union type narrowing limitation
     def test_external_id_with_resolver_but_no_repo_returns_unknown(self, checker, events, resolver):
         """External ID with resolver but no repo configured returns UNKNOWN."""
         # Resolver configured but no repo
@@ -148,8 +147,7 @@ class TestExternalIdWithNoResolver:
 
         assert not report.runnable
         assert len(report.unknown) == 1
-        assert "No resolver configured" in report.unknown[0].error  # type: ignore
-
+        assert "No resolver configured" in report.unknown[0].error  # type: ignore - Union type narrowing limitation
 class TestExternalIdResolution:
     """Test external ID resolution via IssueResolver (Lines 163-186)."""
 
@@ -236,9 +234,8 @@ class TestExternalIdResolution:
         assert len(report.unknown) == 1
         dep = report.unknown[0]
         assert dep.external_id == "M4-001"
-        assert "non-int handle" in dep.error.lower()  # type: ignore
-        assert "str" in dep.error  # type: ignore
-
+        assert "non-int handle" in dep.error.lower()  # type: ignore - Union type narrowing limitation
+        assert "str" in dep.error  # type: ignore - Union type narrowing limitation
 # =============================================================================
 # Dependency Graph Evaluation Behaviors
 # =============================================================================

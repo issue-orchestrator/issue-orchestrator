@@ -57,13 +57,12 @@ class TestEvent:
         )
 
         with pytest.raises(Exception):  # FrozenInstanceError
-            event.entity_id = 456  # type: ignore
-
+            event.entity_id = 456  # type: ignore - Union type narrowing limitation
     def test_event_validates_event_type(self):
         """Test that invalid event types are rejected."""
         with pytest.raises(ValueError, match="event_type must be one of"):
             Event(
-                event_type="invalid",  # type: ignore
+                event_type="invalid",  # type: ignore - Union type narrowing limitation
                 entity_id=123
             )
 

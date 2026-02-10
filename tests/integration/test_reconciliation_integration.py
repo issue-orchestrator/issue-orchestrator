@@ -44,8 +44,7 @@ class MockFreshIssueReader(FreshIssueReader):
         return self._labels_by_issue.get(issue_number, [])
 
     def get_issue_labels_fresh(self, issue_number: int) -> list[str]:
-        return self.get_issue_labels(issue_number)  # type: ignore
-
+        return self.get_issue_labels(issue_number)  # type: ignore - Union type narrowing limitation
     def set_labels(self, issue_number: int, labels: list[str]) -> None:
         self._labels_by_issue[issue_number] = labels
 
@@ -75,8 +74,7 @@ class TestReconciliationIntegration:
 
     @pytest.fixture
     def label_set(self):
-        return MockLabelSet()  # type: ignore
-
+        return MockLabelSet()  # type: ignore - Union type narrowing limitation
     @pytest.fixture
     def session_manager(self):
         return MockSessionManager()
@@ -239,7 +237,7 @@ class TestReconciliationSimulatedRaceCondition:
         This tests the scenario from RECONCILIATION_TESTS.md:
         - simulate label changed externally between plan and apply
         """
-        label_set = MockLabelSet()  # type: ignore
+        label_set = MockLabelSet()  # type: ignore - Union type narrowing limitation
         session_manager = MockSessionManager()
         event_sink = MockEventSink()
 
@@ -248,7 +246,7 @@ class TestReconciliationSimulatedRaceCondition:
 
         applier = ActionApplier(
             labels=label_set,
-            sessions=session_manager,  # type: ignore
+            sessions=session_manager,  # type: ignore - Union type narrowing limitation
             events=event_sink,
             fresh_issue_reader=fresh_reader,
             reconcile=True,
@@ -281,7 +279,7 @@ class TestReconciliationSimulatedRaceCondition:
 
     def test_multiple_sync_operations_track_state_changes(self):
         """Test that multiple sync operations correctly track state."""
-        label_set = MockLabelSet()  # type: ignore
+        label_set = MockLabelSet()  # type: ignore - Union type narrowing limitation
         session_manager = MockSessionManager()
         event_sink = MockEventSink()
         fresh_reader = MockFreshIssueReader({
@@ -292,7 +290,7 @@ class TestReconciliationSimulatedRaceCondition:
 
         applier = ActionApplier(
             labels=label_set,
-            sessions=session_manager,  # type: ignore
+            sessions=session_manager,  # type: ignore - Union type narrowing limitation
             events=event_sink,
             fresh_issue_reader=fresh_reader,
             reconcile=True,
@@ -338,14 +336,14 @@ class TestReconciliationEventTracing:
 
     def test_all_reconciliation_events_include_issue_number(self):
         """All reconciliation events should include the issue number."""
-        label_set = MockLabelSet()  # type: ignore
+        label_set = MockLabelSet()  # type: ignore - Union type narrowing limitation
         session_manager = MockSessionManager()
         event_sink = MockEventSink()
         fresh_reader = MockFreshIssueReader({42: ["foo"]})
 
         applier = ActionApplier(
             labels=label_set,
-            sessions=session_manager,  # type: ignore
+            sessions=session_manager,  # type: ignore - Union type narrowing limitation
             events=event_sink,
             fresh_issue_reader=fresh_reader,
             reconcile=True,
@@ -387,7 +385,7 @@ class TestOrchestratorReconciliationCatch:
         from issue_orchestrator.control.actions import AddLabelAction
         from issue_orchestrator.events import EventName
 
-        label_set = MockLabelSet()  # type: ignore
+        label_set = MockLabelSet()  # type: ignore - Union type narrowing limitation
         session_manager = MockSessionManager()
         event_sink = MockEventSink()
 
@@ -396,7 +394,7 @@ class TestOrchestratorReconciliationCatch:
 
         applier = ActionApplier(
             labels=label_set,
-            sessions=session_manager,  # type: ignore
+            sessions=session_manager,  # type: ignore - Union type narrowing limitation
             events=event_sink,
             fresh_issue_reader=fresh_reader,
             reconcile=True,
@@ -447,7 +445,7 @@ class TestOrchestratorReconciliationCatch:
         from issue_orchestrator.control.reconciliation import ExpectedState
         from issue_orchestrator.control.actions import AddLabelAction
 
-        label_set = MockLabelSet()  # type: ignore
+        label_set = MockLabelSet()  # type: ignore - Union type narrowing limitation
         session_manager = MockSessionManager()
         event_sink = MockEventSink()
 
@@ -456,7 +454,7 @@ class TestOrchestratorReconciliationCatch:
 
         applier = ActionApplier(
             labels=label_set,
-            sessions=session_manager,  # type: ignore
+            sessions=session_manager,  # type: ignore - Union type narrowing limitation
             events=event_sink,
             fresh_issue_reader=fresh_reader,
             reconcile=True,
@@ -489,7 +487,7 @@ class TestOrchestratorReconciliationCatch:
         from issue_orchestrator.control.reconciliation import ExpectedState
         from issue_orchestrator.control.actions import AddLabelAction
 
-        label_set = MockLabelSet()  # type: ignore
+        label_set = MockLabelSet()  # type: ignore - Union type narrowing limitation
         session_manager = MockSessionManager()
         event_sink = MockEventSink()
         fresh_reader = MockFreshIssueReader({
@@ -499,7 +497,7 @@ class TestOrchestratorReconciliationCatch:
 
         applier = ActionApplier(
             labels=label_set,
-            sessions=session_manager,  # type: ignore
+            sessions=session_manager,  # type: ignore - Union type narrowing limitation
             events=event_sink,
             fresh_issue_reader=fresh_reader,
             reconcile=True,

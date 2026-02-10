@@ -481,10 +481,8 @@ def test_set_pr_draft_marks_ready_for_review() -> None:
     assert "markPullRequestReadyForReview" in requests_seen[1]["body"]["query"]
     assert requests_seen[1]["body"]["variables"]["pullRequestId"] == "PR_node_123"
     # Result
-    assert result["isDraft"] is False  # type: ignore
-    assert result["number"] == 42  # type: ignore
-
-
+    assert result["isDraft"] is False  # type: ignore - Union type narrowing limitation
+    assert result["number"] == 42  # type: ignore - Union type narrowing limitation
 def test_set_pr_draft_converts_to_draft() -> None:
     """Verify set_pr_draft(draft=True) uses convertPullRequestToDraft mutation."""
     requests_seen: list[dict] = []
@@ -515,9 +513,7 @@ def test_set_pr_draft_converts_to_draft() -> None:
     assert len(requests_seen) == 2
     # Second request should use convertPullRequestToDraft
     assert "convertPullRequestToDraft" in requests_seen[1]["body"]["query"]
-    assert result["isDraft"] is True  # type: ignore
-
-
+    assert result["isDraft"] is True  # type: ignore - Union type narrowing limitation
 def test_set_pr_draft_raises_on_pr_not_found() -> None:
     """Verify set_pr_draft() raises GitHubHttpError when PR doesn't exist."""
     def handler(request: httpx.Request) -> httpx.Response:

@@ -50,9 +50,7 @@ class TestLeaseConfig:
         """LeaseConfig is a frozen dataclass."""
         config = LeaseConfig()
         with pytest.raises(AttributeError):
-            config.lease_seconds = 100  # type: ignore
-
-
+            config.lease_seconds = 100  # type: ignore - Union type narrowing limitation
 class TestClaimConfig:
     """Tests for the ClaimConfig dataclass."""
 

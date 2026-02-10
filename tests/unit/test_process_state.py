@@ -119,4 +119,4 @@ class TestProcessExitInfo:
         """Test ProcessExitInfo is frozen (immutable)."""
         info = ProcessExitInfo(exit_code=0)
         with pytest.raises(AttributeError):
-            info.exit_code = 1  # type: ignore
+            info.exit_code = 1  # type: ignore - Union type narrowing limitation

@@ -89,8 +89,7 @@ class TestCheckRenewals:
         """Renews lease when within renewal threshold."""
         claim_manager = MockClaimManager(renew_success=True)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         # Create session expiring soon (within 300s threshold)
         session = create_test_session(
             issue_number=42,
@@ -108,8 +107,7 @@ class TestCheckRenewals:
         """Does not renew when plenty of time remaining."""
         claim_manager = MockClaimManager(renew_success=True)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         # Create session with lots of time remaining
         session = create_test_session(
             issue_number=42,
@@ -126,8 +124,7 @@ class TestCheckRenewals:
         """Returns sessions that fail renewal."""
         claim_manager = MockClaimManager(renew_success=False)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         session = create_test_session(
             issue_number=42,
             lease_id="test-lease",
@@ -143,8 +140,7 @@ class TestCheckRenewals:
         """Updates session.lease_expires_at on successful renewal."""
         claim_manager = MockClaimManager(renew_success=True)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         session = create_test_session(
             issue_number=42,
             lease_id="test-lease",
@@ -156,14 +152,12 @@ class TestCheckRenewals:
 
         assert len(lost_sessions) == 0
         # Expiry should have been extended
-        assert session.lease_expires_at > old_expiry  # type: ignore
-
+        assert session.lease_expires_at > old_expiry  # type: ignore - Union type narrowing limitation
     def test_skips_sessions_without_lease(self, config):
         """Skips sessions that don't have a lease_id."""
         claim_manager = MockClaimManager(renew_success=True)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         session = create_test_session(
             issue_number=42,
             lease_id=None,  # No lease
@@ -178,8 +172,7 @@ class TestCheckRenewals:
         """Handles multiple sessions correctly."""
         claim_manager = MockClaimManager(renew_success=True)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         sessions = [
             create_test_session(42, "lease-a", 200),  # Needs renewal
             create_test_session(43, "lease-b", 800),  # No renewal needed
@@ -200,8 +193,7 @@ class TestCheckRenewals:
         """Emits CLAIM_RENEWED event on successful renewal."""
         claim_manager = MockClaimManager(renew_success=True)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         session = create_test_session(
             issue_number=42,
             lease_id="test-lease",
@@ -220,8 +212,7 @@ class TestCheckRenewals:
         """Emits CLAIM_LOST event when renewal fails."""
         claim_manager = MockClaimManager(renew_success=False)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         session = create_test_session(
             issue_number=42,
             lease_id="test-lease",
@@ -248,8 +239,7 @@ class TestCheckSingleSession:
         """Returns True when session is still the claim winner."""
         claim_manager = MockClaimManager(is_winner=True)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         session = create_test_session(issue_number=42, lease_id="test-lease")
 
         result = renewer.check_single_session(session)
@@ -261,8 +251,7 @@ class TestCheckSingleSession:
         """Returns False when session has lost the claim."""
         claim_manager = MockClaimManager(is_winner=False)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         session = create_test_session(issue_number=42, lease_id="test-lease")
 
         result = renewer.check_single_session(session)
@@ -274,8 +263,7 @@ class TestCheckSingleSession:
         """Returns True when session has no lease (no claim system)."""
         claim_manager = MockClaimManager(is_winner=False)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         session = create_test_session(issue_number=42, lease_id=None)
 
         result = renewer.check_single_session(session)
@@ -287,8 +275,7 @@ class TestCheckSingleSession:
         """Emits CLAIM_LOST event when claim check fails."""
         claim_manager = MockClaimManager(is_winner=False)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         session = create_test_session(issue_number=42, lease_id="test-lease")
 
         renewer.check_single_session(session)
@@ -313,8 +300,7 @@ class TestPeriodicVerification:
         """Verifies claim when lease/3 seconds (5 min) have passed since acquisition."""
         claim_manager = MockClaimManager(renew_success=True, is_winner=True)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         # Session acquired 6 minutes ago (> 5 min = lease/3), never verified
         session = create_test_session(
             issue_number=42,
@@ -337,8 +323,7 @@ class TestPeriodicVerification:
         """Does not verify if less than lease/3 seconds since last verification."""
         claim_manager = MockClaimManager(renew_success=True, is_winner=True)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         # Session verified 2 minutes ago (< 5 min = lease/3)
         # renewal_threshold = 900 - 300 = 600s, so 700s remaining is outside renewal window
         session = create_test_session(
@@ -361,8 +346,7 @@ class TestPeriodicVerification:
         """Returns session as lost if claim lost during periodic verification."""
         claim_manager = MockClaimManager(renew_success=True, is_winner=False)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         # Session needs verification (6 min since last)
         session = create_test_session(
             issue_number=42,
@@ -386,8 +370,7 @@ class TestPeriodicVerification:
         """Does not attempt renewal if claim was lost during periodic verification."""
         claim_manager = MockClaimManager(renew_success=True, is_winner=False)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         # Session needs verification AND is in renewal window
         session = create_test_session(
             issue_number=42,
@@ -409,8 +392,7 @@ class TestPeriodicVerification:
         """Successful renewal also updates last_claim_verified_at."""
         claim_manager = MockClaimManager(renew_success=True, is_winner=True)
         events = MockEventSink()
-        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore
-
+        renewer = LeaseRenewer(claim_manager, events, config)  # type: ignore - Union type narrowing limitation
         # Session in renewal window, recently verified
         session = create_test_session(
             issue_number=42,
@@ -426,4 +408,4 @@ class TestPeriodicVerification:
         assert len(lost_sessions) == 0
         # Renewal should have updated last_claim_verified_at
         assert session.last_claim_verified_at is not None
-        assert session.last_claim_verified_at > old_verified  # type: ignore
+        assert session.last_claim_verified_at > old_verified  # type: ignore - Union type narrowing limitation

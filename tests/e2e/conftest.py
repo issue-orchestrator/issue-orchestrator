@@ -476,7 +476,7 @@ def e2e_orchestrator(
             )
 
         if proc._check_api_running():  # noqa: SLF001
-            print(f"\n[E2E] Orchestrator API ready (pid={proc.process.pid}, attempt {attempt + 1})")  # type: ignore
+            print(f"\n[E2E] Orchestrator API ready (pid={proc.process.pid}, attempt {attempt + 1})")  # type: ignore - Union type narrowing limitation
             break
 
         if attempt < max_retries - 1:
@@ -522,19 +522,18 @@ def track_test_timing(request, e2e_timing_stats):
             timing.print_phases(indent="    ")
 
 @pytest.fixture(autouse=True)
-def e2e_inflight_refresh_guard() -> None:  # type: ignore
+def e2e_inflight_refresh_guard() -> None:  # type: ignore - Union type narrowing limitation
     """Reset refresh tracking per test so inflight issues don't leak."""
     reset_inflight_tracker()
-    yield  # type: ignore
-
+    yield  # type: ignore - Union type narrowing limitation
 @pytest.fixture(autouse=True)
-def e2e_gh_activity_guard(request) -> None:  # type: ignore
+def e2e_gh_activity_guard(request) -> None:  # type: ignore - Union type narrowing limitation
     """Guard GH API activity within configured limits."""
     marker = request.node.get_closest_marker("gh_activity_limit")
     if marker is None:
         if request.node.get_closest_marker("e2e") is not None:
             pytest.fail("Missing gh_activity_limit marker on e2e test")
-        yield  # type: ignore
+        yield  # type: ignore - Union type narrowing limitation
         return
 
     if marker.kwargs:
@@ -550,7 +549,7 @@ def e2e_gh_activity_guard(request) -> None:  # type: ignore
 
     port = get_control_api_port()
     before = fetch_gh_audit_report(port)
-    yield  # type: ignore
+    yield  # type: ignore - Union type narrowing limitation
     after = fetch_gh_audit_report(port)
     if not before or not after:
         return

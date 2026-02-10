@@ -105,9 +105,8 @@ class TestReadWriteState:
         write_validation_state(worktree, state)
 
         loaded = read_validation_state(worktree)
-        assert loaded.created_at is not None  # type: ignore
-        assert loaded.updated_at is not None  # type: ignore
-
+        assert loaded.created_at is not None  # type: ignore - Union type narrowing limitation
+        assert loaded.updated_at is not None  # type: ignore - Union type narrowing limitation
     def test_read_corrupted_returns_none(self, tmp_path: Path):
         """Reading corrupted JSON returns None."""
         worktree = tmp_path / "worktree"

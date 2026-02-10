@@ -77,8 +77,7 @@ class TestSupervisorStatus:
         assert result.state == "failed"
         assert result.pid == 999999999
         assert result.port == 8080
-        assert "stale lock" in result.error.lower()  # type: ignore
-
+        assert "stale lock" in result.error.lower()  # type: ignore - Union type narrowing limitation
     def test_status_recovered_flag_preserved(self, tmp_path: Path) -> None:
         """Preserve recovered flag from lock file."""
         lock_dir = tmp_path / ".issue-orchestrator"

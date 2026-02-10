@@ -77,9 +77,7 @@ class TestExternalSnapshot:
         snapshot = ExternalSnapshot.for_issue(1, {"a"})
 
         with pytest.raises(AttributeError):
-            snapshot.number = 2  # type: ignore
-
-
+            snapshot.number = 2  # type: ignore - Union type narrowing limitation
 class TestExpectedState:
     """Tests for ExpectedState dataclass."""
 

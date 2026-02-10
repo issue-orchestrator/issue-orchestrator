@@ -38,8 +38,7 @@ class TestTriageManifestBuilder:
     def test_build_empty_when_no_prs(self):
         """Returns empty manifest when no PRs have the code-reviewed label."""
         host = MockRepositoryHost(prs=[])
-        builder = TriageManifestBuilder(host)  # type: ignore
-
+        builder = TriageManifestBuilder(host)  # type: ignore - Union type narrowing limitation
         manifest = builder.build(data_dir="triage-data")
 
         assert manifest.session_type == "triage"
@@ -67,8 +66,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)  # type: ignore
-
+        builder = TriageManifestBuilder(host)  # type: ignore - Union type narrowing limitation
         manifest = builder.build(data_dir="session/triage-data")
 
         assert len(manifest.prs) == 2
@@ -95,8 +93,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)  # type: ignore
-
+        builder = TriageManifestBuilder(host)  # type: ignore - Union type narrowing limitation
         manifest = builder.build(data_dir="data")
 
         assert len(manifest.prs) == 1
@@ -122,8 +119,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)  # type: ignore
-
+        builder = TriageManifestBuilder(host)  # type: ignore - Union type narrowing limitation
         manifest = builder.build(data_dir="data")
 
         assert len(manifest.prs) == 1
@@ -149,7 +145,7 @@ class TestTriageManifestBuilder:
         ]
         host = MockRepositoryHost(prs=prs)
         builder = TriageManifestBuilder(
-            host,  # type: ignore
+            host,  # type: ignore - Union type narrowing limitation
             code_reviewed_label="my-reviewed",
             triage_reviewed_label="my-triaged",
             triage_failed_label="my-failed",
@@ -166,8 +162,7 @@ class TestTriageManifestBuilder:
     def test_build_sets_generated_at(self):
         """Sets generated_at timestamp."""
         host = MockRepositoryHost(prs=[])
-        builder = TriageManifestBuilder(host)  # type: ignore
-
+        builder = TriageManifestBuilder(host)  # type: ignore - Union type narrowing limitation
         manifest = builder.build(data_dir="data")
 
         assert manifest.generated_at != ""
@@ -187,8 +182,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)  # type: ignore
-
+        builder = TriageManifestBuilder(host)  # type: ignore - Union type narrowing limitation
         manifest = builder.build(data_dir="data")
 
         pr = manifest.prs[0]
@@ -240,8 +234,7 @@ class TestTriageManifestBuilder:
             ),
         ]
         host = MockRepositoryHost(prs=prs)
-        builder = TriageManifestBuilder(host)  # type: ignore
-
+        builder = TriageManifestBuilder(host)  # type: ignore - Union type narrowing limitation
         manifest = builder.build(data_dir="data")
 
         # Only PRs 1 and 5 should be included

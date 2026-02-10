@@ -400,8 +400,7 @@ class TestUpdateAndEmit:
             Issue(number=5, title="I5", labels=["agent:backend"], body=""),
         ]
         state = OrchestratorState()
-        state.cached_queue_issues = issues_old  # type: ignore
-
+        state.cached_queue_issues = issues_old  # type: ignore - Union type narrowing limitation
         with patch(
             "issue_orchestrator.infra.audit.get_queue_issues",
             return_value=issues_new,

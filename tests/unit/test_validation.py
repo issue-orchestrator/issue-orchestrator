@@ -96,8 +96,7 @@ class TestValidationRecord:
         )
 
         with pytest.raises(AttributeError):
-            record.passed = False  # type: ignore
-
+            record.passed = False  # type: ignore - Union type narrowing limitation
 class TestValidationRecordStore:
     """Tests for ValidationRecordStore."""
 
@@ -712,6 +711,6 @@ class TestAgentGate:
 
         # Verify record was written (new API uses just sha)
         store = ValidationRecordStore(temp_worktree)
-        stored = store.read(result.record.head_sha)  # type: ignore
+        stored = store.read(result.record.head_sha)  # type: ignore - Union type narrowing limitation
         assert stored is not None
         assert stored.passed is True

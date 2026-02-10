@@ -96,8 +96,7 @@ class TestRunSchemaChecks:
         cfg.review_enabled = True
         cfg.code_review_agent = None
         cfg.triage_review_agent = None
-        cfg.e2e.issue_agent_label = None  # type: ignore
-
+        cfg.e2e.issue_agent_label = None  # type: ignore - Union type narrowing limitation
         checks = run_schema_checks(cfg)
         agent_failures = [c for c in checks if "not in configured agents" in c.detail]
         assert len(agent_failures) == 0

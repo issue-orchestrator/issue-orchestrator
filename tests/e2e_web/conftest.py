@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import socket
 import time
+from collections.abc import Generator
 from threading import Thread
 
 import pytest
@@ -59,7 +60,7 @@ class UvicornTestServer:
 
 
 @pytest.fixture
-def web_server() -> dict[str, object]:  # type: ignore
+def web_server() -> Generator[dict[str, object], None, None]:
     """Run the dashboard app with a deterministic mock orchestrator."""
     orchestrator = FlowWebMockOrchestrator()
     orchestrator.add_queue_issue(408, "Flow smoke item")
@@ -72,7 +73,7 @@ def web_server() -> dict[str, object]:  # type: ignore
     server = UvicornTestServer("127.0.0.1", port)
     server.start()
     try:
-        yield {  # type: ignore
+        yield {
             "url": f"http://127.0.0.1:{port}",
             "orchestrator": orchestrator,
         }

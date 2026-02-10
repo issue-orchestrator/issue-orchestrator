@@ -29,7 +29,7 @@ from issue_orchestrator.contracts.public import OrchestratorPausedPayload, Orche
 class MockWorktreeManager:
     """Mock implementation of WorktreeManager for testing."""
 
-    def __init__(self, worktree_path: Path = None, branch_name: str = None):  # type: ignore
+    def __init__(self, worktree_path: Path = None, branch_name: str = None):  # type: ignore - Union type narrowing limitation
         self.worktree_path = worktree_path or Path(tempfile.mkdtemp(prefix="io-worktree-"))
         self.branch_name = branch_name or "feature/issue-1"
         self.create_calls = []
@@ -77,7 +77,7 @@ def test_pause_emits_event(sample_config):
 
     orchestrator.pause()
 
-    events = orchestrator.deps.events.get_events_by_name(str(EventName.ORCHESTRATOR_PAUSED))  # type: ignore
+    events = orchestrator.deps.events.get_events_by_name(str(EventName.ORCHESTRATOR_PAUSED))  # type: ignore - Union type narrowing limitation
     assert len(events) == 1
     assert orchestrator.state.paused is True
     OrchestratorPausedPayload.model_validate(events[0].data)
@@ -88,7 +88,7 @@ def test_resume_emits_event(sample_config):
 
     orchestrator.resume()
 
-    events = orchestrator.deps.events.get_events_by_name(str(EventName.ORCHESTRATOR_RESUMED))  # type: ignore
+    events = orchestrator.deps.events.get_events_by_name(str(EventName.ORCHESTRATOR_RESUMED))  # type: ignore - Union type narrowing limitation
     assert len(events) == 1
     assert orchestrator.state.paused is False
     OrchestratorResumedPayload.model_validate(events[0].data)
@@ -439,8 +439,8 @@ class TestLaunchSession:
         _session = orchestrator.launch_session(issue)
 
         # Verify session was created via plugin
-        assert len(orchestrator.deps.runner.plugin.create_session_calls) == 1  # type: ignore
-        call = orchestrator.deps.runner.plugin.create_session_calls[0]  # type: ignore
+        assert len(orchestrator.deps.runner.plugin.create_session_calls) == 1  # type: ignore - Union type narrowing limitation
+        call = orchestrator.deps.runner.plugin.create_session_calls[0]  # type: ignore - Union type narrowing limitation
         assert call["session_id"] == 1  # issue number
         assert isinstance(call["command"], str)
         assert call["working_dir"] == str(mock_worktree_manager.worktree_path)
@@ -1234,7 +1234,7 @@ class TestControlMethods:
 
         orchestrator.request_shutdown()
 
-        events = [e for e in orchestrator.deps.events.events if e.name == "orchestrator.shutdown_requested"]  # type: ignore
+        events = [e for e in orchestrator.deps.events.events if e.name == "orchestrator.shutdown_requested"]  # type: ignore - Union type narrowing limitation
         assert len(events) == 1
         assert events[0].data["force"] is False
         assert events[0].data["active_session_count"] == 0
@@ -1250,7 +1250,7 @@ class TestControlMethods:
 
         orchestrator.request_shutdown(force=True)
 
-        events = [e for e in orchestrator.deps.events.events if e.name == "orchestrator.shutdown_requested"]  # type: ignore
+        events = [e for e in orchestrator.deps.events.events if e.name == "orchestrator.shutdown_requested"]  # type: ignore - Union type narrowing limitation
         assert len(events) == 1
         assert events[0].data["force"] is True
         assert events[0].data["active_session_count"] == 1
@@ -1264,7 +1264,7 @@ class TestControlMethods:
 
         await orchestrator.run_loop()
 
-        event_names = [e.name for e in orchestrator.deps.events.events]  # type: ignore
+        event_names = [e.name for e in orchestrator.deps.events.events]  # type: ignore - Union type narrowing limitation
         assert "orchestrator.shutdown_started" in event_names
         assert "orchestrator.shutdown_completed" in event_names
 
@@ -1582,8 +1582,8 @@ class TestLaunchReviewSession:
         _session = orchestrator.launch_review_session(review)
 
         # Verify session was created via plugin
-        assert len(orchestrator.deps.runner.plugin.create_session_calls) == 1  # type: ignore
-        call = orchestrator.deps.runner.plugin.create_session_calls[0]  # type: ignore
+        assert len(orchestrator.deps.runner.plugin.create_session_calls) == 1  # type: ignore - Union type narrowing limitation
+        call = orchestrator.deps.runner.plugin.create_session_calls[0]  # type: ignore - Union type narrowing limitation
         # Session ID should be review-{pr_number} encoded as integer
         assert call["session_id"] == 123  # PR number
 
@@ -1701,8 +1701,7 @@ class TestLaunchReviewSession:
         orchestrator.launch_review_session(review)
 
         # Should check for review-{pr_number} session
-        assert (123, "review-123") in orchestrator.deps.runner.plugin.session_exists_calls  # type: ignore
-
+        assert (123, "review-123") in orchestrator.deps.runner.plugin.session_exists_calls  # type: ignore - Union type narrowing limitation
     def test_launch_review_session_returns_none_without_agent_config(self, sample_config):
         """Test that launch_review_session returns None without code_review_agent configured."""
         from issue_orchestrator.domain.models import PendingReview

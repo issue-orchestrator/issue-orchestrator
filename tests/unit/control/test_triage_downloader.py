@@ -70,8 +70,7 @@ class TestTriageDownloader:
         """Handles empty manifest gracefully."""
         host = MockRepositoryHost()
         runner = MockCommandRunner()
-        downloader = TriageDownloader(host, runner)  # type: ignore
-
+        downloader = TriageDownloader(host, runner)  # type: ignore - Union type narrowing limitation
         manifest = TriageManifest(data_dir="triage-data", prs=[])
         result = downloader.download(manifest, tmp_path)
 
@@ -83,8 +82,7 @@ class TestTriageDownloader:
         """Raises error if data_dir not set."""
         host = MockRepositoryHost()
         runner = MockCommandRunner()
-        downloader = TriageDownloader(host, runner)  # type: ignore
-
+        downloader = TriageDownloader(host, runner)  # type: ignore - Union type narrowing limitation
         manifest = TriageManifest(data_dir="", prs=[
             PRToReview(number=1, title="PR", url="u", branch="b"),
         ])
@@ -113,8 +111,7 @@ class TestTriageDownloader:
                 stderr="",
             ),
         })
-        downloader = TriageDownloader(host, runner)  # type: ignore
-
+        downloader = TriageDownloader(host, runner)  # type: ignore - Union type narrowing limitation
         manifest = TriageManifest(
             data_dir="triage-data",
             prs=[PRToReview(number=42, title="Test PR", url="u", branch="b")],
@@ -143,8 +140,7 @@ class TestTriageDownloader:
             ),
         })
         runner = MockCommandRunner()
-        downloader = TriageDownloader(host, runner)  # type: ignore
-
+        downloader = TriageDownloader(host, runner)  # type: ignore - Union type narrowing limitation
         manifest = TriageManifest(
             data_dir="triage-data",
             prs=[PRToReview(number=42, title="Test PR", url="u", branch="b")],
@@ -178,8 +174,7 @@ class TestTriageDownloader:
                 stderr="gh: PR not found",
             ),
         })
-        downloader = TriageDownloader(host, runner)  # type: ignore
-
+        downloader = TriageDownloader(host, runner)  # type: ignore - Union type narrowing limitation
         manifest = TriageManifest(
             data_dir="data",
             prs=[PRToReview(number=99, title="PR", url="u", branch="b")],
@@ -196,8 +191,7 @@ class TestTriageDownloader:
         """Writes error metadata when PR not found."""
         host = MockRepositoryHost(prs={})  # No PRs
         runner = MockCommandRunner()
-        downloader = TriageDownloader(host, runner)  # type: ignore
-
+        downloader = TriageDownloader(host, runner)  # type: ignore - Union type narrowing limitation
         manifest = TriageManifest(
             data_dir="data",
             prs=[PRToReview(number=999, title="Missing", url="u", branch="b")],
@@ -222,8 +216,7 @@ class TestTriageDownloader:
             "2": CommandResult(0, "diff2", ""),
             "3": CommandResult(0, "diff3", ""),
         })
-        downloader = TriageDownloader(host, runner)  # type: ignore
-
+        downloader = TriageDownloader(host, runner)  # type: ignore - Union type narrowing limitation
         manifest = TriageManifest(
             data_dir="data",
             prs=[
@@ -259,8 +252,7 @@ class TestTriageDownloader:
             "2": CommandResult(1, "", "not found"),
             "3": CommandResult(0, "diff3", ""),
         })
-        downloader = TriageDownloader(host, runner)  # type: ignore
-
+        downloader = TriageDownloader(host, runner)  # type: ignore - Union type narrowing limitation
         manifest = TriageManifest(
             data_dir="data",
             prs=[
@@ -283,8 +275,7 @@ class TestTriageDownloader:
             1: MockPR(number=1, title="PR", url="u", branch="b", labels=[]),
         })
         runner = MockCommandRunner()
-        downloader = TriageDownloader(host, runner)  # type: ignore
-
+        downloader = TriageDownloader(host, runner)  # type: ignore - Union type narrowing limitation
         manifest = TriageManifest(
             data_dir="deep/nested/triage-data",
             prs=[PRToReview(number=1, title="PR", url="u", branch="b")],
@@ -300,8 +291,7 @@ class TestTriageDownloader:
             42: MockPR(number=42, title="PR", url="u", branch="b", labels=[]),
         })
         runner = MockCommandRunner()
-        downloader = TriageDownloader(host, runner)  # type: ignore
-
+        downloader = TriageDownloader(host, runner)  # type: ignore - Union type narrowing limitation
         manifest = TriageManifest(
             data_dir="data",
             prs=[PRToReview(number=42, title="PR", url="u", branch="b")],

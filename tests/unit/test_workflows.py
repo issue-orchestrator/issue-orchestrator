@@ -38,7 +38,7 @@ def make_pending_review(pr_number: int, issue_number: int) -> PendingReview:
         _issue_number=issue_number,
     )
 
-def make_pending_rework(issue_number: int, pr_number: int = None, rework_cycle: int = 1) -> PendingRework:  # type: ignore
+def make_pending_rework(issue_number: int, pr_number: int = None, rework_cycle: int = 1) -> PendingRework:  # type: ignore - Union type narrowing limitation
     """Create a PendingRework for testing.
 
     Args:
@@ -102,8 +102,7 @@ class TestReviewWorkflow:
         )
 
         assert not decision.should_launch
-        assert "configured" in decision.skip_reason  # type: ignore
-
+        assert "configured" in decision.skip_reason  # type: ignore - Union type narrowing limitation
     def test_should_launch_skips_when_queue_empty(self, workflow):
         """Test skips when queue is empty."""
         decision = workflow.should_launch_reviews(

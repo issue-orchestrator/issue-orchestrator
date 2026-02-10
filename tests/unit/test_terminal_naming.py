@@ -93,4 +93,4 @@ class TestParsedSessionName:
         """ParsedSessionName is immutable."""
         parsed = ParsedSessionName(SessionType.ISSUE, 123)
         with pytest.raises(Exception):  # FrozenInstanceError
-            parsed.number = 456  # type: ignore
+            parsed.number = 456  # type: ignore - Union type narrowing limitation

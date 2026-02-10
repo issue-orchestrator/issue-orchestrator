@@ -50,7 +50,7 @@ class MockOrchestratorForWeb:
         config.repo_root = Path("/tmp/repo")
         config.worktree_base = Path("/tmp")
         config.filtering.label = None
-        config.filter_milestone = None  # type: ignore
+        config.filter_milestone = None  # type: ignore - Union type narrowing limitation
         config.agents = {
             "agent:web": AgentConfig(
                 prompt_path=Path("/tmp/prompt.txt"),

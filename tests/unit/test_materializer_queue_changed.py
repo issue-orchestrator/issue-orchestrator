@@ -32,10 +32,10 @@ def test_queue_changed_removes_issues():
     """queue.changed event should remove issues from the view."""
     view = MaterializedView()
     # Pre-populate with issues
-    view.issues["123"] = view.issues.get("123") or type(  # type: ignore
+    view.issues["123"] = view.issues.get("123") or type(  # type: ignore - Union type narrowing limitation
         "IssueView", (), {"issue_key": "123", "labels": set()}
     )()
-    view.issues["456"] = view.issues.get("456") or type(  # type: ignore
+    view.issues["456"] = view.issues.get("456") or type(  # type: ignore - Union type narrowing limitation
         "IssueView", (), {"issue_key": "456", "labels": set()}
     )()
     assert len(view.issues) == 2

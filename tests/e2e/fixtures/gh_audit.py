@@ -55,7 +55,7 @@ def fetch_gh_audit_report(port: int | None) -> dict | None:
                 return None
             time.sleep(1 + attempt)
 
-    path = payload.get("path") if isinstance(payload, dict) else None  # type: ignore
+    path = payload.get("path") if isinstance(payload, dict) else None  # type: ignore - Union type narrowing limitation
     if not path:
         return None
     try:

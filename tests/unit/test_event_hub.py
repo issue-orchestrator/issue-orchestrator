@@ -5,10 +5,9 @@ from issue_orchestrator.ports import TraceEvent
 def test_event_hub_stats_and_replay_counts() -> None:
     hub = EventHub(max_events=2)
 
-    hub.publish(TraceEvent("tick.started", {"tick_id": 1}).with_event_id(1))  # type: ignore
-    hub.publish(TraceEvent("tick.started", {"tick_id": 2}).with_event_id(2))  # type: ignore
-    hub.publish(TraceEvent("tick.started", {"tick_id": 3}).with_event_id(3))  # type: ignore
-
+    hub.publish(TraceEvent("tick.started", {"tick_id": 1}).with_event_id(1))  # type: ignore - Union type narrowing limitation
+    hub.publish(TraceEvent("tick.started", {"tick_id": 2}).with_event_id(2))  # type: ignore - Union type narrowing limitation
+    hub.publish(TraceEvent("tick.started", {"tick_id": 3}).with_event_id(3))  # type: ignore - Union type narrowing limitation
     stats = hub.stats()
     assert stats["buffer_size"] == 2
     assert stats["oldest_event_id"] == 2

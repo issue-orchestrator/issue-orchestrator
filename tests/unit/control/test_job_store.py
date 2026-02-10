@@ -292,15 +292,13 @@ class TestJobStoreSaveJob:
         job_store.save_job(sample_job)
 
         record = job_store.get_job(sample_job.job_id)
-        assert record.worktree_id == wt_id  # type: ignore
-
+        assert record.worktree_id == wt_id  # type: ignore - Union type narrowing limitation
     def test_stores_metadata(self, job_store: JobStore, sample_job: PublishJob):
         """Verify metadata is stored as JSON."""
         job_store.save_job(sample_job)
 
         record = job_store.get_job(sample_job.job_id)
-        metadata = json.loads(record.metadata_json)  # type: ignore
-
+        metadata = json.loads(record.metadata_json)  # type: ignore - Union type narrowing limitation
         assert metadata["issue_title"] == sample_job.issue_title
         assert metadata["outcome"] == sample_job.outcome
         assert metadata["agent_label"] == sample_job.agent_label
@@ -313,8 +311,7 @@ class TestJobStoreSaveJob:
         job_store.save_job(sample_job)
 
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "queued"  # type: ignore
-
+        assert record.status == "queued"  # type: ignore - Union type narrowing limitation
     def test_sets_created_at(self, job_store: JobStore, sample_job: PublishJob):
         """Verify created_at timestamp is set."""
         before = time.time()
@@ -322,9 +319,7 @@ class TestJobStoreSaveJob:
         after = time.time()
 
         record = job_store.get_job(sample_job.job_id)
-        assert before <= record.created_at <= after  # type: ignore
-
-
+        assert before <= record.created_at <= after  # type: ignore - Union type narrowing limitation
 # ============================================================================
 # JobStore status transitions
 # ============================================================================
@@ -343,8 +338,7 @@ class TestJobStoreMarkStarted:
 
         assert result is True
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "running"  # type: ignore
-
+        assert record.status == "running"  # type: ignore - Union type narrowing limitation
     def test_sets_started_at(self, job_store: JobStore, sample_job: PublishJob):
         """Verify started_at timestamp is set."""
         job_store.save_job(sample_job)
@@ -354,9 +348,8 @@ class TestJobStoreMarkStarted:
         after = time.time()
 
         record = job_store.get_job(sample_job.job_id)
-        assert record.started_at is not None  # type: ignore
-        assert before <= record.started_at <= after  # type: ignore
-
+        assert record.started_at is not None  # type: ignore - Union type narrowing limitation
+        assert before <= record.started_at <= after  # type: ignore - Union type narrowing limitation
     def test_returns_false_for_nonexistent(self, job_store: JobStore):
         """Verify returns False for nonexistent job."""
         result = job_store.mark_started("nonexistent-job-id")
@@ -391,10 +384,9 @@ class TestJobStoreMarkSucceeded:
 
         assert result is True
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "succeeded"  # type: ignore
-        assert record.pr_url == "https://github.com/owner/repo/pull/42"  # type: ignore
-        assert record.pr_number == 42  # type: ignore
-
+        assert record.status == "succeeded"  # type: ignore - Union type narrowing limitation
+        assert record.pr_url == "https://github.com/owner/repo/pull/42"  # type: ignore - Union type narrowing limitation
+        assert record.pr_number == 42  # type: ignore - Union type narrowing limitation
     def test_sets_finished_at(self, job_store: JobStore, sample_job: PublishJob):
         """Verify finished_at timestamp is set."""
         job_store.save_job(sample_job)
@@ -405,9 +397,8 @@ class TestJobStoreMarkSucceeded:
         after = time.time()
 
         record = job_store.get_job(sample_job.job_id)
-        assert record.finished_at is not None  # type: ignore
-        assert before <= record.finished_at <= after  # type: ignore
-
+        assert record.finished_at is not None  # type: ignore - Union type narrowing limitation
+        assert before <= record.finished_at <= after  # type: ignore - Union type narrowing limitation
     def test_can_succeed_from_queued(
         self, job_store: JobStore, sample_job: PublishJob
     ):
@@ -418,9 +409,7 @@ class TestJobStoreMarkSucceeded:
 
         assert result is True
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "succeeded"  # type: ignore
-
-
+        assert record.status == "succeeded"  # type: ignore - Union type narrowing limitation
 class TestJobStoreMarkFailed:
     """Tests for JobStore.mark_failed()."""
 
@@ -439,10 +428,9 @@ class TestJobStoreMarkFailed:
 
         assert result is True
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "failed"  # type: ignore
-        assert record.error_message == "Git push failed"  # type: ignore
-        assert json.loads(record.errors_json) == ["Network error", "Retry limit exceeded"]  # type: ignore
-
+        assert record.status == "failed"  # type: ignore - Union type narrowing limitation
+        assert record.error_message == "Git push failed"  # type: ignore - Union type narrowing limitation
+        assert json.loads(record.errors_json) == ["Network error", "Retry limit exceeded"]  # type: ignore - Union type narrowing limitation
     def test_sets_finished_at(self, job_store: JobStore, sample_job: PublishJob):
         """Verify finished_at timestamp is set."""
         job_store.save_job(sample_job)
@@ -452,10 +440,8 @@ class TestJobStoreMarkFailed:
         after = time.time()
 
         record = job_store.get_job(sample_job.job_id)
-        assert record.finished_at is not None  # type: ignore
-        assert before <= record.finished_at <= after  # type: ignore
-
-
+        assert record.finished_at is not None  # type: ignore - Union type narrowing limitation
+        assert before <= record.finished_at <= after  # type: ignore - Union type narrowing limitation
 class TestJobStoreMarkWorktreeCleaned:
     """Tests for JobStore.mark_worktree_cleaned()."""
 
@@ -469,8 +455,7 @@ class TestJobStoreMarkWorktreeCleaned:
 
         assert count == 1
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "worktree_gone"  # type: ignore
-
+        assert record.status == "worktree_gone"  # type: ignore - Union type narrowing limitation
     def test_only_marks_non_terminal_jobs(
         self, job_store: JobStore, sample_job: PublishJob, sample_worktree: Path
     ):
@@ -483,8 +468,7 @@ class TestJobStoreMarkWorktreeCleaned:
 
         assert count == 0
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "succeeded"  # type: ignore
-
+        assert record.status == "succeeded"  # type: ignore - Union type narrowing limitation
     def test_returns_zero_for_unknown_worktree(self, job_store: JobStore):
         """Verify returns 0 for unknown worktree."""
         count = job_store.mark_worktree_cleaned("/nonexistent/path")
@@ -620,9 +604,8 @@ class TestJobStoreValidateWorktrees:
 
         assert count == 1
         record = job_store.get_job(job.job_id)
-        assert record.status == "worktree_gone"  # type: ignore
-        assert "missing" in record.error_message.lower()  # type: ignore
-
+        assert record.status == "worktree_gone"  # type: ignore - Union type narrowing limitation
+        assert "missing" in record.error_message.lower()  # type: ignore - Union type narrowing limitation
     def test_marks_identity_mismatch_as_gone(
         self, job_store: JobStore, sample_worktree: Path
     ):
@@ -644,9 +627,8 @@ class TestJobStoreValidateWorktrees:
 
         assert count == 1
         record = job_store.get_job(job.job_id)
-        assert record.status == "worktree_gone"  # type: ignore
-        assert "mismatch" in record.error_message.lower()  # type: ignore
-
+        assert record.status == "worktree_gone"  # type: ignore - Union type narrowing limitation
+        assert "mismatch" in record.error_message.lower()  # type: ignore - Union type narrowing limitation
     def test_preserves_valid_worktrees(
         self, job_store: JobStore, sample_job: PublishJob
     ):
@@ -657,8 +639,7 @@ class TestJobStoreValidateWorktrees:
 
         assert count == 0
         record = job_store.get_job(sample_job.job_id)
-        assert record.status == "queued"  # type: ignore
-
+        assert record.status == "queued"  # type: ignore - Union type narrowing limitation
     def test_skips_terminal_jobs(
         self, job_store: JobStore, sample_job: PublishJob, sample_worktree: Path
     ):

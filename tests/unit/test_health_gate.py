@@ -76,9 +76,7 @@ class TestHealthDecisionFactoryMethods:
         decision = HealthDecision.ok()
 
         with pytest.raises(AttributeError):
-            decision.can_proceed = False  # type: ignore
-
-
+            decision.can_proceed = False  # type: ignore - Union type narrowing limitation
 # ============================================================================
 # Paused State Behavior
 # ============================================================================
@@ -151,9 +149,8 @@ class TestCapacityConstraintBehavior:
 
         assert decision.can_proceed is False
         assert decision.reason == "at_capacity"
-        assert decision.details["active_sessions"] == 3  # type: ignore
-        assert decision.details["max_concurrent"] == 3  # type: ignore
-
+        assert decision.details["active_sessions"] == 3  # type: ignore - Union type narrowing limitation
+        assert decision.details["max_concurrent"] == 3  # type: ignore - Union type narrowing limitation
     def test_over_capacity_blocks_new_sessions(self):
         """When over max capacity, no new sessions can be launched."""
         gate = HealthGate(max_concurrent_sessions=3)
@@ -218,9 +215,8 @@ class TestRateLimitBehavior:
 
         assert decision.can_proceed is False
         assert decision.reason == "rate_limit_low"
-        assert decision.details["remaining"] == 50  # type: ignore
-        assert decision.details["threshold"] == 100  # type: ignore
-
+        assert decision.details["remaining"] == 50  # type: ignore - Union type narrowing limitation
+        assert decision.details["threshold"] == 100  # type: ignore - Union type narrowing limitation
     def test_rate_limit_at_threshold_blocks(self):
         """Rate limit exactly at threshold blocks (threshold is minimum required)."""
         rate_provider = MockRateLimitProvider({
@@ -507,9 +503,8 @@ class TestEdgeCases:
 
         assert decision.can_proceed is False
         assert decision.reason == "rate_limit_low"
-        assert decision.details["remaining"] == 500  # type: ignore
-        assert decision.details["threshold"] == 1000  # type: ignore
-
+        assert decision.details["remaining"] == 500  # type: ignore - Union type narrowing limitation
+        assert decision.details["threshold"] == 1000  # type: ignore - Union type narrowing limitation
     def test_rate_limit_zero_remaining_blocks(self):
         """Zero remaining API calls blocks new sessions."""
         rate_provider = MockRateLimitProvider({
@@ -525,9 +520,7 @@ class TestEdgeCases:
 
         assert decision.can_proceed is False
         assert decision.reason == "rate_limit_low"
-        assert decision.details["remaining"] == 0  # type: ignore
-
-
+        assert decision.details["remaining"] == 0  # type: ignore - Union type narrowing limitation
 # ============================================================================
 # Multiple Consecutive Checks
 # ============================================================================

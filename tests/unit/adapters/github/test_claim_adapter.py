@@ -100,7 +100,7 @@ class TestAttemptClaim:
         mock_client.add_comment = MagicMock(side_effect=Exception("Network error"))
 
         adapter = GitHubClaimAdapter(
-            client=mock_client,  # type: ignore
+            client=mock_client,  # type: ignore - Union type narrowing limitation
             claimant_id="test-orchestrator",
             config=LeaseConfig.for_testing(),
             label_adapter=mock_labels,
@@ -110,8 +110,7 @@ class TestAttemptClaim:
 
         assert result.success is False
         assert result.state == ClaimState.UNCLAIMED
-        assert "Network error" in result.error  # type: ignore
-
+        assert "Network error" in result.error  # type: ignore - Union type narrowing limitation
 class TestReleaseClaim:
     """Tests for release_claim method."""
 

@@ -126,8 +126,7 @@ priority: {higher_priority}
         mock_client.comments.append({"body": competing_claim})
 
         # Run convergence - should fail because we're not the winner
-        converged = adapter.run_convergence(issue_number=42, lease_id=result.lease_id)  # type: ignore
-
+        converged = adapter.run_convergence(issue_number=42, lease_id=result.lease_id)  # type: ignore - Union type narrowing limitation
         assert converged is False
 
     def test_convergence_resets_on_contested(self, mock_client, mock_labels):
@@ -185,8 +184,7 @@ priority: {higher_priority}
 
         adapter._fetch_all_claims = controlled_fetch  # noqa: SLF001
 
-        converged = adapter.run_convergence(issue_number=42, lease_id=our_lease_id)  # type: ignore
-
+        converged = adapter.run_convergence(issue_number=42, lease_id=our_lease_id)  # type: ignore - Union type narrowing limitation
         # Should eventually converge after competing claim is removed
         assert converged is True
         # Verify multiple fetches happened (at least: 1 loss + 3 wins)
@@ -246,8 +244,7 @@ class TestConvergenceWithMockedTime:
         result = adapter.attempt_claim(issue_number=42)
 
         # Run convergence
-        converged = adapter.run_convergence(issue_number=42, lease_id=result.lease_id)  # type: ignore
-
+        converged = adapter.run_convergence(issue_number=42, lease_id=result.lease_id)  # type: ignore - Union type narrowing limitation
         assert converged is True
         # Verify randint was called with correct jitter bounds
         mock_randint.assert_called_with(100, 200)
@@ -293,8 +290,7 @@ priority: {higher_priority}
 ```"""})
 
         # Run convergence - should timeout
-        converged = adapter.run_convergence(issue_number=42, lease_id=result.lease_id)  # type: ignore
-
+        converged = adapter.run_convergence(issue_number=42, lease_id=result.lease_id)  # type: ignore - Union type narrowing limitation
         assert converged is False
 
 
@@ -333,7 +329,7 @@ priority: {b_priority}
 
         # A's convergence should fail
         converged_a = adapter_a.run_convergence(
-            issue_number=42, lease_id=result_a.lease_id  # type: ignore
+            issue_number=42, lease_id=result_a.lease_id  # type: ignore - Union type narrowing limitation
         )
 
         assert converged_a is False

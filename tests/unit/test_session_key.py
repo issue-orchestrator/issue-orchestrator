@@ -202,12 +202,11 @@ class TestSessionKeyImmutability:
         key = SessionKey(issue=issue, task=TaskKind.CODE)
 
         with pytest.raises(AttributeError):
-            key.task = TaskKind.REVIEW  # type: ignore
-
+            key.task = TaskKind.REVIEW  # type: ignore - Union type narrowing limitation
     def test_cannot_modify_issue(self):
         """SessionKey.issue cannot be modified."""
         issue = FakeIssueKey("M1-011")
         key = SessionKey(issue=issue, task=TaskKind.CODE)
 
         with pytest.raises(AttributeError):
-            key.issue = FakeIssueKey("M1-012")  # type: ignore
+            key.issue = FakeIssueKey("M1-012")  # type: ignore - Union type narrowing limitation

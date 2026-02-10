@@ -44,7 +44,7 @@ def builder(mock_config, mock_repository_host):
     return SnapshotBuilder(config=mock_config, repository_host=mock_repository_host)
 
 
-def make_issue(number: int, title: str = None, labels: list[str] = None, state: str = "open") -> Issue:  # type: ignore
+def make_issue(number: int, title: str = None, labels: list[str] = None, state: str = "open") -> Issue:  # type: ignore - Union type narrowing limitation
     """Helper to create test issues."""
     return Issue(
         number=number,
@@ -57,8 +57,8 @@ def make_issue(number: int, title: str = None, labels: list[str] = None, state: 
 def make_pr(
     number: int,
     state: str = "open",
-    labels: list[str] = None,  # type: ignore
-    branch: str = None,  # type: ignore
+    labels: list[str] = None,  # type: ignore - Union type narrowing limitation
+    branch: str = None,  # type: ignore - Union type narrowing limitation
 ) -> PRInfo:
     """Helper to create test PRInfo objects."""
     return PRInfo(

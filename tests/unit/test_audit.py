@@ -32,8 +32,7 @@ class TestGetIssueDependencies:
         config = MagicMock()
         issues = [make_issue(1, body="No dependencies here")]
 
-        result = get_issue_dependencies(issues, config)  # type: ignore
-
+        result = get_issue_dependencies(issues, config)  # type: ignore - Union type narrowing limitation
         assert 1 in result
         assert result[1].has_dependencies is False
         assert result[1].dependencies == []
@@ -47,8 +46,7 @@ class TestGetIssueDependencies:
             make_issue(2, body="Depends-on: #1"),
         ]
 
-        result = get_issue_dependencies(issues, config)  # type: ignore
-
+        result = get_issue_dependencies(issues, config)  # type: ignore - Union type narrowing limitation
         assert result[2].has_dependencies is True
         assert len(result[2].dependencies) == 1
         assert result[2].dependencies[0][0] == 1
@@ -64,8 +62,7 @@ class TestGetIssueDependencies:
             make_issue(3, body="Depends-on: #1\nDepends-on: #2"),
         ]
 
-        result = get_issue_dependencies(issues, config)  # type: ignore
-
+        result = get_issue_dependencies(issues, config)  # type: ignore - Union type narrowing limitation
         assert result[3].has_dependencies is True
         assert len(result[3].dependencies) == 2
         dep_nums = [d[0] for d in result[3].dependencies]
@@ -81,8 +78,7 @@ class TestGetIssueDependencies:
             make_issue(2, body="Depends-on: #999"),
         ]
 
-        result = get_issue_dependencies(issues, config)  # type: ignore
-
+        result = get_issue_dependencies(issues, config)  # type: ignore - Union type narrowing limitation
         assert result[2].has_dependencies is True
         assert result[2].dependencies[0][0] == 999
         assert result[2].dependencies[0][1] == "Issue #999"
@@ -94,8 +90,7 @@ class TestGetIssueDependencies:
             make_issue(1, body="Depends-on: owner/other-repo#42"),
         ]
 
-        result = get_issue_dependencies(issues, config)  # type: ignore
-
+        result = get_issue_dependencies(issues, config)  # type: ignore - Union type narrowing limitation
         assert result[1].has_dependencies is True
         assert result[1].dependencies[0][0] == 42
         assert result[1].dependencies[0][1] == "owner/other-repo#42"
@@ -105,8 +100,7 @@ class TestGetIssueDependencies:
         config = MagicMock()
         issues = [make_issue(1, body="")]
 
-        result = get_issue_dependencies(issues, config)  # type: ignore
-
+        result = get_issue_dependencies(issues, config)  # type: ignore - Union type narrowing limitation
         assert result[1].has_dependencies is False
 
     def test_none_body(self):
@@ -116,8 +110,7 @@ class TestGetIssueDependencies:
         issue.body = None
         issues = [issue]
 
-        result = get_issue_dependencies(issues, config)  # type: ignore
-
+        result = get_issue_dependencies(issues, config)  # type: ignore - Union type narrowing limitation
         assert result[1].has_dependencies is False
 
     def test_all_issues_processed(self):
@@ -129,8 +122,7 @@ class TestGetIssueDependencies:
             make_issue(3, body="No deps"),
         ]
 
-        result = get_issue_dependencies(issues, config)  # type: ignore
-
+        result = get_issue_dependencies(issues, config)  # type: ignore - Union type narrowing limitation
         assert len(result) == 3
         assert 1 in result
         assert 2 in result

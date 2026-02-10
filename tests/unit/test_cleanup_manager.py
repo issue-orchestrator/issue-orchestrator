@@ -32,8 +32,8 @@ class CleanupManagerBundle:
 def make_pending_cleanup(
     issue_number: int,
     pr_number: int,
-    terminal_id: str = None,  # type: ignore
-    worktree_path: Path = None,  # type: ignore
+    terminal_id: str = None,  # type: ignore - Union type narrowing limitation
+    worktree_path: Path = None,  # type: ignore - Union type narrowing limitation
 ) -> PendingCleanup:
     """Create a PendingCleanup with a mock issue."""
     mock_issue = MagicMock()

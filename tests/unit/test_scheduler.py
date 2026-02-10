@@ -139,8 +139,7 @@ class TestScheduler:
         available = [create_mock_issue(i, priority="high") for i in range(1, 6)]
 
         # Current count is 0, so we can pick 2
-        batch = scheduler.pick_next_batch(available, current_count=0)  # type: ignore
-
+        batch = scheduler.pick_next_batch(available, current_count=0)  # type: ignore - Union type narrowing limitation
         assert len(batch) == 2
 
     def test_pick_next_batch_with_current_sessions(self, sample_config):
@@ -151,8 +150,7 @@ class TestScheduler:
         available = [create_mock_issue(i, priority="high") for i in range(1, 6)]
 
         # Current count is 2, so we can pick 1 more
-        batch = scheduler.pick_next_batch(available, current_count=2)  # type: ignore
-
+        batch = scheduler.pick_next_batch(available, current_count=2)  # type: ignore - Union type narrowing limitation
         assert len(batch) == 1
 
     def test_pick_next_batch_no_slots_available(self, sample_config):
@@ -163,8 +161,7 @@ class TestScheduler:
         available = [create_mock_issue(i, priority="high") for i in range(1, 4)]
 
         # Current count equals max sessions
-        batch = scheduler.pick_next_batch(available, current_count=2)  # type: ignore
-
+        batch = scheduler.pick_next_batch(available, current_count=2)  # type: ignore - Union type narrowing limitation
         assert len(batch) == 0
 
     def test_pick_next_batch_with_priority_overrides(self, sample_config):
@@ -180,7 +177,7 @@ class TestScheduler:
 
         # Override to prioritize issue 1
         batch = scheduler.pick_next_batch(
-            available, current_count=0, priority_overrides=[1]  # type: ignore
+            available, current_count=0, priority_overrides=[1]  # type: ignore - Union type narrowing limitation
         )
 
         # Issue 1 should be first in the batch
@@ -194,7 +191,7 @@ class TestScheduler:
         available = [create_mock_issue(i, priority="low") for i in range(1, 6)]
 
         batch = scheduler.pick_next_batch(
-            available, current_count=0, priority_overrides=[3, 4, 5]  # type: ignore
+            available, current_count=0, priority_overrides=[3, 4, 5]  # type: ignore - Union type narrowing limitation
         )
 
         # Should only pick 2 even though we have 3 overrides
@@ -211,8 +208,7 @@ class TestScheduler:
         available = [create_mock_issue(i) for i in [1, 2]]
 
         # Override includes issue 99 which doesn't exist
-        batch = scheduler.pick_next_batch(available, current_count=0, priority_overrides=[99, 1])  # type: ignore
-
+        batch = scheduler.pick_next_batch(available, current_count=0, priority_overrides=[99, 1])  # type: ignore - Union type narrowing limitation
         assert len(batch) == 2
         assert batch[0].number == 1
         assert batch[1].number == 2
@@ -236,8 +232,7 @@ class TestScheduler:
             ),
         ]
 
-        deps = scheduler.analyze_dependencies(issues)  # type: ignore
-
+        deps = scheduler.analyze_dependencies(issues)  # type: ignore - Union type narrowing limitation
         assert deps[2] == [1]
         assert 1 not in deps
 
@@ -284,8 +279,7 @@ class TestScheduler:
             ),
         ]
 
-        deps = scheduler.analyze_dependencies(issues)  # type: ignore
-
+        deps = scheduler.analyze_dependencies(issues)  # type: ignore - Union type narrowing limitation
         # All issues 2-6 should depend on 1
         for issue_num in [2, 3, 4, 5, 6]:
             assert deps[issue_num] == [1]
@@ -305,8 +299,7 @@ class TestScheduler:
             ),
         ]
 
-        deps = scheduler.analyze_dependencies(issues)  # type: ignore
-
+        deps = scheduler.analyze_dependencies(issues)  # type: ignore - Union type narrowing limitation
         assert set(deps[3]) == {1, 2}
 
     def test_analyze_dependencies_case_insensitive(self, sample_config):
@@ -323,8 +316,7 @@ class TestScheduler:
             ),
         ]
 
-        deps = scheduler.analyze_dependencies(issues)  # type: ignore
-
+        deps = scheduler.analyze_dependencies(issues)  # type: ignore - Union type narrowing limitation
         # Should find both despite case difference
         assert deps[2] == [1, 1] or deps[2] == [1]
 
@@ -336,8 +328,7 @@ class TestScheduler:
             Issue(number=1, title="Task", labels=[], body="Just a regular task"),
         ]
 
-        deps = scheduler.analyze_dependencies(issues)  # type: ignore
-
+        deps = scheduler.analyze_dependencies(issues)  # type: ignore - Union type narrowing limitation
         assert 1 not in deps
 
     def test_analyze_dependencies_no_body(self, sample_config):
@@ -348,8 +339,7 @@ class TestScheduler:
             Issue(number=1, title="Task", labels=[], body=None),
         ]
 
-        deps = scheduler.analyze_dependencies(issues)  # type: ignore
-
+        deps = scheduler.analyze_dependencies(issues)  # type: ignore - Union type narrowing limitation
         assert 1 not in deps
 
     def test_analyze_dependencies_sorted_output(self, sample_config):
@@ -365,8 +355,7 @@ class TestScheduler:
             ),
         ]
 
-        deps = scheduler.analyze_dependencies(issues)  # type: ignore
-
+        deps = scheduler.analyze_dependencies(issues)  # type: ignore - Union type narrowing limitation
         assert deps[1] == [2, 5, 10]
 
 
@@ -1115,7 +1104,7 @@ class TestSchedulerDependencyGating:
         assert "#200" in reason or "#300" in reason
 
 
-def _make_test_session(issue_number: int) -> "Session":  # type: ignore
+def _make_test_session(issue_number: int) -> "Session":  # type: ignore - Union type narrowing limitation
     """Helper to create a test session for scheduler tests."""
     from issue_orchestrator.domain.models import Session, SessionStatus
     from issue_orchestrator.domain.issue_key import FakeIssueKey

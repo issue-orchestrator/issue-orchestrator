@@ -28,7 +28,7 @@ class FakeRunner:
 
 def test_git_cli_builds_git_c_command():
     runner = FakeRunner()
-    git = GitCLI(runner=runner)  # type: ignore
+    git = GitCLI(runner=runner)  # type: ignore - Union type narrowing limitation
     git.status_porcelain(Path("/tmp/repo"))
     command, cwd, env, timeout_seconds, shell = runner.calls[0]
     assert command[:3] == ["git", "-C", "/tmp/repo"]
@@ -41,8 +41,8 @@ def test_git_cli_builds_git_c_command():
 
 def test_git_cli_raises_typed_error_on_failure():
     runner = FakeRunner()
-    runner.next_result = (1, "", "boom")  # type: ignore
-    git = GitCLI(runner=runner)  # type: ignore
+    runner.next_result = (1, "", "boom")  # type: ignore - Union type narrowing limitation
+    git = GitCLI(runner=runner)  # type: ignore - Union type narrowing limitation
     with pytest.raises(GitError) as exc:
         git.fetch(Path("/tmp/repo"))
     assert "git command failed" in str(exc.value)
@@ -51,7 +51,7 @@ def test_git_cli_raises_typed_error_on_failure():
 def test_git_cli_reports_timeout():
     runner = FakeRunner()
     runner.timed_out = True
-    git = GitCLI(runner=runner)  # type: ignore
+    git = GitCLI(runner=runner)  # type: ignore - Union type narrowing limitation
     with pytest.raises(GitError) as exc:
         git.current_branch(Path("/tmp/repo"))
     assert "timed out" in str(exc.value)

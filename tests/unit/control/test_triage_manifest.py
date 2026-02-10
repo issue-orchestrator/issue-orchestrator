@@ -112,8 +112,7 @@ class TestTriageManifest:
             "data_dir": "some-dir",
             "prs": [],
         }
-        manifest = TriageManifest.from_dict(data)  # type: ignore
-
+        manifest = TriageManifest.from_dict(data)  # type: ignore - Union type narrowing limitation
         assert manifest.session_type == "triage"
         assert manifest.generated_at == "2025-01-21T12:00:00Z"
         assert manifest.data_dir == "some-dir"
@@ -138,8 +137,7 @@ class TestTriageManifest:
                 }
             ],
         }
-        manifest = TriageManifest.from_dict(data)  # type: ignore
-
+        manifest = TriageManifest.from_dict(data)  # type: ignore - Union type narrowing limitation
         assert len(manifest.prs) == 1
         pr = manifest.prs[0]
         assert pr.number == 99
@@ -159,8 +157,7 @@ class TestTriageManifest:
                 }
             ],
         }
-        manifest = TriageManifest.from_dict(data)  # type: ignore
-
+        manifest = TriageManifest.from_dict(data)  # type: ignore - Union type narrowing limitation
         pr = manifest.prs[0]
         assert pr.files.diff == ""
         assert pr.files.metadata == ""

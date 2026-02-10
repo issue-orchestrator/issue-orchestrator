@@ -383,7 +383,7 @@ class TestAgentValidator:
         agent = self._make_agent(
             prompt_path=prompt_file,
             provider="claude-code",
-            ai_system=None,  # type: ignore
+            ai_system=None,  # type: ignore - Union type narrowing limitation
         )
         config = self._make_config(agents={"agent:dev": agent})
 

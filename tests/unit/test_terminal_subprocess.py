@@ -77,6 +77,5 @@ def test_process_alive_handles_waitpid_race(tmp_path, monkeypatch):
             raise ChildProcessError("waitpid race")
 
     plugin = SubprocessPlugin()
-    plugin._children["issue-1"] = _FlakyChild()  # type: ignore
-
+    plugin._children["issue-1"] = _FlakyChild()  # type: ignore - Union type narrowing limitation
     assert plugin._process_alive(4242, "issue-1") is False

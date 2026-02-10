@@ -21,8 +21,7 @@ class TestClaim:
             priority=1000,
         )
         with pytest.raises(AttributeError):
-            claim.lease_id = "new-id"  # type: ignore
-
+            claim.lease_id = "new-id"  # type: ignore - Union type narrowing limitation
     def test_is_expired_when_past_expiry(self):
         """is_expired returns True when current time is past expires_at."""
         now = datetime.now()
@@ -190,4 +189,4 @@ class TestClaimResult:
         """ClaimResult is a frozen dataclass."""
         result = ClaimResult.claimed("lease-123")
         with pytest.raises(AttributeError):
-            result.success = False  # type: ignore
+            result.success = False  # type: ignore - Union type narrowing limitation

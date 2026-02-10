@@ -110,8 +110,7 @@ class TestRestoreSessionsBasic:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-test-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         # Act
         discovered = [make_discovered_session(123, is_review=False)]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
@@ -146,8 +145,7 @@ class TestRestoreSessionsBasic:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "100-feature-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         # Tab name format: "#<issue> Review PR #<pr>"
         discovered = [make_discovered_session(100, tab_name="#100 Review PR #456", is_review=True)]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
@@ -178,8 +176,7 @@ class TestRestoreSessionsBasic:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         # Create an already-tracked session
         existing_session = MagicMock(spec=Session)
         existing_session.terminal_id = "issue-123"
@@ -211,8 +208,7 @@ class TestRestoreSessionsBasic:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         # Same issue discovered twice
         discovered = [
             make_discovered_session(123, tab_name="#123 First tab"),
@@ -239,8 +235,7 @@ class TestOrphanedSessionHandling:
         repo_host = MockRepositoryHost()
         working_copy = MockWorkingCopy()
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         discovered = [make_discovered_session(123)]
         with caplog.at_level(logging.WARNING):
             restored = restorer.restore_sessions(discovered, already_tracked=[])
@@ -272,8 +267,7 @@ class TestErrorRecovery:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree_200] = "200-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         discovered = [
             make_discovered_session(100),  # Will fail - no worktree
             make_discovered_session(200),  # Will succeed
@@ -306,8 +300,7 @@ class TestErrorRecovery:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         discovered = [make_discovered_session(123)]
         with caplog.at_level(logging.ERROR):
             restored = restorer.restore_sessions(discovered, already_tracked=[])
@@ -343,8 +336,7 @@ class TestStateValidation:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         discovered = [make_discovered_session(123)]
         with caplog.at_level(logging.WARNING):
             restored = restorer.restore_sessions(discovered, already_tracked=[])
@@ -361,7 +353,7 @@ class TestStateValidation:
         worktree.mkdir()
 
         agent_config = make_agent_config(tmp_path)
-        config = make_config(agents={"agent:web": agent_config}, repo=None)  # type: ignore
+        config = make_config(agents={"agent:web": agent_config}, repo=None)  # type: ignore - Union type narrowing limitation
         config.repo = None  # No repo configured
         config.repo_root = repo_root
 
@@ -371,8 +363,7 @@ class TestStateValidation:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         discovered = [make_discovered_session(123)]
         with caplog.at_level(logging.WARNING):
             restored = restorer.restore_sessions(discovered, already_tracked=[])
@@ -398,8 +389,7 @@ class TestStateValidation:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         discovered = [make_discovered_session(123, tab_name="#123 My task")]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
@@ -427,8 +417,7 @@ class TestStateValidation:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         discovered = [make_discovered_session(123)]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
@@ -456,8 +445,7 @@ class TestBranchNameResolution:
         working_copy = MockWorkingCopy()
         # No branch configured for worktree - returns None
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         discovered = [make_discovered_session(123)]
         with caplog.at_level(logging.WARNING):
             restored = restorer.restore_sessions(discovered, already_tracked=[])
@@ -487,8 +475,7 @@ class TestWorktreeFinding:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "123-feature"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         discovered = [make_discovered_session(123)]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 
@@ -515,8 +502,7 @@ class TestReviewSessionSpecifics:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "100-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         # Tab name without PR number pattern
         discovered = [make_discovered_session(100, tab_name="#100 Review Something", is_review=True)]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
@@ -542,8 +528,7 @@ class TestReviewSessionSpecifics:
         working_copy = MockWorkingCopy()
         working_copy.branches[worktree] = "100-branch"
 
-        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore
-
+        restorer = SessionRestorer(config, repo_host, working_copy)  # type: ignore - Union type narrowing limitation
         discovered = [make_discovered_session(100, is_review=True)]
         restored = restorer.restore_sessions(discovered, already_tracked=[])
 

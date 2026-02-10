@@ -165,9 +165,7 @@ class TestSessionRef:
         """Test that SessionRef is immutable."""
         ref = SessionRef(session_type=SessionType.ISSUE, number=123)
         with pytest.raises(AttributeError):
-            ref.number = 456  # type: ignore
-
-
+            ref.number = 456  # type: ignore - Union type narrowing limitation
 class TestSessionManager:
     """Test the SessionManager class."""
 

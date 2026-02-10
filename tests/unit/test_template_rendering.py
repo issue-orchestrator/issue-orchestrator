@@ -91,9 +91,7 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
     assert soup.select_one("#tab-flow.active") is not None
     columns = soup.select(".kanban-column")
     assert len(columns) == 5
-    assert "milestones=M7" in soup.select_one(".scope-summary").text  # type: ignore
-
-
+    assert "milestones=M7" in soup.select_one(".scope-summary").text  # type: ignore - Union type narrowing limitation
 def test_attention_view_renders_groups(jinja_env):
     config = make_config()
     config.agents = {"agent:web": make_agent_config()}

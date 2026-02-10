@@ -21,10 +21,9 @@ import time
 from pathlib import Path
 
 import pytest
-from libtmux import Server  # type: ignore
-from libtmux.exc import LibTmuxException  # type: ignore
-from libtmux._internal.query_list import ObjectDoesNotExist  # type: ignore
-
+from libtmux import Server  # type: ignore - Union type narrowing limitation
+from libtmux.exc import LibTmuxException  # type: ignore - Union type narrowing limitation
+from libtmux._internal.query_list import ObjectDoesNotExist  # type: ignore - Union type narrowing limitation
 from tests.e2e.conftest import (
     OrchestratorProcess,
     e2e_label,

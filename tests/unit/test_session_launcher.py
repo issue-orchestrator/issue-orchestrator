@@ -410,8 +410,7 @@ class TestDetectExistingWork:
         working_copy = MockWorkingCopy()
         working_copy.commits_ahead = []
 
-        result = detect_existing_work(tmp_path, working_copy)  # type: ignore
-
+        result = detect_existing_work(tmp_path, working_copy)  # type: ignore - Union type narrowing limitation
         assert result is None
 
     def test_returns_context_with_commits(self, tmp_path):
@@ -423,8 +422,7 @@ class TestDetectExistingWork:
         ]
         working_copy.current_branch = "123-feature"
 
-        result = detect_existing_work(tmp_path, working_copy)  # type: ignore
-
+        result = detect_existing_work(tmp_path, working_copy)  # type: ignore - Union type narrowing limitation
         assert result is not None
         assert "2 existing commit(s)" in result
         assert "123-feature" in result
@@ -439,8 +437,7 @@ class TestDetectExistingWork:
             for i in range(15)
         ]
 
-        result = detect_existing_work(tmp_path, working_copy)  # type: ignore
-
+        result = detect_existing_work(tmp_path, working_copy)  # type: ignore - Union type narrowing limitation
         assert result is not None
         assert "15 existing commit(s)" in result
         assert "... and 5 more" in result
@@ -1444,8 +1441,7 @@ class TestRestoreRunningSessions:
         active_sessions = []
         running = [{"tab_name": "issue-123", "issue_number": 123}]
 
-        restore_running_sessions(running, active_sessions, mock_restorer)  # type: ignore
-
+        restore_running_sessions(running, active_sessions, mock_restorer)  # type: ignore - Union type narrowing limitation
         assert len(active_sessions) == 1
         assert active_sessions[0] == mock_session
 
@@ -1510,7 +1506,7 @@ class TestCreateSession:
             "claude --help",
             Path("/tmp/worktree"),
             "Test Session",
-            mock_manager,  # type: ignore
+            mock_manager,  # type: ignore - Union type narrowing limitation
             events,
         )
 
@@ -1526,8 +1522,7 @@ class TestSessionExists:
         mock_manager.sessions["issue-123"] = True
         events = MockEventSink()
 
-        result = session_exists("issue-123", mock_manager, events)  # type: ignore
-
+        result = session_exists("issue-123", mock_manager, events)  # type: ignore - Union type narrowing limitation
         assert result is True
 
 class TestKillSession:
@@ -1538,8 +1533,7 @@ class TestKillSession:
         mock_manager = MockSessionManager()
         events = MockEventSink()
 
-        kill_session("issue-123", mock_manager, events)  # type: ignore
-
+        kill_session("issue-123", mock_manager, events)  # type: ignore - Union type narrowing limitation
         assert len(mock_manager.stop_calls) == 1
 
 class TestGetSessionMachine:

@@ -160,8 +160,7 @@ class TestActionDataclasses:
         action = AddLabelAction(issue_number=123, label="test")
 
         with pytest.raises(AttributeError):
-            action.issue_number = 456  # type: ignore
-
+            action.issue_number = 456  # type: ignore - Union type narrowing limitation
 class TestActionResult:
     """Test the ActionResult dataclass."""
 

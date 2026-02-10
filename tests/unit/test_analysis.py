@@ -413,7 +413,7 @@ class TestAnalyzeAllIssues:
         check_session = Mock()
 
         result = analyze_all_issues(
-            issues, "owner/repo", {1: "1-issue-1"}, check_session  # type: ignore
+            issues, "owner/repo", {1: "1-issue-1"}, check_session  # type: ignore - Union type narrowing limitation
         )
 
         assert len(result) == 2
@@ -447,8 +447,7 @@ class TestAnalyzeAllIssues:
 
         check_session = Mock()
 
-        analyze_all_issues(issues, "owner/repo", branches, check_session)  # type: ignore
-
+        analyze_all_issues(issues, "owner/repo", branches, check_session)  # type: ignore - Union type narrowing limitation
         # Same branches dict passed to both analyze calls
         for call in mock_analyze.call_args_list:
             assert call[0][2] == branches  # Third argument is branches

@@ -169,8 +169,7 @@ class TestSessionLauncherClaimAcquisition:
                 )
 
                 issue = MockIssue()
-                result = launcher.launch_issue_session(issue, [])  # type: ignore
-
+                result = launcher.launch_issue_session(issue, [])  # type: ignore - Union type narrowing limitation
                 # Verify claim happens before worktree
                 claim_idx = next(
                     (i for i, op in enumerate(operations) if op[0] == "claim"), -1
@@ -220,8 +219,7 @@ class TestSessionLauncherClaimAcquisition:
         )
 
         issue = MockIssue()
-        result = launcher.launch_issue_session(issue, [])  # type: ignore
-
+        result = launcher.launch_issue_session(issue, [])  # type: ignore - Union type narrowing limitation
         assert result.success is False
         assert "claim" in result.reason.lower()
 
@@ -264,8 +262,7 @@ class TestSessionLauncherClaimAcquisition:
         )
 
         issue = MockIssue()
-        result = launcher.launch_issue_session(issue, [])  # type: ignore
-
+        result = launcher.launch_issue_session(issue, [])  # type: ignore - Union type narrowing limitation
         assert result.success is False
         assert "convergence" in result.reason.lower()
         # Verify claim was released

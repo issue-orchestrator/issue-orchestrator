@@ -50,8 +50,7 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.BLOCKED
-        assert "blocked" in entry.detail  # type: ignore
-
+        assert "blocked" in entry.detail  # type: ignore - Union type narrowing limitation
     def test_blocked_failed_label_skips_issue(self, sample_config):
         """Issue with 'blocked-failed' label should be skipped.
 
@@ -74,8 +73,7 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.BLOCKED
-        assert labels.BLOCKED_FAILED in entry.detail  # type: ignore
-
+        assert labels.BLOCKED_FAILED in entry.detail  # type: ignore - Union type narrowing limitation
     def test_blocked_needs_human_label_returns_needs_human(self, sample_config):
         """Issue with 'blocked-needs-human' label should return NEEDS_HUMAN reason."""
         issue = Issue(
@@ -94,8 +92,7 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.NEEDS_HUMAN
-        assert labels.BLOCKED_NEEDS_HUMAN in entry.detail  # type: ignore
-
+        assert labels.BLOCKED_NEEDS_HUMAN in entry.detail  # type: ignore - Union type narrowing limitation
     def test_blocked_cross_milestone_label_skips_issue(self, sample_config):
         """Issue with 'blocked-cross-milestone' label should be skipped."""
         issue = Issue(
@@ -114,8 +111,7 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.BLOCKED
-        assert labels.BLOCKED_CROSS_MILESTONE in entry.detail  # type: ignore
-
+        assert labels.BLOCKED_CROSS_MILESTONE in entry.detail  # type: ignore - Union type narrowing limitation
     def test_legacy_needs_human_label_skips_issue(self, sample_config):
         """Issue with legacy 'needs-human' label should be skipped."""
         issue = Issue(
@@ -154,9 +150,7 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.BLOCKED
-        assert "blocked-custom-reason" in entry.detail  # type: ignore
-
-
+        assert "blocked-custom-reason" in entry.detail  # type: ignore - Union type narrowing limitation
 class TestActiveSessionFiltering:
     """Tests for active session filtering."""
 

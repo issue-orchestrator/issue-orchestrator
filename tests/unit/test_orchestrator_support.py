@@ -132,7 +132,7 @@ def make_issue(number: int, title: str = "Test Issue", labels: list | None = Non
         state="open",
     )
 
-def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = None) -> Session:  # type: ignore
+def make_session(issue: Issue, task: TaskKind = TaskKind.CODE, tmp_path: Path = None) -> Session:  # type: ignore - Union type narrowing limitation
     """Create a test session for an issue."""
     issue_key = FakeIssueKey(name=str(issue.number))
     session_key = SessionKey(issue=issue_key, task=task)
@@ -743,8 +743,7 @@ class TestCheckHealth:
         )
 
         assert decision.can_proceed is False
-        assert "paused" in decision.reason  # type: ignore
-
+        assert "paused" in decision.reason  # type: ignore - Union type narrowing limitation
     def test_returns_blocked_when_at_capacity(self):
         """check_health returns blocked when at maximum capacity."""
         health_gate = HealthGate(max_concurrent_sessions=2)
@@ -756,8 +755,7 @@ class TestCheckHealth:
         )
 
         assert decision.can_proceed is False
-        assert "at_capacity" in decision.reason  # type: ignore
-
+        assert "at_capacity" in decision.reason  # type: ignore - Union type narrowing limitation
 # =============================================================================
 # Tests for OrchestratorSupport.apply_plan
 # =============================================================================
@@ -1494,7 +1492,7 @@ class TestTrackStaleTicks:
             events=mock_event_sink,
             event_context=sample_event_context,
             state=sample_orchestrator_state,
-            stale_issues=stale_issues,  # type: ignore
+            stale_issues=stale_issues,  # type: ignore - Union type narrowing limitation
         )
 
         # Both issues should have tick count of 1
@@ -1514,7 +1512,7 @@ class TestTrackStaleTicks:
                 events=mock_event_sink,
                 event_context=sample_event_context,
                 state=sample_orchestrator_state,
-                stale_issues=stale_issues,  # type: ignore
+                stale_issues=stale_issues,  # type: ignore - Union type narrowing limitation
             )
 
         # Tick count should be 3

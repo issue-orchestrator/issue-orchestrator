@@ -78,9 +78,8 @@ class TestE2EDB:
         # Both should be running
         latest1 = db.latest_run("orch-1")
         latest2 = db.latest_run("orch-2")
-        assert latest1.status == "running"  # type: ignore
-        assert latest2.status == "running"  # type: ignore
-
+        assert latest1.status == "running"  # type: ignore - Union type narrowing limitation
+        assert latest2.status == "running"  # type: ignore - Union type narrowing limitation
     def test_finish_run(self, db: E2EDB):
         """Test finishing a run."""
         run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"], None, None)
@@ -93,10 +92,9 @@ class TestE2EDB:
         )
 
         run = db.latest_run("test-orch")
-        assert run.status == "passed"  # type: ignore
-        assert run.exit_code == 0  # type: ignore
-        assert run.note == "All tests passed"  # type: ignore
-
+        assert run.status == "passed"  # type: ignore - Union type narrowing limitation
+        assert run.exit_code == 0  # type: ignore - Union type narrowing limitation
+        assert run.note == "All tests passed"  # type: ignore - Union type narrowing limitation
     def test_upsert_test_result(self, db: E2EDB):
         """Test inserting and updating test results."""
         run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"], None, None)
@@ -131,7 +129,7 @@ class TestE2EDB:
 
         # Should only have one result
         details = db.run_details(run_id)
-        results = details["results"]  # type: ignore
+        results = details["results"]  # type: ignore - Union type narrowing limitation
         assert len(results) == 1
         assert results[0]["outcome"] == "failed"
         assert results[0]["duration_seconds"] == 2.0
@@ -180,9 +178,8 @@ class TestE2EDB:
         db.cancel_running("test-orch")
 
         run = db.latest_run("test-orch")
-        assert run.status == "canceled"  # type: ignore
-        assert run.finished_at is not None  # type: ignore
-
+        assert run.status == "canceled"  # type: ignore - Union type narrowing limitation
+        assert run.finished_at is not None  # type: ignore - Union type narrowing limitation
     def test_compute_signal_score(self, db: E2EDB):
         """Test computing signal score from run history."""
         # Create runs with mixed results
@@ -237,8 +234,7 @@ class TestE2EDB:
         run2 = db.start_run("/test/repo", "test-orch", ["tests/e2e"], None, None, retry_of=run1)
 
         details = db.run_details(run2)
-        assert details["run"]["retry_of"] == run1  # type: ignore
-
+        assert details["run"]["retry_of"] == run1  # type: ignore - Union type narrowing limitation
     def test_start_run_with_worker_pid(self, db: E2EDB):
         """Test starting a run with worker_pid."""
         _run_id = db.start_run(
@@ -249,8 +245,7 @@ class TestE2EDB:
         )
 
         run = db.latest_run("test-orch")
-        assert run.worker_pid == 12345  # type: ignore
-
+        assert run.worker_pid == 12345  # type: ignore - Union type narrowing limitation
     def test_update_worker_pid(self, db: E2EDB):
         """Test updating worker_pid after run creation."""
         run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"])
@@ -258,8 +253,7 @@ class TestE2EDB:
         db.update_worker_pid(run_id, 67890)
 
         run = db.latest_run("test-orch")
-        assert run.worker_pid == 67890  # type: ignore
-
+        assert run.worker_pid == 67890  # type: ignore - Union type narrowing limitation
     def test_orphan_detection_marks_interrupted(self, db: E2EDB, monkeypatch):
         """Test that orphaned runs (dead PID) are marked as interrupted."""
         # Start a run with a PID
@@ -275,13 +269,11 @@ class TestE2EDB:
 
         # Check that run1 is now interrupted
         details1 = db.run_details(run1)
-        assert details1["run"]["status"] == "interrupted"  # type: ignore
-        assert "died" in details1["run"]["note"].lower()  # type: ignore
-
+        assert details1["run"]["status"] == "interrupted"  # type: ignore - Union type narrowing limitation
+        assert "died" in details1["run"]["note"].lower()  # type: ignore - Union type narrowing limitation
         # Check that run2 is running
         details2 = db.run_details(run2)
-        assert details2["run"]["status"] == "running"  # type: ignore
-
+        assert details2["run"]["status"] == "running"  # type: ignore - Union type narrowing limitation
     def test_orphan_detection_alive_process_raises(self, db: E2EDB, monkeypatch):
         """Test that running run with alive process still raises AlreadyRunning."""
         _run1 = db.start_run("/test/repo", "test-orch", ["tests/e2e"], worker_pid=99999)
@@ -341,10 +333,9 @@ class TestE2EDB:
         assert result is True
 
         run = db.latest_run("test-orch")
-        assert run.status == "running"  # type: ignore
-        assert run.worker_pid == 22222  # type: ignore
-        assert "Resumed" in run.note  # type: ignore
-
+        assert run.status == "running"  # type: ignore - Union type narrowing limitation
+        assert run.worker_pid == 22222  # type: ignore - Union type narrowing limitation
+        assert "Resumed" in run.note  # type: ignore - Union type narrowing limitation
     def test_resume_run_fails_for_non_interrupted(self, db: E2EDB):
         """Test that resume_run fails for runs that aren't interrupted."""
         run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"])
@@ -356,8 +347,7 @@ class TestE2EDB:
 
         # Status should still be running
         run = db.latest_run("test-orch")
-        assert run.status == "running"  # type: ignore
-
+        assert run.status == "running"  # type: ignore - Union type narrowing limitation
     def test_resume_run_fails_for_unknown_run(self, db: E2EDB):
         """Test that resume_run fails for unknown run_id."""
         result = db.resume_run(9999, worker_pid=12345)
@@ -370,8 +360,7 @@ class TestE2EDB:
         db.update_progress(run_id, total_tests=42)
 
         run = db.latest_run("test-orch")
-        assert run.total_tests == 42  # type: ignore
-
+        assert run.total_tests == 42  # type: ignore - Union type narrowing limitation
     def test_update_progress_current_test(self, db: E2EDB):
         """Test updating current_test for a run."""
         run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"])
@@ -379,8 +368,7 @@ class TestE2EDB:
         db.update_progress(run_id, current_test="tests/e2e/test_foo.py::test_bar")
 
         run = db.latest_run("test-orch")
-        assert run.current_test == "tests/e2e/test_foo.py::test_bar"  # type: ignore
-
+        assert run.current_test == "tests/e2e/test_foo.py::test_bar"  # type: ignore - Union type narrowing limitation
     def test_get_progress(self, db: E2EDB):
         """Test getting progress stats for a run."""
         run_id = db.start_run("/test/repo", "test-orch", ["tests/e2e"])
