@@ -1669,6 +1669,22 @@ class SessionLauncher:
         }))
 
 
+def _run_session_analysis(run_dir: Path) -> None:
+    """Run the session analyzer and write analysis.json (best-effort)."""
+    from .session_analyzer import analyze, write_analysis
+    from ..domain.run_manifest import RunManifest
+
+    try:
+        manifest = RunManifest.load(run_dir)
+        analysis = analyze(manifest)
+        write_analysis(run_dir, analysis)
+        logger.info("[ANALYSIS] %s — %s", run_dir.name, analysis.headline[:80])
+    except FileNotFoundError:
+        logger.debug("[ANALYSIS] No manifest in %s — skipping analysis", run_dir.name)
+    except Exception:
+        logger.warning("[ANALYSIS] Failed to analyze %s", run_dir.name, exc_info=True)
+
+
 def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, actions, observer cleanup, claims, and history
     session: Session,
     status: SessionStatus,
@@ -1766,6 +1782,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
         if run_dir:
             session_output.attach_claude_log(run_dir)
+            _run_session_analysis(run_dir)
         else:
             logger.warning(
                 "[%s] No session output dir found - Claude log won't be attached",
