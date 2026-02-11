@@ -45,6 +45,7 @@ E2E Test Runner API endpoints:
 import asyncio
 import json
 import logging
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -848,6 +849,9 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
     env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_type}'"
     env_exports += f" ORCHESTRATOR_SESSION_ID='{session_name}'"
     env_exports += f" {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
+    # Ensure orchestrator tools (agent-done) are on PATH for all backends.
+    orch_bin = Path(sys.executable).parent
+    env_exports += f' PATH="{orch_bin}:$PATH"'
     command = f"{env_exports} && {base_command}"
 
     logger.info(

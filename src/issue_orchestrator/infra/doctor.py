@@ -104,6 +104,7 @@ def run_doctor(
         return result
 
     _check_repository(result, config)
+    _check_worktree_setup(result, config)
     _check_working_directory(result, runner)
     _check_hook_dependencies(result)
     _check_agents(result, config)
@@ -368,6 +369,49 @@ def _check_repository(result: DoctorResult, config: Config) -> None:
             name="Repository",
             status="warning",
             detail="Not configured",
+        ))
+
+
+def _check_worktree_setup(result: DoctorResult, config: Config) -> None:
+    """Check worktree setup readiness for foreign repos."""
+    import sys
+
+    # Check agent-done is available from the orchestrator's venv
+    agent_done_bin = Path(sys.executable).parent / "agent-done"
+    if agent_done_bin.exists():
+        result.checks.append(Check(
+            name="agent-done",
+            status="ok",
+            detail=f"Found at {agent_done_bin}",
+        ))
+    else:
+        result.checks.append(Check(
+            name="agent-done",
+            status="error",
+            detail=(
+                f"Not found at {agent_done_bin}. "
+                "Agents need agent-done to report completion. "
+                "Reinstall the orchestrator: pip install -e '.[dev]'"
+            ),
+        ))
+
+    # Check worktree setup commands
+    if config.setup_worktree:
+        cmds = ", ".join(config.setup_worktree)
+        result.checks.append(Check(
+            name="Worktree Setup",
+            status="ok",
+            detail=f"Commands configured: {cmds}",
+        ))
+    else:
+        result.checks.append(Check(
+            name="Worktree Setup",
+            status="info",
+            detail=(
+                "No worktree setup commands configured. "
+                "If your repo needs dependency installation after worktree creation, "
+                "add commands under worktrees.setup in config."
+            ),
         ))
 
 

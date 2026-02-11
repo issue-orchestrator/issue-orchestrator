@@ -1075,6 +1075,26 @@ class AdvancedSettings(BaseModel):
             "yaml_path": "worktrees.worktree_branch_on_recreate",
         },
     )
+    worktree_setup: str = Field(
+        "",
+        title="Worktree Setup Commands",
+        description="Commands to run in each new worktree after creation (one per line)",
+        json_schema_extra={
+            "doc_examples": ["npm install", "pip install -e '.[dev]'", "make setup"],
+            "doc_notes": "Each command runs in the worktree directory. Leave empty if no setup needed. "
+            "The orchestrator's own setup (hooks, agent-done, Claude settings) is automatic.",
+            "section": "Worktrees",
+            "restart_required": True,
+            "config_attr": "setup_worktree",
+            "yaml_path": "worktrees.setup",
+            "ui_transform": "newline_separated_list",
+            "setup": {
+                "enabled": True,
+                "section": "worktrees",
+                "order": 20,
+            },
+        },
+    )
 
 
 class HooksSettings(BaseModel):
@@ -1185,6 +1205,8 @@ def from_config(config: Config) -> dict[str, BaseModel]:
                 raw = ", ".join(raw) if raw else ""
             elif transform == "space_separated_list":
                 raw = " ".join(raw) if raw else ""
+            elif transform == "newline_separated_list":
+                raw = "\n".join(raw) if raw else ""
             elif isinstance(raw, Path):
                 raw = str(raw)
 
@@ -1216,6 +1238,8 @@ def apply_to(tabs: dict[str, BaseModel], config: Config) -> bool:
                 value = [s.strip() for s in value.split(",") if s.strip()] if value else []
             elif transform == "space_separated_list":
                 value = value.split() if value else []
+            elif transform == "newline_separated_list":
+                value = [s.strip() for s in value.split("\n") if s.strip()] if value else []
 
             # Check restart requirement before applying
             if extra.get("restart_required"):
