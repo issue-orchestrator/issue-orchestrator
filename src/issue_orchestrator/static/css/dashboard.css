@@ -834,6 +834,7 @@ h1 {
 }
 .journey-step {
     display: flex;
+    flex-wrap: wrap;
     gap: 10px;
     padding: 5px 0;
     font-size: 12px;
@@ -860,6 +861,18 @@ h1 {
 }
 .journey-step:hover .journey-action { opacity: 1; }
 .journey-action:hover { background: var(--accent, #4a9eff); color: #fff; border-color: var(--accent, #4a9eff); }
+.journey-detail {
+    width: 100%;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text-muted);
+    padding-left: 75px;
+    margin-top: -4px;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
 .journey-step.status-failed .journey-narrative,
 .journey-step.status-blocked .journey-narrative { color: var(--danger, #e55); }
 .journey-step.status-completed .journey-narrative { color: var(--success, #5a5); }

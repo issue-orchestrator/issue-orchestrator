@@ -291,14 +291,18 @@ def _build_journey_steps(
         time_label = _format_time_label(ts, today)
         day = str(ts)[:10] if ts else ""
 
-        steps.append({
+        detail = event.get("detail")
+        step_dict: dict[str, Any] = {
             "timestamp": ts,
             "time_label": time_label,
             "day": day,
             "narrative": narrative,
             "status": str(event.get("status") or ""),
             "event": event_name,
-        })
+        }
+        if detail:
+            step_dict["detail"] = str(detail)
+        steps.append(step_dict)
 
     return steps
 

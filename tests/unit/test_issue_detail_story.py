@@ -228,6 +228,17 @@ class TestJourneySteps:
         steps = _build_journey_steps(events, "2026-02-09")
         assert steps[0]["time_label"]  # Should have some time string
 
+    def test_detail_flows_through(self):
+        events = [_evt("session.blocked", timestamp="2026-02-09T20:15:00Z",
+                        detail="Tried rebasing onto main")]
+        steps = _build_journey_steps(events, "2026-02-09")
+        assert steps[0]["detail"] == "Tried rebasing onto main"
+
+    def test_detail_omitted_when_absent(self):
+        events = [_evt("session.started", timestamp="2026-02-09T20:15:00Z")]
+        steps = _build_journey_steps(events, "2026-02-09")
+        assert "detail" not in steps[0]
+
 
 # ── Event Narrative ──────────────────────────────────────────────────────
 

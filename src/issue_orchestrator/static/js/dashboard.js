@@ -2833,10 +2833,14 @@ function renderJourneySteps(container, allSteps) {
         }
         const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
         const actions = journeyStepActions(s, issueNum);
+        const detail = s.detail
+            ? `<div class="journey-detail">${escapeHtml(s.detail)}</div>`
+            : '';
         html += `<div class="journey-step ${statusClass}">
             <span class="journey-time">${escapeHtml(s.time_label || '')}</span>
             <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
             ${actions}
+            ${detail}
         </div>`;
     }
     container.innerHTML = html;

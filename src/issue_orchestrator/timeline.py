@@ -35,6 +35,7 @@ class TimelineEvent:
     summary: str | None
     parent_key: str
     artifacts: list[TimelineArtifact]
+    detail: str | None = None
     run_id: str | None = None
     run_dir: str | None = None
     agent: str | None = None
@@ -52,6 +53,7 @@ class TimelineEvent:
             "level": self.level,
             "summary": self.summary,
             "parent_key": self.parent_key,
+            "detail": self.detail,
             "run_id": self.run_id,
             "run_dir": self.run_dir,
             "artifacts": [a.to_dict() for a in self.artifacts],
@@ -100,6 +102,7 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
     status = _status_for_event(event_name)
     level = _level_for_event(event_name)
     summary = _summary_from_data(data)
+    detail = _detail_from_data(event_name, data, summary)
     parent_key = _parent_key(issue_number, data)
     run_id = _run_id_from_data(data)
     run_dir = _run_dir_from_data(data)
@@ -116,6 +119,7 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         status=status,
         level=level,
         summary=summary,
+        detail=detail,
         parent_key=parent_key,
         run_id=run_id,
         run_dir=run_dir,
@@ -247,6 +251,79 @@ def _summary_from_data(data: dict[str, Any]) -> str | None:
         if isinstance(value, str) and value:
             return value
     return None
+
+
+_MAX_DETAIL = 200
+
+
+def _detail_from_data(
+    event_name: str,
+    data: dict[str, Any],
+    summary: str | None,
+) -> str | None:
+    """Extract contextual detail from enriched event data.
+
+    The detail augments the narrative with "what happened and why"
+    without duplicating the summary.  Returns None when no useful
+    detail can be extracted.
+    """
+    parts: list[str] = []
+    summary_str = summary or ""
+
+    if event_name in ("session.blocked", "issue.blocked"):
+        _add_if_new(parts, data.get("attempted"), summary_str)
+        blocked_by = data.get("blocked_by")
+        if isinstance(blocked_by, list) and blocked_by:
+            issues = ", ".join(f"#{n}" for n in blocked_by)
+            parts.append(f"Blocked by: {issues}")
+
+    elif event_name in ("session.timeout", "session.failed"):
+        runtime = data.get("runtime_minutes")
+        timeout = data.get("timeout_minutes")
+        if runtime is not None and timeout is not None:
+            parts.append(f"Ran {runtime:.0f} min (limit: {timeout} min)")
+        elif runtime is not None:
+            parts.append(f"Ran {runtime:.0f} min")
+        _add_if_new(parts, data.get("problems"), summary_str)
+
+    elif event_name == "session.completed":
+        _add_if_new(parts, data.get("implementation"), summary_str)
+        _add_if_new(parts, data.get("problems"), summary_str)
+
+    elif event_name == "session.validation_failed":
+        _add_if_new(parts, data.get("validation_reason"), summary_str)
+
+    elif event_name == "review.changes_requested":
+        _add_if_new(parts, data.get("review_issues"), summary_str)
+        risk = data.get("risk_level")
+        if isinstance(risk, str) and risk:
+            parts.append(f"Risk: {risk}")
+
+    elif event_name == "review.approved":
+        _add_if_new(parts, data.get("review_summary"), summary_str)
+
+    elif event_name == "review.escalated":
+        rework = data.get("rework_cycle")
+        limit = data.get("max_rework_cycles")
+        if rework is not None and limit is not None:
+            parts.append(f"Rework cycle {rework}/{limit}")
+
+    elif event_name == "issue.needs_human":
+        _add_if_new(parts, data.get("question"), summary_str)
+
+    if not parts:
+        return None
+
+    text = ". ".join(parts)
+    if len(text) > _MAX_DETAIL:
+        text = text[: _MAX_DETAIL - 1] + "\u2026"
+    return text
+
+
+def _add_if_new(parts: list[str], value: Any, summary: str) -> None:
+    """Append a string value to parts if it's not already in the summary."""
+    if isinstance(value, str) and value and value not in summary:
+        parts.append(value)
 
 
 def _artifacts_from_data(data: dict[str, Any]) -> list[TimelineArtifact]:
