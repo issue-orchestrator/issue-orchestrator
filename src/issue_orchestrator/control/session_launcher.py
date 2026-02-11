@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Callable
+from typing import Any, TYPE_CHECKING, Optional, Callable
 
 if TYPE_CHECKING:
     from ..domain.state_machines.issue_machine import IssueStateMachine
@@ -1688,6 +1688,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     review_exchange_completed: bool = False,
     blocked_label: Optional[str] = None,
     blocked_reason: Optional[str] = None,
+    completion_detail: Optional[dict[str, Any]] = None,
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
 ) -> None:
@@ -1759,6 +1760,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         review_exchange_completed=review_exchange_completed,
         blocked_label=blocked_label,
         blocked_reason=blocked_reason,
+        completion_detail=completion_detail,
     )
     if session.worktree_path:
         run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
@@ -2056,6 +2058,7 @@ def process_active_sessions(
             review_exchange_completed=review_exchange_completed,
             blocked_label=decision.blocked_label,
             blocked_reason=decision.blocked_reason,
+            completion_detail=decision.completion_detail,
         )
         session_elapsed = time.monotonic() - session_start
         if session_elapsed > 5:

@@ -79,6 +79,11 @@ class SessionDecision:
     blocked_label: Optional[str] = None
     blocked_reason: Optional[str] = None
 
+    # Curated detail from CompletionRecord for trace event enrichment.
+    # Keys: implementation, problems, attempted, blocked_reason, blocked_by,
+    #        question, review_summary, review_issues, risk_level
+    completion_detail: Optional[dict[str, Any]] = None
+
 
 class SessionController:
     """Controller that decides session outcomes.
@@ -190,6 +195,12 @@ class SessionController:
                 original_prompt, retry_prompt_template, repo_root,
             )
 
+        # Enrich manifest with CompletionRecord detail
+        self._enrich_manifest_from_completion(worktree_path, session_name, record)
+
+        # Build completion detail for trace event enrichment
+        completion_detail = self._build_completion_detail(record)
+
         # Log completion summary
         self._log_session_completion(issue_number, session_name, status, record, result, recovered)
 
@@ -203,6 +214,7 @@ class SessionController:
             validation_error=validation_error,
             validation_error_file=validation_error_file,
             blocked_reason=blocked_reason,
+            completion_detail=completion_detail,
         )
 
     def _log_completion_lookup(
@@ -457,6 +469,53 @@ class SessionController:
             "retry_count": validation_retry_count,
         })
         return SessionStatus.VALIDATION_FAILED
+
+    def _enrich_manifest_from_completion(
+        self,
+        worktree_path: Path,
+        session_name: str,
+        record: "CompletionRecord",
+    ) -> None:
+        """Write CompletionRecord detail into the run manifest.
+
+        This is the completion-time enrichment that makes the manifest
+        the session's complete story.  Best-effort — failures are logged
+        but never block completion processing.
+        """
+        from ..domain.run_manifest import RunManifest
+
+        run_dir = self.session_output.find_run_dir(worktree_path, session_name)
+        if not run_dir:
+            logger.debug(
+                "[MANIFEST] No run dir for %s — skipping enrichment",
+                session_name,
+            )
+            return
+
+        try:
+            manifest = RunManifest.load(run_dir)
+            manifest.enrich_from_completion_record(record)
+            manifest.save()
+        except Exception as exc:
+            logger.warning(
+                "[MANIFEST] Failed to enrich manifest for %s: %s",
+                session_name,
+                exc,
+            )
+
+    @staticmethod
+    def _build_completion_detail(record: "CompletionRecord") -> dict[str, Any]:
+        """Extract curated fields from CompletionRecord for trace events."""
+        detail: dict[str, Any] = {}
+        for key in (
+            "implementation", "problems", "attempted", "blocked_reason",
+            "blocked_by", "question", "review_summary", "review_issues",
+            "risk_level",
+        ):
+            value = getattr(record, key, None)
+            if value is not None:
+                detail[key] = value
+        return detail
 
     def _log_session_completion(
         self,

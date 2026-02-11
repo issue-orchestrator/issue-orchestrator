@@ -315,6 +315,7 @@ class CompletionHandler:
         review_exchange_completed: bool = False,
         blocked_label: Optional[str] = None,
         blocked_reason: Optional[str] = None,
+        completion_detail: Optional[dict[str, Any]] = None,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
@@ -374,7 +375,11 @@ class CompletionHandler:
         )
 
         # Emit trace events
-        self._emit_trace_events(session, status, pr_url, pr_number, blocked_reason=blocked_reason)
+        self._emit_trace_events(
+            session, status, pr_url, pr_number,
+            blocked_reason=blocked_reason,
+            completion_detail=completion_detail,
+        )
 
         # Update state machines
         self._update_state_machines(session, status, pr_url)
@@ -432,6 +437,9 @@ class CompletionHandler:
                     "session may have crashed before setup completed",
                     session.terminal_id,
                 )
+
+        # Enrich manifest with runtime context + log tail
+        self._enrich_manifest_runtime(session, status)
 
         result = CompletionResult(
             history_entry=history_entry,
@@ -594,20 +602,32 @@ class CompletionHandler:
         pr_number: Optional[int],
         *,
         blocked_reason: Optional[str] = None,
+        completion_detail: Optional[dict[str, Any]] = None,
     ) -> None:
-        """Emit trace events for session completion."""
+        """Emit trace events for session completion.
+
+        ``completion_detail`` carries curated fields from the CompletionRecord
+        so downstream consumers (timeline, UI) get the rich agent-provided data
+        without rummaging across files.
+        """
         agent = session.agent_label
         task = session.key.task.value if session.key else None
+        detail = completion_detail or {}
 
         if status == SessionStatus.COMPLETED:
-            self.events.publish(TraceEvent(EventName.SESSION_COMPLETED, {
+            payload: dict[str, Any] = {
                 "issue_number": session.issue.number,
                 "session_id": session.terminal_id,
                 "agent": agent,
                 "task": task,
                 "pr_url": pr_url,
                 "runtime_minutes": session.runtime_minutes,
-            }))
+            }
+            # Enrich with completion record detail
+            for key in ("implementation", "problems", "review_summary", "review_issues", "risk_level"):
+                if detail.get(key):
+                    payload[key] = detail[key]
+            self.events.publish(TraceEvent(EventName.SESSION_COMPLETED, payload))
             if pr_url and pr_number is not None:
                 self.events.publish(TraceEvent(EventName.ISSUE_PR_CREATED, {
                     "issue_number": session.issue.number,
@@ -616,28 +636,37 @@ class CompletionHandler:
                 }))
         elif status == SessionStatus.FAILED or status == SessionStatus.TIMED_OUT:
             reason = f"Exceeded {session.agent_config.timeout_minutes} min timeout" if status == SessionStatus.TIMED_OUT else "Session ended without PR or status update"
-            self.events.publish(TraceEvent(EventName.SESSION_FAILED, {
+            payload = {
                 "issue_number": session.issue.number,
                 "session_id": session.terminal_id,
                 "agent": agent,
                 "task": task,
                 "error": reason,
                 "runtime_minutes": session.runtime_minutes,
-            }))
+                "timeout_minutes": session.agent_config.timeout_minutes if session.agent_config else None,
+            }
+            self.events.publish(TraceEvent(EventName.SESSION_FAILED, payload))
         elif status == SessionStatus.BLOCKED:
-            self.events.publish(TraceEvent(EventName.ISSUE_BLOCKED, {
+            payload = {
                 "issue_number": session.issue.number,
                 "agent": agent,
                 "task": task,
                 "reason": blocked_reason or "Agent marked issue as blocked",
-            }))
+            }
+            for key in ("attempted", "blocked_by"):
+                if detail.get(key):
+                    payload[key] = detail[key]
+            self.events.publish(TraceEvent(EventName.ISSUE_BLOCKED, payload))
         elif status == SessionStatus.NEEDS_HUMAN:
-            self.events.publish(TraceEvent(EventName.ISSUE_NEEDS_HUMAN, {
+            payload = {
                 "issue_number": session.issue.number,
                 "agent": agent,
                 "task": task,
                 "reason": blocked_reason or "Agent requested human input",
-            }))
+            }
+            if detail.get("question"):
+                payload["question"] = detail["question"]
+            self.events.publish(TraceEvent(EventName.ISSUE_NEEDS_HUMAN, payload))
 
     def _update_state_machines(
         self,
@@ -1110,6 +1139,55 @@ class CompletionHandler:
                 ),
             ]
         return []
+
+    def _enrich_manifest_runtime(
+        self,
+        session: Session,
+        status: SessionStatus,
+    ) -> None:
+        """Write runtime context and log tail into the run manifest.
+
+        Best-effort — failures are logged but never block completion.
+        """
+        from ..domain.run_manifest import RunManifest
+
+        if not session.worktree_path:
+            return
+
+        run_dir = self._session_output.find_run_dir(
+            session.worktree_path, session.terminal_id
+        )
+        if not run_dir:
+            return
+
+        try:
+            manifest = RunManifest.load(run_dir)
+        except Exception as exc:
+            logger.warning(
+                "[MANIFEST] Failed to load manifest for runtime enrichment: %s", exc,
+            )
+            return
+
+        manifest.runtime_minutes = session.runtime_minutes
+        if session.agent_config:
+            manifest.timeout_minutes = session.agent_config.timeout_minutes
+
+        # Capture log tail for all outcomes
+        log_path = self._session_output.get_log_path(
+            session.worktree_path, session.terminal_id
+        )
+        if log_path and log_path.exists():
+            try:
+                content = log_path.read_text()
+                lines = content.strip().split("\n")
+                manifest.log_tail = "\n".join(lines[-20:])
+            except Exception as exc:
+                logger.debug("[MANIFEST] Could not read log tail: %s", exc)
+
+        try:
+            manifest.save()
+        except Exception as exc:
+            logger.warning("[MANIFEST] Failed to save runtime enrichment: %s", exc)
 
     def generate_completion_actions(
         self,
