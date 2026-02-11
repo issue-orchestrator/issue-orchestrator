@@ -444,6 +444,7 @@ class TestWizardNewProject:
             "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",                  # worktree base
+            "",                     # setup commands (empty to skip)
             "web",                  # ui mode
             "8080",                 # web port
             "tmux",                 # terminal backend
@@ -491,6 +492,7 @@ class TestWizardNewProject:
             "",                     # milestone order (optional)
             "M0",
             "../",
+            "",                     # setup commands (empty to skip)
             "web",
             "8080",
             "tmux",
@@ -532,6 +534,7 @@ class TestWizardNewProject:
             "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
+            "",                     # setup commands (empty to skip)
             "tmux",                 # ui mode (tmux doesn't need port)
             "io",                   # label prefix
             "make test",            # validation command
@@ -579,6 +582,7 @@ class TestWizardNewProject:
             "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
+            "",                     # setup commands (empty to skip)
             "web",
             "9000",                 # custom port
             "tmux",                 # terminal backend
@@ -619,6 +623,7 @@ class TestWizardNewProject:
             "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
+            "",                     # setup commands (empty to skip)
             "web",
             "8080",
             "tmux",                 # terminal backend
@@ -660,6 +665,7 @@ class TestWizardNewProject:
             "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
+            "",                     # setup commands (empty to skip)
             "web",
             "8080",
             "tmux",                 # terminal backend
@@ -714,6 +720,7 @@ class TestWizardNewProject:
             "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
+            "",                     # setup commands (empty to skip)
             "web",
             "8080",
             "tmux",                 # terminal backend
@@ -762,6 +769,7 @@ class TestWizardExistingProject:
             "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",                  # worktree base
+            "",                     # setup commands (empty to skip)
             "web",                  # ui mode
             "8080",                 # port
             "tmux",                 # terminal backend
@@ -819,6 +827,7 @@ class TestWizardExistingProject:
             "M0",                   # foundation milestone
             # Worktrees needed for backend
             "../",
+            "",                     # setup commands (empty to skip)
             # UI mode already configured - won't ask
             # Label prefix not configured
             "io",                   # label prefix
@@ -867,6 +876,7 @@ class TestWizardExistingProject:
             "M0",                   # foundation milestone
             # Worktree missing
             "../",
+            "",                     # setup commands (empty to skip)
             # UI mode missing
             "web",
             "8080",
@@ -918,6 +928,7 @@ class TestWizardExistingProject:
             "M0",                   # foundation milestone
             # Worktree
             "../",
+            "",                     # setup commands (empty to skip)
             # UI mode (fresh)
             "tmux",
             # Label prefix
@@ -955,6 +966,7 @@ class TestWizardExistingProject:
             "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",                  # worktree base (now top-level config)
+            "",                     # setup commands (empty to skip)
             "web",                  # ui mode
             "8080",                 # port (since web mode)
             "tmux",                 # terminal backend
@@ -1003,6 +1015,7 @@ class TestRunWizard:
             "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
+            "",                     # setup commands (empty to skip)
             "web",
             "8080",
             "tmux",
@@ -1054,6 +1067,7 @@ class TestRunWizard:
             "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
+            "",                     # setup commands (empty to skip)
             "web",
             "8080",
             "tmux",
@@ -1131,6 +1145,7 @@ class TestRunWizard:
             "",                     # milestone order (optional)
             "M0",                   # foundation milestone
             "../",
+            "",                     # setup commands (empty to skip)
             "web",
             "8080",
             "tmux",
@@ -1281,6 +1296,7 @@ class TestDryRunMode:
             "",                     # milestone order (optional)
             "M0",  # foundation milestone
             "../",
+            "",                     # setup commands (empty to skip)
             "web",
             "8080",
             "tmux",
@@ -1328,6 +1344,7 @@ class TestDryRunMode:
             "",                     # milestone order (optional)
             "M0",  # foundation milestone
             "../",
+            "",                     # setup commands (empty to skip)
             "web",
             "8080",
             "tmux",

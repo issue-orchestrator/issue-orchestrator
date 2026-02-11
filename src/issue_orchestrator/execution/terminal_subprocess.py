@@ -239,7 +239,6 @@ class SubprocessPlugin:
         self._children: dict[str, "pexpect.spawn"] = {}  # pexpect child processes
         self._watcher_threads: dict[str, threading.Thread] = {}  # Process watchers
         self._log_files: dict[str, BinaryIO] = {}  # Open log file handles
-        self._repo_root = repo_root
         allow_stdin_val = get_env("SUBPROCESS_ALLOW_STDIN") or ""
         self._allow_stdin = allow_stdin_val.lower() in {"1", "true", "yes"}
 
@@ -250,7 +249,9 @@ class SubprocessPlugin:
 
     def _build_process_command(self, command: str, working_dir: Path) -> str:
         """Build the full command with path and isolation prefix."""
-        wrapper_dir = self._repo_root / "scripts"
+        # Use package-relative path so the orchestrator's own scripts dir is
+        # found even when the target repo is a foreign (non-orchestrator) repo.
+        wrapper_dir = Path(__file__).resolve().parents[1] / "scripts"
         venv_bin = working_dir / ".venv" / "bin"
         path_prefix = f"{venv_bin}:{wrapper_dir}:{os.environ.get('PATH', '')}"
         isolation_prefix = build_isolation_prefix(working_dir, scrub_env=True, isolate_home=False)

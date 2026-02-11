@@ -1221,10 +1221,11 @@ class Config:
     enforce_hooks: bool = True  # Install pre-push hooks (runs project validation + orchestrator checks)
     pre_push_hook: Optional[Path] = None  # Custom pre-push hook path (uses bundled if None)
 
-    # Worktree setup commands (run after worktree creation, e.g., npm install)
-    setup_worktree: list[str] = field(
-        default_factory=lambda: ["make install-vscode-extensions"]
-    )
+    # Client-repo-specific setup commands (run after worktree creation).
+    # No default — users must configure these for their repo (e.g., npm install,
+    # pip install -e '.[dev]'). The orchestrator's own setup (hooks, claude
+    # settings, agent-done availability) is handled automatically.
+    setup_worktree: list[str] = field(default_factory=list)
     # Preflight a dry-run push when reusing worktrees to catch stale refs early.
     reuse_push_preflight: bool = True
     # Allow git push --dry-run --no-verify for reuse preflight (default on).

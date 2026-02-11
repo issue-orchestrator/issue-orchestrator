@@ -393,29 +393,34 @@ def install_venv_symlink(worktree_path: Path, repo_root: Path) -> bool:
         return False
 
 
-def sync_cli_tools(worktree_path: Path, repo_root: Path) -> None:
+def sync_cli_tools(worktree_path: Path) -> None:
     """
-    Sync CLI tools from main repo to worktree.
+    Sync CLI tools from the orchestrator package to worktree.
 
     This ensures the worktree has the latest orchestrator tools (especially
     agent-done) regardless of when the worktree was created or what branch
-    it's on. The venv symlink means entry points use main repo's source,
-    but we also copy the source files so the worktree has them available.
+    it's on.
+
+    Uses package-relative paths so this works even when the target repo is
+    a foreign (non-orchestrator) repository.
 
     Args:
         worktree_path: Path to the worktree
-        repo_root: Path to the main repository
     """
-    src_cli_tools = repo_root / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
+    # Find cli_tools from the orchestrator's own package, not from repo_root.
+    # This ensures tools are found even when targeting a foreign repo.
+    # __file__ = .../adapters/worktree/_worktree.py
+    # parents[2] = .../issue_orchestrator/
+    src_cli_tools = Path(__file__).resolve().parents[2] / "entrypoints" / "cli_tools"
     dst_cli_tools = worktree_path / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
 
     if not src_cli_tools.exists():
-        logger.debug("No cli_tools in main repo at %s, skipping sync", src_cli_tools)
+        logger.debug("No cli_tools in orchestrator package at %s, skipping sync", src_cli_tools)
         return
 
-    if not dst_cli_tools.parent.exists():
-        logger.debug("Worktree entrypoints dir doesn't exist at %s, skipping sync", dst_cli_tools.parent)
-        return
+    # Create destination directory tree if it doesn't exist (foreign repos
+    # won't have src/issue_orchestrator/).
+    dst_cli_tools.mkdir(parents=True, exist_ok=True)
 
     # Copy each .py file from source to destination
     for src_file in src_cli_tools.glob("*.py"):
@@ -426,7 +431,7 @@ def sync_cli_tools(worktree_path: Path, repo_root: Path) -> None:
         except OSError as e:
             logger.warning("Failed to sync cli tool %s: %s", src_file.name, e)
 
-    logger.info("Synced cli_tools from main repo to worktree")
+    logger.info("Synced cli_tools from orchestrator package to worktree")
 
 
 def _install_worktree_identity(worktree_path: Path) -> str:
@@ -984,7 +989,7 @@ def _finalize_worktree(
     install_claude_settings(worktree_path)
     _configure_no_verify_dry_run(worktree_path, allow_no_verify_dry_run_preflight)
     install_venv_symlink(worktree_path, repo_root)
-    sync_cli_tools(worktree_path, repo_root)
+    sync_cli_tools(worktree_path)
     _install_worktree_identity(worktree_path)
 
 

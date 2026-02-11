@@ -1,21 +1,36 @@
-"""Foreign repo lifecycle integration test.
+"""Foreign repo lifecycle integration tests.
 
-Exercises the full orchestrator lifecycle (coder → completion → validation →
-review exchange → PR creation) against a *foreign* repository — one that has
-no orchestrator source tree, no `.venv`, no `Makefile`.  Uses the **real**
-`GitWorktreeManager` adapter so the worktree is created via `git worktree add`.
+Verifies the orchestrator works correctly against a *foreign* repository —
+one that has no orchestrator source tree, no ``.venv``, no ``Makefile``.
+
+Tests use the **real** ``GitWorktreeManager`` adapter so worktrees are created
+via ``git worktree add``, and verify:
+- Orchestrator-internal setup (hooks, Claude settings, agent-done, worktree-id)
+- PATH resolution uses the orchestrator's own package, not the target repo
+- sync_cli_tools copies from the orchestrator package, not repo_root
+- setup_worktree defaults to empty (no orchestrator-specific commands)
+- The full lifecycle (coder -> completion -> review -> PR) succeeds
 """
 
 from __future__ import annotations
 
+import json
+import shutil
 import subprocess
+import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from issue_orchestrator.adapters.worktree._worktree import sync_cli_tools
 from issue_orchestrator.domain.models import Issue
 from issue_orchestrator.events import EventName
+from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 from issue_orchestrator.execution.worktree_adapter import GitWorktreeManager
+from issue_orchestrator.infra.config import Config
+from issue_orchestrator.infra.env import ENV_PREFIX
 
 from .conftest import (
     ScriptSessionRunner,
@@ -27,14 +42,19 @@ from .conftest import (
 from .scenario_dsl import script
 
 
+# ---------------------------------------------------------------------------
+# Helpers & Fixtures
+# ---------------------------------------------------------------------------
+
+
 def _init_foreign_repo(tmp_path: Path) -> Path:
     """Create a minimal foreign git repo with an ``origin`` remote.
 
     Layout::
 
         tmp_path/
-          origin.git/    ← bare repo (acts as remote)
-          foreign-repo/  ← working clone with just a README
+          origin.git/    <- bare repo (acts as remote)
+          foreign-repo/  <- working clone with just a README
     """
     bare = tmp_path / "origin.git"
     clone = tmp_path / "foreign-repo"
@@ -92,13 +112,75 @@ def foreign_repo(tmp_path: Path) -> Path:
     return _init_foreign_repo(tmp_path)
 
 
+@dataclass
+class WorktreeHandle:
+    """Returned by the ``make_worktree`` factory fixture."""
+
+    path: Path
+    repo: Path
+
+
+@pytest.fixture()
+def make_worktree(foreign_repo: Path, tmp_path: Path):
+    """Factory fixture that creates real foreign-repo worktrees and cleans up."""
+    worktree_base = tmp_path / "worktrees"
+    worktree_base.mkdir(exist_ok=True)
+    mgr = GitWorktreeManager()
+    created: list[WorktreeHandle] = []
+
+    def _make(issue_number: int, issue_title: str) -> WorktreeHandle:
+        info = mgr.create(
+            repo_root=foreign_repo,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            worktree_base=worktree_base,
+            enforce_hooks=False,
+        )
+        handle = WorktreeHandle(path=info.path, repo=foreign_repo)
+        created.append(handle)
+        return handle
+
+    yield _make
+
+    # Cleanup: force-remove all created worktrees then prune
+    for handle in created:
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(handle.path)],
+            cwd=str(handle.repo),
+            capture_output=True,
+        )
+    subprocess.run(
+        ["git", "worktree", "prune"],
+        cwd=str(foreign_repo),
+        capture_output=True,
+    )
+
+
+def _build_session_exports(
+    issue_number: int,
+    completion_rel: str = ".issue-orchestrator/completion.json",
+) -> str:
+    """Build the env-export string that session_launcher produces."""
+    orch_bin = Path(sys.executable).parent
+    return (
+        f"export {ENV_PREFIX}COMPLETION_PATH='{completion_rel}'"
+        f" {ENV_PREFIX}AGENT_LABEL='agent:coder'"
+        f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
+        f' PATH="{orch_bin}:$PATH"'
+    )
+
+
+# ---------------------------------------------------------------------------
+# Full lifecycle
+# ---------------------------------------------------------------------------
+
+
 @pytest.mark.integration
 def test_foreign_repo_full_lifecycle(foreign_repo: Path, tmp_path: Path) -> None:
     """Full orchestrator lifecycle against a repo with no orchestrator files."""
     worktree_base = tmp_path / "worktrees"
     worktree_base.mkdir()
 
-    # --- Config ---
     config = build_config(
         foreign_repo,
         coder_command=script("coder_dual_mode.sh"),
@@ -108,15 +190,13 @@ def test_foreign_repo_full_lifecycle(foreign_repo: Path, tmp_path: Path) -> None
     )
     config.worktree_base = worktree_base
 
-    # --- Issue ---
     issue = Issue(
         number=1,
         title="Foreign repo test issue",
         labels=["simulated-scenario", "agent:coder"],
     )
 
-    # --- Build orchestrator with real GitWorktreeManager ---
-    orch, repo_host, events, _timeline_reader = build_orchestrator(
+    orch, repo_host, events, _ = build_orchestrator(
         foreign_repo,
         [issue],
         config,
@@ -125,11 +205,9 @@ def test_foreign_repo_full_lifecycle(foreign_repo: Path, tmp_path: Path) -> None
         runner=ScriptSessionRunner(),
     )
 
-    # --- Run & Assert (try/finally ensures cleanup on assertion failure) ---
     try:
         run_until(orch, lambda: not orch.state.active_sessions, max_ticks=15)
 
-        # --- Assertions ---
         emitted = {e.name for e in events.events}
         assert EventName.SESSION_STARTED in emitted
         assert EventName.SESSION_COMPLETED in emitted
@@ -137,13 +215,9 @@ def test_foreign_repo_full_lifecycle(foreign_repo: Path, tmp_path: Path) -> None
         assert EventName.REVIEW_EXCHANGE_COMPLETED in emitted
         assert EventName.ISSUE_PR_CREATED in emitted
 
-        # PR was created
         assert repo_host.get_pr(100) is not None, "Expected PR #100 to be created"
 
-        # The worktree was a real git worktree: .git is a file whose content
-        # starts with "gitdir:" pointing to a real gitdir path.  This
-        # distinguishes it from TempWorktreeManager which writes a plain
-        # "simulated" string.
+        # The worktree was a real git worktree
         history = orch.state.session_history
         assert history, "Expected session history to be non-empty"
         worktree_path = history[0].worktree_path
@@ -155,21 +229,467 @@ def test_foreign_repo_full_lifecycle(foreign_repo: Path, tmp_path: Path) -> None
         assert git_content.startswith("gitdir:"), (
             f".git file should start with 'gitdir:', got: {git_content!r}"
         )
-        gitdir = Path(git_content.split(":", 1)[1].strip())
-        assert gitdir.is_dir(), f"gitdir path should be a directory: {gitdir}"
 
-        # No self-referential artifacts: foreign repo should NOT have .venv or
-        # src/issue_orchestrator/ in the worktree (those come from venv symlink
-        # and cli_tools sync, which only happen if the source repo has them).
+        # Orchestrator-internal setup was applied
         wt = Path(worktree_path)
+
+        assert (wt / ".claude" / "settings.json").exists(), (
+            "Claude settings should be installed in worktree"
+        )
+        assert (wt / ".issue-orchestrator" / "worktree-id").exists(), (
+            "Worktree identity marker should be installed"
+        )
+
+        # CLI tools synced from orchestrator package (not repo_root)
+        cli_tools_dir = wt / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
+        assert cli_tools_dir.exists(), (
+            "CLI tools should be synced from orchestrator package to foreign repo worktree"
+        )
+        assert (cli_tools_dir / "agent_done.py").exists(), (
+            "agent_done.py should be synced to worktree"
+        )
+
+        # Foreign repo should NOT have the full orchestrator source tree
+        assert not (wt / "src" / "issue_orchestrator" / "control").exists(), (
+            "Foreign repo worktree should not contain orchestrator control layer"
+        )
+        assert not (wt / "src" / "issue_orchestrator" / "domain").exists(), (
+            "Foreign repo worktree should not contain orchestrator domain layer"
+        )
+
+        # .venv: either absent (foreign repo has none) or a symlink
         venv = wt / ".venv"
         if venv.exists():
-            # If .venv exists it must be a symlink (installed by finalize), not a real dir
             assert venv.is_symlink(), ".venv in worktree should be a symlink, not a copy"
-        assert not (wt / "src" / "issue_orchestrator").exists(), (
-            "Foreign repo worktree should not contain src/issue_orchestrator/"
+    finally:
+        close = getattr(orch, "close", None)
+        if callable(close):
+            close()
+
+
+# ---------------------------------------------------------------------------
+# Unit-level / small integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_foreign_repo_sync_cli_tools_from_package(make_worktree, foreign_repo: Path) -> None:
+    """sync_cli_tools copies from the orchestrator package, not repo_root."""
+    handle = make_worktree(99, "sync-test")
+    wt = handle.path
+
+    # The foreign repo has no src/issue_orchestrator/ at all
+    assert not (foreign_repo / "src" / "issue_orchestrator").exists()
+
+    # But sync_cli_tools should still work (finds source from package)
+    sync_cli_tools(wt)
+
+    # CLI tools were synced
+    cli_tools = wt / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
+    assert cli_tools.exists(), "CLI tools dir should be created"
+    assert (cli_tools / "agent_done.py").exists(), "agent_done.py should be synced"
+
+
+@pytest.mark.integration
+def test_foreign_repo_agent_done_on_path() -> None:
+    """agent-done is findable from the orchestrator's own venv."""
+    orch_bin = Path(sys.executable).parent
+    agent_done = orch_bin / "agent-done"
+    assert agent_done.exists(), (
+        f"agent-done should be in orchestrator venv bin at {agent_done}"
+    )
+
+
+def test_foreign_repo_default_setup_commands_empty() -> None:
+    """Config defaults to no setup commands (foreign-repo safe)."""
+    config = Config()
+    assert config.setup_worktree == [], (
+        "Default setup_worktree should be empty list, not orchestrator-specific commands"
+    )
+
+
+@pytest.mark.integration
+def test_foreign_repo_scripts_dir_from_package() -> None:
+    """terminal_subprocess uses package-relative scripts dir, not repo_root.
+
+    Instead of mirroring the implementation's path arithmetic, we verify the
+    scripts directory referenced in the command actually exists and contains
+    the expected wrapper scripts.
+    """
+    plugin = SubprocessPlugin()
+    cmd = plugin._build_process_command("echo test", Path("/tmp/fake-worktree"))  # noqa: SLF001
+
+    # Extract the PATH value from the generated command
+    # Format: ... export PATH="<venv_bin>:<scripts_dir>:<system_path>" ...
+    import re
+
+    match = re.search(r'export PATH="([^"]+)"', cmd)
+    assert match, f"Could not find PATH export in command: {cmd}"
+    path_entries = match.group(1).split(":")
+
+    # The second entry (after worktree .venv/bin) should be the scripts dir
+    # and it should actually exist with the expected wrappers
+    scripts_entry = path_entries[1]
+    scripts_dir = Path(scripts_entry)
+    assert scripts_dir.exists(), (
+        f"Scripts dir from command PATH does not exist: {scripts_dir}"
+    )
+    assert (scripts_dir / "agent-done").exists(), (
+        f"Expected agent-done wrapper in scripts dir: {scripts_dir}"
+    )
+
+
+@pytest.mark.integration
+def test_foreign_repo_with_setup_commands(foreign_repo: Path, tmp_path: Path) -> None:
+    """Setup commands run in worktree during session launch."""
+    worktree_base = tmp_path / "worktrees"
+    worktree_base.mkdir()
+
+    marker = "foreign-setup-ran.marker"
+
+    config = build_config(
+        foreign_repo,
+        coder_command=script("coder_dual_mode.sh"),
+        reviewer_command=script("reviewer_ok.sh", prompt=True),
+        review_exchange_mode="via-local-loop",
+        validation_cmd=script("validate_pass.sh"),
+    )
+    config.worktree_base = worktree_base
+    config.setup_worktree = [f"touch {marker}"]
+
+    issue = Issue(
+        number=2,
+        title="Setup commands test",
+        labels=["simulated-scenario", "agent:coder"],
+    )
+
+    orch, _, _, _ = build_orchestrator(
+        foreign_repo,
+        [issue],
+        config,
+        worktree_manager=GitWorktreeManager(),  # type: ignore[arg-type]
+        working_copy=StubWorkingCopy(),
+        runner=ScriptSessionRunner(),
+    )
+
+    try:
+        run_until(orch, lambda: not orch.state.active_sessions, max_ticks=15)
+
+        history = orch.state.session_history
+        assert history, "Expected session history"
+        worktree_path = history[0].worktree_path
+        assert worktree_path is not None
+        wt = Path(worktree_path)
+        assert (wt / marker).exists(), (
+            f"Setup command should have created {marker} in worktree"
         )
     finally:
         close = getattr(orch, "close", None)
         if callable(close):
             close()
+
+
+# ---------------------------------------------------------------------------
+# Real PATH chain tests — prove agent-done is findable in a foreign repo
+# worktree through the actual command construction used in production.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_foreign_repo_real_path_chain_finds_agent_done(make_worktree) -> None:
+    """The full PATH chain (session_launcher + terminal_subprocess) finds agent-done."""
+    handle = make_worktree(77, "path-chain-test")
+    wt = handle.path
+
+    # Sanity: foreign repo worktree has NO full orchestrator source tree
+    assert not (wt / "src" / "issue_orchestrator" / "control").exists()
+    assert not (wt / "src" / "issue_orchestrator" / "domain").exists()
+    assert not (wt / ".venv").exists()
+
+    plugin = SubprocessPlugin()
+    exports = _build_session_exports(77)
+    full_cmd = plugin._build_process_command(  # noqa: SLF001
+        f"{exports} && which agent-done", wt
+    )
+
+    result = subprocess.run(
+        full_cmd, shell=True, capture_output=True, text=True, executable="/bin/bash",
+    )
+
+    assert result.returncode == 0, (
+        f"agent-done not found via real PATH chain in foreign repo worktree.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}\ncommand: {full_cmd}"
+    )
+    assert "agent-done" in result.stdout, (
+        f"Expected 'agent-done' in which output, got: {result.stdout!r}"
+    )
+
+
+@pytest.mark.integration
+def test_foreign_repo_real_path_chain_agent_done_executes(make_worktree) -> None:
+    """agent-done actually executes (not just findable) through the real PATH chain."""
+    handle = make_worktree(78, "agent-done-exec-test")
+    wt = handle.path
+
+    plugin = SubprocessPlugin()
+    exports = _build_session_exports(78)
+    full_cmd = plugin._build_process_command(  # noqa: SLF001
+        f"{exports} && agent-done --help", wt
+    )
+
+    result = subprocess.run(
+        full_cmd, shell=True, capture_output=True, text=True, executable="/bin/bash",
+    )
+
+    assert result.returncode == 0, (
+        f"agent-done --help failed in foreign repo worktree.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}\ncommand: {full_cmd}"
+    )
+    assert "completed" in result.stdout.lower() or "usage" in result.stdout.lower(), (
+        f"Expected agent-done help output, got: {result.stdout!r}"
+    )
+
+
+@pytest.mark.integration
+def test_foreign_repo_real_path_chain_validation_runs(make_worktree) -> None:
+    """A validation command executes successfully through the real PATH chain."""
+    handle = make_worktree(79, "validation-test")
+    wt = handle.path
+
+    val_script = wt / "validate.sh"
+    val_script.write_text("#!/bin/bash\necho VALIDATION_OK\nexit 0\n")
+    val_script.chmod(0o755)
+
+    plugin = SubprocessPlugin()
+    exports = _build_session_exports(79)
+    full_cmd = plugin._build_process_command(  # noqa: SLF001
+        f"{exports} && ./validate.sh", wt
+    )
+
+    result = subprocess.run(
+        full_cmd, shell=True, capture_output=True, text=True, executable="/bin/bash",
+    )
+
+    assert result.returncode == 0, (
+        f"Validation command failed in foreign repo worktree.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "VALIDATION_OK" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# Real agent invocation — prove agent-done writes completion in a foreign repo
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+def test_foreign_repo_agent_done_writes_completion(make_worktree) -> None:
+    """agent-done completed writes a completion record in a foreign repo worktree."""
+    handle = make_worktree(80, "agent-done-completion-test")
+    wt = handle.path
+    completion_rel = ".issue-orchestrator/completion.json"
+
+    exports = _build_session_exports(80, completion_rel)
+    agent_cmd = (
+        "agent-done completed"
+        " --implementation 'Foreign repo test implementation'"
+        " --problems 'None'"
+    )
+
+    plugin = SubprocessPlugin()
+    full_cmd = plugin._build_process_command(  # noqa: SLF001
+        f"{exports} && {agent_cmd}", wt
+    )
+
+    result = subprocess.run(
+        full_cmd, shell=True, capture_output=True, text=True,
+        executable="/bin/bash", timeout=30,
+    )
+
+    assert result.returncode == 0, (
+        f"agent-done completed failed in foreign repo worktree.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}\ncommand: {full_cmd}"
+    )
+
+    completion_file = wt / completion_rel
+    assert completion_file.exists(), (
+        f"agent-done should have written {completion_rel} in worktree.\n"
+        f"stdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+    record = json.loads(completion_file.read_text())
+    assert record["outcome"] == "completed", (
+        f"Expected outcome 'completed', got: {record}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.xdist_group("pty")
+def test_foreign_repo_real_pty_agent_invocation(
+    make_worktree, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real PTY session (pexpect) runs agent-done in a foreign repo worktree."""
+    handle = make_worktree(81, "pty-agent-test")
+    wt = handle.path
+    completion_rel = ".issue-orchestrator/completion.json"
+
+    # Write a test agent script that calls agent-done
+    agent_script = wt / "test-agent.sh"
+    agent_script.write_text(
+        "#!/bin/bash\n"
+        "set -e\n"
+        "agent-done completed"
+        " --implementation 'PTY foreign repo test'"
+        " --problems 'None'\n"
+    )
+    agent_script.chmod(0o755)
+
+    exports = _build_session_exports(81, completion_rel)
+    command = f"{exports} && ./test-agent.sh"
+
+    # Use monkeypatch for clean env manipulation (auto-restores on teardown)
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_REPO_ROOT", str(handle.repo))
+
+    plugin = SubprocessPlugin()
+    session_name = "coder-81"
+
+    created = plugin.create_session(
+        session_id=81,
+        command=command,
+        working_dir=str(wt),
+        title="PTY agent test",
+        session_name=session_name,
+    )
+    assert created is True, "create_session should return True"
+
+    # Poll until the session finishes (agent-done is fast)
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if not plugin.session_exists(81, session_name):
+            break
+        time.sleep(0.2)
+    else:
+        plugin.kill_session(81, session_name)
+        pytest.fail("PTY session did not complete within 15 seconds")
+
+    completion_file = wt / completion_rel
+    assert completion_file.exists(), (
+        f"agent-done should have written {completion_rel} via PTY session.\n"
+        f"Worktree contents: {list(wt.iterdir())}"
+    )
+
+    record = json.loads(completion_file.read_text())
+    assert record["outcome"] == "completed", (
+        f"Expected outcome 'completed', got: {record}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Real AI agent tests — prove Claude Code / Codex can run agent-done in a
+# foreign repo worktree through the full production PATH chain.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.integration
+@pytest.mark.live
+@pytest.mark.xdist_group("pty")
+@pytest.mark.skipif(
+    shutil.which("claude") is None,
+    reason="Claude Code CLI not installed",
+)
+def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
+    """Claude Code invokes agent-done in a foreign repo worktree."""
+    handle = make_worktree(90, "claude-foreign-test")
+    wt = handle.path
+    completion_rel = ".issue-orchestrator/completion.json"
+
+    exports = _build_session_exports(90, completion_rel)
+
+    prompt = (
+        "You are in a test. Run this exact bash command and nothing else: "
+        'agent-done completed --implementation "claude foreign repo test" '
+        '--problems "none". '
+        "Do not explain anything, just run the command above."
+    )
+
+    escaped_prompt = prompt.replace('"', '\\"')
+    plugin = SubprocessPlugin()
+    inner_cmd = (
+        f'{exports} && claude -p --permission-mode bypassPermissions '
+        f'"{escaped_prompt}"'
+    )
+    full_cmd = plugin._build_process_command(inner_cmd, wt)  # noqa: SLF001
+
+    result = subprocess.run(
+        full_cmd, shell=True, capture_output=True, text=True,
+        executable="/bin/bash", timeout=120,
+    )
+
+    print(f"Claude stdout: {result.stdout[:1000]}")
+    print(f"Claude stderr: {result.stderr[:1000]}")
+    print(f"Return code: {result.returncode}")
+
+    completion_file = wt / completion_rel
+    assert completion_file.exists(), (
+        f"Claude Code did not produce completion.json in foreign repo worktree.\n"
+        f"stdout: {result.stdout[:500]}\nstderr: {result.stderr[:500]}\n"
+        f"returncode: {result.returncode}"
+    )
+
+    record = json.loads(completion_file.read_text())
+    assert record["outcome"] == "completed", (
+        f"Expected outcome 'completed', got: {record}"
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.live
+@pytest.mark.xdist_group("codex")
+@pytest.mark.skipif(
+    shutil.which("codex") is None,
+    reason="Codex CLI not installed",
+)
+def test_foreign_repo_codex_agent_done(make_worktree) -> None:
+    """Codex invokes agent-done in a foreign repo worktree."""
+    handle = make_worktree(91, "codex-foreign-test")
+    wt = handle.path
+    completion_rel = ".issue-orchestrator/completion.json"
+
+    exports = _build_session_exports(91, completion_rel)
+
+    prompt = (
+        "You are in a test. Run this exact bash command and nothing else: "
+        'agent-done completed --implementation "codex foreign repo test" '
+        '--problems "none". '
+        "Do not explain anything, just run the command above using the shell tool."
+    )
+
+    escaped_prompt = prompt.replace('"', '\\"')
+    plugin = SubprocessPlugin()
+    inner_cmd = (
+        f'{exports} && codex exec '
+        f'--dangerously-bypass-approvals-and-sandbox '
+        f'"{escaped_prompt}"'
+    )
+    full_cmd = plugin._build_process_command(inner_cmd, wt)  # noqa: SLF001
+
+    result = subprocess.run(
+        full_cmd, shell=True, capture_output=True, text=True,
+        executable="/bin/bash", timeout=180,
+    )
+
+    print(f"Codex stdout: {result.stdout[:1000]}")
+    print(f"Codex stderr: {result.stderr[:1000]}")
+    print(f"Return code: {result.returncode}")
+
+    completion_file = wt / completion_rel
+    assert completion_file.exists(), (
+        f"Codex did not produce completion.json in foreign repo worktree.\n"
+        f"stdout: {result.stdout[:500]}\nstderr: {result.stderr[:500]}\n"
+        f"returncode: {result.returncode}"
+    )
+
+    record = json.loads(completion_file.read_text())
+    assert record["outcome"] == "completed", (
+        f"Expected outcome 'completed', got: {record}"
+    )

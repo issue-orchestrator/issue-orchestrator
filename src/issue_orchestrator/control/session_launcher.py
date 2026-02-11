@@ -246,6 +246,35 @@ class SessionLauncher:
                 )
         return all_ok
 
+    def _build_session_env(
+        self,
+        *,
+        completion_path: str,
+        agent_label: str,
+        issue_number: int,
+        run_dir: Path,
+    ) -> str:
+        """Build the common env-export string for all session types.
+
+        Includes the orchestrator venv on PATH so ``agent-done`` is always
+        reachable — even when the target repo is a foreign (non-orchestrator)
+        repository with no ``.venv``.
+
+        NOTE: Validation config is NOT passed via env var.  ``agent-done``
+        reads validation config from the worktree's config file so tests are
+        deterministic (no env var leakage).
+        """
+        orch_bin = Path(sys.executable).parent
+        return (
+            f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
+            f" {ENV_PREFIX}AGENT_LABEL='{agent_label}'"
+            f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
+            f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
+            f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_dir}'"
+            f" {ENV_PREFIX}RUN_DIR='{run_dir}'"
+            f' PATH="{orch_bin}:$PATH"'
+        )
+
     # ─────────────────────────────────────────────────────────────────────────
     # Phase helpers for launch_issue_session
     # These represent distinct phases a human would describe when explaining
@@ -682,17 +711,12 @@ class SessionLauncher:
             run.run_dir,
             {"completion_path": completion_path},
         )
-        # Export env vars so child processes (like agent-done) can access them
-        env_exports = f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
-        env_exports += f" {ENV_PREFIX}AGENT_LABEL='{issue.agent_type}'"
-        env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{issue.number}'"
-        env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
-        env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run.run_dir}'"
-        env_exports += f" {ENV_PREFIX}RUN_DIR='{run.run_dir}'"
-        # NOTE: Validation config is NOT passed via env var.
-        # agent-done reads validation config from the worktree's config file.
-        # This ensures tests are deterministic (no env var leakage).
-
+        env_exports = self._build_session_env(
+            completion_path=completion_path,
+            agent_label=issue.agent_type,
+            issue_number=issue.number,
+            run_dir=run.run_dir,
+        )
         if self.config.e2e_pr_labels:
             labels_str = ",".join(self.config.e2e_pr_labels)
             env_exports += f" E2E_PR_LABELS='{labels_str}'"
@@ -928,17 +952,12 @@ class SessionLauncher:
             run.run_dir,
             {"completion_path": completion_path},
         )
-        # Export env vars so child processes (like agent-done) can access them
-        env_exports = f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
-        env_exports += f" {ENV_PREFIX}AGENT_LABEL='{agent_label}'"
-        env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{review.issue_number}'"
-        env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
-        env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run.run_dir}'"
-        env_exports += f" {ENV_PREFIX}RUN_DIR='{run.run_dir}'"
-        # NOTE: Validation config is NOT passed via env var.
-        # agent-done reads validation config from the worktree's config file.
-        # This ensures tests are deterministic (no env var leakage).
-
+        env_exports = self._build_session_env(
+            completion_path=completion_path,
+            agent_label=agent_label,
+            issue_number=review.issue_number,
+            run_dir=run.run_dir,
+        )
         command = f"{env_exports} && {base_command}"
         logger.info(
             "[launch] Review session command: issue=%s pr=%s session=%s worktree=%s completion=%s command=%s",
@@ -1214,17 +1233,12 @@ class SessionLauncher:
             run.run_dir,
             {"completion_path": completion_path},
         )
-        # Export env vars so child processes (like agent-done) can access them
-        env_exports = f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
-        env_exports += f" {ENV_PREFIX}AGENT_LABEL='{rework.agent_type}'"
-        env_exports += f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
-        env_exports += f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
-        env_exports += f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run.run_dir}'"
-        env_exports += f" {ENV_PREFIX}RUN_DIR='{run.run_dir}'"
-        # NOTE: Validation config is NOT passed via env var.
-        # agent-done reads validation config from the worktree's config file.
-        # This ensures tests are deterministic (no env var leakage).
-
+        env_exports = self._build_session_env(
+            completion_path=completion_path,
+            agent_label=rework.agent_type,
+            issue_number=issue_number,
+            run_dir=run.run_dir,
+        )
         command = f"{env_exports} && {base_command}"
         logger.info(
             "[launch] Rework session command: issue=%s pr=%s session=%s worktree=%s completion=%s command=%s",

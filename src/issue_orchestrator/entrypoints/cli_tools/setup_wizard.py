@@ -528,7 +528,8 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     worktree_base = prompter.input(_wt_field["prompt"], str(_wt_field["default"]))
 
     # Set at top-level (not per-agent)
-    config["worktrees"] = {"base": worktree_base}
+    worktrees_config: dict[str, Any] = {"base": worktree_base}
+    config["worktrees"] = worktrees_config
 
     # If subdirectory, offer to add to .gitignore
     if not worktree_base.startswith(".."):
@@ -547,6 +548,18 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
                 with open(gitignore_path, "a") as f:
                     f.write(f"\n# Issue orchestrator worktrees\n{worktree_dir}/\n")
                 prompter.print(f"  ✓ Added {worktree_dir}/ to .gitignore")
+
+    # Worktree setup commands
+    prompter.print("\n--- Worktree Setup Commands ---")
+    prompter.print("Commands to run in each new worktree after creation (e.g., install deps).")
+    prompter.print("Examples:")
+    prompter.print("  npm install")
+    prompter.print("  pip install -e '.[dev]'")
+    prompter.print("  make setup")
+    setup_input = prompter.input("Setup commands (comma-separated, or empty to skip)", "")
+    if setup_input.strip():
+        setup_cmds = [cmd.strip() for cmd in setup_input.split(",") if cmd.strip()]
+        worktrees_config["setup"] = setup_cmds
 
     # UI Mode
     prompter.print("\n--- UI Mode ---")
@@ -897,6 +910,21 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                     with open(gitignore_path, "a") as f:
                         f.write(f"\n# Issue orchestrator worktrees\n{worktree_dir}/\n")
                     prompter.print(f"  ✓ Added {worktree_dir}/ to .gitignore")
+
+    # Worktree setup commands (if not already configured)
+    worktrees_cfg = config.get("worktrees", {})
+    if "setup" not in worktrees_cfg:
+        prompter.print("\n--- Worktree Setup Commands ---")
+        prompter.print("Commands to run in each new worktree after creation (e.g., install deps).")
+        prompter.print("Examples:")
+        prompter.print("  npm install")
+        prompter.print("  pip install -e '.[dev]'")
+        prompter.print("  make setup")
+        setup_input = prompter.input("Setup commands (comma-separated, or empty to skip)", "")
+        if setup_input.strip():
+            setup_cmds = [cmd.strip() for cmd in setup_input.split(",") if cmd.strip()]
+            wt_config = cast(dict[str, Any], config.setdefault("worktrees", {}))
+            wt_config["setup"] = setup_cmds
 
     # UI mode
     if "ui" not in config or "mode" not in config.get("ui", {}):
