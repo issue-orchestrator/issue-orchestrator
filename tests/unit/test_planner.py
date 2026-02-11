@@ -464,7 +464,6 @@ class TestPlanDiscoveredReviews:
     def test_plans_queue_action_for_discovered_review(self):
         """Planner produces QueueReviewAction for discovered reviews."""
         from issue_orchestrator.domain.models import DiscoveredReview
-        from issue_orchestrator.control.actions import ActionType
 
         config = make_config(code_review_agent="agent:reviewer")
         scheduler = Scheduler(config)
