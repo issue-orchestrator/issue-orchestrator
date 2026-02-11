@@ -1189,6 +1189,42 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
         return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
 
 
+def _manifest_response(
+    run_dir: Path,
+    session_name: str | None,
+) -> JSONResponse:
+    """Load RunManifest + analysis from run_dir and return as JSON."""
+    from ..domain.run_manifest import RunManifest
+    from ..control.session_analyzer import load_analysis
+
+    try:
+        manifest = RunManifest.load(run_dir)
+    except FileNotFoundError:
+        return JSONResponse({
+            "run_dir": str(run_dir),
+            "session_name": session_name,
+            "manifest": None,
+        })
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
+
+    result: dict[str, Any] = {
+        "run_dir": str(run_dir),
+        "session_name": session_name,
+        "manifest": manifest.to_dict(),
+    }
+
+    analysis = load_analysis(run_dir)
+    if analysis:
+        result["analysis"] = {
+            "headline": analysis.headline,
+            "detail": analysis.detail,
+            "suggestions": list(analysis.suggestions),
+        }
+
+    return JSONResponse(result)
+
+
 @app.get("/api/session/manifest/{issue_number}")
 async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901, PLR0912 - manifest lookup with multiple path strategies
     """Get the session manifest for an issue."""
@@ -1211,7 +1247,6 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
     if not worktree_path:
         from ..execution.session_output_adapter import (
             FileSystemSessionOutput,
-            MANIFEST_NAME,
             find_run_dir_for_issue,
         )
 
@@ -1224,22 +1259,7 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
         if run_dir:
             session_output_manager = FileSystemSessionOutput()
             session_output_manager.attach_claude_log(run_dir)
-            manifest_path = run_dir / MANIFEST_NAME
-            if not manifest_path.exists():
-                return JSONResponse({
-                    "run_dir": str(run_dir),
-                    "session_name": session.terminal_id if session else None,
-                    "manifest": None,
-                })
-            try:
-                manifest = json.loads(manifest_path.read_text())
-                return JSONResponse({
-                    "run_dir": str(run_dir),
-                    "session_name": session.terminal_id if session else None,
-                    "manifest": manifest,
-                })
-            except Exception as e:
-                return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
+            return _manifest_response(run_dir, session.terminal_id if session else None)
 
     if not worktree_path:
         return JSONResponse({
@@ -1247,7 +1267,7 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
             "hint": "Session may have been cleaned up or never started",
         }, status_code=404)
 
-    from ..execution.session_output_adapter import FileSystemSessionOutput, MANIFEST_NAME
+    from ..execution.session_output_adapter import FileSystemSessionOutput
     session_output_helper = FileSystemSessionOutput()
     run_dir = session_output_helper.find_run_dir(
         worktree_path,
@@ -1260,23 +1280,7 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
         }, status_code=404)
     session_output_helper.attach_claude_log(run_dir)
 
-    manifest_path = run_dir / MANIFEST_NAME
-    if not manifest_path.exists():
-        return JSONResponse({
-            "run_dir": str(run_dir),
-            "session_name": session.terminal_id if session else None,
-            "manifest": None,
-        })
-
-    try:
-        manifest = json.loads(manifest_path.read_text())
-        return JSONResponse({
-            "run_dir": str(run_dir),
-            "session_name": session.terminal_id if session else None,
-            "manifest": manifest,
-        })
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
+    return _manifest_response(run_dir, session.terminal_id if session else None)
 
 
 @app.get("/api/session/worktree/{issue_number}")
@@ -1888,7 +1892,8 @@ async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..execution.session_output_adapter import FileSystemSessionOutput, MANIFEST_NAME, find_run_dir_for_issue
+    from ..domain.run_manifest import RunManifest
+    from ..execution.session_output_adapter import FileSystemSessionOutput, find_run_dir_for_issue
 
     session_output_mgr = FileSystemSessionOutput()
 
@@ -1920,23 +1925,20 @@ async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval
     if not run_dir:
         return JSONResponse({"error": f"No session found for issue #{issue_number}"}, status_code=404)
 
-    # Get claude_log_path from manifest
-    manifest_path = run_dir / MANIFEST_NAME
-    if not manifest_path.exists():
-        return JSONResponse({"error": "Session manifest not found"}, status_code=404)
-
+    # Get claude_log_path from manifest via RunManifest
     try:
-        manifest = json.loads(manifest_path.read_text())
+        manifest = RunManifest.load(run_dir)
+    except FileNotFoundError:
+        return JSONResponse({"error": "Session manifest not found"}, status_code=404)
     except Exception as e:
         return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
 
-    claude_log_path = manifest.get("claude_log_path")
-    if not claude_log_path:
+    if not manifest.claude_log_path:
         return JSONResponse({"error": "No Claude log path in manifest"}, status_code=404)
 
-    log_path = Path(claude_log_path)
+    log_path = Path(manifest.claude_log_path)
     if not log_path.exists():
-        return JSONResponse({"error": f"Claude log file not found: {claude_log_path}"}, status_code=404)
+        return JSONResponse({"error": f"Claude log file not found: {manifest.claude_log_path}"}, status_code=404)
 
     # Parse JSONL file
     entries = []
