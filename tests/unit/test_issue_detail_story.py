@@ -17,6 +17,7 @@ from issue_orchestrator.view_models.issue_detail import (
     _derive_cycle_outcome,
     _event_to_narrative,
     _format_time_label,
+    filter_last_run_cycles,
 )
 
 
@@ -984,6 +985,105 @@ class TestSignalJourneyCycles:
         assert "Changes Requested" in cycles[0]["outcome"]
         assert "Changes Requested" in cycles[1]["outcome"]
         assert "Approved" in cycles[2]["outcome"]
+
+    # ── Last-run filter tests (lifecycle filtering) ──
+
+    def test_last_run_filter_excludes_prior_lifecycles_legacy(self):
+        """Legacy path: cycles before a block event are excluded by last-run filter."""
+        events = [
+            # Lifecycle 1: coding → block
+            _evt("session.started", timestamp="2026-02-08T10:00:00Z", agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-08T10:30:00Z"),
+            _evt("session.started", timestamp="2026-02-08T11:00:00Z", agent="agent:backend"),
+            _evt("session.failed", timestamp="2026-02-08T11:30:00Z"),
+            _evt("issue.blocked", timestamp="2026-02-08T11:35:00Z"),
+            # Lifecycle 2: resumed after unblock
+            _evt("session.started", timestamp="2026-02-09T10:00:00Z", agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T10:30:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        # Multiple cycles across 2 lifecycles
+        assert len(cycles) >= 2
+        lifecycles = {c["lifecycle"] for c in cycles}
+        assert len(lifecycles) == 2, f"Expected 2 lifecycles, got {lifecycles}"
+
+        # Filter to last run
+        filtered = filter_last_run_cycles(cycles)
+        assert len(filtered) < len(cycles), "Last-run filter should exclude earlier cycles"
+        assert all(c["lifecycle"] == max(lifecycles) for c in filtered)
+
+    def test_last_run_filter_no_terminal_shows_all(self):
+        """Without terminal events, all cycles are lifecycle 1 → filter shows all."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T10:00:00Z", agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T10:30:00Z"),
+            _evt("session.started", timestamp="2026-02-09T11:00:00Z", agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T11:30:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        filtered = filter_last_run_cycles(cycles)
+        assert len(filtered) == len(cycles), "No terminal events → all cycles shown"
+
+    def test_last_run_filter_manual_unblock_no_event(self):
+        """Block event followed by sessions with no issue.unblocked event (manual unblock).
+
+        Simulates the #4070 scenario: issue was blocked, user removed labels
+        manually in GitHub, orchestrator resumed. The issue.blocked event sets
+        needs_new_lifecycle, and the next session.started bumps lifecycle even
+        without an issue.unblocked event.
+        """
+        events = [
+            # Lifecycle 1: many coding sessions
+            _evt("session.started", timestamp="2026-02-08T10:00:00Z", agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-08T10:30:00Z"),
+            _evt("session.started", timestamp="2026-02-08T11:00:00Z", agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-08T11:30:00Z"),
+            _evt("session.started", timestamp="2026-02-08T12:00:00Z", agent="agent:backend"),
+            _evt("session.failed", timestamp="2026-02-08T12:30:00Z"),
+            _evt("session.started", timestamp="2026-02-08T13:00:00Z", agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-08T13:30:00Z"),
+            # Block — sets needs_new_lifecycle
+            _evt("issue.blocked", timestamp="2026-02-08T14:00:00Z"),
+            # --- Manual label removal in GitHub, no issue.unblocked event ---
+            # Lifecycle 2: resumed sessions
+            _evt("session.started", timestamp="2026-02-09T10:00:00Z", agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T10:30:00Z"),
+            _evt("session.started", timestamp="2026-02-09T11:00:00Z", agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T11:30:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        lifecycles = {c["lifecycle"] for c in cycles}
+        assert len(lifecycles) == 2, f"Expected 2 lifecycles, got {lifecycles}"
+
+        filtered = filter_last_run_cycles(cycles)
+        # Should only show cycles from lifecycle 2 (after the block)
+        assert len(filtered) < len(cycles), "Last-run should exclude pre-block cycles"
+        assert all(c["lifecycle"] == max(lifecycles) for c in filtered)
+        # Specifically: only the 2 post-block sessions
+        assert len(filtered) == 2
+
+    def test_last_run_filter_many_blocks_picks_latest(self):
+        """Multiple block→resume cycles: filter shows only the latest lifecycle."""
+        events = [
+            # Lifecycle 1
+            _evt("session.started", timestamp="2026-02-07T10:00:00Z", agent="agent:backend"),
+            _evt("session.failed", timestamp="2026-02-07T10:30:00Z"),
+            _evt("issue.blocked", timestamp="2026-02-07T10:35:00Z"),
+            # Lifecycle 2
+            _evt("session.started", timestamp="2026-02-08T10:00:00Z", agent="agent:backend"),
+            _evt("session.failed", timestamp="2026-02-08T10:30:00Z"),
+            _evt("issue.blocked", timestamp="2026-02-08T10:35:00Z"),
+            # Lifecycle 3 (latest)
+            _evt("session.started", timestamp="2026-02-09T10:00:00Z", agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T10:30:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        lifecycles = {c["lifecycle"] for c in cycles}
+        assert len(lifecycles) == 3, f"Expected 3 lifecycles, got {lifecycles}"
+
+        filtered = filter_last_run_cycles(cycles)
+        assert all(c["lifecycle"] == 3 for c in filtered)
+        assert len(filtered) == 1  # Only the last coding session
 
     def test_legacy_signal_boundary_creates_lifecycle_split(self):
         """Mixed legacy (no rework_cycle) + signal events get separate lifecycles."""

@@ -378,6 +378,20 @@ _OUTCOME_EVENTS = frozenset({
 })
 
 
+def filter_last_run_cycles(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter cycles to only those from the latest lifecycle.
+
+    Mirrors the frontend ``filterJourneyCycles('last-run')`` logic so it can
+    be tested without the UI.  Returns all cycles if no lifecycle info exists.
+    """
+    if not cycles:
+        return cycles
+    max_lifecycle = max(c.get("lifecycle", 0) for c in cycles)
+    if max_lifecycle <= 0:
+        return cycles
+    return [c for c in cycles if c.get("lifecycle") == max_lifecycle]
+
+
 def _build_journey_cycles(
     events: list[dict[str, Any]],
     today: str,
