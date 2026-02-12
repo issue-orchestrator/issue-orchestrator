@@ -2796,11 +2796,15 @@ async function unblockFromDrawer() {
     }
 }
 
+const _SESSION_START_EVENTS = new Set([
+    'session.started', 'rework.started', 'rework.launching',
+]);
+
 function filterJourneySteps(steps, filter) {
     if (filter === 'all' || steps.length === 0) return steps;
-    // "last-run": find the last session.started and show everything from there
+    // "last-run": find the last session-start boundary and show from there
     for (let i = steps.length - 1; i >= 0; i--) {
-        if (steps[i].event === 'session.started') return steps.slice(i);
+        if (_SESSION_START_EVENTS.has(steps[i].event)) return steps.slice(i);
     }
     // No session boundary — show last 10
     return steps.slice(-10);
@@ -2811,10 +2815,11 @@ function renderJourneySteps(container, allSteps) {
     const isLastRun = journeyFilter === 'last-run';
     const isAll = journeyFilter === 'all';
 
-    // Filter selector
+    // Filter selector + copy button
     let html = `<div class="journey-filter">
         <button class="journey-filter-btn ${isLastRun ? 'active' : ''}" onclick="setJourneyFilter('last-run')">Last run</button>
         <button class="journey-filter-btn ${isAll ? 'active' : ''}" onclick="setJourneyFilter('all')">All</button>
+        <button class="journey-filter-btn journey-copy-btn" onclick="copyJourneyTimeline()" title="Copy timeline as text">Copy</button>
     </div>`;
 
     if (steps.length === 0) {
@@ -2852,6 +2857,33 @@ function setJourneyFilter(filter) {
         const journeyEl = document.getElementById('issueDetailJourney');
         if (journeyEl) renderJourneySteps(journeyEl, issueDetailData.journey_steps || []);
     }
+}
+
+function copyJourneyTimeline() {
+    if (!issueDetailData) return;
+    const steps = filterJourneySteps(issueDetailData.journey_steps || [], journeyFilter);
+    if (steps.length === 0) {
+        showToast('No timeline to copy', true);
+        return;
+    }
+    const issueNum = issueDetailData.issue_number;
+    const title = issueDetailData.title || '';
+    let text = `Issue #${issueNum}: ${title}\n`;
+    let currentDay = '';
+    for (const s of steps) {
+        if (s.day && s.day !== currentDay) {
+            currentDay = s.day;
+            text += `\n--- ${currentDay} ---\n`;
+        }
+        const time = s.time_label || '';
+        const narrative = s.narrative || s.event || '';
+        text += `${time}  ${narrative}\n`;
+        if (s.detail) text += `  ${s.detail}\n`;
+    }
+    navigator.clipboard.writeText(text.trim()).then(
+        () => showToast('Timeline copied'),
+        () => showToast('Failed to copy', true)
+    );
 }
 
 function formatJourneyDay(dayStr) {

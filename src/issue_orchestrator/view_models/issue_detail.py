@@ -234,6 +234,7 @@ _JOURNEY_SKIP_EVENTS = frozenset({
     "issue.labels_changed",
     "issue.claimed",
     "session.processing_completed",
+    "session.no_completion_record",
     "session.no_output",
 })
 

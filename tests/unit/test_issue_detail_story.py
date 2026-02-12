@@ -205,6 +205,7 @@ class TestJourneySteps:
             _evt("observation.scan", timestamp="2026-02-09T10:02:00Z"),
             _evt("tick.completed", timestamp="2026-02-09T10:03:00Z"),
             _evt("session.no_output", timestamp="2026-02-09T10:04:00Z"),
+            _evt("session.no_completion_record", timestamp="2026-02-09T10:04:30Z"),
             _evt("stale.in_progress_detected", timestamp="2026-02-09T10:05:00Z"),
             _evt("pr.view_changed", timestamp="2026-02-09T10:06:00Z"),
             _evt("session.completed", timestamp="2026-02-09T10:30:00Z"),
@@ -215,6 +216,7 @@ class TestJourneySteps:
         assert "observation.scan" not in event_names
         assert "tick.completed" not in event_names
         assert "session.no_output" not in event_names
+        assert "session.no_completion_record" not in event_names
         assert "stale.in_progress_detected" not in event_names
         assert "pr.view_changed" not in event_names
         assert "session.started" in event_names
