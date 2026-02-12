@@ -207,6 +207,7 @@ h1 {
     cursor: pointer;
 }
 .settings-menu-item:hover { background: var(--bg-panel-soft); }
+.settings-menu-item:active { background: var(--bg-hover); transform: scale(0.98); transition: transform 0.05s; }
 
 .gh-usage-wrap {
     position: relative;
@@ -411,22 +412,15 @@ h1 {
     gap: 10px;
     overflow-x: auto;
     padding-bottom: 10px;
-    position: relative;
 }
-.kanban-loading-banner {
-    position: absolute;
-    top: 0; left: 0; right: 0;
-    text-align: center;
-    padding: 6px 12px;
-    font-size: 12px;
-    color: var(--accent, #4a9eff);
-    background: color-mix(in srgb, var(--accent, #4a9eff) 8%, var(--bg-panel));
-    border: 1px solid color-mix(in srgb, var(--accent, #4a9eff) 25%, transparent);
+.skeleton-card {
+    height: 48px;
     border-radius: 8px;
-    z-index: 5;
-    animation: pulse-opacity 1.5s ease-in-out infinite;
+    background: linear-gradient(90deg, var(--bg-panel) 25%, var(--bg-panel-soft) 50%, var(--bg-panel) 75%);
+    background-size: 200% 100%;
+    animation: skeleton-shimmer 1.5s ease-in-out infinite;
 }
-@keyframes pulse-opacity { 0%,100% { opacity: 1; } 50% { opacity: 0.5; } }
+@keyframes skeleton-shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 .kanban-column {
     flex: 1;
     min-width: 0;

@@ -136,9 +136,6 @@
         <main id="mainContent">
             {% if active_tab != 'e2e' %}
             <section class="kanban-board" id="panel-kanban" role="tabpanel" aria-labelledby="tab-kanban" aria-label="Kanban board">
-                {% if startup_status != 'complete' %}
-                <div class="kanban-loading-banner" id="kanbanLoadingBanner">Loading issues&hellip;</div>
-                {% endif %}
                 {% for column in flow_columns %}
                 <article class="kanban-column {% if column.expandable %}expandable{% endif %}"
                          data-column="{{ column.id }}"
@@ -192,7 +189,12 @@
                             </div>
                             {% endfor %}
                         {% else %}
+                            {% if startup_status != 'complete' %}
+                            <div class="skeleton-card"></div>
+                            <div class="skeleton-card"></div>
+                            {% else %}
                             <div class="column-empty">No items</div>
+                            {% endif %}
                         {% endif %}
                     </div>
                     {% if column.expandable %}

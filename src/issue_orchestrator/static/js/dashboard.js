@@ -2111,8 +2111,7 @@ async function toggleExcluded() {
         evtSource.addEventListener(eventType, function(e) {
             console.log('[SSE] Received event:', eventType, e.data);
             if (eventType === 'startup_complete') {
-                const banner = document.getElementById('kanbanLoadingBanner');
-                if (banner) banner.remove();
+                document.querySelectorAll('.skeleton-card').forEach(el => el.remove());
             }
             // Slight delay to let server state settle
             setTimeout(() => refreshViewModel({ reloadOnListChange: true }), 200);
