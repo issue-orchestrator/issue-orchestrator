@@ -17,7 +17,7 @@ Defense-in-depth: each layer catches what the previous one misses.
 ```mermaid
 flowchart TB
   CMD["Agent runs a command"]
-  CMD --> L1{"Layer 1: AI Meta-Agent Hooks"}
+  CMD --> L1{"Layer 1: AI Agent Hooks"}
   L1 -->|blocked| STOP1["Blocked before execution"]
   L1 -->|allowed| GIT["git push"]
   GIT --> L2{"Layer 2: Git Hooks"}
@@ -35,7 +35,7 @@ flowchart TB
 
 | Layer | Mechanism | Bypassable? |
 |-------|-----------|-------------|
-| **1. AI Meta-Agent** | Claude `PreToolUse`, Cursor `beforeShellExecution`, Copilot `--deny-tool`, Codex `Execpolicy` | Not by the agent |
+| **1. AI Agent** | Claude `PreToolUse`, Cursor `beforeShellExecution`, Copilot `--deny-tool`, Codex `Execpolicy` | Not by the agent |
 | **2. Git Hooks** | Pre-push wrapper chains project + orchestrator hooks, audit trail | `--no-verify` (but Layer 1 blocks that) |
 | **3. Server-Side** | GitHub branch protection, required status checks | Cannot be bypassed |
 
@@ -73,9 +73,9 @@ These must be set up in the target project. The orchestrator helps install them 
 | Execpolicy rules (Codex) | Codex CLI | `.codex/rules/orchestrator.rules` | Blocks dangerous commands outside sandbox | **YES** |
 | CLAUDE.md | Policy | `CLAUDE.md` | Documents prohibited actions | Advisory |
 
-## Meta-Agent Support Matrix
+## AI Agent Support Matrix
 
-| Meta-Agent | Hook Mechanism | Can Block `--no-verify` | Supported |
+| AI Agent | Hook Mechanism | Can Block `--no-verify` | Supported |
 |------------|----------------|------------------------|-----------|
 | Claude Code | `PreToolUse` in `.claude/settings.json` | ✅ Yes (exit 2) | ✅ |
 | Cursor (1.7+) | `beforeShellExecution` in `.cursor/hooks.json` | ✅ Yes (`"permission": "deny"`) | ✅ |
@@ -84,7 +84,7 @@ These must be set up in the target project. The orchestrator helps install them 
 | Gemini CLI | In development | ⚠️ Not yet | ❌ |
 | Aider | None (lint only) | ❌ No | ❌ |
 
-**Unsupported meta-agents cannot be used** - without hook enforcement, safety guarantees don't hold.
+**Unsupported AI agents cannot be used** - without hook enforcement, safety guarantees don't hold.
 
 ## What Each Hook Blocks
 

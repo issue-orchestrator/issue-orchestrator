@@ -1,82 +1,36 @@
 # Issue-Orchestrator
 
-**Issue-Orchestrator** is a local-first control plane for AI-assisted software development that enforces architectural boundaries, validation gates, and review workflows rather than relying on agent discipline or prompts alone.
+Issue-Orchestrator takes GitHub issues, runs AI agents on them with guardrails, and produces pull requests for you to merge.
 
-The core premise is simple:
-AI agents are excellent at executing bounded tasks, but they optimize for completion, not long-term system health. Sustainable agentic development requires explicit structure, enforced workflows, and guardrails that cannot be bypassed.
-
-Issue-Orchestrator processes GitHub issues through a deterministic workflow:
-- architecture is enforced via import-linter and custom AST guardrails
-- validation and review gates must pass before progress
-- agents execute work in isolated worktrees with minimal permissions
-- retries, failures, and provider outages are handled explicitly
-- humans approve all pull requests
-
-The system is designed as a **UI-agnostic control plane**, with decoupled operator interfaces (currently a local web UI and IDE-integrated clients) layered on top.
-
----
-
-## Project Status
-
-This project is under **active development**.
-
-- Core orchestration, guardrails, and workflow enforcement are stable.
-- Some integrations and higher-level planning experiments are evolving.
-- APIs and internals may change as the system is refined.
-
-The repository is public to support discussion, review, and hiring conversations.
-For guidance on where to focus, see [REVIEWER_README.md](REVIEWER_README.md).
-
-## Who it's for
-- Solo builders and small teams using coding agents on real repos
-- People who want strong safety/guardrails (humans merge, verification, reconciliation)
-
-## Who it's not for
-- Teams seeking a hosted SaaS orchestrator
-- Workflows where agents must merge directly
-
-## Guarantees
-
-1. **Humans merge** — the orchestrator and agents never merge PRs.
-2. **Write then observe** — correctness-critical writes are verified by observation before state advances.
-3. **Reconciliation-first** — drift pauses or quarantines work; state never "guesses."
-
-See [Guardrails & Safety Model](docs/design/guardrails.md) for enforcement details and trust boundaries.
-
-## Quickstart
-
-```bash
-make venv                              # creates .venv with uv + correct Python
-export ISSUE_ORCH_GITHUB_TOKEN=ghp_...
-issue-orchestrator setup
-issue-orchestrator start
-```
-
-See [Installation](docs/user/installation.md) and [Quickstart Guide](docs/user/quickstart.md) for detailed setup, prerequisites, and configuration.
+AI agents are excellent at executing bounded tasks, but they optimize for completion, not long-term system health. Issue-Orchestrator provides the structure: enforced validation, automated code review, architecture boundary checks, and isolated worktrees — so agents can work in parallel while you stay in control.
 
 ## How it works
 
-```mermaid
-flowchart LR
-  GH[GitHub state] --> OBS["Observe(snapshots)"]
-  OBS --> PLAN["Plan(Planner)"]
-  PLAN --> APPLY["Apply(ActionApplier)"]
-  APPLY --> GH
-  APPLY --> EVT["Events/SSE"]
-  EVT --> UI["Web UI / Tests"]
-```
+The orchestrator picks up GitHub issues, assigns them to AI agents, and manages the full lifecycle through to a merge-ready PR.
 
 ```mermaid
 flowchart LR
-  AG[Agent completes] --> REV[Review rounds]
-  REV -->|iterates until approved| PR[PR created]
-  PR --> HUMAN[Human merges]
+  ISS["GitHub Issues"] --> ORCH["Orchestrator"]
+  ORCH --> AGENT["Agents work"]
+  AGENT --> REV["Review + iterate"]
+  REV --> PR["Pull Requests"]
+  PR --> YOU["You merge"]
 ```
 
-Review iterates between coder and reviewer agents before a PR is created.
-Review [can also happen against a draft PR](docs/development/REVIEW_WORKFLOW.md) after creation.
+**Under the hood**, each tick of the orchestrator runs an observe-plan-apply loop: read GitHub state, decide what actions to take, execute them.
+
+When an agent finishes coding, a reviewer agent checks the work. They iterate — the coder fixes issues, the reviewer re-checks — until the code is approved. Only then is a PR created. (Review [can also happen against a draft PR](docs/development/REVIEW_WORKFLOW.md) after creation.)
+
+```mermaid
+flowchart LR
+  CODE["Agent codes"] --> REVIEW["Reviewer checks"]
+  REVIEW -->|changes needed| CODE
+  REVIEW -->|approved| PR["PR created"]
+```
 
 ### Issue lifecycle
+
+Every issue moves through a state machine. Labels on GitHub are the source of truth — if the orchestrator crashes, it recovers state from labels on restart.
 
 ```mermaid
 stateDiagram-v2
@@ -92,15 +46,52 @@ stateDiagram-v2
   Ready --> [*] : human merges
 ```
 
-All work currently targets the `main` branch.
+## Dashboard
 
-## Features
+<!-- TODO: Add dashboard screenshot -->
+*Screenshot placeholder — the web dashboard shows a kanban board with issues flowing through Queued, Running, Blocked, and Done columns.*
 
-**Web Dashboard** — Kanban board showing issue lifecycle (queued, running, blocked, done), failure analysis, session timelines, and orchestrator management. Any client can connect: browser, VS Code ([MCP integration](docs/user/vscode.md)), or AI agents via the REST API.
+The dashboard gives you a live view of what the orchestrator is doing:
+
+- **Queued** — issues waiting for an available agent slot
+- **Running** — active agent sessions with live status
+- **Blocked** — failed sessions, validation errors, or issues needing human input
+- **Done** — completed PRs waiting for your review and merge
+
+The dashboard also provides session timelines, failure analysis (why did this agent fail?), and E2E test results. Any client can connect: browser, VS Code ([MCP integration](docs/user/vscode.md)), or AI agents via the REST API.
+
+## Guardrails
+
+Agents cannot merge PRs — only humans merge. Validation (tests, linting, architecture checks) runs automatically before any code is pushed. [Multi-layer hooks](docs/architecture/hooks.md) enforce these rules at the AI agent level, git level, and server level — agents cannot bypass them. See [Guardrails & Safety Model](docs/design/guardrails.md) for details.
+
+## Quickstart
+
+```bash
+make venv                              # creates .venv with uv + correct Python
+export ISSUE_ORCH_GITHUB_TOKEN=ghp_...
+issue-orchestrator setup
+issue-orchestrator start
+```
+
+See [Installation](docs/user/installation.md) and [Quickstart Guide](docs/user/quickstart.md) for detailed setup, prerequisites, and configuration.
+
+## More
 
 **Async E2E Test Runner** — Background test execution with progress tracking, resumable runs, flake detection, quarantine support, and signal scoring. Survives orchestrator restarts. See [E2E documentation](docs/user/e2e.md).
 
 **Goal Pilot** *(experimental, opt-in)* — An agentic layer that takes high-level goals and breaks them into orchestrator actions. Constrained by the same safety guarantees as the core. See [user guide](docs/user/goal_pilot.md) and [design document](docs/design/goal-pilot.md).
+
+## Who it's for
+
+- Solo builders and small teams using coding agents on real repos
+- People who want strong safety and guardrails (humans merge, verification, reconciliation)
+
+## Project Status
+
+This project is under **active development**. Core orchestration, guardrails, and workflow enforcement are stable. APIs and internals may change as the system is refined.
+
+The repository is public to support discussion, review, and hiring conversations.
+For guidance on where to focus, see [REVIEWER_README.md](REVIEWER_README.md).
 
 ## Documentation
 
