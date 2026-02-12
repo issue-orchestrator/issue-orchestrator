@@ -109,7 +109,9 @@ export interface IssueDetailPayload {
   events: Record<string, any>[];
   issue_number: number;
   issue_url: string;
+  journey_cycles: Record<string, any>[];
   journey_steps: Record<string, any>[];
+  lifecycle_count: number;
   phase_toc: Record<string, any>[];
   previous_cycles: Record<string, any>[];
   previous_cycles_count: number;

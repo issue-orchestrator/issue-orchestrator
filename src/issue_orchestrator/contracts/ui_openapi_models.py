@@ -120,7 +120,9 @@ class IssueDetailPayload(BaseModel):
     events: list[dict[str, Any]]
     issue_number: int
     issue_url: str
+    journey_cycles: list[dict[str, Any]]
     journey_steps: list[dict[str, Any]]
+    lifecycle_count: int
     phase_toc: list[dict[str, Any]]
     previous_cycles: list[dict[str, Any]]
     previous_cycles_count: int

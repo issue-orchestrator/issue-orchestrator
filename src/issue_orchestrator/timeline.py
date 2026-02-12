@@ -182,6 +182,7 @@ def _status_for_event(event_name: str) -> str:
         "review.closed",
         "rework.escalating",
         "dependency.blocked",
+        "session.validation_retry_needed",
     }
     success_events = {
         "session.completed",
