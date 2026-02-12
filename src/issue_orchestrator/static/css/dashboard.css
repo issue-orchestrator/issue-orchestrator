@@ -907,6 +907,52 @@ h1 {
     letter-spacing: 0.05em;
 }
 
+/* Journey cycles — collapsible groups */
+.journey-cycle { margin-bottom: 2px; position: relative; }
+.journey-cycle-header {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 5px 8px;
+    cursor: pointer;
+    border-radius: 4px;
+    position: relative;
+}
+.journey-cycle-header:hover { background: rgba(128,128,128,0.08); }
+.journey-cycle-toggle { width: 12px; font-size: 10px; color: var(--text-muted); flex-shrink: 0; }
+.journey-cycle-label { font-size: 12px; font-weight: 500; white-space: nowrap; }
+.journey-cycle-agent { font-size: 10px; color: var(--text-muted); white-space: nowrap; }
+.journey-cycle-retries { font-size: 10px; color: var(--warn, #f0b24f); white-space: nowrap; }
+.journey-cycle-outcome { font-size: 12px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.journey-cycle-outcome.outcome-failed { color: var(--danger, #e55); }
+.journey-cycle-outcome.outcome-success { color: var(--ok, #46c37b); }
+.journey-cycle-outcome.outcome-warning { color: var(--warn, #f0b24f); }
+.journey-cycle-time { font-size: 11px; color: var(--text-muted); margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.journey-cycle-artifacts-btn { cursor: pointer; font-size: 12px; flex-shrink: 0; }
+.journey-cycle-body { padding-left: 20px; }
+.journey-cycle-body.collapsed { display: none; }
+
+.journey-artifact-popover {
+    position: absolute;
+    right: 8px;
+    top: 100%;
+    background: var(--bg-panel, #172435);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 0;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    z-index: 100;
+    min-width: 180px;
+}
+.journey-artifact-popover a {
+    display: block;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--text);
+    text-decoration: none;
+}
+.journey-artifact-popover a:hover { background: rgba(128,128,128,0.08); }
+
 /* Issue story: collapsible sections */
 .issue-detail-section {
     border-top: 1px solid var(--border);

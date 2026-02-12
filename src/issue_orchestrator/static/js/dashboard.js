@@ -2796,26 +2796,206 @@ async function unblockFromDrawer() {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Journey cycles — collapsible lifecycle groups
+// ---------------------------------------------------------------------------
+
+function filterJourneyCycles(cycles, filter) {
+    if (filter === 'all' || cycles.length === 0) return cycles;
+    // "last-run": filter to max lifecycle value
+    const maxLifecycle = Math.max(...cycles.map(c => c.lifecycle || 0));
+    if (maxLifecycle > 0) {
+        return cycles.filter(c => c.lifecycle === maxLifecycle);
+    }
+    // Fallback: show all
+    return cycles;
+}
+
+function renderJourneyTimeline(container, data) {
+    const cycles = data.journey_cycles;
+    if (cycles && cycles.length > 0) {
+        _renderJourneyCycles(container, cycles);
+    } else {
+        // Legacy fallback for payloads without journey_cycles
+        _renderLegacyJourneySteps(container, data.journey_steps || []);
+    }
+}
+
+function _renderJourneyCycles(container, allCycles) {
+    const cycles = filterJourneyCycles(allCycles, journeyFilter);
+    const isLastRun = journeyFilter === 'last-run';
+    const isAll = journeyFilter === 'all';
+    const issueNum = issueDetailData ? issueDetailData.issue_number : null;
+
+    let html = `<div class="journey-filter">
+        <button class="journey-filter-btn ${isLastRun ? 'active' : ''}" onclick="setJourneyFilter('last-run')">Last run</button>
+        <button class="journey-filter-btn ${isAll ? 'active' : ''}" onclick="setJourneyFilter('all')">All</button>
+        <button class="journey-filter-btn journey-copy-btn" onclick="copyJourneyTimeline()" title="Copy timeline as text">Copy</button>
+    </div>`;
+
+    if (cycles.length === 0) {
+        html += '<div class="timeline-empty">No activity recorded.</div>';
+        container.innerHTML = html;
+        return;
+    }
+
+    for (let i = 0; i < cycles.length; i++) {
+        const c = cycles[i];
+        const expanded = c.expanded;
+        const toggle = expanded ? '\u25be' : '\u25b8';
+        const bodyClass = expanded ? '' : ' collapsed';
+        const cycleId = `journey-cycle-${i}`;
+        const agentPill = c.agent ? `<span class="journey-cycle-agent">(${escapeHtml(c.agent)})</span>` : '';
+        const retryInfo = c.retry_count > 0 ? `<span class="journey-cycle-retries">${c.retry_count} ${c.retry_count === 1 ? 'retry' : 'retries'}</span>` : '';
+        const outcomeClass = _cycleOutcomeClass(c.outcome || '');
+        const artifacts = c.artifacts || {};
+        const hasArtifacts = artifacts.log_url || artifacts.pr_url || artifacts.has_review_feedback;
+
+        html += `<div class="journey-cycle" id="${cycleId}">
+            <div class="journey-cycle-header" onclick="toggleJourneyCycle('${cycleId}')">
+                <span class="journey-cycle-toggle">${toggle}</span>
+                <span class="journey-cycle-label">Cycle ${c.cycle}</span>
+                ${agentPill}
+                ${retryInfo}
+                <span class="journey-cycle-outcome ${outcomeClass}">\u2014 ${escapeHtml(c.outcome || 'In progress')}</span>
+                <span class="journey-cycle-time">${escapeHtml(c.time_label || '')}</span>
+                ${hasArtifacts ? `<span class="journey-cycle-artifacts-btn" onclick="event.stopPropagation(); toggleArtifactPopover('${cycleId}', ${issueNum})" title="Cycle artifacts">\ud83d\udcce</span>` : ''}
+            </div>
+            <div class="journey-cycle-body${bodyClass}" id="${cycleId}-body">`;
+
+        const steps = c.steps || [];
+        for (const s of steps) {
+            const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
+            const detail = s.detail ? `<div class="journey-detail">${escapeHtml(s.detail)}</div>` : '';
+            html += `<div class="journey-step ${statusClass}">
+                <span class="journey-time">${escapeHtml(s.time_label || '')}</span>
+                <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
+                ${detail}
+            </div>`;
+        }
+
+        html += `</div></div>`;
+    }
+
+    container.innerHTML = html;
+}
+
+function _cycleOutcomeClass(outcome) {
+    const lower = outcome.toLowerCase();
+    if (lower.includes('failed') || lower.includes('blocked') || lower.includes('timed out')) return 'outcome-failed';
+    if (lower.includes('approved') || lower.includes('merged') || lower.includes('completed')) return 'outcome-success';
+    if (lower.includes('changes requested') || lower.includes('escalated')) return 'outcome-warning';
+    return '';
+}
+
+function toggleJourneyCycle(cycleId) {
+    const body = document.getElementById(cycleId + '-body');
+    const header = document.querySelector(`#${cycleId} .journey-cycle-toggle`);
+    if (!body) return;
+    const isCollapsed = body.classList.contains('collapsed');
+    body.classList.toggle('collapsed');
+    if (header) header.textContent = isCollapsed ? '\u25be' : '\u25b8';
+}
+
+function toggleArtifactPopover(cycleId, issueNumber) {
+    // Close any existing popover
+    const existing = document.querySelector('.journey-artifact-popover');
+    if (existing) {
+        const existingParent = existing.closest('.journey-cycle');
+        existing.remove();
+        if (existingParent && existingParent.id === cycleId) return; // Toggle off
+    }
+
+    const cycleEl = document.getElementById(cycleId);
+    if (!cycleEl || !issueDetailData) return;
+
+    // Find cycle data
+    const allCycles = issueDetailData.journey_cycles || [];
+    const cycleIndex = parseInt(cycleId.split('-').pop(), 10);
+    const cycleData = filterJourneyCycles(allCycles, journeyFilter)[cycleIndex];
+    if (!cycleData) return;
+
+    const artifacts = cycleData.artifacts || {};
+    let items = '';
+
+    if (artifacts.log_url) {
+        items += `<a href="${escapeHtml(artifacts.log_url)}" target="_blank" rel="noopener noreferrer">View log transcript</a>`;
+    } else if (issueNumber) {
+        items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openAgentLog(${issueNumber})">View log transcript</a>`;
+    }
+
+    if (artifacts.pr_url) {
+        const prLabel = artifacts.pr_number ? `PR #${artifacts.pr_number}` : 'Pull Request';
+        items += `<a href="${escapeHtml(artifacts.pr_url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(prLabel)}</a>`;
+    }
+
+    if (artifacts.has_review_feedback && issueNumber) {
+        items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openReviewFeedback(${issueNumber})">Review feedback</a>`;
+    }
+
+    if (issueNumber) {
+        items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openDiagnoseFromCycle(${issueNumber})">Diagnose</a>`;
+    }
+
+    if (!items) return;
+
+    const popover = document.createElement('div');
+    popover.className = 'journey-artifact-popover';
+    popover.innerHTML = items;
+    cycleEl.querySelector('.journey-cycle-header').appendChild(popover);
+
+    // Close on click outside
+    setTimeout(() => {
+        document.addEventListener('click', _closePopoverOnClickOutside, { once: true });
+    }, 0);
+    document.addEventListener('keydown', _closePopoverOnEscape);
+}
+
+function _closePopoverOnClickOutside(e) {
+    const popover = document.querySelector('.journey-artifact-popover');
+    if (popover && !popover.contains(e.target)) {
+        popover.remove();
+    }
+    document.removeEventListener('keydown', _closePopoverOnEscape);
+}
+
+function _closePopoverOnEscape(e) {
+    if (e.key === 'Escape') {
+        closeArtifactPopover();
+    }
+}
+
+function closeArtifactPopover() {
+    const popover = document.querySelector('.journey-artifact-popover');
+    if (popover) popover.remove();
+    document.removeEventListener('keydown', _closePopoverOnEscape);
+}
+
+function openDiagnoseFromCycle(issueNumber) {
+    // Reuse existing failure-diagnosis endpoint
+    openTimelineModal(issueNumber);
+}
+
+// --- Legacy fallback: delete when all timelines have lifecycle field ---
 const _SESSION_START_EVENTS = new Set([
     'session.started', 'rework.started', 'rework.launching',
 ]);
 
-function filterJourneySteps(steps, filter) {
-    if (filter === 'all' || steps.length === 0) return steps;
-    // "last-run": find the last session-start boundary and show from there
+function _legacyFilterBySessionStart(steps) {
     for (let i = steps.length - 1; i >= 0; i--) {
         if (_SESSION_START_EVENTS.has(steps[i].event)) return steps.slice(i);
     }
-    // No session boundary — show last 10
     return steps.slice(-10);
 }
 
-function renderJourneySteps(container, allSteps) {
-    const steps = filterJourneySteps(allSteps, journeyFilter);
-    const isLastRun = journeyFilter === 'last-run';
-    const isAll = journeyFilter === 'all';
+function _renderLegacyJourneySteps(container, allSteps) {
+    const filter = journeyFilter;
+    const steps = (filter === 'all' || allSteps.length === 0)
+        ? allSteps
+        : _legacyFilterBySessionStart(allSteps);
+    const isLastRun = filter === 'last-run';
+    const isAll = filter === 'all';
 
-    // Filter selector + copy button
     let html = `<div class="journey-filter">
         <button class="journey-filter-btn ${isLastRun ? 'active' : ''}" onclick="setJourneyFilter('last-run')">Last run</button>
         <button class="journey-filter-btn ${isAll ? 'active' : ''}" onclick="setJourneyFilter('all')">All</button>
@@ -2828,7 +3008,6 @@ function renderJourneySteps(container, allSteps) {
         return;
     }
 
-    // Group by day and render with day headers
     let currentDay = '';
     const issueNum = issueDetailData ? issueDetailData.issue_number : null;
     for (const s of steps) {
@@ -2837,7 +3016,7 @@ function renderJourneySteps(container, allSteps) {
             html += `<div class="journey-day-header">${escapeHtml(formatJourneyDay(s.day))}</div>`;
         }
         const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
-        const actions = journeyStepActions(s, issueNum);
+        const actions = _legacyJourneyStepActions(s, issueNum);
         const detail = s.detail
             ? `<div class="journey-detail">${escapeHtml(s.detail)}</div>`
             : '';
@@ -2851,17 +3030,62 @@ function renderJourneySteps(container, allSteps) {
     container.innerHTML = html;
 }
 
+function _legacyJourneyStepActions(step, issueNumber) {
+    if (!issueNumber) return '';
+    const ev = step.event || '';
+    if (ev === 'session.started' || ev === 'session.completed' || ev === 'session.failed' || ev === 'session.blocked') {
+        return `<button class="journey-action" onclick="openAgentLog(${issueNumber})" title="View transcript">transcript</button>`;
+    }
+    if (ev === 'review.changes_requested' || ev === 'review.approved' || ev === 'review.started') {
+        return `<button class="journey-action" onclick="openReviewFeedback(${issueNumber})" title="View review feedback">feedback</button>`;
+    }
+    return '';
+}
+// --- End legacy ---
+
 function setJourneyFilter(filter) {
     journeyFilter = filter;
     if (issueDetailData) {
         const journeyEl = document.getElementById('issueDetailJourney');
-        if (journeyEl) renderJourneySteps(journeyEl, issueDetailData.journey_steps || []);
+        if (journeyEl) renderJourneyTimeline(journeyEl, issueDetailData);
     }
 }
 
 function copyJourneyTimeline() {
     if (!issueDetailData) return;
-    const steps = filterJourneySteps(issueDetailData.journey_steps || [], journeyFilter);
+
+    // Prefer cycle-grouped data, fallback to flat steps
+    const cycles = issueDetailData.journey_cycles || [];
+    if (cycles.length > 0) {
+        const filtered = filterJourneyCycles(cycles, journeyFilter);
+        if (filtered.length === 0) {
+            showToast('No timeline to copy', true);
+            return;
+        }
+        const issueNum = issueDetailData.issue_number;
+        const title = issueDetailData.title || '';
+        let text = `Issue #${issueNum}: ${title}\n`;
+        for (const c of filtered) {
+            const agent = c.agent ? ` (${c.agent})` : '';
+            text += `\nCycle ${c.cycle}${agent} \u2014 ${c.outcome || 'In progress'}  ${c.time_label || ''}\n`;
+            for (const s of (c.steps || [])) {
+                const time = s.time_label || '';
+                const narrative = s.narrative || s.event || '';
+                text += `  ${time}  ${narrative}\n`;
+                if (s.detail) text += `    ${s.detail}\n`;
+            }
+        }
+        navigator.clipboard.writeText(text.trim()).then(
+            () => showToast('Timeline copied'),
+            () => showToast('Failed to copy', true)
+        );
+        return;
+    }
+
+    // Legacy flat steps
+    const steps = (journeyFilter === 'all')
+        ? (issueDetailData.journey_steps || [])
+        : _legacyFilterBySessionStart(issueDetailData.journey_steps || []);
     if (steps.length === 0) {
         showToast('No timeline to copy', true);
         return;
@@ -2898,20 +3122,6 @@ function formatJourneyDay(dayStr) {
     } catch (e) {
         return dayStr;
     }
-}
-
-function journeyStepActions(step, issueNumber) {
-    if (!issueNumber) return '';
-    const ev = step.event || '';
-    // Session events: show transcript link
-    if (ev === 'session.started' || ev === 'session.completed' || ev === 'session.failed' || ev === 'session.blocked') {
-        return `<button class="journey-action" onclick="openAgentLog(${issueNumber})" title="View transcript">transcript</button>`;
-    }
-    // Review events: show feedback link
-    if (ev === 'review.changes_requested' || ev === 'review.approved' || ev === 'review.started') {
-        return `<button class="journey-action" onclick="openReviewFeedback(${issueNumber})" title="View review feedback">feedback</button>`;
-    }
-    return '';
 }
 
 async function openReviewFeedback(issueNumber) {
@@ -2998,10 +3208,9 @@ function renderIssueDetail() {
     else if ((summary.status || '').toLowerCase().includes('running') || (summary.status || '').toLowerCase().includes('in_progress')) statusEl.classList.add('status-running');
     else statusEl.classList.add('status-queued');
 
-    // Journey steps with "Last run / All" filter
+    // Journey timeline with "Last run / All" filter
     const journeyEl = document.getElementById('issueDetailJourney');
-    const allSteps = d.journey_steps || [];
-    renderJourneySteps(journeyEl, allSteps);
+    renderJourneyTimeline(journeyEl, d);
 
     // Previous cycles (collapsed)
     const prevSection = document.getElementById('issueDetailPrevCycles');
