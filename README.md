@@ -11,22 +11,16 @@ The orchestrator picks up GitHub issues, assigns them to AI agents, and manages 
 ```mermaid
 flowchart LR
   ISS["GitHub Issues"] --> ORCH["Orchestrator"]
-  ORCH --> AGENT["Agents work"]
-  AGENT --> REV["Review + iterate"]
-  REV --> PR["Pull Requests"]
+  ORCH --> CODE["Agent codes"]
+  CODE --> REV["Reviewer checks"]
+  REV -->|changes needed| CODE
+  REV -->|approved| PR["Pull Request"]
   PR --> YOU["You merge"]
 ```
 
 **Under the hood**, each tick of the orchestrator runs an observe-plan-apply loop: read GitHub state, decide what actions to take, execute them.
 
-When an agent finishes coding, a reviewer agent checks the work. They iterate — the coder fixes issues, the reviewer re-checks — until the code is approved. Only then is a PR created. (Review [can also happen against a draft PR](docs/development/REVIEW_WORKFLOW.md) after creation.)
-
-```mermaid
-flowchart LR
-  CODE["Agent codes"] --> REVIEW["Reviewer checks"]
-  REVIEW -->|changes needed| CODE
-  REVIEW -->|approved| PR["PR created"]
-```
+The agent-reviewer loop is the core of quality enforcement. When an agent finishes coding, a reviewer agent checks the work. If changes are needed, the coder fixes and the reviewer re-checks — with cycle limits to prevent infinite loops. The orchestrator mediates, and only creates a PR once code is approved. (The loop [can also run via a draft PR](docs/development/REVIEW_WORKFLOW.md) on GitHub.)
 
 ### Issue lifecycle
 
