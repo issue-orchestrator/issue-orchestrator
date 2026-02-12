@@ -12,28 +12,32 @@ Without hooks, agents will find ways around conventions and the system breaks.
 
 ## Hook Layers
 
+Defense-in-depth: each layer catches what the previous one misses.
+
+```mermaid
+flowchart TB
+  CMD["Agent runs a command"]
+  CMD --> L1{"Layer 1: AI Meta-Agent Hooks"}
+  L1 -->|blocked| STOP1["Blocked before execution"]
+  L1 -->|allowed| GIT["git push"]
+  GIT --> L2{"Layer 2: Git Hooks"}
+  L2 -->|blocked| STOP2["Push rejected locally"]
+  L2 -->|allowed or --no-verify| REMOTE["Reaches GitHub"]
+  REMOTE --> L3{"Layer 3: Branch Protection"}
+  L3 -->|checks fail| STOP3["Merge blocked server-side"]
+  L3 -->|checks pass| MERGE["Human reviews and merges"]
+
+  style STOP1 fill:#ef4444,color:#fff
+  style STOP2 fill:#ef4444,color:#fff
+  style STOP3 fill:#ef4444,color:#fff
+  style MERGE fill:#22c55e,color:#fff
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 1: AI Meta-Agent Hooks (best - blocks before execute) │
-│   Claude Code: PreToolUse in .claude/settings.json          │
-│   Cursor: beforeShellExecution in .cursor/hooks.json        │
-│   Copilot CLI: --deny-tool flags                            │
-│   Codex CLI: Execpolicy rules in .codex/rules/              │
-└─────────────────────────────────────────────────────────────┘
-                           ↓ if bypassed
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 2: Git Hooks (bypassable with --no-verify)            │
-│   Pre-push: runs tests/linters before push allowed          │
-│   Chained wrapper: orchestrator + project hooks             │
-└─────────────────────────────────────────────────────────────┘
-                           ↓ if bypassed
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 3: Server-Side (ultimate backstop)                    │
-│   GitHub branch protection                                  │
-│   Required status checks                                    │
-│   Cannot be bypassed by client                              │
-└─────────────────────────────────────────────────────────────┘
-```
+
+| Layer | Mechanism | Bypassable? |
+|-------|-----------|-------------|
+| **1. AI Meta-Agent** | Claude `PreToolUse`, Cursor `beforeShellExecution`, Copilot `--deny-tool`, Codex `Execpolicy` | Not by the agent |
+| **2. Git Hooks** | Pre-push wrapper chains project + orchestrator hooks, audit trail | `--no-verify` (but Layer 1 blocks that) |
+| **3. Server-Side** | GitHub branch protection, required status checks | Cannot be bypassed |
 
 ## Hook Inventory
 

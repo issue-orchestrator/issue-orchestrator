@@ -1,16 +1,18 @@
-# GitHub Token Setup (No gh CLI)
+# GitHub Token Setup (Developer)
 
-This system no longer uses the GitHub CLI for token discovery. You have two supported options:
+How the orchestrator resolves GitHub tokens at runtime. For creating a token and required scopes, see [GitHub Permissions (User Guide)](../user/github-permissions.md).
+
+The system does not use the GitHub CLI for token discovery. Two supported options:
 
 1) Environment variable (recommended for simplicity)
 2) macOS keychain + `hosts.yml` (recommended for safer storage)
 
 ## Option 1: Environment Variable
 
-Set a token in your shell and point the config to it (or use `GITHUB_TOKEN` directly).
+Set a token in your shell. The resolution order is `ISSUE_ORCH_GITHUB_TOKEN` > `GITHUB_TOKEN` > `GH_TOKEN`.
 
 ```bash
-export GITHUB_TOKEN="ghp_..."
+export ISSUE_ORCH_GITHUB_TOKEN="ghp_..."
 ```
 
 Optional config:

@@ -1,7 +1,31 @@
 # Issue-Orchestrator
 
-## What it is
-Issue-Orchestrator is a local-first control plane that turns GitHub issues into a managed agent workflow (code -> review -> PR), with guardrails for untrusted agents.
+**Issue-Orchestrator** is a local-first control plane for AI-assisted software development that enforces architectural boundaries, validation gates, and review workflows rather than relying on agent discipline or prompts alone.
+
+The core premise is simple:
+AI agents are excellent at executing bounded tasks, but they optimize for completion, not long-term system health. Sustainable agentic development requires explicit structure, enforced workflows, and guardrails that cannot be bypassed.
+
+Issue-Orchestrator processes GitHub issues through a deterministic workflow:
+- architecture is enforced via import-linter and custom AST guardrails
+- validation and review gates must pass before progress
+- agents execute work in isolated worktrees with minimal permissions
+- retries, failures, and provider outages are handled explicitly
+- humans approve all pull requests
+
+The system is designed as a **UI-agnostic control plane**, with decoupled operator interfaces (currently a local web UI and IDE-integrated clients) layered on top.
+
+---
+
+## Project Status
+
+This project is under **active development**.
+
+- Core orchestration, guardrails, and workflow enforcement are stable.
+- Some integrations and higher-level planning experiments are evolving.
+- APIs and internals may change as the system is refined.
+
+The repository is public to support discussion, review, and hiring conversations.
+For guidance on where to focus, see [REVIEWER_README.md](REVIEWER_README.md).
 
 ## Who it's for
 - Solo builders and small teams using coding agents on real repos
@@ -11,46 +35,27 @@ Issue-Orchestrator is a local-first control plane that turns GitHub issues into 
 - Teams seeking a hosted SaaS orchestrator
 - Workflows where agents must merge directly
 
-## Guarantees (guardrails)
-1) **Humans merge**: the orchestrator/agents never merge PRs.
-2) **Write->Observe**: correctness-critical writes are verified by observation before state advances.
-3) **Reconciliation-first**: drift pauses/quarantines work; state never "guesses".
+## Guarantees
 
-## Dependency updates
-Dependency updates are managed by Renovate. The config lives in `renovate.json` and is the
-single source of truth for dependency PRs and lockfile updates.
+1. **Humans merge** — the orchestrator and agents never merge PRs.
+2. **Write then observe** — correctness-critical writes are verified by observation before state advances.
+3. **Reconciliation-first** — drift pauses or quarantines work; state never "guesses."
 
-## Main first workflow
-Issue-Orchestrator is designed around a main-first development flow.
-
-Currently:
-•	All issues are assumed to work against the main branch.
-•	Worktrees are created from origin/main.
-•	Pull requests target main.
-•	Dependencies are evaluated within this single branch context.
-
-This design keeps the system predictable and easy to reason about, especially during recovery and reconciliation.
-
-Branch-specific workflows
-Branch-specific workflows (for example, targeting release or stabilization branches) are not currently supported.
-
-This is an intentional design choice to avoid:
-•	cross-branch dependency complexity
-•	ambiguous PR targeting
-•	harder recovery and reconciliation logic
-
-Support for issue-specific base branches may be added in the future, with strict constraints, if real-world usage requires it.
+See [Guardrails & Safety Model](docs/design/guardrails.md) for enforcement details and trust boundaries.
 
 ## Quickstart
+
 ```bash
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
+make venv                              # creates .venv with uv + correct Python
 export ISSUE_ORCH_GITHUB_TOKEN=ghp_...
 issue-orchestrator setup
-issue-orchestrator run --once
+issue-orchestrator start
 ```
 
+See [Installation](docs/user/installation.md) and [Quickstart Guide](docs/user/quickstart.md) for detailed setup, prerequisites, and configuration.
+
 ## How it works
+
 ```mermaid
 flowchart LR
   GH[GitHub state] --> OBS["Observe(snapshots)"]
@@ -63,110 +68,43 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  AG[Agent run] --> COMP[Completion observation]
-  COMP --> REV[Review loop]
-  REV --> PR[Draft PR]
-  PR --> READY[Mark ready]
-  READY --> HUMAN[Human merge]
+  AG[Agent completes] --> REV[Review rounds]
+  REV -->|iterates until approved| PR[PR created]
+  PR --> HUMAN[Human merges]
 ```
 
-## Async E2E Test Runner
+Review iterates between coder and reviewer agents before a PR is created.
+Review [can also happen against a draft PR](docs/development/REVIEW_WORKFLOW.md) after creation.
 
-Built-in facility for running end-to-end tests asynchronously with full visibility in the web dashboard.
+### Issue lifecycle
 
-**Highlights:**
-- **Progress tracking** - Watch tests execute in real-time with live progress bar and current test display
-- **Resumable runs** - If interrupted, automatically resumes from where it left off (skipping passed tests)
-- **Retry-once policy** - Flaky tests get one automatic retry before marking as failed
-- **Quarantine support** - Known-flaky tests tracked separately, excluded from failure counts
-- **Signal score** - Track E2E stability over time ("94% pass rate over 30 runs")
-- **Survives restarts** - E2E worker continues running even if orchestrator restarts
-
-**Quick start:**
-```yaml
-# .issue-orchestrator/config/default.yaml
-e2e:
-  enabled: true
-  auto_run_interval_minutes: 30
-  pytest_args: ["tests/e2e", "-v"]
-  allow_retry_once: true
+```mermaid
+stateDiagram-v2
+  [*] --> Queued
+  Queued --> Running : session launched
+  Running --> Completed : agent-done completed
+  Running --> Blocked : failed / needs human
+  Blocked --> Running : unblocked / retried
+  Completed --> Review : PR created
+  Review --> Rework : changes requested
+  Rework --> Review : re-reviewed
+  Review --> Ready : approved
+  Ready --> [*] : human merges
 ```
 
-**Dashboard shows:**
-- Live progress: `12/19 tests (63%) - 10✓ 2✗`
-- Current test being executed
-- Signal score with quarantine count
-- Detailed breakdown: passed, failed, passed-on-retry, quarantined
+All work currently targets the `main` branch.
 
-**API endpoints:**
-- `POST /control/e2e/start` - Start E2E run (or cancel and restart if running)
-- `POST /control/e2e/stop` - Cancel running E2E
-- `GET /control/e2e/status` - Get status with progress
-- `GET /control/e2e/summary/{run_id}` - Full test breakdown
-- `GET /control/e2e/quarantine` - View quarantine list
+## Features
 
-See [E2E Documentation](docs/user/e2e.md) for full configuration reference, API details, database schema, and troubleshooting.
+**Web Dashboard** — Kanban board showing issue lifecycle (queued, running, blocked, done), failure analysis, session timelines, and orchestrator management. Any client can connect: browser, VS Code ([MCP integration](docs/user/vscode.md)), or AI agents via the REST API.
 
-## Experimental: Goal Pilot
+**Async E2E Test Runner** — Background test execution with progress tracking, resumable runs, flake detection, quarantine support, and signal scoring. Survives orchestrator restarts. See [E2E documentation](docs/user/e2e.md).
 
-> **Status:** Experimental / Opt-in
-> **Role:** Autonomous Control Plane
-
-The **Goal Pilot** is an experimental agentic layer built *on top* of the stable Issue-Orchestrator core. 
-
-While the core orchestrator provides a deterministic, Hexagonal Architecture platform for managing lifecycle events (the "engine"), the Goal Pilot acts as an autonomous driver. It reduces manual operator involvement by introducing an agentic loop that can reason about high-level goals.
-
-See [Design Document](docs/design/goal-pilot.md) and [Configuration](docs/user/configuration.md#goal-pilot) to enable.
-
-### Why this architecture?
-We explicitly separated the **Stable Core** from the **Experimental Pilot** to ensure safety and reliability.
-
-*   **The Core (Stable):** Handles the mechanics—moving tickets, running checks, syncing state. It is deterministic, strictly typed, and heavily tested.
-*   **The Pilot (Experimental):** Handles the *decisions*. It consumes the same public Ports/Adapters as the CLI. 
-
-### Key Capabilities
-*   **Goal-Oriented:** Takes high-level intent (e.g., "Implement feature X") and breaks it down into actions.
-*   **Safe by Design:** The Pilot is constrained to the safety guarantees of the underlying platform. It cannot bypass validations, merge PRs, or violate architectural boundaries.
-*   **Resumable "Brain":** The Pilot's state is persisted in a dedicated SQLite store, making the agent's reasoning process durable and auditable.
-
-**Note:** This layer is strictly opt-in. You can use `issue-orchestrator` as a standard, deterministic CLI tool without ever enabling the autonomous components.
-
-## Guardrails & Safety Model
-
-Issue-Orchestrator is designed to assist humans, not replace trust boundaries.
-Agents are powerful, but they are constrained by explicit guardrails at multiple layers.
-
-What the system guarantees
-•	Agents cannot publish code directly.
-All publishing is gated by a mandatory validation step (make validate) and enforced by the orchestrator and CI.
-•	Humans always merge.
-Branch protection is assumed; agents may create draft PRs but never merge.
-•	Architecture boundaries are enforced.
-Control, domain, and ports layers cannot perform side effects (e.g. subprocesses, HTTP calls). Violations fail fast.
-•	Validation is the single source of truth.
-The same validation gate runs locally, in CI, and in orchestrated workflows.
-
-How guardrails are enforced
-•	Local hooks provide fast feedback before pushes.
-•	Orchestrator policy enforces validation regardless of local hooks.
-•	CI re-runs the canonical gate in a clean environment.
-•	Static guardrails (AST + import checks) prevent architectural drift.
-
-The system assumes agents can make mistakes.
-It is explicitly designed so mistakes cannot bypass safety.
-
-What the system does not claim
-•	Local agent execution on macOS is best-effort isolated, not a hardened sandbox.
-•	Absolute-path execution (e.g. /usr/bin/*) cannot be fully prevented locally.
-•	For strong isolation, container or CI-based execution is a future option.
-
-This is an intentional trade-off in favor of developer ergonomics and transparency.
-
-Learn more
-•	Architecture boundaries: docs/design/BOUNDARIES.md
-•	Validation & publishing policy: docs/design/VALIDATION.md
-•	Threat model & trust assumptions: docs/design/THREAT_MODEL.md
+**Goal Pilot** *(experimental, opt-in)* — An agentic layer that takes high-level goals and breaks them into orchestrator actions. Constrained by the same safety guarantees as the core. See [user guide](docs/user/goal_pilot.md) and [design document](docs/design/goal-pilot.md).
 
 ## Documentation
-- [docs/](docs/README.md) - Full documentation index
-- [docs/architecture/](docs/architecture/README.md) - System design & ADRs
+
+- **Getting started:** [Installation](docs/user/installation.md) · [Quickstart](docs/user/quickstart.md) · [Configuration](docs/user/configuration.md) · [GitHub Permissions](docs/user/github-permissions.md)
+- **Architecture:** [Overview](docs/architecture/README.md) · [ADRs](docs/architecture/ADR/README.md) · [Guardrails](docs/design/guardrails.md) · [Hooks](docs/architecture/hooks.md)
+- **Development:** [Testing](docs/development/TESTING.md) · [Troubleshooting](docs/development/TROUBLESHOOTING.md) · [Review Workflow](docs/development/REVIEW_WORKFLOW.md)
+- **Reference:** [Configuration Reference](docs/user/configuration_reference.md) · [E2E Runner](docs/user/e2e.md) · [Goal Pilot](docs/user/goal_pilot.md)

@@ -26,7 +26,7 @@ Issue Orchestrator automates the process of having AI agents (like Claude Code) 
 
 - Label issues with agent tags (e.g., `agent:backend`, `agent:frontend`)
 - Run the orchestrator to automatically pick up and process those issues
-- Monitor progress through a web dashboard, tmux, or iTerm2 tabs
+- Monitor progress through a web dashboard
 - Have agents create PRs and report their work in structured comments
 
 Think of it as a supervisor that:
@@ -40,37 +40,21 @@ Think of it as a supervisor that:
 
 ## Prerequisites
 
-Before you begin, make sure you have:
-
 ### Required
 
 | Tool | Purpose | Installation |
 |------|---------|--------------|
 | **Python 3.11+** | Runs the orchestrator | `brew install python` or from python.org |
+| **[uv](https://docs.astral.sh/uv/)** | Dependency management | `brew install uv` or see uv docs |
+| **GNU Make** | Build automation | `brew install make` (macOS), pre-installed (Linux) |
 | **git** | Version control | Usually pre-installed |
-| **GitHub CLI (`gh`)** | Interacts with GitHub | `brew install gh` then `gh auth login` |
-| **Claude CLI** | The AI agent | See [Claude Code docs](https://claude.ai/claude-code) |
-
-### Optional (depending on UI mode)
-
-| Tool | Purpose | Installation |
-|------|---------|--------------|
-| **tmux** | Terminal multiplexer UI mode | `brew install tmux` |
-| **iTerm2** | macOS terminal with tabs | Download from iterm2.com |
+| **Claude CLI** | The AI agent | See [Claude Code docs](https://docs.anthropic.com/en/docs/claude-code) |
 
 ### Verify Your Setup
 
 ```bash
-# Check Python version
 python3 --version  # Should be 3.11 or higher
-
-# Check git
 git --version
-
-# Check GitHub CLI is authenticated
-gh auth status
-
-# Check Claude CLI
 claude --version
 ```
 
@@ -78,24 +62,16 @@ claude --version
 
 ## Installation
 
-### From PyPI (Recommended)
-
-```bash
-pip install issue-orchestrator
-```
-
-### From Source (For Development)
-
 ```bash
 git clone https://github.com/BruceBGordon/issue-orchestrator
 cd issue-orchestrator
-pip install -e ".[dev]"
+make venv
+source .venv/bin/activate
 ```
 
-### Verify Installation
+Verify:
 
 ```bash
-issue-orchestrator --version
 issue-orchestrator --help
 ```
 
@@ -103,45 +79,46 @@ issue-orchestrator --help
 
 ## Quick Setup Walkthrough
 
-Let's set up issue-orchestrator for a sample project step by step.
-
 ### Step 1: Navigate to Your Project
 
 ```bash
 cd /path/to/your/project
 ```
 
-### Step 2: Create Configuration File
+### Step 2: Run the Setup Wizard
 
-Create `.issue-orchestrator/config/default.yaml` in your project:
+```bash
+issue-orchestrator setup
+```
+
+This creates `.issue-orchestrator/config/default.yaml` interactively. Or create it manually — a minimal config:
 
 ```yaml
-# .issue-orchestrator/config/default.yaml
-
-# Your GitHub repo (auto-detected if not specified)
-repo:
-  name: your-username/your-repo
-
-# Agent configurations - the keys match GitHub labels
 agents:
-  "agent:claude":                           # This label on an issue...
-    prompt: ".issue-orchestrator/prompts/worker.md"  # ...uses this prompt
-    model: "sonnet"                         # Claude model to use
-    timeout_minutes: 45                     # Max time before timeout
+  "agent:dev":
+    prompt: ".issue-orchestrator/prompts/worker.md"
+    model: "sonnet"
+    ai_system: "claude-code"
+    timeout_minutes: 45
 
-# How many agents to run at once
 execution:
   concurrency:
     max_concurrent_sessions: 2
-    session_timeout_minutes: 45
 
-# UI mode: "web" (browser), "tmux", or "iterm2"
-ui:
-  mode: "web"
-  web_port: 8080
+validation:
+  cmd: "make test"
+  timeout_seconds: 300
 ```
 
-### Step 3: Create the Prompt Directory and File
+### Step 3: Set Your GitHub Token
+
+```bash
+export ISSUE_ORCH_GITHUB_TOKEN=ghp_...
+```
+
+See [GitHub Permissions](github-permissions.md) for required scopes.
+
+### Step 4: Create the Prompt File
 
 ```bash
 mkdir -p .issue-orchestrator/prompts
@@ -167,82 +144,45 @@ You are working on GitHub issue #{issue_number}: {issue_title}
 When done, use the `agent-done` command:
 
 ### If you completed the work:
-```bash
 agent-done completed \
   --implementation "What you implemented" \
   --problems "Any issues encountered, or 'None'"
-```
 
 ### If you're blocked:
-```bash
 agent-done blocked \
   --reason "Why you cannot proceed" \
   --attempted "What you tried"
-```
-
-### If you need human input:
-```bash
-agent-done needs_human \
-  --question "Your specific question"
-```
 
 Sessions that exit without calling `agent-done` are marked as failed.
 ```
 
-### Step 4: Initialize GitHub Labels
-
-The orchestrator uses specific labels. Create them automatically:
-
-```bash
-issue-orchestrator init
-```
-
-This creates labels like:
-- `agent:claude` (or whatever agents you defined)
-- `in-progress`
-- `blocked`
-- `needs-human`
-- `priority:high`, `priority:medium`, `priority:low`
-
-### Step 5: Set Up Safety Hooks
-
-Install hooks that prevent agents from bypassing safety guardrails:
+### Step 5: Install Safety Hooks
 
 ```bash
 issue-orchestrator setup-hooks
 ```
 
-This creates:
-- `.claude/hooks/block-no-verify.sh` - Blocks `git push --no-verify`
-- `.claude/settings.json` - Configures Claude to use the hook
+This installs hooks that prevent agents from bypassing validation (e.g., blocking `git push --no-verify`).
 
 ### Step 6: Verify Your Setup
 
 ```bash
-issue-orchestrator verify
+issue-orchestrator doctor
 ```
 
-This checks:
-- Configuration is valid
-- GitHub CLI is authenticated
-- Git repository is valid
-- Hooks are installed and working
-
-If you see `--test-ai-gate` option, you can run `issue-orchestrator verify --test-ai-gate` to test AI gating (hooks/execpolicy).
+This checks configuration, GitHub connectivity, token permissions, and hook installation.
 
 ---
 
 ## Understanding the System
 
-### Core Concepts
-
-#### Agent Labels
+### Agent Labels
 
 Issues are routed to agents based on GitHub labels:
 
 ```
-GitHub Issue Label    →    Config Key         →    Agent Settings
-  "agent:backend"     →    agents["agent:backend"]    →    prompt, model, timeout
+GitHub Issue Label    →    Config Key              →    Agent Settings
+  "agent:backend"     →    agents["agent:backend"]  →    prompt, model, timeout
 ```
 
 You define which agents exist by adding entries to your config:
@@ -251,45 +191,41 @@ You define which agents exist by adding entries to your config:
 agents:
   "agent:backend":
     prompt: "prompts/backend.md"
+    ai_system: "claude-code"
   "agent:frontend":
     prompt: "prompts/frontend.md"
-  "agent:devops":
-    prompt: "prompts/devops.md"
+    ai_system: "claude-code"
 ```
 
-#### Worktrees
+### Worktrees
 
-Each issue gets its own [git worktree](https://git-scm.com/docs/git-worktree) - an isolated checkout:
+Each issue gets its own [git worktree](https://git-scm.com/docs/git-worktree) — an isolated checkout:
 
 ```
-your-repo/           ← main repo
-your-repo-42/        ← worktree for issue #42
-your-repo-57/        ← worktree for issue #57
+your-repo/           <- main repo
+your-repo-42/        <- worktree for issue #42
+your-repo-57/        <- worktree for issue #57
 ```
 
 This lets multiple agents work in parallel without conflicts.
 
-#### Priority
+### Priority
 
-There are two priority signals, and they serve different purposes:
+There are two priority signals:
 
-1) **Scheduling order (used by the orchestrator)**: Title prefix `[P?-nnn]`
-   - `P0` < `P1` < `P2` < ... < `P9`
-   - `-nnn` is the sequence within that tier (lower numbers run first)
-   - If missing, the scheduler uses the configured default tier (P1 by default)
+1. **Scheduling order**: Title prefix `[P?-nnn]`
+   - `P0` < `P1` < `P2` ... `P9` (lower runs first)
+   - `-nnn` is the sequence within that tier
+   - If missing, uses the configured default tier (P1 by default)
    - Example: `[P0-005] Fix critical bug`
 
-2) **Labels (display/metadata)**: `priority:high|medium|low`
-   - Used for UI/CLI display and triage metadata
-   - **Not used by the scheduler** to order work
+2. **Labels** (`priority:high|medium|low`): Display/metadata only, not used by the scheduler.
 
-If you want scheduling order, use the `[P?-nnn]` prefix in the title.
-
-#### Status Labels
+### Status Labels
 
 | Label | Meaning | Who Sets It |
 |-------|---------|-------------|
-| `in-progress` | Being worked on | Orchestrator (on launch) |
+| `in-progress` | Being worked on | Orchestrator |
 | `blocked` | Agent hit a blocker | Agent (via `agent-done blocked`) |
 | `needs-human` | Agent has a question | Agent (via `agent-done needs_human`) |
 
@@ -297,11 +233,7 @@ If you want scheduling order, use the `[P?-nnn]` prefix in the title.
 
 ## Creating Agent Prompts
 
-Prompts are markdown files that instruct the AI what to do. They're the "personality" and instructions for each agent type.
-
-### Template Variables
-
-Prompts receive these variables:
+Prompts are markdown files that instruct the AI. They receive these template variables:
 
 | Variable | Description | Example |
 |----------|-------------|---------|
@@ -319,35 +251,26 @@ Prompts receive these variables:
 
 You are a backend engineer working on issue #{issue_number}: {issue_title}
 
-## Expertise
-
-- Python, FastAPI, SQLAlchemy
-- PostgreSQL, Redis
-- REST API design
-- Testing with pytest
-
 ## Guidelines
 
 1. Follow existing code patterns in the codebase
 2. Write tests for new functionality
 3. Keep functions small and focused
 4. Use type hints
-5. Update docstrings
 
 ## Workflow
 
 1. Read the issue and understand requirements
-2. Explore relevant files (`src/api/`, `src/models/`, `tests/`)
+2. Explore relevant files
 3. Implement the solution
 4. Write/update tests
-5. Run `pytest` to verify
-6. Commit with conventional commit messages
+5. Run tests to verify
+6. Commit with clear messages
 
 ## Completion
 
 Use `agent-done` when finished:
 
-```bash
 # Success
 agent-done completed \
   --implementation "Added /users endpoint with JWT auth" \
@@ -360,42 +283,11 @@ agent-done blocked \
 
 # Need help
 agent-done needs_human --question "Should we use OAuth or API keys?"
-```
 
-**Important**: Report ALL problems honestly. The triage review agent will catch unreported issues.
-```
-
-### Example: Frontend Agent
-
-`.issue-orchestrator/prompts/frontend.md`:
-
-```markdown
-# Frontend Agent
-
-You are a frontend engineer working on issue #{issue_number}: {issue_title}
-
-## Expertise
-
-- React, TypeScript
-- Tailwind CSS
-- React Query for data fetching
-- Testing with Vitest and React Testing Library
-
-## Guidelines
-
-1. Use functional components with hooks
-2. Follow the existing component structure
-3. Ensure accessibility (ARIA labels, keyboard nav)
-4. Write component tests
-
-## Completion
-
-Use `agent-done` when finished - see `agent-done --help` for options.
+**Important**: Report ALL problems honestly.
 ```
 
 ### Multi-Agent Setup
-
-For larger projects, you might have specialized agents:
 
 ```yaml
 agents:
@@ -403,184 +295,82 @@ agents:
     prompt: "prompts/backend.md"
     model: "sonnet"
     timeout_minutes: 45
+    ai_system: "claude-code"
 
   "agent:frontend":
     prompt: "prompts/frontend.md"
     model: "sonnet"
     timeout_minutes: 30
-
-  "agent:devops":
-    prompt: "prompts/devops.md"
-    model: "haiku"        # Smaller model for simpler tasks
-    timeout_minutes: 20
+    ai_system: "claude-code"
 
   "agent:docs":
     prompt: "prompts/docs.md"
     model: "haiku"
-    skip_review: true     # Don't require code review for docs
+    skip_review: true
+    ai_system: "claude-code"
 ```
 
 ---
 
 ## Setting Up Safety Hooks
 
-Hooks prevent agents from bypassing safety guardrails. This is **critical** - without hooks, agents can:
-- Skip pre-commit/pre-push tests with `--no-verify`
-- Push broken code directly
-- Create PRs without going through `agent-done`
-
-### Why This Matters
-
-AI agents are clever and will find shortcuts. If you tell them "don't use --no-verify" in a prompt, they might:
-- Forget
-- Decide it's "just this once"
-- Find alternative ways to skip hooks
-
-Technical enforcement is the only reliable solution.
-
-### Installing Hooks
+Hooks prevent agents from bypassing safety guardrails. Without hooks, agents can skip pre-push tests with `--no-verify` or push broken code directly. Technical enforcement is the only reliable solution — prompt instructions are suggestions that agents can forget or work around.
 
 ```bash
 issue-orchestrator setup-hooks
 ```
 
-This creates:
-
-**`.claude/hooks/block-no-verify.sh`**
-```bash
-#!/bin/bash
-# Intercepts commands before Claude executes them
-# Exit 2 = BLOCK, Exit 0 = ALLOW
-
-input=$(cat)
-
-python_bin="$(command -v python3 || true)"
-hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-command=$("$python_bin" "$hook_dir/parse_hook_input.py" <<< "$input" 2>/dev/null || echo "")
-
-if echo "$command" | grep -qE "git\s+(commit|push).*--no-verify"; then
-  echo "BLOCKED: --no-verify is forbidden." >&2
-  exit 2
-fi
-
-exit 0
-```
-
-**`.claude/settings.json`**
-```json
-{
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": ".claude/hooks/block-no-verify.sh"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-### Verifying Hooks Work
+Verify hooks work:
 
 ```bash
-# Quick verification (tests hook script logic)
 issue-orchestrator verify
-
-# AI gate test (spawns agent where supported)
-issue-orchestrator verify --test-ai-gate
+issue-orchestrator verify --test-ai-gate  # Spawns agent to test blocking
 ```
 
-The AI gate test:
-1. Creates a temp git repo
-2. Spawns Claude with a prompt to run `git push --no-verify`
-3. Verifies Claude reports being blocked
-
-### What Happens If Hooks Fail
-
-If verification fails, the orchestrator won't start by default:
-
-```
-STARTUP BLOCKED: Hook verification failed
-
-Without verified hooks, agents can bypass --no-verify
-and push code without running pre-push tests/checks.
-
-Options:
-  1. Run 'issue-orchestrator setup-hooks' to install hooks
-  2. Run 'issue-orchestrator verify' to diagnose issues
-```
+If verification fails, the orchestrator won't start by default. See [Guardrails & Safety Model](../../docs/design/guardrails.md) for the full enforcement architecture.
 
 ---
 
 ## Creating Issues for Agents
 
-Now that your system is configured, create GitHub issues for agents to work on.
-
-### Issue Requirements
-
-For an issue to be picked up by the orchestrator:
+For an issue to be picked up:
 
 1. **Must have an agent label** matching a key in your config (e.g., `agent:backend`)
-2. **Should include a title priority prefix** if ordering matters (defaults to P1 if missing; e.g., `[P1-010]`)
-3. **Should have a clear description** so the agent understands the task
+2. **Should have a clear description** so the agent understands the task
 
-Optional but recommended:
+Optional:
+- **Title priority prefix** `[P1-010]` for scheduling order
 - **Priority label** (`priority:high|medium|low`) for display/metadata
 
 ### Example Issue
 
-**Title**: [P1-010] Add user profile endpoint
+**Title**: `[P1-010] Add user profile endpoint`
 
-**Labels**: `agent:backend`, `priority:high` (label is optional)
+**Labels**: `agent:backend`
 
 **Body**:
 ```markdown
 ## Summary
-
 Add a GET /users/{id}/profile endpoint that returns user profile information.
 
 ## Requirements
-
 - Return user's name, email, bio, and avatar URL
 - Return 404 if user doesn't exist
 - Include rate limiting (10 requests/minute)
 
 ## Acceptance Criteria
-
 - [ ] Endpoint returns correct data for existing users
 - [ ] Returns 404 with appropriate message for missing users
 - [ ] Rate limiting works correctly
 - [ ] Tests cover success and error cases
 ```
 
-### Creating Issues via CLI
-
-```bash
-# Create an issue
-gh issue create \
-  --title "[P1-010] Add user profile endpoint" \
-  --body "..." \
-  --label "agent:backend" \
-  --label "priority:high"
-
-# Or create and let the orchestrator pick it up
-gh issue create \
-  --title "Fix login bug" \
-  --label "agent:frontend"
-```
-
 ### Tips for Good Agent Issues
 
-1. **Be specific** - Agents work best with clear, bounded tasks
-2. **Provide context** - Link to relevant files or docs
-3. **Include acceptance criteria** - How will we know it's done?
-4. **One task per issue** - Don't bundle multiple unrelated changes
-5. **Use checklists** - Agents can check off items as they complete them
+1. **Be specific** — agents work best with clear, bounded tasks
+2. **Provide context** — link to relevant files or docs
+3. **Include acceptance criteria** — how will we know it's done?
+4. **One task per issue** — don't bundle multiple unrelated changes
 
 ---
 
@@ -589,25 +379,15 @@ gh issue create \
 ### Basic Usage
 
 ```bash
-# Start with web dashboard (default)
 issue-orchestrator start
 ```
 
-This opens a browser at http://localhost:8080 showing:
-- Active sessions (agents currently working)
-- Issue queue (what's waiting to be processed)
-- Status and controls
+This launches the orchestrator with the web dashboard at http://localhost:8080.
 
-### Command Line Options
+### Common Options
 
 ```bash
-# Use tmux instead of web dashboard
-issue-orchestrator start --ui-mode tmux
-
-# Use iTerm2 tabs (macOS only)
-issue-orchestrator start --ui-mode iterm2
-
-# Custom port for web dashboard
+# Custom port
 issue-orchestrator start --port 3000
 
 # Limit to specific milestone
@@ -616,10 +396,10 @@ issue-orchestrator start --milestone "v2.0"
 # Only process N issues then stop
 issue-orchestrator start --max-issues 5
 
-# Dry run - show what would happen without doing it
+# Dry run — show what would happen without doing it
 issue-orchestrator start --dry-run
 
-# Enable debug logging (writes to ~/.issue-orchestrator.log)
+# Enable debug logging
 issue-orchestrator start --debug
 
 # Run without dashboard (for CI/scripts)
@@ -629,243 +409,70 @@ issue-orchestrator start --no-dashboard
 ### Other Commands
 
 ```bash
-# Show current status
-issue-orchestrator status
-
-# Attach to a running session
-issue-orchestrator attach 42
-
-# Pause (finish current work, don't start new)
-issue-orchestrator pause
-
-# Resume after pause
-issue-orchestrator resume
-
-# Prioritize a specific issue
-issue-orchestrator next 42
-
-# Initialize labels on GitHub
-issue-orchestrator init
-
-# Verify setup
-issue-orchestrator verify
-
-# Install hooks
-issue-orchestrator setup-hooks
+issue-orchestrator status          # Show current status
+issue-orchestrator pause           # Finish current work, don't start new
+issue-orchestrator resume          # Resume after pause
+issue-orchestrator doctor          # Run diagnostics
+issue-orchestrator init            # Initialize GitHub labels
+issue-orchestrator setup-hooks     # Install safety hooks
 ```
 
 ---
 
 ## How an Issue Flows Through the System
 
-Let's trace what happens when issue #42 is processed.
-
-### 1. Issue Created and Labeled
+### 1. Issue Labeled
 
 ```
 GitHub Issue #42: "[P1-010] Add user profile endpoint"
-Labels: [agent:backend, priority:high]
+Labels: [agent:backend]
 ```
 
-### 2. Orchestrator Polls and Finds Issue
+### 2. Orchestrator Fetches and Prioritizes
 
-```
-$ issue-orchestrator start
-
-[Orchestrator] Fetching issues with agent labels...
-[Orchestrator] Found 3 issues
-[Orchestrator] Queue sorted by priority:
-  1. #42 ([P1-010]) → agent:backend
-  2. #57 ([P1-020]) → agent:frontend
-  3. #63 ([P2-005]) → agent:backend
-[Orchestrator] Starting #42...
-```
+The orchestrator polls GitHub, finds issues with agent labels, and sorts by priority.
 
 ### 3. Worktree Created
 
 ```
-[launch] Creating worktree for issue #42...
-         Repo: /home/dev/myapp
-         Worktree: /home/dev/myapp-42
-         Branch: 42-add-user-profile-endpoint
-
-$ git worktree add ../myapp-42 -b 42-add-user-profile-endpoint
+Creating worktree for issue #42...
+  Worktree: ../your-repo-42
+  Branch: 42-add-user-profile-endpoint
 ```
 
-### 4. Safety Hooks Installed
+### 4. Issue Labeled `in-progress`
 
-The orchestrator copies pre-push hooks to the worktree:
+### 5. Agent Session Launched
 
-```
-/home/dev/myapp-42/.git/hooks/pre-push
-```
+The orchestrator starts Claude in the worktree with the configured prompt. The agent reads the issue, explores the code, implements the solution, writes tests, and commits.
 
-This ensures any push from this worktree runs project tests.
-
-### 5. Issue Labeled `in-progress`
-
-```
-[Orchestrator] Adding 'in-progress' label to #42
-```
-
-### 6. Claude Session Launched
-
-```
-[launch] Starting Claude session...
-
-$ cd /home/dev/myapp-42
-$ claude --model sonnet "You are working on issue #42: Add user profile endpoint.
-  Read prompts/backend.md for your instructions."
-```
-
-A new terminal tab/tmux window/web session is created showing Claude working.
-
-### 7. Agent Works on the Issue
-
-Claude:
-1. Reads the prompt file
-2. Reads the issue details via `gh issue view 42`
-3. Explores relevant code
-4. Implements the solution
-5. Writes tests
-6. Makes commits
-
-```bash
-# Agent's commits
-git add src/api/profile.py tests/test_profile.py
-git commit -m "feat: add user profile endpoint"
-
-git add src/api/rate_limit.py
-git commit -m "feat: add rate limiting to profile endpoint"
-```
-
-### 8. Agent Completes with `agent-done`
+### 6. Agent Calls `agent-done`
 
 ```bash
 agent-done completed \
   --implementation "Added GET /users/{id}/profile endpoint with rate limiting" \
-  --problems "None - implementation was straightforward"
+  --problems "None"
 ```
 
-### 9. What `agent-done` Does
+This writes a structured `completion.json` file in the worktree. The agent does **not** push or create PRs — the orchestrator handles that.
 
-**Step 1: Add trailers to commit**
-```bash
-git commit --amend -m "feat: add rate limiting to profile endpoint
+### 7. Orchestrator Processes Completion
 
-Agent-Status: completed
-Agent-Implementation: Added GET /users/{id}/profile endpoint with rate limiting
-Agent-Problems: None - implementation was straightforward"
-```
+The orchestrator:
+1. Reads `completion.json`
+2. Pushes the branch
+3. Creates a draft PR
+4. Posts a structured comment on the issue
+5. Queues code review (if configured)
+6. Removes `in-progress` label
 
-**Step 2: Push (hooks run)**
-```bash
-git push -u origin 42-add-user-profile-endpoint
+### 8. Review (if configured)
 
-# Pre-push hook runs:
-# ✓ Project tests pass
-# ✓ Agent-Status trailer found
-# → Push allowed
-```
+If `review.enabled: true`, a reviewer agent evaluates the PR. If changes are requested, a rework cycle begins automatically. See [Review Workflow](../development/REVIEW_WORKFLOW.md).
 
-**Step 3: Create PR**
-```bash
-gh pr create \
-  --title "Fixes #42: Add user profile endpoint" \
-  --body "..."
+### 9. Human Merges
 
-# Returns: https://github.com/owner/repo/pull/99
-```
-
-**Step 4: Comment on issue**
-```markdown
-## Implementation
-Added GET /users/{id}/profile endpoint with rate limiting
-
-## Problems Encountered
-None - implementation was straightforward
-
-## Pull Request
-https://github.com/owner/repo/pull/99
-```
-
-### 10. Orchestrator Detects Completion
-
-```
-[Monitor] Session for #42 exited
-[Monitor] Checking for PR...
-[Monitor] ✓ PR #99 found for branch 42-add-user-profile-endpoint
-[Monitor] Status: COMPLETED
-[Monitor] Removing 'in-progress' label from #42
-[Monitor] Cleaning up worktree...
-
-$ git worktree remove ../myapp-42
-```
-
-### 11. Next Issue Starts
-
-```
-[Orchestrator] Slot available, starting next issue...
-[Orchestrator] Starting #57...
-```
-
-### Flow Diagram
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│                        GITHUB                                 │
-│  Issue #42 [agent:backend, priority:high]                     │
-│  "[P1-010] Add user profile endpoint"                         │
-└──────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│                     ORCHESTRATOR                              │
-│  1. Polls GitHub for issues with agent:* labels               │
-│  2. Sorts by [P?-nnn] priority                                │
-│  3. Creates worktree at ../myapp-42                           │
-│  4. Installs pre-push hooks                                   │
-│  5. Labels issue "in-progress"                                │
-│  6. Launches Claude session                                   │
-│  7. Monitors for completion                                   │
-└──────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│                   GIT WORKTREE                                │
-│  ../myapp-42/                                                 │
-│  ├── (full copy of repo)                                      │
-│  ├── .git/hooks/pre-push    ← Enforces tests before push     │
-│  └── Branch: 42-add-user-profile-endpoint                     │
-└──────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│                  CLAUDE SESSION                               │
-│  • Reads issue and prompt                                     │
-│  • Implements solution                                        │
-│  • Writes tests                                               │
-│  • Commits changes                                            │
-│  • Runs: agent-done completed --implementation "..."          │
-└──────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│                    agent-done                                 │
-│  1. Adds trailers to commit (Agent-Status: completed)         │
-│  2. git push (pre-push hook runs tests)                       │
-│  3. gh pr create                                              │
-│  4. gh issue comment (structured comment)                     │
-└──────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌──────────────────────────────────────────────────────────────┐
-│                        GITHUB                                 │
-│  Issue #42 ← Structured comment with implementation details   │
-│  PR #99 ← Links to issue, ready for review                    │
-│  Labels: (in-progress removed)                                │
-└──────────────────────────────────────────────────────────────┘
-```
+The PR is ready for human review and merge. The orchestrator never merges PRs.
 
 ---
 
@@ -873,65 +480,17 @@ $ git worktree remove ../myapp-42
 
 ### Web Dashboard
 
-The default web dashboard at http://localhost:8080 shows:
+The default dashboard at http://localhost:8080 shows:
 
-**Active Sessions**
-- Issue number and title
-- Agent type
-- Runtime
-- Status (running, completing, etc.)
-- Button to attach
-
-**Issue Queue**
-- Pending issues sorted by priority
-- Labels and milestone
-- Estimated wait time
-
-**Controls**
-- Pause/Resume orchestration
-- Force refresh
-- View logs
-
-### Terminal UI (tmux)
-
-```bash
-issue-orchestrator start --ui-mode tmux
-```
-
-Creates a tmux session with windows for each agent:
-- Use `Ctrl-b n` / `Ctrl-b p` to switch between windows
-- Use `Ctrl-b d` to detach (orchestrator keeps running)
-- Reattach with `tmux attach`
-
-### Attaching to Sessions
-
-To interact with a running agent:
-
-```bash
-# From command line
-issue-orchestrator attach 42
-
-# This opens the terminal/tab where agent for #42 is running
-```
+- **Active sessions** — agents currently working, with runtime and status
+- **Issue queue** — pending issues sorted by priority
+- **Blocked issues** — issues needing human attention
+- **Controls** — pause/resume, refresh, settings
 
 ### Status Check
 
 ```bash
-$ issue-orchestrator status
-
-Issue Orchestrator Status
-========================
-
-Active Sessions: 2/3
-  #42: agent:backend - 12m running - "Add user profile"
-  #57: agent:frontend - 3m running - "Fix login form"
-
-Queue: 5 issues
-  1. #63 (high) agent:backend - "Database migration"
-  2. #71 (medium) agent:frontend - "Update dashboard"
-  ...
-
-Last activity: 30s ago
+issue-orchestrator status
 ```
 
 ---
@@ -940,140 +499,41 @@ Last activity: 30s ago
 
 ### Issue Not Being Picked Up
 
-**Check 1: Does it have an agent label?**
-```bash
-gh issue view 42 --json labels
-```
-Must have a label matching a key in your `agents:` config.
-
-**Check 2: Is it already in-progress?**
-Issues with `in-progress` label are skipped. Remove it to retry:
-```bash
-gh issue edit 42 --remove-label "in-progress"
-```
-
-**Check 3: Is there a filter blocking it?**
-Check your config for `filter_label` or `filter_milestone`.
+1. **Check labels**: `gh issue view 42 --json labels` — must have an agent label matching your config
+2. **Check for `in-progress`**: Remove it to retry: `gh issue edit 42 --remove-label "in-progress"`
+3. **Check filters**: Review `filtering` in your config
 
 ### Agent Session Fails
 
-**Check worktree exists:**
-```bash
-ls ../your-repo-42/
-```
-
-**Check for errors in the session:**
-```bash
-issue-orchestrator attach 42
-# or check logs
-cat ~/.issue-orchestrator.log
-```
-
-**Common causes:**
-- Missing dependencies in worktree
-- Prompt file not found
-- Git conflicts
-- API rate limits
+1. Check session logs in the web dashboard
+2. Check if `agent-done` was called (sessions without it are marked failed)
+3. Common causes: missing dependencies, prompt file not found, API rate limits
 
 ### Hooks Not Blocking
 
-**Verify hooks are installed:**
 ```bash
-issue-orchestrator verify
+issue-orchestrator verify  # Diagnose hook issues
 ```
-
-**Check hook is executable:**
-```bash
-ls -la .claude/hooks/
-# Should show: -rwxr-xr-x block-no-verify.sh
-```
-
-**Check settings.json:**
-```bash
-cat .claude/settings.json
-# Should reference the hook
-```
-
-### Push Rejected by Pre-push Hook
-
-**Check what failed:**
-```bash
-cat ../your-repo-42/.git/hooks/pre-push.log
-```
-
-**Common issues:**
-- Tests failing
-- Missing Agent-Status trailer (use `agent-done`)
-- Linter errors
 
 ### Session Times Out
 
-Default timeout is 45 minutes. Adjust in config:
-
+Adjust in config:
 ```yaml
 agents:
   "agent:backend":
-    timeout_minutes: 90  # More time for complex tasks
+    timeout_minutes: 90
 ```
 
-Or for complex issues, break them into smaller issues.
+Or break complex issues into smaller ones.
+
+For more, see [Troubleshooting](../development/TROUBLESHOOTING.md).
 
 ---
 
 ## Next Steps
 
-Now that you have the basics working:
-
-### 1. Customize Your Prompts
-
-Tailor prompts to your project's conventions, testing framework, and style guide.
-
-### 2. Set Up Code Review
-
-Add a triage review agent that audits completed work:
-
-```yaml
-agents:
-  "agent:triage-review":
-    prompt: "prompts/triage-review.md"
-    skip_review: true  # Don't review the reviewer
-```
-
-See `examples/prompts/triage-review.md` for a sample.
-
-### 3. Add CI Integration
-
-Run the orchestrator headlessly in CI:
-
-```bash
-issue-orchestrator start --no-dashboard --max-issues 10
-```
-
-### 4. Monitor with Logging
-
-Enable debug logging for troubleshooting:
-
-```bash
-issue-orchestrator start --debug
-tail -f ~/.issue-orchestrator.log
-```
-
-### 5. Explore Advanced Features
-
-- **Milestones**: Focus on specific releases
-- **Concurrency tuning**: Balance speed vs. resource usage
-- **Custom commands**: Use different AI tools per agent
-- **Multiple repos**: Run orchestrators for different projects
-
----
-
-## Getting Help
-
-- **Issues**: https://github.com/BruceBGordon/issue-orchestrator/issues
-- **Discussions**: GitHub Discussions for questions
-- **Protocol docs**: See `AGENT_PROTOCOL.md` for the agent contract
-- **Hook docs**: See `HOOKS.md` for enforcement details
-
----
-
-*Happy orchestrating!*
+- **Customize prompts** for your project's conventions and testing framework
+- **Enable code review**: set `review.enabled: true` with a reviewer agent — see [Review Workflow](../development/REVIEW_WORKFLOW.md)
+- **Configure E2E testing**: see [E2E Runner](e2e.md)
+- **Explore Goal Pilot**: autonomous goal-driven orchestration — see [Goal Pilot](goal_pilot.md)
+- **Full configuration**: see [Configuration](configuration.md) and [Configuration Reference](configuration_reference.md)

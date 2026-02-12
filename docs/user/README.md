@@ -1,11 +1,14 @@
-# Using Issue Orchestrator (User Docs)
+# User Documentation
 
-Start here if you want to **install and run** the tool.
+For the full documentation index, see [docs/README.md](../README.md).
 
-- Install: see `installation.md`
-- Quickstart: see `quickstart.md`
-- Configure: see `configuration.md` (quickstart) and `configuration_reference.md` (full reference)
-- Goal Pilot: see `goal_pilot.md`
-- FAQ: see `faq.md`
-
-Design docs live in `../design/` (invariants + tradeoffs).
+- [Installation](installation.md)
+- [Quickstart](quickstart.md)
+- [Tutorial](tutorial.md) - Hands-on walkthrough
+- [Configuration](configuration.md) - Getting started with config
+- [Configuration Reference](configuration_reference.md) - Every config field
+- [GitHub Permissions](github-permissions.md) - Token setup and scopes
+- [E2E Test Runner](e2e.md) - Async test execution
+- [Goal Pilot](goal_pilot.md) - Autonomous goal-driven orchestration
+- [VS Code Integration](vscode.md) - IDE integration via MCP
+- [FAQ](faq.md)

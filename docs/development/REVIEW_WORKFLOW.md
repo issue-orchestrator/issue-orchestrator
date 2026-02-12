@@ -71,12 +71,41 @@ Session FAILED/BLOCKED/TIMEOUT
   - Helps identify patterns in failures
 ```
 
+## Label State Transitions
+
+Labels are the source of truth for issue state. This diagram shows how labels
+change as work moves through the review pipeline.
+
+```mermaid
+stateDiagram-v2
+  state "in-progress" as IP
+  state "pr-pending" as PR
+  state "needs-code-review" as NCR
+  state "code-reviewed" as CR
+  state "needs-rework" as NR
+  state "triage-reviewed" as TR
+  state "blocked-needs-human" as BNH
+
+  [*] --> IP : session launched
+  IP --> PR : agent-done completed, PR created
+  PR --> NCR : review queued
+  NCR --> CR : reviewer approves
+  NCR --> NR : reviewer requests changes
+  NR --> IP : rework session launched
+  IP --> PR : rework completes
+  CR --> TR : triage batch review passes
+  NR --> BNH : max rework cycles exceeded
+  TR --> [*] : human merges
+  CR --> [*] : human merges (no triage configured)
+```
+
 ## Configuration
 
 ```yaml
 review:
+  enabled: true
   # Stage 1: Code Review (per-PR)
-  code_review_agent: "agent:reviewer"
+  default: "agent:reviewer"            # Default reviewer agent
   code_review_label: "needs-code-review"
   code_reviewed_label: "code-reviewed"
 
@@ -139,6 +168,6 @@ cleanup:
 
 ## UI Phase Detection
 
-Dashboard shows "Coding" or "Reviewing" based on tmux session name:
+Dashboard shows "Coding" or "Reviewing" based on session terminal ID:
 - `issue-*` -> "Coding"
 - `review-*` -> "Reviewing"
