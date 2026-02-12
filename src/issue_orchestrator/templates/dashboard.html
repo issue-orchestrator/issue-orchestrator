@@ -136,6 +136,9 @@
         <main id="mainContent">
             {% if active_tab != 'e2e' %}
             <section class="kanban-board" id="panel-kanban" role="tabpanel" aria-labelledby="tab-kanban" aria-label="Kanban board">
+                {% if startup_status != 'complete' %}
+                <div class="kanban-loading-banner" id="kanbanLoadingBanner">Loading issues&hellip;</div>
+                {% endif %}
                 {% for column in flow_columns %}
                 <article class="kanban-column {% if column.expandable %}expandable{% endif %}"
                          data-column="{{ column.id }}"
@@ -297,6 +300,7 @@
             <a class="issue-action-btn" id="issueDetailGitHubBtn" href="#" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
         </div>
         <div class="issue-detail-status" id="issueDetailStatus"></div>
+        <h3 class="issue-detail-section-title">Journey</h3>
         <div class="issue-detail-journey" id="issueDetailJourney"></div>
         <details class="issue-detail-section" id="issueDetailPrevCycles" style="display:none;">
             <summary id="issueDetailPrevCyclesSummary">Previous cycles</summary>

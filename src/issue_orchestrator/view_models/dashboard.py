@@ -738,7 +738,7 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
     if "human" in blocked_lower:
         badges.append("human")
     if item.get("merge_pending"):
-        badges.append("merge")
+        badges.append("PR pending")
     return {
         "issue_number": item.get("issue_number"),
         "title": item.get("title", ""),

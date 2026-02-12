@@ -984,3 +984,43 @@ class TestSignalJourneyCycles:
         assert "Changes Requested" in cycles[0]["outcome"]
         assert "Changes Requested" in cycles[1]["outcome"]
         assert "Approved" in cycles[2]["outcome"]
+
+    def test_legacy_signal_boundary_creates_lifecycle_split(self):
+        """Mixed legacy (no rework_cycle) + signal events get separate lifecycles."""
+        events = [
+            # Legacy era — no rework_cycle key
+            _evt("session.started", timestamp="2026-02-08T10:00:00Z", agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-08T10:30:00Z"),
+            _evt("issue.blocked", timestamp="2026-02-08T10:35:00Z"),
+            # Signal era — rework_cycle present
+            _evt("session.started", timestamp="2026-02-09T10:00:00Z",
+                 rework_cycle=None, agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T10:30:00Z",
+                 rework_cycle=None),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        # Legacy events form one cycle, signal events form another
+        assert len(cycles) >= 2
+        # The lifecycles should differ: legacy lifecycle < signal lifecycle
+        legacy_lifecycle = cycles[0]["lifecycle"]
+        signal_lifecycle = cycles[-1]["lifecycle"]
+        assert signal_lifecycle > legacy_lifecycle
+
+    def test_review_cycle_no_rework_prefix(self):
+        """Review-dominated cycles should not get 'Rework →' outcome prefix."""
+        events = [
+            # Cycle 1: initial coding
+            _evt("session.started", timestamp="2026-02-09T10:00:00Z",
+                 rework_cycle=0, agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T10:30:00Z",
+                 rework_cycle=0),
+            # Cycle 2: review (with task=review signal)
+            _evt("review.started", timestamp="2026-02-09T11:00:00Z",
+                 rework_cycle=1, task="review"),
+            _evt("session.completed", timestamp="2026-02-09T11:30:00Z",
+                 rework_cycle=1, task="review"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 2
+        # Cycle 2 is review — should NOT have "Rework →" prefix
+        assert "Rework" not in cycles[1]["outcome"]

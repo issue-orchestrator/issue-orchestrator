@@ -1715,7 +1715,7 @@ async function loadExpandedColumn(columnId) {
                     <div class="card-line card-muted">${item.detail_label || item.status || ''}</div>
                 </div>
                 <div class="card-actions">
-                    ${columnId === 'blocked' ? `<button class="card-action-btn" onclick="unblockSingle(${n}, this);event.stopPropagation();" title="Unblock issue #${n}">Unblock</button>` : ''}
+                    ${columnId === 'blocked' ? `<button class="card-action-btn card-action-unblock" onclick="unblockSingle(${n}, this);event.stopPropagation();" title="Unblock issue #${n}">Unblock</button>` : ''}
                     ${item.issue_url ? `<a class="card-gh" href="${item.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">↗</a>` : ''}
                     ${item.pr_url ? `<a class="card-action-btn" href="${item.pr_url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">PR</a>` : ''}
                     <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
@@ -1793,7 +1793,7 @@ function getSelectedIssueNumbers(columnId) {
 }
 
 async function unblockSingle(issueNumber, btn) {
-    if (!confirm(`Unblock issue #${issueNumber} and move it back to queued?`)) return;
+    if (!await showConfirm(`Unblock issue #${issueNumber} and move it back to queued?`, btn)) return;
     if (btn) btn.disabled = true;
     try {
         const resp = await fetch('/api/bulk-retry', {
@@ -1804,9 +1804,14 @@ async function unblockSingle(issueNumber, btn) {
         if (resp.ok) {
             showToast(`Unblocked #${issueNumber} → Queued`);
             await refreshViewModel();
+        } else {
+            const data = await resp.json().catch(() => ({}));
+            showToast(data.error || `Unblock failed (${resp.status})`, true);
+            if (btn) btn.disabled = false;
         }
     } catch (e) {
         console.error('Unblock failed:', e);
+        showToast('Unblock failed: network error', true);
         if (btn) btn.disabled = false;
     }
 }
@@ -1814,7 +1819,7 @@ async function unblockSingle(issueNumber, btn) {
 async function bulkUnblock() {
     const numbers = getSelectedIssueNumbers('blocked');
     if (!numbers.length) return;
-    if (!confirm(`Unblock ${numbers.length} issue(s) and move them back to queued?`)) return;
+    if (!await showConfirm(`Unblock ${numbers.length} issue(s) and move them back to queued?`)) return;
     try {
         const resp = await fetch('/api/bulk-retry', {
             method: 'POST',
@@ -1824,9 +1829,13 @@ async function bulkUnblock() {
         if (resp.ok) {
             showToast(`Unblocking ${numbers.length} issue(s) → Queued`);
             await refreshViewModel();
+        } else {
+            const data = await resp.json().catch(() => ({}));
+            showToast(data.error || `Bulk unblock failed (${resp.status})`, true);
         }
     } catch (e) {
         console.error('Bulk unblock failed:', e);
+        showToast('Bulk unblock failed: network error', true);
     }
 }
 
@@ -2100,6 +2109,10 @@ async function toggleExcluded() {
     refreshEvents.forEach(eventType => {
         evtSource.addEventListener(eventType, function(e) {
             console.log('[SSE] Received event:', eventType, e.data);
+            if (eventType === 'startup_complete') {
+                const banner = document.getElementById('kanbanLoadingBanner');
+                if (banner) banner.remove();
+            }
             // Slight delay to let server state settle
             setTimeout(() => refreshViewModel({ reloadOnListChange: true }), 200);
         });
@@ -2776,8 +2789,8 @@ function closeIssueDetail() {
 async function unblockFromDrawer() {
     if (!issueDetailData) return;
     const n = issueDetailData.issue_number;
-    if (!confirm(`Unblock issue #${n} and move it back to queued?`)) return;
     const btn = document.getElementById('issueDetailUnblockBtn');
+    if (!await showConfirm(`Unblock issue #${n} and move it back to queued?`, btn)) return;
     if (btn) btn.disabled = true;
     try {
         const resp = await fetch('/api/bulk-retry', {
@@ -2789,9 +2802,14 @@ async function unblockFromDrawer() {
             showToast(`Unblocked #${n} → Queued`);
             closeIssueDetail();
             await refreshViewModel();
+        } else {
+            const data = await resp.json().catch(() => ({}));
+            showToast(data.error || `Unblock failed (${resp.status})`, true);
+            if (btn) btn.disabled = false;
         }
     } catch (e) {
         console.error('Unblock from drawer failed:', e);
+        showToast('Unblock failed: network error', true);
         if (btn) btn.disabled = false;
     }
 }
@@ -3589,7 +3607,7 @@ async function unblockSelectedIssues() {
     if (needsHumanSelected > 0) {
         confirmMsg += `\n\n⚠️ ${needsHumanSelected} issue${needsHumanSelected > 1 ? 's have' : ' has'} 'needs-human' label - make sure you've addressed the concern.`;
     }
-    if (!confirm(confirmMsg)) return;
+    if (!await showConfirm(confirmMsg, blockedUnblockBtn)) return;
 
     // Disable button during request
     blockedUnblockBtn.disabled = true;
@@ -3626,8 +3644,8 @@ async function resetSelectedIssues() {
     if (issueNumbers.length === 0) return;
 
     // Confirm with warning about destructive nature
-    const confirmMsg = `⚠️ Reset and retry ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''}?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Blocking labels\n\nIssues will return to available state for a fresh retry.`;
-    if (!confirm(confirmMsg)) return;
+    const confirmMsg = `Reset and retry ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''}?\n\nThis will DELETE:\n\u2022 Local worktrees\n\u2022 Remote branches\n\u2022 Blocking labels\n\nIssues will return to available state for a fresh retry.`;
+    if (!await showConfirm(confirmMsg, blockedResetBtn)) return;
 
     // Disable buttons during request
     blockedResetBtn.disabled = true;
@@ -4200,6 +4218,60 @@ function showToast(message, isError = false) {
     toast.classList.toggle('error', isError);
     toast.classList.add('visible');
     setTimeout(() => toast.classList.remove('visible'), 2500);
+}
+
+/**
+ * Show a positioned confirmation popover near an anchor element.
+ * Returns a Promise that resolves to true (confirm) or false (cancel).
+ */
+function showConfirm(message, anchorEl) {
+    return new Promise(resolve => {
+        // Remove any existing confirm popover
+        const existing = document.getElementById('confirmPopover');
+        if (existing) { existing.remove(); resolve(false); return; }
+
+        const overlay = document.createElement('div');
+        overlay.id = 'confirmPopover';
+        overlay.className = 'confirm-overlay';
+
+        const box = document.createElement('div');
+        box.className = 'confirm-box';
+        box.innerHTML = `
+            <div class="confirm-message">${escapeHtml(message)}</div>
+            <div class="confirm-actions">
+                <button class="confirm-btn confirm-btn-cancel">Cancel</button>
+                <button class="confirm-btn confirm-btn-ok">Confirm</button>
+            </div>`;
+
+        overlay.appendChild(box);
+        document.body.appendChild(overlay);
+
+        // Position near anchor
+        if (anchorEl) {
+            const rect = anchorEl.getBoundingClientRect();
+            const boxW = 280, boxH = 120;
+            let top = rect.bottom + 6;
+            let left = rect.left + rect.width / 2 - boxW / 2;
+            // Keep on screen
+            if (top + boxH > window.innerHeight) top = rect.top - boxH - 6;
+            if (left < 8) left = 8;
+            if (left + boxW > window.innerWidth - 8) left = window.innerWidth - boxW - 8;
+            box.style.position = 'fixed';
+            box.style.top = top + 'px';
+            box.style.left = left + 'px';
+            box.style.width = boxW + 'px';
+        }
+
+        function cleanup(result) {
+            overlay.remove();
+            resolve(result);
+        }
+
+        overlay.addEventListener('click', e => { if (e.target === overlay) cleanup(false); });
+        box.querySelector('.confirm-btn-cancel').addEventListener('click', () => cleanup(false));
+        box.querySelector('.confirm-btn-ok').addEventListener('click', () => cleanup(true));
+        box.querySelector('.confirm-btn-ok').focus();
+    });
 }
 
 // Create Issue Modal Functions

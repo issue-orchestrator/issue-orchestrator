@@ -423,9 +423,13 @@ def _build_signal_journey_cycles(
         if any(event_name.startswith(p) for p in _JOURNEY_SKIP_PREFIXES):
             continue
 
-        rc = event.get("rework_cycle") or 0
-        coding_cycle = rc + 1
         lifecycle = lifecycle_per_event[idx]
+        if "rework_cycle" in event:
+            rc = event.get("rework_cycle") or 0
+            coding_cycle = rc + 1
+        else:
+            # Legacy event: group into cycle 0 (will be renumbered later)
+            coding_cycle = 0
         groups.setdefault(coding_cycle, []).append((event, lifecycle))
 
     cycles: list[dict[str, Any]] = []
@@ -451,10 +455,16 @@ def _compute_lifecycle_per_event(
 
     Lifecycle increments when a new session starts after a terminal event
     (issue.blocked, issue.needs_human, issue.completed) or after issue.unblocked.
+
+    Also increments at the boundary between legacy events (no ``rework_cycle``
+    key) and signal-era events (with ``rework_cycle`` key) so that "Last run"
+    filtering can separate old and new activity.
     """
     result: list[int] = []
     lifecycle = 1
     needs_new_lifecycle = False
+    seen_legacy = False
+    seen_signal_boundary = False
 
     for event in events:
         event_name = str(event.get("event") or "")
@@ -467,6 +477,15 @@ def _compute_lifecycle_per_event(
 
         if event_name in _LIFECYCLE_TERMINAL:
             needs_new_lifecycle = True
+
+        # Treat transition from legacy → signal era as a lifecycle boundary
+        has_signal = "rework_cycle" in event
+        if not has_signal:
+            seen_legacy = True
+        elif seen_legacy and not seen_signal_boundary:
+            seen_signal_boundary = True
+            lifecycle += 1
+            needs_new_lifecycle = False
 
         result.append(lifecycle)
 
@@ -719,9 +738,15 @@ def _derive_cycle_outcome(
 
     label = _outcome_label(event_name, summary, context)
 
-    # Prefix with "Rework → " when iteration > 1
+    # Prefix with "Rework → " when iteration > 1, but not for review-dominated cycles
     if iteration > 1:
-        label = f"Rework \u2192 {label}"
+        is_review_cycle = any(
+            str(e.get("task") or "") == "review"
+            or str(e.get("event") or "").startswith("review.")
+            for e in events
+        )
+        if not is_review_cycle:
+            label = f"Rework \u2192 {label}"
 
     return label
 
