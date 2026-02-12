@@ -612,6 +612,7 @@ class CompletionHandler:
         """
         agent = session.agent_label
         task = session.key.task.value if session.key else None
+        rework_cycle = session.rework_cycle
         detail = completion_detail or {}
 
         if status == SessionStatus.COMPLETED:
@@ -620,6 +621,7 @@ class CompletionHandler:
                 "session_id": session.terminal_id,
                 "agent": agent,
                 "task": task,
+                "rework_cycle": rework_cycle,
                 "pr_url": pr_url,
                 "runtime_minutes": session.runtime_minutes,
             }
@@ -633,6 +635,9 @@ class CompletionHandler:
                     "issue_number": session.issue.number,
                     "pr_url": pr_url,
                     "pr_number": pr_number,
+                    "agent": agent,
+                    "task": task,
+                    "rework_cycle": rework_cycle,
                 }))
         elif status == SessionStatus.FAILED or status == SessionStatus.TIMED_OUT:
             reason = f"Exceeded {session.agent_config.timeout_minutes} min timeout" if status == SessionStatus.TIMED_OUT else "Session ended without PR or status update"
@@ -641,6 +646,7 @@ class CompletionHandler:
                 "session_id": session.terminal_id,
                 "agent": agent,
                 "task": task,
+                "rework_cycle": rework_cycle,
                 "error": reason,
                 "runtime_minutes": session.runtime_minutes,
                 "timeout_minutes": session.agent_config.timeout_minutes if session.agent_config else None,
@@ -651,6 +657,7 @@ class CompletionHandler:
                 "issue_number": session.issue.number,
                 "agent": agent,
                 "task": task,
+                "rework_cycle": rework_cycle,
                 "reason": blocked_reason or "Agent marked issue as blocked",
             }
             for key in ("attempted", "blocked_by"):
@@ -662,6 +669,7 @@ class CompletionHandler:
                 "issue_number": session.issue.number,
                 "agent": agent,
                 "task": task,
+                "rework_cycle": rework_cycle,
                 "reason": blocked_reason or "Agent requested human input",
             }
             if detail.get("question"):
@@ -779,12 +787,42 @@ class CompletionHandler:
             if pr_info:
                 self._emit_pr_view_changed(pr_info, issue_key=session.key.issue.stable_id(), issue_number=session.issue.number)
                 self._process_review_outcome(pr_info, pr_number_review, review_machine)
+                # Publish review outcome events from state machine transitions
+                self._publish_review_outcome(review_machine, session, pr_number_review)
         except Exception as e:
             logger.warning(f"Failed to check PR labels for review outcome: {e}")
             self.events.publish(TraceEvent(EventName.APPLY_FAILED, {
                 "step_type": "review_outcome_check", "pr_number": pr_number_review,
                 "issue_number": session.issue.number, "error": str(e),
             }))
+
+    def _publish_review_outcome(
+        self,
+        review_machine: Any,
+        session: Session,
+        pr_number: int,
+    ) -> None:
+        """Publish review.approved or review.changes_requested events.
+
+        These events are defined in EventName but were never emitted.
+        The ReviewStateMachine stores the outcome in last_transition after
+        approve() or request_changes() — we read it and publish.
+        """
+        tr = review_machine.last_transition
+        if not tr:
+            return
+
+        _REVIEW_OUTCOME_EVENTS = {"review.approved", "review.changes_requested"}
+        if tr.event_name not in _REVIEW_OUTCOME_EVENTS:
+            return
+
+        payload: dict[str, Any] = {
+            **tr.data,
+            "pr_number": pr_number,
+            "reviewer_agent": session.agent_label,
+            "rework_cycle": session.rework_cycle,
+        }
+        self.events.publish(TraceEvent(EventName(tr.event_name), payload))
 
     def _process_review_outcome(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
         """Process review outcome based on PR labels."""

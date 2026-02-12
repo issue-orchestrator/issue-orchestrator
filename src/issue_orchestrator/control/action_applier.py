@@ -768,6 +768,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                     "pr_number": action.pr_number,
                     "issue_number": action.issue_number,
                     "rework_count": action.rework_cycles - 1,
+                    "rework_cycle": action.rework_cycles,
                     "max_rework_cycles": action.max_rework_cycles,
                 },
             )

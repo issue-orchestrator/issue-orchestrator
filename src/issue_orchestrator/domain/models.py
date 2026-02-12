@@ -546,6 +546,7 @@ class Session:
     completion_path: str = COMPLETION_RECORD_PATH  # Agent-specific path to completion.json
     agent_label: Optional[str] = None  # Agent type label (e.g., "agent:backend") for per-agent reviewer
     pr_number: int | None = None  # PR number for review/rework sessions
+    rework_cycle: int | None = None  # Which rework iteration (1, 2, ...) — None for initial coding
     started_at: datetime = field(default_factory=datetime.now)
     status: SessionStatus = SessionStatus.RUNNING
     exit_sent: bool = False  # Track if we've already sent /exit
