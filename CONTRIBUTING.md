@@ -1,5 +1,7 @@
 # Contributing
 
+For dev setup, conventions, and how to make changes, see the [Developing journey](docs/journeys/developing.md).
+
 ## Running Tests from Forks
 
 Some integration tests require a GitHub token and are skipped on fork PRs (GitHub blocks secrets from forks for security).

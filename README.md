@@ -18,13 +18,11 @@ flowchart LR
   PR --> YOU["You merge"]
 ```
 
-**Under the hood**, each tick of the orchestrator runs an observe-plan-apply loop: read GitHub state, decide what actions to take, execute them.
-
 The agent-reviewer loop is the core of quality enforcement. When an agent finishes coding, a reviewer agent checks the work. If changes are needed, the coder fixes and the reviewer re-checks — with cycle limits to prevent infinite loops. The orchestrator mediates, and only creates a PR once code is approved. (The loop [can also run via a draft PR](docs/development/REVIEW_WORKFLOW.md) on GitHub.)
 
 ### Issue lifecycle
 
-Every issue moves through a state machine. Labels on GitHub are the source of truth — if the orchestrator crashes, it recovers state from labels on restart.
+Every issue moves through a state machine. Labels on GitHub and the worktrees each agent uses are the source of truth — if the orchestrator crashes, it recovers state from labels and worktrees on restart.
 
 ```mermaid
 stateDiagram-v2
@@ -62,6 +60,7 @@ Agents cannot merge PRs — only humans merge. Validation (tests, linting, archi
 
 ```bash
 make venv                              # creates .venv with uv + correct Python
+source .venv/bin/activate
 export ISSUE_ORCH_GITHUB_TOKEN=ghp_...
 issue-orchestrator setup
 issue-orchestrator start
@@ -89,7 +88,15 @@ For guidance on where to focus, see [REVIEWER_README.md](REVIEWER_README.md).
 
 ## Documentation
 
-- **Getting started:** [Installation](docs/user/installation.md) · [Quickstart](docs/user/quickstart.md) · [Configuration](docs/user/configuration.md) · [GitHub Permissions](docs/user/github-permissions.md)
+Pick the path that fits:
+
+- **[Getting Started](docs/journeys/getting-started.md)** — Install, configure, run your first issue
+- **[Evaluating the System](docs/journeys/evaluating.md)** — Architecture, guardrails, quality signals, where to read code
+- **[Developing](docs/journeys/developing.md)** — Dev setup, conventions, testing, how to make changes
+
+Reference docs:
+
+- **User:** [Installation](docs/user/installation.md) · [Tutorial](docs/user/tutorial.md) · [Configuration](docs/user/configuration.md) · [Configuration Reference](docs/user/configuration_reference.md) · [FAQ](docs/user/faq.md)
 - **Architecture:** [Overview](docs/architecture/README.md) · [ADRs](docs/architecture/ADR/README.md) · [Guardrails](docs/design/guardrails.md) · [Hooks](docs/architecture/hooks.md)
 - **Development:** [Testing](docs/development/TESTING.md) · [Troubleshooting](docs/development/TROUBLESHOOTING.md) · [Review Workflow](docs/development/REVIEW_WORKFLOW.md)
-- **Reference:** [Configuration Reference](docs/user/configuration_reference.md) · [E2E Runner](docs/user/e2e.md) · [Goal Pilot](docs/user/goal_pilot.md)
+- **Features:** [E2E Runner](docs/user/e2e.md) · [Goal Pilot](docs/user/goal_pilot.md) · [VS Code](docs/user/vscode.md)

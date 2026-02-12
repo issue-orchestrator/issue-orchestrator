@@ -13,7 +13,7 @@ Issue-Orchestrator is designed to assist humans, not replace trust boundaries. A
 
 Guardrails are layered so that no single bypass defeats the system:
 
-1. **AI meta-agent hooks** block unsafe tool calls before they execute (Claude Code `PreToolUse`, Cursor `beforeShellExecution`, etc.)
+1. **AI agent hooks** block unsafe tool calls before they execute (Claude Code `PreToolUse`, Cursor `beforeShellExecution`, etc.)
 2. **Git hooks** run tests and linters before push is allowed. Bypassable with `--no-verify`, but covered by the next layer.
 3. **Orchestrator policy** enforces validation regardless of local hooks. An agent session cannot advance without a passing validation record.
 4. **CI** re-runs the canonical validation gate in a clean environment. This is the ultimate backstop for code quality.

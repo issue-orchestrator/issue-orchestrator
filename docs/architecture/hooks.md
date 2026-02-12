@@ -253,7 +253,7 @@ verify:
 
 # Dangerous overrides (NOT RECOMMENDED)
 dangerous:
-  allow_unsupported_agents: true  # Allow meta-agents without hooks
+  allow_unsupported_agents: true  # Allow AI agents without hooks
 ```
 
 ## Setup Flow
@@ -261,7 +261,7 @@ dangerous:
 ```bash
 $ issue-orchestrator setup
 
-[1/4] Which AI meta-agent are you using?
+[1/4] Which AI agent are you using?
       > Claude Code
       > Cursor
       > Copilot CLI

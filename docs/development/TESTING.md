@@ -4,7 +4,7 @@
 
 ```bash
 source .venv/bin/activate
-pytest tests/unit/              # Run unit tests (~1100+ tests)
+pytest tests/unit/              # Run unit tests (~4000 tests)
 pytest tests/unit/ -v           # Verbose
 pytest tests/unit/ --cov        # With coverage (90%+)
 pytest tests/integration/       # Integration tests (requires Claude CLI)
