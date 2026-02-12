@@ -7,10 +7,14 @@ import pytest
 from issue_orchestrator.view_models.issue_detail import (
     IssueStoryContext,
     build_issue_detail_view_model,
+    _annotate_lifecycle,
     _build_blocked_detail,
+    _build_journey_cycles,
     _build_journey_steps,
     _build_previous_cycles,
     _build_status_explanation,
+    _collect_cycle_artifacts,
+    _derive_cycle_outcome,
     _event_to_narrative,
     _format_time_label,
 )
@@ -404,6 +408,8 @@ class TestBuildIssueDetailViewModel:
         assert result["issue_number"] == 42
         assert "status_explanation" in result
         assert "journey_steps" in result
+        assert "journey_cycles" in result
+        assert "lifecycle_count" in result
         assert "previous_cycles" in result
         assert "previous_cycles_count" in result
         assert "raw_events_count" in result
@@ -428,6 +434,23 @@ class TestBuildIssueDetailViewModel:
         assert result["raw_events_count"] == 1
         assert result["blocked_detail"] is None
 
+    def test_journey_cycles_present_in_payload(self):
+        """journey_cycles and lifecycle_count appear in builder output."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z", agent="agent:backend"),
+            _evt("session.failed", timestamp="2026-02-09T14:12:00Z", summary="No PR"),
+        ]
+        result = build_issue_detail_view_model(
+            issue_number=42,
+            title="Test",
+            issue_url="https://github.com/test/repo/issues/42",
+            events=events,
+            phase_toc=[],
+            cycles=[],
+        )
+        assert len(result["journey_cycles"]) == 1
+        assert result["lifecycle_count"] == 1
+
 
 # ── Time Label Formatting ────────────────────────────────────────────────
 
@@ -442,3 +465,522 @@ class TestFormatTimeLabel:
 
     def test_none(self):
         assert _format_time_label(None) == ""
+
+
+# ── Lifecycle Detection ─────────────────────────────────────────────────
+
+class TestLifecycleAnnotation:
+
+    def test_single_lifecycle_single_iteration(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+        ]
+        annotated = _annotate_lifecycle(events)
+        assert annotated[0][1] == 1  # lifecycle
+        assert annotated[0][2] == 1  # iteration
+        assert annotated[1][1] == 1
+        assert annotated[1][2] == 1
+
+    def test_iteration_increments_on_rework(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+            _evt("review.changes_requested", timestamp="2026-02-09T14:35:00Z"),
+            _evt("rework.started", timestamp="2026-02-09T14:40:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T15:00:00Z"),
+        ]
+        annotated = _annotate_lifecycle(events)
+        # First iteration
+        assert annotated[0][2] == 1  # session.started → iteration 1
+        # After rework.started → iteration 2
+        assert annotated[3][2] == 2  # rework.started
+        assert annotated[4][2] == 2  # session.completed in iteration 2
+
+    def test_multi_lifecycle_block_unblock(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.failed", timestamp="2026-02-09T14:12:00Z"),
+            _evt("issue.blocked", timestamp="2026-02-09T14:12:01Z"),
+            _evt("issue.unblocked", timestamp="2026-02-10T09:00:00Z"),
+            _evt("session.started", timestamp="2026-02-10T09:05:00Z"),
+            _evt("session.completed", timestamp="2026-02-10T09:30:00Z"),
+        ]
+        annotated = _annotate_lifecycle(events)
+        # First lifecycle
+        assert annotated[0][1] == 1  # lifecycle 1
+        assert annotated[1][1] == 1
+        assert annotated[2][1] == 1  # issue.blocked still lifecycle 1
+        # issue.unblocked starts lifecycle 2
+        assert annotated[3][1] == 2
+        # session.started in new lifecycle → iteration 1
+        assert annotated[4][1] == 2
+        assert annotated[4][2] == 1
+
+    def test_terminal_then_new_session_starts_new_lifecycle(self):
+        """After a terminal event, a new session.started creates a new lifecycle."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("issue.completed", timestamp="2026-02-09T14:30:00Z"),
+            _evt("session.started", timestamp="2026-02-10T09:00:00Z"),
+        ]
+        annotated = _annotate_lifecycle(events)
+        assert annotated[0][1] == 1
+        assert annotated[2][1] == 2  # new lifecycle after terminal
+
+    def test_no_events_returns_empty(self):
+        assert _annotate_lifecycle([]) == []
+
+
+# ── Journey Cycles ──────────────────────────────────────────────────────
+
+class TestJourneyCycles:
+
+    def test_single_cycle(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z", agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 1
+        c = cycles[0]
+        assert c["cycle"] == 1
+        assert c["lifecycle"] == 1
+        assert c["iteration"] == 1
+        assert c["agent"] == "backend"
+        assert "Completed" in c["outcome"]
+        assert len(c["steps"]) == 2
+
+    def test_multiple_iterations_create_separate_cycles(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+            _evt("review.changes_requested", timestamp="2026-02-09T14:35:00Z"),
+            _evt("rework.started", timestamp="2026-02-09T14:40:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T15:00:00Z"),
+            _evt("review.approved", timestamp="2026-02-09T15:05:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 2
+        assert cycles[0]["iteration"] == 1
+        assert cycles[1]["iteration"] == 2
+
+    def test_cycle_outcome_failed(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.failed", timestamp="2026-02-09T14:12:00Z", summary="No PR"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert "Failed" in cycles[0]["outcome"]
+
+    def test_cycle_outcome_timeout(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.timeout", timestamp="2026-02-09T14:40:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert "Timed out" in cycles[0]["outcome"]
+
+    def test_cycle_outcome_changes_requested(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+            _evt("review.changes_requested", timestamp="2026-02-09T14:35:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert "Changes Requested" in cycles[0]["outcome"]
+
+    def test_cycle_outcome_approved(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+            _evt("review.approved", timestamp="2026-02-09T14:35:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert "Approved" in cycles[0]["outcome"]
+
+    def test_cycle_outcome_escalated(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("review.escalated", timestamp="2026-02-09T14:35:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert "Escalated" in cycles[0]["outcome"]
+
+    def test_rework_prefix_on_iteration_gt_1(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("review.changes_requested", timestamp="2026-02-09T14:35:00Z"),
+            _evt("rework.started", timestamp="2026-02-09T14:40:00Z"),
+            _evt("session.failed", timestamp="2026-02-09T14:42:00Z", summary="Crashed"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 2
+        # First cycle: iteration 1, no rework prefix
+        assert not cycles[0]["outcome"].startswith("Rework")
+        # Second cycle: iteration 2, has rework prefix
+        assert cycles[1]["outcome"].startswith("Rework")
+
+    def test_expanded_flag_only_last_cycle(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.failed", timestamp="2026-02-09T14:12:00Z"),
+            _evt("session.started", timestamp="2026-02-09T14:15:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 2
+        assert cycles[0]["expanded"] is False
+        assert cycles[1]["expanded"] is True
+
+    def test_agent_extraction(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z", agent="agent:frontend"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert cycles[0]["agent"] == "frontend"
+
+    def test_agent_without_prefix(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z", agent="backend"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert cycles[0]["agent"] == "backend"
+
+    def test_no_agent(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert cycles[0]["agent"] == ""
+
+    def test_empty_events_returns_empty_cycles(self):
+        assert _build_journey_cycles([], "2026-02-09") == []
+
+    def test_noisy_events_filtered_from_steps(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("observation.scan", timestamp="2026-02-09T14:11:00Z"),
+            _evt("issue.labels_changed", timestamp="2026-02-09T14:12:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 1
+        step_events = {s["event"] for s in cycles[0]["steps"]}
+        assert "observation.scan" not in step_events
+        assert "issue.labels_changed" not in step_events
+        assert "session.started" in step_events
+
+    def test_time_label_includes_date(self):
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        # Cycle header time_label always includes date
+        assert "Feb" in cycles[0]["time_label"]
+
+    def test_terminal_cycle_uses_rich_status(self):
+        """When issue.blocked is the last event, use rich status explanation."""
+        ctx = _ctx(
+            flow_stage="blocked",
+            labels=("blocked-needs-human",),
+            current_rework_cycle=9,
+            max_rework_cycles=10,
+        )
+        events = [
+            _evt("rework.started", timestamp="2026-02-11T07:05:00Z"),
+            _evt("session.failed", timestamp="2026-02-11T07:07:00Z",
+                 summary="Session ended without PR"),
+            _evt("issue.blocked", timestamp="2026-02-11T07:07:01Z",
+                 summary="Rework limit approaching"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-11", context=ctx)
+        assert len(cycles) == 1
+        # Should have a rich outcome, not just "Blocked: ..."
+        outcome = cycles[0]["outcome"]
+        assert outcome  # not empty
+
+    def test_orphan_events_without_session_start(self):
+        """Events without session.started get grouped into one fallback cycle."""
+        events = [
+            _evt("review.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("review.approved", timestamp="2026-02-09T14:30:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        # Orphaned events still get rendered so they're not lost
+        assert len(cycles) == 1
+        assert cycles[0]["lifecycle"] == 0
+        assert cycles[0]["iteration"] == 0
+
+
+# ── Cycle Outcome Derivation ────────────────────────────────────────────
+
+class TestCycleOutcome:
+
+    def test_failed_with_summary(self):
+        events = [_evt("session.failed", summary="No PR or status")]
+        result = _derive_cycle_outcome(events, 1, None)
+        assert "Failed" in result
+        assert "No PR" in result
+
+    def test_completed_session(self):
+        events = [_evt("session.completed")]
+        assert _derive_cycle_outcome(events, 1, None) == "Completed"
+
+    def test_changes_requested(self):
+        events = [
+            _evt("session.completed"),
+            _evt("review.changes_requested"),
+        ]
+        assert _derive_cycle_outcome(events, 1, None) == "Changes Requested"
+
+    def test_approved(self):
+        events = [_evt("review.approved")]
+        assert _derive_cycle_outcome(events, 1, None) == "Approved"
+
+    def test_merged(self):
+        events = [_evt("review.merged")]
+        assert _derive_cycle_outcome(events, 1, None) == "Merged"
+
+    def test_needs_human(self):
+        events = [_evt("issue.needs_human", summary="Need API key")]
+        result = _derive_cycle_outcome(events, 1, None)
+        assert "Needs human" in result
+        assert "API key" in result
+
+    def test_rework_prefix(self):
+        events = [_evt("session.failed", summary="Crashed")]
+        result = _derive_cycle_outcome(events, 2, None)
+        assert result.startswith("Rework")
+        assert "Failed" in result
+
+    def test_no_rework_prefix_iteration_1(self):
+        events = [_evt("session.failed")]
+        result = _derive_cycle_outcome(events, 1, None)
+        assert not result.startswith("Rework")
+
+    def test_in_progress_no_outcome_events(self):
+        events = [_evt("session.started")]
+        assert _derive_cycle_outcome(events, 1, None) == "In progress"
+
+
+# ── Artifact Collection ─────────────────────────────────────────────────
+
+class TestArtifactCollection:
+
+    def test_pr_url_from_pr_created(self):
+        events = [
+            _evt("issue.pr_created", artifacts=[
+                {"type": "pull_request", "value": "https://github.com/org/repo/pull/42"},
+            ]),
+        ]
+        artifacts = _collect_cycle_artifacts(events)
+        assert artifacts["pr_url"] == "https://github.com/org/repo/pull/42"
+        assert artifacts["pr_number"] == 42
+
+    def test_review_feedback_flag(self):
+        events = [
+            _evt("review.changes_requested"),
+        ]
+        artifacts = _collect_cycle_artifacts(events)
+        assert artifacts["has_review_feedback"] is True
+
+    def test_no_artifacts(self):
+        events = [_evt("session.started")]
+        artifacts = _collect_cycle_artifacts(events)
+        assert artifacts["pr_url"] is None
+        assert artifacts["pr_number"] is None
+        assert artifacts["log_url"] is None
+        assert artifacts["has_review_feedback"] is False
+
+    def test_log_url_from_transcript_artifact(self):
+        events = [
+            _evt("session.completed", artifacts=[
+                {"type": "transcript", "value": "https://example.com/log/123"},
+            ]),
+        ]
+        artifacts = _collect_cycle_artifacts(events)
+        assert artifacts["log_url"] == "https://example.com/log/123"
+
+
+# ── Signal-based Journey Cycles (rework_cycle present) ──────────────────
+
+class TestSignalJourneyCycles:
+    """Tests for the new signal-based cycle grouping using rework_cycle."""
+
+    def test_single_cycle_rework_cycle_none(self):
+        """Events with rework_cycle=None go to cycle 1."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z",
+                 agent="agent:backend", rework_cycle=None),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z",
+                 rework_cycle=None),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 1
+        assert cycles[0]["cycle"] == 1
+        assert cycles[0]["iteration"] == 1  # (rework_cycle or 0) + 1
+        assert cycles[0]["agent"] == "backend"
+        assert "Completed" in cycles[0]["outcome"]
+
+    def test_rework_cycle_0_and_1_create_two_cycles(self):
+        """rework_cycle=0 → cycle 1, rework_cycle=1 → cycle 2."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z",
+                 agent="agent:backend", rework_cycle=0),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z",
+                 rework_cycle=0),
+            _evt("review.changes_requested", timestamp="2026-02-09T14:35:00Z",
+                 rework_cycle=0, reviewer_agent="agent:reviewer"),
+            _evt("rework.started", timestamp="2026-02-09T14:40:00Z",
+                 rework_cycle=1, agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T15:00:00Z",
+                 rework_cycle=1),
+            _evt("review.approved", timestamp="2026-02-09T15:05:00Z",
+                 rework_cycle=1, reviewer_agent="agent:reviewer"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 2
+        assert cycles[0]["iteration"] == 1
+        assert cycles[1]["iteration"] == 2
+        assert cycles[0]["expanded"] is False
+        assert cycles[1]["expanded"] is True
+
+    def test_reviewer_agent_extracted(self):
+        """reviewer_agent from review.approved appears in cycle data."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z",
+                 rework_cycle=None),
+            _evt("review.approved", timestamp="2026-02-09T14:35:00Z",
+                 rework_cycle=None, reviewer_agent="agent:reviewer-bot"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 1
+        assert cycles[0]["reviewer_agent"] == "reviewer-bot"
+
+    def test_retry_count_within_cycle(self):
+        """Multiple session.started events within one cycle count retries."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z",
+                 rework_cycle=None),
+            _evt("session.failed", timestamp="2026-02-09T14:12:00Z",
+                 rework_cycle=None),
+            _evt("session.started", timestamp="2026-02-09T14:15:00Z",
+                 rework_cycle=None),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z",
+                 rework_cycle=None),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        # All events have rework_cycle=None → all in cycle 1
+        assert len(cycles) == 1
+        assert cycles[0]["retry_count"] == 1  # 2 starts - 1
+
+    def test_lifecycle_boundary_detection(self):
+        """Terminal events + unblock create new lifecycle in signal path."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z",
+                 rework_cycle=None),
+            _evt("session.failed", timestamp="2026-02-09T14:12:00Z",
+                 rework_cycle=None),
+            _evt("issue.blocked", timestamp="2026-02-09T14:12:01Z",
+                 rework_cycle=None),
+            _evt("issue.unblocked", timestamp="2026-02-10T09:00:00Z",
+                 rework_cycle=None),
+            _evt("session.started", timestamp="2026-02-10T09:05:00Z",
+                 rework_cycle=None),
+            _evt("session.completed", timestamp="2026-02-10T09:30:00Z",
+                 rework_cycle=None),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-10")
+        # All events share rework_cycle=None → single cycle, but lifecycle changes
+        assert len(cycles) == 1
+        # Lifecycle is assigned to the first event; the first event in the cycle
+        # is in lifecycle 1 since the terminal event comes LATER
+        assert cycles[0]["lifecycle"] == 1
+
+    def test_backward_compat_no_rework_cycle(self):
+        """Events without any rework_cycle use legacy annotated path."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+            _evt("review.changes_requested", timestamp="2026-02-09T14:35:00Z"),
+            _evt("rework.started", timestamp="2026-02-09T14:40:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T15:00:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        # Legacy path still creates multiple cycles from iteration detection
+        assert len(cycles) == 2
+
+    def test_empty_events_signal_path(self):
+        """Empty events returns empty cycles even with signal check."""
+        assert _build_journey_cycles([], "2026-02-09") == []
+
+    def test_outcome_derivation_per_cycle(self):
+        """Each cycle gets its own outcome from its last significant event."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z",
+                 rework_cycle=0, agent="agent:backend"),
+            _evt("session.failed", timestamp="2026-02-09T14:12:00Z",
+                 rework_cycle=0, summary="No PR"),
+            _evt("rework.started", timestamp="2026-02-09T14:40:00Z",
+                 rework_cycle=1),
+            _evt("session.completed", timestamp="2026-02-09T15:00:00Z",
+                 rework_cycle=1),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 2
+        assert "Failed" in cycles[0]["outcome"]
+        assert "Completed" in cycles[1]["outcome"]
+
+    def test_noisy_events_filtered_in_signal_path(self):
+        """Noise events are filtered from signal-based cycles."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z",
+                 rework_cycle=None),
+            _evt("observation.scan", timestamp="2026-02-09T14:11:00Z",
+                 rework_cycle=None),
+            _evt("issue.labels_changed", timestamp="2026-02-09T14:12:00Z",
+                 rework_cycle=None),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z",
+                 rework_cycle=None),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 1
+        step_events = {s["event"] for s in cycles[0]["steps"]}
+        assert "observation.scan" not in step_events
+        assert "issue.labels_changed" not in step_events
+
+    def test_mixed_rework_cycles_group_correctly(self):
+        """Events with rework_cycle=0, 1, 2 create three cycles."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T10:00:00Z",
+                 rework_cycle=0, agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T10:30:00Z",
+                 rework_cycle=0),
+            _evt("review.changes_requested", timestamp="2026-02-09T10:35:00Z",
+                 rework_cycle=0),
+            _evt("rework.started", timestamp="2026-02-09T11:00:00Z",
+                 rework_cycle=1),
+            _evt("session.completed", timestamp="2026-02-09T11:30:00Z",
+                 rework_cycle=1),
+            _evt("review.changes_requested", timestamp="2026-02-09T11:35:00Z",
+                 rework_cycle=1),
+            _evt("rework.started", timestamp="2026-02-09T12:00:00Z",
+                 rework_cycle=2),
+            _evt("session.completed", timestamp="2026-02-09T12:30:00Z",
+                 rework_cycle=2),
+            _evt("review.approved", timestamp="2026-02-09T12:35:00Z",
+                 rework_cycle=2),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 3
+        assert cycles[0]["iteration"] == 1
+        assert cycles[1]["iteration"] == 2
+        assert cycles[2]["iteration"] == 3
+        assert "Changes Requested" in cycles[0]["outcome"]
+        assert "Changes Requested" in cycles[1]["outcome"]
+        assert "Approved" in cycles[2]["outcome"]

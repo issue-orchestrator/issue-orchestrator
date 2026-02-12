@@ -1766,3 +1766,246 @@ class TestIntegrationBehaviors:
         # No cleanup or review queuing
         assert result.should_defer_cleanup is False
         assert result.should_queue_review is False
+
+
+# =============================================================================
+# Test: rework_cycle Propagation in Events
+# =============================================================================
+
+
+class TestReworkCyclePropagation:
+    """Tests that rework_cycle flows through to emitted events."""
+
+    def test_session_completed_carries_rework_cycle(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """SESSION_COMPLETED event payload includes rework_cycle."""
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree,
+                                      terminal_id="rework-1", task_kind=TaskKind.REWORK)
+        session.rework_cycle = 2
+        session.agent_label = "agent:backend"
+
+        pr_url = "https://github.com/owner/repo/pull/42"
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+        )
+        events = InMemoryEventSink()
+        handler = make_handler(config, events=events, repository_host=repository_host)
+
+        handler.process_completion(session, SessionStatus.COMPLETED)
+
+        completed_events = events.get_events(str(EventName.SESSION_COMPLETED))
+        assert len(completed_events) >= 1
+        payload = completed_events[0].data
+        assert payload["rework_cycle"] == 2
+        assert payload["agent"] == "agent:backend"
+        assert payload["task"] == "rework"
+
+    def test_session_completed_rework_cycle_none_for_initial(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Initial coding session has rework_cycle=None."""
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        # Default rework_cycle is None for initial coding
+
+        pr_url = "https://github.com/owner/repo/pull/42"
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+        )
+        events = InMemoryEventSink()
+        handler = make_handler(config, events=events, repository_host=repository_host)
+
+        handler.process_completion(session, SessionStatus.COMPLETED)
+
+        completed_events = events.get_events(str(EventName.SESSION_COMPLETED))
+        assert len(completed_events) >= 1
+        assert completed_events[0].data["rework_cycle"] is None
+
+    def test_session_failed_carries_rework_cycle(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """SESSION_FAILED event payload includes rework_cycle."""
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        session.rework_cycle = 1
+
+        events = InMemoryEventSink()
+        handler = make_handler(config, events=events)
+
+        handler.process_completion(session, SessionStatus.FAILED)
+
+        failed_events = events.get_events(str(EventName.SESSION_FAILED))
+        assert len(failed_events) >= 1
+        assert failed_events[0].data["rework_cycle"] == 1
+
+    def test_issue_blocked_carries_rework_cycle(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """ISSUE_BLOCKED event payload includes rework_cycle."""
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        session.rework_cycle = 3
+
+        events = InMemoryEventSink()
+        handler = make_handler(config, events=events)
+
+        handler.process_completion(session, SessionStatus.BLOCKED)
+
+        blocked_events = events.get_events(str(EventName.ISSUE_BLOCKED))
+        assert len(blocked_events) >= 1
+        assert blocked_events[0].data["rework_cycle"] == 3
+
+    def test_issue_needs_human_carries_rework_cycle(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """ISSUE_NEEDS_HUMAN event payload includes rework_cycle."""
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        session.rework_cycle = 2
+
+        events = InMemoryEventSink()
+        handler = make_handler(config, events=events)
+
+        handler.process_completion(session, SessionStatus.NEEDS_HUMAN)
+
+        needs_events = events.get_events(str(EventName.ISSUE_NEEDS_HUMAN))
+        assert len(needs_events) >= 1
+        assert needs_events[0].data["rework_cycle"] == 2
+
+    def test_issue_pr_created_carries_rework_cycle_and_agent(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """ISSUE_PR_CREATED event now includes agent, task, and rework_cycle."""
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        session.rework_cycle = 1
+        session.agent_label = "agent:backend"
+
+        pr_url = "https://github.com/owner/repo/pull/42"
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+        )
+        events = InMemoryEventSink()
+        handler = make_handler(config, events=events, repository_host=repository_host)
+
+        handler.process_completion(session, SessionStatus.COMPLETED)
+
+        pr_events = events.get_events(str(EventName.ISSUE_PR_CREATED))
+        assert len(pr_events) >= 1
+        payload = pr_events[0].data
+        assert payload["rework_cycle"] == 1
+        assert payload["agent"] == "agent:backend"
+        assert payload["task"] == "code"
+
+
+# =============================================================================
+# Test: Review Outcome Event Emission
+# =============================================================================
+
+
+class TestReviewOutcomeEventEmission:
+    """Tests that review.approved and review.changes_requested are published."""
+
+    def test_review_approved_emitted(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """review.approved event emitted when reviewer approves."""
+        config.code_reviewed_label = "code-reviewed"
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree,
+                                      terminal_id="review-42", task_kind=TaskKind.REVIEW)
+        session.agent_label = "agent:reviewer"
+        session.pr_number = 42
+
+        # PR has code-reviewed label
+        pr_info = SimpleNamespace(
+            url="https://github.com/owner/repo/pull/42",
+            number=42,
+            labels=["code-reviewed"],
+            draft=False,
+        )
+        repository_host = make_repository_host(pr_info=pr_info)
+
+        # Set up review machine in IN_REVIEW state
+        review_machine = ReviewStateMachine(pr_number=42, issue_number=1,
+                                            initial_state=ReviewState.IN_REVIEW)
+
+        events = InMemoryEventSink()
+        handler = make_handler(
+            config, events=events,
+            repository_host=repository_host,
+            review_machine=review_machine,
+        )
+
+        handler.process_completion(session, SessionStatus.COMPLETED)
+
+        approved_events = events.get_events(str(EventName.REVIEW_APPROVED))
+        assert len(approved_events) == 1
+        payload = approved_events[0].data
+        assert payload["pr_number"] == 42
+        assert payload["reviewer_agent"] == "agent:reviewer"
+        assert payload["issue_number"] == 1
+
+    def test_review_changes_requested_emitted(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """review.changes_requested event emitted when reviewer requests changes."""
+        config.code_reviewed_label = "code-reviewed"
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree,
+                                      terminal_id="review-42", task_kind=TaskKind.REVIEW)
+        session.agent_label = "agent:reviewer"
+        session.pr_number = 42
+        session.rework_cycle = 1
+
+        # PR has needs-rework label (not code-reviewed)
+        pr_info = SimpleNamespace(
+            url="https://github.com/owner/repo/pull/42",
+            number=42,
+            labels=["needs-rework"],
+            draft=False,
+        )
+        repository_host = make_repository_host(pr_info=pr_info)
+
+        # Set up review machine in IN_REVIEW state
+        review_machine = ReviewStateMachine(pr_number=42, issue_number=1,
+                                            initial_state=ReviewState.IN_REVIEW,
+                                            max_rework_cycles=5)
+
+        events = InMemoryEventSink()
+        handler = make_handler(
+            config, events=events,
+            repository_host=repository_host,
+            review_machine=review_machine,
+        )
+
+        handler.process_completion(session, SessionStatus.COMPLETED)
+
+        cr_events = events.get_events(str(EventName.REVIEW_CHANGES_REQUESTED))
+        assert len(cr_events) == 1
+        payload = cr_events[0].data
+        assert payload["pr_number"] == 42
+        assert payload["reviewer_agent"] == "agent:reviewer"
+        assert payload["rework_cycle"] == 1
+        assert payload["rework_count"] == 1  # From review machine
+
+    def test_review_outcome_not_emitted_for_non_review_session(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Review outcome events not emitted for code sessions."""
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+
+        pr_url = "https://github.com/owner/repo/pull/42"
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+        )
+        events = InMemoryEventSink()
+        handler = make_handler(config, events=events, repository_host=repository_host)
+
+        handler.process_completion(session, SessionStatus.COMPLETED)
+
+        assert events.get_events(str(EventName.REVIEW_APPROVED)) == []
+        assert events.get_events(str(EventName.REVIEW_CHANGES_REQUESTED)) == []
