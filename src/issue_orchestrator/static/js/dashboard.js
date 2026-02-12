@@ -1380,10 +1380,11 @@ async function shutdown() {
     const activeSessions = status.active_sessions || [];
 
     if (activeSessions.length > 0) {
-        // Show modal with options
+        // Show modal with options — make user decide about active work
         showShutdownModal(activeSessions);
     } else {
-        if (!confirm('Shutdown the orchestrator?')) return;
+        // Nothing running — close immediately, no confirmation needed
+        showToast('Shutting down...');
         await executeShutdown();
     }
 }
