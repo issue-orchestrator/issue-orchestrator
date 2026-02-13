@@ -36,7 +36,7 @@ If a user says “discuss” or “explore”, do not implement until you:
 
 ## What This Is
 
-**issue-orchestrator** orchestrates multiple Claude Code agents working on GitHub issues in parallel. It fetches issues, creates git worktrees, launches agent sessions (tmux/iTerm2/web), enforces structured completion via `agent-done`, and manages the full lifecycle including code review and triage.
+**issue-orchestrator** orchestrates multiple AI agents working on GitHub issues in parallel. It fetches issues, creates git worktrees, launches agent sessions, enforces structured completion via `agent-done`, and manages the full lifecycle including code review and triage.
 
 ## Architecture Principles
 
@@ -51,6 +51,8 @@ If a user says “discuss” or “explore”, do not implement until you:
 
 4. **Labels as Source of Truth** - Crash-safe: GitHub labels persist, orchestrator recovers state from labels on restart.
 
+5. **Agent Intent, Orchestrator Authority** - Agents write a `CompletionRecord` expressing intent (what they did, what they want). The orchestrator validates it as untrusted input, decides what to do, and executes via adapters. Agents cannot push code or create PRs directly.
+
 ## Key Ports (Protocols)
 
 | Port | Purpose | Adapter |
@@ -59,6 +61,8 @@ If a user says “discuss” or “explore”, do not implement until you:
 | `SessionRunner` | Terminal session management | `PluggySessionRunner` |
 | `IssueTracker` | GitHub issue operations | `GitHubAdapter` |
 | `SessionStore` | Persist session state | `JsonSessionStore` |
+
+These are the foundational ports. See `ports/` for the full set (~26 protocols including `WorkingCopy`, `WorktreeManager`, `RepositoryHost`, `CommandRunner`, and others).
 
 ## Composition Root
 
@@ -96,7 +100,7 @@ agent-done changes_requested --issues "Missing tests"  # Reviewer
 
 | Topic | File | When to Read |
 |-------|------|--------------|
-| Architecture deep-dive | [docs/architecture/README.md](docs/architecture/README.md) | System design, DI patterns, adding adapters |
+| Architecture overview | [docs/architecture/README.md](docs/architecture/README.md) | System diagram, core principles |
 | Review workflow | [docs/development/REVIEW_WORKFLOW.md](docs/development/REVIEW_WORKFLOW.md) | Code review, triage, rework cycles |
 | Troubleshooting | [docs/development/TROUBLESHOOTING.md](docs/development/TROUBLESHOOTING.md) | Debugging, common problems |
 | Hook enforcement | [docs/architecture/hooks.md](docs/architecture/hooks.md) | Guardrails, agent restrictions |

@@ -32,3 +32,4 @@ These ADRs capture the *few* architectural decisions that materially affect corr
 - [0021 Optional Docker-based agent isolation](0021-docker-isolation.md)
 - [0022 Issue-specific base branch (default main)](0022-ISSUE-BASE-BRANCH.md)
 - [0023 Deterministic orchestrator required (cannot replace with agentic-first solution)](0023-deterministic-orchestrator-required.md)
+- [0024 Test-driven development workflow for agents](0024-tdd-workflow-for-agents.md)

@@ -12,28 +12,32 @@ Without hooks, agents will find ways around conventions and the system breaks.
 
 ## Hook Layers
 
+Defense-in-depth: each layer catches what the previous one misses.
+
+```mermaid
+flowchart TB
+  CMD["Agent runs a command"]
+  CMD --> L1{"Layer 1: AI Agent Hooks"}
+  L1 -->|blocked| STOP1["Blocked before execution"]
+  L1 -->|allowed| GIT["git push"]
+  GIT --> L2{"Layer 2: Git Hooks"}
+  L2 -->|blocked| STOP2["Push rejected locally"]
+  L2 -->|allowed or --no-verify| REMOTE["Reaches GitHub"]
+  REMOTE --> L3{"Layer 3: Branch Protection"}
+  L3 -->|checks fail| STOP3["Merge blocked server-side"]
+  L3 -->|checks pass| MERGE["Human reviews and merges"]
+
+  style STOP1 fill:#ef4444,color:#fff
+  style STOP2 fill:#ef4444,color:#fff
+  style STOP3 fill:#ef4444,color:#fff
+  style MERGE fill:#22c55e,color:#fff
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 1: AI Meta-Agent Hooks (best - blocks before execute) │
-│   Claude Code: PreToolUse in .claude/settings.json          │
-│   Cursor: beforeShellExecution in .cursor/hooks.json        │
-│   Copilot CLI: --deny-tool flags                            │
-│   Codex CLI: Execpolicy rules in .codex/rules/              │
-└─────────────────────────────────────────────────────────────┘
-                           ↓ if bypassed
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 2: Git Hooks (bypassable with --no-verify)            │
-│   Pre-push: runs tests/linters before push allowed          │
-│   Chained wrapper: orchestrator + project hooks             │
-└─────────────────────────────────────────────────────────────┘
-                           ↓ if bypassed
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 3: Server-Side (ultimate backstop)                    │
-│   GitHub branch protection                                  │
-│   Required status checks                                    │
-│   Cannot be bypassed by client                              │
-└─────────────────────────────────────────────────────────────┘
-```
+
+| Layer | Mechanism | Bypassable? |
+|-------|-----------|-------------|
+| **1. AI Agent** | Claude `PreToolUse`, Cursor `beforeShellExecution`, Copilot `--deny-tool`, Codex `Execpolicy` | Not by the agent |
+| **2. Git Hooks** | Pre-push wrapper chains project + orchestrator hooks, audit trail | `--no-verify` (but Layer 1 blocks that) |
+| **3. Server-Side** | GitHub branch protection, required status checks | Cannot be bypassed |
 
 ## Hook Inventory
 
@@ -69,9 +73,9 @@ These must be set up in the target project. The orchestrator helps install them 
 | Execpolicy rules (Codex) | Codex CLI | `.codex/rules/orchestrator.rules` | Blocks dangerous commands outside sandbox | **YES** |
 | CLAUDE.md | Policy | `CLAUDE.md` | Documents prohibited actions | Advisory |
 
-## Meta-Agent Support Matrix
+## AI Agent Support Matrix
 
-| Meta-Agent | Hook Mechanism | Can Block `--no-verify` | Supported |
+| AI Agent | Hook Mechanism | Can Block `--no-verify` | Supported |
 |------------|----------------|------------------------|-----------|
 | Claude Code | `PreToolUse` in `.claude/settings.json` | ✅ Yes (exit 2) | ✅ |
 | Cursor (1.7+) | `beforeShellExecution` in `.cursor/hooks.json` | ✅ Yes (`"permission": "deny"`) | ✅ |
@@ -80,7 +84,7 @@ These must be set up in the target project. The orchestrator helps install them 
 | Gemini CLI | In development | ⚠️ Not yet | ❌ |
 | Aider | None (lint only) | ❌ No | ❌ |
 
-**Unsupported meta-agents cannot be used** - without hook enforcement, safety guarantees don't hold.
+**Unsupported AI agents cannot be used** - without hook enforcement, safety guarantees don't hold.
 
 ## What Each Hook Blocks
 
@@ -249,7 +253,7 @@ verify:
 
 # Dangerous overrides (NOT RECOMMENDED)
 dangerous:
-  allow_unsupported_agents: true  # Allow meta-agents without hooks
+  allow_unsupported_agents: true  # Allow AI agents without hooks
 ```
 
 ## Setup Flow
@@ -257,7 +261,7 @@ dangerous:
 ```bash
 $ issue-orchestrator setup
 
-[1/4] Which AI meta-agent are you using?
+[1/4] Which AI agent are you using?
       > Claude Code
       > Cursor
       > Copilot CLI

@@ -31,3 +31,7 @@ export ISSUE_ORCH_GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 **Agents get no GitHub token.** The orchestrator handles all GitHub operations.
 
 See [ADR-0005](../architecture/ADR/0005-human-merge-and-agent-credential-isolation.md) and [ADR-0016](../architecture/ADR/0016-orchestrator-as-mediator.md) for why.
+
+## Token Resolution Details
+
+For the full resolution chain (env var, keychain, hosts.yml) and alternative storage options, see [GitHub Token Setup (Developer)](../development/GITHUB_TOKEN_SETUP.md).

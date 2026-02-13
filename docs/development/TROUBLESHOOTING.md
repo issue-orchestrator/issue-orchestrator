@@ -5,19 +5,16 @@
 **Check what's running:**
 ```bash
 issue-orchestrator status
-tmux list-windows -t orchestrator
 ```
 
 **See session output:**
 ```bash
 issue-orchestrator output <issue_number>
-tmux capture-pane -t orchestrator:issue-<number> -p
 ```
 
 **Attach to session:**
 ```bash
 issue-orchestrator attach <issue_number>
-tmux attach -t orchestrator:issue-<number>
 ```
 
 **Check web dashboard:**
@@ -148,18 +145,6 @@ cd /path/to/main/repo
 git config --unset core.hooksPath
 git config core.hooksPath .githooks
 ```
-
-### iTerm2 Slowdown
-
-**Symptom:** Creating new tabs takes 30-60+ seconds.
-
-**Cause:** Too many accumulated idle tabs.
-
-**Fix:**
-```bash
-python -c "from issue_orchestrator.iterm2 import cleanup_idle_tabs; cleanup_idle_tabs()"
-```
-Or restart orchestrator (cleanup runs at startup for iTerm2/web modes).
 
 ### Missing Labels
 

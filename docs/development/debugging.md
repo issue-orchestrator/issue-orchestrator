@@ -26,8 +26,13 @@ The web UI uses SSE (LifecycleSSEPlugin), not IPC.
 
 **How to emit events:**
 ```python
-self.events.publish(TraceEvent("session.started", {"issue_number": 123}))
+from ..events import EventName
+from ..ports import TraceEvent
+
+self.events.publish(TraceEvent(EventName.SESSION_STARTED, {"issue_number": 123}))
 ```
+
+All events must use `EventName` constants from `events/catalog.py`. Raw strings are not accepted.
 
 **How events appear in logs:**
 ```
@@ -129,19 +134,6 @@ review:
 1. `tmux list-sessions` - is session still running?
 2. Check session.log for errors
 3. Check if agent-done was called
-
-## Adding More Logging
-
-### Current Gaps
-- Orchestrator loop doesn't log session lifecycle events
-- No visibility into what GitHub API calls are made
-- No easy way to trace issue → session → completion flow
-
-### Proposed Improvements
-1. Add event emission for all session lifecycle events
-2. Log label operations with issue/PR numbers
-3. Create web UI endpoint for viewing event log
-4. Add timestamps to all events
 
 ## Debugging Commands
 

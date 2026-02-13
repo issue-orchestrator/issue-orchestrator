@@ -47,7 +47,7 @@ Policy documents (CLAUDE.md, prompts) are suggestions. Relying on "agent good be
 - System invariants survive adversarial agent behavior
 - Clear security story
 - Reduced chance of silent bad merges
-- Unsupported meta-agents (no hooks) are rejected
+- Unsupported AI agents (no hooks) are rejected
 
 ### Negative
 - Setup complexity (multiple hook layers)

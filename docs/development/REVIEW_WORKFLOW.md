@@ -1,98 +1,129 @@
 # Review Workflow
 
-## Review Exchange Decision Flow
+## The Review Loop
+
+The core concept: an agent codes, a reviewer checks, and they iterate until the code is approved or the orchestrator escalates.
+
+This flow begins after validation passes. When an agent completes work, the orchestrator processes the completion record — which includes running the validation gate (tests, linting, architecture checks). Only after validation succeeds does the review loop start.
 
 ```mermaid
 flowchart TD
-  A[Completion record processed] --> B{review.enabled?}
-  B -- no --> Z[No review workflow]
-  B -- yes --> C{review.exchange.mode}
-
-  C -- via-draft-pr --> D[Create draft PR]
-  D --> E[Select reviewer agent]
-  E --> F[Run reviewer against PR]
-  F --> G[Apply review labels/actions]
-
-  C -- via-mcp --> H[Resolve coder: issue agent, reviewer: per-agent/default]
-  H --> J[Run MCP exchange loop]
-  J --> K{reviewer ok + validation record?}
-  K -- yes --> D2[Create non-draft PR + mark code-reviewed]
-  K -- no --> L[Stop/halts PR creation]
-
-  C -- via-local-loop --> M[Resolve coder: issue agent, reviewer: per-agent/default]
-  M --> O[Run local loop exchange]
-  O --> K
-
-  C -- auto --> P[Resolve coder+reviewer AI systems]
-  P --> R{MCP pair supported?}
-  R -- yes --> J
-  R -- no --> O
+  DONE["Agent completes work"] --> VAL{"Validation gate"}
+  VAL -->|fails| BLOCKED["Blocked — validation failed"]
+  VAL -->|passes| REVIEW["Reviewer checks code"]
+  REVIEW -->|approved| PR["PR created / marked reviewed"]
+  REVIEW -->|changes needed| REWORK["Agent reworks"]
+  REWORK --> REVIEW
+  REWORK -->|cycle limit hit| ESCALATE["Escalated — needs human"]
 ```
+
+**Cycle limits prevent infinite loops.** The orchestrator tracks rework iterations (`rework-cycle-N` labels on GitHub). After `max_rework_cycles` (default: 10), it stops the loop and escalates to a human. For in-process exchange modes, `max_rounds` and `max_no_progress` provide additional stopping conditions — if the reviewer reports no progress for consecutive rounds, the loop stops early.
+
+## Exchange Mechanisms
+
+The review loop can run through different mechanisms. The orchestrator selects the mechanism based on `review.exchange.mode` configuration.
+
+### via-draft-pr (default)
+
+Traditional GitHub-based flow. The orchestrator creates a draft PR, launches a reviewer agent against it, and uses GitHub labels to drive the loop. No human intervention required — the orchestrator detects label changes and launches rework sessions automatically.
+
+```mermaid
+flowchart LR
+  CODE["Agent codes"] --> PUSH["Push + draft PR"]
+  PUSH --> REV["Reviewer agent checks PR"]
+  REV -->|approves| LABEL1["Label: code-reviewed"]
+  REV -->|requests changes| LABEL2["Label: needs-rework"]
+  LABEL2 --> REWORK["Orchestrator launches rework session"]
+  REWORK --> REV
+```
+
+### via-local-loop
+
+Coder and reviewer agents alternate within the orchestrator process. Faster iteration — no GitHub round-trips. The orchestrator runs both agents sequentially and passes results between them.
+
+```mermaid
+flowchart LR
+  CODE["Coder agent"] -->|submits code| REV["Reviewer agent"]
+  REV -->|feedback| CODE
+  REV -->|approved| DONE["Create PR + mark code-reviewed"]
+```
+
+Stops when: reviewer approves, `max_rounds` reached, or `max_no_progress` consecutive rounds without improvement.
+
+### via-mcp
+
+Coder and reviewer communicate directly via MCP (Model Context Protocol). Same stopping conditions as via-local-loop, but agents exchange messages bidirectionally rather than through the orchestrator.
+
+### auto
+
+Selects `via-mcp` if both agents support it, otherwise falls back to `via-local-loop`.
 
 ## Multi-Stage Review Pipeline
 
+After the review loop approves code, additional stages can run.
+
+```mermaid
+flowchart TD
+  LOOP["Review loop approves code"] --> CR["Code-reviewed"]
+  CR --> TRIAGE{"Triage batch review configured?"}
+  TRIAGE -->|yes, threshold met| TR["Triage agent reviews patterns across PRs"]
+  TR --> DONE["Triage-reviewed — ready for human merge"]
+  TRIAGE -->|no| DONE2["Ready for human merge"]
+
+  FAIL["Session failed / blocked / timeout"] --> TFAIL{"triage_review_on_failure?"}
+  TFAIL -->|yes| INVEST["Triage agent investigates failure"]
+  TFAIL -->|no| SKIP["No investigation"]
 ```
-Work Agent creates PR
-       |
-[Stage 1: Code Review] (per-PR, immediate)
-  - Triggered immediately by orchestrator
-  - Also scanned at startup for crash recovery
-  - Review agent checks code quality, tests
-  - Uses: agent-done approved/changes_requested
-  - Label: "needs-code-review" -> "code-reviewed" or "needs-rework"
-       |
-     /   \
-Approved  Changes Requested
-    |           |
-    |     [Rework Loop] (automatic, up to max_rework_cycles)
-    |       - Orchestrator detects "needs-rework" label
-    |       - Re-queues work agent to fix issues
-    |       - Tracks cycle via "rework-1", "rework-2" labels
-    |       - After max cycles: escalates to "needs-human"
-    |           |
-    |     Back to Code Review
-    |
-Humans can optionally review on GitHub
-       |
-[Stage 2: Triage Batch Review] (batch, threshold-triggered)
-  - Triggered when N code-reviewed PRs accumulate
-  - Triage agent reviews patterns across PRs
-  - Label: "code-reviewed" -> "triage-reviewed"
-       |
-Manual merge
 
+## Label State Transitions
 
-[Failure Investigation Path]
-Session FAILED/BLOCKED/TIMEOUT
-       |
-  - If triage_review_on_failure: true (default)
-  - Triage agent investigates what went wrong
-  - Uses _queue_triage_failure_review()
-  - Helps identify patterns in failures
+Labels are the source of truth for issue state. The orchestrator recovers from crashes by reading labels — no database required.
+
+```mermaid
+stateDiagram-v2
+  state "in-progress" as IP
+  state "pr-pending" as PR
+  state "needs-code-review" as NCR
+  state "code-reviewed" as CR
+  state "needs-rework" as NR
+  state "triage-reviewed" as TR
+  state "blocked-needs-human" as BNH
+
+  [*] --> IP : session launched
+  IP --> PR : agent-done completed, PR created
+  PR --> NCR : review queued
+  NCR --> CR : reviewer approves
+  NCR --> NR : reviewer requests changes
+  NR --> IP : rework session launched
+  IP --> PR : rework completes
+  CR --> TR : triage batch review passes
+  NR --> BNH : max rework cycles exceeded
+  TR --> [*] : human merges
+  CR --> [*] : human merges (no triage configured)
 ```
 
 ## Configuration
 
 ```yaml
 review:
-  # Stage 1: Code Review (per-PR)
-  code_review_agent: "agent:reviewer"
-  code_review_label: "needs-code-review"
-  code_reviewed_label: "code-reviewed"
+  enabled: true
+  default: "agent:reviewer"            # Default reviewer agent
 
-  # Rework iteration limit
-  max_rework_cycles: 2  # Escalate to needs-human after N cycles
+  # Exchange mechanism
+  exchange:
+    mode: "via-draft-pr"               # via-draft-pr, via-local-loop, via-mcp, auto
+    loop:
+      max_rounds: 10                   # Max iterations (local-loop / mcp)
+      max_no_progress: 2              # Stop if reviewer reports no progress N times
+      require_validation: true         # Reviewer must confirm validation passed
 
-  # Stage 2: Triage Batch Review
+  # Rework cycle limit (via-draft-pr mode)
+  max_rework_cycles: 10               # Escalate to needs-human after N cycles
+
+  # Triage batch review
   triage_review_agent: "agent:triage"
-  triage_reviewed_label: "triage-reviewed"
-  triage_review_threshold: 5  # Trigger after 5 PRs
-
-  # Failure Investigation
-  triage_review_on_failure: true  # Triage investigates failures (default: true)
-
-labels:
-  needs_rework: "needs-rework"
+  triage_review_threshold: 5           # Trigger after N code-reviewed PRs
+  triage_review_on_failure: true       # Investigate failures (default: true)
 ```
 
 ## Key Design Decisions
@@ -139,6 +170,6 @@ cleanup:
 
 ## UI Phase Detection
 
-Dashboard shows "Coding" or "Reviewing" based on tmux session name:
+Dashboard shows "Coding" or "Reviewing" based on session terminal ID:
 - `issue-*` -> "Coding"
 - `review-*` -> "Reviewing"
