@@ -156,8 +156,8 @@ def test_view_model_queue_and_blocked_items():
     blocked_item = view_model.blocked_items[0]
     assert blocked_item["issue_number"] == 2
     assert blocked_item["status"] == "blocked"
-    assert "blocked" in (blocked_item["blocked_summary"] or "")
-    assert "waiting on" in (blocked_item["blocked_summary"] or "")
+    assert "blocked" in (blocked_item["blocked_summary"] or "").lower()
+    assert "waiting on" in (blocked_item["blocked_summary"] or "").lower()
     # Dependency-blocked items (issue #2) stay in blocked because they also have
     # the "blocked" label — only pure dependency blocks stay in queued
     assert view_model.blocked_count == 1

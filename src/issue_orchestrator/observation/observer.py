@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from ..control.label_manager import LabelManager
     from ..domain.state_machines.session_machine import SessionStateMachine
     from ..ports import RepositoryHost, SessionRunner, TerminalObserver
     from ..ports.fresh_issue_reader import FreshIssueReader
@@ -24,7 +25,6 @@ if TYPE_CHECKING:
 from ..domain import ProcessState
 from ..domain.process_state import ProcessExitInfo
 from ..infra.config import Config
-from ..infra import labels
 from ..infra.logging_config import issue_log
 from ..events import EventName
 from ..domain.models import Session, SessionStatus
@@ -56,6 +56,7 @@ class SessionObserver:
         repository_host: Optional["RepositoryHost"] = None,
         fresh_issue_reader: Optional["FreshIssueReader"] = None,
         terminal_observer: Optional["TerminalObserver"] = None,
+        label_manager: "LabelManager | None" = None,
     ) -> None:
         """Initialize the observer with configuration.
 
@@ -77,6 +78,10 @@ class SessionObserver:
         self._fresh_issue_reader = fresh_issue_reader
         self._terminal_observer = terminal_observer
         self._session_output = session_output
+        if label_manager is None:
+            from ..control.label_manager import LabelManager
+            label_manager = LabelManager(config)
+        self._lm = label_manager
 
     def _extract_session_number(self, session_name: str) -> int:
         """Extract the numeric ID from a session name (handles both issue- and review- prefixes)."""
@@ -602,17 +607,17 @@ class SessionObserver:
             )
             current_labels = session.issue.labels
 
-        if self.config.get_label_blocked() in current_labels:
+        if self._lm.blocked in current_labels:
             logger.info(
                 issue_log(session.issue.number, "Has '%s' label - BLOCKED"),
-                self.config.get_label_blocked(),
+                self._lm.blocked,
             )
             return SessionStatus.BLOCKED
 
-        if self.config.get_label_needs_human() in current_labels:
+        if self._lm.needs_human in current_labels:
             logger.info(
                 issue_log(session.issue.number, "Has '%s' label - NEEDS_HUMAN"),
-                self.config.get_label_needs_human(),
+                self._lm.needs_human,
             )
             return SessionStatus.NEEDS_HUMAN
 
@@ -720,7 +725,7 @@ class SessionObserver:
         stale_issues = []
 
         for issue in issues:
-            if labels.is_in_progress(issue.labels):
+            if self._lm.is_in_progress(issue.labels):
                 if issue.number not in active_issue_numbers:
                     logger.debug(
                         issue_log(issue.number, "Stale in-progress: label present but no active session"),

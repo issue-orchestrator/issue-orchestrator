@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 
 from .analysis import analyze_issue
 from .config import Config
-from . import labels as label_utils
 from ..domain.dependencies import parse_dependencies
 from ..ports.issue import Issue
 from ..domain.models import OrchestratorState
@@ -217,25 +216,25 @@ def audit_issue(
     issue_branches: Optional[dict[int, str]] = None,
 ) -> IssueAuditEntry:
     """Determine why an issue is queued or skipped."""
+    from ..control.label_manager import LabelManager
+    lm = LabelManager(config)
+
     if issue.state == "closed":
         return IssueAuditEntry(issue, SkipReason.CLOSED)
 
     if issue.number in active_numbers:
         return IssueAuditEntry(issue, SkipReason.ACTIVE_SESSION)
 
-    label_in_progress = config.get_label_in_progress()
-    label_needs_human = config.get_label_needs_human()
-
-    if label_in_progress in issue.labels or "in-progress" in issue.labels:
+    if lm.is_in_progress(issue.labels):
         return _audit_in_progress_issue(issue, config, active_numbers, issue_branches)
 
-    blocking_labels = label_utils.get_blocking_labels(issue.labels)
+    blocking_labels = lm.get_blocking(list(issue.labels))
     if blocking_labels:
-        if label_utils.requires_human_any(issue.labels):
+        if lm.requires_human_any(list(issue.labels)):
             return IssueAuditEntry(issue, SkipReason.NEEDS_HUMAN, f"label: {blocking_labels[0]}")
         return IssueAuditEntry(issue, SkipReason.BLOCKED, f"label: {blocking_labels[0]}")
 
-    if label_needs_human in issue.labels or "needs-human" in issue.labels:
+    if lm.requires_human_any(list(issue.labels)):
         return IssueAuditEntry(issue, SkipReason.NEEDS_HUMAN)
 
     if issue.number in history_numbers:

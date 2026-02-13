@@ -10,7 +10,7 @@ This is an immutable snapshot of a GitHub issue. Key design:
 from dataclasses import dataclass
 
 from ...domain.issue_key import IssueKey, GitHubIssueKey, parse_external_id
-from ...infra import labels as label_module
+from ...domain.models import _base_of, _is_blocking_label
 
 
 @dataclass(frozen=True, eq=False)
@@ -104,12 +104,12 @@ class GitHubIssue:
 
         Blocking labels: blocked, blocked-*, needs-human, failed (legacy).
         """
-        return label_module.is_blocking_any(list(self.labels))
+        return any(_is_blocking_label(l) for l in self.labels)
 
     @property
     def is_in_progress(self) -> bool:
         """Check if issue has the 'in-progress' label."""
-        return label_module.is_in_progress(list(self.labels))
+        return any(_base_of(l) == "in-progress" for l in self.labels)
 
     @property
     def needs_human(self) -> bool:
@@ -117,7 +117,7 @@ class GitHubIssue:
 
         Subset of blocked - checks for: needs-human, blocked-needs-human.
         """
-        return label_module.requires_human_any(list(self.labels))
+        return any(_base_of(l) in ("blocked-needs-human", "needs-human") for l in self.labels)
 
     # -------------------------------------------------------------------------
     # Convenience

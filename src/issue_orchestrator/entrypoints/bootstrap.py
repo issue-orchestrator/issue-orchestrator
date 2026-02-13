@@ -277,10 +277,15 @@ def _create_completion_components(
     session_output: FileSystemSessionOutput,
     command_runner: LocalCommandRunner,
     provider_resilience: ProviderResilienceManager | None = None,
+    label_manager: "LabelManager | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
     from ..control.session_controller import SessionController
+    from ..control.label_manager import LabelManager as _LM
+
+    if label_manager is None:
+        label_manager = _LM(config)
 
     completion_processor = CompletionProcessor(
         label_adapter=github,
@@ -288,14 +293,7 @@ def _create_completion_components(
         git_adapter=working_copy,
         session_output=session_output,
         event_bus=None,
-        label_config={
-            "blocked": config.get_label_blocked(),
-            "needs_human": config.get_label_needs_human(),
-            "code_reviewed": config.code_reviewed_label or "code-reviewed",
-            "needs_rework": config.get_label_needs_rework(),
-            "code_review": config.code_review_label or "needs-code-review",
-            "in_progress": config.get_label_in_progress(),
-        },
+        label_config=label_manager.to_label_config_dict(),
         config=config,
     ) if github else None
 
@@ -309,7 +307,7 @@ def _create_completion_components(
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
         max_validation_retries=config.retry.max_validation_retries,
         provider_resilience=provider_resilience,
-        provider_blocked_label=config.get_label_provider_unavailable(),
+        provider_blocked_label=label_manager.provider_unavailable,
     ) if completion_processor else None
 
     return completion_processor, session_controller_instance
@@ -576,7 +574,8 @@ def build_orchestrator(
 
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
-        config, github, events, working_copy, session_output, command_runner, provider_resilience
+        config, github, events, working_copy, session_output, command_runner, provider_resilience,
+        label_manager=label_manager,
     )
 
     # Create async completion components (observer + executor)
@@ -837,14 +836,7 @@ def build_orchestrator_for_testing(
         git_adapter=working_copy,
         session_output=session_output,
         event_bus=None,
-        label_config={
-            "blocked": config.get_label_blocked(),
-            "needs_human": config.get_label_needs_human(),
-            "code_reviewed": config.code_reviewed_label or "code-reviewed",
-            "needs_rework": config.get_label_needs_rework(),
-            "code_review": config.code_review_label or "needs-code-review",
-            "in_progress": config.get_label_in_progress(),
-        },
+        label_config=label_manager.to_label_config_dict(),
         config=config,
     )
 
@@ -859,7 +851,7 @@ def build_orchestrator_for_testing(
         validation_cmd=config.validation.cmd if config.validation else None,
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
         provider_resilience=provider_resilience,
-        provider_blocked_label=config.get_label_provider_unavailable(),
+        provider_blocked_label=label_manager.provider_unavailable,
     )
 
     # Create LabelSync for testing

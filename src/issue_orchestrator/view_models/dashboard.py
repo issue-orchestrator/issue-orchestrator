@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from ..domain.session_key import TaskKind
 from ..history import latest_history_entries_by_issue
-from ..infra import labels as label_module
+from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
 from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
 from ..infra import gh_audit
@@ -213,23 +213,11 @@ def flow_stage_label(steps: list[dict[str, str]], stage: str) -> str:
     return stage.replace("_", " ").title()
 
 
-def describe_blocking_label(label: str) -> str:
-    if label == "blocked-needs-human":
-        return "needs human"
-    if label == "blocked-failed":
-        return "failed run"
-    if label == "blocked-cross-milestone":
-        return "dependency cross-milestone"
-    if label == "blocked":
-        return "blocked"
-    return label.replace("blocked-", "blocked: ")
-
-
-def blocked_summary(labels: list[str], dependency_summary: str | None = None) -> str | None:
+def blocked_summary(labels: list[str], lm: LabelManager, dependency_summary: str | None = None) -> str | None:
     reasons: list[str] = []
-    blocking = label_module.get_blocking_labels(labels)
+    blocking = lm.get_blocking(labels)
     if blocking:
-        reasons.append(describe_blocking_label(blocking[0]))
+        reasons.append(lm.describe(blocking[0]))
     if dependency_summary:
         reasons.append(dependency_summary)
     return " • ".join(reasons) if reasons else None
@@ -342,7 +330,7 @@ def _pending_issue_numbers(state) -> dict[str, set[int]]:
     }
 
 
-def _build_active_items(state, config, queue_page: int, seen_issues: set[int]) -> tuple[list[dict[str, Any]], set[int]]:
+def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *, lm: LabelManager) -> tuple[list[dict[str, Any]], set[int]]:
     if queue_page != 1:
         return [], seen_issues
 
@@ -376,6 +364,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int]) -
 
         blocked = blocked_summary(
             list(session.issue.labels),
+            lm,
             state.dependency_problems.get(session.issue.number).summary
             if session.issue.number in state.dependency_problems
             else None,
@@ -419,6 +408,8 @@ def _build_queue_items(
     queue_page: int,
     seen_issues: set[int],
     pending_numbers: dict[str, set[int]],
+    *,
+    lm: LabelManager,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, set[int]]:
     queue_items: list[dict[str, Any]] = []
     blocked_items: list[dict[str, Any]] = []
@@ -449,6 +440,7 @@ def _build_queue_items(
         dep_problem = state.dependency_problems.get(issue.number)
         blocked = blocked_summary(
             list(issue.labels),
+            lm,
             dep_problem.summary if dep_problem else None,
         )
         # Separate dependency-blocked (stays in queue) from agent-blocked (goes to blocked column)
@@ -473,9 +465,9 @@ def _build_queue_items(
             flow_stage = "rework"
         elif issue.number in pending_numbers["triage"]:
             flow_stage = "triage"
-        elif issue.number in pending_numbers["review"] or label_module.is_pr_pending(issue.labels):
+        elif issue.number in pending_numbers["review"] or lm.is_pr_pending(issue.labels):
             flow_stage = "review"
-        elif label_module.is_in_progress(issue.labels):
+        elif lm.is_in_progress(issue.labels):
             flow_stage = "in_progress"
         else:
             flow_stage = "queued"
@@ -506,7 +498,7 @@ def _build_queue_items(
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
-            "merge_pending": label_module.is_pr_pending(issue.labels),
+            "merge_pending": lm.is_pr_pending(issue.labels),
             "dependency_blocked": is_dependency_blocked,
             **_refresh_meta(state, config, issue.number),
         }
@@ -759,7 +751,7 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
     }
 
 
-def _build_backlog_items(state, config) -> list[dict[str, Any]]:
+def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, Any]]:
     if state.startup_status != "complete":
         return []
     dependency_info = get_issue_dependencies(state.cached_queue_issues, config)
@@ -769,6 +761,7 @@ def _build_backlog_items(state, config) -> list[dict[str, Any]]:
         dep_summary = dep_info.summary if dep_info else ""
         blocked = blocked_summary(
             list(issue.labels),
+            lm,
             dep_summary if dep_summary else None,
         )
         cards.append({
@@ -1084,15 +1077,16 @@ def build_dashboard_view_model(
     queue_total = 0
 
     if state and config:
+        lm = LabelManager(config)
         active_numbers = {s.issue.number for s in state.active_sessions}
         seen_issues.update(active_numbers)
 
         pending_numbers = _pending_issue_numbers(state)
-        active_items, seen_issues = _build_active_items(state, config, queue_page, seen_issues)
+        active_items, seen_issues = _build_active_items(state, config, queue_page, seen_issues, lm=lm)
         queue_items, queue_blocked, queue_total, seen_issues = _build_queue_items(
-            state, config, queue_page, seen_issues, pending_numbers
+            state, config, queue_page, seen_issues, pending_numbers, lm=lm,
         )
-        backlog_items = _build_backlog_items(state, config)
+        backlog_items = _build_backlog_items(state, config, lm=lm)
         blocked_items.extend(queue_blocked)
         history_items, history_blocked = _build_history_items(state, config)
         blocked_items.extend(history_blocked)

@@ -318,11 +318,13 @@ class InitializeLabelsCommand:
             return ActionResult({"error": "No repository configured"}, status_code=400)
 
         try:
+            from ..control.label_manager import LabelManager
+            _lm = LabelManager(config)
             client = create_repository_host(config.repo)
             labels = [
-                config.get_label_in_progress(),
-                config.get_label_blocked(),
-                config.get_label_needs_human(),
+                _lm.in_progress,
+                _lm.blocked,
+                _lm.needs_human,
                 "priority:high",
                 "priority:medium",
                 "priority:low",

@@ -786,6 +786,7 @@ async def get_excluded_issues() -> JSONResponse:
             "flow_steps": flow_steps_for(flow_stage),
             "blocked_summary": blocked_summary(
                 list(entry.issue.labels),
+                _orchestrator.deps.label_manager,
                 dep_problem.summary if dep_problem else None,
             ),
         })
@@ -1537,17 +1538,17 @@ def _determine_issue_flow_stage(
     pr_url: str | None,
 ) -> str:
     """Determine the flow stage for an issue."""
-    from ..infra import labels as label_module
+    from ..domain.models import _is_blocking_label, _base_of
 
     # Active session = in_progress
     if active_task_kind is not None:
         return "in_progress"
 
     # Check labels
-    if label_module.is_blocking_any(labels):
+    if any(_is_blocking_label(l) for l in labels):
         return "blocked"
 
-    if label_module.is_pr_pending(labels):
+    if any(_base_of(l) == "pr-pending" for l in labels):
         return "awaiting_merge"
 
     # Check session history for completion
@@ -2411,11 +2412,11 @@ async def get_blocked_issues() -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..infra import labels as label_module
     from ..control.worktree_manager import get_worktree_path
 
     state = _orchestrator.state
     config = _orchestrator.config
+    lm = _orchestrator.deps.label_manager
 
     def make_issue_url(issue_number: int) -> str:
         return f"https://github.com/{config.repo}/issues/{issue_number}" if config.repo else ""
@@ -2428,9 +2429,9 @@ async def get_blocked_issues() -> JSONResponse:
             if not issue.is_blocked:
                 continue
 
-            blocking_labels = label_module.get_blocking_labels(list(issue.labels))
+            blocking_labels = lm.get_blocking(list(issue.labels))
             blocking_label = blocking_labels[0] if blocking_labels else "blocked"
-            needs_human = label_module.requires_human_any(list(issue.labels))
+            needs_human = lm.requires_human_any(list(issue.labels))
 
             # Try to get failure reason from history
             failure_reason = None
@@ -2528,7 +2529,6 @@ async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901 - m
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..infra import labels as label_module
     from ..control.actions import RemoveLabelAction
 
     try:
@@ -2543,6 +2543,7 @@ async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901 - m
     state = _orchestrator.state
     repository_host = _orchestrator.repository_host
     action_applier = _orchestrator.deps.action_applier
+    lm = _orchestrator.deps.label_manager
 
     unblocked = []
     failed = []
@@ -2551,7 +2552,7 @@ async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901 - m
         try:
             # Get current labels to find blocking ones
             current_labels = repository_host.get_issue_labels(issue_number)
-            blocking_labels = label_module.get_blocking_labels(current_labels)
+            blocking_labels = lm.get_blocking(current_labels)
 
             if blocking_labels:
                 for label in blocking_labels:
@@ -2614,7 +2615,6 @@ async def reset_and_retry(request: Request) -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..infra import labels as label_module
     from ..control.maintenance import reset_issue, ResetResult
 
     try:
@@ -2630,6 +2630,7 @@ async def reset_and_retry(request: Request) -> JSONResponse:
     config = _orchestrator.config
     repository_host = _orchestrator.repository_host
     deps = _orchestrator.deps
+    lm = deps.label_manager
 
     reset_results: list[dict] = []
     failed: list[dict] = []
@@ -2638,7 +2639,7 @@ async def reset_and_retry(request: Request) -> JSONResponse:
         try:
             # Get current labels to find blocking ones
             current_labels = repository_host.get_issue_labels(issue_number)
-            blocking_labels = label_module.get_blocking_labels(current_labels)
+            blocking_labels = lm.get_blocking(current_labels)
 
             result: ResetResult = reset_issue(
                 issue_number=issue_number,

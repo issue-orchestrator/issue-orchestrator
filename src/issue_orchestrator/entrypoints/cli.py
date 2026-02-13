@@ -369,7 +369,9 @@ def _print_orphan_branches(states: list, config: "Config", github, working_copy)
     delete_count = sum(1 for o in orphan_states if o.suggested_action == "delete-branch")
     if resume_count > 0:
         console.print(f"\n[dim]To resume work on open issues, add in-progress label:[/dim]")
-        console.print(f"[dim]  gh issue edit # --add-label {config.get_label_in_progress()}[/dim]")
+        from ..control.label_manager import LabelManager
+        _lm = LabelManager(config)
+        console.print(f"[dim]  gh issue edit # --add-label {_lm.in_progress}[/dim]")
     if delete_count > 0:
         console.print(f"\n[dim]To clean up stale branches:[/dim]")
         console.print(f"[dim]  git push origin --delete <branch-name>[/dim]")
@@ -880,10 +882,12 @@ def cmd_init(args: argparse.Namespace) -> int:
         return 1
 
     # Collect all labels to create
+    from ..control.label_manager import LabelManager
+    _lm = LabelManager(config)
     labels = [
-        config.get_label_in_progress(),
-        config.get_label_blocked(),
-        config.get_label_needs_human(),
+        _lm.in_progress,
+        _lm.blocked,
+        _lm.needs_human,
         "priority:high",
         "priority:medium",
         "priority:low",
