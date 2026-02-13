@@ -79,6 +79,7 @@ from ..ports.claim_manager import NullClaimManager
 from ..domain.lease_config import LeaseConfig
 
 if TYPE_CHECKING:
+    from ..control.label_manager import LabelManager
     from ..infra.orchestrator import Orchestrator
     from ..control.pr_scanner import PRScanner
     from ..control.session_restorer import SessionRestorer
@@ -213,6 +214,7 @@ def _create_planner(
     github: GitHubAdapter | None,
     events: EventSink,
     provider_resilience: ProviderResilienceManager | None = None,
+    label_manager: "LabelManager | None" = None,
 ) -> tuple[Planner, Scheduler, DependencyEvaluator | None, LabelSync | None]:
     """Create planner and supporting control plane components."""
     scheduler = Scheduler(config=config)
@@ -233,10 +235,10 @@ def _create_planner(
         foundation_milestone=config.foundation_milestone,
     ) if github else None
 
-    label_sync = LabelSync(labels=github, events=events, pr_tracker=github) if github else None
+    label_sync = LabelSync(labels=github, events=events, pr_tracker=github, label_manager=label_manager) if github else None
 
     review_workflow = ReviewWorkflow(config=config, events=events)
-    rework_workflow = ReworkWorkflow(config=config, events=events)
+    rework_workflow = ReworkWorkflow(config=config, events=events, label_manager=label_manager)
     triage_workflow = TriageWorkflow(config=config, events=events)
 
     planner = Planner(
@@ -247,6 +249,7 @@ def _create_planner(
         rework_workflow=rework_workflow,
         triage_workflow=triage_workflow,
         provider_resilience=provider_resilience,
+        label_manager=label_manager,
     )
     return planner, scheduler, dependency_evaluator, label_sync
 
@@ -521,8 +524,12 @@ def build_orchestrator(
         events=events,
     )
 
+    # Create label manager (shared instance for all control-layer components)
+    from ..control.label_manager import LabelManager as _LabelManager
+    label_manager = _LabelManager(config)
+
     # Create planner and control plane components
-    planner, _scheduler, _dependency_evaluator, label_sync = _create_planner(config, github, events, provider_resilience)
+    planner, _scheduler, _dependency_evaluator, label_sync = _create_planner(config, github, events, provider_resilience, label_manager=label_manager)
     session_manager = SessionManager(runner=runner, events=events, config=config)
 
     # Create IO adapters
@@ -614,11 +621,9 @@ def build_orchestrator(
     action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
 
     # Build infrastructure services bundle
-    from ..control.label_manager import LabelManager
     from ..control.infra_services import InfraServices
     from ..execution.label_store import LabelStore
 
-    label_manager = LabelManager(config)
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
     infra_services = InfraServices(
@@ -734,6 +739,10 @@ def build_orchestrator_for_testing(
         events=events,
     )
 
+    # Create label manager (shared instance for all control-layer components)
+    from ..control.label_manager import LabelManager as _LabelManager
+    label_manager = _LabelManager(config)
+
     # Create default planner if not provided
     if planner is None:
         scheduler = Scheduler(config=config)
@@ -741,6 +750,7 @@ def build_orchestrator_for_testing(
             config=config,
             scheduler=scheduler,
             provider_resilience=provider_resilience,
+            label_manager=label_manager,
         )
 
     # Create default session manager if not provided
@@ -853,7 +863,7 @@ def build_orchestrator_for_testing(
     )
 
     # Create LabelSync for testing
-    label_sync = LabelSync(labels=github, events=events, pr_tracker=github)
+    label_sync = LabelSync(labels=github, events=events, pr_tracker=github, label_manager=label_manager)
 
     # Create EventHub for testing
     event_hub = EventHub()
@@ -885,11 +895,9 @@ def build_orchestrator_for_testing(
     )
 
     # Build infrastructure services bundle
-    from ..control.label_manager import LabelManager
     from ..control.infra_services import InfraServices
     from ..execution.label_store import LabelStore
 
-    label_manager = LabelManager(config)
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
     infra_services = InfraServices(

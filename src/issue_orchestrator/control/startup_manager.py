@@ -26,6 +26,7 @@ from ..ports.issue import Issue
 
 if TYPE_CHECKING:
     from ..execution.queue_cache_store import QueueCacheStore
+    from .label_manager import LabelManager
 from ..domain.models import (
     OrchestratorState,
     PendingReview,
@@ -39,7 +40,6 @@ from .action_applier import ActionApplier
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
-from ..infra import labels
 from ..infra import gh_audit
 from ..infra.validation_state import has_pending_retry, read_validation_state, get_retry_prompt_path
 from ..infra.repo_identity import get_repo_head_sha
@@ -71,6 +71,7 @@ class StartupManager:
         launch_session_fn: Callable[[Issue], Optional[Session]],
         update_queue_cache_fn: Callable[[], None],
         queue_cache_store: "QueueCacheStore | None" = None,
+        label_manager: "LabelManager | None" = None,
     ):
         """Initialize the startup manager.
 
@@ -85,6 +86,7 @@ class StartupManager:
             launch_session_fn: Callback to launch a new session
             update_queue_cache_fn: Callback to update the queue cache
             queue_cache_store: Persistent store for queue cache (enables warm restarts)
+            label_manager: Label registry for prefix-aware queries.
         """
         self.config = config
         self.events = events
@@ -97,6 +99,10 @@ class StartupManager:
         self._launch_session = launch_session_fn
         self._update_queue_cache = update_queue_cache_fn
         self._queue_cache_store = queue_cache_store
+        if label_manager is None:
+            from .label_manager import LabelManager
+            label_manager = LabelManager(config)
+        self._lm = label_manager
 
     def _build_labels(self, *labels: str) -> list[str]:
         """Build labels list, including filtering.label if configured."""
@@ -228,7 +234,7 @@ class StartupManager:
         for milestone in milestones:
             with gh_audit.context(reason=gh_audit.AuditReason.STARTUP_REFRESH, scope=gh_audit.AuditScope.STARTUP):
                 issues.extend(self.repository_host.list_issues(
-                    labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
+                    labels=self._build_labels(agent_label, self._lm.in_progress),
                     milestone=milestone, limit=self.config.filtering.fetch_limit,
                 ))
 
@@ -267,11 +273,11 @@ class StartupManager:
 
     def _handle_issue_with_pr(self, issue: Issue, analysis: IssueState) -> None:
         """Handle issue that has an open PR."""
-        if not labels.is_pr_pending(issue.labels):
+        if not self._lm.is_pr_pending(issue.labels):
             print(f"  #{issue.number}: Has open PR - adding pr-pending label (crash recovery)")
             self._apply_label_actions([
-                AddLabelAction(issue_number=issue.number, label=labels.PR_PENDING, reason="startup recovery: missing pr-pending"),
-                RemoveLabelAction(issue_number=issue.number, label=self.config.get_label_in_progress(), reason="startup recovery: remove stale in-progress"),
+                AddLabelAction(issue_number=issue.number, label=self._lm.pr_pending, reason="startup recovery: missing pr-pending"),
+                RemoveLabelAction(issue_number=issue.number, label=self._lm.in_progress, reason="startup recovery: remove stale in-progress"),
             ])
         else:
             print(f"  #{issue.number}: Has open PR ({analysis.pr_url or 'unknown'}) - already has pr-pending")
@@ -280,7 +286,7 @@ class StartupManager:
         """Clear stale in-progress label from issue."""
         print(f"  #{issue.number}: No session or branch - clearing stale label")
         self._apply_label_actions([
-            RemoveLabelAction(issue_number=issue.number, label=self.config.get_label_in_progress(), reason="startup recovery: clear stale in-progress"),
+            RemoveLabelAction(issue_number=issue.number, label=self._lm.in_progress, reason="startup recovery: clear stale in-progress"),
         ])
 
     async def _recover_pending_reviews(self, state: OrchestratorState) -> None:

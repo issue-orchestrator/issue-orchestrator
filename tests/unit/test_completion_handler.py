@@ -1048,7 +1048,7 @@ class TestLabelActionGeneration:
         remove_label = next((a for a in actions if isinstance(a, RemoveLabelAction)), None)
 
         assert add_label is not None
-        assert add_label.label == labels.BLOCKED_NEEDS_HUMAN  # Needs human investigation
+        assert add_label.label == "needs-human"  # Needs human investigation
 
         assert comment is not None
         assert "Investigation" in comment.comment  # Explains agent-done was not called
@@ -1105,7 +1105,7 @@ class TestLabelActionGeneration:
         assert remove_label is not None
         assert remove_label.label == config.get_label_in_progress()
         assert not any(
-            isinstance(a, AddLabelAction) and a.label == labels.BLOCKED_NEEDS_HUMAN
+            isinstance(a, AddLabelAction) and a.label == "needs-human"
             for a in result.actions
         )
 
@@ -1125,7 +1125,7 @@ class TestLabelActionGeneration:
         result = handler.process_completion(session, SessionStatus.FAILED)
 
         add_labels = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
-        assert labels.BLOCKED_NEEDS_HUMAN in add_labels
+        assert "needs-human" in add_labels
         assert guard not in add_labels
 
     def test_failure_auto_retry_enabled_for_review_adds_review_guard(
@@ -1312,12 +1312,12 @@ class TestLabelActionGeneration:
 
         add_label = result.actions[0]
         assert isinstance(add_label, AddLabelAction)
-        # Note: blocked label is NOT prefixed (only in-progress is)
-        assert add_label.label == labels.BLOCKED
+        # Blocked label IS prefixed now (LabelManager applies prefix to all labels)
+        assert add_label.label == "bot:blocked"
 
         add_comment = result.actions[1]
         assert isinstance(add_comment, AddCommentAction)
-        assert f"`{labels.BLOCKED}`" in add_comment.comment
+        assert "`bot:blocked`" in add_comment.comment
 
         remove_label = result.actions[2]
         assert isinstance(remove_label, RemoveLabelAction)
@@ -1496,7 +1496,7 @@ class TestStatusSessionTypeMatrix:
 
         assert len(result.actions) == 3
         add_label = next(a for a in result.actions if isinstance(a, AddLabelAction))
-        assert add_label.label == labels.BLOCKED_NEEDS_HUMAN
+        assert add_label.label == "needs-human"
 
         comment = next(a for a in result.actions if isinstance(a, AddCommentAction))
         assert "Investigation" in comment.comment
@@ -1758,10 +1758,10 @@ class TestIntegrationBehaviors:
         # Events emitted
         assert events.has_event(str(EventName.SESSION_FAILED))
 
-        # Actions include blocked-needs-human label (for investigation) and comment
+        # Actions include needs-human label (for investigation) and comment
         add_label = next((a for a in result.actions if isinstance(a, AddLabelAction)), None)
         assert add_label is not None
-        assert add_label.label == labels.BLOCKED_NEEDS_HUMAN
+        assert add_label.label == "needs-human"
 
         # No cleanup or review queuing
         assert result.should_defer_cleanup is False

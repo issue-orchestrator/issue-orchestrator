@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from ..ports.session_runner import DiscoveredSession
     from ..ports.claim_manager import ClaimManager
     from .provider_resilience import ProviderResilienceManager
+    from .label_manager import LabelManager
 
 from ..infra.config import Config
 from ..infra.env import ENV_PREFIX
@@ -200,6 +201,7 @@ class SessionLauncher:
         claim_manager: Optional["ClaimManager"] = None,
         provider_resilience: Optional["ProviderResilienceManager"] = None,
         remove_session_machine: Callable[[str], None] | None = None,
+        label_manager: Optional["LabelManager"] = None,
     ):
         self.config = config
         self.events = events
@@ -222,6 +224,10 @@ class SessionLauncher:
         self._provider_resilience = provider_resilience
         self._provider_policy = ProviderAvailabilityPolicy(config, provider_resilience) if provider_resilience else None
         self._remove_session_machine = remove_session_machine
+        if label_manager is None:
+            from .label_manager import LabelManager
+            label_manager = LabelManager(config)
+        self._lm = label_manager
 
     def _worktree_reuse_options(self, *, allow_remote_branch_delete: bool = True) -> WorktreeReuseOptions:
         return WorktreeReuseOptions(
@@ -540,7 +546,7 @@ class SessionLauncher:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), ctx.error)
             _write_worktree_diagnostic(ctx.error)
-            needs_human_label = self.config.get_label_needs_human()
+            needs_human_label = self._lm.needs_human
             self._apply_actions([
                 AddLabelAction(
                     issue_number=issue.number,
@@ -620,7 +626,7 @@ class SessionLauncher:
 
         # Add in-progress label
         step_start = time.time()
-        in_progress_label = self.config.get_label_in_progress()
+        in_progress_label = self._lm.in_progress
         label_ok = self._apply_actions([
             AddLabelAction(
                 issue_number=issue.number,
@@ -723,7 +729,7 @@ class SessionLauncher:
             self._apply_actions([
                 RemoveLabelAction(
                     issue_number=issue.number,
-                    label=self.config.get_label_in_progress(),
+                    label=self._lm.in_progress,
                     reason="session creation failed",
                 ),
             ], context="launch_session_creation_failed")
@@ -854,7 +860,7 @@ class SessionLauncher:
             log_transition("review", review.pr_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(review.issue_number, "BLOCKED: worktree preparation failed for review: %s"), ctx.error)
             _write_worktree_diagnostic(ctx.error)
-            needs_human_label = self.config.get_label_needs_human()
+            needs_human_label = self._lm.needs_human
             self._apply_actions([
                 AddLabelAction(
                     issue_number=review.issue_number,
@@ -1022,7 +1028,7 @@ class SessionLauncher:
         if not pr_info:
             return existing_work
 
-        keep_current_label = self.config.get_label_review_keep_current_approach()
+        keep_current_label = self._lm.review_keep_approach
         if keep_current_label not in pr_info.labels:
             return existing_work
 
@@ -1111,7 +1117,7 @@ class SessionLauncher:
             log_transition("rework", issue_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(issue_number, "BLOCKED: worktree preparation failed for rework: %s"), ctx.error)
             _write_worktree_diagnostic(ctx.error)
-            needs_human_label = self.config.get_label_needs_human()
+            needs_human_label = self._lm.needs_human
             self._apply_actions([
                 AddLabelAction(
                     issue_number=issue_number,
@@ -1295,7 +1301,7 @@ class SessionLauncher:
         self._apply_actions([
             RemoveLabelAction(
                 issue_number=pr_number,
-                label=self.config.get_label_needs_rework(),
+                label=self._lm.needs_rework,
                 reason="rework started",
             ),
         ], context="rework_remove_needs_rework")
@@ -1303,7 +1309,7 @@ class SessionLauncher:
             "pr_number": pr_number,
             "issue_number": issue_number,
             "issue_key": str(issue_number),
-            "removed": [self.config.get_label_needs_rework()],
+            "removed": [self._lm.needs_rework],
         }))
 
         return LaunchResult(session, True)
@@ -1648,14 +1654,14 @@ class SessionLauncher:
         actions: list[Action] = []
         removed: list[str] = []
         for i in range(1, cycle):
-            label = f"rework-cycle-{i}"
+            label = self._lm.rework_cycle(i)
             removed.append(label)
             actions.append(RemoveLabelAction(
                 issue_number=pr_number,
                 label=label,
                 reason="rework cycle update",
             ))
-        added_label = f"rework-cycle-{cycle}"
+        added_label = self._lm.rework_cycle(cycle)
         actions.append(AddLabelAction(
             issue_number=pr_number,
             label=added_label,

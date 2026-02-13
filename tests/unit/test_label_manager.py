@@ -77,7 +77,7 @@ class TestNamedProperties:
         assert lm.blocked_failed == "blocked-failed"
 
     def test_needs_human(self, lm: LabelManager) -> None:
-        assert lm.needs_human == "blocked-needs-human"
+        assert lm.needs_human == "needs-human"
 
     def test_blocked_cross_milestone(self, lm: LabelManager) -> None:
         assert lm.blocked_cross_milestone == "blocked-cross-milestone"
@@ -249,7 +249,7 @@ class TestStateQueries:
         assert lm.is_pr_pending(["in-progress"]) is False
 
     def test_requires_human(self, lm: LabelManager) -> None:
-        assert lm.requires_human("blocked-needs-human") is True
+        assert lm.requires_human("needs-human") is True
         assert lm.requires_human("needs-human") is True  # legacy
         assert lm.requires_human("blocked-failed") is False
 
@@ -257,7 +257,7 @@ class TestStateQueries:
         assert plm.requires_human("bot:blocked-needs-human") is True
 
     def test_requires_human_any(self, lm: LabelManager) -> None:
-        assert lm.requires_human_any(["blocked-needs-human", "bug"]) is True
+        assert lm.requires_human_any(["needs-human", "bug"]) is True
         assert lm.requires_human_any(["blocked-failed", "bug"]) is False
 
 
@@ -312,10 +312,10 @@ class TestPickBlocking:
         assert lm.pick_blocking(failed=True) == "blocked-failed"
 
     def test_needs_human(self, lm: LabelManager) -> None:
-        assert lm.pick_blocking(needs_human=True) == "blocked-needs-human"
+        assert lm.pick_blocking(needs_human=True) == "needs-human"
 
     def test_needs_human_takes_precedence(self, lm: LabelManager) -> None:
-        assert lm.pick_blocking(failed=True, needs_human=True) == "blocked-needs-human"
+        assert lm.pick_blocking(failed=True, needs_human=True) == "needs-human"
 
     def test_prefixed(self, plm: LabelManager) -> None:
         assert plm.pick_blocking(failed=True) == "bot:blocked-failed"

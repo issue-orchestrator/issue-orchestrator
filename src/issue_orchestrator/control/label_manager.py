@@ -82,7 +82,7 @@ class LabelManager:
             LabelEntry("pr_pending", "pr-pending", LabelCategory.LIFECYCLE, "PR pending merge"),
             LabelEntry("blocked", config.label_blocked, LabelCategory.BLOCKING, "Blocked"),
             LabelEntry("blocked_failed", "blocked-failed", LabelCategory.BLOCKING, "Failed run"),
-            LabelEntry("blocked_needs_human", "blocked-needs-human", LabelCategory.BLOCKING, "Needs human"),
+            LabelEntry("blocked_needs_human", config.label_needs_human, LabelCategory.BLOCKING, "Needs human"),
             LabelEntry("blocked_cross_milestone", "blocked-cross-milestone", LabelCategory.BLOCKING, "Cross-milestone dep"),
             LabelEntry("needs_rework", config.label_needs_rework, LabelCategory.LIFECYCLE, "Needs rework"),
             LabelEntry("validation_failed", config.label_validation_failed, LabelCategory.LIFECYCLE, "Validation failed"),

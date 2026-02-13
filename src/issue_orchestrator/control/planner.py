@@ -46,6 +46,7 @@ from ..domain.models import (
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
     from .provider_resilience import ProviderResilienceManager
+    from .label_manager import LabelManager
 from .scheduler import Scheduler
 from .dependency_evaluator import DependencyEvaluator
 from .provider_availability import ProviderAvailabilityPolicy
@@ -72,7 +73,6 @@ from .actions import (
     SessionType,
 )
 from .reconciliation import build_expected_for_mutation
-from ..infra import labels
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +284,7 @@ class Planner:
         rework_workflow: Optional[ReworkWorkflow] = None,
         triage_workflow: Optional[TriageWorkflow] = None,
         provider_resilience: Optional["ProviderResilienceManager"] = None,
+        label_manager: Optional["LabelManager"] = None,
     ):
         """Initialize planner with its dependencies.
 
@@ -294,6 +295,7 @@ class Planner:
             review_workflow: Optional review decision logic
             rework_workflow: Optional rework decision logic
             triage_workflow: Optional triage decision logic
+            label_manager: Label registry for prefix-aware queries.
         """
         self.config = config
         self.scheduler = scheduler
@@ -303,6 +305,10 @@ class Planner:
         self.triage_workflow = triage_workflow
         self.provider_resilience = provider_resilience
         self.provider_policy = ProviderAvailabilityPolicy(config, provider_resilience) if provider_resilience else None
+        if label_manager is None:
+            from .label_manager import LabelManager
+            label_manager = LabelManager(config)
+        self._lm = label_manager
 
     def plan(self, snapshot: OrchestratorSnapshot) -> Plan:
         """Create a plan for the current state.
@@ -451,7 +457,7 @@ class Planner:
                 # Add pr-pending label to prevent issue re-pickup while awaiting merge
                 actions.append(AddLabelAction(
                     issue_number=review.issue_number,
-                    label=labels.PR_PENDING,
+                    label=self._lm.pr_pending,
                     reason=f"session completed with PR #{review.pr_number} - awaiting merge",
                     expected=build_expected_for_mutation(),
                 ))
@@ -479,8 +485,8 @@ class Planner:
 
     def _blocked_label_for_record(self, observed: ObservedCompletion) -> str:
         if observed.blocked_reason == "provider_unavailable":
-            return self.config.get_label_provider_unavailable()
-        return labels.BLOCKED
+            return self._lm.provider_unavailable
+        return self._lm.blocked
 
     def _record_provider_skip(
         self,
@@ -581,7 +587,7 @@ class Planner:
             # Always remove in-progress label when session completes
             actions.append(RemoveLabelAction(
                 issue_number=issue_number,
-                label=labels.IN_PROGRESS,
+                label=self._lm.in_progress,
                 reason=f"session completed with outcome={observed.outcome}",
                 expected=build_expected_for_mutation(),
             ))
@@ -593,7 +599,7 @@ class Planner:
                 if observed.needs_publish:
                     actions.append(AddLabelAction(
                         issue_number=issue_number,
-                        label=labels.PR_PENDING,
+                        label=self._lm.pr_pending,
                         reason="session completed - publish job pending",
                         expected=build_expected_for_mutation(),
                     ))
@@ -615,14 +621,14 @@ class Planner:
                     logger.debug("Planner: adding blocked label for issue #%d", issue_number)
             elif observed.outcome == CompletionOutcome.NEEDS_HUMAN:
                 # Session needs human intervention - use BLOCKED_NEEDS_HUMAN
-                if plan_context.should_add_label(issue_number, labels.BLOCKED_NEEDS_HUMAN):
+                if plan_context.should_add_label(issue_number, self._lm.needs_human):
                     actions.append(AddLabelAction(
                         issue_number=issue_number,
-                        label=labels.BLOCKED_NEEDS_HUMAN,
+                        label=self._lm.needs_human,
                         reason="session needs human intervention",
                         expected=build_expected_for_mutation(),
                     ))
-                    plan_context.record_add(issue_number, labels.BLOCKED_NEEDS_HUMAN)
+                    plan_context.record_add(issue_number, self._lm.needs_human)
                     logger.debug("Planner: adding blocked-needs-human label for issue #%d", issue_number)
             elif observed.outcome in (CompletionOutcome.REVIEW_APPROVED, CompletionOutcome.REVIEW_CHANGES_REQUESTED):
                 # Review session completed - labels handled by review workflow
@@ -772,8 +778,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 pr_number=escalation.pr_number,
                 escalation_reason="max rework cycles exceeded",
                 rework_cycles=escalation.rework_cycle - 1,  # Completed cycles, not current
-                needs_human_label=self.config.get_label_needs_human(),
-                needs_rework_label=self.config.get_label_needs_rework(),
+                needs_human_label=self._lm.needs_human,
+                needs_rework_label=self._lm.needs_rework,
                 max_rework_cycles=self.config.max_rework_cycles,
                 reason=f"PR #{escalation.pr_number} exceeded max rework cycles ({escalation.rework_cycle - 1})",
                 expected=build_expected_for_mutation(),
@@ -898,7 +904,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         for issue in snapshot.stale_in_progress_issues:
             actions.append(RemoveLabelAction(
                 issue_number=issue.number,
-                label=labels.IN_PROGRESS,
+                label=self._lm.in_progress,
                 reason="stale - no running session",
                 expected=build_expected_for_mutation(),
             ))
@@ -931,14 +937,14 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             # Remove the io:claimed label
             actions.append(RemoveLabelAction(
                 issue_number=issue.number,
-                label=labels.IO_CLAIMED,
+                label=self._lm.io_claimed,
                 reason="stale claim expired",
                 expected=build_expected_for_mutation(),
             ))
             # Add blocked:stale-claim label for visibility
             actions.append(AddLabelAction(
                 issue_number=issue.number,
-                label=labels.BLOCKED_STALE_CLAIM,
+                label=self._lm.blocked_stale_claim,
                 reason="stale claim detected - orchestrator may have crashed",
                 expected=build_expected_for_mutation(),
             ))
@@ -990,7 +996,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             if "cross-milestone" in reason.lower():
                 actions.append(AddLabelAction(
                     issue_number=issue.number,
-                    label=labels.BLOCKED_CROSS_MILESTONE,
+                    label=self._lm.blocked_cross_milestone,
                     reason=f"dependency violates milestone scope: {reason}",
                     expected=build_expected_for_mutation(),
                 ))
@@ -1211,8 +1217,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         pr_number=issue_num,  # PR resolved by adapter at execution time
                         escalation_reason=escalation.reason or "max rework cycles reached",
                         rework_cycles=rework.rework_cycle,
-                        needs_human_label=self.config.get_label_needs_human(),
-                        needs_rework_label=self.config.get_label_needs_rework(),
+                        needs_human_label=self._lm.needs_human,
+                        needs_rework_label=self._lm.needs_rework,
                         max_rework_cycles=self.config.max_rework_cycles,
                         reason=f"escalating: cycle {rework.rework_cycle} >= max {escalation.max_cycles}",
                         expected=build_expected_for_mutation(),

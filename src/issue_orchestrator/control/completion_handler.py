@@ -22,6 +22,7 @@ if TYPE_CHECKING:
     from ..domain.state_machines.review_machine import ReviewStateMachine
     from ..domain.models import PendingReview, PendingRework, PendingTriageReview
     from .state_machine_manager import StateMachineManager
+    from .label_manager import LabelManager
 
 from ..infra.config import Config
 from ..events import EventName
@@ -32,7 +33,6 @@ from ..ports.session_output import SessionOutput
 from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
 from .completion_processor import ERROR_PREFIX_PUSH, ERROR_PREFIX_CREATE_PR
 from .reconciliation import build_expected_for_mutation, ExpectedState
-from ..infra import labels
 from ..domain.triage_manifest import TriageManifest
 from pathlib import Path
 
@@ -134,6 +134,7 @@ class CompletionHandler:
         get_review_machine_fn: Callable[[int], Optional["ReviewStateMachine"]],
         session_output: SessionOutput,
         remove_session_machine_fn: Callable[[str], None] | None = None,
+        label_manager: "LabelManager | None" = None,
     ):
         self.config = config
         self.events = events
@@ -143,6 +144,10 @@ class CompletionHandler:
         self._get_review_machine = get_review_machine_fn
         self._session_output = session_output
         self._remove_session_machine = remove_session_machine_fn
+        if label_manager is None:
+            from .label_manager import LabelManager
+            label_manager = LabelManager(config)
+        self._lm = label_manager
 
     def _interrupted_retry_mode(self, session: Session) -> str | None:
         """Map session type to interrupted-retry mode."""
@@ -228,7 +233,7 @@ class CompletionHandler:
         if session.terminal_id.startswith("issue-"):
             actions.append(RemoveLabelAction(
                 issue_number=session.issue.number,
-                label=self.config.get_label_in_progress(),
+                label=self._lm.in_progress,
                 reason="Interrupted issue session - releasing claim for auto-retry",
                 expected=expected,
             ))
@@ -408,7 +413,7 @@ class CompletionHandler:
         if review_exchange_completed and pr_url:
             completion_actions.append(AddLabelAction(
                 issue_number=session.issue.number,
-                label=labels.PR_PENDING,
+                label=self._lm.pr_pending,
                 reason="review exchange completed - awaiting merge",
                 expected=build_expected_for_mutation(),
             ))
@@ -829,7 +834,7 @@ class CompletionHandler:
         labels = pr_info.labels
         if self.config.code_reviewed_label and self.config.code_reviewed_label in labels:
             self._handle_review_approved(pr_info, pr_number, review_machine)
-        elif self.config.get_label_needs_rework() in labels:
+        elif self._lm.needs_rework in labels:
             self._handle_changes_requested(pr_number, review_machine)
 
     def _handle_review_approved(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
@@ -981,7 +986,7 @@ class CompletionHandler:
         from pathlib import Path
 
         issue_number = session.issue.number
-        in_progress_label = self.config.get_label_in_progress()
+        in_progress_label = self._lm.in_progress
 
         # Brief error hint for comment (not full details - those are in diagnostic file)
         first_error = critical_errors[0][:100] if critical_errors else "Unknown error"
@@ -997,7 +1002,7 @@ class CompletionHandler:
         return [
             AddLabelAction(
                 issue_number=issue_number,
-                label=labels.BLOCKED_FAILED,
+                label=self._lm.blocked_failed,
                 reason="Processing failed after agent completion (push/PR creation failed)",
                 expected=expected,
             ),
@@ -1009,7 +1014,7 @@ class CompletionHandler:
                         f"{diagnostic_info}\n"
                         f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                         f"- Session: `{session.terminal_id}`\n\n"
-                        f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                        f"This issue has been marked as `{self._lm.blocked_failed}` and will not be automatically retried.\n"
                         f"Remove the label to retry.",
                 reason="Notify about processing failure",
                 expected=expected,
@@ -1029,7 +1034,7 @@ class CompletionHandler:
     ) -> list[Action]:
         """Generate actions when session timed out."""
         issue_number = session.issue.number
-        in_progress_label = self.config.get_label_in_progress()
+        in_progress_label = self._lm.in_progress
         is_issue_session = session.terminal_id.startswith("issue-")
         session_kind = session.terminal_id.split("-", 1)[0]
 
@@ -1038,7 +1043,7 @@ class CompletionHandler:
             return [
                 AddLabelAction(
                     issue_number=issue_number,
-                    label=labels.BLOCKED_FAILED,
+                    label=self._lm.blocked_failed,
                     reason=f"Session timed out after {session.runtime_minutes} minutes",
                     expected=expected,
                 ),
@@ -1048,7 +1053,7 @@ class CompletionHandler:
                             f"The agent session exceeded the {timeout_mins} minute timeout limit.\n\n"
                             f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                             f"- Session: `{session.terminal_id}`\n\n"
-                            f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                            f"This issue has been marked as `{self._lm.blocked_failed}` and will not be automatically retried.\n"
                             f"Remove the label to allow reprocessing.",
                     reason="Notify about session timeout",
                     expected=expected,
@@ -1084,7 +1089,7 @@ class CompletionHandler:
             return retry_actions
 
         issue_number = session.issue.number
-        in_progress_label = self.config.get_label_in_progress()
+        in_progress_label = self._lm.in_progress
         is_issue_session = session.terminal_id.startswith("issue-")
         session_kind = session.terminal_id.split("-", 1)[0]
 
@@ -1092,7 +1097,7 @@ class CompletionHandler:
             return [
                 AddLabelAction(
                     issue_number=issue_number,
-                    label=labels.BLOCKED_NEEDS_HUMAN,
+                    label=self._lm.needs_human,
                     reason="Session terminated without calling agent-done (mandatory)",
                     expected=expected,
                 ),
@@ -1109,7 +1114,7 @@ class CompletionHandler:
                             f"- Orchestrator shutdown/restart interrupted the session lifecycle\n"
                             f"- Agent ignored the mandatory `agent-done` requirement\n"
                             f"- Infrastructure issue prevented completion\n\n"
-                            f"This issue has been marked as `{labels.BLOCKED_NEEDS_HUMAN}` for investigation.\n"
+                            f"This issue has been marked as `{self._lm.needs_human}` for investigation.\n"
                             f"Remove the label after investigating to allow reprocessing.",
                     reason="Notify about session needing human investigation",
                     expected=expected,
@@ -1146,7 +1151,7 @@ class CompletionHandler:
     ) -> list[Action]:
         """Generate actions when agent explicitly reported blocked."""
         is_issue_session = session.terminal_id.startswith("issue-")
-        label = blocked_label or labels.BLOCKED
+        label = blocked_label or self._lm.blocked
 
         if is_issue_session:
             reason_text = blocked_reason.strip() if blocked_reason else "No reason provided."
@@ -1171,7 +1176,7 @@ class CompletionHandler:
                 ),
                 RemoveLabelAction(
                     issue_number=session.issue.number,
-                    label=self.config.get_label_in_progress(),
+                    label=self._lm.in_progress,
                     reason="Session blocked - releasing claim",
                     expected=expected,
                 ),
@@ -1287,7 +1292,7 @@ class CompletionHandler:
             # POLICY: Completion → release in-progress (claim maintained via pr-pending)
             actions: list[Action] = [RemoveLabelAction(
                 issue_number=session.issue.number,
-                label=self.config.get_label_in_progress(),
+                label=self._lm.in_progress,
                 reason="Session completed successfully",
                 expected=expected,
             )]

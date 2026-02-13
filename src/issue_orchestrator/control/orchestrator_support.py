@@ -503,7 +503,7 @@ def _detect_stale_claims(
     Returns:
         List of issues with stale claims
     """
-    from ..infra import labels
+    from ..infra.labels import IO_CLAIMED
 
     if not claim_manager:
         return []
@@ -515,7 +515,7 @@ def _detect_stale_claims(
 
     for issue in issues:
         # Only check issues with io:claimed label
-        if labels.IO_CLAIMED not in issue.labels:
+        if IO_CLAIMED not in issue.labels:
             continue
 
         # Skip issues with active sessions (claim is valid, session is running)
