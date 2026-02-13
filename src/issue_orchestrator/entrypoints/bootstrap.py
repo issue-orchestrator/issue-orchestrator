@@ -43,6 +43,7 @@ from ..execution import (
     CompositeEventSink,
     SqliteGoalPilotStore,
     SQLiteProviderCircuitStore,
+    QueueCacheStore,
     TimelineEventSink,
     DefaultTimelineReader,
     FileSystemTimelineStore,
@@ -511,6 +512,9 @@ def build_orchestrator(
     provider_circuit_store = SQLiteProviderCircuitStore(
         state_dir(config.repo_root) / "provider_circuit.sqlite"
     )
+    queue_cache_store = QueueCacheStore(
+        state_dir(config.repo_root) / "queue_cache.sqlite"
+    )
     provider_resilience = ProviderResilienceManager(
         config.provider_resilience,
         store=provider_circuit_store,
@@ -609,6 +613,24 @@ def build_orchestrator(
     # When a worktree is removed, mark associated jobs as WORKTREE_GONE
     action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
 
+    # Build infrastructure services bundle
+    from ..control.label_manager import LabelManager
+    from ..control.infra_services import InfraServices
+    from ..execution.label_store import LabelStore
+
+    label_manager = LabelManager(config)
+    label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
+
+    infra_services = InfraServices(
+        label_manager=label_manager,
+        label_store=label_store,
+        queue_cache_store=queue_cache_store,
+        provider_resilience=provider_resilience,
+        timeline_reader=timeline_reader,
+        timeline_writer=timeline_writer,
+        goal_pilot_store=goal_pilot_store,
+    )
+
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)
     deps = OrchestratorDeps(
         events=events,
@@ -638,10 +660,7 @@ def build_orchestrator(
         lease_renewer=lease_renewer,
         completion_observer=completion_observer,
         publish_executor=publish_executor,
-        goal_pilot_store=goal_pilot_store,
-        provider_resilience=provider_resilience,
-        timeline_reader=timeline_reader,
-        timeline_writer=timeline_writer,
+        services=infra_services,
     )
 
     return Orchestrator(config=config, deps=deps)
@@ -860,6 +879,29 @@ def build_orchestrator_for_testing(
     # Wire up worktree removal callback for async completion job tracking
     action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
 
+    # Queue cache store for testing (uses repo_root state dir)
+    queue_cache_store = QueueCacheStore(
+        state_dir(config.repo_root) / "queue_cache.sqlite"
+    )
+
+    # Build infrastructure services bundle
+    from ..control.label_manager import LabelManager
+    from ..control.infra_services import InfraServices
+    from ..execution.label_store import LabelStore
+
+    label_manager = LabelManager(config)
+    label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
+
+    infra_services = InfraServices(
+        label_manager=label_manager,
+        label_store=label_store,
+        queue_cache_store=queue_cache_store,
+        provider_resilience=provider_resilience,
+        timeline_reader=timeline_reader,
+        timeline_writer=timeline_writer,
+        goal_pilot_store=goal_pilot_store,
+    )
+
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)
     deps = OrchestratorDeps(
         events=events,
@@ -889,10 +931,7 @@ def build_orchestrator_for_testing(
         lease_renewer=lease_renewer,
         completion_observer=completion_observer,
         publish_executor=publish_executor,
-        goal_pilot_store=goal_pilot_store,
-        provider_resilience=provider_resilience,
-        timeline_reader=timeline_reader,
-        timeline_writer=timeline_writer,
+        services=infra_services,
     )
 
     return Orchestrator(config=config, deps=deps)

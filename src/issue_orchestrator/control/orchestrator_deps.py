@@ -15,6 +15,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..events import EventHub
+    from ..execution.label_store import LabelStore
+    from ..execution.queue_cache_store import QueueCacheStore
     from ..ports import (
         EventSink,
         SessionRunner,
@@ -31,6 +33,8 @@ if TYPE_CHECKING:
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.working_copy import WorkingCopy
     from ..ports.claim_manager import ClaimManager
+    from .infra_services import InfraServices
+    from .label_manager import LabelManager
     from .planner import Planner
     from .session_manager import SessionManager
     from .label_sync import LabelSync
@@ -59,38 +63,10 @@ class OrchestratorDeps:
     The Orchestrator receives this bundle instead of many individual parameters,
     making the wiring explicit and type-checked.
 
-    Attributes:
-        events: Event sink for publishing trace events
-        runner: Session runner for terminal operations
-        repository_host: GitHub adapter for issue/PR operations
-        e2e_issue_tracker: E2E issue tracker for failure issue operations
-        fresh_issue_reader: FreshIssueReader for correctness-critical reads
-        event_hub: Event hub for internal event distribution
-        planner: Planning engine for action generation
-        session_manager: Manages terminal sessions
-        label_sync: Label synchronization operations
-        action_applier: Applies planned actions to external systems
-        fact_gatherer: Gathers facts for planning cycle
-        pr_scanner: Scans PRs for review/rework state
-        session_restorer: Restores sessions after restart
-        worktree_manager: Manages git worktrees
-        working_copy: Git working copy operations
-        command_runner: Executes shell commands
-        manifest_downloader: Downloads PR data for triage sessions
-        state_machine_manager: Manages issue/session/review state machines
-        completion_processor: Processes session completion files
-        session_controller: Decides session outcomes
-        health_gate: System health checks (capacity, rate limits)
-        session_output: Session artifact storage (logs, manifests, validation)
-        claim_manager: Manages issue claims for multi-orchestrator coordination
-        claim_gate: Verifies claims before write operations
-        lease_renewer: Renews leases for long-running sessions
-        completion_observer: Observes session completions (fast, no execution)
-        publish_executor: Executes publish jobs in background threads
-        goal_pilot_store: Durable Goal Pilot state store
-        provider_resilience: Provider circuit breaker manager
-        timeline_reader: Timeline reader for issue event traces
-        timeline_writer: Timeline writer for issue event traces
+    Cross-cutting infrastructure services (label management, persistence,
+    provider resilience, timeline) are bundled in ``services: InfraServices``.
+    Backward-compat properties delegate to the bundle so existing callers
+    (e.g. ``deps.provider_resilience``) continue to work unchanged.
     """
 
     # Core event/runtime ports
@@ -134,12 +110,37 @@ class OrchestratorDeps:
     completion_observer: "CompletionObserver"
     publish_executor: "PublishJobExecutor"
 
-    # Goal Pilot external memory
-    goal_pilot_store: "GoalPilotStore"
+    # Cross-cutting infrastructure services (label mgmt, persistence, etc.)
+    services: "InfraServices"
 
-    # Provider resilience
-    provider_resilience: "ProviderResilienceManager"
+    # ------------------------------------------------------------------
+    # Backward-compat properties — delegate to services bundle
+    # ------------------------------------------------------------------
 
-    # Timeline storage
-    timeline_reader: "TimelineReader"
-    timeline_writer: "TimelineWriter"
+    @property
+    def label_manager(self) -> "LabelManager":
+        return self.services.label_manager
+
+    @property
+    def label_store(self) -> "LabelStore":
+        return self.services.label_store
+
+    @property
+    def goal_pilot_store(self) -> "GoalPilotStore":
+        return self.services.goal_pilot_store
+
+    @property
+    def provider_resilience(self) -> "ProviderResilienceManager":
+        return self.services.provider_resilience
+
+    @property
+    def queue_cache_store(self) -> "QueueCacheStore":
+        return self.services.queue_cache_store
+
+    @property
+    def timeline_reader(self) -> "TimelineReader":
+        return self.services.timeline_reader
+
+    @property
+    def timeline_writer(self) -> "TimelineWriter":
+        return self.services.timeline_writer

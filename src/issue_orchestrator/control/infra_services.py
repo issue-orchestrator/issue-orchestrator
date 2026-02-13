@@ -1,0 +1,38 @@
+"""Cross-cutting infrastructure services bundle.
+
+Groups services that many control-layer components need (label management,
+persistence, provider resilience, timeline) into a single frozen dataclass.
+This replaces 7 individual fields on ``OrchestratorDeps``.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from ..execution.label_store import LabelStore
+    from ..execution.queue_cache_store import QueueCacheStore
+    from ..ports.goal_pilot_store import GoalPilotStore
+    from ..ports.timeline_reader import TimelineReader
+    from ..ports.timeline_writer import TimelineWriter
+    from .label_manager import LabelManager
+    from .provider_resilience import ProviderResilienceManager
+
+
+@dataclass(frozen=True)
+class InfraServices:
+    """Cross-cutting infrastructure services.
+
+    Bundled into a single object so ``OrchestratorDeps`` doesn't keep growing
+    one field at a time.  Backward-compat properties on OrchestratorDeps
+    delegate here.
+    """
+
+    label_manager: "LabelManager"
+    label_store: "LabelStore"
+    queue_cache_store: "QueueCacheStore"
+    provider_resilience: "ProviderResilienceManager"
+    timeline_reader: "TimelineReader"
+    timeline_writer: "TimelineWriter"
+    goal_pilot_store: "GoalPilotStore"
