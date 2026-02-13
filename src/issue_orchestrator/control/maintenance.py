@@ -18,6 +18,8 @@ if TYPE_CHECKING:
     from ..ports.working_copy import WorkingCopy
     from ..domain.models import SessionHistoryEntry
     from .action_applier import ActionApplier
+    from .label_manager import LabelManager
+    from ..execution.label_store import LabelStore
 
 from .actions import RemoveLabelAction
 from .worktree_manager import get_worktree_path
@@ -72,17 +74,20 @@ def reset_issue(
     worktree_manager: "WorktreeManager",
     working_copy: "WorkingCopy",
     action_applier: "ActionApplier",
-    blocking_labels: list[str],
+    label_manager: "LabelManager",
+    current_labels: list[str],
     session_history: list["SessionHistoryEntry"],
     completed_today: list[int],
+    label_store: "LabelStore | None" = None,
 ) -> ResetResult:
     """Reset an issue to pristine state for fresh retry.
 
     This "nuclear option" cleans up all local and remote state:
     1. Deletes the local worktree
     2. Deletes the remote branch
-    3. Removes blocking labels
-    4. Removes from session history
+    3. Removes ALL orchestrator-owned labels (not just blocking)
+    4. Clears label persistence store
+    5. Removes from session history
 
     Args:
         issue_number: The issue to reset
@@ -90,9 +95,11 @@ def reset_issue(
         worktree_manager: Manager for worktree lifecycle operations
         working_copy: Working copy adapter for git operations
         action_applier: For applying label changes
-        blocking_labels: Blocking labels to remove from the issue
+        label_manager: For identifying orchestrator-owned labels
+        current_labels: Current labels on the issue (from GitHub)
         session_history: Session history list (will be mutated)
         completed_today: Completed today list (will be mutated)
+        label_store: Optional label persistence store to clean
 
     Returns:
         ResetResult with details of what was cleaned up
@@ -113,7 +120,6 @@ def reset_issue(
                 logger.warning("[reset] Failed to delete worktree %s: %s", worktree_path, e)
 
         # 2. Delete remote branch
-        # Find the branch for this issue from remote branches
         branch_name = _find_issue_branch(working_copy, config.repo_root, issue_number)
         if branch_name:
             try:
@@ -123,8 +129,9 @@ def reset_issue(
             except Exception as e:
                 logger.warning("[reset] Failed to delete remote branch %s: %s", branch_name, e)
 
-        # 3. Remove blocking labels
-        for label in blocking_labels:
+        # 3. Remove ALL orchestrator-owned labels (not just blocking)
+        ours = label_manager.get_ours(current_labels)
+        for label in ours:
             action = RemoveLabelAction(
                 issue_number=issue_number,
                 label=label,
@@ -140,8 +147,14 @@ def reset_issue(
                     label, issue_number, result.error or "unknown error"
                 )
 
-        # 4. Remove from session history
-        # Note: We mutate the list in place since it's passed by reference
+        # 4. Clear label persistence store
+        if label_store is not None:
+            try:
+                label_store.remove_issue(issue_number)
+            except Exception as e:
+                logger.warning("[reset] Failed to clear label store for #%d: %s", issue_number, e)
+
+        # 5. Remove from session history
         session_history[:] = [
             entry for entry in session_history
             if entry.issue_number != issue_number

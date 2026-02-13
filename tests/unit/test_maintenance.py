@@ -57,6 +57,16 @@ def mock_config(tmp_path):
 
 
 @pytest.fixture
+def mock_label_manager():
+    """Create a mock LabelManager that returns current_labels as 'ours'."""
+    lm = MagicMock()
+    # By default, get_ours returns whatever labels are passed in
+    # Tests can override this per-case
+    lm.get_ours = MagicMock(side_effect=lambda labels: labels)
+    return lm
+
+
+@pytest.fixture
 def sample_session_history_entry():
     """Create a sample SessionHistoryEntry."""
     return SessionHistoryEntry(
@@ -242,6 +252,7 @@ class TestResetIssue:
         mock_working_copy,
         mock_action_applier,
         mock_config,
+        mock_label_manager,
     ):
         """Test successful reset with all cleanup operations."""
         # Setup - compute worktree path the same way get_worktree_path does
@@ -262,7 +273,8 @@ class TestResetIssue:
             worktree_manager=mock_worktree_manager,
             working_copy=mock_working_copy,
             action_applier=mock_action_applier,
-            blocking_labels=["blocked"],
+            label_manager=mock_label_manager,
+            current_labels=["blocked"],
             session_history=session_history,
             completed_today=completed_today,
         )
@@ -295,6 +307,7 @@ class TestResetIssue:
         mock_working_copy,
         mock_action_applier,
         mock_config,
+        mock_label_manager,
     ):
         """Test reset when no worktree exists."""
         mock_working_copy.list_remote_branches.return_value = [
@@ -310,7 +323,8 @@ class TestResetIssue:
             worktree_manager=mock_worktree_manager,
             working_copy=mock_working_copy,
             action_applier=mock_action_applier,
-            blocking_labels=["blocked"],
+            label_manager=mock_label_manager,
+            current_labels=["blocked"],
             session_history=session_history,
             completed_today=completed_today,
         )
@@ -326,6 +340,7 @@ class TestResetIssue:
         mock_working_copy,
         mock_action_applier,
         mock_config,
+        mock_label_manager,
         tmp_path,
     ):
         """Test reset when branch doesn't exist."""
@@ -345,7 +360,8 @@ class TestResetIssue:
             worktree_manager=mock_worktree_manager,
             working_copy=mock_working_copy,
             action_applier=mock_action_applier,
-            blocking_labels=["blocked"],
+            label_manager=mock_label_manager,
+            current_labels=["blocked"],
             session_history=session_history,
             completed_today=completed_today,
         )
@@ -361,6 +377,7 @@ class TestResetIssue:
         mock_working_copy,
         mock_action_applier,
         mock_config,
+        mock_label_manager,
     ):
         """Test reset with no blocking labels."""
         mock_working_copy.list_remote_branches.return_value = [
@@ -376,7 +393,8 @@ class TestResetIssue:
             worktree_manager=mock_worktree_manager,
             working_copy=mock_working_copy,
             action_applier=mock_action_applier,
-            blocking_labels=[],
+            label_manager=mock_label_manager,
+            current_labels=[],
             session_history=session_history,
             completed_today=completed_today,
         )
@@ -392,6 +410,7 @@ class TestResetIssue:
         mock_working_copy,
         mock_action_applier,
         mock_config,
+        mock_label_manager,
     ):
         """Test reset with multiple blocking labels."""
         mock_working_copy.list_remote_branches.return_value = []
@@ -405,7 +424,8 @@ class TestResetIssue:
             worktree_manager=mock_worktree_manager,
             working_copy=mock_working_copy,
             action_applier=mock_action_applier,
-            blocking_labels=["blocked", "in-progress", "needs-review"],
+            label_manager=mock_label_manager,
+            current_labels=["blocked", "in-progress", "needs-review"],
             session_history=session_history,
             completed_today=completed_today,
         )
@@ -420,6 +440,7 @@ class TestResetIssue:
         mock_working_copy,
         mock_action_applier,
         mock_config,
+        mock_label_manager,
     ):
         """Test that issue is removed from session history."""
         mock_working_copy.list_remote_branches.return_value = []
@@ -457,7 +478,8 @@ class TestResetIssue:
             worktree_manager=mock_worktree_manager,
             working_copy=mock_working_copy,
             action_applier=mock_action_applier,
-            blocking_labels=[],
+            label_manager=mock_label_manager,
+            current_labels=[],
             session_history=session_history,
             completed_today=completed_today,
         )
@@ -474,6 +496,7 @@ class TestResetIssue:
         mock_working_copy,
         mock_action_applier,
         mock_config,
+        mock_label_manager,
     ):
         """Test that issue is removed from completed_today list."""
         mock_working_copy.list_remote_branches.return_value = []
@@ -487,7 +510,8 @@ class TestResetIssue:
             worktree_manager=mock_worktree_manager,
             working_copy=mock_working_copy,
             action_applier=mock_action_applier,
-            blocking_labels=[],
+            label_manager=mock_label_manager,
+            current_labels=[],
             session_history=session_history,
             completed_today=completed_today,
         )
@@ -501,6 +525,7 @@ class TestResetIssue:
         mock_working_copy,
         mock_action_applier,
         mock_config,
+        mock_label_manager,
     ):
         """Test reset when issue is not in completed_today."""
         mock_working_copy.list_remote_branches.return_value = []
@@ -514,7 +539,8 @@ class TestResetIssue:
             worktree_manager=mock_worktree_manager,
             working_copy=mock_working_copy,
             action_applier=mock_action_applier,
-            blocking_labels=[],
+            label_manager=mock_label_manager,
+            current_labels=[],
             session_history=session_history,
             completed_today=completed_today,
         )
@@ -530,6 +556,7 @@ class TestResetIssue:
         mock_working_copy,
         mock_action_applier,
         mock_config,
+        mock_label_manager,
         tmp_path,
     ):
         """Test that failure to remove worktree is logged but doesn't stop reset."""
@@ -550,7 +577,8 @@ class TestResetIssue:
             worktree_manager=mock_worktree_manager,
             working_copy=mock_working_copy,
             action_applier=mock_action_applier,
-            blocking_labels=[],
+            label_manager=mock_label_manager,
+            current_labels=[],
             session_history=session_history,
             completed_today=completed_today,
         )
@@ -568,6 +596,7 @@ class TestResetIssue:
         mock_working_copy,
         mock_action_applier,
         mock_config,
+        mock_label_manager,
     ):
         """Test that failure to delete branch is logged but doesn't stop reset."""
         # Compute worktree path the same way get_worktree_path does
@@ -588,7 +617,8 @@ class TestResetIssue:
             worktree_manager=mock_worktree_manager,
             working_copy=mock_working_copy,
             action_applier=mock_action_applier,
-            blocking_labels=[],
+            label_manager=mock_label_manager,
+            current_labels=[],
             session_history=session_history,
             completed_today=completed_today,
         )
@@ -606,6 +636,7 @@ class TestResetIssue:
         mock_working_copy,
         mock_action_applier,
         mock_config,
+        mock_label_manager,
     ):
         """Test that failure to remove label is logged but doesn't stop reset."""
         mock_working_copy.list_remote_branches.return_value = []
@@ -625,7 +656,8 @@ class TestResetIssue:
             worktree_manager=mock_worktree_manager,
             working_copy=mock_working_copy,
             action_applier=mock_action_applier,
-            blocking_labels=["blocked", "in-progress"],
+            label_manager=mock_label_manager,
+            current_labels=["blocked", "in-progress"],
             session_history=session_history,
             completed_today=completed_today,
         )
@@ -641,6 +673,7 @@ class TestResetIssue:
         mock_working_copy,
         mock_action_applier,
         mock_config,
+        mock_label_manager,
     ):
         """Test handling of unexpected exceptions during reset."""
         mock_working_copy.list_remote_branches.side_effect = RuntimeError("Unexpected error")
@@ -654,7 +687,8 @@ class TestResetIssue:
             worktree_manager=mock_worktree_manager,
             working_copy=mock_working_copy,
             action_applier=mock_action_applier,
-            blocking_labels=[],
+            label_manager=mock_label_manager,
+            current_labels=[],
             session_history=session_history,
             completed_today=completed_today,
         )

@@ -625,6 +625,10 @@ def build_orchestrator(
 
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
 
+    # Wire label_store into action_applier for write-through persistence
+    if action_applier is not None:
+        action_applier.label_store = label_store
+
     infra_services = InfraServices(
         label_manager=label_manager,
         label_store=label_store,
@@ -891,6 +895,10 @@ def build_orchestrator_for_testing(
     from ..execution.label_store import LabelStore
 
     label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
+
+    # Wire label_store into action_applier for write-through persistence
+    if action_applier is not None:
+        action_applier.label_store = label_store
 
     infra_services = InfraServices(
         label_manager=label_manager,

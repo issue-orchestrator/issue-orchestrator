@@ -2637,9 +2637,8 @@ async def reset_and_retry(request: Request) -> JSONResponse:
 
     for issue_number in issue_numbers:
         try:
-            # Get current labels to find blocking ones
+            # Get current labels for full orchestrator label cleanup
             current_labels = repository_host.get_issue_labels(issue_number)
-            blocking_labels = lm.get_blocking(current_labels)
 
             result: ResetResult = reset_issue(
                 issue_number=issue_number,
@@ -2647,9 +2646,11 @@ async def reset_and_retry(request: Request) -> JSONResponse:
                 worktree_manager=deps.worktree_manager,
                 working_copy=deps.working_copy,
                 action_applier=deps.action_applier,
-                blocking_labels=blocking_labels,
+                label_manager=lm,
+                current_labels=current_labels,
                 session_history=state.session_history,
                 completed_today=state.completed_today,
+                label_store=deps.label_store,
             )
 
             if result.success:
