@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Optional, Callable, cast
 if TYPE_CHECKING:
     from types import FrameType
     from ..domain.models import OrchestratorState, Session, SessionStatus
+    from ..execution.queue_cache_store import QueueCacheStore
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from .planner import Plan, Planner
@@ -559,6 +560,7 @@ def run_planning_cycle(
     inflight_stable_ids: dict[str, float],
     observer: object | None = None,
     claim_manager: object | None = None,
+    queue_cache_store: "QueueCacheStore | None" = None,
 ) -> tuple[float, bool]:
     """Run the planning cycle - extracted from Orchestrator per move map Step 2."""
     should_fetch = (time.time() - last_network_sync >= config.fetch_layer_network_sync_seconds) or refresh_requested
@@ -567,6 +569,7 @@ def run_planning_cycle(
         last_network_sync, refresh_requested = _fetch_and_update_queue(
             config, events, state, repository_host, scheduler, github_workflow,
             refresh_requested, inflight_stable_ids,
+            queue_cache_store=queue_cache_store,
         )
 
     # Detect stale issues and claims
@@ -599,6 +602,7 @@ def _fetch_and_update_queue(
     github_workflow: object,
     refresh_requested: bool,
     inflight_stable_ids: dict[str, float],
+    queue_cache_store: "QueueCacheStore | None" = None,
 ) -> tuple[float, bool]:
     """Fetch issues and update queue cache."""
     from ..infra import gh_audit
@@ -659,6 +663,13 @@ def _fetch_and_update_queue(
             state.queue_last_full_scan_at = refresh_started_at
         state.queue_last_refresh_mode = "full" if full_scan else "incremental"
         state.queue_delta_watermark = next_watermark
+
+        if queue_cache_store is not None:
+            queue_cache_store.save_snapshot(
+                state.cached_queue_issues,
+                state.queue_delta_watermark,
+                repo=config.repo or "",
+            )
 
         if state.failed_this_cycle:
             logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", state.failed_this_cycle)

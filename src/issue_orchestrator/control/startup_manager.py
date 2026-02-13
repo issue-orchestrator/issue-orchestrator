@@ -18,11 +18,14 @@ runtime initialization only:
 import logging
 import re
 import time
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from ..infra.analysis import analyze_issue, IssueState
 from ..infra.config import Config
 from ..ports.issue import Issue
+
+if TYPE_CHECKING:
+    from ..execution.queue_cache_store import QueueCacheStore
 from ..domain.models import (
     OrchestratorState,
     PendingReview,
@@ -67,6 +70,7 @@ class StartupManager:
         restore_sessions_fn: Callable[[list[DiscoveredSession]], None],
         launch_session_fn: Callable[[Issue], Optional[Session]],
         update_queue_cache_fn: Callable[[], None],
+        queue_cache_store: "QueueCacheStore | None" = None,
     ):
         """Initialize the startup manager.
 
@@ -80,6 +84,7 @@ class StartupManager:
             restore_sessions_fn: Callback to restore running sessions
             launch_session_fn: Callback to launch a new session
             update_queue_cache_fn: Callback to update the queue cache
+            queue_cache_store: Persistent store for queue cache (enables warm restarts)
         """
         self.config = config
         self.events = events
@@ -91,6 +96,7 @@ class StartupManager:
         self._restore_sessions = restore_sessions_fn
         self._launch_session = launch_session_fn
         self._update_queue_cache = update_queue_cache_fn
+        self._queue_cache_store = queue_cache_store
 
     def _build_labels(self, *labels: str) -> list[str]:
         """Build labels list, including filtering.label if configured."""
@@ -180,8 +186,8 @@ class StartupManager:
         audit_entries = audit_queue(self.config, state, self.repository_host, issue_branches=issue_branches)
         print_audit(audit_entries)
 
-        state.startup_message = "Caching queue..."
-        self._update_queue_cache()
+        # Step 12: Restore + sync queue cache
+        self._restore_and_sync_queue(state)
 
         # Mark startup complete
         state.startup_status = "complete"
@@ -418,6 +424,65 @@ class StartupManager:
         """
         # Delegate to CleanupManager if needed
         pass
+
+    def _restore_and_sync_queue(self, state: OrchestratorState) -> None:
+        """Restore queue cache from SQLite and delta-sync from GitHub.
+
+        Warm start: load cached issues + watermark from SQLite, then use
+        ``list_issues_delta`` to fetch only what changed since last persist.
+        Cold start: fall back to a full scan via ``_update_queue_cache``.
+        Either way, persist the result back to SQLite for the next restart.
+        """
+        store = self._queue_cache_store
+        if store is None:
+            # No persistent store configured — fall back to full scan.
+            state.startup_message = "Caching queue..."
+            self._update_queue_cache()
+            return
+
+        state.startup_message = "Restoring queue cache..."
+        cached_issues = store.load_issues(self.config.repo or "")
+        cached_watermark = store.load_watermark()
+
+        if cached_issues and cached_watermark:
+            # Warm start: load from SQLite, then delta sync from GitHub
+            state.startup_message = "Syncing queue changes from GitHub..."
+            logger.info(
+                "[STARTUP] Warm start: %d cached issues, watermark=%s",
+                len(cached_issues), cached_watermark,
+            )
+            delta_issues, next_watermark = self.repository_host.list_issues_delta(
+                since=cached_watermark, limit=200,
+            )
+            # Merge: start from cached, apply deltas
+            issue_map: dict[int, Issue] = {i.number: i for i in cached_issues}
+            for issue in delta_issues:
+                if issue.state.lower() == "open":
+                    issue_map[issue.number] = issue
+                else:
+                    issue_map.pop(issue.number, None)
+
+            # Apply eligibility policy (scope + exclusion filters)
+            from .queue_cache import QueueCache
+            QueueCache(self.config, state).replace_from_refresh(list(issue_map.values()))
+            state.queue_delta_watermark = next_watermark or cached_watermark
+            logger.info(
+                "[STARTUP] Delta sync: %d delta issues, %d in queue after filter",
+                len(delta_issues), len(state.cached_queue_issues),
+            )
+        else:
+            # Cold start (first run or empty store): full scan via existing path
+            state.startup_message = "Caching queue..."
+            logger.info("[STARTUP] Cold start: running full queue scan")
+            self._update_queue_cache()
+
+        # Persist updated state to SQLite for next restart
+        state.startup_message = "Persisting queue cache..."
+        store.save_snapshot(
+            state.cached_queue_issues,
+            state.queue_delta_watermark,
+            repo=self.config.repo or "",
+        )
 
     async def _resume_partial_work(
         self,

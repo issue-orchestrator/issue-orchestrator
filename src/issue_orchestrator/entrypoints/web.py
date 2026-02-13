@@ -223,6 +223,22 @@ STATIC_DIR = Path(__file__).parent.parent / "static"
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+
+if os.environ.get("IO_DEV"):
+
+    @app.middleware("http")
+    async def no_cache_static(request: Request, call_next):
+        """Prevent browser from caching static assets (CSS/JS).
+
+        Without this, the dashboard iframe in the control center serves stale
+        JS/CSS even after a hard-refresh of the parent page.
+        Only active when IO_DEV=1 is set.
+        """
+        response = await call_next(request)
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
+
 # Global reference to orchestrator (set at startup)
 _orchestrator: "Orchestrator | None" = None
 # Global reference to uvicorn server (for shutdown)
