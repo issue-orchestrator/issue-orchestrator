@@ -194,6 +194,13 @@ function buildEmptyStateHtml(vm) {
     if (!vm) {
         return 'No issues in queue';
     }
+    if (vm.startup_status && vm.startup_status !== 'complete') {
+        const msg = vm.startup_message || 'Starting up...';
+        return '<div class="startup-loading">' +
+            '<div class="startup-spinner"></div>' +
+            '<span class="startup-loading-text">' + msg + '</span>' +
+            '</div>';
+    }
     if (vm.active_tab === 'history') {
         return 'No session history yet';
     }
@@ -377,6 +384,8 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
 
         if (reloadOnListChange && viewModel.startup_status === 'complete') {
             await refreshIssueRows(viewModel, payload.rows);
+        } else if (viewModel.startup_status && viewModel.startup_status !== 'complete') {
+            ensureEmptyState(viewModel, false);
         }
     } catch (e) {
         console.error('Failed to refresh view-model:', e);
@@ -1111,7 +1120,12 @@ async function refreshIssueCard(issueNumber, triggerEl = null, options = {}) {
     issueRefreshLastAttempt.set(issueNumber, now);
     issueRefreshInFlight.add(issueNumber);
     if (triggerEl) {
-        triggerEl.disabled = true;
+        // Subtle press feedback before disabling for spin
+        triggerEl.style.background = 'rgba(78, 161, 255, 0.18)';
+        setTimeout(() => {
+            triggerEl.style.background = '';
+            triggerEl.disabled = true;
+        }, 120);
     }
 
     try {
@@ -1623,8 +1637,16 @@ function renderCompactCards(container, items) {
             detailLine = `<div class="card-line card-muted">${card.summary}</div>`;
         }
         const badges = (card.badges || []).map(b => `<span class="badge">${b}</span>`).join('');
-        const badgesDiv = (badges || staleBadge)
-            ? `<div class="card-badges">${badges}${staleBadge}</div>`
+        const orchLabels = card.orchestrator_labels || [];
+        const visibleLabels = orchLabels.slice(0, 3);
+        const extraCount = orchLabels.length - visibleLabels.length;
+        const orchPills = visibleLabels.map(l => `<span class="badge badge-orch" title="${l}">${l}</span>`).join('');
+        const orchExtra = extraCount > 0
+            ? `<span class="badge badge-orch badge-orch-more" title="${orchLabels.slice(3).join(', ')}">+${extraCount}</span>`
+            : '';
+        const allBadges = badges + orchPills + orchExtra + staleBadge;
+        const badgesDiv = allBadges
+            ? `<div class="card-badges">${allBadges}</div>`
             : '';
         return `<div class="issue-card" data-issue="${n}" data-stale="${staleAttr}" data-last-refresh-age-seconds="${card.last_refreshed_age_seconds || 0}">
             <div class="card-top">
@@ -2885,9 +2907,11 @@ function _renderJourneyCycles(container, allCycles) {
         for (const s of steps) {
             const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
             const detail = s.detail ? `<div class="journey-detail">${escapeHtml(s.detail)}</div>` : '';
+            const actions = renderTimelineEventActions(s.actions || []);
             html += `<div class="journey-step ${statusClass}">
                 <span class="journey-time">${escapeHtml(s.time_label || '')}</span>
                 <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
+                ${actions}
                 ${detail}
             </div>`;
         }
@@ -2896,6 +2920,23 @@ function _renderJourneyCycles(container, allCycles) {
     }
 
     container.innerHTML = html;
+
+    // Wire up delegated click handler for action buttons inside journey steps
+    if (!container.dataset.journeyActionsBound) {
+        container.addEventListener('click', (event) => {
+            const actionTarget = event.target.closest('.timeline-action-btn');
+            if (actionTarget && actionTarget.dataset.action) {
+                try {
+                    const action = JSON.parse(actionTarget.dataset.action);
+                    runTimelineEventAction(action);
+                } catch (err) {
+                    console.error('Failed to parse journey action:', err);
+                    showToast('Unable to execute action', 'error');
+                }
+            }
+        });
+        container.dataset.journeyActionsBound = 'true';
+    }
 }
 
 function _cycleOutcomeClass(outcome) {

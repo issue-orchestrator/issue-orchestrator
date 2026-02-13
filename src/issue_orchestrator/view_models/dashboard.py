@@ -396,6 +396,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            "orchestrator_labels": lm.get_ours(list(session.issue.labels)),
             **_refresh_meta(state, config, session.issue.number),
         })
 
@@ -500,6 +501,7 @@ def _build_queue_items(
             "blocked_summary": blocked,
             "merge_pending": lm.is_pr_pending(issue.labels),
             "dependency_blocked": is_dependency_blocked,
+            "orchestrator_labels": lm.get_ours(list(issue.labels)),
             **_refresh_meta(state, config, issue.number),
         }
         if is_blocked:
@@ -740,6 +742,7 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
         "summary": item.get("detail_label") or "",
         "blocked_summary": blocked,
         "badges": badges,
+        "orchestrator_labels": item.get("orchestrator_labels", []),
         "focus_action": "focus",
         "issue_url": item.get("issue_url") or item.get("url") or "",
         "focus_hint": "Focus issue",
@@ -775,6 +778,7 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
+            "orchestrator_labels": lm.get_ours(list(issue.labels)),
             **_refresh_meta(state, config, issue.number),
         })
     return cards
