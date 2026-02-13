@@ -2,7 +2,7 @@ from pathlib import Path
 import sqlite3
 
 from issue_orchestrator.events import EventName
-from issue_orchestrator.infra import labels as label_module
+
 
 from .conftest import StubWorkingCopy
 from .scenario_dsl import scenario, script
@@ -203,10 +203,10 @@ def test_claim_loss_marks_blocked_and_comment(scenario_repo: Path):
         .configure(_configure_grace_period) \
         .use_lease_renewer(LeaseRenewerOnce()) \
         .wait_for(
-            lambda orch: label_module.BLOCKED_CLAIM_LOST in orch.deps.repository_host.get_issue_labels(1),
+            lambda orch: "blocked:claim-lost" in orch.deps.repository_host.get_issue_labels(1),
             max_ticks=3,
         ) \
-        .expect_issue_label(label_module.BLOCKED_CLAIM_LOST) \
+        .expect_issue_label("blocked:claim-lost") \
         .expect_issue_comment_contains("Work Cancelled") \
         .run()
 

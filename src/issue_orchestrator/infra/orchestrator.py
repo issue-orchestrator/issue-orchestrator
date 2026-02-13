@@ -444,8 +444,6 @@ class Orchestrator:
         Handles sessions that have lost their claims by terminating them
         and adding the appropriate blocked label.
         """
-        from ..infra import labels
-
         # Check renewals - returns sessions that lost their claim
         lost_sessions = self.deps.lease_renewer.check_renewals(
             list(self.state.active_sessions)
@@ -473,7 +471,7 @@ class Orchestrator:
             try:
                 self.deps.action_applier.labels.add_label(
                     session.issue.number,
-                    labels.BLOCKED_CLAIM_LOST,
+                    self.deps.label_manager.blocked_claim_lost,
                 )
             except Exception as e:
                 logger.warning(
@@ -509,7 +507,7 @@ class Orchestrator:
         # new value when the cycle returns.
         refresh_to_process = self._refresh_requested
         self._refresh_requested = False
-        self._last_network_sync, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_network_sync, refresh_to_process, self._inflight_stable_ids, self.observer, self.deps.claim_manager, queue_cache_store=self.deps.queue_cache_store)
+        self._last_network_sync, _ = _run_planning_cycle_impl(self.config, self.deps.events, self._event_context, self.state, self.deps.fact_gatherer, self.deps.planner, self.deps.repository_host, self.scheduler, self._github_workflow, self._apply_plan, self._clear_discovered_facts, self._last_network_sync, refresh_to_process, self._inflight_stable_ids, self.observer, self.deps.claim_manager, queue_cache_store=self.deps.queue_cache_store, io_claimed_label=self.deps.label_manager.io_claimed)
 
     def _clear_discovered_facts(self) -> None: self._plan_applier.clear_discovered_facts()
     def _emit_heartbeat_if_needed(self) -> None: self._plan_applier.emit_heartbeat_if_needed()

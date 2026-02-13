@@ -41,7 +41,6 @@ from issue_orchestrator.ports import NullEventSink, InMemoryEventSink, TraceEven
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.events import EventName
 from issue_orchestrator.contracts.public import SessionCompletedPayload
-from issue_orchestrator.infra import labels
 
 
 # =============================================================================
@@ -998,7 +997,7 @@ class TestLabelActionGeneration:
         )
 
         add_labels = [a for a in result.actions if isinstance(a, AddLabelAction)]
-        assert any(action.label == labels.PR_PENDING for action in add_labels)
+        assert any(action.label == "pr-pending" for action in add_labels)
 
     def test_timeout_generates_blocked_failed_label_and_comment(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
@@ -1020,7 +1019,7 @@ class TestLabelActionGeneration:
         remove_label = next((a for a in actions if isinstance(a, RemoveLabelAction)), None)
 
         assert add_label is not None
-        assert add_label.label == labels.BLOCKED_FAILED
+        assert add_label.label == "blocked-failed"
         assert add_label.issue_number == 123
 
         assert comment is not None
@@ -1075,7 +1074,7 @@ class TestLabelActionGeneration:
         actions = result.actions
         assert any(isinstance(a, AddCommentAction) for a in actions)
         assert not any(
-            isinstance(a, AddLabelAction) and a.label == labels.BLOCKED_FAILED
+            isinstance(a, AddLabelAction) and a.label == "blocked-failed"
             for a in actions
         )
         assert not any(isinstance(a, RemoveLabelAction) for a in actions)
@@ -1193,7 +1192,7 @@ class TestLabelActionGeneration:
 
         add_label = result.actions[0]
         assert isinstance(add_label, AddLabelAction)
-        assert add_label.label == labels.BLOCKED
+        assert add_label.label == "blocked"
 
         add_comment = result.actions[1]
         assert isinstance(add_comment, AddCommentAction)
@@ -1415,7 +1414,7 @@ class TestStatusSessionTypeMatrix:
         assert len(result.actions) == 3
         add_label = result.actions[0]
         assert isinstance(add_label, AddLabelAction)
-        assert add_label.label == labels.BLOCKED
+        assert add_label.label == "blocked"
 
         add_comment = result.actions[1]
         assert isinstance(add_comment, AddCommentAction)
@@ -1547,7 +1546,7 @@ class TestStatusSessionTypeMatrix:
 
         assert len(result.actions) == 3
         add_label = next(a for a in result.actions if isinstance(a, AddLabelAction))
-        assert add_label.label == labels.BLOCKED_FAILED
+        assert add_label.label == "blocked-failed"
 
         comment = next(a for a in result.actions if isinstance(a, AddCommentAction))
         assert "Timed Out" in comment.comment

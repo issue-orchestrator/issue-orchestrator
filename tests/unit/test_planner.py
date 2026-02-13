@@ -32,7 +32,7 @@ from issue_orchestrator.domain.models import (
     SessionIdentity,
     WorktreeLocation,
 )
-from issue_orchestrator.infra import labels
+
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
@@ -303,7 +303,7 @@ class TestObservedCompletionLabels:
         )
         plan = planner.plan(snapshot)
 
-        add_labels = [a for a in plan.actions if getattr(a, "label", None) == labels.PR_PENDING]
+        add_labels = [a for a in plan.actions if getattr(a, "label", None) == "pr-pending"]
         assert len(add_labels) == 1
 
     def test_respects_max_issues_to_start(self):

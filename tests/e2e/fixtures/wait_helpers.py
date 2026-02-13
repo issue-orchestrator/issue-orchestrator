@@ -9,12 +9,11 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from issue_orchestrator.testing.asyncdsl import OrchestratorWatcher
 
-from issue_orchestrator.infra import labels
 
 
 def _raise_if_blocked_failed(issue_view: Any | None, issue_key: str) -> None:
-    if issue_view and labels.BLOCKED_FAILED in issue_view.labels:
-        raise AssertionError(f"Issue {issue_key} hit {labels.BLOCKED_FAILED} while waiting")
+    if issue_view and "blocked-failed" in issue_view.labels:
+        raise AssertionError(f"Issue {issue_key} hit blocked-failed while waiting")
 
 
 async def wait_for_file_with_content(

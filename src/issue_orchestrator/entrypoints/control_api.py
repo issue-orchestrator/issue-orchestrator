@@ -961,13 +961,13 @@ async def retry_issue(issue_number: int) -> JSONResponse:
         )
 
     try:
-        from ..infra import labels as label_module
+        lm = _orchestrator.deps.label_manager
 
-        # Remove blocked-related labels
+        # Remove blocking labels
         labels_to_remove = [
-            label_module.BLOCKED,
-            label_module.BLOCKED_NEEDS_HUMAN,
-            label_module.BLOCKED_FAILED,
+            lm.blocked,
+            lm.needs_human,
+            lm.blocked_failed,
         ]
 
         removed = []
@@ -1019,14 +1019,14 @@ async def dismiss_issue(issue_number: int) -> JSONResponse:
         )
 
     try:
-        from ..infra import labels as label_module
+        lm = _orchestrator.deps.label_manager
 
         # Remove all orchestrator-managed labels to fully dismiss
         labels_to_remove = [
-            label_module.BLOCKED,
-            label_module.BLOCKED_NEEDS_HUMAN,
-            label_module.BLOCKED_FAILED,
-            label_module.IN_PROGRESS,
+            lm.blocked,
+            lm.needs_human,
+            lm.blocked_failed,
+            lm.in_progress,
         ]
 
         removed = []

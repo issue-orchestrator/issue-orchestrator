@@ -176,6 +176,7 @@ def _create_claim_components(
     config: Config,
     github: GitHubAdapter | None,
     events: EventSink,
+    io_claimed_label: str = "io:claimed",
 ) -> tuple[ClaimGate, LeaseRenewer, LeaseConfig, NullClaimManager | GitHubClaimAdapter]:
     """Create claim management components."""
     if github and config.claims.enabled:
@@ -194,6 +195,7 @@ def _create_claim_components(
             config=lease_config,
             events=events,
             label_adapter=github,
+            io_claimed_label=io_claimed_label,
         )
         logger.info("Claims enabled: claimant_id=%s, lease=%ds", claimant_id, lease_config.lease_seconds)
     else:
@@ -505,9 +507,13 @@ def build_orchestrator(
     if github:
         _check_github_token_scopes(config, github)
 
+    # Create label manager (shared instance for all control-layer components)
+    from ..control.label_manager import LabelManager as _LabelManager
+    label_manager = _LabelManager(config)
+
     # Create claim management components
     claim_gate, lease_renewer, _lease_config, claim_manager = _create_claim_components(
-        config, github, events
+        config, github, events, io_claimed_label=label_manager.io_claimed,
     )
 
     provider_circuit_store = SQLiteProviderCircuitStore(
@@ -521,10 +527,6 @@ def build_orchestrator(
         store=provider_circuit_store,
         events=events,
     )
-
-    # Create label manager (shared instance for all control-layer components)
-    from ..control.label_manager import LabelManager as _LabelManager
-    label_manager = _LabelManager(config)
 
     # Create planner and control plane components
     planner, _scheduler, _dependency_evaluator, label_sync = _create_planner(config, github, events, provider_resilience, label_manager=label_manager)

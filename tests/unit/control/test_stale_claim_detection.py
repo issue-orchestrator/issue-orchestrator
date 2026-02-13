@@ -9,7 +9,6 @@ from issue_orchestrator.control.planner import (
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.actions import ActionType
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.infra import labels
 from issue_orchestrator.domain.models import Issue
 
 
@@ -65,7 +64,7 @@ class TestStaleClaims:
         planner = Planner(config=config, scheduler=scheduler)
 
         # Issue with stale claim (detected by orchestrator/observer)
-        stale_issue = make_issue(42, issue_labels=[labels.IO_CLAIMED])
+        stale_issue = make_issue(42, issue_labels=["io:claimed"])
 
         snapshot = make_snapshot(
             issues=[stale_issue],
@@ -87,7 +86,7 @@ class TestStaleClaims:
             if a.action_type == ActionType.REMOVE_LABEL
         ]
         assert len(remove_actions) == 1
-        assert remove_actions[0].label == labels.IO_CLAIMED
+        assert remove_actions[0].label == "io:claimed"
 
         # Check add label action
         add_actions = [
@@ -95,7 +94,7 @@ class TestStaleClaims:
             if a.action_type == ActionType.ADD_LABEL
         ]
         assert len(add_actions) == 1
-        assert add_actions[0].label == labels.BLOCKED_STALE_CLAIM
+        assert add_actions[0].label == "blocked:stale-claim"
 
     def test_adds_stale_claim_label(self):
         """Adds blocked:stale-claim label to stale claimed issues."""
@@ -103,7 +102,7 @@ class TestStaleClaims:
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
 
-        stale_issue = make_issue(123, issue_labels=[labels.IO_CLAIMED])
+        stale_issue = make_issue(123, issue_labels=["io:claimed"])
 
         snapshot = make_snapshot(
             issues=[stale_issue],
@@ -118,7 +117,7 @@ class TestStaleClaims:
             and getattr(a, "issue_number", None) == 123
         ]
         assert len(add_label_actions) == 1
-        assert add_label_actions[0].label == labels.BLOCKED_STALE_CLAIM
+        assert add_label_actions[0].label == "blocked:stale-claim"
 
     def test_removes_claimed_label(self):
         """Removes io:claimed label from stale claimed issues."""
@@ -126,7 +125,7 @@ class TestStaleClaims:
         scheduler = Scheduler(config)
         planner = Planner(config=config, scheduler=scheduler)
 
-        stale_issue = make_issue(456, issue_labels=[labels.IO_CLAIMED])
+        stale_issue = make_issue(456, issue_labels=["io:claimed"])
 
         snapshot = make_snapshot(
             issues=[stale_issue],
@@ -141,7 +140,7 @@ class TestStaleClaims:
             and getattr(a, "issue_number", None) == 456
         ]
         assert len(remove_label_actions) == 1
-        assert remove_label_actions[0].label == labels.IO_CLAIMED
+        assert remove_label_actions[0].label == "io:claimed"
 
     def test_ignores_valid_claims(self):
         """Does not plan actions for issues not in stale_claim_issues."""
@@ -150,7 +149,7 @@ class TestStaleClaims:
         planner = Planner(config=config, scheduler=scheduler)
 
         # Issue with valid claim (not in stale_claim_issues)
-        valid_issue = make_issue(42, issue_labels=[labels.IO_CLAIMED])
+        valid_issue = make_issue(42, issue_labels=["io:claimed"])
 
         snapshot = make_snapshot(
             issues=[valid_issue],
@@ -162,7 +161,7 @@ class TestStaleClaims:
         # Should not have any claim-related actions
         claim_actions = [
             a for a in plan.actions
-            if getattr(a, "label", None) in [labels.IO_CLAIMED, labels.BLOCKED_STALE_CLAIM]
+            if getattr(a, "label", None) in ["io:claimed", "blocked:stale-claim"]
         ]
         assert len(claim_actions) == 0
 
@@ -173,9 +172,9 @@ class TestStaleClaims:
         planner = Planner(config=config, scheduler=scheduler)
 
         stale_issues = [
-            make_issue(1, issue_labels=[labels.IO_CLAIMED]),
-            make_issue(2, issue_labels=[labels.IO_CLAIMED]),
-            make_issue(3, issue_labels=[labels.IO_CLAIMED]),
+            make_issue(1, issue_labels=["io:claimed"]),
+            make_issue(2, issue_labels=["io:claimed"]),
+            make_issue(3, issue_labels=["io:claimed"]),
         ]
 
         snapshot = make_snapshot(
@@ -188,7 +187,7 @@ class TestStaleClaims:
         # Should have 2 actions per stale issue (6 total)
         stale_actions = [
             a for a in plan.actions
-            if getattr(a, "label", None) in [labels.IO_CLAIMED, labels.BLOCKED_STALE_CLAIM]
+            if getattr(a, "label", None) in ["io:claimed", "blocked:stale-claim"]
         ]
         assert len(stale_actions) == 6
 
@@ -215,7 +214,7 @@ class TestStaleClaims:
 
         claim_actions = [
             a for a in plan.actions
-            if getattr(a, "label", None) in [labels.IO_CLAIMED, labels.BLOCKED_STALE_CLAIM]
+            if getattr(a, "label", None) in ["io:claimed", "blocked:stale-claim"]
         ]
         assert len(claim_actions) == 0
 
@@ -226,7 +225,7 @@ class TestStaleClaims:
         planner = Planner(config=config, scheduler=scheduler)
 
         # Issue that is stale claimed - should be cleaned up first
-        stale_issue = make_issue(42, issue_labels=[labels.IO_CLAIMED])
+        stale_issue = make_issue(42, issue_labels=["io:claimed"])
 
         snapshot = make_snapshot(
             issues=[stale_issue],
@@ -239,13 +238,13 @@ class TestStaleClaims:
         remove_claimed = [
             a for a in plan.actions
             if a.action_type == ActionType.REMOVE_LABEL
-            and getattr(a, "label", None) == labels.IO_CLAIMED
+            and getattr(a, "label", None) == "io:claimed"
         ]
         assert len(remove_claimed) == 1
 
         add_stale = [
             a for a in plan.actions
             if a.action_type == ActionType.ADD_LABEL
-            and getattr(a, "label", None) == labels.BLOCKED_STALE_CLAIM
+            and getattr(a, "label", None) == "blocked:stale-claim"
         ]
         assert len(add_stale) == 1
