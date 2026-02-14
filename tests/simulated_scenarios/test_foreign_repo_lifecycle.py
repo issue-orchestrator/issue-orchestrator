@@ -15,6 +15,7 @@ via ``git worktree add``, and verify:
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -256,11 +257,6 @@ def test_foreign_repo_full_lifecycle(foreign_repo: Path, tmp_path: Path) -> None
         assert not (wt / "src" / "issue_orchestrator" / "domain").exists(), (
             "Foreign repo worktree should not contain orchestrator domain layer"
         )
-
-        # .venv: either absent (foreign repo has none) or a symlink
-        venv = wt / ".venv"
-        if venv.exists():
-            assert venv.is_symlink(), ".venv in worktree should be a symlink, not a copy"
     finally:
         close = getattr(orch, "close", None)
         if callable(close):
@@ -594,8 +590,8 @@ def test_foreign_repo_real_pty_agent_invocation(
 @pytest.mark.live
 @pytest.mark.xdist_group("pty")
 @pytest.mark.skipif(
-    shutil.which("claude") is None,
-    reason="Claude Code CLI not installed",
+    shutil.which("claude") is None or "CLAUDECODE" in os.environ,
+    reason="Claude Code CLI not installed or running inside a Claude session",
 )
 def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
     """Claude Code invokes agent-done in a foreign repo worktree."""

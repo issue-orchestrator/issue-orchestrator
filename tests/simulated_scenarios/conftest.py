@@ -9,6 +9,7 @@ import sys
 import pytest
 
 from issue_orchestrator.domain.models import Issue, AgentConfig
+from issue_orchestrator.ports.working_copy import BranchStatus, CommitInfo, PreflightResult, PushResult, RebaseResult
 from issue_orchestrator.ports.worktree_manager import WorktreeInfo
 from issue_orchestrator.infra.config import Config
 from tests.conftest import MockGitHubAdapter, MockEventSink, build_test_orchestrator_deps
@@ -88,6 +89,13 @@ class ScriptSessionRunner:
 
 @dataclass
 class StubWorkingCopy:
+    """Stub implementing the WorkingCopy protocol for simulated scenario tests.
+
+    Must stay in sync with ``ports/working_copy.py``.  Extra methods
+    (``list_branch_names``, ``default_branch``) are kept because they satisfy
+    the ``CompletionProcessor.GitAdapter`` protocol.
+    """
+
     branch: str = "issue-1"
 
     def get_head_sha(self, worktree: Path) -> str | None:
@@ -96,20 +104,52 @@ class StubWorkingCopy:
     def get_current_branch(self, worktree: Path) -> str | None:
         return self.branch
 
-    def rebase_on_branch(self, worktree: Path, target: str = "origin/main"):
-        return None
-
-    def create_branch_from_current(self, worktree: Path, branch: str) -> None:
-        self.branch = branch
-
-    def list_branch_names(self, worktree: Path) -> list[str]:
-        return [self.branch]
+    def get_branch_status(self, worktree: Path) -> BranchStatus | None:
+        return BranchStatus(branch=self.branch, ahead=0, behind=0, has_remote=True, clean=True)
 
     def has_uncommitted_changes(self, worktree: Path) -> bool:
         return False
 
-    def push(self, worktree: Path, remote: str = "origin", force_with_lease: bool = True, set_upstream: bool = True, skip_hooks: bool = False):
-        return type("PushResult", (), {"success": True, "message": "ok"})()
+    def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
+        return []
+
+    def fetch(self, worktree: Path, remote: str = "origin") -> bool:
+        return True
+
+    def list_remote_branches(self, repo_root: Path, remote: str = "origin") -> list[str]:
+        return [f"{remote}/{self.branch}"]
+
+    def get_commits_ahead_count(self, repo_root: Path, branch: str, base: str = "origin/main") -> int:
+        return 0
+
+    def get_last_commit_date(self, repo_root: Path, branch: str) -> str | None:
+        return None
+
+    def rebase_on_branch(self, worktree: Path, target: str = "origin/main") -> RebaseResult:
+        return RebaseResult(success=True, message="ok")
+
+    def create_branch_from_current(self, worktree: Path, branch: str) -> None:
+        self.branch = branch
+
+    def push(self, worktree: Path, remote: str = "origin", force_with_lease: bool = True, set_upstream: bool = True, skip_hooks: bool = False) -> PushResult:
+        return PushResult(success=True, branch=self.branch, remote=remote, message="ok")
+
+    def get_issue_number_from_branch(self, worktree: Path) -> int | None:
+        parts = self.branch.split("-")
+        if parts and parts[0].isdigit():
+            return int(parts[0])
+        return None
+
+    def push_preflight(self, worktree: Path, remote: str = "origin") -> PreflightResult:
+        return PreflightResult(would_succeed=True)
+
+    def delete_remote_branch(self, repo_root: Path, branch: str, remote: str = "origin") -> bool:
+        return True
+
+    # --- Extra methods for CompletionProcessor.GitAdapter protocol ---
+
+    def list_branch_names(self, worktree: Path) -> list[str]:
+        return [self.branch]
 
     def default_branch(self, repo_root: Path, remote: str = "origin") -> str:
         return "main"

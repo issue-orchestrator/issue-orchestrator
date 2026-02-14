@@ -15,7 +15,6 @@ from ._worktree import (
     find_worktree_for_branch,
     HOOKS_DIR,
     install_claude_settings,
-    install_venv_symlink,
     sync_cli_tools,
 )
 
@@ -35,6 +34,5 @@ __all__ = [
     "find_worktree_for_branch",
     "HOOKS_DIR",
     "install_claude_settings",
-    "install_venv_symlink",
     "sync_cli_tools",
 ]

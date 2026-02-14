@@ -358,41 +358,6 @@ def _push_dry_run_preflight(
     return False, f"push dry-run failed: {last_error}"
 
 
-def install_venv_symlink(worktree_path: Path, repo_root: Path) -> bool:
-    """
-    Symlink .venv from main repo into worktree.
-
-    This gives the worktree access to dev tools (pyright, pytest, etc.)
-    so the agent can run validation during their work and catch issues early.
-
-    Args:
-        worktree_path: Path to the worktree
-        repo_root: Path to the main repository
-
-    Returns:
-        True if symlink was created, False if .venv doesn't exist in main repo
-    """
-    main_venv = repo_root / ".venv"
-    worktree_venv = worktree_path / ".venv"
-
-    if not main_venv.exists():
-        logger.debug("No .venv in main repo at %s, skipping symlink", main_venv)
-        return False
-
-    if worktree_venv.exists() or worktree_venv.is_symlink():
-        # Already exists (symlink or real) - don't overwrite
-        logger.debug(".venv already exists in worktree at %s", worktree_venv)
-        return True
-
-    try:
-        worktree_venv.symlink_to(main_venv)
-        logger.info("Symlinked .venv: %s -> %s", worktree_venv, main_venv)
-        return True
-    except OSError as e:
-        logger.warning("Failed to symlink .venv: %s", e)
-        return False
-
-
 def sync_cli_tools(worktree_path: Path) -> None:
     """
     Sync CLI tools from the orchestrator package to worktree.
@@ -983,12 +948,11 @@ def _finalize_worktree(
     pre_push_hook: Path | None,
     allow_no_verify_dry_run_preflight: bool,
 ) -> None:
-    """Install hooks, settings, venv, cli_tools, and identity marker on a worktree."""
+    """Install hooks, settings, cli_tools, and identity marker on a worktree."""
     if enforce_hooks:
         install_hooks(worktree_path, pre_push_hook)
     install_claude_settings(worktree_path)
     _configure_no_verify_dry_run(worktree_path, allow_no_verify_dry_run_preflight)
-    install_venv_symlink(worktree_path, repo_root)
     sync_cli_tools(worktree_path)
     _install_worktree_identity(worktree_path)
 
