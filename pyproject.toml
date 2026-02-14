@@ -34,6 +34,8 @@ dependencies = [
     "tenacity>=8.0",   # Retry with exponential backoff
     "pexpect>=4.8",    # Robust PTY handling for subprocess output capture
     "mcp>=1.0.0",      # MCP server support
+    "pystray>=0.19",   # System tray icon (macOS menu bar / Windows tray)
+    "Pillow>=10.0",    # Image handling for tray icon
 ]
 
 [project.optional-dependencies]

@@ -74,6 +74,10 @@ def require_claude():
 
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
+@pytest.mark.skipif(
+    "CLAUDECODE" in os.environ,
+    reason="Cannot launch Claude inside another Claude Code session",
+)
 class TestClaudeExecution:
     """Integration tests that actually run Claude Code."""
 
@@ -191,6 +195,10 @@ class TestClaudeExecution:
 
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
+@pytest.mark.skipif(
+    "CLAUDECODE" in os.environ,
+    reason="Cannot launch Claude inside another Claude Code session",
+)
 class TestClaudeWithEnvironmentIsolation:
     """Integration tests for Claude with environment isolation (no HOME isolation).
 
@@ -339,6 +347,10 @@ class TestShellEscaping:
 
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
+@pytest.mark.skipif(
+    "CLAUDECODE" in os.environ,
+    reason="Cannot launch Claude inside another Claude Code session",
+)
 class TestClaudeViaAdapterPath:
     """E2E test that runs Claude through the same path as tmux adapters.
 
@@ -511,6 +523,10 @@ class TestClaudeViaAdapterPath:
 
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
+@pytest.mark.skipif(
+    "CLAUDECODE" in os.environ,
+    reason="Cannot launch Claude inside another Claude Code session",
+)
 class TestAgentDoneInvocation:
     """Integration tests for agent-done invocation from Claude.
 
