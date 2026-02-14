@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+# pystray import fails on headless Linux (Xlib needs a display)
+try:
+    import pystray as _pystray  # noqa: F401
+    _pystray_available = True
+except Exception:
+    _pystray_available = False
+
+_skip_no_pystray = pytest.mark.skipif(
+    not _pystray_available,
+    reason="pystray requires a display (unavailable on headless CI)",
+)
 
 
 class TestLoadIcon:
@@ -42,6 +55,7 @@ class TestLoadIcon:
         assert result == mock_new.return_value
 
 
+@_skip_no_pystray
 class TestBuildMenu:
     """Tests for _build_menu()."""
 
@@ -123,6 +137,7 @@ class TestBuildMenu:
         assert len(items) == 1
 
 
+@_skip_no_pystray
 class TestStartTray:
     """Tests for start_tray()."""
 
@@ -186,6 +201,7 @@ class TestStartTray:
         assert mock_icon_cls.call_args[0][1] is custom_image
 
 
+@_skip_no_pystray
 class TestOpenControlCenter:
     """Test the 'Open Control Center' menu action."""
 
