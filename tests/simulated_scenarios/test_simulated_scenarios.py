@@ -4,6 +4,8 @@ import sqlite3
 from issue_orchestrator.events import EventName
 from issue_orchestrator.infra import labels as label_module
 
+from issue_orchestrator.ports.working_copy import PushResult
+
 from .conftest import StubWorkingCopy
 from .scenario_dsl import scenario, script
 
@@ -16,8 +18,8 @@ class FailingPushWorkingCopy(StubWorkingCopy):
         force_with_lease: bool = True,
         set_upstream: bool = True,
         skip_hooks: bool = False,
-    ):
-        return type("PushResult", (), {"success": False, "message": "simulated push failure"})()
+    ) -> PushResult:
+        return PushResult(success=False, branch=self.branch, remote=remote, message="simulated push failure")
 
 
 class LeaseRenewerOnce:
