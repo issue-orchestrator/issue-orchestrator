@@ -52,6 +52,17 @@ def _run_claude(
         ) from exc
 
 
+@pytest.fixture(autouse=True)
+def _strip_nested_session_env(monkeypatch):
+    """Allow Claude subprocess invocations from within a Claude Code session.
+
+    Claude Code sets CLAUDECODE to detect (and reject) nested launches.
+    Strip it so integration tests that spawn Claude subprocesses work
+    regardless of whether the test runner itself is a Claude Code agent.
+    """
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+
+
 @pytest.fixture
 def require_claude():
     """Fixture that fails fast if Claude CLI is not installed."""
