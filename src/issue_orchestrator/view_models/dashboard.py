@@ -10,7 +10,7 @@ from typing import Any, Callable
 
 from ..domain.session_key import TaskKind
 from ..history import latest_history_entries_by_issue
-from ..infra import labels as label_module
+from ..control.label_manager import LabelManager
 from ..infra.audit import get_issue_dependencies
 from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
 from ..infra import gh_audit
@@ -29,20 +29,16 @@ class DashboardViewModel:
     blocked_items: list[dict[str, Any]]
     history_items: list[dict[str, Any]]
     e2e_items: list[dict[str, Any]]
-    backlog_items: list[dict[str, Any]]
-    done_items: list[dict[str, Any]]
+    completed_items: list[dict[str, Any]]
     awaiting_merge_items: list[dict[str, Any]]
     flow_columns: list[dict[str, Any]]
-    attention_groups: list[dict[str, Any]]
     scope_summary: dict[str, Any]
 
     active_count: int
     queue_count: int
     blocked_count: int
-    history_count: int
     e2e_count: int
-    backlog_count: int
-    done_count: int
+    completed_count: int
     awaiting_merge_count: int
 
     active_tab: str
@@ -78,19 +74,15 @@ class DashboardViewModel:
             "blocked_items": self.blocked_items,
             "history_items": self.history_items,
             "e2e_items": self.e2e_items,
-            "backlog_items": self.backlog_items,
-            "done_items": self.done_items,
+            "completed_items": self.completed_items,
             "awaiting_merge_items": self.awaiting_merge_items,
             "flow_columns": self.flow_columns,
-            "attention_groups": self.attention_groups,
             "scope_summary": self.scope_summary,
             "active_count": self.active_count,
             "queue_count": self.queue_count,
             "blocked_count": self.blocked_count,
-            "history_count": self.history_count,
             "e2e_count": self.e2e_count,
-            "backlog_count": self.backlog_count,
-            "done_count": self.done_count,
+            "completed_count": self.completed_count,
             "awaiting_merge_count": self.awaiting_merge_count,
             "active_tab": self.active_tab,
             "paused": self.paused,
@@ -142,19 +134,15 @@ class DashboardViewModel:
             "blocked_items": self.blocked_items,
             "history_items": self.history_items,
             "e2e_items": self.e2e_items,
-            "backlog_items": self.backlog_items,
-            "done_items": self.done_items,
+            "completed_items": self.completed_items,
             "awaiting_merge_items": self.awaiting_merge_items,
             "flow_columns": self.flow_columns,
-            "attention_groups": self.attention_groups,
             "scope_summary": self.scope_summary,
             "active_count": self.active_count,
             "queue_count": self.queue_count,
             "blocked_count": self.blocked_count,
-            "history_count": self.history_count,
             "e2e_count": self.e2e_count,
-            "backlog_count": self.backlog_count,
-            "done_count": self.done_count,
+            "completed_count": self.completed_count,
             "awaiting_merge_count": self.awaiting_merge_count,
             "active_tab": self.active_tab,
             "paused": self.paused,
@@ -225,23 +213,11 @@ def flow_stage_label(steps: list[dict[str, str]], stage: str) -> str:
     return stage.replace("_", " ").title()
 
 
-def describe_blocking_label(label: str) -> str:
-    if label == "blocked-needs-human":
-        return "needs human"
-    if label == "blocked-failed":
-        return "failed run"
-    if label == "blocked-cross-milestone":
-        return "dependency cross-milestone"
-    if label == "blocked":
-        return "blocked"
-    return label.replace("blocked-", "blocked: ")
-
-
-def blocked_summary(labels: list[str], dependency_summary: str | None = None) -> str | None:
+def blocked_summary(labels: list[str], lm: LabelManager, dependency_summary: str | None = None) -> str | None:
     reasons: list[str] = []
-    blocking = label_module.get_blocking_labels(labels)
+    blocking = lm.get_blocking(labels)
     if blocking:
-        reasons.append(describe_blocking_label(blocking[0]))
+        reasons.append(lm.describe(blocking[0]))
     if dependency_summary:
         reasons.append(dependency_summary)
     return " • ".join(reasons) if reasons else None
@@ -354,7 +330,7 @@ def _pending_issue_numbers(state) -> dict[str, set[int]]:
     }
 
 
-def _build_active_items(state, config, queue_page: int, seen_issues: set[int]) -> tuple[list[dict[str, Any]], set[int]]:
+def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *, lm: LabelManager) -> tuple[list[dict[str, Any]], set[int]]:
     if queue_page != 1:
         return [], seen_issues
 
@@ -388,6 +364,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int]) -
 
         blocked = blocked_summary(
             list(session.issue.labels),
+            lm,
             state.dependency_problems.get(session.issue.number).summary
             if session.issue.number in state.dependency_problems
             else None,
@@ -419,18 +396,21 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int]) -
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            "orchestrator_labels": sorted(lm.get_ours(list(session.issue.labels))),
             **_refresh_meta(state, config, session.issue.number),
         })
 
     return items, seen_issues
 
 
-def _build_queue_items(
+def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multiple state sources
     state,
     config,
     queue_page: int,
     seen_issues: set[int],
     pending_numbers: dict[str, set[int]],
+    *,
+    lm: LabelManager,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, set[int]]:
     queue_items: list[dict[str, Any]] = []
     blocked_items: list[dict[str, Any]] = []
@@ -461,14 +441,22 @@ def _build_queue_items(
         dep_problem = state.dependency_problems.get(issue.number)
         blocked = blocked_summary(
             list(issue.labels),
+            lm,
             dep_problem.summary if dep_problem else None,
         )
-        is_blocked = issue.is_blocked or dep_problem is not None
+        # Separate dependency-blocked (stays in queue) from agent-blocked (goes to blocked column)
+        is_dependency_blocked = dep_problem is not None
+        is_agent_blocked = issue.is_blocked
+        is_blocked = is_agent_blocked  # Only label-based blocks go to the blocked column
         agent_label = (issue.agent_type or "unknown").replace("agent:", "")
         if is_blocked:
             status = "blocked"
             status_reason = _normalize_status_reason(dep_summary) or "blocked"
             detail_label = blocked or "blocked"
+        elif is_dependency_blocked:
+            status = "queue"
+            status_reason = _normalize_status_reason(dep_summary)
+            detail_label = f"agent: {agent_label}"
         else:
             status = "queue"
             status_reason = _normalize_status_reason(dep_summary)
@@ -478,9 +466,9 @@ def _build_queue_items(
             flow_stage = "rework"
         elif issue.number in pending_numbers["triage"]:
             flow_stage = "triage"
-        elif issue.number in pending_numbers["review"] or label_module.is_pr_pending(issue.labels):
+        elif issue.number in pending_numbers["review"] or lm.is_pr_pending(issue.labels):
             flow_stage = "review"
-        elif label_module.is_in_progress(issue.labels):
+        elif lm.is_in_progress(issue.labels):
             flow_stage = "in_progress"
         else:
             flow_stage = "queued"
@@ -511,13 +499,15 @@ def _build_queue_items(
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
-            "merge_pending": label_module.is_pr_pending(issue.labels),
+            "merge_pending": lm.is_pr_pending(issue.labels),
+            "dependency_blocked": is_dependency_blocked,
+            "orchestrator_labels": sorted(lm.get_ours(list(issue.labels))),
             **_refresh_meta(state, config, issue.number),
         }
         if is_blocked:
             blocked_items.append(item)
         else:
-            queue_items.append(item)
+            queue_items.append(item)  # Dependency-blocked items stay in queue
 
     return queue_items, blocked_items, queue_total, seen_issues
 
@@ -568,7 +558,7 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             "blocked_summary": status_reason if entry.status != "completed" else None,
             **_refresh_meta(state, config, entry.issue_number),
         }
-        if entry.status in ("blocked", "needs_human"):
+        if entry.status in ("blocked", "needs_human", "failed", "timed_out"):
             blocked_items.append(item)
         else:
             history_items.append(item)
@@ -735,23 +725,16 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
     phase = item.get("flow_stage_label") or item.get("flow_stage") or ""
     phase_age = item.get("time") or ""
     blocked = item.get("blocked_summary") or ""
-    badges: list[str] = []
-    blocked_lower = blocked.lower()
-    if "dependency" in blocked_lower or "waiting on" in blocked_lower:
-        badges.append("dependency")
-    if "human" in blocked_lower:
-        badges.append("human")
-    if item.get("merge_pending"):
-        badges.append("merge")
     return {
         "issue_number": item.get("issue_number"),
         "title": item.get("title", ""),
         "state_label": state_label or item.get("status", ""),
         "phase": phase,
         "phase_age": phase_age,
-        "summary": item.get("detail_label") or "",
+        "summary": f"Summary: {blocked}" if blocked else "",
         "blocked_summary": blocked,
-        "badges": badges,
+        "badges": [],
+        "orchestrator_labels": item.get("orchestrator_labels", []),
         "focus_action": "focus",
         "issue_url": item.get("issue_url") or item.get("url") or "",
         "focus_hint": "Focus issue",
@@ -763,7 +746,7 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
     }
 
 
-def _build_backlog_items(state, config) -> list[dict[str, Any]]:
+def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, Any]]:
     if state.startup_status != "complete":
         return []
     dependency_info = get_issue_dependencies(state.cached_queue_issues, config)
@@ -773,6 +756,7 @@ def _build_backlog_items(state, config) -> list[dict[str, Any]]:
         dep_summary = dep_info.summary if dep_info else ""
         blocked = blocked_summary(
             list(issue.labels),
+            lm,
             dep_summary if dep_summary else None,
         )
         cards.append({
@@ -786,6 +770,7 @@ def _build_backlog_items(state, config) -> list[dict[str, Any]]:
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
+            "orchestrator_labels": sorted(lm.get_ours(list(issue.labels))),
             **_refresh_meta(state, config, issue.number),
         })
     return cards
@@ -796,12 +781,12 @@ def _exclude_flow_overlaps(
     queue_items: list[dict[str, Any]],
     active_items: list[dict[str, Any]],
     blocked_items: list[dict[str, Any]],
-    done_items: list[dict[str, Any]],
+    completed_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Keep flow columns mutually exclusive by removing overlaps from backlog.
+    """Keep scope count accurate by removing items already in a kanban column.
 
-    Backlog is the "not yet picked up elsewhere" bucket, so anything already
-    represented in queued/running/blocked/done should not appear there.
+    Backlog is used only for scope_summary.in_scope_total; anything already
+    represented in queued/running/blocked/completed should not be double-counted.
     """
     def _to_issue_number(raw: Any) -> int | None:
         if isinstance(raw, int):
@@ -812,7 +797,7 @@ def _exclude_flow_overlaps(
 
     occupied_numbers = {
         issue_number
-        for item in queue_items + active_items + blocked_items + done_items
+        for item in queue_items + active_items + blocked_items + completed_items
         for issue_number in [_to_issue_number(item.get("issue_number"))]
         if issue_number is not None
     }
@@ -824,96 +809,64 @@ def _exclude_flow_overlaps(
     ]
 
 
-def _build_attention_groups(
-    blocked_items: list[dict[str, Any]],
+def _build_awaiting_merge_items(
     queue_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
     history_items: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    awaiting_merge = [item for item in queue_items + blocked_items if item.get("merge_pending")]
-    dependency_blocked = [
-        item for item in blocked_items
-        if "dependency" in (item.get("blocked_summary") or "").lower()
-        or "waiting on" in (item.get("blocked_summary") or "").lower()
+) -> list[dict[str, Any]]:
+    """Items with PRs ready to merge — drawn from all lifecycle stages."""
+    return [
+        item for item in queue_items + blocked_items + history_items
+        if item.get("merge_pending")
     ]
-    failed_exhausted = [item for item in history_items if item.get("status") in {"failed", "timed_out"}]
-    needs_human = [
-        item for item in blocked_items
-        if "human" in (item.get("blocked_summary") or "").lower()
-    ]
-    groups = [
-        {
-            "id": "needs-human",
-            "title": "Waiting on Human",
-            "description": "Blocked items that require a human action.",
-            "items": [_compact_card(item, "waiting") for item in needs_human],
-        },
-        {
-            "id": "aging-blocked",
-            "title": "Aging Blockers",
-            "description": "Blocked items to triage first.",
-            "items": [_compact_card(item, "blocked") for item in blocked_items],
-        },
-        {
-            "id": "awaiting-merge",
-            "title": "Awaiting Merge",
-            "description": "PR-ready items waiting for merge.",
-            "items": [_compact_card(item, "awaiting merge") for item in awaiting_merge],
-        },
-        {
-            "id": "dependency",
-            "title": "Dependency Blocked",
-            "description": "Issues blocked by dependencies.",
-            "items": [_compact_card(item, "dependency") for item in dependency_blocked],
-        },
-        {
-            "id": "failed",
-            "title": "Failed / Exhausted",
-            "description": "Runs that failed and need investigation.",
-            "items": [_compact_card(item, "failed") for item in failed_exhausted],
-        },
-    ]
-    groups = [group for group in groups if group["items"]]
-    return groups, awaiting_merge
 
 
 def _build_flow_columns(
-    backlog_items: list[dict[str, Any]],
     queue_items: list[dict[str, Any]],
     active_items: list[dict[str, Any]],
     blocked_items: list[dict[str, Any]],
-    done_items: list[dict[str, Any]],
+    awaiting_merge_items: list[dict[str, Any]],
+    completed_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    queued_items = [item for item in queue_items if item.get("flow_stage") != "review"]
+    # Exclude merge-pending items from the queued column (they appear in awaiting-merge)
+    awaiting_numbers = {item.get("issue_number") for item in awaiting_merge_items}
+    queued_only = [item for item in queue_items if item.get("issue_number") not in awaiting_numbers]
     return [
-        {
-            "id": "backlog",
-            "title": "Backlog",
-            "count": len(backlog_items),
-            "items": [_compact_card(item, "backlog") for item in backlog_items[:12]],
-        },
         {
             "id": "queued",
             "title": "Queued",
-            "count": len(queued_items),
-            "items": [_compact_card(item, "queued") for item in queued_items[:12]],
+            "count": len(queued_only),
+            "items": [_compact_card(item, "queued") for item in queued_only[:12]],
+            "expandable": True,
         },
         {
             "id": "running",
             "title": "Running",
             "count": len(active_items),
             "items": [_compact_card(item, "running") for item in active_items[:12]],
+            "expandable": False,
         },
         {
             "id": "blocked",
             "title": "Blocked",
             "count": len(blocked_items),
             "items": [_compact_card(item, "blocked") for item in blocked_items[:12]],
+            "expandable": True,
         },
         {
-            "id": "done",
-            "title": "Done",
-            "count": len(done_items),
-            "items": [_compact_card(item, "done") for item in done_items[:12]],
+            "id": "awaiting-merge",
+            "title": "Awaiting Merge",
+            "count": len(awaiting_merge_items),
+            "items": [_compact_card(item, "awaiting merge") for item in awaiting_merge_items[:12]],
+            "expandable": True,
+        },
+        {
+            "id": "completed",
+            "title": "Completed",
+            "count": len(completed_items),
+            "items": [_compact_card(item, "completed") for item in completed_items[:12]],
+            "expandable": True,
+            "session_scoped": True,
         },
     ]
 
@@ -924,18 +877,19 @@ def _select_issues_for_tab(
     queue_items: list[dict[str, Any]],
     blocked_items: list[dict[str, Any]],
     e2e_items: list[dict[str, Any]],
-    history_items: list[dict[str, Any]],
+    awaiting_merge_items: list[dict[str, Any]],
+    completed_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    if active_tab in {"active", "flow"}:
+    if active_tab == "kanban":
         return active_items if active_items else queue_items
-    if active_tab in {"queue", "backlog"}:
-        return queue_items
-    if active_tab in {"blocked", "attention"}:
+    if active_tab == "blocked":
         return blocked_items
+    if active_tab == "awaiting-merge":
+        return awaiting_merge_items
+    if active_tab == "completed":
+        return completed_items
     if active_tab == "e2e":
         return e2e_items
-    if active_tab == "history":
-        return history_items
     return active_items
 
 
@@ -1077,23 +1031,22 @@ def _build_e2e_view_model(
 
 
 def _normalize_tab(active_tab: str) -> str:
-    if active_tab == "work":
-        return "flow"
+    # Map legacy tab names to new kanban-based tabs
+    if active_tab in {"work", "active", "queue", "flow"}:
+        return "kanban"
     if active_tab == "attention":
-        return "attention"
-    if active_tab == "active":
-        return "flow"
-    if active_tab == "queue":
-        return "flow"
-    if active_tab == "blocked":
-        return "attention"
-    return active_tab
+        return "kanban"
+    if active_tab in {"history", "merged"}:
+        return "kanban"
+    if active_tab in {"kanban", "blocked", "awaiting-merge", "completed", "e2e"}:
+        return active_tab
+    return "kanban"
 
 
 def build_dashboard_view_model(
     orchestrator,
     queue_page: int = 1,
-    active_tab: str = "flow",
+    active_tab: str = "kanban",
     e2e_page: int = 1,
     e2e_status_provider: Callable[[Any], dict[str, Any]] | None = None,
 ) -> DashboardViewModel:
@@ -1111,25 +1064,25 @@ def build_dashboard_view_model(
     history_items: list[dict[str, Any]] = []
     e2e_items: list[dict[str, Any]] = []
     backlog_items: list[dict[str, Any]] = []
-    done_items: list[dict[str, Any]] = []
     awaiting_merge_items: list[dict[str, Any]] = []
+    completed_items: list[dict[str, Any]] = []
     flow_columns: list[dict[str, Any]] = []
-    attention_groups: list[dict[str, Any]] = []
     scope_summary: dict[str, Any] = {}
     seen_issues: set[int] = set()
 
     queue_total = 0
 
     if state and config:
+        lm = LabelManager(config)
         active_numbers = {s.issue.number for s in state.active_sessions}
         seen_issues.update(active_numbers)
 
         pending_numbers = _pending_issue_numbers(state)
-        active_items, seen_issues = _build_active_items(state, config, queue_page, seen_issues)
+        active_items, seen_issues = _build_active_items(state, config, queue_page, seen_issues, lm=lm)
         queue_items, queue_blocked, queue_total, seen_issues = _build_queue_items(
-            state, config, queue_page, seen_issues, pending_numbers
+            state, config, queue_page, seen_issues, pending_numbers, lm=lm,
         )
-        backlog_items = _build_backlog_items(state, config)
+        backlog_items = _build_backlog_items(state, config, lm=lm)
         blocked_items.extend(queue_blocked)
         history_items, history_blocked = _build_history_items(state, config)
         blocked_items.extend(history_blocked)
@@ -1141,16 +1094,23 @@ def build_dashboard_view_model(
         _attach_refresh_meta(history_items, state, config, now_ts)
         _attach_refresh_meta(backlog_items, state, config, now_ts)
 
-        done_items = [item for item in history_items if item.get("status") == "completed"]
+        # Completed = items the agent finished this session
+        completed_items = [item for item in history_items if item.get("status") == "completed"]
+
+        # Awaiting merge = items with PRs ready for human merge
+        awaiting_merge_items = _build_awaiting_merge_items(queue_items, blocked_items, history_items)
+
+        # Backlog used only for scope_summary.in_scope_total (not a kanban column)
         backlog_items = _exclude_flow_overlaps(
             backlog_items,
             queue_items,
             active_items,
             blocked_items,
-            done_items,
+            completed_items,
         )
-        attention_groups, awaiting_merge_items = _build_attention_groups(blocked_items, queue_items, history_items)
-        flow_columns = _build_flow_columns(backlog_items, queue_items, active_items, blocked_items, done_items)
+        flow_columns = _build_flow_columns(
+            queue_items, active_items, blocked_items, awaiting_merge_items, completed_items
+        )
 
     e2e_status_provider = e2e_status_provider or _get_e2e_status
     e2e_status = e2e_status_provider(config)
@@ -1169,7 +1129,8 @@ def build_dashboard_view_model(
         list((config.agents if config else {}).keys()),
     )
     issues = _select_issues_for_tab(
-        active_tab, active_items, queue_items, blocked_items, e2e_items_paginated, history_items
+        active_tab, active_items, queue_items, blocked_items,
+        e2e_items_paginated, awaiting_merge_items, completed_items,
     )
 
     queue_total_pages = (queue_total + QUEUE_PAGE_SIZE - 1) // QUEUE_PAGE_SIZE if queue_total > 0 else 1
@@ -1252,19 +1213,15 @@ def build_dashboard_view_model(
         blocked_items=blocked_items,
         history_items=history_items,
         e2e_items=e2e_items_paginated,
-        backlog_items=backlog_items,
-        done_items=done_items,
+        completed_items=completed_items,
         awaiting_merge_items=awaiting_merge_items,
         flow_columns=flow_columns,
-        attention_groups=attention_groups,
         scope_summary=scope_summary,
         active_count=len(active_items),
         queue_count=len(queue_items),
         blocked_count=len(blocked_items),
-        history_count=len(history_items) + len(blocked_items),
         e2e_count=e2e_total,
-        backlog_count=len(backlog_items),
-        done_count=len(done_items),
+        completed_count=len(completed_items),
         awaiting_merge_count=len(awaiting_merge_items),
         active_tab=active_tab,
         paused=state.paused if state else False,

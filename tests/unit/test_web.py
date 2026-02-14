@@ -1558,7 +1558,7 @@ class TestApiTimelineEndpoint:
             assert payload["title"] == "Detail Issue"
             assert "summary" in payload
             assert "events" in payload
-            assert "loops" in payload
+            assert "cycles" in payload
             assert "actions" in payload
         finally:
             set_orchestrator(None)
@@ -1793,6 +1793,165 @@ class TestApiTimelineEndpoint:
             assert 7 not in mock_orch.state.issue_refresh_timestamps
         finally:
             set_orchestrator(None)
+
+
+class TestTimelineActionWiring:
+    """Validate every timeline action type is handled end-to-end.
+
+    The pipeline is:
+        backend emits action types → JS runTimelineEventAction dispatches
+        → JS handler calls API endpoint → endpoint exists in FastAPI app.
+
+    This test prevents wiring drift: if a new action type is emitted by
+    the backend but never handled by the frontend, or if a handler
+    references an endpoint that doesn't exist, the test fails.
+    """
+
+    # Complete registry: action type → API route pattern (or None for client-only)
+    _ACTION_ENDPOINT_MAP: dict[str, str | None] = {
+        "open_path": "/api/open-file",
+        "open_url": None,  # client-side window.open, no HTTP call
+        "open_agent_log": "/api/log/local/{issue_number}",
+        "view_claude_log": "/api/session/claude-log/{issue_number}",
+        "open_orchestrator_log": "/api/session/orchestrator-log/{issue_number}",
+        "open_session_diagnostics": "/api/dialog/session-diagnostics/{issue_number}",
+    }
+
+    def _collect_app_route_patterns(self) -> set[str]:
+        """Extract all registered route patterns from the FastAPI app."""
+        patterns: set[str] = set()
+        for route in app.routes:
+            if hasattr(route, "path"):
+                patterns.add(route.path)
+        return patterns
+
+    def test_all_emitted_action_types_are_registered(self) -> None:
+        """Every action type produced by _timeline_event_actions must be
+        in _ACTION_ENDPOINT_MAP so we know it has a JS handler."""
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+
+        # Generate actions for representative events to collect all possible types
+        representative_events = [
+            {"event": "session.started", "issue_number": 1},
+            {"event": "session.completed", "issue_number": 1},
+            {"event": "session.failed", "issue_number": 1},
+            {"event": "validation.failed", "issue_number": 1},
+            {
+                "event": "session.completed",
+                "issue_number": 1,
+                "artifacts": [
+                    {"type": "pull_request", "label": "PR", "value": "https://example.com/pr/1"},
+                    {"type": "worktree", "label": "Worktree", "value": "/tmp/wt"},
+                ],
+            },
+        ]
+
+        all_types: set[str] = set()
+        for evt in representative_events:
+            actions = _timeline_event_actions(evt, 1)
+            for action in actions:
+                all_types.add(action["type"])
+
+        unhandled = all_types - set(self._ACTION_ENDPOINT_MAP)
+        assert not unhandled, (
+            f"Action types emitted by backend but missing from wiring registry: {unhandled}. "
+            f"Add them to TestTimelineActionWiring._ACTION_ENDPOINT_MAP."
+        )
+
+    def test_all_action_endpoints_exist_in_app(self) -> None:
+        """Every action type that calls an API must have a matching route."""
+        patterns = self._collect_app_route_patterns()
+
+        for action_type, endpoint in self._ACTION_ENDPOINT_MAP.items():
+            if endpoint is None:
+                continue  # client-only action, no HTTP
+            assert endpoint in patterns, (
+                f"Action type '{action_type}' expects endpoint '{endpoint}' "
+                f"but no matching route found in the FastAPI app."
+            )
+
+    def test_issue_detail_journey_steps_carry_actions(self) -> None:
+        """Journey cycle steps must pass through event actions for ⋯ menus."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.state.cached_queue_issues = [create_issue(123, "Wire Test")]
+
+        stream = TimelineStream(
+            issue_number=123,
+            events=[
+                TimelineEvent(
+                    event_id="e1",
+                    timestamp="2026-02-06T00:00:00Z",
+                    event="session.started",
+                    issue_number=123,
+                    phase="in_progress",
+                    step="started",
+                    status="started",
+                    level="phase",
+                    summary=None,
+                    parent_key="session:issue-123",
+                    artifacts=[],
+                ),
+            ],
+        )
+        mock_orch.deps.timeline_reader.read.return_value = stream
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/issue-detail/123")
+            assert response.status_code == 200
+            payload = response.json()
+
+            # Journey cycles must exist and carry actions on steps
+            cycles = payload.get("journey_cycles", [])
+            assert len(cycles) > 0, "Expected at least one journey cycle"
+            steps = cycles[0].get("steps", [])
+            assert len(steps) > 0, "Expected at least one step in cycle"
+
+            step_actions = steps[0].get("actions", [])
+            assert len(step_actions) > 0, (
+                "Journey cycle steps must include actions for ⋯ menu rendering"
+            )
+            step_action_types = {a["type"] for a in step_actions}
+            # Every step should have at least the default diagnostics actions
+            assert "open_agent_log" in step_action_types
+            assert "open_session_diagnostics" in step_action_types
+        finally:
+            set_orchestrator(None)
+
+    def test_no_action_type_without_js_handler(self) -> None:
+        """Ensure the registry is exhaustive — every known action type
+        maps to exactly one endpoint or None (client-only)."""
+        # This is a meta-test: if someone adds a new action type to the
+        # backend, they must also update this registry.
+        from issue_orchestrator.entrypoints.web import (
+            _timeline_event_default_actions,
+            _timeline_event_recommended_actions,
+        )
+
+        # Collect all hardcoded action types from the default/recommended helpers
+        captured: list[dict] = []
+
+        def _capture(action: dict, _dedupe: str) -> None:
+            captured.append(action)
+
+        _timeline_event_default_actions(issue_number=1, add_action=_capture)
+        _timeline_event_recommended_actions(
+            event_name="session.started", issue_number=1, add_action=_capture,
+        )
+        _timeline_event_recommended_actions(
+            event_name="session.failed", issue_number=1, add_action=_capture,
+        )
+        _timeline_event_recommended_actions(
+            event_name="validation.failed", issue_number=1, add_action=_capture,
+        )
+
+        default_types = {a["type"] for a in captured}
+        unregistered = default_types - set(self._ACTION_ENDPOINT_MAP)
+        assert not unregistered, (
+            f"Action types in default/recommended helpers not in wiring registry: "
+            f"{unregistered}"
+        )
 
 
 class TestKillSessionEndpoint:
@@ -2561,14 +2720,14 @@ class TestTriggerServerShutdown:
 
 
 class TestDashboardWithProblems:
-    """Test dashboard with problem items in history tab."""
+    """Test dashboard shows problem items in the kanban blocked column."""
 
     def test_dashboard_with_failed_session(self):
-        """Test dashboard displays failed sessions in history tab."""
+        """Test dashboard displays failed sessions in the blocked column."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
-        # Add a failed session to history
+        # Add a failed session to history — goes to blocked column
         failed_entry = SessionHistoryEntry(
             issue_number=1,
             title="Failed Issue",
@@ -2581,7 +2740,7 @@ class TestDashboardWithProblems:
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
-            response = client.get("/?tab=history")
+            response = client.get("/?tab=kanban")
 
             assert response.status_code == 200
             assert "Failed Issue" in response.text
@@ -2589,7 +2748,7 @@ class TestDashboardWithProblems:
             set_orchestrator(None)
 
     def test_dashboard_with_blocked_session(self):
-        """Test dashboard displays blocked sessions in history tab."""
+        """Test dashboard displays blocked sessions in the blocked column."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
@@ -2605,7 +2764,7 @@ class TestDashboardWithProblems:
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
-            response = client.get("/?tab=history")
+            response = client.get("/?tab=kanban")
 
             assert response.status_code == 200
             assert "Blocked Issue" in response.text
@@ -2613,7 +2772,7 @@ class TestDashboardWithProblems:
             set_orchestrator(None)
 
     def test_dashboard_with_timed_out_session(self):
-        """Test dashboard displays timed out sessions in history tab."""
+        """Test dashboard displays timed out sessions in the blocked column."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
@@ -2629,7 +2788,7 @@ class TestDashboardWithProblems:
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
-            response = client.get("/?tab=history")
+            response = client.get("/?tab=kanban")
 
             assert response.status_code == 200
             assert "Timeout Issue" in response.text

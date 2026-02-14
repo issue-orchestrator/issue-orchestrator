@@ -12,7 +12,6 @@ from typing import Callable, Iterable
 import httpx
 
 from issue_orchestrator.domain.issue_key import IssueKey, GitHubIssueKey
-from issue_orchestrator.infra import labels as issue_labels
 
 logger = logging.getLogger(__name__)
 from issue_orchestrator.testing.asyncdsl import (
@@ -135,9 +134,9 @@ async def wait_for_any_pr_label(
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
         issue_view = watcher.view.issues.get(issue_key)
-        if fail_on_blocked_failed and issue_view and issue_labels.BLOCKED_FAILED in issue_view.labels:
+        if fail_on_blocked_failed and issue_view and "blocked-failed" in issue_view.labels:
             raise AssertionError(
-                f"Issue {issue_key} hit {issue_labels.BLOCKED_FAILED} while waiting for PR labels"
+                f"Issue {issue_key} hit {"blocked-failed"} while waiting for PR labels"
             )
         if issue_view and issue_view.pr and issue_view.pr.labels:
             if any(label in issue_view.pr.labels for label in labels):
@@ -390,9 +389,9 @@ class E2EFlow:
         issue_key = issue.stable_id()
         while time.monotonic() < deadline:
             issue_view = watcher.view.issues.get(issue_key)
-            if self.fail_on_blocked_failed and issue_view and issue_labels.BLOCKED_FAILED in issue_view.labels:
+            if self.fail_on_blocked_failed and issue_view and "blocked-failed" in issue_view.labels:
                 raise AssertionError(
-                    f"Issue {issue_key} hit {issue_labels.BLOCKED_FAILED} while waiting for PR"
+                    f"Issue {issue_key} hit {"blocked-failed"} while waiting for PR"
                 )
             if issue_view and issue_view.pr.number:
                 return issue_view.pr.number

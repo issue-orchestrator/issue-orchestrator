@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Optional, Callable, cast
 if TYPE_CHECKING:
     from types import FrameType
     from ..domain.models import OrchestratorState, Session, SessionStatus
+    from ..ports.queue_cache_store import QueueCacheStore
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from .planner import Plan, Planner
@@ -484,6 +485,7 @@ def _detect_stale_claims(
     claim_manager: object | None,
     events: EventSink,
     event_context: EventContext,
+    io_claimed_label: str = "io:claimed",
 ) -> list["Issue"]:
     """Detect issues with stale claims (io:claimed label but no valid claim).
 
@@ -498,12 +500,11 @@ def _detect_stale_claims(
         claim_manager: ClaimManager for checking claim validity
         events: Event sink for emitting events
         event_context: Event context for enriching events
+        io_claimed_label: Resolved io:claimed label string
 
     Returns:
         List of issues with stale claims
     """
-    from ..infra import labels
-
     if not claim_manager:
         return []
 
@@ -514,7 +515,7 @@ def _detect_stale_claims(
 
     for issue in issues:
         # Only check issues with io:claimed label
-        if labels.IO_CLAIMED not in issue.labels:
+        if io_claimed_label not in issue.labels:
             continue
 
         # Skip issues with active sessions (claim is valid, session is running)
@@ -559,6 +560,8 @@ def run_planning_cycle(
     inflight_stable_ids: dict[str, float],
     observer: object | None = None,
     claim_manager: object | None = None,
+    queue_cache_store: "QueueCacheStore | None" = None,
+    io_claimed_label: str = "io:claimed",
 ) -> tuple[float, bool]:
     """Run the planning cycle - extracted from Orchestrator per move map Step 2."""
     should_fetch = (time.time() - last_network_sync >= config.fetch_layer_network_sync_seconds) or refresh_requested
@@ -567,11 +570,12 @@ def run_planning_cycle(
         last_network_sync, refresh_requested = _fetch_and_update_queue(
             config, events, state, repository_host, scheduler, github_workflow,
             refresh_requested, inflight_stable_ids,
+            queue_cache_store=queue_cache_store,
         )
 
     # Detect stale issues and claims
     stale_issues = _detect_stale_in_progress(observer, state, events, event_context)
-    stale_claim_issues = _detect_stale_claims(state.cached_queue_issues, state.active_sessions, claim_manager, events, event_context)
+    stale_claim_issues = _detect_stale_claims(state.cached_queue_issues, state.active_sessions, claim_manager, events, event_context, io_claimed_label=io_claimed_label)
 
     # Create snapshot and plan
     snapshot = fact_gatherer.create_snapshot(state, state.cached_queue_issues, stale_in_progress_issues=stale_issues, stale_claim_issues=stale_claim_issues)
@@ -599,6 +603,7 @@ def _fetch_and_update_queue(
     github_workflow: object,
     refresh_requested: bool,
     inflight_stable_ids: dict[str, float],
+    queue_cache_store: "QueueCacheStore | None" = None,
 ) -> tuple[float, bool]:
     """Fetch issues and update queue cache."""
     from ..infra import gh_audit
@@ -640,8 +645,6 @@ def _fetch_and_update_queue(
         _process_inflight_ids(required_stable_ids, all_issues, inflight_stable_ids)
         _update_label_cache(repository_host, all_issues)
         _record_issue_refreshes(state, refreshed_numbers, refreshed_at)
-        for issue in all_issues:
-            state.issue_last_refreshed_at[issue.number] = refreshed_at
 
         if sync_plan.run_pr_scan:
             github_workflow.scan_needs_code_review_prs(state)
@@ -661,6 +664,13 @@ def _fetch_and_update_queue(
             state.queue_last_full_scan_at = refresh_started_at
         state.queue_last_refresh_mode = "full" if full_scan else "incremental"
         state.queue_delta_watermark = next_watermark
+
+        if queue_cache_store is not None:
+            queue_cache_store.save_snapshot(
+                state.cached_queue_issues,
+                state.queue_delta_watermark,
+                repo=config.repo or "",
+            )
 
         if state.failed_this_cycle:
             logger.info("[REFRESH] Clearing failed_this_cycle: %s (labels now synced from GitHub)", state.failed_this_cycle)

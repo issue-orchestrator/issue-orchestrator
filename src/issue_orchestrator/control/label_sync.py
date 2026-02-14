@@ -10,13 +10,16 @@ Usage:
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional, Set, FrozenSet
+from typing import TYPE_CHECKING, Optional, Set, FrozenSet
 
 from ..events import EventName
 from ..ports import EventSink, TraceEvent
 from ..infra import gh_audit
 from ..ports.label_set import LabelSet
 from ..ports.pull_request_tracker import PullRequestTracker
+
+if TYPE_CHECKING:
+    from .label_manager import LabelManager
 
 
 @dataclass(frozen=True)
@@ -110,6 +113,7 @@ class LabelSync:
         labels: LabelSet,
         events: EventSink,
         pr_tracker: Optional[PullRequestTracker] = None,
+        label_manager: "LabelManager | None" = None,
     ):
         """Initialize the sync service.
 
@@ -117,10 +121,12 @@ class LabelSync:
             labels: LabelSet port for label operations
             events: EventSink for trace events
             pr_tracker: Optional PullRequestTracker for PR operations (used for reconciliation)
+            label_manager: Label registry for prefix-aware blocking checks.
         """
         self.labels = labels
         self.events = events
         self.pr_tracker = pr_tracker
+        self._label_manager = label_manager
 
     def sync(
         self,
@@ -232,8 +238,11 @@ class LabelSync:
         Returns:
             LabelSyncResult with removed blocked labels
         """
-        # Find all blocked-* labels
-        blocked_labels = {label for label in current if label.startswith("blocked")}
+        # Find all blocking labels (prefix-aware when label_manager is available)
+        if self._label_manager:
+            blocked_labels = {label for label in current if self._label_manager.is_blocking(label)}
+        else:
+            blocked_labels = {label for label in current if label.startswith("blocked")}
 
         if not blocked_labels:
             return LabelSyncResult(

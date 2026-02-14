@@ -13,7 +13,6 @@ from issue_orchestrator.infra.audit import (
     SkipReason,
 )
 from issue_orchestrator.infra.config import Config
-from issue_orchestrator.infra import labels
 from issue_orchestrator.domain.models import Issue
 
 
@@ -61,7 +60,7 @@ class TestBlockingLabelFiltering:
         issue = Issue(
             number=1,
             title="Failed session issue",
-            labels=[labels.BLOCKED_FAILED, "agent:backend"],
+            labels=["blocked-failed", "agent:backend"],
             body="",
         )
 
@@ -74,14 +73,14 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.BLOCKED
-        assert labels.BLOCKED_FAILED in entry.detail
+        assert "blocked-failed" in entry.detail
 
     def test_blocked_needs_human_label_returns_needs_human(self, sample_config):
         """Issue with 'blocked-needs-human' label should return NEEDS_HUMAN reason."""
         issue = Issue(
             number=1,
             title="Needs human issue",
-            labels=[labels.BLOCKED_NEEDS_HUMAN, "agent:backend"],
+            labels=["blocked-needs-human", "agent:backend"],
             body="",
         )
 
@@ -94,14 +93,14 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.NEEDS_HUMAN
-        assert labels.BLOCKED_NEEDS_HUMAN in entry.detail
+        assert "blocked-needs-human" in entry.detail
 
     def test_blocked_cross_milestone_label_skips_issue(self, sample_config):
         """Issue with 'blocked-cross-milestone' label should be skipped."""
         issue = Issue(
             number=1,
             title="Cross milestone blocked",
-            labels=[labels.BLOCKED_CROSS_MILESTONE, "agent:backend"],
+            labels=["blocked-cross-milestone", "agent:backend"],
             body="",
         )
 
@@ -114,7 +113,7 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.BLOCKED
-        assert labels.BLOCKED_CROSS_MILESTONE in entry.detail
+        assert "blocked-cross-milestone" in entry.detail
 
     def test_legacy_needs_human_label_skips_issue(self, sample_config):
         """Issue with legacy 'needs-human' label should be skipped."""

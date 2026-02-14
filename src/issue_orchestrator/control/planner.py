@@ -46,6 +46,7 @@ from ..domain.models import (
 if TYPE_CHECKING:
     from ..domain.models import OrchestratorState
     from .provider_resilience import ProviderResilienceManager
+    from .label_manager import LabelManager
 from .scheduler import Scheduler
 from .dependency_evaluator import DependencyEvaluator
 from .provider_availability import ProviderAvailabilityPolicy
@@ -72,7 +73,6 @@ from .actions import (
     SessionType,
 )
 from .reconciliation import build_expected_for_mutation
-from ..infra import labels
 
 logger = logging.getLogger(__name__)
 
@@ -284,6 +284,7 @@ class Planner:
         rework_workflow: Optional[ReworkWorkflow] = None,
         triage_workflow: Optional[TriageWorkflow] = None,
         provider_resilience: Optional["ProviderResilienceManager"] = None,
+        label_manager: Optional["LabelManager"] = None,
     ):
         """Initialize planner with its dependencies.
 
@@ -294,6 +295,7 @@ class Planner:
             review_workflow: Optional review decision logic
             rework_workflow: Optional rework decision logic
             triage_workflow: Optional triage decision logic
+            label_manager: Label registry for prefix-aware queries.
         """
         self.config = config
         self.scheduler = scheduler
@@ -303,6 +305,10 @@ class Planner:
         self.triage_workflow = triage_workflow
         self.provider_resilience = provider_resilience
         self.provider_policy = ProviderAvailabilityPolicy(config, provider_resilience) if provider_resilience else None
+        if label_manager is None:
+            from .label_manager import LabelManager
+            label_manager = LabelManager(config)
+        self._lm = label_manager
 
     def plan(self, snapshot: OrchestratorSnapshot) -> Plan:
         """Create a plan for the current state.
@@ -412,22 +418,23 @@ class Planner:
             capacity -= len(triage_actions)
             triage_launch_count = len(triage_actions)
 
-        # 5. Plan issue launches.
+        # 5. Plan issue launches with remaining capacity.
         #
-        # We only block new issue launches when we are actively launching review/rework/triage
-        # in this tick. If pending work exists but cannot be launched (e.g., workflow unavailable
-        # or temporarily skipped), do not starve issue execution.
-        pending_launches_started = (review_launch_count + rework_launch_count + triage_launch_count) > 0
-        if capacity > 0 and not pending_launches_started:
+        # Reviews/reworks/triage get priority (they consumed capacity above),
+        # but any leftover capacity goes to new issues. We never starve issue
+        # launches just because review/rework/triage actions were planned.
+        if capacity > 0:
+            pending_work_planned = review_launch_count + rework_launch_count + triage_launch_count
+            if pending_work_planned:
+                logger.info(
+                    "Planner: pending work consumed %d slot(s) "
+                    "(reviews=%d, reworks=%d, triage=%d), %d slot(s) remain for issues",
+                    pending_work_planned, review_launch_count,
+                    rework_launch_count, triage_launch_count, capacity,
+                )
             issue_actions, issue_skipped, _ = self._plan_issues(snapshot, capacity)
             actions.extend(issue_actions)
             skipped.extend(issue_skipped)
-        elif pending_launches_started:
-            logger.debug("Planner: skipping new issues - pending work exists "
-                        "(reviews=%d, reworks=%d, triage=%d)",
-                        len(snapshot.pending_reviews),
-                        len(snapshot.pending_reworks),
-                        len(snapshot.pending_triage))
 
         return Plan(actions=tuple(actions), skipped=tuple(skipped))
 
@@ -450,7 +457,7 @@ class Planner:
                 # Add pr-pending label to prevent issue re-pickup while awaiting merge
                 actions.append(AddLabelAction(
                     issue_number=review.issue_number,
-                    label=labels.PR_PENDING,
+                    label=self._lm.pr_pending,
                     reason=f"session completed with PR #{review.pr_number} - awaiting merge",
                     expected=build_expected_for_mutation(),
                 ))
@@ -478,8 +485,8 @@ class Planner:
 
     def _blocked_label_for_record(self, observed: ObservedCompletion) -> str:
         if observed.blocked_reason == "provider_unavailable":
-            return self.config.get_label_provider_unavailable()
-        return labels.BLOCKED
+            return self._lm.provider_unavailable
+        return self._lm.blocked
 
     def _record_provider_skip(
         self,
@@ -580,7 +587,7 @@ class Planner:
             # Always remove in-progress label when session completes
             actions.append(RemoveLabelAction(
                 issue_number=issue_number,
-                label=labels.IN_PROGRESS,
+                label=self._lm.in_progress,
                 reason=f"session completed with outcome={observed.outcome}",
                 expected=build_expected_for_mutation(),
             ))
@@ -592,7 +599,7 @@ class Planner:
                 if observed.needs_publish:
                     actions.append(AddLabelAction(
                         issue_number=issue_number,
-                        label=labels.PR_PENDING,
+                        label=self._lm.pr_pending,
                         reason="session completed - publish job pending",
                         expected=build_expected_for_mutation(),
                     ))
@@ -614,14 +621,14 @@ class Planner:
                     logger.debug("Planner: adding blocked label for issue #%d", issue_number)
             elif observed.outcome == CompletionOutcome.NEEDS_HUMAN:
                 # Session needs human intervention - use BLOCKED_NEEDS_HUMAN
-                if plan_context.should_add_label(issue_number, labels.BLOCKED_NEEDS_HUMAN):
+                if plan_context.should_add_label(issue_number, self._lm.needs_human):
                     actions.append(AddLabelAction(
                         issue_number=issue_number,
-                        label=labels.BLOCKED_NEEDS_HUMAN,
+                        label=self._lm.needs_human,
                         reason="session needs human intervention",
                         expected=build_expected_for_mutation(),
                     ))
-                    plan_context.record_add(issue_number, labels.BLOCKED_NEEDS_HUMAN)
+                    plan_context.record_add(issue_number, self._lm.needs_human)
                     logger.debug("Planner: adding blocked-needs-human label for issue #%d", issue_number)
             elif observed.outcome in (CompletionOutcome.REVIEW_APPROVED, CompletionOutcome.REVIEW_CHANGES_REQUESTED):
                 # Review session completed - labels handled by review workflow
@@ -771,8 +778,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 pr_number=escalation.pr_number,
                 escalation_reason="max rework cycles exceeded",
                 rework_cycles=escalation.rework_cycle - 1,  # Completed cycles, not current
-                needs_human_label=self.config.get_label_needs_human(),
-                needs_rework_label=self.config.get_label_needs_rework(),
+                needs_human_label=self._lm.needs_human,
+                needs_rework_label=self._lm.needs_rework,
                 max_rework_cycles=self.config.max_rework_cycles,
                 reason=f"PR #{escalation.pr_number} exceeded max rework cycles ({escalation.rework_cycle - 1})",
                 expected=build_expected_for_mutation(),
@@ -897,7 +904,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         for issue in snapshot.stale_in_progress_issues:
             actions.append(RemoveLabelAction(
                 issue_number=issue.number,
-                label=labels.IN_PROGRESS,
+                label=self._lm.in_progress,
                 reason="stale - no running session",
                 expected=build_expected_for_mutation(),
             ))
@@ -930,14 +937,14 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             # Remove the io:claimed label
             actions.append(RemoveLabelAction(
                 issue_number=issue.number,
-                label=labels.IO_CLAIMED,
+                label=self._lm.io_claimed,
                 reason="stale claim expired",
                 expected=build_expected_for_mutation(),
             ))
             # Add blocked:stale-claim label for visibility
             actions.append(AddLabelAction(
                 issue_number=issue.number,
-                label=labels.BLOCKED_STALE_CLAIM,
+                label=self._lm.blocked_stale_claim,
                 reason="stale claim detected - orchestrator may have crashed",
                 expected=build_expected_for_mutation(),
             ))
@@ -946,7 +953,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         return actions
 
-    def _plan_issues(
+    def _plan_issues(  # noqa: C901, PLR0912 — multi-phase issue scheduling
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,
@@ -969,11 +976,13 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             capacity = min(capacity, remaining)
 
         # Get available issues (not blocked, not in-progress with running session)
+        snapshot_issue_count = len(snapshot.issues)
         available, dependency_blocked = self.scheduler.get_available_issues(
             list(snapshot.issues),
             check_dependencies=self.dependency_evaluator is not None,
             active_sessions=list(snapshot.active_sessions),
         )
+        scheduler_filtered = snapshot_issue_count - len(available) - len(dependency_blocked)
 
         # Record dependency-blocked items and add cross-milestone labels
         for issue, reason in dependency_blocked:
@@ -987,7 +996,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             if "cross-milestone" in reason.lower():
                 actions.append(AddLabelAction(
                     issue_number=issue.number,
-                    label=labels.BLOCKED_CROSS_MILESTONE,
+                    label=self._lm.blocked_cross_milestone,
                     reason=f"dependency violates milestone scope: {reason}",
                     expected=build_expected_for_mutation(),
                 ))
@@ -1008,13 +1017,19 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 filtered.append(issue)
             available = filtered
 
-        # Filter out issues already being worked on, just completed, or failed this cycle
-        issues_with_pending_reviews = {r.issue_number for r in snapshot.discovered_reviews}
-        issues_with_pending_reworks = {r.issue_number for r in snapshot.discovered_reworks}
+        # Filter out issues already being worked on, just completed, or failed this cycle.
+        # Include both discovered (new this tick) and pending (queued for launch) reviews/reworks
+        # to prevent launching a code session for an issue that already has review/rework work.
+        issues_with_reviews = {r.issue_number for r in snapshot.discovered_reviews}
+        issues_with_reviews.update(r.issue_number for r in snapshot.pending_reviews)
+        issues_with_reworks = {r.issue_number for r in snapshot.discovered_reworks}
+        issues_with_reworks.update(
+            n for r in snapshot.pending_reworks if (n := r.resolve_issue_number()) is not None
+        )
         excluded_issues = (
             snapshot.active_issue_numbers |
-            issues_with_pending_reviews |
-            issues_with_pending_reworks |
+            issues_with_reviews |
+            issues_with_reworks |
             snapshot.failed_this_cycle |  # Skip issues that failed until cache refresh
             snapshot.session_history_issue_numbers  # Skip issues with completed sessions
         )
@@ -1023,15 +1038,23 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             if issue.number not in excluded_issues
         ]
 
-        # Log if we're skipping issues due to recent failure
-        skipped_due_to_failure = [i for i in available if i.number in snapshot.failed_this_cycle]
-        for issue in skipped_due_to_failure:
-            skipped.append(SkippedItem(
-                item_type="issue",
-                number=issue.number,
-                reason="failed this cycle - waiting for cache refresh",
-            ))
-            logger.info(issue_log(issue.number, "Skipped: reason=failed_this_cycle"))
+        # Log per-issue exclusion reasons for diagnostics
+        for issue in available:
+            if issue.number in snapshot.active_issue_numbers:
+                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="active session running"))
+                logger.info(issue_log(issue.number, "Skipped: reason=active_session"))
+            elif issue.number in issues_with_reviews:
+                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="pending review"))
+                logger.info(issue_log(issue.number, "Skipped: reason=pending_review"))
+            elif issue.number in issues_with_reworks:
+                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="pending rework"))
+                logger.info(issue_log(issue.number, "Skipped: reason=pending_rework"))
+            elif issue.number in snapshot.failed_this_cycle:
+                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="failed this cycle - waiting for cache refresh"))
+                logger.info(issue_log(issue.number, "Skipped: reason=failed_this_cycle"))
+            elif issue.number in snapshot.session_history_issue_numbers:
+                skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="session completed this run"))
+                logger.info(issue_log(issue.number, "Skipped: reason=session_history"))
 
         # Pick next batch based on priority
         to_launch = self.scheduler.pick_next_batch(
@@ -1054,6 +1077,18 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 working_dir="",  # Orchestrator will fill in
                 reason=f"scheduled: priority={priority_reason}",
             ))
+
+        # Pipeline funnel summary for diagnostics
+        snapshot_numbers = sorted(i.number for i in snapshot.issues)
+        available_numbers = sorted(i.number for i in available)
+        eligible_numbers = sorted(i.number for i in not_active)
+        launching_numbers = sorted(i.number for i in to_launch[:capacity])
+        logger.info(
+            "[PLAN] Issue pipeline: snapshot=%s → scheduler=%s (filtered=%d, dep_blocked=%d) "
+            "→ eligible=%s → launching=%s (capacity=%d)",
+            snapshot_numbers, available_numbers, scheduler_filtered,
+            len(dependency_blocked), eligible_numbers, launching_numbers, capacity,
+        )
 
         return actions, skipped, len(actions)
 
@@ -1182,8 +1217,8 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                         pr_number=issue_num,  # PR resolved by adapter at execution time
                         escalation_reason=escalation.reason or "max rework cycles reached",
                         rework_cycles=rework.rework_cycle,
-                        needs_human_label=self.config.get_label_needs_human(),
-                        needs_rework_label=self.config.get_label_needs_rework(),
+                        needs_human_label=self._lm.needs_human,
+                        needs_rework_label=self._lm.needs_rework,
                         max_rework_cycles=self.config.max_rework_cycles,
                         reason=f"escalating: cycle {rework.rework_cycle} >= max {escalation.max_cycles}",
                         expected=build_expected_for_mutation(),

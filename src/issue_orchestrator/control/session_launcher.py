@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, Callable
+from typing import Any, TYPE_CHECKING, Optional, Callable
 
 if TYPE_CHECKING:
     from ..domain.state_machines.issue_machine import IssueStateMachine
@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from ..ports.session_runner import DiscoveredSession
     from ..ports.claim_manager import ClaimManager
     from .provider_resilience import ProviderResilienceManager
+    from .label_manager import LabelManager
 
 from ..infra.config import Config
 from ..infra.env import ENV_PREFIX
@@ -200,6 +201,7 @@ class SessionLauncher:
         claim_manager: Optional["ClaimManager"] = None,
         provider_resilience: Optional["ProviderResilienceManager"] = None,
         remove_session_machine: Callable[[str], None] | None = None,
+        label_manager: Optional["LabelManager"] = None,
     ):
         self.config = config
         self.events = events
@@ -222,6 +224,10 @@ class SessionLauncher:
         self._provider_resilience = provider_resilience
         self._provider_policy = ProviderAvailabilityPolicy(config, provider_resilience) if provider_resilience else None
         self._remove_session_machine = remove_session_machine
+        if label_manager is None:
+            from .label_manager import LabelManager
+            label_manager = LabelManager(config)
+        self._lm = label_manager
 
     def _worktree_reuse_options(self, *, allow_remote_branch_delete: bool = True) -> WorktreeReuseOptions:
         return WorktreeReuseOptions(
@@ -569,7 +575,7 @@ class SessionLauncher:
             log_transition("issue", issue.number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(issue.number, "BLOCKED: worktree preparation failed: %s"), ctx.error)
             _write_worktree_diagnostic(ctx.error)
-            needs_human_label = self.config.get_label_needs_human()
+            needs_human_label = self._lm.needs_human
             self._apply_actions([
                 AddLabelAction(
                     issue_number=issue.number,
@@ -649,7 +655,7 @@ class SessionLauncher:
 
         # Add in-progress label
         step_start = time.time()
-        in_progress_label = self.config.get_label_in_progress()
+        in_progress_label = self._lm.in_progress
         label_ok = self._apply_actions([
             AddLabelAction(
                 issue_number=issue.number,
@@ -747,7 +753,7 @@ class SessionLauncher:
             self._apply_actions([
                 RemoveLabelAction(
                     issue_number=issue.number,
-                    label=self.config.get_label_in_progress(),
+                    label=self._lm.in_progress,
                     reason="session creation failed",
                 ),
             ], context="launch_session_creation_failed")
@@ -782,6 +788,8 @@ class SessionLauncher:
         self.events.publish(TraceEvent(EventName.SESSION_STARTED, {
             "issue_number": issue.number,
             "session_id": session_name,
+            "agent": issue.agent_type,
+            "task": "code",
             "worktree_path": str(worktree_path),
             "branch_name": branch_name,
             "run_id": run.run_id,
@@ -876,7 +884,7 @@ class SessionLauncher:
             log_transition("review", review.pr_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(review.issue_number, "BLOCKED: worktree preparation failed for review: %s"), ctx.error)
             _write_worktree_diagnostic(ctx.error)
-            needs_human_label = self.config.get_label_needs_human()
+            needs_human_label = self._lm.needs_human
             self._apply_actions([
                 AddLabelAction(
                     issue_number=review.issue_number,
@@ -997,6 +1005,7 @@ class SessionLauncher:
             completion_path=completion_path,
             agent_label=agent_label,
             pr_number=review.pr_number,
+            rework_cycle=rework_count if rework_count > 0 else None,
         )
 
         log_transition("review", review.pr_number, "LAUNCHING", "ACTIVE", "session launched")
@@ -1006,6 +1015,8 @@ class SessionLauncher:
         self.events.publish(TraceEvent(EventName.REVIEW_STARTED, {
             "pr_number": review.pr_number,
             "issue_number": review.issue_number,
+            "agent": agent_label,
+            "task": "review",
             "session_name": session_name,
             "run_id": run.run_id,
             "run_dir": str(run.run_dir),
@@ -1036,7 +1047,7 @@ class SessionLauncher:
         if not pr_info:
             return existing_work
 
-        keep_current_label = self.config.get_label_review_keep_current_approach()
+        keep_current_label = self._lm.review_keep_approach
         if keep_current_label not in pr_info.labels:
             return existing_work
 
@@ -1125,7 +1136,7 @@ class SessionLauncher:
             log_transition("rework", issue_number, "LAUNCHING", "BLOCKED", "worktree preparation failed")
             logger.error(issue_log(issue_number, "BLOCKED: worktree preparation failed for rework: %s"), ctx.error)
             _write_worktree_diagnostic(ctx.error)
-            needs_human_label = self.config.get_label_needs_human()
+            needs_human_label = self._lm.needs_human
             self._apply_actions([
                 AddLabelAction(
                     issue_number=issue_number,
@@ -1278,6 +1289,7 @@ class SessionLauncher:
             completion_path=completion_path,
             agent_label=rework.agent_type,
             pr_number=pr_number,
+            rework_cycle=rework.rework_cycle,
         )
 
         log_transition("rework", issue_number, "LAUNCHING", "ACTIVE", f"session launched, cycle={rework.rework_cycle}")
@@ -1303,7 +1315,7 @@ class SessionLauncher:
         self._apply_actions([
             RemoveLabelAction(
                 issue_number=pr_number,
-                label=self.config.get_label_needs_rework(),
+                label=self._lm.needs_rework,
                 reason="rework started",
             ),
         ], context="rework_remove_needs_rework")
@@ -1311,7 +1323,7 @@ class SessionLauncher:
             "pr_number": pr_number,
             "issue_number": issue_number,
             "issue_key": str(issue_number),
-            "removed": [self.config.get_label_needs_rework()],
+            "removed": [self._lm.needs_rework],
         }))
 
         return LaunchResult(session, True)
@@ -1656,14 +1668,14 @@ class SessionLauncher:
         actions: list[Action] = []
         removed: list[str] = []
         for i in range(1, cycle):
-            label = f"rework-cycle-{i}"
+            label = self._lm.rework_cycle(i)
             removed.append(label)
             actions.append(RemoveLabelAction(
                 issue_number=pr_number,
                 label=label,
                 reason="rework cycle update",
             ))
-        added_label = f"rework-cycle-{cycle}"
+        added_label = self._lm.rework_cycle(cycle)
         actions.append(AddLabelAction(
             issue_number=pr_number,
             label=added_label,
@@ -1677,6 +1689,22 @@ class SessionLauncher:
             "added": [added_label],
             "removed": removed,
         }))
+
+
+def _run_session_analysis(run_dir: Path) -> None:
+    """Run the session analyzer and write analysis.json (best-effort)."""
+    from .session_analyzer import analyze, write_analysis
+    from ..domain.run_manifest import RunManifest
+
+    try:
+        manifest = RunManifest.load(run_dir)
+        analysis = analyze(manifest)
+        write_analysis(run_dir, analysis)
+        logger.info("[ANALYSIS] %s — %s", run_dir.name, analysis.headline[:80])
+    except FileNotFoundError:
+        logger.debug("[ANALYSIS] No manifest in %s — skipping analysis", run_dir.name)
+    except Exception:
+        logger.warning("[ANALYSIS] Failed to analyze %s", run_dir.name, exc_info=True)
 
 
 def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, actions, observer cleanup, claims, and history
@@ -1698,6 +1726,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     review_exchange_completed: bool = False,
     blocked_label: Optional[str] = None,
     blocked_reason: Optional[str] = None,
+    completion_detail: Optional[dict[str, Any]] = None,
     claim_manager: Optional["ClaimManager"] = None,
     events: Optional[EventSink] = None,
 ) -> None:
@@ -1769,11 +1798,13 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         review_exchange_completed=review_exchange_completed,
         blocked_label=blocked_label,
         blocked_reason=blocked_reason,
+        completion_detail=completion_detail,
     )
     if session.worktree_path:
         run_dir = session_output.find_run_dir(session.worktree_path, session.terminal_id)
         if run_dir:
             session_output.attach_claude_log(run_dir)
+            _run_session_analysis(run_dir)
         else:
             logger.warning(
                 "[%s] No session output dir found - Claude log won't be attached",
@@ -2066,6 +2097,7 @@ def process_active_sessions(
             review_exchange_completed=review_exchange_completed,
             blocked_label=decision.blocked_label,
             blocked_reason=decision.blocked_reason,
+            completion_detail=decision.completion_detail,
         )
         session_elapsed = time.monotonic() - session_start
         if session_elapsed > 5:

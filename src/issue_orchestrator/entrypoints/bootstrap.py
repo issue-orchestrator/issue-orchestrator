@@ -43,6 +43,7 @@ from ..execution import (
     CompositeEventSink,
     SqliteGoalPilotStore,
     SQLiteProviderCircuitStore,
+    QueueCacheStore,
     TimelineEventSink,
     DefaultTimelineReader,
     FileSystemTimelineStore,
@@ -78,6 +79,7 @@ from ..ports.claim_manager import NullClaimManager
 from ..domain.lease_config import LeaseConfig
 
 if TYPE_CHECKING:
+    from ..control.label_manager import LabelManager
     from ..infra.orchestrator import Orchestrator
     from ..control.pr_scanner import PRScanner
     from ..control.session_restorer import SessionRestorer
@@ -174,6 +176,7 @@ def _create_claim_components(
     config: Config,
     github: GitHubAdapter | None,
     events: EventSink,
+    io_claimed_label: str = "io:claimed",
 ) -> tuple[ClaimGate, LeaseRenewer, LeaseConfig, NullClaimManager | GitHubClaimAdapter]:
     """Create claim management components."""
     if github and config.claims.enabled:
@@ -192,6 +195,7 @@ def _create_claim_components(
             config=lease_config,
             events=events,
             label_adapter=github,
+            io_claimed_label=io_claimed_label,
         )
         logger.info("Claims enabled: claimant_id=%s, lease=%ds", claimant_id, lease_config.lease_seconds)
     else:
@@ -212,6 +216,7 @@ def _create_planner(
     github: GitHubAdapter | None,
     events: EventSink,
     provider_resilience: ProviderResilienceManager | None = None,
+    label_manager: "LabelManager | None" = None,
 ) -> tuple[Planner, Scheduler, DependencyEvaluator | None, LabelSync | None]:
     """Create planner and supporting control plane components."""
     scheduler = Scheduler(config=config)
@@ -232,10 +237,10 @@ def _create_planner(
         foundation_milestone=config.foundation_milestone,
     ) if github else None
 
-    label_sync = LabelSync(labels=github, events=events, pr_tracker=github) if github else None
+    label_sync = LabelSync(labels=github, events=events, pr_tracker=github, label_manager=label_manager) if github else None
 
     review_workflow = ReviewWorkflow(config=config, events=events)
-    rework_workflow = ReworkWorkflow(config=config, events=events)
+    rework_workflow = ReworkWorkflow(config=config, events=events, label_manager=label_manager)
     triage_workflow = TriageWorkflow(config=config, events=events)
 
     planner = Planner(
@@ -246,6 +251,7 @@ def _create_planner(
         rework_workflow=rework_workflow,
         triage_workflow=triage_workflow,
         provider_resilience=provider_resilience,
+        label_manager=label_manager,
     )
     return planner, scheduler, dependency_evaluator, label_sync
 
@@ -273,10 +279,15 @@ def _create_completion_components(
     session_output: FileSystemSessionOutput,
     command_runner: LocalCommandRunner,
     provider_resilience: ProviderResilienceManager | None = None,
+    label_manager: "LabelManager | None" = None,
 ) -> tuple["CompletionProcessor | None", "SessionController | None"]:
     """Create completion processor and session controller."""
     from ..control.completion_processor import CompletionProcessor
     from ..control.session_controller import SessionController
+    from ..control.label_manager import LabelManager as _LM
+
+    if label_manager is None:
+        label_manager = _LM(config)
 
     completion_processor = CompletionProcessor(
         label_adapter=github,
@@ -284,14 +295,7 @@ def _create_completion_components(
         git_adapter=working_copy,
         session_output=session_output,
         event_bus=None,
-        label_config={
-            "blocked": config.get_label_blocked(),
-            "needs_human": config.get_label_needs_human(),
-            "code_reviewed": config.code_reviewed_label or "code-reviewed",
-            "needs_rework": config.get_label_needs_rework(),
-            "code_review": config.code_review_label or "needs-code-review",
-            "in_progress": config.get_label_in_progress(),
-        },
+        label_config=label_manager.to_label_config_dict(),
         config=config,
     ) if github else None
 
@@ -305,7 +309,7 @@ def _create_completion_components(
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
         max_validation_retries=config.retry.max_validation_retries,
         provider_resilience=provider_resilience,
-        provider_blocked_label=config.get_label_provider_unavailable(),
+        provider_blocked_label=label_manager.provider_unavailable,
     ) if completion_processor else None
 
     return completion_processor, session_controller_instance
@@ -503,13 +507,20 @@ def build_orchestrator(
     if github:
         _check_github_token_scopes(config, github)
 
+    # Create label manager (shared instance for all control-layer components)
+    from ..control.label_manager import LabelManager as _LabelManager
+    label_manager = _LabelManager(config)
+
     # Create claim management components
     claim_gate, lease_renewer, _lease_config, claim_manager = _create_claim_components(
-        config, github, events
+        config, github, events, io_claimed_label=label_manager.io_claimed,
     )
 
     provider_circuit_store = SQLiteProviderCircuitStore(
         state_dir(config.repo_root) / "provider_circuit.sqlite"
+    )
+    queue_cache_store = QueueCacheStore(
+        state_dir(config.repo_root) / "queue_cache.sqlite"
     )
     provider_resilience = ProviderResilienceManager(
         config.provider_resilience,
@@ -518,7 +529,7 @@ def build_orchestrator(
     )
 
     # Create planner and control plane components
-    planner, _scheduler, _dependency_evaluator, label_sync = _create_planner(config, github, events, provider_resilience)
+    planner, _scheduler, _dependency_evaluator, label_sync = _create_planner(config, github, events, provider_resilience, label_manager=label_manager)
     session_manager = SessionManager(runner=runner, events=events, config=config)
 
     # Create IO adapters
@@ -565,7 +576,8 @@ def build_orchestrator(
 
     # Create completion components
     completion_processor, session_controller_instance = _create_completion_components(
-        config, github, events, working_copy, session_output, command_runner, provider_resilience
+        config, github, events, working_copy, session_output, command_runner, provider_resilience,
+        label_manager=label_manager,
     )
 
     # Create async completion components (observer + executor)
@@ -609,6 +621,26 @@ def build_orchestrator(
     # When a worktree is removed, mark associated jobs as WORKTREE_GONE
     action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
 
+    # Build infrastructure services bundle
+    from ..control.infra_services import InfraServices
+    from ..execution.label_store import LabelStore
+
+    label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
+
+    # Wire label_store into action_applier for write-through persistence
+    if action_applier is not None:
+        action_applier.label_store = label_store
+
+    infra_services = InfraServices(
+        label_manager=label_manager,
+        label_store=label_store,
+        queue_cache_store=queue_cache_store,
+        provider_resilience=provider_resilience,
+        timeline_reader=timeline_reader,
+        timeline_writer=timeline_writer,
+        goal_pilot_store=goal_pilot_store,
+    )
+
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)
     deps = OrchestratorDeps(
         events=events,
@@ -638,10 +670,7 @@ def build_orchestrator(
         lease_renewer=lease_renewer,
         completion_observer=completion_observer,
         publish_executor=publish_executor,
-        goal_pilot_store=goal_pilot_store,
-        provider_resilience=provider_resilience,
-        timeline_reader=timeline_reader,
-        timeline_writer=timeline_writer,
+        services=infra_services,
     )
 
     return Orchestrator(config=config, deps=deps)
@@ -715,6 +744,10 @@ def build_orchestrator_for_testing(
         events=events,
     )
 
+    # Create label manager (shared instance for all control-layer components)
+    from ..control.label_manager import LabelManager as _LabelManager
+    label_manager = _LabelManager(config)
+
     # Create default planner if not provided
     if planner is None:
         scheduler = Scheduler(config=config)
@@ -722,6 +755,7 @@ def build_orchestrator_for_testing(
             config=config,
             scheduler=scheduler,
             provider_resilience=provider_resilience,
+            label_manager=label_manager,
         )
 
     # Create default session manager if not provided
@@ -808,14 +842,7 @@ def build_orchestrator_for_testing(
         git_adapter=working_copy,
         session_output=session_output,
         event_bus=None,
-        label_config={
-            "blocked": config.get_label_blocked(),
-            "needs_human": config.get_label_needs_human(),
-            "code_reviewed": config.code_reviewed_label or "code-reviewed",
-            "needs_rework": config.get_label_needs_rework(),
-            "code_review": config.code_review_label or "needs-code-review",
-            "in_progress": config.get_label_in_progress(),
-        },
+        label_config=label_manager.to_label_config_dict(),
         config=config,
     )
 
@@ -830,11 +857,11 @@ def build_orchestrator_for_testing(
         validation_cmd=config.validation.cmd if config.validation else None,
         validation_timeout_seconds=config.validation.timeout_seconds if config.validation else 300,
         provider_resilience=provider_resilience,
-        provider_blocked_label=config.get_label_provider_unavailable(),
+        provider_blocked_label=label_manager.provider_unavailable,
     )
 
     # Create LabelSync for testing
-    label_sync = LabelSync(labels=github, events=events, pr_tracker=github)
+    label_sync = LabelSync(labels=github, events=events, pr_tracker=github, label_manager=label_manager)
 
     # Create EventHub for testing
     event_hub = EventHub()
@@ -859,6 +886,31 @@ def build_orchestrator_for_testing(
 
     # Wire up worktree removal callback for async completion job tracking
     action_applier.on_worktree_removed = publish_executor.mark_worktree_cleaned
+
+    # Queue cache store for testing (uses repo_root state dir)
+    queue_cache_store = QueueCacheStore(
+        state_dir(config.repo_root) / "queue_cache.sqlite"
+    )
+
+    # Build infrastructure services bundle
+    from ..control.infra_services import InfraServices
+    from ..execution.label_store import LabelStore
+
+    label_store = LabelStore(state_dir(config.repo_root) / "label_store.sqlite")
+
+    # Wire label_store into action_applier for write-through persistence
+    if action_applier is not None:
+        action_applier.label_store = label_store
+
+    infra_services = InfraServices(
+        label_manager=label_manager,
+        label_store=label_store,
+        queue_cache_store=queue_cache_store,
+        provider_resilience=provider_resilience,
+        timeline_reader=timeline_reader,
+        timeline_writer=timeline_writer,
+        goal_pilot_store=goal_pilot_store,
+    )
 
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)
     deps = OrchestratorDeps(
@@ -889,10 +941,7 @@ def build_orchestrator_for_testing(
         lease_renewer=lease_renewer,
         completion_observer=completion_observer,
         publish_executor=publish_executor,
-        goal_pilot_store=goal_pilot_store,
-        provider_resilience=provider_resilience,
-        timeline_reader=timeline_reader,
-        timeline_writer=timeline_writer,
+        services=infra_services,
     )
 
     return Orchestrator(config=config, deps=deps)

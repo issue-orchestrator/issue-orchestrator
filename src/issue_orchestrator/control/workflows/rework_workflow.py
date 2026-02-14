@@ -14,15 +14,17 @@ Usage:
 """
 
 import logging
-import re
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from ...infra.config import Config
 from ...events import EventName
 from ...domain.models import PendingRework
 from ...ports import EventSink, TraceEvent
 from .decision_base import WorkflowDecision
+
+if TYPE_CHECKING:
+    from ..label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
 
@@ -80,18 +82,20 @@ class ReworkWorkflow:
     It contains POLICY (what should happen), not MECHANICS.
     """
 
-    # Pattern for rework cycle labels
-    REWORK_CYCLE_PATTERN = re.compile(r"rework-cycle-(\d+)")
-
-    def __init__(self, config: Config, events: EventSink):
+    def __init__(self, config: Config, events: EventSink, label_manager: "LabelManager | None" = None):
         """Initialize the workflow.
 
         Args:
             config: Configuration with rework settings
             events: EventSink for trace events
+            label_manager: Label registry for prefix-aware queries.
         """
         self.config = config
         self.events = events
+        if label_manager is None:
+            from ..label_manager import LabelManager
+            label_manager = LabelManager(config)
+        self._lm = label_manager
 
     def get_max_rework_cycles(self) -> int:
         """Get the maximum number of rework cycles before escalation."""
@@ -201,11 +205,8 @@ class ReworkWorkflow:
         Returns:
             Rework cycle number (0 if not found, meaning first cycle)
         """
-        for label in labels:
-            match = self.REWORK_CYCLE_PATTERN.match(label)
-            if match:
-                return int(match.group(1))
-        return 0
+        cycle = self._lm.extract_rework_cycle(labels)
+        return cycle if cycle is not None else 0
 
     def get_next_cycle_label(self, current_cycle: int) -> str:
         """Get the label for the next rework cycle.
@@ -216,7 +217,7 @@ class ReworkWorkflow:
         Returns:
             Label string for the next cycle
         """
-        return f"rework-cycle-{current_cycle + 1}"
+        return self._lm.rework_cycle(current_cycle + 1)
 
     def get_current_cycle_label(self, cycle: int) -> str:
         """Get the label for the current rework cycle.
@@ -227,4 +228,4 @@ class ReworkWorkflow:
         Returns:
             Label string for the cycle
         """
-        return f"rework-cycle-{cycle}"
+        return self._lm.rework_cycle(cycle)

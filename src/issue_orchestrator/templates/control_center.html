@@ -571,13 +571,32 @@
         }
 
         .scope-note {
-            margin-bottom: 12px;
+            margin-top: 16px;
             font-size: 12px;
             color: var(--text-secondary);
             border: 1px solid var(--border-color);
             border-radius: 8px;
             background: var(--bg-card);
             padding: 10px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+        }
+        .scope-note-dismiss {
+            border: none;
+            background: transparent;
+            color: var(--text-muted);
+            cursor: pointer;
+            font-size: 16px;
+            line-height: 1;
+            padding: 2px 6px;
+            border-radius: 4px;
+            flex-shrink: 0;
+        }
+        .scope-note-dismiss:hover {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
         }
 
         .recovery-banner {
@@ -681,6 +700,33 @@
             color: var(--accent-purple);
         }
 
+        .repo-card-badge.ready {
+            background: rgba(63, 185, 80, 0.15);
+            color: var(--accent-green);
+        }
+
+        .repo-card-badge.legacy {
+            background: rgba(210, 153, 34, 0.15);
+            color: var(--accent-yellow);
+        }
+
+        .repo-card.discovered {
+            border-style: dashed;
+        }
+
+        .discovered-section {
+            margin-top: 24px;
+        }
+
+        .discovered-section-header {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            margin-bottom: 12px;
+        }
+
         .repo-card-stats {
             display: flex;
             gap: 16px;
@@ -776,45 +822,6 @@
         /* ============================================
            Activity View (Embedded Dashboard)
            ============================================ */
-        .activity-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 12px 24px;
-            border-bottom: 1px solid var(--border-subtle);
-            background: var(--bg-card);
-        }
-
-        .activity-repo-info {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            flex-wrap: wrap;
-        }
-
-        .activity-repo-name {
-            font-size: 16px;
-            font-weight: 600;
-        }
-
-        .engine-config-inline {
-            display: inline-flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 12px;
-            color: var(--text-secondary);
-        }
-
-        .engine-config-inline select {
-            padding: 4px 8px;
-            border-radius: 4px;
-            border: 1px solid var(--border-color);
-            background: var(--bg-input);
-            color: var(--text-primary);
-            font-size: 12px;
-            min-width: 140px;
-        }
-
         .activity-iframe-container {
             flex: 1;
             position: relative;
@@ -852,6 +859,233 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+
+        /* ============================================
+           Consolidated Activity Header
+           ============================================ */
+        .consolidated-header {
+            display: none;
+            align-items: center;
+            gap: 12px;
+            padding: 8px 16px;
+            border-bottom: 1px solid var(--border-subtle);
+            background: var(--bg-card);
+            position: sticky;
+            top: 0;
+            z-index: 50;
+            min-height: 44px;
+        }
+        .consolidated-header.active { display: flex; }
+
+        .consolidated-breadcrumb {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--text-primary);
+            flex: 1;
+            min-width: 0;
+        }
+        .consolidated-breadcrumb .back-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px;
+            height: 28px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        .consolidated-breadcrumb .back-btn:hover {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
+        }
+        .consolidated-breadcrumb .separator {
+            color: var(--text-muted);
+            font-weight: 400;
+        }
+        .consolidated-breadcrumb .breadcrumb-label {
+            color: var(--text-secondary);
+        }
+        .consolidated-breadcrumb .breadcrumb-repo {
+            font-weight: 600;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .consolidated-actions {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            flex-shrink: 0;
+        }
+        .consolidated-actions .icon-btn {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 32px;
+            height: 32px;
+            border: none;
+            border-radius: 6px;
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            font-size: 16px;
+            position: relative;
+        }
+        .consolidated-actions .icon-btn:hover,
+        .consolidated-actions .icon-btn.active {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
+        }
+
+        /* Scope Info Popover */
+        .scope-popover {
+            position: absolute;
+            top: calc(100% + 4px);
+            right: 0;
+            min-width: 280px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            padding: 10px 12px;
+            z-index: 200;
+            display: none;
+            font-size: 12px;
+        }
+        .scope-popover.visible { display: block; }
+        .scope-popover-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 3px 0;
+        }
+        .scope-popover-row .label { color: var(--text-muted); }
+        .scope-popover-row .value { color: var(--text-primary); font-weight: 500; }
+
+        /* Action Menu Dropdown */
+        .action-menu {
+            position: absolute;
+            top: calc(100% + 4px);
+            right: 0;
+            min-width: 210px;
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            padding: 4px 0;
+            z-index: 200;
+            display: none;
+        }
+        .action-menu.visible { display: block; }
+        .action-menu-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            width: 100%;
+            padding: 7px 12px;
+            border: none;
+            background: transparent;
+            color: var(--text-primary);
+            font-size: 13px;
+            cursor: pointer;
+            text-align: left;
+        }
+        .action-menu-item:hover { background: var(--bg-card-hover); }
+        .action-menu-item:active { background: var(--border-color); }
+        .action-menu-item .menu-icon { width: 16px; text-align: center; flex-shrink: 0; }
+        .action-menu-divider { height: 1px; background: var(--border-subtle); margin: 4px 0; }
+        .config-menu-row {
+            cursor: default;
+            gap: 8px;
+        }
+        .config-menu-row:hover { background: transparent; }
+        .config-menu-row label { font-size: 13px; color: var(--text-primary); }
+        .config-menu-row select {
+            flex: 1;
+            padding: 3px 6px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-input);
+            color: var(--text-primary);
+            font-size: 12px;
+        }
+
+        /* ============================================
+           Activity Footer Status Bar
+           ============================================ */
+        .activity-footer {
+            display: none;
+            align-items: center;
+            gap: 12px;
+            padding: 5px 16px;
+            border-top: 1px solid var(--border-subtle);
+            background: var(--bg-card);
+            font-size: 12px;
+            color: var(--text-secondary);
+            flex-shrink: 0;
+        }
+        .activity-footer.active { display: flex; }
+        .activity-footer .footer-sep { color: var(--text-muted); }
+        .activity-footer .footer-repo {
+            font-weight: 500;
+            color: var(--text-primary);
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            cursor: pointer;
+            transition: max-width 0.2s ease;
+        }
+        .activity-footer .footer-repo.expanded {
+            max-width: none;
+        }
+        .activity-footer .footer-config { color: var(--text-secondary); }
+
+        /* ============================================
+           Maximize Mode
+           ============================================ */
+        /* Hide sidebar and consolidated header when viewing a repo's dashboard — dashboard takes over */
+        body.repo-focused .sidebar { display: none; }
+        body.repo-focused .main-content { margin-left: 0; }
+        body.repo-focused .consolidated-header { display: none !important; }
+        body.maximized .sidebar { display: none; }
+        body.maximized .main-content { margin-left: 0; }
+        body.maximized .consolidated-header { display: none !important; }
+        body.maximized .activity-footer { display: none !important; }
+        body.maximized .header { display: none !important; }
+        body.maximized #activityView.active {
+            position: fixed;
+            inset: 0;
+            z-index: 500;
+        }
+        .maximize-exit-btn {
+            position: fixed;
+            top: 12px;
+            right: 12px;
+            z-index: 600;
+            width: 36px;
+            height: 36px;
+            border-radius: 8px;
+            border: 1px solid var(--border-color);
+            background: var(--bg-card);
+            color: var(--text-primary);
+            font-size: 18px;
+            cursor: pointer;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            box-shadow: var(--shadow);
+            opacity: 0.7;
+            transition: opacity 0.15s;
+        }
+        .maximize-exit-btn:hover { opacity: 1; }
+        body.maximized .maximize-exit-btn { display: flex; }
 
         /* ============================================
            Tools View
@@ -1562,6 +1796,25 @@
         .version-info a:hover {
             color: var(--accent-blue);
         }
+
+        /* Press feedback — unified for all interactive elements */
+        .nav-item:active,
+        .repo-dropdown-trigger:active,
+        .dropdown-item:active,
+        .btn:active:not(:disabled),
+        .scope-note-dismiss:active,
+        .consolidated-breadcrumb .back-btn:active,
+        .consolidated-actions .icon-btn:active,
+        .action-menu-item:active,
+        .maximize-exit-btn:active,
+        .tool-card:active,
+        .goal-pilot-run-item:active,
+        .goal-pilot-step-header:active,
+        .theme-btn:active,
+        .modal-close:active {
+            transform: scale(0.96);
+            transition: transform 0.05s;
+        }
     </style>
 </head>
 <body>
@@ -1637,17 +1890,6 @@
                     <div class="active-summary" id="activeSummary">0 Running · 0 Paused · 0 Not running</div>
                 </div>
                 <div class="header-actions">
-                    <button class="btn btn-sm" id="rescanReposBtn">Rescan Repositories</button>
-                    <button class="btn btn-icon" id="doctorBtn" title="Run diagnostics" aria-label="Run doctor diagnostics">
-                        <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true">
-                            <path fill="currentColor" d="M8.5 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm9-3a1 1 0 11-2 0 1 1 0 012 0zM6.5 8a.75.75 0 01.75-.75h.75v3.75H7A.75.75 0 017 9.5h.25v-2H7A.75.75 0 016.5 8zm2.25 3a.75.75 0 010 1.5h-1.5a.75.75 0 010-1.5h1.5z"/>
-                        </svg>
-                    </button>
-                    <button class="btn btn-icon" id="themeToggle" title="Toggle theme" aria-label="Toggle dark/light theme">
-                        <svg viewBox="0 0 16 16" width="18" height="18" aria-hidden="true" id="themeIcon">
-                            <path fill="currentColor" d="M9.598 1.591a.75.75 0 01.785-.175 7 7 0 11-8.967 8.967.75.75 0 01.961-.96 5.5 5.5 0 007.046-7.046.75.75 0 01.175-.786zm1.616 1.945a7 7 0 01-7.678 7.678 5.5 5.5 0 107.678-7.678z"/>
-                        </svg>
-                    </button>
                     <button class="btn btn-danger btn-sm" id="shutdownBtn">
                         Close Control Center
                     </button>
@@ -1656,9 +1898,6 @@
 
             <!-- Repositories View -->
             <div class="view-container active" id="repositoriesView" role="main" aria-labelledby="viewTitle">
-                <div class="scope-note">
-                    Closing this window does not stop repository engines running on this machine.
-                </div>
                 <div class="recovery-banner" id="recoveryBanner">
                     <div>
                         <div class="recovery-banner-title" id="recoveryBannerTitle">Running engines detected</div>
@@ -1677,40 +1916,88 @@
                         </div>
                     </div>
                 </div>
+                <div class="scope-note" id="scopeNote" style="display:none;">
+                    Closing this window does not stop repository engines running on this machine.
+                    <button class="scope-note-dismiss" id="dismissScopeNote" aria-label="Dismiss this notice" title="Don't show again">&times;</button>
+                </div>
             </div>
 
             <!-- Activity View (Embedded Dashboard) -->
             <div class="view-container" id="activityView" role="main">
-                <div class="activity-header">
-                    <div class="activity-repo-info">
-                        <button class="btn btn-sm" id="backToRepos" aria-label="Back to repositories">
+                <!-- Consolidated Header -->
+                <div class="consolidated-header" id="consolidatedHeader">
+                    <div class="consolidated-breadcrumb">
+                        <button class="back-btn" id="consolidatedBack" aria-label="Back to repository engines" title="Back to repository engines">
                             <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
                                 <path fill="currentColor" fill-rule="evenodd" d="M7.78 12.53a.75.75 0 01-1.06 0L2.47 8.28a.75.75 0 010-1.06l4.25-4.25a.75.75 0 011.06 1.06L4.81 7h7.44a.75.75 0 010 1.5H4.81l2.97 2.97a.75.75 0 010 1.06z"/>
                             </svg>
-                            Back to repository engines
                         </button>
-                        <span class="activity-repo-name" id="activityRepoName"></span>
-                        <span class="repo-card-badge running" id="activityRepoBadge">Running</span>
-                        <div class="engine-config-inline">
-                            <label for="activityConfigSelect">Config</label>
-                            <select id="activityConfigSelect"></select>
-                            <label class="set-default">
-                                <input type="checkbox" id="activitySetDefaultConfig">
-                                Set as default
-                            </label>
-                        </div>
+                        <span class="breadcrumb-label">Control Center</span>
+                        <span class="separator" aria-hidden="true">›</span>
+                        <span class="breadcrumb-repo" id="consolidatedRepoName"></span>
+                        <span class="repo-card-badge running" id="consolidatedBadge">Running</span>
                     </div>
-                    <div class="header-actions">
-                        <button class="btn btn-sm" id="pauseResumeBtn">Pause engine</button>
-                        <button class="btn btn-danger btn-sm" id="stopRepoBtn">Stop engine</button>
+                    <div class="consolidated-actions">
+                        <div style="position:relative;">
+                            <button class="icon-btn" id="scopeInfoBtn" aria-label="Scope information" title="Scope info">
+                                <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                                    <path fill="currentColor" d="M8 1.5a6.5 6.5 0 100 13 6.5 6.5 0 000-13zM0 8a8 8 0 1116 0A8 8 0 010 8zm6.5-.25A.75.75 0 017.25 7h1v4.25a.75.75 0 01-1.5 0V8.5h-.25A.75.75 0 016.5 7.75zM8 6a1 1 0 110-2 1 1 0 010 2z"/>
+                                </svg>
+                            </button>
+                            <div class="scope-popover" id="scopePopover">
+                                <div class="scope-popover-row"><span class="label">Scope</span><span class="value" id="scopePopoverScope">--</span></div>
+                                <div class="scope-popover-row" id="scopePopoverExcludeRow" style="display:none;"><span class="label">Exclude</span><span class="value" id="scopePopoverExclude">--</span></div>
+                                <div class="scope-popover-row"><span class="label">Repo</span><span class="value" id="scopePopoverRepo">--</span></div>
+                                <div class="scope-popover-row"><span class="label">In scope</span><span class="value" id="scopePopoverTotal">--</span></div>
+                                <div class="scope-popover-row"><span class="label">Queued</span><span class="value" id="scopePopoverQueued">--</span></div>
+                                <div class="scope-popover-row"><span class="label">Running</span><span class="value" id="scopePopoverRunning">--</span></div>
+                                <div class="scope-popover-row"><span class="label">Awaiting merge</span><span class="value" id="scopePopoverMerge">--</span></div>
+                                <div class="scope-popover-row"><span class="label">Blocked</span><span class="value" id="scopePopoverBlocked">--</span></div>
+                                <div class="scope-popover-row"><span class="label">Last sync</span><span class="value" id="scopePopoverSync">--</span></div>
+                            </div>
+                        </div>
+                        <div style="position:relative;">
+                            <button class="icon-btn" id="actionMenuBtn" aria-label="Actions menu" title="Actions">
+                                <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                                    <path fill="currentColor" d="M1 2.75A.75.75 0 011.75 2h12.5a.75.75 0 110 1.5H1.75A.75.75 0 011 2.75zm0 5A.75.75 0 011.75 7h12.5a.75.75 0 110 1.5H1.75A.75.75 0 011 7.75zM1.75 12h12.5a.75.75 0 110 1.5H1.75a.75.75 0 110-1.5z"/>
+                                </svg>
+                            </button>
+                            <div class="action-menu" id="actionMenu">
+                                <div class="action-menu-config" id="menuConfigWrap" style="display:none;">
+                                    <div class="action-menu-item config-menu-row">
+                                        <span class="menu-icon">📋</span>
+                                        <label for="menuConfigSelect">Config</label>
+                                        <select id="menuConfigSelect" onclick="event.stopPropagation();"></select>
+                                    </div>
+                                    <div class="action-menu-divider"></div>
+                                </div>
+                                <button class="action-menu-item" id="menuCloseCC"><span class="menu-icon">✕</span> Close Control Center</button>
+                            </div>
+                        </div>
+                        <button class="icon-btn" id="maximizeBtn" aria-label="Maximize dashboard" title="Maximize">
+                            <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                                <path fill="currentColor" d="M3.75 2A1.75 1.75 0 002 3.75v8.5c0 .966.784 1.75 1.75 1.75h8.5A1.75 1.75 0 0014 12.25v-8.5A1.75 1.75 0 0012.25 2h-8.5zm-.25 1.75a.25.25 0 01.25-.25h8.5a.25.25 0 01.25.25v8.5a.25.25 0 01-.25.25h-8.5a.25.25 0 01-.25-.25v-8.5z"/>
+                            </svg>
+                        </button>
                     </div>
                 </div>
+                <!-- Dashboard Iframe -->
                 <div class="activity-iframe-container">
                     <div class="activity-loading" id="activityLoading">
                         <div class="spinner"></div>
                         <p>Loading activity...</p>
                     </div>
                     <iframe id="activityIframe" title="Repository engine activity dashboard"></iframe>
+                </div>
+                <!-- Footer Status Bar -->
+                <div class="activity-footer" id="activityFooter">
+                    <span id="footerRepo" class="footer-repo" title="" onclick="this.classList.toggle('expanded'); this.textContent = this.classList.contains('expanded') ? (this.dataset.full || this.textContent) : (this.dataset.short || this.textContent);">--</span>
+                    <span class="footer-sep" aria-hidden="true">&middot;</span>
+                    <span id="footerConfig" class="footer-config">--</span>
+                    <span class="footer-sep" aria-hidden="true">&middot;</span>
+                    <span id="footerGHUsage">GH --/min</span>
+                    <span class="footer-sep" aria-hidden="true">&middot;</span>
+                    <span id="footerSync">Sync --</span>
                 </div>
             </div>
 
@@ -2113,7 +2400,30 @@
                         </div>
                     </div>
                 </div>
+
+                <div class="settings-section">
+                    <h2 class="settings-section-title">Maintenance</h2>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">Rescan Repositories</div>
+                            <div class="settings-item-desc">Scan filesystem for new or changed repositories</div>
+                        </div>
+                        <div class="settings-item-control">
+                            <button class="btn btn-sm" id="rescanReposBtn">Rescan</button>
+                        </div>
+                    </div>
+                    <div class="settings-item">
+                        <div>
+                            <div class="settings-item-label">System Check</div>
+                            <div class="settings-item-desc">Verify Control Center prerequisites and environment</div>
+                        </div>
+                        <div class="settings-item-control">
+                            <button class="btn btn-sm" id="systemCheckBtn">Run</button>
+                        </div>
+                    </div>
+                </div>
             </div>
+            <button class="maximize-exit-btn" id="maximizeExitBtn" aria-label="Exit maximize" title="Exit maximize">&times;</button>
         </main>
     </div>
 
@@ -2350,7 +2660,8 @@
             discoveredLoadedAt: 0,
             currentView: 'repositories',
             activeRepo: null,  // { path, config, source: 'registered'|'discovered' }
-            theme: localStorage.getItem('theme') || 'system'
+            theme: localStorage.getItem('theme') || 'system',
+            dashboardStatus: null
         };
 
         const DISCOVERED_STALE_MS = 5 * 60 * 1000;
@@ -2406,12 +2717,12 @@
                 btn.setAttribute('aria-checked', isActive);
             });
 
-            // Update header theme icon
-            const icon = document.getElementById('themeIcon');
-            if (effectiveTheme === 'dark') {
-                icon.innerHTML = '<path fill="currentColor" d="M9.598 1.591a.75.75 0 01.785-.175 7 7 0 11-8.967 8.967.75.75 0 01.961-.96 5.5 5.5 0 007.046-7.046.75.75 0 01.175-.786zm1.616 1.945a7 7 0 01-7.678 7.678 5.5 5.5 0 107.678-7.678z"/>';
-            } else {
-                icon.innerHTML = '<path fill="currentColor" d="M8 12a4 4 0 100-8 4 4 0 000 8zM8 0a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0V.75A.75.75 0 018 0zm0 13a.75.75 0 01.75.75v1.5a.75.75 0 01-1.5 0v-1.5A.75.75 0 018 13zM3.17 3.17a.75.75 0 011.06 0l1.06 1.06a.75.75 0 11-1.06 1.06L3.17 4.23a.75.75 0 010-1.06zm9.6 9.6a.75.75 0 011.06 0l1.06 1.06a.75.75 0 11-1.06 1.06l-1.06-1.06a.75.75 0 010-1.06zM0 8a.75.75 0 01.75-.75h1.5a.75.75 0 010 1.5H.75A.75.75 0 010 8zm13 0a.75.75 0 01.75-.75h1.5a.75.75 0 010 1.5h-1.5A.75.75 0 0113 8zM3.17 12.77a.75.75 0 010-1.06l1.06-1.06a.75.75 0 111.06 1.06l-1.06 1.06a.75.75 0 01-1.06 0zm9.6-9.6a.75.75 0 010-1.06l1.06-1.06a.75.75 0 111.06 1.06l-1.06 1.06a.75.75 0 01-1.06 0z"/>';
+            // Push effective theme to embedded dashboard iframe
+            const iframe = document.getElementById('activityIframe');
+            if (iframe && iframe.contentWindow) {
+                try {
+                    iframe.contentWindow.postMessage({ type: 'theme', theme: effectiveTheme }, '*');
+                } catch (e) { /* cross-origin, ignore */ }
             }
         }
 
@@ -2716,6 +3027,14 @@
         function switchView(viewName, repoPath = null) {
             state.currentView = viewName;
 
+            // Exit maximize mode when leaving activity view
+            if (viewName !== 'activity') {
+                document.body.classList.remove('maximized');
+                document.body.classList.remove('repo-focused');
+            } else {
+                document.body.classList.add('repo-focused');
+            }
+
             // Update nav items
             document.querySelectorAll('.nav-item[data-view]').forEach(item => {
                 const isActive = item.dataset.view === viewName;
@@ -2731,6 +3050,26 @@
             const viewContainer = document.getElementById(viewName + 'View');
             if (viewContainer) {
                 viewContainer.classList.add('active');
+            }
+
+            // Toggle headers: consolidated for activity, global for everything else
+            const globalHeader = document.querySelector('.header');
+            const consolidatedHeader = document.getElementById('consolidatedHeader');
+            const activityFooter = document.getElementById('activityFooter');
+            const subtitle = document.querySelector('.header-subtitle');
+            const activeSummary = document.getElementById('activeSummary');
+
+            if (viewName === 'activity') {
+                globalHeader.style.display = 'none';
+                consolidatedHeader.classList.add('active');
+                activityFooter.classList.add('active');
+            } else {
+                globalHeader.style.display = '';
+                consolidatedHeader.classList.remove('active');
+                activityFooter.classList.remove('active');
+                // Only show subtitle + summary in repos view
+                if (subtitle) subtitle.style.display = viewName === 'repositories' ? '' : 'none';
+                if (activeSummary) activeSummary.style.display = viewName === 'repositories' ? '' : 'none';
             }
 
             // Update header title
@@ -2755,14 +3094,128 @@
         }
 
         // ============================================
+        // Consolidated Header Utilities
+        // ============================================
+        function closeConsolidatedDropdowns() {
+            const popover = document.getElementById('scopePopover');
+            const menu = document.getElementById('actionMenu');
+            if (popover) popover.classList.remove('visible');
+            if (menu) menu.classList.remove('visible');
+            document.getElementById('scopeInfoBtn')?.classList.remove('active');
+            document.getElementById('actionMenuBtn')?.classList.remove('active');
+        }
+
+        function toggleMaximize() {
+            document.body.classList.toggle('maximized');
+            closeConsolidatedDropdowns();
+        }
+
+        // Footer sync label — recomputes "Xm ago" locally every 5s
+        function formatSyncAge(epochSeconds) {
+            if (!epochSeconds) return 'never';
+            const ageSec = Math.max(0, Math.floor(Date.now() / 1000 - epochSeconds));
+            if (ageSec < 5) return 'just now';
+            if (ageSec < 60) return ageSec + 's ago';
+            if (ageSec < 3600) return Math.floor(ageSec / 60) + 'm ago';
+            return Math.floor(ageSec / 3600) + 'h ago';
+        }
+
+        function updateFooterSync(refresh) {
+            const el = document.getElementById('footerSync');
+            if (!el) return;
+            if (refresh?.inProgress) {
+                el.textContent = 'Syncing...';
+            } else if (refresh?.lastRefreshAt) {
+                el.textContent = 'Sync ' + formatSyncAge(refresh.lastRefreshAt);
+            } else {
+                el.textContent = 'Sync ' + (refresh?.lastRefreshLabel || '--');
+            }
+        }
+
+        // Tick the sync age every 5s so it stays fresh
+        setInterval(() => {
+            if (state.dashboardStatus?.refresh) {
+                updateFooterSync(state.dashboardStatus.refresh);
+            }
+        }, 5000);
+
+        // Listen for messages from embedded dashboard iframe
+        window.addEventListener('message', (event) => {
+            if (!event.data?.type) return;
+            // Dashboard requests navigation back to repositories
+            if (event.data.type === 'cc-back-to-repos') {
+                switchView('repositories');
+                return;
+            }
+            if (event.data.type !== 'dashboard-status') return;
+            const p = event.data.payload;
+            if (!p) return;
+
+            // Cache for scope popover
+            state.dashboardStatus = p;
+
+            // Update footer
+            const footerGH = document.getElementById('footerGHUsage');
+            const footerSync = document.getElementById('footerSync');
+            const footerRepo = document.getElementById('footerRepo');
+            const footerConfig = document.getElementById('footerConfig');
+
+            if (footerRepo && p.scope.repo) {
+                const repoShort = p.scope.repo.length > 30 ? '...' + p.scope.repo.slice(-27) : p.scope.repo;
+                footerRepo.dataset.full = p.scope.repo;
+                footerRepo.dataset.short = repoShort;
+                footerRepo.title = p.scope.repo;
+                if (!footerRepo.classList.contains('expanded')) footerRepo.textContent = repoShort;
+                else footerRepo.textContent = p.scope.repo;
+            }
+            if (footerConfig && state.activeRepo && state.activeRepo.config) {
+                footerConfig.textContent = state.activeRepo.config;
+            }
+            if (footerGH) footerGH.textContent = 'GH ' + p.ghUsage.callsPerMinute + '/min';
+            updateFooterSync(p.refresh);
+
+            // Update consolidated badge from live dashboard data
+            const badge = document.getElementById('consolidatedBadge');
+            if (badge) {
+                if (p.shutdownRequested) {
+                    badge.textContent = 'Stopping...';
+                    badge.className = 'repo-card-badge paused';
+                } else if (p.paused) {
+                    badge.textContent = 'Paused';
+                    badge.className = 'repo-card-badge paused';
+                } else if (p.startupStatus !== 'complete') {
+                    badge.textContent = 'Starting...';
+                    badge.className = 'repo-card-badge paused';
+                } else {
+                    badge.textContent = 'Running';
+                    badge.className = 'repo-card-badge running';
+                }
+            }
+        });
+
+        // Escape key exits maximize mode
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && document.body.classList.contains('maximized')) {
+                e.stopPropagation();
+                document.body.classList.remove('maximized');
+            }
+        });
+
+        // ============================================
         // Repository Loading
         // ============================================
         let deepLinkHandled = false;
 
-        async function loadRepos() {
+        async function loadRepos(silent = false) {
             try {
                 // Load registered repos
                 const response = await fetch('/control/repos');
+                if (!response.ok) {
+                    const body = await response.text().catch(() => '');
+                    console.error('Failed to load repos: HTTP', response.status, body);
+                    if (!silent) showToast(`Failed to load repositories (HTTP ${response.status})`, 'error');
+                    return;
+                }
                 const data = await response.json();
                 state.repos = data.repos || [];
 
@@ -2788,6 +3241,10 @@
                     const params = new URLSearchParams(window.location.search);
                     const repoPath = params.get('repo');
                     if (repoPath) {
+                        // Clean the URL so refreshes land on repos view
+                        const cleanUrl = window.location.pathname;
+                        window.history.replaceState({}, '', cleanUrl);
+
                         const repo = state.repos.find(r => r.path === repoPath);
                         const repoState = repo?.status?.state;
                         if (repo && (repoState === 'running' || repo?.status?.paused)) {
@@ -2798,8 +3255,52 @@
                 }
             } catch (error) {
                 console.error('Failed to load repos:', error);
-                showToast('Failed to load repositories', 'error');
+                if (!silent) showToast(`Failed to load repositories: ${error.message}`, 'error');
             }
+        }
+
+        function resolveActiveRepo() {
+            if (!state.activeRepo) return null;
+            const path = state.activeRepo.path || state.activeRepo;
+            const source = state.activeRepo.source || 'registered';
+            let repo = null;
+            if (source === 'discovered') {
+                repo = state.discoveredRepos.find(r => r.path === path) || null;
+            }
+            if (!repo) {
+                repo = state.repos.find(r => r.path === path) || null;
+            }
+            return { path, source, repo };
+        }
+
+        function repoHasConfig(repo, source) {
+            if (!repo) return false;
+            if (repo.configs && repo.configs.length > 0) return true;
+            if (source === 'discovered' && repo.status === 'legacy') return true;
+            if (repo.status && (repo.status.state === 'running' || repo.status.state === 'partial' || repo.status.paused)) {
+                return true;
+            }
+            return false;
+        }
+
+        function getToolRepoPath(options = {}) {
+            const requireConfig = options.requireConfig === true;
+            const active = resolveActiveRepo();
+            if (active) {
+                if (!requireConfig || repoHasConfig(active.repo, active.source)) {
+                    return active.path;
+                }
+            }
+
+            if (requireConfig) {
+                const configured = state.repos.find(r => r.configs && r.configs.length > 0);
+                if (configured) return configured.path;
+                const discoveredConfigured = state.discoveredRepos.find(r => r.configs && r.configs.length > 0);
+                if (discoveredConfigured) return discoveredConfigured.path;
+                return null;
+            }
+
+            return state.repos[0]?.path || null;
         }
 
         function updateToolsScopeNote() {
@@ -2873,21 +3374,35 @@
 
         function renderRepos() {
             const container = document.getElementById('reposContent');
+            const discovered = state.discoveredRepos || [];
+            const hasRegistered = state.repos.length > 0;
+            const hasDiscovered = discovered.length > 0;
 
-            if (state.repos.length === 0) {
+            if (!hasRegistered && !hasDiscovered) {
                 container.innerHTML = `
                     <div class="empty-state">
                         <svg viewBox="0 0 16 16" aria-hidden="true">
                             <path fill="currentColor" fill-rule="evenodd" d="M2 2.5A2.5 2.5 0 014.5 0h8.75a.75.75 0 01.75.75v12.5a.75.75 0 01-.75.75h-2.5a.75.75 0 110-1.5h1.75v-2h-8a1 1 0 00-.714 1.7.75.75 0 01-1.072 1.05A2.495 2.495 0 012 11.5v-9zm10.5-1V9h-8c-.356 0-.694.074-1 .208V2.5a1 1 0 011-1h8zM5 12.25v3.25a.25.25 0 00.4.2l1.45-1.087a.25.25 0 01.3 0L8.6 15.7a.25.25 0 00.4-.2v-3.25a.25.25 0 00-.25-.25h-3.5a.25.25 0 00-.25.25z"/>
                         </svg>
                         <h3>No repositories found</h3>
-                        <p>Run issue-orchestrator from a git repository to get started.</p>
+                        <p>Run issue-orchestrator from a git repository to get started, or click Rescan Repositories.</p>
                     </div>
                 `;
                 return;
             }
 
-            const html = `<div class="repos-grid">${state.repos.map(renderRepoCard).join('')}</div>`;
+            let html = '';
+            if (hasRegistered) {
+                html += `<div class="repos-grid">${state.repos.map(renderRepoCard).join('')}</div>`;
+            }
+            if (hasDiscovered) {
+                html += `
+                    <div class="discovered-section">
+                        <div class="discovered-section-header">Discovered Repositories</div>
+                        <div class="repos-grid">${discovered.map(renderDiscoveredRepoCard).join('')}</div>
+                    </div>
+                `;
+            }
             container.innerHTML = html;
 
             // Attach event listeners
@@ -2907,6 +3422,42 @@
                     showToast(`Default config for ${path.split('/').pop()} set to ${config}`, 'success');
                 });
             });
+        }
+
+        function renderDiscoveredRepoCard(repo) {
+            const isReady = repo.status === 'ready';
+            const isLegacy = repo.status === 'legacy';
+            const badgeClass = isReady ? 'ready' : (isLegacy ? 'legacy' : 'needs-setup');
+            const badgeText = isReady ? 'Ready' : (isLegacy ? 'Legacy config' : 'Needs Setup');
+
+            const configMarkup = repo.configs?.length ? `
+                <div class="repo-card-config">
+                    <span>Config:</span> ${escapeHtml(repo.configs.join(', '))}
+                </div>
+            ` : '';
+
+            let actions = '';
+            if (isReady) {
+                actions = `<button class="btn btn-primary" data-action="register" data-path="${escapeHtml(repo.path)}">Add Repository</button>`;
+            } else {
+                actions = `<button class="btn btn-primary" data-action="setup" data-path="${escapeHtml(repo.path)}">Setup</button>`;
+            }
+
+            return `
+                <div class="repo-card discovered">
+                    <div class="repo-card-header">
+                        <div>
+                            <div class="repo-card-title">${escapeHtml(repo.name)}</div>
+                            <div class="repo-card-path">${escapeHtml(repo.path)}</div>
+                        </div>
+                        <span class="repo-card-badge ${badgeClass}">${badgeText}</span>
+                    </div>
+                    ${configMarkup}
+                    <div class="repo-card-actions">
+                        ${actions}
+                    </div>
+                </div>
+            `;
         }
 
         function renderRepoCard(repo) {
@@ -2947,7 +3498,7 @@
                 actions = `<button class="btn btn-primary" data-action="setup" data-path="${escapeHtml(repo.path)}">Setup</button>`;
             } else if (isNotRunning) {
                 actions = `
-                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open engine</button>
+                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}" disabled>Open engine</button>
                     <button class="btn btn-primary" data-action="start" data-path="${escapeHtml(repo.path)}">Start engine</button>
                     <button class="btn" data-action="start-paused" data-path="${escapeHtml(repo.path)}">Start paused</button>
                 `;
@@ -2999,27 +3550,20 @@
             const meta = document.getElementById('recoveryBannerMeta');
             if (!banner || !title || !meta) return;
 
-            const active = state.repos.filter(r => {
-                const s = r.status || {};
-                return s.state === 'running' || s.state === 'partial' || s.paused;
-            });
             const orphaned = state.repos.filter(r => r.status?.runtime_health === 'orphaned');
             const staleLocks = state.repos.filter(r => r.status?.runtime_health === 'stale_lock');
             const unresponsive = state.repos.filter(r => r.status?.runtime_health === 'unresponsive');
 
-            const shouldShow = active.length > 0 || orphaned.length > 0 || staleLocks.length > 0 || unresponsive.length > 0;
-            banner.classList.toggle('active', shouldShow);
-            if (!shouldShow) {
-                return;
-            }
+            const needsRecovery = orphaned.length + staleLocks.length + unresponsive.length;
+            banner.classList.toggle('active', needsRecovery > 0);
+            if (needsRecovery === 0) return;
 
-            if (orphaned.length > 0 || staleLocks.length > 0 || unresponsive.length > 0) {
-                title.textContent = 'Recovery attention needed';
-                meta.textContent = `${active.length} active · ${orphaned.length} orphaned · ${staleLocks.length} stale lock · ${unresponsive.length} unresponsive`;
-                return;
-            }
-            title.textContent = `${active.length} engines still running in background`;
-            meta.textContent = 'Reconnect to a running engine or keep working from overview.';
+            const parts = [];
+            if (orphaned.length > 0) parts.push(`${orphaned.length} orphaned`);
+            if (staleLocks.length > 0) parts.push(`${staleLocks.length} stale lock`);
+            if (unresponsive.length > 0) parts.push(`${unresponsive.length} unresponsive`);
+            title.textContent = 'Recovery attention needed';
+            meta.textContent = parts.join(' · ');
         }
 
         function reconnectToActiveEngine() {
@@ -3094,53 +3638,108 @@
             const repoState = getRepoState(repo);
             const isPaused = repoState === 'paused';
 
-            // Update header info
-            document.getElementById('activityRepoName').textContent = repo.name;
-            const badge = document.getElementById('activityRepoBadge');
+            // Update consolidated header
+            document.getElementById('consolidatedRepoName').textContent = repo.name;
+            // Populate footer context immediately
+            const footerRepo = document.getElementById('footerRepo');
+            const footerConfig = document.getElementById('footerConfig');
+            if (footerRepo) {
+                const repoShort = repo.name.length > 30 ? '...' + repo.name.slice(-27) : repo.name;
+                footerRepo.dataset.full = repo.path;
+                footerRepo.dataset.short = repoShort;
+                footerRepo.textContent = repoShort;
+                footerRepo.title = repo.path;
+                footerRepo.classList.remove('expanded');
+            }
+            if (footerConfig && state.activeRepo.config) {
+                footerConfig.textContent = state.activeRepo.config;
+            }
+            const badge = document.getElementById('consolidatedBadge');
             badge.textContent = isPaused ? 'Paused' : (repoState === 'running' ? 'Running' : 'Not running');
             const badgeClass = isPaused ? 'paused' : (repoState === 'running' ? 'running' : 'stopped');
             badge.className = `repo-card-badge ${badgeClass}`;
 
-            // Update pause/resume button
-            const pauseBtn = document.getElementById('pauseResumeBtn');
-            pauseBtn.textContent = isPaused ? 'Resume engine' : 'Pause engine';
-            pauseBtn.disabled = repoState === 'not running';
+            // Update menu pause/resume label
+            const menuPR = document.getElementById('menuPauseResume');
+            if (menuPR) {
+                menuPR.innerHTML = isPaused
+                    ? '<span class="menu-icon">▶</span> Resume engine'
+                    : '<span class="menu-icon">⏸</span> Pause engine';
+            }
 
-            const activityConfigSelect = document.getElementById('activityConfigSelect');
-            const activitySetDefaultConfig = document.getElementById('activitySetDefaultConfig');
-            if (activityConfigSelect && activitySetDefaultConfig) {
+            // Update config selector in menu
+            const configSelect = document.getElementById('menuConfigSelect');
+            const configWrap = document.getElementById('menuConfigWrap');
+            if (configSelect && configWrap) {
                 const configs = repo.configs || [];
-                if (configs.length > 0) {
-                    activityConfigSelect.innerHTML = configs.map(c =>
+                if (configs.length > 1) {
+                    configSelect.innerHTML = configs.map(c =>
                         `<option value="${escapeHtml(c)}" ${c === state.activeRepo.config ? 'selected' : ''}>${escapeHtml(c)}</option>`
                     ).join('');
-                    activityConfigSelect.disabled = false;
-                    activitySetDefaultConfig.checked = getDefaultConfig(repo.path) === state.activeRepo.config;
-                    activitySetDefaultConfig.disabled = false;
+                    configWrap.style.display = '';
                 } else {
-                    activityConfigSelect.innerHTML = '<option value="">No config</option>';
-                    activityConfigSelect.disabled = true;
-                    activitySetDefaultConfig.checked = false;
-                    activitySetDefaultConfig.disabled = true;
+                    configWrap.style.display = 'none';
                 }
             }
+
 
             // Load iframe
             const iframe = document.getElementById('activityIframe');
             const loading = document.getElementById('activityLoading');
-            loading.style.display = 'block';
             iframe.style.display = 'none';
+            iframe.src = 'about:blank';
 
             // Set iframe source to orchestrator dashboard
             const port = getRepoPort(repo);
-            if (port) {
-                iframe.src = `http://localhost:${port}/`;
+            if (port && repoState !== 'not running') {
+                loading.innerHTML = '<div class="spinner"></div><p>Loading activity...</p>';
+                loading.style.display = 'block';
+
+                let loadTimedOut = false;
+                const timeout = setTimeout(() => {
+                    loadTimedOut = true;
+                    loading.innerHTML = `
+                        <p>Engine on port ${port} is not responding.</p>
+                        <button class="btn btn-sm" onclick="loadActivityView('${escapeHtml(repo.path).replace(/'/g, "\\'")}')">Retry</button>
+                    `;
+                }, 8000);
+
                 iframe.onload = () => {
-                    loading.style.display = 'none';
-                    iframe.style.display = 'block';
+                    clearTimeout(timeout);
+                    if (!loadTimedOut) {
+                        loading.style.display = 'none';
+                        iframe.style.display = 'block';
+                        // Send repo display name to dashboard for embedded header
+                        try {
+                            iframe.contentWindow.postMessage({
+                                type: 'cc-repo-info',
+                                repoName: repo.name,
+                            }, '*');
+                        } catch (e) { /* cross-origin */ }
+                    }
                 };
+                iframe.onerror = () => {
+                    clearTimeout(timeout);
+                    loading.innerHTML = `
+                        <p>Failed to connect to engine on port ${port}.</p>
+                        <button class="btn btn-sm" onclick="loadActivityView('${escapeHtml(repo.path).replace(/'/g, "\\'")}')">Retry</button>
+                    `;
+                };
+                const iframeTheme = state.theme === 'system'
+                    ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+                    : state.theme;
+                iframe.src = `http://localhost:${port}/?embedded=1&theme=${encodeURIComponent(iframeTheme)}`;
             } else {
-                loading.innerHTML = '<p>Repository engine is not running.</p>';
+                loading.innerHTML = `
+                    <p>Repository engine is not running.</p>
+                    <button class="btn btn-primary btn-sm" data-action="start" data-path="${escapeHtml(repo.path)}">Start engine</button>
+                    <button class="btn btn-sm" data-action="start-paused" data-path="${escapeHtml(repo.path)}">Start paused</button>
+                `;
+                loading.style.display = 'block';
+                // Attach action handlers to the inline buttons
+                loading.querySelectorAll('[data-action]').forEach(btn => {
+                    btn.addEventListener('click', handleRepoAction);
+                });
             }
         }
 
@@ -3173,6 +3772,30 @@
                 case 'setup':
                     openSetupWizard(path);
                     break;
+                case 'register':
+                    await registerDiscoveredRepo(path);
+                    break;
+            }
+        }
+
+        async function registerDiscoveredRepo(path) {
+            try {
+                const response = await fetch('/control/repos', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ repo_root: path })
+                });
+                if (!response.ok) {
+                    const error = await response.json();
+                    throw new Error(error.error || 'Failed to register repository');
+                }
+                showToast(`Added ${path.split('/').pop()}`, 'success');
+                // Refresh both lists so it moves from discovered to registered
+                await loadDiscoveredRepos();
+                await loadRepos();
+                renderDropdownMenu();
+            } catch (error) {
+                showToast(error.message, 'error');
             }
         }
 
@@ -3296,79 +3919,88 @@
         // ============================================
         // Doctor
         // ============================================
-        async function runDoctor(repoPath = null) {
+        function _renderDoctorResults(data) {
+            let html = '';
+            if (data.checks) {
+                const renderExpandable = (check) => {
+                    if (!check.expandable || !check.expandable.per_db) return '';
+                    const rows = Object.entries(check.expandable.per_db)
+                        .map(([label, detail]) => {
+                            const rawStatus = detail.status || 'info';
+                            const statusClass = rawStatus === 'ok'
+                                ? 'ok'
+                                : rawStatus === 'error'
+                                    ? 'error'
+                                    : rawStatus === 'overdue'
+                                        ? 'warning'
+                                        : rawStatus === 'missing'
+                                            ? 'info'
+                                            : rawStatus === 'disabled' || rawStatus === 'skipped'
+                                                ? 'info'
+                                                : 'warning';
+                            const message = detail.detail || '';
+                            return `<div class="doctor-subcheck ${statusClass}">${escapeHtml(label)}: ${escapeHtml(message)}</div>`;
+                        })
+                        .join('');
+                    return rows ? `<div class="doctor-subchecks">${rows}</div>` : '';
+                };
+
+                const renderCheck = (name, check) => {
+                    const status = check.status || (check.ok || check.passed ? 'ok' : 'error');
+                    const icon = status === 'ok' ? '✓' : status === 'warning' ? '!' : status === 'info' ? 'i' : '✗';
+                    const message = check.message || check.detail || (status === 'ok' ? 'OK' : 'Failed');
+                    const subchecks = renderExpandable(check);
+                    html += `<div class="doctor-check ${status === 'ok' ? 'pass' : status === 'warning' ? 'warn' : status === 'info' ? 'warn' : 'fail'}">${icon} ${escapeHtml(name)}: ${escapeHtml(message)}</div>${subchecks}`;
+                };
+
+                if (Array.isArray(data.checks)) {
+                    for (const check of data.checks) {
+                        renderCheck(check.name || 'Check', check);
+                    }
+                } else {
+                    for (const [name, check] of Object.entries(data.checks)) {
+                        renderCheck(name, check);
+                    }
+                }
+            }
+            if (data.all_ok !== undefined) {
+                html += `<div class="doctor-check ${data.all_ok ? 'pass' : 'fail'}">Overall: ${data.all_ok ? 'All checks passed' : 'Some checks failed'}</div>`;
+            }
+            return html || 'All checks passed!';
+        }
+
+        async function runDoctor() {
+            const targetPath = state.activeRepo?.path;
+            if (!targetPath) {
+                showToast('Select a repository first', 'warning');
+                return;
+            }
             const modal = document.getElementById('doctorModal');
             const modalTitle = document.getElementById('doctorModalTitle');
             const results = document.getElementById('doctorResults');
-
             modal.classList.add('active');
-            // Be explicit about scope: repo diagnostics vs control-center prerequisites.
-            const targetPath = repoPath || state.activeRepo?.path || null;
-            const isRepoScope = Boolean(targetPath);
-            modalTitle.textContent = isRepoScope ? 'Doctor Results - Repository' : 'Doctor Results - Control Center';
-            results.innerHTML = isRepoScope
-                ? `<div class="doctor-check info">Scope: Repository<br><code>${escapeHtml(targetPath || '')}</code></div><div class="doctor-check info">Running diagnostics...</div>`
-                : '<div class="doctor-check info">Scope: Control Center prerequisites (no repository selected)</div><div class="doctor-check info">Running diagnostics...</div>';
-
+            modalTitle.textContent = `Doctor — ${targetPath.split('/').pop()}`;
+            results.innerHTML = `<div class="doctor-check info">Running diagnostics for <code>${escapeHtml(targetPath)}</code>...</div>`;
             try {
-                const url = targetPath
-                    ? `/control/orchestrator/doctor?repo_root=${encodeURIComponent(targetPath)}`
-                    : '/control/setup/prereqs';
-                const response = await fetch(url);
-                const data = await response.json();
-
-                let html = '';
-                // Handle doctor endpoint format
-                if (data.checks) {
-                    const renderExpandable = (check) => {
-                        if (!check.expandable || !check.expandable.per_db) return '';
-                        const rows = Object.entries(check.expandable.per_db)
-                            .map(([label, detail]) => {
-                                const rawStatus = detail.status || 'info';
-                                const statusClass = rawStatus === 'ok'
-                                    ? 'ok'
-                                    : rawStatus === 'error'
-                                        ? 'error'
-                                        : rawStatus === 'overdue'
-                                            ? 'warning'
-                                            : rawStatus === 'missing'
-                                                ? 'info'
-                                                : rawStatus === 'disabled' || rawStatus === 'skipped'
-                                                    ? 'info'
-                                                    : 'warning';
-                                const message = detail.detail || '';
-                                return `<div class="doctor-subcheck ${statusClass}">${escapeHtml(label)}: ${escapeHtml(message)}</div>`;
-                            })
-                            .join('');
-                        return rows ? `<div class="doctor-subchecks">${rows}</div>` : '';
-                    };
-
-                    const renderCheck = (name, check) => {
-                        const status = check.status || (check.ok || check.passed ? 'ok' : 'error');
-                        const icon = status === 'ok' ? '✓' : status === 'warning' ? '!' : status === 'info' ? 'i' : '✗';
-                        const message = check.message || check.detail || (status === 'ok' ? 'OK' : 'Failed');
-                        const subchecks = renderExpandable(check);
-                        html += `<div class="doctor-check ${status === 'ok' ? 'pass' : status === 'warning' ? 'warn' : status === 'info' ? 'warn' : 'fail'}">${icon} ${escapeHtml(name)}: ${escapeHtml(message)}</div>${subchecks}`;
-                    };
-
-                    if (Array.isArray(data.checks)) {
-                        for (const check of data.checks) {
-                            renderCheck(check.name || 'Check', check);
-                        }
-                    } else {
-                        for (const [name, check] of Object.entries(data.checks)) {
-                            renderCheck(name, check);
-                        }
-                    }
-                }
-                // Handle prereqs endpoint format
-                if (data.all_ok !== undefined) {
-                    html += `<div class="doctor-check ${data.all_ok ? 'pass' : 'fail'}">Overall: ${data.all_ok ? 'All checks passed' : 'Some checks failed'}</div>`;
-                }
-
-                results.innerHTML = html || 'All checks passed!';
+                const response = await fetch(`/control/orchestrator/doctor?repo_root=${encodeURIComponent(targetPath)}`);
+                results.innerHTML = _renderDoctorResults(await response.json());
             } catch (error) {
                 results.innerHTML = `<div class="doctor-check fail">✗ Failed to run diagnostics: ${escapeHtml(error.message)}</div>`;
+            }
+        }
+
+        async function runSystemCheck() {
+            const modal = document.getElementById('doctorModal');
+            const modalTitle = document.getElementById('doctorModalTitle');
+            const results = document.getElementById('doctorResults');
+            modal.classList.add('active');
+            modalTitle.textContent = 'System Check';
+            results.innerHTML = '<div class="doctor-check info">Checking prerequisites...</div>';
+            try {
+                const response = await fetch('/control/setup/prereqs');
+                results.innerHTML = _renderDoctorResults(await response.json());
+            } catch (error) {
+                results.innerHTML = `<div class="doctor-check fail">✗ Failed to run system check: ${escapeHtml(error.message)}</div>`;
             }
         }
 
@@ -3380,15 +4012,21 @@
                 const s = r.status || {};
                 return s.state === 'running' || s.state === 'partial' || s.paused;
             });
+
+            // Nothing running — close immediately, no confirmation needed
+            if (active.length === 0) {
+                showToast('Shutting down...');
+                confirmShutdown();
+                return;
+            }
+
             const summary = document.getElementById('shutdownSummaryText');
             const running = document.getElementById('shutdownRunningText');
             if (summary) {
                 summary.textContent = 'This closes the Control Center window and dashboard server. Repository engines keep running independently.';
             }
             if (running) {
-                if (active.length === 0) {
-                    running.textContent = 'No repository engines are currently running.';
-                } else if (active.length === 1) {
+                if (active.length === 1) {
                     running.textContent = `1 repository engine remains active: ${active[0].name}.`;
                 } else {
                     const names = active.slice(0, 3).map(r => r.name).join(', ');
@@ -3402,13 +4040,28 @@
         async function confirmShutdown() {
             try {
                 await fetch('/control/shutdown', { method: 'POST' });
-                showToast('Control Center shut down. You can close this tab now.', 'success');
                 document.getElementById('shutdownModal').classList.remove('active');
+                // Try to close the tab; if blocked, show a "closed" landing page
                 setTimeout(() => {
                     window.close();
-                    // Browser may block programmatic close if not opened by script.
-                    showToast('Browser blocked automatic close. Please close this tab manually.', 'warning');
-                }, 700);
+                    // Browser blocked programmatic close — replace page with closed state
+                    setTimeout(() => {
+                        document.body.innerHTML = `
+                            <div style="display:flex;align-items:center;justify-content:center;height:100vh;
+                                        background:var(--bg-main,#0f1722);color:var(--text-primary,#d7e2ef);
+                                        font-family:'Segoe UI','SF Pro Text','Helvetica Neue',sans-serif;text-align:center;">
+                                <div>
+                                    <div style="font-size:48px;margin-bottom:16px;opacity:0.5;">&#x2713;</div>
+                                    <h1 style="font-size:20px;font-weight:600;margin:0 0 8px;">Control Center closed</h1>
+                                    <p style="color:var(--text-secondary,#90a5bf);margin:0;font-size:14px;">
+                                        Repository engines continue running independently.<br>
+                                        You can close this tab.
+                                    </p>
+                                </div>
+                            </div>
+                        `;
+                    }, 200);
+                }, 500);
             } catch (error) {
                 showToast('Failed to close Control Center', 'error');
             }
@@ -3574,20 +4227,12 @@
                 item.addEventListener('click', () => switchView(item.dataset.view));
             });
 
-            // Back to repos from activity
-            document.getElementById('backToRepos').addEventListener('click', () => {
+            // Back to repos from consolidated header
+            document.getElementById('consolidatedBack').addEventListener('click', () => {
                 switchView('repositories');
             });
 
-            // Theme toggle (header button cycles through)
-            document.getElementById('themeToggle').addEventListener('click', () => {
-                const themes = ['system', 'light', 'dark'];
-                const currentIndex = themes.indexOf(state.theme);
-                const nextTheme = themes[(currentIndex + 1) % themes.length];
-                applyTheme(nextTheme);
-            });
-
-            // Theme selector buttons
+            // Theme selector buttons (in Settings view)
             document.querySelectorAll('.theme-btn').forEach(btn => {
                 btn.addEventListener('click', () => applyTheme(btn.dataset.theme));
             });
@@ -3596,26 +4241,18 @@
             document.getElementById('reconnectEnginesBtn').addEventListener('click', reconnectToActiveEngine);
             document.getElementById('cleanupRecoveryBtn').addEventListener('click', cleanRecoveryState);
 
-            document.getElementById('activityConfigSelect').addEventListener('change', (e) => {
-                if (!state.activeRepo?.path) return;
-                state.activeRepo.config = e.target.value;
-                saveRecentRepo(state.activeRepo.path, state.activeRepo.config);
-                document.getElementById('activitySetDefaultConfig').checked =
-                    getDefaultConfig(state.activeRepo.path) === state.activeRepo.config;
-            });
-            document.getElementById('activitySetDefaultConfig').addEventListener('change', (e) => {
-                if (!state.activeRepo?.path || !state.activeRepo?.config) return;
-                if (e.target.checked) {
-                    setDefaultConfigForRepo(state.activeRepo.path, state.activeRepo.config);
-                    showToast(`${state.activeRepo.config} set as default`, 'success');
-                    return;
-                }
-                setDefaultConfigForRepo(state.activeRepo.path, null);
+            // Scope note (dismissible)
+            if (!localStorage.getItem('cc-scope-note-dismissed')) {
+                document.getElementById('scopeNote').style.display = '';
+            }
+            document.getElementById('dismissScopeNote').addEventListener('click', () => {
+                document.getElementById('scopeNote').style.display = 'none';
+                localStorage.setItem('cc-scope-note-dismissed', '1');
             });
 
-            // Doctor
-            document.getElementById('doctorBtn').addEventListener('click', runDoctor);
+            // Doctor (Tools view — repo scope) and System Check (Settings — CC scope)
             document.getElementById('doctorTool').addEventListener('click', runDoctor);
+            document.getElementById('systemCheckBtn').addEventListener('click', runSystemCheck);
             document.getElementById('closeDoctorModal').addEventListener('click', () => {
                 document.getElementById('doctorModal').classList.remove('active');
             });
@@ -3633,50 +4270,7 @@
             });
             document.getElementById('confirmShutdown').addEventListener('click', confirmShutdown);
 
-            // Tools - helper to get current repo
-            function resolveActiveRepo() {
-                if (!state.activeRepo) return null;
-                const path = state.activeRepo.path || state.activeRepo;
-                const source = state.activeRepo.source || 'registered';
-                let repo = null;
-                if (source === 'discovered') {
-                    repo = state.discoveredRepos.find(r => r.path === path) || null;
-                }
-                if (!repo) {
-                    repo = state.repos.find(r => r.path === path) || null;
-                }
-                return { path, source, repo };
-            }
-
-            function repoHasConfig(repo, source) {
-                if (!repo) return false;
-                if (repo.configs && repo.configs.length > 0) return true;
-                if (source === 'discovered' && repo.status === 'legacy') return true;
-                if (repo.status && (repo.status.state === 'running' || repo.status.state === 'partial' || repo.status.paused)) {
-                    return true;
-                }
-                return false;
-            }
-
-            function getToolRepoPath(options = {}) {
-                const requireConfig = options.requireConfig === true;
-                const active = resolveActiveRepo();
-                if (active) {
-                    if (!requireConfig || repoHasConfig(active.repo, active.source)) {
-                        return active.path;
-                    }
-                }
-
-                if (requireConfig) {
-                    const configured = state.repos.find(r => r.configs && r.configs.length > 0);
-                    if (configured) return configured.path;
-                    const discoveredConfigured = state.discoveredRepos.find(r => r.configs && r.configs.length > 0);
-                    if (discoveredConfigured) return discoveredConfigured.path;
-                    return null;
-                }
-
-                return state.repos[0]?.path || null;
-            }
+            // Tools - helper to get current repo (defined in outer scope, see below DOMContentLoaded)
 
             // Goal Pilot
             const goalPilotState = {
@@ -4710,24 +5304,77 @@
                 else if (setupWizardState.step === 3) await loadSetupStep3();
             });
 
-            // Pause/Resume in activity view
-            document.getElementById('pauseResumeBtn').addEventListener('click', async () => {
-                if (!state.activeRepo?.path) return;
-                const repo = state.repos.find(r => r.path === state.activeRepo.path);
-                if (!repo) return;
-                if (getRepoState(repo) === 'paused') {
-                    await resumeRepo(repo.path);
-                } else {
-                    await pauseRepo(repo.path);
-                }
-                loadActivityView(repo.path);
+            // Consolidated header menu actions (CC-level only; engine actions are in the dashboard)
+            document.getElementById('menuCloseCC').addEventListener('click', () => {
+                closeConsolidatedDropdowns();
+                showShutdownModal();
             });
 
-            // Stop from activity view
-            document.getElementById('stopRepoBtn').addEventListener('click', async () => {
-                if (state.activeRepo) {
-                    await stopRepo(state.activeRepo.path);
+            // Scope info popover toggle
+            document.getElementById('scopeInfoBtn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                const popover = document.getElementById('scopePopover');
+                const btn = document.getElementById('scopeInfoBtn');
+                const wasVisible = popover.classList.contains('visible');
+                closeConsolidatedDropdowns();
+                if (!wasVisible) {
+                    popover.classList.add('visible');
+                    btn.classList.add('active');
+                    const s = state.dashboardStatus;
+                    if (s) {
+                        // Build scope string: milestones + optional label filter
+                        let scopeStr = s.scope.filterMilestones?.length
+                            ? 'milestones=' + s.scope.filterMilestones.join(',')
+                            : 'milestones=all';
+                        if (s.scope.filterLabel) scopeStr += ', label=' + s.scope.filterLabel;
+                        document.getElementById('scopePopoverScope').textContent = scopeStr;
+
+                        // Exclude labels (only show row if present)
+                        const excludeRow = document.getElementById('scopePopoverExcludeRow');
+                        if (s.scope.excludeLabels?.length) {
+                            document.getElementById('scopePopoverExclude').textContent = s.scope.excludeLabels.join(', ');
+                            excludeRow.style.display = '';
+                        } else {
+                            excludeRow.style.display = 'none';
+                        }
+
+                        document.getElementById('scopePopoverRepo').textContent = s.scope.repo || '--';
+                        document.getElementById('scopePopoverTotal').textContent = s.scope.inScopeTotal;
+                        document.getElementById('scopePopoverQueued').textContent = s.counts.queued;
+                        document.getElementById('scopePopoverRunning').textContent = s.counts.running;
+                        document.getElementById('scopePopoverMerge').textContent = s.counts.awaitingMerge;
+                        document.getElementById('scopePopoverBlocked').textContent = s.counts.blocked;
+                        document.getElementById('scopePopoverSync').textContent =
+                            s.refresh.lastRefreshAt ? formatSyncAge(s.refresh.lastRefreshAt) : (s.refresh.lastRefreshLabel || '--');
+                    }
                 }
+            });
+
+            // Action menu toggle
+            document.getElementById('actionMenuBtn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                const menu = document.getElementById('actionMenu');
+                const btn = document.getElementById('actionMenuBtn');
+                const wasVisible = menu.classList.contains('visible');
+                closeConsolidatedDropdowns();
+                if (!wasVisible) {
+                    menu.classList.add('visible');
+                    btn.classList.add('active');
+                }
+            });
+
+            // Close consolidated dropdowns on outside click
+            document.addEventListener('click', closeConsolidatedDropdowns);
+
+            // Maximize toggle
+            document.getElementById('maximizeBtn').addEventListener('click', toggleMaximize);
+            document.getElementById('maximizeExitBtn').addEventListener('click', toggleMaximize);
+
+            // Config selector in action menu
+            document.getElementById('menuConfigSelect').addEventListener('change', async (e) => {
+                if (!state.activeRepo?.path) return;
+                state.activeRepo.config = e.target.value;
+                setDefaultConfig(state.activeRepo.path, e.target.value);
             });
 
             // Close modals on backdrop click
@@ -4748,9 +5395,9 @@
                 }
             });
 
-            // Refresh repos periodically
+            // Refresh repos periodically (silent — no error toasts on background polls)
             setInterval(() => {
-                loadRepos();
+                loadRepos(true);
                 loadSystemState();
             }, 30000);
         });

@@ -14,7 +14,6 @@ if TYPE_CHECKING:
 
 from .analysis import analyze_issue
 from .config import Config
-from . import labels as label_utils
 from ..domain.dependencies import parse_dependencies
 from ..ports.issue import Issue
 from ..domain.models import OrchestratorState
@@ -146,6 +145,7 @@ def audit_queue(
     state: Optional[OrchestratorState] = None,
     issue_tracker: Optional["IssueTracker"] = None,
     issue_branches: Optional[dict[int, str]] = None,
+    preloaded_issues: Optional[list[Issue]] = None,
 ) -> list[IssueAuditEntry]:
     """Audit all issues and explain why each is queued or skipped.
 
@@ -153,12 +153,15 @@ def audit_queue(
         config: Configuration with agent labels and repo info.
         state: Optional orchestrator state for session history check.
         issue_tracker: IssueTracker for fetching issues.
+        issue_branches: Map of issue numbers to branch names.
+        preloaded_issues: Pre-fetched issues to use instead of calling GitHub.
+            When provided, skips the ``fetch_all_issues`` call entirely.
 
     Returns:
         List of audit entries, one per issue.
     """
-    if issue_tracker is None:
-        raise ValueError("issue_tracker is required")
+    if preloaded_issues is None and issue_tracker is None:
+        raise ValueError("issue_tracker is required when preloaded_issues is not provided")
 
     entries = []
 
@@ -172,8 +175,12 @@ def audit_queue(
     if issue_branches is None:
         issue_branches = {}
 
-    # Fetch all issues
-    all_issues = fetch_all_issues(config, issue_tracker)
+    # Use preloaded issues or fetch from GitHub
+    if preloaded_issues is not None:
+        all_issues = preloaded_issues
+    else:
+        assert issue_tracker is not None  # Guaranteed by validation above
+        all_issues = fetch_all_issues(config, issue_tracker)
 
     # Sort by issue number for consistent output
     all_issues.sort(key=lambda i: i.number)
@@ -217,25 +224,25 @@ def audit_issue(
     issue_branches: Optional[dict[int, str]] = None,
 ) -> IssueAuditEntry:
     """Determine why an issue is queued or skipped."""
+    from ..control.label_manager import LabelManager
+    lm = LabelManager(config)
+
     if issue.state == "closed":
         return IssueAuditEntry(issue, SkipReason.CLOSED)
 
     if issue.number in active_numbers:
         return IssueAuditEntry(issue, SkipReason.ACTIVE_SESSION)
 
-    label_in_progress = config.get_label_in_progress()
-    label_needs_human = config.get_label_needs_human()
-
-    if label_in_progress in issue.labels or "in-progress" in issue.labels:
+    if lm.is_in_progress(issue.labels):
         return _audit_in_progress_issue(issue, config, active_numbers, issue_branches)
 
-    blocking_labels = label_utils.get_blocking_labels(issue.labels)
+    blocking_labels = lm.get_blocking(list(issue.labels))
     if blocking_labels:
-        if label_utils.requires_human_any(issue.labels):
+        if lm.requires_human_any(list(issue.labels)):
             return IssueAuditEntry(issue, SkipReason.NEEDS_HUMAN, f"label: {blocking_labels[0]}")
         return IssueAuditEntry(issue, SkipReason.BLOCKED, f"label: {blocking_labels[0]}")
 
-    if label_needs_human in issue.labels or "needs-human" in issue.labels:
+    if lm.requires_human_any(list(issue.labels)):
         return IssueAuditEntry(issue, SkipReason.NEEDS_HUMAN)
 
     if issue.number in history_numbers:

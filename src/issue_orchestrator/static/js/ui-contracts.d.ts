@@ -37,16 +37,13 @@ export interface DashboardViewModelPayload {
   active_session_count: number;
   active_tab: string;
   agents: string[];
-  attention_groups: Record<string, any>[];
   awaiting_merge_count: number;
   awaiting_merge_items: IssueItemPayload[];
-  backlog_count: number;
-  backlog_items: IssueItemPayload[];
   blocked_count: number;
   blocked_items: IssueItemPayload[];
+  completed_count: number;
+  completed_items: IssueItemPayload[];
   dashboard_data: DashboardDataPayload;
-  done_count: number;
-  done_items: IssueItemPayload[];
   e2e_count: number;
   e2e_items: IssueItemPayload[];
   e2e_page: number;
@@ -56,7 +53,6 @@ export interface DashboardViewModelPayload {
   flow_columns: Record<string, any>[];
   github_owner: string;
   github_repo: string;
-  history_count: number;
   history_items: IssueItemPayload[];
   issues: IssueItemPayload[];
   paused: boolean;
@@ -108,11 +104,19 @@ export interface InfoDialogPayload {
 
 export interface IssueDetailPayload {
   actions: Record<string, any>[];
+  blocked_detail: Record<string, any> | null;
+  cycles: Record<string, any>[];
   events: Record<string, any>[];
   issue_number: number;
   issue_url: string;
-  loops: Record<string, any>[];
+  journey_cycles: Record<string, any>[];
+  journey_steps: Record<string, any>[];
+  lifecycle_count: number;
   phase_toc: Record<string, any>[];
+  previous_cycles: Record<string, any>[];
+  previous_cycles_count: number;
+  raw_events_count: number;
+  status_explanation: string;
   summary: Record<string, any>;
   title: string;
 }

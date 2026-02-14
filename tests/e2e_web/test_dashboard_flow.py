@@ -13,7 +13,7 @@ def test_dashboard_loads_without_page_errors(page: Page, web_server: dict[str, o
     page.goto(str(web_server["url"]), wait_until="domcontentloaded")
     page.wait_for_timeout(500)
 
-    expect(page.locator("#tab-flow")).to_be_visible()
+    expect(page.locator("#tab-kanban")).to_be_visible()
     assert errors == []
 
 
@@ -29,10 +29,10 @@ def test_flow_card_opens_issue_detail_drawer(page: Page, web_server: dict[str, o
     expect(page.locator("#issueDetailTitle")).to_contain_text("Issue #408")
 
 
-def test_attention_tab_navigation_works(page: Page, web_server: dict[str, object]) -> None:
-    """Flow-first tabs should navigate to Attention view."""
+def test_e2e_tab_navigation_works(page: Page, web_server: dict[str, object]) -> None:
+    """Dashboard tabs should navigate to E2E view."""
     page.goto(str(web_server["url"]), wait_until="domcontentloaded")
 
-    page.locator("#tab-attention").click()
-    page.wait_for_url("**?tab=attention**")
-    expect(page.locator("#panel-attention")).to_be_visible()
+    page.locator("#tab-e2e").click()
+    page.wait_for_url("**?tab=e2e**")
+    expect(page.locator("#panel-e2e")).to_be_visible()

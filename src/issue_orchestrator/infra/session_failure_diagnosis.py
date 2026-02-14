@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .config import Config
+    from ..ports.session_output import SessionOutput
 
 
 @dataclass
@@ -35,10 +36,13 @@ class SessionFailureDiagnosis:
     warnings: list[str] = field(default_factory=list)
     suggestions: list[str] = field(default_factory=list)
     review_feedback: list[dict[str, Any]] = field(default_factory=list)
+    analysis_headline: str | None = None
+    analysis_detail: str | None = None
+    analysis_suggestions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dict for JSON serialization."""
-        return {
+        result = {
             "issue_number": self.issue_number,
             "ai_system": self.ai_system,
             "permission_mode": self.permission_mode,
@@ -52,6 +56,13 @@ class SessionFailureDiagnosis:
             "suggestions": self.suggestions,
             "review_feedback": self.review_feedback,
         }
+        if self.analysis_headline:
+            result["analysis_headline"] = self.analysis_headline
+            if self.analysis_detail:
+                result["analysis_detail"] = self.analysis_detail
+            if self.analysis_suggestions:
+                result["analysis_suggestions"] = self.analysis_suggestions
+        return result
 
 
 def _search_worktree_in_base(
@@ -197,12 +208,40 @@ def _load_review_feedback(worktree_path: Path | None) -> list[dict[str, Any]]:
     return result
 
 
+def _load_analysis_from_worktree(
+    worktree_path: Path | None,
+    session_output: "SessionOutput | None" = None,
+) -> tuple[str | None, str | None, list[str]]:
+    """Try to load analysis.json from the most recent run dir.
+
+    Returns (headline, detail, suggestions).
+    """
+    if not worktree_path or not session_output:
+        return None, None, []
+
+    try:
+        from ..control.session_analyzer import load_analysis
+
+        run_dir = session_output.find_run_dir(worktree_path)
+        if not run_dir:
+            return None, None, []
+
+        analysis = load_analysis(run_dir)
+        if not analysis:
+            return None, None, []
+
+        return analysis.headline, analysis.detail, list(analysis.suggestions)
+    except Exception:
+        return None, None, []
+
+
 def create_session_failure_diagnosis(
     issue_number: int,
     session_history: list,
     active_sessions: list,
     config: "Config",
     agents: dict,
+    session_output: "SessionOutput | None" = None,
 ) -> SessionFailureDiagnosis:
     """Create a failure diagnosis for a session."""
     from ..adapters.session_log.registry import get_log_provider
@@ -230,6 +269,12 @@ def create_session_failure_diagnosis(
     # Load review feedback from per-cycle files
     review_feedback = _load_review_feedback(Path(worktree_path) if worktree_path else None)
 
+    # Augment with session analysis from run manifest
+    analysis_headline, analysis_detail, analysis_suggestions = _load_analysis_from_worktree(
+        Path(worktree_path) if worktree_path else None,
+        session_output=session_output,
+    )
+
     return SessionFailureDiagnosis(
         issue_number=issue_number,
         ai_system=ai_system,
@@ -243,4 +288,7 @@ def create_session_failure_diagnosis(
         warnings=warnings,
         suggestions=suggestions,
         review_feedback=review_feedback,
+        analysis_headline=analysis_headline,
+        analysis_detail=analysis_detail,
+        analysis_suggestions=analysis_suggestions,
     )

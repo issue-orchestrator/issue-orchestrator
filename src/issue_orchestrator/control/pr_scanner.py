@@ -15,7 +15,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Sequence, Protocol
 
 from ..infra.config import Config
-from ..infra import labels as label_registry
 from ..events import EventName
 from ..domain.models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
@@ -26,6 +25,7 @@ from ..infra import gh_audit
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
+    from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +62,7 @@ class PRScanner:
         config: Config,
         repository: RepositoryScanner,
         events: EventSink,
+        label_manager: "LabelManager | None" = None,
     ):
         """Initialize the scanner.
 
@@ -69,10 +70,15 @@ class PRScanner:
             config: Configuration with label settings
             repository: Adapter for GitHub operations
             events: EventSink for trace events
+            label_manager: Label registry for prefix-aware queries.
         """
         self.config = config
         self.repository = repository
         self.events = events
+        if label_manager is None:
+            from .label_manager import LabelManager
+            label_manager = LabelManager(config)
+        self._lm = label_manager
 
     def scan_for_reviews(
         self,
@@ -158,7 +164,7 @@ class PRScanner:
         if not self.config.code_review_agent:
             return [], []
 
-        rework_label = self.config.get_label_needs_rework()
+        rework_label = self._lm.needs_rework
         with gh_audit.context(
             reason=gh_audit.AuditReason.PR_SCAN,
             scope=gh_audit.AuditScope.PERIODIC,
@@ -193,8 +199,8 @@ class PRScanner:
 
             # Skip if already blocked (has any blocking label like blocked-*, needs-human, etc.)
             # This prevents escalation spam when GitHub label cache is stale
-            if label_registry.is_blocking_any(pr.labels):
-                blocking = label_registry.get_blocking_labels(pr.labels)
+            if self._lm.is_blocking_any(pr.labels):
+                blocking = self._lm.get_blocking(pr.labels)
                 logger.debug(
                     "[SCANNER] PR #%d already blocked (%s), skipping",
                     pr.number, ", ".join(blocking)
@@ -280,9 +286,8 @@ class PRScanner:
 
         Returns the NEXT cycle number (e.g., rework-cycle-2 means next is cycle 3).
         """
-        for label in labels:
-            match = re.match(r"rework-cycle-(\d+)", label)
-            if match:
-                return int(match.group(1)) + 1  # Next cycle
+        cycle = self._lm.extract_rework_cycle(labels)
+        if cycle is not None:
+            return cycle + 1  # Next cycle
         return 1  # First rework
 

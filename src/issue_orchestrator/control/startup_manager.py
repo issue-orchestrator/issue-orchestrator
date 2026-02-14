@@ -7,22 +7,32 @@ Hook verification is handled by the launcher (pre-flight doctor checks)
 before the orchestrator process starts. The startup sequence here covers
 runtime initialization only:
 
-1. Clean up stale claims (in-progress labels without sessions)
-2. Clean up idle terminal sessions
-3. Discover and restore running sessions
-4. Recover pending reviews/reworks/triage
-5. Resume issues with partial work
-6. Audit and cache the queue
+1. Enforce SQLite pragmas and backups
+2. Clean up stale claims (in-progress labels without sessions)
+3. Clean up idle terminal sessions
+4. Discover and restore running sessions
+5. Restore + sync queue cache (warm: 1 delta call, cold: full scan)
+6. Check in-progress issues (filters from cache when available)
+7. Recover pending code reviews
+8. Recover pending triage reviews
+9. Recover pending validation retries
+10. Recover orphaned cleanups
+11. Resume issues with partial work
+12. Audit queue (uses cached issues when available)
 """
 
 import logging
 import re
 import time
-from typing import Callable, Optional
+from typing import TYPE_CHECKING, Callable, Optional
 
 from ..infra.analysis import analyze_issue, IssueState
 from ..infra.config import Config
 from ..ports.issue import Issue
+
+if TYPE_CHECKING:
+    from ..ports.queue_cache_store import QueueCacheStore
+    from .label_manager import LabelManager
 from ..domain.models import (
     OrchestratorState,
     PendingReview,
@@ -36,7 +46,6 @@ from .action_applier import ActionApplier
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
-from ..infra import labels
 from ..infra import gh_audit
 from ..infra.validation_state import has_pending_retry, read_validation_state, get_retry_prompt_path
 from ..infra.repo_identity import get_repo_head_sha
@@ -67,6 +76,8 @@ class StartupManager:
         restore_sessions_fn: Callable[[list[DiscoveredSession]], None],
         launch_session_fn: Callable[[Issue], Optional[Session]],
         update_queue_cache_fn: Callable[[], None],
+        queue_cache_store: "QueueCacheStore | None" = None,
+        label_manager: "LabelManager | None" = None,
     ):
         """Initialize the startup manager.
 
@@ -80,6 +91,8 @@ class StartupManager:
             restore_sessions_fn: Callback to restore running sessions
             launch_session_fn: Callback to launch a new session
             update_queue_cache_fn: Callback to update the queue cache
+            queue_cache_store: Persistent store for queue cache (enables warm restarts)
+            label_manager: Label registry for prefix-aware queries.
         """
         self.config = config
         self.events = events
@@ -91,6 +104,11 @@ class StartupManager:
         self._restore_sessions = restore_sessions_fn
         self._launch_session = launch_session_fn
         self._update_queue_cache = update_queue_cache_fn
+        self._queue_cache_store = queue_cache_store
+        if label_manager is None:
+            from .label_manager import LabelManager
+            label_manager = LabelManager(config)
+        self._lm = label_manager
 
     def _build_labels(self, *labels: str) -> list[str]:
         """Build labels list, including filtering.label if configured."""
@@ -150,38 +168,42 @@ class StartupManager:
             print(f"  Found {len(running)} running sessions to restore tracking")
             self._restore_sessions(running)
 
-        # Step 5: Check in-progress issues and determine action
+        # Step 5: Restore + sync queue cache (moved early so Steps 6/8 use cache)
+        self._restore_and_sync_queue(state)
+
+        # Step 6: Check in-progress issues and determine action
         state.startup_message = "Scanning local branches..."
         issue_branches = self._issue_branches()
 
         issues_to_resume: list[tuple[Issue, str]] = []
         await self._check_in_progress_issues(state, issue_branches, issues_to_resume)
 
-        # Step 6: Recover pending code reviews
+        # Step 7: Recover pending code reviews
         if self.config.code_review_agent and self.config.code_review_label:
             await self._recover_pending_reviews(state)
 
-        # Step 7: Recover pending triage reviews
+        # Step 8: Recover pending triage reviews
         if self.config.triage_review_agent:
             await self._recover_pending_triage(state)
 
-        # Step 8: Recover pending validation retries (crash recovery)
+        # Step 9: Recover pending validation retries (crash recovery)
         self._recover_pending_validation_retries(state, issue_branches)
 
-        # Step 9: Recover orphaned cleanups
+        # Step 10: Recover orphaned cleanups
         self._recover_orphaned_cleanups(state)
 
-        # Step 10: Resume issues with partial work
+        # Step 11: Resume issues with partial work
         await self._resume_partial_work(state, issues_to_resume)
 
-        # Step 11: Audit and cache the queue
+        # Step 12: Audit and cache the queue
         state.startup_message = "Auditing queue..."
         from ..infra.audit import audit_queue, print_audit
-        audit_entries = audit_queue(self.config, state, self.repository_host, issue_branches=issue_branches)
+        audit_entries = audit_queue(
+            self.config, state, self.repository_host,
+            issue_branches=issue_branches,
+            preloaded_issues=list(state.cached_queue_issues) if state.cached_queue_issues else None,
+        )
         print_audit(audit_entries)
-
-        state.startup_message = "Caching queue..."
-        self._update_queue_cache()
 
         # Mark startup complete
         state.startup_status = "complete"
@@ -206,11 +228,24 @@ class StartupManager:
         issue_branches: dict[int, str],
         issues_to_resume: list[tuple[Issue, str]],
     ) -> None:
-        """Check all in-progress issues and determine action."""
-        for agent_label in self.config.agents.keys():
-            issues = self._fetch_in_progress_issues_for_agent(state, agent_label)
+        """Check all in-progress issues and determine action.
+
+        When the queue cache is populated (warm or cold-after-full-scan),
+        filters in-progress issues from cache — zero GitHub calls.
+        Falls back to per-agent GitHub fetch only when no cache exists.
+        """
+        if state.cached_queue_issues:
+            # Warm path: filter in-progress from cache (0 GitHub calls)
+            issues = [i for i in state.cached_queue_issues if self._lm.is_in_progress(i.labels)]
+            logger.info("[startup] Found %d in-progress issues from cache", len(issues))
             for issue in issues:
-                self._analyze_and_handle_issue(state, issue, issue_branches, issues_to_resume, agent_label)
+                self._analyze_and_handle_issue(state, issue, issue_branches, issues_to_resume, agent_label="")
+        else:
+            # Cold fallback: per-agent fetch (only when cache is empty)
+            for agent_label in self.config.agents.keys():
+                issues = self._fetch_in_progress_issues_for_agent(state, agent_label)
+                for issue in issues:
+                    self._analyze_and_handle_issue(state, issue, issue_branches, issues_to_resume, agent_label)
 
     def _fetch_in_progress_issues_for_agent(self, state: OrchestratorState, agent_label: str) -> list[Issue]:
         """Fetch in-progress issues for a specific agent."""
@@ -222,7 +257,7 @@ class StartupManager:
         for milestone in milestones:
             with gh_audit.context(reason=gh_audit.AuditReason.STARTUP_REFRESH, scope=gh_audit.AuditScope.STARTUP):
                 issues.extend(self.repository_host.list_issues(
-                    labels=self._build_labels(agent_label, self.config.get_label_in_progress()),
+                    labels=self._build_labels(agent_label, self._lm.in_progress),
                     milestone=milestone, limit=self.config.filtering.fetch_limit,
                 ))
 
@@ -261,11 +296,11 @@ class StartupManager:
 
     def _handle_issue_with_pr(self, issue: Issue, analysis: IssueState) -> None:
         """Handle issue that has an open PR."""
-        if not labels.is_pr_pending(issue.labels):
+        if not self._lm.is_pr_pending(issue.labels):
             print(f"  #{issue.number}: Has open PR - adding pr-pending label (crash recovery)")
             self._apply_label_actions([
-                AddLabelAction(issue_number=issue.number, label=labels.PR_PENDING, reason="startup recovery: missing pr-pending"),
-                RemoveLabelAction(issue_number=issue.number, label=self.config.get_label_in_progress(), reason="startup recovery: remove stale in-progress"),
+                AddLabelAction(issue_number=issue.number, label=self._lm.pr_pending, reason="startup recovery: missing pr-pending"),
+                RemoveLabelAction(issue_number=issue.number, label=self._lm.in_progress, reason="startup recovery: remove stale in-progress"),
             ])
         else:
             print(f"  #{issue.number}: Has open PR ({analysis.pr_url or 'unknown'}) - already has pr-pending")
@@ -274,7 +309,7 @@ class StartupManager:
         """Clear stale in-progress label from issue."""
         print(f"  #{issue.number}: No session or branch - clearing stale label")
         self._apply_label_actions([
-            RemoveLabelAction(issue_number=issue.number, label=self.config.get_label_in_progress(), reason="startup recovery: clear stale in-progress"),
+            RemoveLabelAction(issue_number=issue.number, label=self._lm.in_progress, reason="startup recovery: clear stale in-progress"),
         ])
 
     async def _recover_pending_reviews(self, state: OrchestratorState) -> None:
@@ -418,6 +453,65 @@ class StartupManager:
         """
         # Delegate to CleanupManager if needed
         pass
+
+    def _restore_and_sync_queue(self, state: OrchestratorState) -> None:
+        """Restore queue cache from SQLite and delta-sync from GitHub.
+
+        Warm start: load cached issues + watermark from SQLite, then use
+        ``list_issues_delta`` to fetch only what changed since last persist.
+        Cold start: fall back to a full scan via ``_update_queue_cache``.
+        Either way, persist the result back to SQLite for the next restart.
+        """
+        store = self._queue_cache_store
+        if store is None:
+            # No persistent store configured — fall back to full scan.
+            state.startup_message = "Caching queue..."
+            self._update_queue_cache()
+            return
+
+        state.startup_message = "Restoring queue cache..."
+        cached_issues = store.load_issues(self.config.repo or "")
+        cached_watermark = store.load_watermark()
+
+        if cached_issues and cached_watermark:
+            # Warm start: load from SQLite, then delta sync from GitHub
+            state.startup_message = "Syncing queue changes from GitHub..."
+            logger.info(
+                "[STARTUP] Warm start: %d cached issues, watermark=%s",
+                len(cached_issues), cached_watermark,
+            )
+            delta_issues, next_watermark = self.repository_host.list_issues_delta(
+                since=cached_watermark, limit=200,
+            )
+            # Merge: start from cached, apply deltas
+            issue_map: dict[int, Issue] = {i.number: i for i in cached_issues}
+            for issue in delta_issues:
+                if issue.state.lower() == "open":
+                    issue_map[issue.number] = issue
+                else:
+                    issue_map.pop(issue.number, None)
+
+            # Apply eligibility policy (scope + exclusion filters)
+            from .queue_cache import QueueCache
+            QueueCache(self.config, state).replace_from_refresh(list(issue_map.values()))
+            state.queue_delta_watermark = next_watermark or cached_watermark
+            logger.info(
+                "[STARTUP] Delta sync: %d delta issues, %d in queue after filter",
+                len(delta_issues), len(state.cached_queue_issues),
+            )
+        else:
+            # Cold start (first run or empty store): full scan via existing path
+            state.startup_message = "Caching queue..."
+            logger.info("[STARTUP] Cold start: running full queue scan")
+            self._update_queue_cache()
+
+        # Persist updated state to SQLite for next restart
+        state.startup_message = "Persisting queue cache..."
+        store.save_snapshot(
+            state.cached_queue_issues,
+            state.queue_delta_watermark,
+            repo=self.config.repo or "",
+        )
 
     async def _resume_partial_work(
         self,

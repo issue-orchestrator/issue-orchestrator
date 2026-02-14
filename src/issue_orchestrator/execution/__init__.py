@@ -45,6 +45,7 @@ from .command_runner import LocalCommandRunner
 from .session_output_adapter import FileSystemSessionOutput
 from .goal_pilot_store import SqliteGoalPilotStore
 from .provider_circuit_store import SQLiteProviderCircuitStore
+from .queue_cache_store import QueueCacheStore
 from .timeline_event_sink import TimelineEventSink
 from .timeline_reader import DefaultTimelineReader
 from .timeline_store import FileSystemTimelineStore, TimelineStoreConfig
@@ -82,6 +83,8 @@ __all__ = [
     "SqliteGoalPilotStore",
     # Provider circuit store
     "SQLiteProviderCircuitStore",
+    # Queue cache store
+    "QueueCacheStore",
     # Timeline storage
     "TimelineEventSink",
     "DefaultTimelineReader",

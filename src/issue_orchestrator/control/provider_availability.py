@@ -12,6 +12,7 @@ from ..infra.config import Config
 from .provider_resilience import ProviderResilienceManager
 
 if TYPE_CHECKING:
+    from .label_manager import LabelManager
     from .planner import OrchestratorSnapshot
 
 
@@ -19,9 +20,14 @@ if TYPE_CHECKING:
 class ProviderAvailabilityPolicy:
     config: Config
     provider_resilience: ProviderResilienceManager
+    label_manager: "LabelManager | None" = None
 
     def blocked_label(self) -> str:
-        return self.config.get_label_provider_unavailable()
+        if self.label_manager is not None:
+            return self.label_manager.provider_unavailable
+        # Deprecated fallback — callers should provide label_manager
+        from .label_manager import LabelManager
+        return LabelManager(self.config).provider_unavailable
 
     def provider_for_agent_label(self, agent_label: str | None) -> str | None:
         if not agent_label:

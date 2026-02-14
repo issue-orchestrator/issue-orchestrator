@@ -9,7 +9,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Protocol, Sequence
+from typing import TYPE_CHECKING, Optional, Protocol, Sequence
 
 from ..ports.issue import Issue
 from ..domain.models import Session
@@ -17,8 +17,10 @@ from ..domain.models import Session
 # Sort keys can contain floats (timestamps/inf), ints (numbers), or strings (names)
 SortKey = tuple[float | int | str, ...]
 from ..infra.config import Config
-from ..infra import labels
 from .dependency_evaluator import DependencyEvaluator
+
+if TYPE_CHECKING:
+    from .label_manager import LabelManager
 
 logger = logging.getLogger(__name__)
 
@@ -184,6 +186,7 @@ class Scheduler:
         config: Config,
         milestone_strategy: Optional[MilestoneSortStrategy] = None,
         dependency_evaluator: Optional[DependencyEvaluator] = None,
+        label_manager: "LabelManager | None" = None,
     ) -> None:
         """Initialize scheduler with configuration.
 
@@ -191,6 +194,7 @@ class Scheduler:
             config: Configuration object containing max_sessions and other settings.
             milestone_strategy: Optional milestone sorting strategy. If None, uses config to create one.
             dependency_evaluator: Optional evaluator to gate issues on dependencies.
+            label_manager: Label registry for prefix-aware queries.
         """
         self.config = config
         self.milestone_strategy = milestone_strategy or get_milestone_strategy(config)
@@ -199,6 +203,10 @@ class Scheduler:
             milestone: index for index, milestone in enumerate(self.milestone_order)
         }
         self.dependency_evaluator = dependency_evaluator
+        if label_manager is None:
+            from .label_manager import LabelManager
+            label_manager = LabelManager(config)
+        self._lm = label_manager
 
     def get_available_issues(
         self,
@@ -237,16 +245,16 @@ class Scheduler:
 
             # Runtime-aware in-progress gating:
             # Only block if label exists AND session is actually running
-            if labels.is_in_progress(issue.labels):
+            if self._lm.is_in_progress(issue.labels):
                 if issue.number in active_issue_numbers:
                     # Session actually running - don't schedule
                     continue
                 # Label exists but no session - stale, will be cleaned up by planner
                 # Don't block scheduling; planner will handle label cleanup
 
-            if labels.is_pr_pending(issue.labels):
+            if self._lm.is_pr_pending(issue.labels):
                 continue
-            if labels.is_blocking_any(issue.labels):
+            if self._lm.is_blocking_any(issue.labels):
                 continue
 
             # Check dependencies if evaluator is available

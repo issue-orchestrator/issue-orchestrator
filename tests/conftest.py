@@ -494,6 +494,14 @@ def mock_session_runner(mock_terminal_plugin):
     return MockSessionRunner(mock_terminal_plugin)
 
 
+def _build_null_queue_cache_store():
+    """Create a QueueCacheStore mock that returns empty data (cold start)."""
+    store = MagicMock()
+    store.load_issues.return_value = []
+    store.load_watermark.return_value = None
+    return store
+
+
 def build_test_orchestrator_deps(
     config,
     repo_host,
@@ -673,6 +681,23 @@ def build_test_orchestrator_deps(
     timeline_reader = timeline_reader or NullTimelineReader()
     timeline_writer = timeline_writer or NullTimelineWriter()
 
+    from issue_orchestrator.control.label_manager import LabelManager
+    from issue_orchestrator.control.infra_services import InfraServices
+    from issue_orchestrator.execution.label_store import LabelStore
+
+    label_manager = LabelManager(config)
+    label_store = LabelStore(config.repo_root / ".issue-orchestrator" / "label_store.sqlite")
+
+    infra_services = InfraServices(
+        label_manager=label_manager,
+        label_store=label_store,
+        queue_cache_store=_build_null_queue_cache_store(),
+        provider_resilience=provider_resilience,
+        timeline_reader=timeline_reader,
+        timeline_writer=timeline_writer,
+        goal_pilot_store=goal_pilot_store,
+    )
+
     return OrchestratorDeps(
         events=events,
         runner=runner,
@@ -701,10 +726,7 @@ def build_test_orchestrator_deps(
         lease_renewer=lease_renewer,
         completion_observer=completion_observer,
         publish_executor=publish_executor,
-        goal_pilot_store=goal_pilot_store,
-        provider_resilience=provider_resilience,
-        timeline_reader=timeline_reader,
-        timeline_writer=timeline_writer,
+        services=infra_services,
     )
 
 

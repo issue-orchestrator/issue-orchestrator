@@ -39,7 +39,7 @@ from ..view_models.dialogs import (
     build_phase_dialog,
     build_session_diagnostics_dialog,
 )
-from ..view_models.issue_detail import build_issue_detail_view_model
+from ..view_models.issue_detail import IssueStoryContext, build_issue_detail_view_model
 from ..contracts.ui_openapi_models import (
     BlockedIssuesDialogPayload,
     ConfigDialogPayload,
@@ -222,6 +222,22 @@ STATIC_DIR = Path(__file__).parent.parent / "static"
 # Mount static files with proper security (prevents path traversal, uses async streaming)
 if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
+if os.environ.get("IO_DEV"):
+
+    @app.middleware("http")
+    async def no_cache_static(request: Request, call_next):
+        """Prevent browser from caching static assets (CSS/JS).
+
+        Without this, the dashboard iframe in the control center serves stale
+        JS/CSS even after a hard-refresh of the parent page.
+        Only active when IO_DEV=1 is set.
+        """
+        response = await call_next(request)
+        if request.url.path.startswith("/static/"):
+            response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+        return response
 
 # Global reference to orchestrator (set at startup)
 _orchestrator: "Orchestrator | None" = None
@@ -770,6 +786,7 @@ async def get_excluded_issues() -> JSONResponse:
             "flow_steps": flow_steps_for(flow_stage),
             "blocked_summary": blocked_summary(
                 list(entry.issue.labels),
+                _orchestrator.deps.label_manager,
                 dep_problem.summary if dep_problem else None,
             ),
         })
@@ -1189,6 +1206,42 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
         return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
 
 
+def _manifest_response(
+    run_dir: Path,
+    session_name: str | None,
+) -> JSONResponse:
+    """Load RunManifest + analysis from run_dir and return as JSON."""
+    from ..domain.run_manifest import RunManifest
+    from ..control.session_analyzer import load_analysis
+
+    try:
+        manifest = RunManifest.load(run_dir)
+    except FileNotFoundError:
+        return JSONResponse({
+            "run_dir": str(run_dir),
+            "session_name": session_name,
+            "manifest": None,
+        })
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
+
+    result: dict[str, Any] = {
+        "run_dir": str(run_dir),
+        "session_name": session_name,
+        "manifest": manifest.to_dict(),
+    }
+
+    analysis = load_analysis(run_dir)
+    if analysis:
+        result["analysis"] = {
+            "headline": analysis.headline,
+            "detail": analysis.detail,
+            "suggestions": list(analysis.suggestions),
+        }
+
+    return JSONResponse(result)
+
+
 @app.get("/api/session/manifest/{issue_number}")
 async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901, PLR0912 - manifest lookup with multiple path strategies
     """Get the session manifest for an issue."""
@@ -1211,7 +1264,6 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
     if not worktree_path:
         from ..execution.session_output_adapter import (
             FileSystemSessionOutput,
-            MANIFEST_NAME,
             find_run_dir_for_issue,
         )
 
@@ -1224,22 +1276,7 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
         if run_dir:
             session_output_manager = FileSystemSessionOutput()
             session_output_manager.attach_claude_log(run_dir)
-            manifest_path = run_dir / MANIFEST_NAME
-            if not manifest_path.exists():
-                return JSONResponse({
-                    "run_dir": str(run_dir),
-                    "session_name": session.terminal_id if session else None,
-                    "manifest": None,
-                })
-            try:
-                manifest = json.loads(manifest_path.read_text())
-                return JSONResponse({
-                    "run_dir": str(run_dir),
-                    "session_name": session.terminal_id if session else None,
-                    "manifest": manifest,
-                })
-            except Exception as e:
-                return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
+            return _manifest_response(run_dir, session.terminal_id if session else None)
 
     if not worktree_path:
         return JSONResponse({
@@ -1247,7 +1284,7 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
             "hint": "Session may have been cleaned up or never started",
         }, status_code=404)
 
-    from ..execution.session_output_adapter import FileSystemSessionOutput, MANIFEST_NAME
+    from ..execution.session_output_adapter import FileSystemSessionOutput
     session_output_helper = FileSystemSessionOutput()
     run_dir = session_output_helper.find_run_dir(
         worktree_path,
@@ -1260,23 +1297,7 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
         }, status_code=404)
     session_output_helper.attach_claude_log(run_dir)
 
-    manifest_path = run_dir / MANIFEST_NAME
-    if not manifest_path.exists():
-        return JSONResponse({
-            "run_dir": str(run_dir),
-            "session_name": session.terminal_id if session else None,
-            "manifest": None,
-        })
-
-    try:
-        manifest = json.loads(manifest_path.read_text())
-        return JSONResponse({
-            "run_dir": str(run_dir),
-            "session_name": session.terminal_id if session else None,
-            "manifest": manifest,
-        })
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
+    return _manifest_response(run_dir, session.terminal_id if session else None)
 
 
 @app.get("/api/session/worktree/{issue_number}")
@@ -1406,7 +1427,7 @@ async def get_issue_timeline(issue_number: int) -> JSONResponse:
     events = _decorate_timeline_events(events, issue_number)
     payload["events"] = events
     payload["phase_toc"] = _build_phase_toc(events)
-    payload["loops"] = _build_timeline_loops(events)
+    payload["cycles"] = _build_timeline_cycles(events)
     return JSONResponse(payload)
 
 
@@ -1422,18 +1443,123 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
     events = _filter_timeline_events(timeline.get("events", []))
     events = _decorate_timeline_events(events, issue_number)
     phase_toc = _build_phase_toc(events)
-    loops = _build_timeline_loops(events)
+    cycles = _build_timeline_cycles(events)
     title = _issue_title_for(issue_number)
     issue_url = issue_url_for(_orchestrator.config, issue_number)
+    context = _build_issue_story_context(issue_number)
     payload = build_issue_detail_view_model(
         issue_number=issue_number,
         title=title,
         issue_url=issue_url,
         events=events,
         phase_toc=phase_toc,
-        loops=loops,
+        cycles=cycles,
+        context=context,
     )
     return IssueDetailPayload.model_validate(payload)
+
+
+def _build_issue_story_context(issue_number: int) -> IssueStoryContext | None:  # noqa: C901, PLR0912 — assembles story from multiple state sources
+    """Assemble story context from orchestrator state for one issue."""
+    if not _orchestrator:
+        return None
+    state = _orchestrator.state
+    config = _orchestrator.config
+
+    # Active session?
+    active_runtime: int | None = None
+    active_task_kind: str | None = None
+    for session in state.active_sessions:
+        if session.issue.number == issue_number:
+            active_runtime = session.runtime_minutes
+            active_task_kind = session.key.task.value
+            break
+
+    # Labels from cached queue issues or active session
+    labels: tuple[str, ...] = ()
+    for issue in state.cached_queue_issues:
+        if issue.number == issue_number:
+            labels = tuple(issue.labels)
+            break
+    if not labels:
+        for session in state.active_sessions:
+            if session.issue.number == issue_number:
+                labels = tuple(session.issue.labels)
+                break
+
+    # Dependency
+    dep_problem = state.dependency_problems.get(issue_number)
+    dep_summary = dep_problem.summary if dep_problem else None
+
+    # Rework cycle
+    rework_cycle = 0
+    for rework in state.pending_reworks:
+        if rework.resolve_issue_number() == issue_number:
+            rework_cycle = rework.rework_cycle
+            break
+
+    # PR info
+    pr_url: str | None = None
+    pr_number: int | None = None
+    for review in state.pending_reviews:
+        if review.issue_number == issue_number:
+            pr_url = review.pr_url
+            pr_number = review.pr_number
+            break
+    if not pr_url:
+        for entry in state.session_history:
+            if entry.issue_number == issue_number and entry.pr_url:
+                pr_url = entry.pr_url
+                break
+
+    # Flow stage
+    flow_stage = _determine_issue_flow_stage(
+        issue_number, labels, active_task_kind, state, pr_url,
+    )
+
+    return IssueStoryContext(
+        flow_stage=flow_stage,
+        active_runtime_minutes=active_runtime,
+        active_task_kind=active_task_kind,
+        labels=labels,
+        dependency_summary=dep_summary,
+        current_rework_cycle=rework_cycle,
+        max_rework_cycles=config.max_rework_cycles,
+        pr_url=pr_url,
+        pr_number=pr_number,
+    )
+
+
+def _determine_issue_flow_stage(
+    issue_number: int,
+    labels: tuple[str, ...],
+    active_task_kind: str | None,
+    state: Any,
+    pr_url: str | None,
+) -> str:
+    """Determine the flow stage for an issue."""
+    from ..domain.models import _is_blocking_label, _base_of
+
+    # Active session = in_progress
+    if active_task_kind is not None:
+        return "in_progress"
+
+    # Check labels
+    if any(_is_blocking_label(l) for l in labels):
+        return "blocked"
+
+    if any(_base_of(l) == "pr-pending" for l in labels):
+        return "awaiting_merge"
+
+    # Check session history for completion
+    for entry in state.session_history:
+        if entry.issue_number == issue_number:
+            if entry.status == "completed":
+                return "done" if not pr_url else "awaiting_merge"
+            if entry.status in ("blocked", "needs_human", "failed", "timed_out"):
+                return "blocked"
+
+    return "queued"
 
 
 def _build_phase_toc(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1451,20 +1577,32 @@ def _build_phase_toc(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return toc
 
 
-def _build_timeline_loops(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    loops: list[dict[str, Any]] = []
+def _build_timeline_cycles(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Group timeline events into code/review cycles.
+
+    Each cycle starts at a ``session.started`` event and encompasses
+    the code → review → rework lifecycle for one attempt at the issue.
+    """
+    cycles: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
-    loop_number = 0
-    loop_phases = {"in_progress", "reviewing", "rework", "triage"}
+    cycle_number = 0
+    cycle_phases = {"in_progress", "reviewing", "rework", "triage"}
 
     for event in events:
         phase = str(event.get("phase") or "system")
-        if phase not in loop_phases:
+        if phase not in cycle_phases:
             continue
+
+        # A new session.started event means a new cycle — close the previous one
+        event_name = str(event.get("event") or "")
+        if current is not None and event_name == "session.started":
+            cycles.append(current)
+            current = None
+
         if current is None:
-            loop_number += 1
+            cycle_number += 1
             current = {
-                "loop": loop_number,
+                "cycle": cycle_number,
                 "start": event.get("timestamp"),
                 "end": event.get("timestamp"),
                 "status": event.get("status") or "started",
@@ -1479,12 +1617,12 @@ def _build_timeline_loops(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
             current["phases"].append(phase)
         current["events"].append(event)
         if phase == "reviewing" and str(event.get("status")) in {"completed", "failed"}:
-            loops.append(current)
+            cycles.append(current)
             current = None
 
     if current is not None:
-        loops.append(current)
-    return loops
+        cycles.append(current)
+    return cycles
 
 
 def _latest_history_entries(session_history: list[Any], limit: int = 50) -> list[Any]:
@@ -1771,7 +1909,8 @@ async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..execution.session_output_adapter import FileSystemSessionOutput, MANIFEST_NAME, find_run_dir_for_issue
+    from ..domain.run_manifest import RunManifest
+    from ..execution.session_output_adapter import FileSystemSessionOutput, find_run_dir_for_issue
 
     session_output_mgr = FileSystemSessionOutput()
 
@@ -1803,23 +1942,20 @@ async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval
     if not run_dir:
         return JSONResponse({"error": f"No session found for issue #{issue_number}"}, status_code=404)
 
-    # Get claude_log_path from manifest
-    manifest_path = run_dir / MANIFEST_NAME
-    if not manifest_path.exists():
-        return JSONResponse({"error": "Session manifest not found"}, status_code=404)
-
+    # Get claude_log_path from manifest via RunManifest
     try:
-        manifest = json.loads(manifest_path.read_text())
+        manifest = RunManifest.load(run_dir)
+    except FileNotFoundError:
+        return JSONResponse({"error": "Session manifest not found"}, status_code=404)
     except Exception as e:
         return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
 
-    claude_log_path = manifest.get("claude_log_path")
-    if not claude_log_path:
+    if not manifest.claude_log_path:
         return JSONResponse({"error": "No Claude log path in manifest"}, status_code=404)
 
-    log_path = Path(claude_log_path)
+    log_path = Path(manifest.claude_log_path)
     if not log_path.exists():
-        return JSONResponse({"error": f"Claude log file not found: {claude_log_path}"}, status_code=404)
+        return JSONResponse({"error": f"Claude log file not found: {manifest.claude_log_path}"}, status_code=404)
 
     # Parse JSONL file
     entries = []
@@ -2198,6 +2334,74 @@ async def retry_issue(issue_number: int) -> JSONResponse:
     return JSONResponse({"retrying": issue_number, "message": "Issue will be picked up on next cycle"})
 
 
+@app.post("/api/bulk-retry")
+async def bulk_retry(request: Request) -> JSONResponse:
+    """Re-queue multiple blocked issues for retry."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+    body = await request.json()
+    issue_numbers = body.get("issue_numbers", [])
+    state = _orchestrator.state
+    retried = []
+    for num in issue_numbers:
+        state.session_history = [
+            entry for entry in state.session_history
+            if entry.issue_number != num
+        ]
+        if num in state.completed_today:
+            state.completed_today.remove(num)
+        retried.append(num)
+    return JSONResponse({"retried": retried})
+
+
+@app.post("/api/bulk-kill")
+async def bulk_kill(request: Request) -> JSONResponse:
+    """Kill sessions and re-queue for retry."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+    body = await request.json()
+    issue_numbers = body.get("issue_numbers", [])
+    state = _orchestrator.state
+    killed = []
+    for num in issue_numbers:
+        # Kill active session if any
+        for session in list(state.active_sessions):
+            if session.issue.number == num:
+                try:
+                    _orchestrator.kill_session(session.terminal_id)
+                except Exception:
+                    pass
+                state.active_sessions = [
+                    s for s in state.active_sessions
+                    if s.issue.number != num
+                ]
+        # Remove from history
+        state.session_history = [
+            entry for entry in state.session_history
+            if entry.issue_number != num
+        ]
+        if num in state.completed_today:
+            state.completed_today.remove(num)
+        killed.append(num)
+    return JSONResponse({"killed": killed})
+
+
+@app.post("/api/bulk-deprioritize")
+async def bulk_deprioritize(request: Request) -> JSONResponse:
+    """Remove issues from the priority queue."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+    body = await request.json()
+    issue_numbers = body.get("issue_numbers", [])
+    state = _orchestrator.state
+    removed = []
+    for num in issue_numbers:
+        if num in state.priority_queue:
+            state.priority_queue.remove(num)
+            removed.append(num)
+    return JSONResponse({"deprioritized": removed})
+
+
 @app.get("/api/blocked-issues")
 async def get_blocked_issues() -> JSONResponse:
     """Get all blocked issues with their blocking labels and context.
@@ -2208,11 +2412,11 @@ async def get_blocked_issues() -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..infra import labels as label_module
     from ..control.worktree_manager import get_worktree_path
 
     state = _orchestrator.state
     config = _orchestrator.config
+    lm = _orchestrator.deps.label_manager
 
     def make_issue_url(issue_number: int) -> str:
         return f"https://github.com/{config.repo}/issues/{issue_number}" if config.repo else ""
@@ -2225,9 +2429,9 @@ async def get_blocked_issues() -> JSONResponse:
             if not issue.is_blocked:
                 continue
 
-            blocking_labels = label_module.get_blocking_labels(list(issue.labels))
+            blocking_labels = lm.get_blocking(list(issue.labels))
             blocking_label = blocking_labels[0] if blocking_labels else "blocked"
-            needs_human = label_module.requires_human_any(list(issue.labels))
+            needs_human = lm.requires_human_any(list(issue.labels))
 
             # Try to get failure reason from history
             failure_reason = None
@@ -2325,7 +2529,6 @@ async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901 - m
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..infra import labels as label_module
     from ..control.actions import RemoveLabelAction
 
     try:
@@ -2340,6 +2543,7 @@ async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901 - m
     state = _orchestrator.state
     repository_host = _orchestrator.repository_host
     action_applier = _orchestrator.deps.action_applier
+    lm = _orchestrator.deps.label_manager
 
     unblocked = []
     failed = []
@@ -2348,7 +2552,7 @@ async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901 - m
         try:
             # Get current labels to find blocking ones
             current_labels = repository_host.get_issue_labels(issue_number)
-            blocking_labels = label_module.get_blocking_labels(current_labels)
+            blocking_labels = lm.get_blocking(current_labels)
 
             if blocking_labels:
                 for label in blocking_labels:
@@ -2411,7 +2615,6 @@ async def reset_and_retry(request: Request) -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..infra import labels as label_module
     from ..control.maintenance import reset_issue, ResetResult
 
     try:
@@ -2427,15 +2630,15 @@ async def reset_and_retry(request: Request) -> JSONResponse:
     config = _orchestrator.config
     repository_host = _orchestrator.repository_host
     deps = _orchestrator.deps
+    lm = deps.label_manager
 
     reset_results: list[dict] = []
     failed: list[dict] = []
 
     for issue_number in issue_numbers:
         try:
-            # Get current labels to find blocking ones
+            # Get current labels for full orchestrator label cleanup
             current_labels = repository_host.get_issue_labels(issue_number)
-            blocking_labels = label_module.get_blocking_labels(current_labels)
 
             result: ResetResult = reset_issue(
                 issue_number=issue_number,
@@ -2443,9 +2646,11 @@ async def reset_and_retry(request: Request) -> JSONResponse:
                 worktree_manager=deps.worktree_manager,
                 working_copy=deps.working_copy,
                 action_applier=deps.action_applier,
-                blocking_labels=blocking_labels,
+                label_manager=lm,
+                current_labels=current_labels,
                 session_history=state.session_history,
                 completed_today=state.completed_today,
+                label_store=deps.label_store,
             )
 
             if result.success:

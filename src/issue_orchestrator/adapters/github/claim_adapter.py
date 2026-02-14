@@ -43,6 +43,7 @@ class GitHubClaimAdapter(ClaimManager):
         config: LeaseConfig | None = None,
         events: "EventSink | None" = None,
         label_adapter: "LabelSetProtocol | None" = None,
+        io_claimed_label: str = "io:claimed",
     ):
         """Initialize the claim adapter.
 
@@ -58,6 +59,7 @@ class GitHubClaimAdapter(ClaimManager):
         self._config = config or LeaseConfig()
         self._events = events
         self._labels = label_adapter
+        self._io_claimed_label = io_claimed_label
 
     def attempt_claim(self, issue_number: int) -> ClaimResult:
         """Attempt to claim an issue by posting a claim comment.
@@ -96,8 +98,7 @@ class GitHubClaimAdapter(ClaimManager):
 
             # Add claim label
             if self._labels:
-                from ...infra.labels import IO_CLAIMED
-                self._labels.add_label(issue_number, IO_CLAIMED)
+                self._labels.add_label(issue_number, self._io_claimed_label)
 
             self._emit_event("CLAIM_ATTEMPTED", {
                 "issue_number": issue_number,
@@ -272,8 +273,7 @@ class GitHubClaimAdapter(ClaimManager):
         try:
             # Remove claim label
             if self._labels:
-                from ...infra.labels import IO_CLAIMED
-                self._labels.remove_label(issue_number, IO_CLAIMED)
+                self._labels.remove_label(issue_number, self._io_claimed_label)
 
             self._emit_event("CLAIM_RELEASED", {
                 "issue_number": issue_number,

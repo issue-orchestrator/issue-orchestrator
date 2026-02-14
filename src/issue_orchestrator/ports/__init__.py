@@ -62,6 +62,8 @@ from issue_orchestrator.ports.provider_resilience import (
     ProviderCircuitStore,
     InMemoryProviderCircuitStore,
 )
+from issue_orchestrator.ports.label_store import LabelStore
+from issue_orchestrator.ports.queue_cache_store import QueueCacheStore
 from issue_orchestrator.ports.timeline_store import TimelineStore, TimelineRecord, NullTimelineStore
 from issue_orchestrator.ports.timeline_reader import TimelineReader, NullTimelineReader
 from issue_orchestrator.ports.timeline_writer import TimelineWriter, NullTimelineWriter
@@ -136,4 +138,7 @@ __all__ = [
     "NullTimelineReader",
     "TimelineWriter",
     "NullTimelineWriter",
+    # Label/cache persistence
+    "LabelStore",
+    "QueueCacheStore",
 ]

@@ -67,4 +67,20 @@ def list_sqlite_databases(config: Config) -> list[SQLiteDatabase]:
             backup=True,
             enforce_pragmas=True,
         ),
+        SQLiteDatabase(
+            key="queue_cache",
+            label="Queue Cache",
+            path_fn=lambda cfg: _state_db(cfg, "queue_cache.sqlite"),
+            enabled_fn=lambda cfg: True,
+            backup=True,
+            enforce_pragmas=True,
+        ),
+        SQLiteDatabase(
+            key="label_store",
+            label="Label Store",
+            path_fn=lambda cfg: _state_db(cfg, "label_store.sqlite"),
+            enabled_fn=lambda cfg: True,
+            backup=True,
+            enforce_pragmas=True,
+        ),
     ]

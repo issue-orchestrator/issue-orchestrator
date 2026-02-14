@@ -74,6 +74,13 @@ def create_mock_orchestrator():
     mock.deps = MagicMock()
     mock.deps.repository_host = MagicMock()
 
+    # Configure label_manager to return real strings (not MagicMock)
+    lm = mock.deps.label_manager
+    lm.blocked = "blocked"
+    lm.needs_human = "blocked-needs-human"
+    lm.blocked_failed = "blocked-failed"
+    lm.in_progress = "in-progress"
+
     # Mock event context for snapshot (use public property)
     mock.event_context = MagicMock()
     mock.event_context.tick_id = 0

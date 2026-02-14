@@ -180,6 +180,7 @@ class TestReworkWorkflow:
         config = MagicMock()
         config.max_concurrent_sessions = 3
         config.max_rework_cycles = 3
+        config.label_prefix = None
         return config
 
     @pytest.fixture

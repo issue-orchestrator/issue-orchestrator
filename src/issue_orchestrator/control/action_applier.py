@@ -28,7 +28,7 @@ Usage:
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Literal, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Literal, Optional, Sequence
 
 from ..events import EventName
 from ..infra.logging_config import issue_log
@@ -38,6 +38,9 @@ from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
 from ..ports.worktree_manager import WorktreeManager
 from ..domain.models import Session
+
+if TYPE_CHECKING:
+    from ..ports.label_store import LabelStore
 from .reconciliation import (
     ExternalSnapshot,
     ReconciliationRequired,
@@ -150,6 +153,8 @@ class ActionApplier:
     claim_gate: Optional[ClaimGate] = None
     # Callback to look up lease_id for an issue from active sessions
     lease_id_lookup: Optional[LeaseIdLookup] = None
+    # Optional label persistence store for write-through tracking
+    label_store: Optional["LabelStore"] = None
     # Callback for worktree removal notifications
     # Used by async completion processing to mark jobs as WORKTREE_GONE
     # Returns the number of jobs marked as worktree_gone
@@ -260,6 +265,7 @@ class ActionApplier:
                     no_op=True,
                 )
             self.labels.add_label(action.issue_number, action.label)
+            self._persist_label_add(action.issue_number, action.label)
             self._record_label_stat(action.issue_number, "label_add_applied")
             logger.info(issue_log(action.issue_number, "Label added: %s"), action.label)
             self._emit_issue_labels_changed(action.issue_number, [action.label], [])
@@ -307,6 +313,7 @@ class ActionApplier:
                     no_op=True,
                 )
             self.labels.remove_label(action.issue_number, action.label)
+            self._persist_label_remove(action.issue_number, action.label)
             self._record_label_stat(action.issue_number, "label_remove_applied")
             logger.info(issue_log(action.issue_number, "Label removed: %s"), action.label)
             self._emit_issue_labels_changed(action.issue_number, [], [action.label])
@@ -458,6 +465,24 @@ class ActionApplier:
             )
             return None
 
+    def _persist_label_add(self, issue_number: int, label: str) -> None:
+        """Write-through: record label addition in LabelStore."""
+        if self.label_store is None:
+            return
+        try:
+            self.label_store.add_label(issue_number, label)
+        except Exception as e:
+            logger.debug("LabelStore add_label failed for #%d %s: %s", issue_number, label, e)
+
+    def _persist_label_remove(self, issue_number: int, label: str) -> None:
+        """Write-through: record label removal in LabelStore."""
+        if self.label_store is None:
+            return
+        try:
+            self.label_store.remove_label(issue_number, label)
+        except Exception as e:
+            logger.debug("LabelStore remove_label failed for #%d %s: %s", issue_number, label, e)
+
     def _check_reconciliation_for_sync(
         self,
         issue_number: int,
@@ -548,6 +573,7 @@ class ActionApplier:
             self._record_label_stat(action.issue_number, "label_add_attempted")
             try:
                 self.labels.add_label(action.issue_number, label)
+                self._persist_label_add(action.issue_number, label)
                 self._record_label_stat(action.issue_number, "label_add_applied")
             except Exception as e:
                 self._record_label_stat(action.issue_number, "label_mutation_failed")
@@ -558,6 +584,7 @@ class ActionApplier:
             self._record_label_stat(action.issue_number, "label_remove_attempted")
             try:
                 self.labels.remove_label(action.issue_number, label)
+                self._persist_label_remove(action.issue_number, label)
                 self._record_label_stat(action.issue_number, "label_remove_applied")
             except Exception as e:
                 self._record_label_stat(action.issue_number, "label_mutation_failed")
@@ -711,6 +738,7 @@ class ActionApplier:
         self._record_label_stat(action.issue_number, "label_add_attempted")
         try:
             self.labels.add_label(action.pr_number, action.needs_human_label)
+            self._persist_label_add(action.pr_number, action.needs_human_label)
             self._record_label_stat(action.issue_number, "label_add_applied")
             added_labels.append(action.needs_human_label)
         except Exception as e:
@@ -721,6 +749,7 @@ class ActionApplier:
         self._record_label_stat(action.issue_number, "label_remove_attempted")
         try:
             self.labels.remove_label(action.pr_number, action.needs_rework_label)
+            self._persist_label_remove(action.pr_number, action.needs_rework_label)
             self._record_label_stat(action.issue_number, "label_remove_applied")
             removed_labels.append(action.needs_rework_label)
         except Exception as e:
@@ -768,6 +797,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                     "pr_number": action.pr_number,
                     "issue_number": action.issue_number,
                     "rework_count": action.rework_cycles - 1,
+                    "rework_cycle": action.rework_cycles,
                     "max_rework_cycles": action.max_rework_cycles,
                 },
             )
@@ -841,6 +871,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             self._record_label_stat(action.issue_number or action.pr_number, "label_add_attempted")
             try:
                 self.labels.add_label(action.pr_number, action.code_review_label)
+                self._persist_label_add(action.pr_number, action.code_review_label)
                 self._record_label_stat(action.issue_number or action.pr_number, "label_add_applied")
                 logger.info(issue_log(action.issue_number, "Review label '%s' added to PR #%d"), action.code_review_label, action.pr_number)
                 self._emit_pr_view_changed(

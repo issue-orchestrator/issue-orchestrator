@@ -22,17 +22,18 @@ if TYPE_CHECKING:
     from ..domain.state_machines.review_machine import ReviewStateMachine
     from ..domain.models import PendingReview, PendingRework, PendingTriageReview
     from .state_machine_manager import StateMachineManager
+    from .label_manager import LabelManager
 
 from ..infra.config import Config
 from ..events import EventName
 from ..infra.logging_config import log_context, get_repo_log_path
 from ..domain.models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
+from ..domain.session_key import TaskKind
 from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
 from ..ports.session_output import SessionOutput
 from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
 from .completion_processor import ERROR_PREFIX_PUSH, ERROR_PREFIX_CREATE_PR
 from .reconciliation import build_expected_for_mutation, ExpectedState
-from ..infra import labels
 from ..domain.triage_manifest import TriageManifest
 from pathlib import Path
 
@@ -134,6 +135,7 @@ class CompletionHandler:
         get_review_machine_fn: Callable[[int], Optional["ReviewStateMachine"]],
         session_output: SessionOutput,
         remove_session_machine_fn: Callable[[str], None] | None = None,
+        label_manager: "LabelManager | None" = None,
     ):
         self.config = config
         self.events = events
@@ -143,6 +145,10 @@ class CompletionHandler:
         self._get_review_machine = get_review_machine_fn
         self._session_output = session_output
         self._remove_session_machine = remove_session_machine_fn
+        if label_manager is None:
+            from .label_manager import LabelManager
+            label_manager = LabelManager(config)
+        self._lm = label_manager
 
     def _interrupted_retry_mode(self, session: Session) -> str | None:
         """Map session type to interrupted-retry mode."""
@@ -228,7 +234,7 @@ class CompletionHandler:
         if session.terminal_id.startswith("issue-"):
             actions.append(RemoveLabelAction(
                 issue_number=session.issue.number,
-                label=self.config.get_label_in_progress(),
+                label=self._lm.in_progress,
                 reason="Interrupted issue session - releasing claim for auto-retry",
                 expected=expected,
             ))
@@ -315,6 +321,7 @@ class CompletionHandler:
         review_exchange_completed: bool = False,
         blocked_label: Optional[str] = None,
         blocked_reason: Optional[str] = None,
+        completion_detail: Optional[dict[str, Any]] = None,
     ) -> CompletionResult:
         """Process a session completion and update all state machines.
 
@@ -374,7 +381,11 @@ class CompletionHandler:
         )
 
         # Emit trace events
-        self._emit_trace_events(session, status, pr_url, pr_number)
+        self._emit_trace_events(
+            session, status, pr_url, pr_number,
+            blocked_reason=blocked_reason,
+            completion_detail=completion_detail,
+        )
 
         # Update state machines
         self._update_state_machines(session, status, pr_url)
@@ -403,7 +414,7 @@ class CompletionHandler:
         if review_exchange_completed and pr_url:
             completion_actions.append(AddLabelAction(
                 issue_number=session.issue.number,
-                label=labels.PR_PENDING,
+                label=self._lm.pr_pending,
                 reason="review exchange completed - awaiting merge",
                 expected=build_expected_for_mutation(),
             ))
@@ -432,6 +443,9 @@ class CompletionHandler:
                     "session may have crashed before setup completed",
                     session.terminal_id,
                 )
+
+        # Enrich manifest with runtime context + log tail
+        self._enrich_manifest_runtime(session, status)
 
         result = CompletionResult(
             history_entry=history_entry,
@@ -592,47 +606,126 @@ class CompletionHandler:
         status: SessionStatus,
         pr_url: Optional[str],
         pr_number: Optional[int],
+        *,
+        blocked_reason: Optional[str] = None,
+        completion_detail: Optional[dict[str, Any]] = None,
     ) -> None:
-        """Emit trace events for session completion."""
-        status_reasons = {
-            SessionStatus.COMPLETED: "PR created successfully",
-            SessionStatus.BLOCKED: "Agent marked issue as blocked",
-            SessionStatus.NEEDS_HUMAN: "Agent requested human input",
-            SessionStatus.TIMED_OUT: f"Exceeded {session.agent_config.timeout_minutes} min timeout",
-            SessionStatus.FAILED: "Session ended without PR or status update",
-        }
-        status_reason = status_reasons.get(status, "Unknown")
+        """Emit trace events for session completion.
+
+        ``completion_detail`` carries curated fields from the CompletionRecord
+        so downstream consumers (timeline, UI) get the rich agent-provided data
+        without rummaging across files.
+        """
+        detail = completion_detail or {}
 
         if status == SessionStatus.COMPLETED:
-            self.events.publish(TraceEvent(EventName.SESSION_COMPLETED, {
-                "issue_number": session.issue.number,
-                "session_id": session.terminal_id,
-                "pr_url": pr_url,
-                "runtime_minutes": session.runtime_minutes,
-            }))
-            if pr_url and pr_number is not None:
-                self.events.publish(TraceEvent(EventName.ISSUE_PR_CREATED, {
-                    "issue_number": session.issue.number,
-                    "pr_url": pr_url,
-                    "pr_number": pr_number,
-                }))
-        elif status == SessionStatus.FAILED or status == SessionStatus.TIMED_OUT:
-            self.events.publish(TraceEvent(EventName.SESSION_FAILED, {
-                "issue_number": session.issue.number,
-                "session_id": session.terminal_id,
-                "error": status_reason,
-                "runtime_minutes": session.runtime_minutes,
-            }))
+            self._emit_completed_events(session, pr_url, pr_number, detail)
+        elif status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
+            self._emit_failure_event(session, status)
         elif status == SessionStatus.BLOCKED:
-            self.events.publish(TraceEvent(EventName.ISSUE_BLOCKED, {
-                "issue_number": session.issue.number,
-                "reason": status_reason,
-            }))
+            self._emit_blocked_event(session, blocked_reason, detail)
         elif status == SessionStatus.NEEDS_HUMAN:
-            self.events.publish(TraceEvent(EventName.ISSUE_NEEDS_HUMAN, {
+            self._emit_needs_human_event(session, blocked_reason, detail)
+
+    def _emit_completed_events(
+        self,
+        session: Session,
+        pr_url: Optional[str],
+        pr_number: Optional[int],
+        detail: dict[str, Any],
+    ) -> None:
+        """Emit events for a completed session (coding/rework only)."""
+        # Review sessions get their events from _publish_review_outcome()
+        if session.key.task == TaskKind.REVIEW:
+            return
+
+        agent = session.agent_label
+        task = session.key.task.value if session.key else None
+        rework_cycle = session.rework_cycle
+
+        payload: dict[str, Any] = {
+            "issue_number": session.issue.number,
+            "session_id": session.terminal_id,
+            "agent": agent,
+            "task": task,
+            "rework_cycle": rework_cycle,
+            "pr_url": pr_url,
+            "runtime_minutes": session.runtime_minutes,
+        }
+        for key in ("implementation", "problems", "review_summary", "review_issues", "risk_level"):
+            if detail.get(key):
+                payload[key] = detail[key]
+        self.events.publish(TraceEvent(EventName.SESSION_COMPLETED, payload))
+
+        if pr_url and pr_number is not None:
+            self.events.publish(TraceEvent(EventName.ISSUE_PR_CREATED, {
                 "issue_number": session.issue.number,
-                "reason": status_reason,
+                "pr_url": pr_url,
+                "pr_number": pr_number,
+                "agent": agent,
+                "task": task,
+                "rework_cycle": rework_cycle,
             }))
+
+    def _emit_failure_event(
+        self,
+        session: Session,
+        status: SessionStatus,
+    ) -> None:
+        """Emit SESSION_FAILED event for failed or timed-out sessions."""
+        reason = (
+            f"Exceeded {session.agent_config.timeout_minutes} min timeout"
+            if status == SessionStatus.TIMED_OUT
+            else "Session ended without PR or status update"
+        )
+        payload: dict[str, Any] = {
+            "issue_number": session.issue.number,
+            "session_id": session.terminal_id,
+            "agent": session.agent_label,
+            "task": session.key.task.value if session.key else None,
+            "rework_cycle": session.rework_cycle,
+            "error": reason,
+            "runtime_minutes": session.runtime_minutes,
+            "timeout_minutes": session.agent_config.timeout_minutes if session.agent_config else None,
+        }
+        self.events.publish(TraceEvent(EventName.SESSION_FAILED, payload))
+
+    def _emit_blocked_event(
+        self,
+        session: Session,
+        blocked_reason: Optional[str],
+        detail: dict[str, Any],
+    ) -> None:
+        """Emit ISSUE_BLOCKED event."""
+        payload: dict[str, Any] = {
+            "issue_number": session.issue.number,
+            "agent": session.agent_label,
+            "task": session.key.task.value if session.key else None,
+            "rework_cycle": session.rework_cycle,
+            "reason": blocked_reason or "Agent marked issue as blocked",
+        }
+        for key in ("attempted", "blocked_by"):
+            if detail.get(key):
+                payload[key] = detail[key]
+        self.events.publish(TraceEvent(EventName.ISSUE_BLOCKED, payload))
+
+    def _emit_needs_human_event(
+        self,
+        session: Session,
+        blocked_reason: Optional[str],
+        detail: dict[str, Any],
+    ) -> None:
+        """Emit ISSUE_NEEDS_HUMAN event."""
+        payload: dict[str, Any] = {
+            "issue_number": session.issue.number,
+            "agent": session.agent_label,
+            "task": session.key.task.value if session.key else None,
+            "rework_cycle": session.rework_cycle,
+            "reason": blocked_reason or "Agent requested human input",
+        }
+        if detail.get("question"):
+            payload["question"] = detail["question"]
+        self.events.publish(TraceEvent(EventName.ISSUE_NEEDS_HUMAN, payload))
 
     def _update_state_machines(
         self,
@@ -745,6 +838,8 @@ class CompletionHandler:
             if pr_info:
                 self._emit_pr_view_changed(pr_info, issue_key=session.key.issue.stable_id(), issue_number=session.issue.number)
                 self._process_review_outcome(pr_info, pr_number_review, review_machine)
+                # Publish review outcome events from state machine transitions
+                self._publish_review_outcome(review_machine, session, pr_number_review)
         except Exception as e:
             logger.warning(f"Failed to check PR labels for review outcome: {e}")
             self.events.publish(TraceEvent(EventName.APPLY_FAILED, {
@@ -752,12 +847,40 @@ class CompletionHandler:
                 "issue_number": session.issue.number, "error": str(e),
             }))
 
+    def _publish_review_outcome(
+        self,
+        review_machine: Any,
+        session: Session,
+        pr_number: int,
+    ) -> None:
+        """Publish review.approved or review.changes_requested events.
+
+        These events are defined in EventName but were never emitted.
+        The ReviewStateMachine stores the outcome in last_transition after
+        approve() or request_changes() — we read it and publish.
+        """
+        tr = review_machine.last_transition
+        if not tr:
+            return
+
+        _REVIEW_OUTCOME_EVENTS = {"review.approved", "review.changes_requested"}
+        if tr.event_name not in _REVIEW_OUTCOME_EVENTS:
+            return
+
+        payload: dict[str, Any] = {
+            **tr.data,
+            "pr_number": pr_number,
+            "reviewer_agent": session.agent_label,
+            "rework_cycle": session.rework_cycle,
+        }
+        self.events.publish(TraceEvent(EventName(tr.event_name), payload))
+
     def _process_review_outcome(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
         """Process review outcome based on PR labels."""
         labels = pr_info.labels
         if self.config.code_reviewed_label and self.config.code_reviewed_label in labels:
             self._handle_review_approved(pr_info, pr_number, review_machine)
-        elif self.config.get_label_needs_rework() in labels:
+        elif self._lm.needs_rework in labels:
             self._handle_changes_requested(pr_number, review_machine)
 
     def _handle_review_approved(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
@@ -909,7 +1032,7 @@ class CompletionHandler:
         from pathlib import Path
 
         issue_number = session.issue.number
-        in_progress_label = self.config.get_label_in_progress()
+        in_progress_label = self._lm.in_progress
 
         # Brief error hint for comment (not full details - those are in diagnostic file)
         first_error = critical_errors[0][:100] if critical_errors else "Unknown error"
@@ -925,7 +1048,7 @@ class CompletionHandler:
         return [
             AddLabelAction(
                 issue_number=issue_number,
-                label=labels.BLOCKED_FAILED,
+                label=self._lm.blocked_failed,
                 reason="Processing failed after agent completion (push/PR creation failed)",
                 expected=expected,
             ),
@@ -937,7 +1060,7 @@ class CompletionHandler:
                         f"{diagnostic_info}\n"
                         f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                         f"- Session: `{session.terminal_id}`\n\n"
-                        f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                        f"This issue has been marked as `{self._lm.blocked_failed}` and will not be automatically retried.\n"
                         f"Remove the label to retry.",
                 reason="Notify about processing failure",
                 expected=expected,
@@ -957,7 +1080,7 @@ class CompletionHandler:
     ) -> list[Action]:
         """Generate actions when session timed out."""
         issue_number = session.issue.number
-        in_progress_label = self.config.get_label_in_progress()
+        in_progress_label = self._lm.in_progress
         is_issue_session = session.terminal_id.startswith("issue-")
         session_kind = session.terminal_id.split("-", 1)[0]
 
@@ -966,7 +1089,7 @@ class CompletionHandler:
             return [
                 AddLabelAction(
                     issue_number=issue_number,
-                    label=labels.BLOCKED_FAILED,
+                    label=self._lm.blocked_failed,
                     reason=f"Session timed out after {session.runtime_minutes} minutes",
                     expected=expected,
                 ),
@@ -976,7 +1099,7 @@ class CompletionHandler:
                             f"The agent session exceeded the {timeout_mins} minute timeout limit.\n\n"
                             f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                             f"- Session: `{session.terminal_id}`\n\n"
-                            f"This issue has been marked as `{labels.BLOCKED_FAILED}` and will not be automatically retried.\n"
+                            f"This issue has been marked as `{self._lm.blocked_failed}` and will not be automatically retried.\n"
                             f"Remove the label to allow reprocessing.",
                     reason="Notify about session timeout",
                     expected=expected,
@@ -1012,7 +1135,7 @@ class CompletionHandler:
             return retry_actions
 
         issue_number = session.issue.number
-        in_progress_label = self.config.get_label_in_progress()
+        in_progress_label = self._lm.in_progress
         is_issue_session = session.terminal_id.startswith("issue-")
         session_kind = session.terminal_id.split("-", 1)[0]
 
@@ -1020,7 +1143,7 @@ class CompletionHandler:
             return [
                 AddLabelAction(
                     issue_number=issue_number,
-                    label=labels.BLOCKED_NEEDS_HUMAN,
+                    label=self._lm.needs_human,
                     reason="Session terminated without calling agent-done (mandatory)",
                     expected=expected,
                 ),
@@ -1037,7 +1160,7 @@ class CompletionHandler:
                             f"- Orchestrator shutdown/restart interrupted the session lifecycle\n"
                             f"- Agent ignored the mandatory `agent-done` requirement\n"
                             f"- Infrastructure issue prevented completion\n\n"
-                            f"This issue has been marked as `{labels.BLOCKED_NEEDS_HUMAN}` for investigation.\n"
+                            f"This issue has been marked as `{self._lm.needs_human}` for investigation.\n"
                             f"Remove the label after investigating to allow reprocessing.",
                     reason="Notify about session needing human investigation",
                     expected=expected,
@@ -1074,7 +1197,7 @@ class CompletionHandler:
     ) -> list[Action]:
         """Generate actions when agent explicitly reported blocked."""
         is_issue_session = session.terminal_id.startswith("issue-")
-        label = blocked_label or labels.BLOCKED
+        label = blocked_label or self._lm.blocked
 
         if is_issue_session:
             reason_text = blocked_reason.strip() if blocked_reason else "No reason provided."
@@ -1099,12 +1222,61 @@ class CompletionHandler:
                 ),
                 RemoveLabelAction(
                     issue_number=session.issue.number,
-                    label=self.config.get_label_in_progress(),
+                    label=self._lm.in_progress,
                     reason="Session blocked - releasing claim",
                     expected=expected,
                 ),
             ]
         return []
+
+    def _enrich_manifest_runtime(
+        self,
+        session: Session,
+        status: SessionStatus,
+    ) -> None:
+        """Write runtime context and log tail into the run manifest.
+
+        Best-effort — failures are logged but never block completion.
+        """
+        from ..domain.run_manifest import RunManifest
+
+        if not session.worktree_path:
+            return
+
+        run_dir = self._session_output.find_run_dir(
+            session.worktree_path, session.terminal_id
+        )
+        if not run_dir:
+            return
+
+        try:
+            manifest = RunManifest.load(run_dir)
+        except Exception as exc:
+            logger.warning(
+                "[MANIFEST] Failed to load manifest for runtime enrichment: %s", exc,
+            )
+            return
+
+        manifest.runtime_minutes = session.runtime_minutes
+        if session.agent_config:
+            manifest.timeout_minutes = session.agent_config.timeout_minutes
+
+        # Capture log tail for all outcomes
+        log_path = self._session_output.get_log_path(
+            session.worktree_path, session.terminal_id
+        )
+        if log_path and log_path.exists():
+            try:
+                content = log_path.read_text()
+                lines = content.strip().split("\n")
+                manifest.log_tail = "\n".join(lines[-20:])
+            except Exception as exc:
+                logger.debug("[MANIFEST] Could not read log tail: %s", exc)
+
+        try:
+            manifest.save()
+        except Exception as exc:
+            logger.warning("[MANIFEST] Failed to save runtime enrichment: %s", exc)
 
     def generate_completion_actions(
         self,
@@ -1166,7 +1338,7 @@ class CompletionHandler:
             # POLICY: Completion → release in-progress (claim maintained via pr-pending)
             actions: list[Action] = [RemoveLabelAction(
                 issue_number=session.issue.number,
-                label=self.config.get_label_in_progress(),
+                label=self._lm.in_progress,
                 reason="Session completed successfully",
                 expected=expected,
             )]

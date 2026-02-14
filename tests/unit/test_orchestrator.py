@@ -270,10 +270,13 @@ class TestStartup:
         await orchestrator.startup()
 
         # Should query for in-progress issues for each agent type
+        # (cold fallback path — cache is empty since issues=[])
         assert len(mock_repository_host.list_issues_calls) > 0
-        call = mock_repository_host.list_issues_calls[0]
-        assert "agent:web" in call["labels"]
-        assert sample_config.get_label_in_progress() in call["labels"]
+        in_progress_label = sample_config.get_label_in_progress()
+        assert any(
+            "agent:web" in call["labels"] and in_progress_label in call["labels"]
+            for call in mock_repository_host.list_issues_calls
+        )
 
     @pytest.mark.asyncio
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")

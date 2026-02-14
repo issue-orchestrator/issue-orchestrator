@@ -161,6 +161,6 @@ def test_issue_detail_payload_matches_ui_openapi() -> None:
         issue_url="https://github.com/test/repo/issues/12",
         events=[{"event": "session.started", "status": "started"}],
         phase_toc=[{"phase": "in_progress", "label": "In Progress"}],
-        loops=[{"loop": 1, "status": "started", "phases": ["in_progress"]}],
+        cycles=[{"cycle": 1, "status": "started", "phases": ["in_progress"]}],
     )
     _validator("IssueDetailPayload").validate(payload)
