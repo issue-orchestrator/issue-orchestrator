@@ -15,12 +15,23 @@ try:
 except Exception:
     _pystray_available = False
 
+try:
+    import PIL as _pil  # noqa: F401
+    _pil_available = True
+except Exception:
+    _pil_available = False
+
 _skip_no_pystray = pytest.mark.skipif(
     not _pystray_available,
     reason="pystray requires a display (unavailable on headless CI)",
 )
+_skip_no_pil = pytest.mark.skipif(
+    not _pil_available,
+    reason="Pillow is unavailable",
+)
 
 
+@_skip_no_pil
 class TestLoadIcon:
     """Tests for _load_icon()."""
 
@@ -141,8 +152,8 @@ class TestBuildMenu:
 class TestStartTray:
     """Tests for start_tray()."""
 
-    def test_creates_icon_and_starts_thread(self) -> None:
-        """start_tray creates an Icon and starts it on a daemon thread."""
+    def test_creates_icon_and_starts_detached_loop(self) -> None:
+        """start_tray creates an Icon and starts it via run_detached()."""
         from issue_orchestrator.entrypoints import tray
 
         mock_icon = MagicMock()
@@ -152,11 +163,8 @@ class TestStartTray:
             patch("pystray.Icon", return_value=mock_icon) as mock_icon_cls,
             patch("pystray.Menu") as mock_menu,
             patch.object(tray, "_load_icon", return_value=mock_image),
-            patch("threading.Thread") as mock_thread_cls,
         ):
             mock_menu.SEPARATOR = "---"
-            mock_thread = MagicMock()
-            mock_thread_cls.return_value = mock_thread
 
             result = tray.start_tray(
                 "http://localhost:19080/",
@@ -170,11 +178,7 @@ class TestStartTray:
             "Issue Orchestrator",
             mock_menu.return_value,
         )
-        mock_thread_cls.assert_called_once()
-        call_kwargs = mock_thread_cls.call_args[1]
-        assert call_kwargs["daemon"] is True
-        assert callable(call_kwargs["target"])
-        mock_thread.start.assert_called_once()
+        mock_icon.run_detached.assert_called_once_with()
 
     def test_uses_provided_icon_image(self) -> None:
         """start_tray uses a custom image when provided."""
@@ -187,7 +191,6 @@ class TestStartTray:
             patch("pystray.Icon", return_value=mock_icon) as mock_icon_cls,
             patch("pystray.Menu") as mock_menu,
             patch.object(tray, "_load_icon") as mock_load,
-            patch("threading.Thread"),
         ):
             mock_menu.SEPARATOR = "---"
             tray.start_tray(
