@@ -473,7 +473,7 @@ class StartupManager:
         cached_issues = store.load_issues(self.config.repo or "")
         cached_watermark = store.load_watermark()
 
-        if cached_issues and cached_watermark:
+        if cached_watermark:
             # Warm start: load from SQLite, then delta sync from GitHub
             state.startup_message = "Syncing queue changes from GitHub..."
             logger.info(

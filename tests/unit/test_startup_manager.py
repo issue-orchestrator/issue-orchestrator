@@ -603,3 +603,44 @@ class TestStartupGitHubCallBudget:
 
         assert mock_repository_host.list_issues.call_count == 0
         assert mock_repository_host.list_issues_delta.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_warm_start_empty_cache_with_watermark(
+        self, mock_config, mock_events, mock_runner, mock_repository_host,
+        mock_action_applier, mock_issue_branches_fn,
+    ):
+        """Empty cached issue list + valid watermark is still a warm start.
+
+        An empty queue is a valid cached state (no eligible issues). Should
+        use delta sync (list_issues_delta), not fall back to full scan.
+        """
+        mock_config.agents = {"agent:test": AgentConfig(prompt_path=mock_config.repo_root / "prompt.md", timeout_minutes=30)}
+
+        mock_store = MagicMock()
+        mock_store.load_issues.return_value = []  # Empty but valid cache
+        mock_store.load_watermark.return_value = "2025-01-01T00:00:00Z"
+
+        # Delta sync returns one new issue
+        mock_repository_host.list_issues_delta.return_value = (
+            [Issue(number=5, title="New Issue", labels=["agent:test"])],
+            "2025-01-01T00:00:01Z",
+        )
+
+        update_queue_fn = MagicMock()
+        sm = StartupManager(
+            config=mock_config, events=mock_events, runner=mock_runner,
+            repository_host=mock_repository_host, action_applier=mock_action_applier,
+            issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None,
+            update_queue_cache_fn=update_queue_fn,
+            queue_cache_store=mock_store,
+        )
+
+        await sm.run_startup(OrchestratorState())
+
+        # Should use delta sync, NOT fall back to full scan
+        assert mock_repository_host.list_issues.call_count == 0
+        assert mock_repository_host.list_issues_delta.call_count == 1
+        update_queue_fn.assert_not_called()

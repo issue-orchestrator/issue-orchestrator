@@ -93,6 +93,8 @@ class LabelManager:
             LabelEntry("needs_reconcile", "needs-reconcile", LabelCategory.CLAIM, "Needs reconciliation"),
             LabelEntry("provider_unavailable", self._provider_unavailable_base, LabelCategory.BLOCKING, "Provider unavailable"),
             LabelEntry("review_keep_approach", config.review_keep_current_approach_label, LabelCategory.INFORMATIONAL, "Keep current approach"),
+            LabelEntry("code_review", config.code_review_label or "needs-code-review", LabelCategory.LIFECYCLE, "Needs code review"),
+            LabelEntry("code_reviewed", config.code_reviewed_label or "code-reviewed", LabelCategory.LIFECYCLE, "Code reviewed"),
         ]
         for e in entries:
             self._entries[e.key] = e
@@ -241,7 +243,7 @@ class LabelManager:
 
     def requires_human(self, label: str) -> bool:
         base = self._strip_prefix(label)
-        return base in ("blocked-needs-human", "needs-human")
+        return base == self._entries["blocked_needs_human"].base_name
 
     def requires_human_any(self, labels: Sequence[str]) -> bool:
         return any(self.requires_human(l) for l in labels)
@@ -305,8 +307,8 @@ class LabelManager:
         return {
             "blocked": self.blocked,
             "needs_human": self.needs_human,
-            "code_reviewed": self._resolve_base("code-reviewed"),
+            "code_reviewed": self._resolved["code_reviewed"],
             "needs_rework": self.needs_rework,
-            "code_review": self._resolve_base("needs-code-review"),
+            "code_review": self._resolved["code_review"],
             "in_progress": self.in_progress,
         }
