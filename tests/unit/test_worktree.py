@@ -19,7 +19,6 @@ from issue_orchestrator.adapters.worktree.api import (
     install_hooks,
     find_worktree_for_branch,
     install_claude_settings,
-    install_venv_symlink,
     WorktreeError,
 )
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
@@ -310,7 +309,6 @@ class TestCreateWorktree:
         with pytest.raises(WorktreeError, match="Failed to create worktree"):
             create_worktree(repo_root, 123, "Test")
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.install_venv_symlink")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_hooks")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
@@ -319,7 +317,6 @@ class TestCreateWorktree:
         mock_run,
         mock_install_hooks,
         mock_install_claude_settings,
-        mock_install_venv_symlink,
         tmp_path,
         monkeypatch,
     ):
@@ -368,9 +365,7 @@ class TestCreateWorktree:
 
         mock_install_hooks.assert_called_once()
         mock_install_claude_settings.assert_called_once()
-        mock_install_venv_symlink.assert_called_once()
 
-    @patch("issue_orchestrator.adapters.worktree._worktree.install_venv_symlink")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_hooks")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
@@ -379,7 +374,6 @@ class TestCreateWorktree:
         mock_run,
         mock_install_hooks,
         mock_install_claude_settings,
-        mock_install_venv_symlink,
         tmp_path,
         monkeypatch,
     ):
@@ -415,7 +409,6 @@ class TestCreateWorktree:
 
         mock_install_hooks.assert_called_once()
         mock_install_claude_settings.assert_called_once()
-        mock_install_venv_symlink.assert_called_once()
 
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_creates_base_directory(self, mock_run, tmp_path):
@@ -1233,101 +1226,6 @@ class TestInstallClaudeSettings:
         assert "Stop" in settings["hooks"]
 
 
-class TestInstallVenvSymlink:
-    """Tests for install_venv_symlink function."""
-
-    def test_creates_symlink_when_venv_exists(self, tmp_path):
-        """Test that symlink is created when main repo has .venv."""
-
-        # Setup main repo with .venv
-        main_repo = tmp_path / "main_repo"
-        main_repo.mkdir()
-        main_venv = main_repo / ".venv"
-        main_venv.mkdir()
-
-        # Setup worktree
-        worktree = tmp_path / "worktree"
-        worktree.mkdir()
-
-        # Execute
-        result = install_venv_symlink(worktree, main_repo)
-
-        # Verify
-        assert result is True
-        worktree_venv = worktree / ".venv"
-        assert worktree_venv.is_symlink()
-        assert worktree_venv.resolve() == main_venv
-
-    def test_returns_false_when_no_main_venv(self, tmp_path):
-        """Test that function returns False when main repo has no .venv."""
-
-        # Setup main repo without .venv
-        main_repo = tmp_path / "main_repo"
-        main_repo.mkdir()
-
-        # Setup worktree
-        worktree = tmp_path / "worktree"
-        worktree.mkdir()
-
-        # Execute
-        result = install_venv_symlink(worktree, main_repo)
-
-        # Verify
-        assert result is False
-        assert not (worktree / ".venv").exists()
-
-    def test_skips_if_venv_already_exists(self, tmp_path):
-        """Test that existing .venv in worktree is not overwritten."""
-
-        # Setup main repo with .venv
-        main_repo = tmp_path / "main_repo"
-        main_repo.mkdir()
-        main_venv = main_repo / ".venv"
-        main_venv.mkdir()
-
-        # Setup worktree with existing .venv (real directory)
-        worktree = tmp_path / "worktree"
-        worktree.mkdir()
-        worktree_venv = worktree / ".venv"
-        worktree_venv.mkdir()
-        (worktree_venv / "marker.txt").write_text("existing")
-
-        # Execute
-        result = install_venv_symlink(worktree, main_repo)
-
-        # Verify - should return True but not overwrite
-        assert result is True
-        assert not worktree_venv.is_symlink()  # Still a real directory
-        assert (worktree_venv / "marker.txt").exists()  # Content preserved
-
-    def test_skips_if_symlink_already_exists(self, tmp_path):
-        """Test that existing symlink is not replaced."""
-
-        # Setup main repo with .venv
-        main_repo = tmp_path / "main_repo"
-        main_repo.mkdir()
-        main_venv = main_repo / ".venv"
-        main_venv.mkdir()
-
-        # Setup another target for existing symlink
-        other_venv = tmp_path / "other_venv"
-        other_venv.mkdir()
-
-        # Setup worktree with existing symlink to other_venv
-        worktree = tmp_path / "worktree"
-        worktree.mkdir()
-        worktree_venv = worktree / ".venv"
-        worktree_venv.symlink_to(other_venv)
-
-        # Execute
-        result = install_venv_symlink(worktree, main_repo)
-
-        # Verify - should return True but not change existing symlink
-        assert result is True
-        assert worktree_venv.is_symlink()
-        assert worktree_venv.resolve() == other_venv  # Still points to other_venv
-
-
 class TestCreateWorktreeReuse:
     """Test reuse flow via create_worktree (public API)."""
 
@@ -1364,7 +1262,7 @@ class TestCreateWorktreeReuse:
             patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
             patch("issue_orchestrator.adapters.worktree._worktree.install_hooks"),
             patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings"),
-            patch("issue_orchestrator.adapters.worktree._worktree.install_venv_symlink"),
+
             patch("issue_orchestrator.adapters.worktree._worktree.sync_cli_tools"),
         ):
             def run_side_effect(cmd, *args, **kwargs):
@@ -1433,7 +1331,7 @@ class TestCreateWorktreeReuse:
             patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
             patch("issue_orchestrator.adapters.worktree._worktree.install_hooks"),
             patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings"),
-            patch("issue_orchestrator.adapters.worktree._worktree.install_venv_symlink"),
+
             patch("issue_orchestrator.adapters.worktree._worktree.sync_cli_tools"),
         ):
             def run_side_effect(cmd, *args, **kwargs):
@@ -1498,7 +1396,7 @@ class TestCreateWorktreeReuse:
             patch("issue_orchestrator.adapters.git.git_cli.subprocess.run") as mock_run,
             patch("issue_orchestrator.adapters.worktree._worktree.install_hooks"),
             patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings"),
-            patch("issue_orchestrator.adapters.worktree._worktree.install_venv_symlink"),
+
             patch("issue_orchestrator.adapters.worktree._worktree.sync_cli_tools"),
         ):
             def run_side_effect(cmd, *args, **kwargs):

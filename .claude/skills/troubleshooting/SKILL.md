@@ -176,24 +176,6 @@ cat $WORKTREE/.agent-done-marker
 
 ## Worktree Issues
 
-### Missing .venv Symlink
-
-If push fails with:
-```
-.venv/bin/lint-imports: No such file or directory
-```
-
-The worktree is missing its `.venv` symlink:
-
-```bash
-# Check if symlink exists
-ls -la /path/to/worktree/.venv
-
-# Should show -> /path/to/main/repo/.venv
-```
-
-**Fix:** `install_venv_symlink()` is called in `adapters/worktree/_worktree.py` during worktree creation AND reuse.
-
 ### Stale Completion Files
 
 If sessions complete immediately with old data:
