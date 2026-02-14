@@ -158,6 +158,7 @@ def control_center_process(
         "--port",
         str(control_center_port),
         "--no-browser",
+        "--no-tray",
     ]
 
     logger.info("Starting control center on port %d", control_center_port)

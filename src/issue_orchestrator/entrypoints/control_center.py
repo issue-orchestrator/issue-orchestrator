@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import webbrowser
+from typing import Any
 
 import uvicorn
 
@@ -72,6 +73,29 @@ def _open_browser(url: str, delay: float = 1.0) -> None:
     webbrowser.open(url)
 
 
+def _start_tray_icon(url: str) -> Any | None:
+    """Start the system tray icon, returning the icon or None on failure."""
+    try:
+        from .tray import start_tray
+        from .control_api import _build_repos_status
+
+        def _get_engine_status() -> list[tuple[str, str]]:
+            try:
+                return [
+                    (r["name"], r.get("status", {}).get("state", "unknown"))
+                    for r in _build_repos_status()
+                ]
+            except Exception:
+                return []
+
+        icon = start_tray(dashboard_url=url, engine_status_fn=_get_engine_status)
+        logger.debug("System tray icon started")
+        return icon
+    except Exception:
+        logger.debug("System tray icon unavailable (headless or missing deps)")
+        return None
+
+
 def main() -> int:
     """Run the standalone control center server."""
     # NOTE: Cannot use signal.signal(signal.SIGCHLD, signal.SIG_IGN) to auto-reap
@@ -104,6 +128,11 @@ def main() -> int:
         "--no-browser",
         action="store_true",
         help="Don't open browser automatically",
+    )
+    parser.add_argument(
+        "--no-tray",
+        action="store_true",
+        help="Don't show system tray icon",
     )
 
     args = parser.parse_args()
@@ -142,6 +171,9 @@ def main() -> int:
         reaper_thread = threading.Thread(target=_zombie_reaper, daemon=True)
         reaper_thread.start()
 
+    # Start system tray icon (menu bar on macOS)
+    tray_icon = _start_tray_icon(url) if not args.no_tray else None
+
     try:
         uvicorn.run(
             control_app,
@@ -157,6 +189,9 @@ def main() -> int:
         logger.exception("Control center failed: %s", e)
         return 1
     finally:
+        # Stop the system tray icon
+        if tray_icon is not None:
+            tray_icon.stop()
         # Stop the reaper thread
         _reaper_stop.set()
         # Clear PID file
