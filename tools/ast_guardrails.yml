@@ -12,6 +12,42 @@ layer_boundaries:
     allow:
       # bootstrap.py is the composition root - it wires adapters to protocols
       - src/issue_orchestrator/entrypoints/bootstrap.py
+      # provider factory (when introduced) is part of composition wiring
+      - src/issue_orchestrator/entrypoints/repository_host_factory.py
+  - name: core_no_github_adapter_imports
+    description: "Core control and observation layers must not import GitHub adapters directly"
+    deny_in:
+      - src/issue_orchestrator/control
+      - src/issue_orchestrator/observation
+    deny_imports:
+      - issue_orchestrator.adapters.github
+  - name: entrypoints_no_github_adapter_imports
+    description: "Entrypoints must route GitHub adapter wiring through composition root/factory only"
+    deny_in:
+      - src/issue_orchestrator/entrypoints
+    deny_imports:
+      - issue_orchestrator.adapters.github
+    allow:
+      - src/issue_orchestrator/entrypoints/bootstrap.py
+      - src/issue_orchestrator/entrypoints/repository_host_factory.py
+
+deny_symbol_refs:
+  - name: layers_no_github_symbol_refs
+    description: "Avoid concrete GitHub symbol coupling outside composition root/factory"
+    deny_in:
+      - src/issue_orchestrator/control
+      - src/issue_orchestrator/observation
+      - src/issue_orchestrator/entrypoints
+    deny_symbols:
+      - GitHubAdapter
+      - GitHubIssueResolver
+      - GitHubClaimAdapter
+      - GitHubFreshIssueReader
+      - GitHubCache
+      - GitHubHttpClient
+    allow:
+      - src/issue_orchestrator/entrypoints/bootstrap.py
+      - src/issue_orchestrator/entrypoints/repository_host_factory.py
 
 allow_prefixes:
   - src/issue_orchestrator/execution

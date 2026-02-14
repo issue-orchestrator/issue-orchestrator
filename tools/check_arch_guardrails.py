@@ -222,6 +222,49 @@ def check_attr_call_rules(path: Path, tree: ast.AST, rules: dict) -> list[Violat
     return violations
 
 
+def check_symbol_ref_rules(path: Path, tree: ast.AST, rules: dict) -> list[Violation]:
+    """Check symbol reference rules (e.g., no GitHub symbols in core layers)."""
+    violations: list[Violation] = []
+    symbol_rules = rules.get("deny_symbol_refs", []) or []
+
+    for rule in symbol_rules:
+        deny_in = rule.get("deny_in", []) or []
+        deny_symbols = set(rule.get("deny_symbols", []) or [])
+        allow = rule.get("allow", []) or []
+        rule_name = rule.get("name", "deny-symbol-ref")
+
+        p = path.as_posix()
+        in_denied_path = any(p.startswith(prefix.rstrip("/")) for prefix in deny_in)
+        is_allowed_file = any(p == allowed or p.startswith(allowed.rstrip("/") + "/") for allowed in allow)
+
+        if not in_denied_path or is_allowed_file:
+            continue
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name) and node.id in deny_symbols:
+                violations.append(
+                    Violation(
+                        path.as_posix(),
+                        node.lineno,
+                        node.col_offset,
+                        rule_name,
+                        node.id,
+                    )
+                )
+            if isinstance(node, ast.Attribute) and node.attr in deny_symbols:
+                violations.append(
+                    Violation(
+                        path.as_posix(),
+                        node.lineno,
+                        node.col_offset,
+                        rule_name,
+                        node.attr,
+                    )
+                )
+
+    return violations
+
+
 def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[Violation]:
     allow_general = is_allowed(path, allow_prefixes)
 
@@ -235,6 +278,7 @@ def check_file(path: Path, rules: dict, allow_prefixes: Sequence[str]) -> list[V
     # Check layer boundary rules first
     violations.extend(check_layer_boundaries(path, tree, rules))
     violations.extend(check_attr_call_rules(path, tree, rules))
+    violations.extend(check_symbol_ref_rules(path, tree, rules))
 
     deny_imports = set(rules.get("deny_imports", []) or [])
     deny_dynamic_imports = set(rules.get("deny_dynamic_imports", []) or [])
