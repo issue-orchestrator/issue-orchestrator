@@ -28,6 +28,7 @@ from ..infra.config import Config
 from ..events import EventName
 from ..infra.logging_config import log_context, get_repo_log_path
 from ..domain.models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
+from ..domain.session_key import TaskKind
 from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
 from ..ports.session_output import SessionOutput
 from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
@@ -615,71 +616,116 @@ class CompletionHandler:
         so downstream consumers (timeline, UI) get the rich agent-provided data
         without rummaging across files.
         """
-        agent = session.agent_label
-        task = session.key.task.value if session.key else None
-        rework_cycle = session.rework_cycle
         detail = completion_detail or {}
 
         if status == SessionStatus.COMPLETED:
-            payload: dict[str, Any] = {
-                "issue_number": session.issue.number,
-                "session_id": session.terminal_id,
-                "agent": agent,
-                "task": task,
-                "rework_cycle": rework_cycle,
-                "pr_url": pr_url,
-                "runtime_minutes": session.runtime_minutes,
-            }
-            # Enrich with completion record detail
-            for key in ("implementation", "problems", "review_summary", "review_issues", "risk_level"):
-                if detail.get(key):
-                    payload[key] = detail[key]
-            self.events.publish(TraceEvent(EventName.SESSION_COMPLETED, payload))
-            if pr_url and pr_number is not None:
-                self.events.publish(TraceEvent(EventName.ISSUE_PR_CREATED, {
-                    "issue_number": session.issue.number,
-                    "pr_url": pr_url,
-                    "pr_number": pr_number,
-                    "agent": agent,
-                    "task": task,
-                    "rework_cycle": rework_cycle,
-                }))
-        elif status == SessionStatus.FAILED or status == SessionStatus.TIMED_OUT:
-            reason = f"Exceeded {session.agent_config.timeout_minutes} min timeout" if status == SessionStatus.TIMED_OUT else "Session ended without PR or status update"
-            payload = {
-                "issue_number": session.issue.number,
-                "session_id": session.terminal_id,
-                "agent": agent,
-                "task": task,
-                "rework_cycle": rework_cycle,
-                "error": reason,
-                "runtime_minutes": session.runtime_minutes,
-                "timeout_minutes": session.agent_config.timeout_minutes if session.agent_config else None,
-            }
-            self.events.publish(TraceEvent(EventName.SESSION_FAILED, payload))
+            self._emit_completed_events(session, pr_url, pr_number, detail)
+        elif status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
+            self._emit_failure_event(session, status)
         elif status == SessionStatus.BLOCKED:
-            payload = {
-                "issue_number": session.issue.number,
-                "agent": agent,
-                "task": task,
-                "rework_cycle": rework_cycle,
-                "reason": blocked_reason or "Agent marked issue as blocked",
-            }
-            for key in ("attempted", "blocked_by"):
-                if detail.get(key):
-                    payload[key] = detail[key]
-            self.events.publish(TraceEvent(EventName.ISSUE_BLOCKED, payload))
+            self._emit_blocked_event(session, blocked_reason, detail)
         elif status == SessionStatus.NEEDS_HUMAN:
-            payload = {
+            self._emit_needs_human_event(session, blocked_reason, detail)
+
+    def _emit_completed_events(
+        self,
+        session: Session,
+        pr_url: Optional[str],
+        pr_number: Optional[int],
+        detail: dict[str, Any],
+    ) -> None:
+        """Emit events for a completed session (coding/rework only)."""
+        # Review sessions get their events from _publish_review_outcome()
+        if session.key.task == TaskKind.REVIEW:
+            return
+
+        agent = session.agent_label
+        task = session.key.task.value if session.key else None
+        rework_cycle = session.rework_cycle
+
+        payload: dict[str, Any] = {
+            "issue_number": session.issue.number,
+            "session_id": session.terminal_id,
+            "agent": agent,
+            "task": task,
+            "rework_cycle": rework_cycle,
+            "pr_url": pr_url,
+            "runtime_minutes": session.runtime_minutes,
+        }
+        for key in ("implementation", "problems", "review_summary", "review_issues", "risk_level"):
+            if detail.get(key):
+                payload[key] = detail[key]
+        self.events.publish(TraceEvent(EventName.SESSION_COMPLETED, payload))
+
+        if pr_url and pr_number is not None:
+            self.events.publish(TraceEvent(EventName.ISSUE_PR_CREATED, {
                 "issue_number": session.issue.number,
+                "pr_url": pr_url,
+                "pr_number": pr_number,
                 "agent": agent,
                 "task": task,
                 "rework_cycle": rework_cycle,
-                "reason": blocked_reason or "Agent requested human input",
-            }
-            if detail.get("question"):
-                payload["question"] = detail["question"]
-            self.events.publish(TraceEvent(EventName.ISSUE_NEEDS_HUMAN, payload))
+            }))
+
+    def _emit_failure_event(
+        self,
+        session: Session,
+        status: SessionStatus,
+    ) -> None:
+        """Emit SESSION_FAILED event for failed or timed-out sessions."""
+        reason = (
+            f"Exceeded {session.agent_config.timeout_minutes} min timeout"
+            if status == SessionStatus.TIMED_OUT
+            else "Session ended without PR or status update"
+        )
+        payload: dict[str, Any] = {
+            "issue_number": session.issue.number,
+            "session_id": session.terminal_id,
+            "agent": session.agent_label,
+            "task": session.key.task.value if session.key else None,
+            "rework_cycle": session.rework_cycle,
+            "error": reason,
+            "runtime_minutes": session.runtime_minutes,
+            "timeout_minutes": session.agent_config.timeout_minutes if session.agent_config else None,
+        }
+        self.events.publish(TraceEvent(EventName.SESSION_FAILED, payload))
+
+    def _emit_blocked_event(
+        self,
+        session: Session,
+        blocked_reason: Optional[str],
+        detail: dict[str, Any],
+    ) -> None:
+        """Emit ISSUE_BLOCKED event."""
+        payload: dict[str, Any] = {
+            "issue_number": session.issue.number,
+            "agent": session.agent_label,
+            "task": session.key.task.value if session.key else None,
+            "rework_cycle": session.rework_cycle,
+            "reason": blocked_reason or "Agent marked issue as blocked",
+        }
+        for key in ("attempted", "blocked_by"):
+            if detail.get(key):
+                payload[key] = detail[key]
+        self.events.publish(TraceEvent(EventName.ISSUE_BLOCKED, payload))
+
+    def _emit_needs_human_event(
+        self,
+        session: Session,
+        blocked_reason: Optional[str],
+        detail: dict[str, Any],
+    ) -> None:
+        """Emit ISSUE_NEEDS_HUMAN event."""
+        payload: dict[str, Any] = {
+            "issue_number": session.issue.number,
+            "agent": session.agent_label,
+            "task": session.key.task.value if session.key else None,
+            "rework_cycle": session.rework_cycle,
+            "reason": blocked_reason or "Agent requested human input",
+        }
+        if detail.get("question"):
+            payload["question"] = detail["question"]
+        self.events.publish(TraceEvent(EventName.ISSUE_NEEDS_HUMAN, payload))
 
     def _update_state_machines(
         self,

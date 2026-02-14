@@ -688,6 +688,7 @@ h1 {
 }
 .card-badges {
     display: flex;
+    flex-wrap: wrap;
     gap: 6px;
     margin-top: 6px;
 }
@@ -703,15 +704,7 @@ h1 {
     color: var(--warn);
 }
 .badge-orch {
-    font-size: 9px;
     opacity: 0.7;
-    max-width: 120px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-}
-.badge-orch-more {
-    cursor: default;
 }
 .attention-board {
     display: grid;

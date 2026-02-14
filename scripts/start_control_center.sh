@@ -137,6 +137,21 @@ ensure_deps() {
   fi
 }
 
+is_our_process() {
+  # Check if a PID belongs to the orchestrator (python, uvicorn, or entry point)
+  local pid="$1"
+  local cmdline
+  cmdline=$(ps -p "${pid}" -o args= 2>/dev/null || echo "")
+  if [[ -z "${cmdline}" ]]; then
+    return 1  # Process already exited
+  fi
+  # Match python, uvicorn, or our entry point binary/module
+  if echo "${cmdline}" | grep -q -i -E 'python|uvicorn|issue.orchestrator|issue-orchestrator'; then
+    return 0
+  fi
+  return 1
+}
+
 ensure_port_free() {
   local pids attempt
 
@@ -151,11 +166,11 @@ ensure_port_free() {
 
   # Try graceful kill (SIGTERM) first
   for pid in ${pids}; do
-    if ps -p "${pid}" -o comm= 2>/dev/null | grep -q -i python; then
+    if is_our_process "${pid}"; then
       echo "Sending SIGTERM to old control center (PID ${pid})..."
       kill "${pid}" 2>/dev/null || true
     else
-      echo "WARNING: PID ${pid} is not Python, skipping"
+      echo "WARNING: PID ${pid} is not an orchestrator process, skipping"
     fi
   done
 
@@ -168,12 +183,12 @@ ensure_port_free() {
     fi
   done
 
-  # SIGTERM didn't work, try SIGKILL on Python processes only
+  # SIGTERM didn't work, try SIGKILL
   echo "Graceful shutdown timed out, trying SIGKILL..."
   pids=$(lsof -ti :"${PORT}" 2>/dev/null || echo "")
   local killed_any=false
   for pid in ${pids}; do
-    if ps -p "${pid}" -o comm= 2>/dev/null | grep -q -i python; then
+    if is_our_process "${pid}"; then
       echo "Sending SIGKILL to PID ${pid}..."
       kill -9 "${pid}" 2>/dev/null || true
       killed_any=true
@@ -184,7 +199,7 @@ ensure_port_free() {
   sleep 1
   if lsof -ti :"${PORT}" >/dev/null 2>&1; then
     if [[ "${killed_any}" == "false" ]]; then
-      echo "ERROR: Port ${PORT} is in use by non-Python process(es)"
+      echo "ERROR: Port ${PORT} is in use by non-orchestrator process(es)"
     else
       echo "ERROR: Could not free port ${PORT} even with SIGKILL"
     fi
@@ -213,4 +228,6 @@ ensure_port_free
 show_startup_info
 
 # Use unified entry point - it handles dashboard lifecycle
+# IO_DEV disables static file caching so CSS/JS changes are visible immediately
+export IO_DEV=1
 exec "${VENV_PATH}/bin/issue-orchestrator" "$@"

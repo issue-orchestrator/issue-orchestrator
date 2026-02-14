@@ -904,9 +904,6 @@
             background: var(--bg-card-hover);
             color: var(--text-primary);
         }
-        .consolidated-breadcrumb .back-btn:active {
-            transform: scale(0.92);
-        }
         .consolidated-breadcrumb .separator {
             color: var(--text-muted);
             font-weight: 400;
@@ -945,9 +942,6 @@
         .consolidated-actions .icon-btn.active {
             background: var(--bg-card-hover);
             color: var(--text-primary);
-        }
-        .consolidated-actions .icon-btn:active {
-            transform: scale(0.92);
         }
 
         /* Scope Info Popover */
@@ -1801,6 +1795,25 @@
 
         .version-info a:hover {
             color: var(--accent-blue);
+        }
+
+        /* Press feedback — unified for all interactive elements */
+        .nav-item:active,
+        .repo-dropdown-trigger:active,
+        .dropdown-item:active,
+        .btn:active:not(:disabled),
+        .scope-note-dismiss:active,
+        .consolidated-breadcrumb .back-btn:active,
+        .consolidated-actions .icon-btn:active,
+        .action-menu-item:active,
+        .maximize-exit-btn:active,
+        .tool-card:active,
+        .goal-pilot-run-item:active,
+        .goal-pilot-step-header:active,
+        .theme-btn:active,
+        .modal-close:active {
+            transform: scale(0.96);
+            transition: transform 0.05s;
         }
     </style>
 </head>
@@ -3485,7 +3498,7 @@
                 actions = `<button class="btn btn-primary" data-action="setup" data-path="${escapeHtml(repo.path)}">Setup</button>`;
             } else if (isNotRunning) {
                 actions = `
-                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open engine</button>
+                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}" disabled>Open engine</button>
                     <button class="btn btn-primary" data-action="start" data-path="${escapeHtml(repo.path)}">Start engine</button>
                     <button class="btn" data-action="start-paused" data-path="${escapeHtml(repo.path)}">Start paused</button>
                 `;
@@ -3999,15 +4012,21 @@
                 const s = r.status || {};
                 return s.state === 'running' || s.state === 'partial' || s.paused;
             });
+
+            // Nothing running — close immediately, no confirmation needed
+            if (active.length === 0) {
+                showToast('Shutting down...');
+                confirmShutdown();
+                return;
+            }
+
             const summary = document.getElementById('shutdownSummaryText');
             const running = document.getElementById('shutdownRunningText');
             if (summary) {
                 summary.textContent = 'This closes the Control Center window and dashboard server. Repository engines keep running independently.';
             }
             if (running) {
-                if (active.length === 0) {
-                    running.textContent = 'No repository engines are currently running.';
-                } else if (active.length === 1) {
+                if (active.length === 1) {
                     running.textContent = `1 repository engine remains active: ${active[0].name}.`;
                 } else {
                     const names = active.slice(0, 3).map(r => r.name).join(', ');

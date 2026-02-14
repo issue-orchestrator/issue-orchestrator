@@ -953,7 +953,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         return actions
 
-    def _plan_issues(
+    def _plan_issues(  # noqa: C901, PLR0912 — multi-phase issue scheduling
         self,
         snapshot: OrchestratorSnapshot,
         capacity: int,

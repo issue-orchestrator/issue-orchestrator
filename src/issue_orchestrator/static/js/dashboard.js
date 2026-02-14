@@ -1120,12 +1120,7 @@ async function refreshIssueCard(issueNumber, triggerEl = null, options = {}) {
     issueRefreshLastAttempt.set(issueNumber, now);
     issueRefreshInFlight.add(issueNumber);
     if (triggerEl) {
-        // Subtle press feedback before disabling for spin
-        triggerEl.style.background = 'rgba(78, 161, 255, 0.18)';
-        setTimeout(() => {
-            triggerEl.style.background = '';
-            triggerEl.disabled = true;
-        }, 120);
+        triggerEl.disabled = true;
     }
 
     try {
@@ -1631,20 +1626,12 @@ function renderCompactCards(container, items) {
         const phaseLine = card.phase || card.state_label || '';
         const ageStr = card.phase_age ? ` &middot; ${card.phase_age}` : '';
         let detailLine = '';
-        if (card.blocked_summary) {
-            detailLine = `<div class="card-line card-muted">${card.blocked_summary}</div>`;
-        } else if (card.summary) {
+        if (card.summary) {
             detailLine = `<div class="card-line card-muted">${card.summary}</div>`;
         }
-        const badges = (card.badges || []).map(b => `<span class="badge">${b}</span>`).join('');
         const orchLabels = card.orchestrator_labels || [];
-        const visibleLabels = orchLabels.slice(0, 3);
-        const extraCount = orchLabels.length - visibleLabels.length;
-        const orchPills = visibleLabels.map(l => `<span class="badge badge-orch" title="${l}">${l}</span>`).join('');
-        const orchExtra = extraCount > 0
-            ? `<span class="badge badge-orch badge-orch-more" title="${orchLabels.slice(3).join(', ')}">+${extraCount}</span>`
-            : '';
-        const allBadges = badges + orchPills + orchExtra + staleBadge;
+        const orchPills = orchLabels.map(l => `<span class="badge badge-orch">${l}</span>`).join('');
+        const allBadges = orchPills + staleBadge;
         const badgesDiv = allBadges
             ? `<div class="card-badges">${allBadges}</div>`
             : '';
@@ -1768,6 +1755,7 @@ function updateBlockedNewCount(col, items, viewed) {
             if (h2) h2.appendChild(badge);
         }
         badge.textContent = `${newCount} new`;
+        badge.title = `${newCount} blocked issue${newCount === 1 ? '' : 's'} not yet viewed`;
     } else if (badge) {
         badge.remove();
     }

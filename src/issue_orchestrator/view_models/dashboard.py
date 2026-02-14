@@ -396,14 +396,14 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
-            "orchestrator_labels": lm.get_ours(list(session.issue.labels)),
+            "orchestrator_labels": sorted(lm.get_ours(list(session.issue.labels))),
             **_refresh_meta(state, config, session.issue.number),
         })
 
     return items, seen_issues
 
 
-def _build_queue_items(
+def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multiple state sources
     state,
     config,
     queue_page: int,
@@ -501,7 +501,7 @@ def _build_queue_items(
             "blocked_summary": blocked,
             "merge_pending": lm.is_pr_pending(issue.labels),
             "dependency_blocked": is_dependency_blocked,
-            "orchestrator_labels": lm.get_ours(list(issue.labels)),
+            "orchestrator_labels": sorted(lm.get_ours(list(issue.labels))),
             **_refresh_meta(state, config, issue.number),
         }
         if is_blocked:
@@ -725,23 +725,15 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
     phase = item.get("flow_stage_label") or item.get("flow_stage") or ""
     phase_age = item.get("time") or ""
     blocked = item.get("blocked_summary") or ""
-    badges: list[str] = []
-    blocked_lower = blocked.lower()
-    if "dependency" in blocked_lower or "waiting on" in blocked_lower:
-        badges.append("dependency")
-    if "human" in blocked_lower:
-        badges.append("human")
-    if item.get("merge_pending"):
-        badges.append("PR pending")
     return {
         "issue_number": item.get("issue_number"),
         "title": item.get("title", ""),
         "state_label": state_label or item.get("status", ""),
         "phase": phase,
         "phase_age": phase_age,
-        "summary": item.get("detail_label") or "",
+        "summary": f"Summary: {blocked}" if blocked else "",
         "blocked_summary": blocked,
-        "badges": badges,
+        "badges": [],
         "orchestrator_labels": item.get("orchestrator_labels", []),
         "focus_action": "focus",
         "issue_url": item.get("issue_url") or item.get("url") or "",
@@ -778,7 +770,7 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
-            "orchestrator_labels": lm.get_ours(list(issue.labels)),
+            "orchestrator_labels": sorted(lm.get_ours(list(issue.labels))),
             **_refresh_meta(state, config, issue.number),
         })
     return cards

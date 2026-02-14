@@ -340,6 +340,14 @@
             font-size: 12px;
             color: var(--text-muted);
         }
+
+        /* Press feedback — unified for all interactive elements */
+        .btn:active:not(:disabled),
+        .tab:active,
+        .back-link:active {
+            transform: scale(0.96);
+            transition: transform 0.05s;
+        }
     </style>
 </head>
 <body>

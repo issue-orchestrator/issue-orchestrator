@@ -452,3 +452,154 @@ class TestStartupManagerValidationRetryRecovery:
 
         # Verify no pending retry (max exhausted)
         assert len(sample_state.pending_validation_retries) == 0
+
+
+class TestStartupGitHubCallBudget:
+    """Verify startup makes only the expected number of GitHub API calls.
+
+    This prevents regressions that silently add extra API calls to the
+    startup path, which compound with agents × milestones.
+
+    With no queue_cache_store, the startup path is:
+    - Step 5: queue cache restore (no-op without store)
+    - Step 6: in-progress check (cold fallback, per-agent list_issues)
+    - Step 12: audit (list_issues via fetch_all_issues)
+
+    With a warm cache store, the startup path is:
+    - Step 5: queue cache restore (1 list_issues_delta call)
+    - Step 6: in-progress check (filters from cache, 0 list_issues)
+    - Step 12: audit (uses preloaded cache, 0 list_issues)
+    """
+
+    @pytest.mark.asyncio
+    async def test_cold_start_call_count_one_agent_no_milestones(
+        self, mock_config, mock_events, mock_runner, mock_repository_host,
+        mock_action_applier, mock_issue_branches_fn,
+    ):
+        """Cold start (no store) with 1 agent, no milestones: 2 list_issues.
+
+        - Step 6: 1 list_issues (in-progress cold fallback, 1 agent × 1 milestone)
+        - Step 12: 1 list_issues (audit fetch, 1 agent × 1 milestone)
+        Total: 2 list_issues, 0 get_prs_with_label
+        """
+        mock_config.agents = {"agent:test": AgentConfig(prompt_path=mock_config.repo_root / "prompt.md", timeout_minutes=30)}
+        sm = StartupManager(
+            config=mock_config, events=mock_events, runner=mock_runner,
+            repository_host=mock_repository_host, action_applier=mock_action_applier,
+            issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None,
+            update_queue_cache_fn=lambda: None,
+        )
+
+        await sm.run_startup(OrchestratorState())
+
+        assert mock_repository_host.list_issues.call_count == 2
+        assert mock_repository_host.get_prs_with_label.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_cold_start_call_count_two_agents_two_milestones(
+        self, mock_config, mock_events, mock_runner, mock_repository_host,
+        mock_action_applier, mock_issue_branches_fn,
+    ):
+        """Cold start (no store) with 2 agents, 2 milestones: 8 list_issues.
+
+        - Step 6: 4 list_issues (2 agents × 2 milestones, cold fallback)
+        - Step 12: 4 list_issues (2 agents × 2 milestones, audit fetch)
+        Total: 8 list_issues, 0 get_prs_with_label
+        """
+        mock_config.agents = {
+            "agent:a": AgentConfig(prompt_path=mock_config.repo_root / "prompt.md", timeout_minutes=30),
+            "agent:b": AgentConfig(prompt_path=mock_config.repo_root / "prompt.md", timeout_minutes=30),
+        }
+        mock_config.filtering.milestones = ["M1", "M2"]
+        sm = StartupManager(
+            config=mock_config, events=mock_events, runner=mock_runner,
+            repository_host=mock_repository_host, action_applier=mock_action_applier,
+            issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None,
+            update_queue_cache_fn=lambda: None,
+        )
+
+        await sm.run_startup(OrchestratorState())
+
+        assert mock_repository_host.list_issues.call_count == 8
+        assert mock_repository_host.get_prs_with_label.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_cold_start_with_code_review_adds_one_pr_call(
+        self, mock_config, mock_events, mock_runner, mock_repository_host,
+        mock_action_applier, mock_issue_branches_fn,
+    ):
+        """Code review config adds exactly 1 get_prs_with_label call."""
+        mock_config.agents = {"agent:test": AgentConfig(prompt_path=mock_config.repo_root / "prompt.md", timeout_minutes=30)}
+        mock_config.code_review_agent = "agent:reviewer"
+        mock_config.code_review_label = "needs-review"
+        sm = StartupManager(
+            config=mock_config, events=mock_events, runner=mock_runner,
+            repository_host=mock_repository_host, action_applier=mock_action_applier,
+            issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None,
+            update_queue_cache_fn=lambda: None,
+        )
+
+        await sm.run_startup(OrchestratorState())
+
+        assert mock_repository_host.list_issues.call_count == 2
+        assert mock_repository_host.get_prs_with_label.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_agents_makes_zero_list_issues_calls(
+        self, startup_manager, sample_state, mock_repository_host,
+    ):
+        """With no agents configured, startup should make zero list_issues calls."""
+        await startup_manager.run_startup(sample_state)
+
+        assert mock_repository_host.list_issues.call_count == 0
+        assert mock_repository_host.get_prs_with_label.call_count == 0
+
+    @pytest.mark.asyncio
+    async def test_warm_start_uses_delta_only(
+        self, mock_config, mock_events, mock_runner, mock_repository_host,
+        mock_action_applier, mock_issue_branches_fn,
+    ):
+        """Warm restart with cache: 0 list_issues, 1 list_issues_delta.
+
+        When queue_cache_store has cached issues + watermark:
+        - Step 5: 1 list_issues_delta (delta sync from cache)
+        - Step 6: 0 list_issues (filters in-progress from cache)
+        - Step 12: 0 list_issues (audit uses preloaded cache)
+        Total: 0 list_issues, 1 list_issues_delta
+        """
+        mock_config.agents = {"agent:test": AgentConfig(prompt_path=mock_config.repo_root / "prompt.md", timeout_minutes=30)}
+
+        # Pre-populate queue cache store with issues + watermark
+        mock_store = MagicMock()
+        mock_store.load_issues.return_value = [
+            Issue(number=1, title="Cached Issue", labels=["agent:test"]),
+        ]
+        mock_store.load_watermark.return_value = "2025-01-01T00:00:00Z"
+
+        # Delta sync returns no changes
+        mock_repository_host.list_issues_delta.return_value = ([], "2025-01-01T00:00:01Z")
+
+        sm = StartupManager(
+            config=mock_config, events=mock_events, runner=mock_runner,
+            repository_host=mock_repository_host, action_applier=mock_action_applier,
+            issue_branches_fn=mock_issue_branches_fn,
+            session_exists_fn=lambda name: False,
+            restore_sessions_fn=MagicMock(),
+            launch_session_fn=lambda issue: None,
+            update_queue_cache_fn=lambda: None,
+            queue_cache_store=mock_store,
+        )
+
+        await sm.run_startup(OrchestratorState())
+
+        assert mock_repository_host.list_issues.call_count == 0
+        assert mock_repository_host.list_issues_delta.call_count == 1

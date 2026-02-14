@@ -257,7 +257,7 @@ def _summary_from_data(data: dict[str, Any]) -> str | None:
 _MAX_DETAIL = 200
 
 
-def _detail_from_data(
+def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail extraction
     event_name: str,
     data: dict[str, Any],
     summary: str | None,

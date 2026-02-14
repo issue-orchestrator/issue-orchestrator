@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Optional, Callable, cast
 if TYPE_CHECKING:
     from types import FrameType
     from ..domain.models import OrchestratorState, Session, SessionStatus
-    from ..execution.queue_cache_store import QueueCacheStore
+    from ..ports.queue_cache_store import QueueCacheStore
     from ..infra.config import Config
     from ..infra.orchestrator import Orchestrator
     from .planner import Plan, Planner

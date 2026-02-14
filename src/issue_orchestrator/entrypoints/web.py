@@ -1459,7 +1459,7 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
     return IssueDetailPayload.model_validate(payload)
 
 
-def _build_issue_story_context(issue_number: int) -> IssueStoryContext | None:
+def _build_issue_story_context(issue_number: int) -> IssueStoryContext | None:  # noqa: C901, PLR0912 — assembles story from multiple state sources
     """Assemble story context from orchestrator state for one issue."""
     if not _orchestrator:
         return None

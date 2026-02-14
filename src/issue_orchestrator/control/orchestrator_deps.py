@@ -15,8 +15,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..events import EventHub
-    from ..execution.label_store import LabelStore
-    from ..execution.queue_cache_store import QueueCacheStore
+    from ..ports.label_store import LabelStore
+    from ..ports.queue_cache_store import QueueCacheStore
     from ..ports import (
         EventSink,
         SessionRunner,

@@ -145,6 +145,7 @@ def audit_queue(
     state: Optional[OrchestratorState] = None,
     issue_tracker: Optional["IssueTracker"] = None,
     issue_branches: Optional[dict[int, str]] = None,
+    preloaded_issues: Optional[list[Issue]] = None,
 ) -> list[IssueAuditEntry]:
     """Audit all issues and explain why each is queued or skipped.
 
@@ -152,12 +153,15 @@ def audit_queue(
         config: Configuration with agent labels and repo info.
         state: Optional orchestrator state for session history check.
         issue_tracker: IssueTracker for fetching issues.
+        issue_branches: Map of issue numbers to branch names.
+        preloaded_issues: Pre-fetched issues to use instead of calling GitHub.
+            When provided, skips the ``fetch_all_issues`` call entirely.
 
     Returns:
         List of audit entries, one per issue.
     """
-    if issue_tracker is None:
-        raise ValueError("issue_tracker is required")
+    if preloaded_issues is None and issue_tracker is None:
+        raise ValueError("issue_tracker is required when preloaded_issues is not provided")
 
     entries = []
 
@@ -171,8 +175,12 @@ def audit_queue(
     if issue_branches is None:
         issue_branches = {}
 
-    # Fetch all issues
-    all_issues = fetch_all_issues(config, issue_tracker)
+    # Use preloaded issues or fetch from GitHub
+    if preloaded_issues is not None:
+        all_issues = preloaded_issues
+    else:
+        assert issue_tracker is not None  # Guaranteed by validation above
+        all_issues = fetch_all_issues(config, issue_tracker)
 
     # Sort by issue number for consistent output
     all_issues.sort(key=lambda i: i.number)

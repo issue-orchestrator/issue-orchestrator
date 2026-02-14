@@ -40,7 +40,7 @@ from ..ports.worktree_manager import WorktreeManager
 from ..domain.models import Session
 
 if TYPE_CHECKING:
-    from ..execution.label_store import LabelStore
+    from ..ports.label_store import LabelStore
 from .reconciliation import (
     ExternalSnapshot,
     ReconciliationRequired,

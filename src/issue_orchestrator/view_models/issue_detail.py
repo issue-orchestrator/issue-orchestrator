@@ -76,7 +76,7 @@ def build_issue_detail_view_model(
 # Status explanation
 # ---------------------------------------------------------------------------
 
-def _build_status_explanation(
+def _build_status_explanation(  # noqa: C901 — maps flow stages to status explanations
     ctx: IssueStoryContext | None,
     events: list[dict[str, Any]],
 ) -> str:
@@ -136,7 +136,7 @@ _BLOCKED_EVENT_NAMES = frozenset({
 })
 
 
-def _blocked_explanation(ctx: IssueStoryContext, events: list[dict[str, Any]]) -> str:
+def _blocked_explanation(ctx: IssueStoryContext, events: list[dict[str, Any]]) -> str:  # noqa: C901 — maps blocking conditions to explanations
     """Produce a specific blocked explanation from labels + events."""
     labels = ctx.labels
 
@@ -566,6 +566,10 @@ def _finalize_cycle_from_events(
         detail = evt.get("detail")
         if detail:
             step_dict["detail"] = str(detail)
+        # Pass through actions so journey cycle events have ⋯ menus
+        actions = evt.get("actions")
+        if actions:
+            step_dict["actions"] = actions
         steps.append(step_dict)
 
     return {
@@ -716,6 +720,9 @@ def _finalize_cycle(
         detail = evt.get("detail")
         if detail:
             step_dict["detail"] = str(detail)
+        actions = evt.get("actions")
+        if actions:
+            step_dict["actions"] = actions
         steps.append(step_dict)
 
     return {
@@ -765,7 +772,7 @@ def _derive_cycle_outcome(
     return label
 
 
-def _outcome_label(
+def _outcome_label(  # noqa: C901 — event-type dispatch for outcome labeling
     event_name: str,
     summary: str,
     context: IssueStoryContext | None,
@@ -821,7 +828,7 @@ def _duration_suffix(summary: str) -> str:
     return ""
 
 
-def _collect_cycle_artifacts(events: list[dict[str, Any]]) -> dict[str, Any]:
+def _collect_cycle_artifacts(events: list[dict[str, Any]]) -> dict[str, Any]:  # noqa: C901 — collects artifacts from heterogeneous event types
     """Collect artifact references from cycle events."""
     log_url: str | None = None
     pr_url: str | None = None

@@ -681,6 +681,7 @@ class Orchestrator:
             active_sessions=self.state.active_sessions,
             config=self.config,
             agents=self.config.agents,
+            session_output=self.deps.session_output,
         )
         return diagnosis.to_dict()
 

@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from ..domain.models import SessionHistoryEntry
     from .action_applier import ActionApplier
     from .label_manager import LabelManager
-    from ..execution.label_store import LabelStore
+    from ..ports.label_store import LabelStore
 
 from .actions import RemoveLabelAction
 from .worktree_manager import get_worktree_path
@@ -68,7 +68,7 @@ class ResetResult:
     error: str | None = None
 
 
-def reset_issue(
+def reset_issue(  # noqa: C901 — multi-step cleanup coordination
     issue_number: int,
     config: "Config",
     worktree_manager: "WorktreeManager",

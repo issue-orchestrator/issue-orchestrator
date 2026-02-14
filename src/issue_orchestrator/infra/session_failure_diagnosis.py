@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .config import Config
+    from ..ports.session_output import SessionOutput
 
 
 @dataclass
@@ -209,19 +210,18 @@ def _load_review_feedback(worktree_path: Path | None) -> list[dict[str, Any]]:
 
 def _load_analysis_from_worktree(
     worktree_path: Path | None,
+    session_output: "SessionOutput | None" = None,
 ) -> tuple[str | None, str | None, list[str]]:
     """Try to load analysis.json from the most recent run dir.
 
     Returns (headline, detail, suggestions).
     """
-    if not worktree_path:
+    if not worktree_path or not session_output:
         return None, None, []
 
     try:
-        from ..execution.session_output_adapter import FileSystemSessionOutput
         from ..control.session_analyzer import load_analysis
 
-        session_output = FileSystemSessionOutput()
         run_dir = session_output.find_run_dir(worktree_path)
         if not run_dir:
             return None, None, []
@@ -241,6 +241,7 @@ def create_session_failure_diagnosis(
     active_sessions: list,
     config: "Config",
     agents: dict,
+    session_output: "SessionOutput | None" = None,
 ) -> SessionFailureDiagnosis:
     """Create a failure diagnosis for a session."""
     from ..adapters.session_log.registry import get_log_provider
@@ -271,6 +272,7 @@ def create_session_failure_diagnosis(
     # Augment with session analysis from run manifest
     analysis_headline, analysis_detail, analysis_suggestions = _load_analysis_from_worktree(
         Path(worktree_path) if worktree_path else None,
+        session_output=session_output,
     )
 
     return SessionFailureDiagnosis(

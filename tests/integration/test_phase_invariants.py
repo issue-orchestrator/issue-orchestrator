@@ -471,10 +471,9 @@ class TestDashboardRendering:
         response = client.get("/")
 
         assert response.status_code == 200
-        # Check flow-oriented tabs are present
-        assert "switchTab('flow')" in response.text or "Flow" in response.text
-        assert "switchTab('attention')" in response.text or "Attention" in response.text
-        assert "switchTab('history')" in response.text or "History" in response.text
+        # Check dashboard tabs are present
+        assert "switchTab('kanban')" in response.text or "Kanban" in response.text
+        assert "switchTab('e2e')" in response.text or "E2E" in response.text
 
     def test_dashboard_issue_detail_drawer_present(self) -> None:
         """Dashboard should include issue-detail drawer surface."""
@@ -489,8 +488,6 @@ class TestDashboardRendering:
         assert "issueDetailTitle" in response.text
         assert "issueDetailFocusBtn" in response.text
         assert "issueDetailGitHubBtn" in response.text
-        assert "issueDetailLoopsBtn" in response.text
-        assert "issueDetailRawBtn" in response.text
 
     def test_dashboard_api_endpoints_exist(self) -> None:
         """Dashboard API endpoints should exist."""

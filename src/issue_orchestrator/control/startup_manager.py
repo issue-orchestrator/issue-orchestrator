@@ -7,12 +7,18 @@ Hook verification is handled by the launcher (pre-flight doctor checks)
 before the orchestrator process starts. The startup sequence here covers
 runtime initialization only:
 
-1. Clean up stale claims (in-progress labels without sessions)
-2. Clean up idle terminal sessions
-3. Discover and restore running sessions
-4. Recover pending reviews/reworks/triage
-5. Resume issues with partial work
-6. Audit and cache the queue
+1. Enforce SQLite pragmas and backups
+2. Clean up stale claims (in-progress labels without sessions)
+3. Clean up idle terminal sessions
+4. Discover and restore running sessions
+5. Restore + sync queue cache (warm: 1 delta call, cold: full scan)
+6. Check in-progress issues (filters from cache when available)
+7. Recover pending code reviews
+8. Recover pending triage reviews
+9. Recover pending validation retries
+10. Recover orphaned cleanups
+11. Resume issues with partial work
+12. Audit queue (uses cached issues when available)
 """
 
 import logging
@@ -25,7 +31,7 @@ from ..infra.config import Config
 from ..ports.issue import Issue
 
 if TYPE_CHECKING:
-    from ..execution.queue_cache_store import QueueCacheStore
+    from ..ports.queue_cache_store import QueueCacheStore
     from .label_manager import LabelManager
 from ..domain.models import (
     OrchestratorState,
@@ -162,38 +168,42 @@ class StartupManager:
             print(f"  Found {len(running)} running sessions to restore tracking")
             self._restore_sessions(running)
 
-        # Step 5: Check in-progress issues and determine action
+        # Step 5: Restore + sync queue cache (moved early so Steps 6/8 use cache)
+        self._restore_and_sync_queue(state)
+
+        # Step 6: Check in-progress issues and determine action
         state.startup_message = "Scanning local branches..."
         issue_branches = self._issue_branches()
 
         issues_to_resume: list[tuple[Issue, str]] = []
         await self._check_in_progress_issues(state, issue_branches, issues_to_resume)
 
-        # Step 6: Recover pending code reviews
+        # Step 7: Recover pending code reviews
         if self.config.code_review_agent and self.config.code_review_label:
             await self._recover_pending_reviews(state)
 
-        # Step 7: Recover pending triage reviews
+        # Step 8: Recover pending triage reviews
         if self.config.triage_review_agent:
             await self._recover_pending_triage(state)
 
-        # Step 8: Recover pending validation retries (crash recovery)
+        # Step 9: Recover pending validation retries (crash recovery)
         self._recover_pending_validation_retries(state, issue_branches)
 
-        # Step 9: Recover orphaned cleanups
+        # Step 10: Recover orphaned cleanups
         self._recover_orphaned_cleanups(state)
 
-        # Step 10: Resume issues with partial work
+        # Step 11: Resume issues with partial work
         await self._resume_partial_work(state, issues_to_resume)
 
-        # Step 11: Audit and cache the queue
+        # Step 12: Audit and cache the queue
         state.startup_message = "Auditing queue..."
         from ..infra.audit import audit_queue, print_audit
-        audit_entries = audit_queue(self.config, state, self.repository_host, issue_branches=issue_branches)
+        audit_entries = audit_queue(
+            self.config, state, self.repository_host,
+            issue_branches=issue_branches,
+            preloaded_issues=list(state.cached_queue_issues) if state.cached_queue_issues else None,
+        )
         print_audit(audit_entries)
-
-        # Step 12: Restore + sync queue cache
-        self._restore_and_sync_queue(state)
 
         # Mark startup complete
         state.startup_status = "complete"
@@ -218,11 +228,24 @@ class StartupManager:
         issue_branches: dict[int, str],
         issues_to_resume: list[tuple[Issue, str]],
     ) -> None:
-        """Check all in-progress issues and determine action."""
-        for agent_label in self.config.agents.keys():
-            issues = self._fetch_in_progress_issues_for_agent(state, agent_label)
+        """Check all in-progress issues and determine action.
+
+        When the queue cache is populated (warm or cold-after-full-scan),
+        filters in-progress issues from cache — zero GitHub calls.
+        Falls back to per-agent GitHub fetch only when no cache exists.
+        """
+        if state.cached_queue_issues:
+            # Warm path: filter in-progress from cache (0 GitHub calls)
+            issues = [i for i in state.cached_queue_issues if self._lm.is_in_progress(i.labels)]
+            logger.info("[startup] Found %d in-progress issues from cache", len(issues))
             for issue in issues:
-                self._analyze_and_handle_issue(state, issue, issue_branches, issues_to_resume, agent_label)
+                self._analyze_and_handle_issue(state, issue, issue_branches, issues_to_resume, agent_label="")
+        else:
+            # Cold fallback: per-agent fetch (only when cache is empty)
+            for agent_label in self.config.agents.keys():
+                issues = self._fetch_in_progress_issues_for_agent(state, agent_label)
+                for issue in issues:
+                    self._analyze_and_handle_issue(state, issue, issue_branches, issues_to_resume, agent_label)
 
     def _fetch_in_progress_issues_for_agent(self, state: OrchestratorState, agent_label: str) -> list[Issue]:
         """Fetch in-progress issues for a specific agent."""

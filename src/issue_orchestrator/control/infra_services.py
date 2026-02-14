@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from ..execution.label_store import LabelStore
-    from ..execution.queue_cache_store import QueueCacheStore
+    from ..ports.label_store import LabelStore
+    from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.goal_pilot_store import GoalPilotStore
     from ..ports.timeline_reader import TimelineReader
     from ..ports.timeline_writer import TimelineWriter

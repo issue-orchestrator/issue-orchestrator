@@ -221,6 +221,12 @@ class Scenario:
             assert all(e.name != name for e in ctx.events_since_baseline())
         return self._add_expectation(_assert)
 
+    def expect_no_timeline_event(self, name: EventName) -> Scenario:
+        def _assert(ctx: ScenarioContext) -> None:
+            assert all(e.event != name.value for e in ctx.timeline_since_baseline()), \
+                f"Unexpected timeline event {name.value} found"
+        return self._add_expectation(_assert)
+
     def expect_latest_event(
         self,
         name: EventName,

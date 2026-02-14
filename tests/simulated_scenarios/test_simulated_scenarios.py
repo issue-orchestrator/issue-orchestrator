@@ -359,7 +359,40 @@ def test_review_queue_approved_flow_updates_pr_labels(scenario_repo: Path):
         .expect_pr(created=True, draft=True) \
         .expect_pr_label("code-reviewed") \
         .expect_pr_lacks_label("needs-code-review") \
+        .expect_timeline_event(EventName.REVIEW_APPROVED) \
+        .expect_latest_timeline_event(
+            EventName.SESSION_COMPLETED,
+            predicate=lambda e: e.task == "code",
+        ) \
         .run()
+
+
+def test_review_session_does_not_emit_coding_events(scenario_repo: Path):
+    """Review approval emits review.approved, NOT session.completed with task=review."""
+    ctx = scenario("review_no_coding_events", scenario_repo) \
+        .coder(script("coder_complete.sh")) \
+        .reviewer(script("reviewer_approved.sh")) \
+        .review_exchange(mode="via-draft-pr") \
+        .wait_for(
+            lambda orch: (
+                orch.deps.repository_host.get_pr(100) is not None
+                and "code-reviewed" in orch.deps.repository_host.get_pr(100).labels
+            ),
+            max_ticks=12,
+        ) \
+        .expect_timeline_event(EventName.ISSUE_PR_CREATED) \
+        .expect_timeline_event(EventName.REVIEW_APPROVED) \
+        .expect_latest_timeline_event(
+            EventName.SESSION_COMPLETED,
+            predicate=lambda e: e.task == "code",
+        ) \
+        .run()
+    # Verify no SESSION_COMPLETED event has task="review"
+    review_completed = [
+        e for e in ctx.timeline_since_baseline()
+        if e.event == EventName.SESSION_COMPLETED.value and e.task == "review"
+    ]
+    assert not review_completed, "Review session should not emit SESSION_COMPLETED"
 
 
 def test_review_changes_requested_queues_rework(scenario_repo: Path):
@@ -396,6 +429,7 @@ def test_review_rework_then_approved(scenario_repo: Path):
         .expect_pr_label("code-reviewed") \
         .expect_pr_lacks_label("needs-rework") \
         .expect_review_feedback_written() \
+        .expect_timeline_event(EventName.REVIEW_CHANGES_REQUESTED) \
         .run()
 
 
