@@ -221,7 +221,13 @@ show_startup_info() {
 
 # --- Main ---
 stop_all_orchestrators
-# git_pull skipped — running from worktree for local dev
+
+# Pull latest code when running from the base repo (main branch).
+# Skip automatically in worktrees — they have their own branches.
+if [[ -z "$(cd "${ROOT_DIR}" && git rev-parse --show-superproject-working-tree 2>/dev/null)" ]]; then
+  git_pull
+fi
+
 ensure_venv
 ensure_deps
 ensure_port_free
