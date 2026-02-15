@@ -98,3 +98,34 @@ def test_blocks_cached_label_reads_in_control(tmp_path: Path) -> None:
         "        self.issue_tracker.get_issue_labels(1)\n"
     )
     assert _run(tmp_path, code, "src/issue_orchestrator/control/x.py") == 2
+
+
+def test_blocks_github_adapter_import_in_control(tmp_path: Path) -> None:
+    code = "from issue_orchestrator.adapters.github import GitHubAdapter\n"
+    assert _run(tmp_path, code, "src/issue_orchestrator/control/x.py") == 2
+
+
+def test_blocks_github_adapter_import_in_entrypoint_non_composition(tmp_path: Path) -> None:
+    code = "from issue_orchestrator.adapters.github import GitHubAdapter\n"
+    assert _run(tmp_path, code, "src/issue_orchestrator/entrypoints/cli.py") == 2
+
+
+def test_allows_github_adapter_import_in_bootstrap(tmp_path: Path) -> None:
+    code = "from issue_orchestrator.adapters.github import GitHubAdapter\n"
+    assert _run(tmp_path, code, "src/issue_orchestrator/entrypoints/bootstrap.py") == 0
+
+
+def test_allows_github_adapter_import_in_provider_factory(tmp_path: Path) -> None:
+    code = "from issue_orchestrator.adapters.github import GitHubAdapter\n"
+    assert _run(tmp_path, code, "src/issue_orchestrator/entrypoints/repository_host_factory.py") == 0
+
+
+def test_blocks_github_symbol_reference_in_control(tmp_path: Path) -> None:
+    code = (
+        "from typing import TYPE_CHECKING\n"
+        "if TYPE_CHECKING:\n"
+        "    from issue_orchestrator.adapters.github import GitHubAdapter\n"
+        "def f(x: GitHubAdapter) -> None:\n"
+        "    return None\n"
+    )
+    assert _run(tmp_path, code, "src/issue_orchestrator/control/x.py") == 2
