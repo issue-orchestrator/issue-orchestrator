@@ -10,7 +10,6 @@ gracefully when they are unavailable (e.g., headless servers, CI).
 from __future__ import annotations
 
 import logging
-import threading
 import webbrowser
 from pathlib import Path
 from typing import Any, TYPE_CHECKING, Callable
@@ -77,7 +76,7 @@ def start_tray(
     engine_status_fn: Callable[[], list[tuple[str, str]]],
     icon_image: Image.Image | None = None,
 ) -> Any:
-    """Start the system tray icon in a background thread.
+    """Start the system tray icon in detached mode.
 
     Returns the Icon instance so the caller can call ``icon.stop()`` on shutdown.
     """
@@ -86,13 +85,5 @@ def start_tray(
     image = icon_image or _load_icon()
     menu = _build_menu(dashboard_url, engine_status_fn)
     icon = _pystray.Icon("issue-orchestrator", image, "Issue Orchestrator", menu)
-
-    def _run() -> None:
-        try:
-            icon.run()
-        except Exception:
-            logger.debug("Tray icon event loop failed", exc_info=True)
-
-    thread = threading.Thread(target=_run, daemon=True)
-    thread.start()
+    icon.run_detached()
     return icon
