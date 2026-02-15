@@ -4,4 +4,14 @@ set -euo pipefail
 # Canonical local gate. Mirrors CI.
 # Validation signature optimization should make this fast when nothing changed.
 
+# Enforce dirty-tree policy from YAML before expensive validation.
+if [ -x ".venv/bin/python" ]; then
+  .venv/bin/python -m issue_orchestrator.entrypoints.cli_tools.prepush_check --dirty-only -v
+elif command -v python3 >/dev/null 2>&1; then
+  python3 -m issue_orchestrator.entrypoints.cli_tools.prepush_check --dirty-only -v
+else
+  echo "python3 not found; cannot run dirty-tree guard" >&2
+  exit 1
+fi
+
 make validate

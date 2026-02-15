@@ -33,7 +33,7 @@ def find_worktree_root() -> Path:
     return cwd
 
 
-DIRTY_CHECK_MODES = {"tracked", "unstaged", "off"}
+DIRTY_CHECK_MODES = {"tracked", "unstaged", "all", "off"}
 
 
 def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
@@ -68,10 +68,21 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
         if verbose:
             print(
                 "Invalid validation.pre_push_dirty_check value: "
-                f"{mode!r} (expected tracked|unstaged|off)"
+                f"{mode!r} (expected tracked|unstaged|all|off)"
             )
         return 1
     if mode == "off":
+        return None
+    if mode == "all":
+        working_copy = GitWorkingCopy()
+        if working_copy.has_uncommitted_changes(worktree):
+            if verbose:
+                print(
+                    "Working tree is dirty (tracked or untracked files); "
+                    "commit, add, or stash before pushing. "
+                    "Override with validation.pre_push_dirty_check."
+                )
+            return 1
         return None
 
     include_staged = mode == "tracked"
@@ -133,7 +144,7 @@ def _run_validation_gate(
     return 1
 
 
-def run_prepush_check(verbose: bool = False) -> int:
+def run_prepush_check(verbose: bool = False, dirty_only: bool = False) -> int:
     """Run pre-push validation check.
 
     This function:
@@ -145,6 +156,7 @@ def run_prepush_check(verbose: bool = False) -> int:
 
     Args:
         verbose: Whether to print status messages
+        dirty_only: If True, enforce only dirty-tree policy and skip validation command.
 
     Returns:
         Exit code (0 = passed, 1 = failed, 2 = error)
@@ -155,6 +167,11 @@ def run_prepush_check(verbose: bool = False) -> int:
     dirty_result = _run_dirty_guard(worktree, dirty_check, verbose)
     if dirty_result is not None:
         return dirty_result
+
+    if dirty_only:
+        if verbose:
+            print("Dirty-tree check passed")
+        return 0
 
     if not cmd:
         if verbose:
@@ -181,6 +198,11 @@ def main() -> None:
         action="store_true",
         help="Suppress all output",
     )
+    parser.add_argument(
+        "--dirty-only",
+        action="store_true",
+        help="Run only dirty-tree guard (skip validation command)",
+    )
 
     args = parser.parse_args()
 
@@ -188,7 +210,7 @@ def main() -> None:
         logging.disable(logging.CRITICAL)
 
     try:
-        exit_code = run_prepush_check(verbose=args.verbose)
+        exit_code = run_prepush_check(verbose=args.verbose, dirty_only=args.dirty_only)
         sys.exit(exit_code)
     except Exception as e:
         if not args.quiet:

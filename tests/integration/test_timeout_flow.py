@@ -92,6 +92,9 @@ class StubWorkingCopy:
     def has_uncommitted_changes(self, worktree: Path) -> bool:
         return False
 
+    def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool:
+        return False
+
 
 def _make_session(worktree: Path, timeout_minutes: int = 1) -> Session:
     issue = Issue(number=1, title="Timeout test", labels=["test"])

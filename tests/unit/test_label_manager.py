@@ -37,6 +37,8 @@ class _StubConfig:
         default_factory=_ProviderResilienceConfig,
     )
     review_keep_current_approach_label: str = "reviewer-keep-current-approach"
+    code_review_label: str | None = None
+    code_reviewed_label: str | None = None
 
 
 @pytest.fixture
@@ -250,11 +252,29 @@ class TestStateQueries:
 
     def test_requires_human(self, lm: LabelManager) -> None:
         assert lm.requires_human("needs-human") is True
-        assert lm.requires_human("needs-human") is True  # legacy
         assert lm.requires_human("blocked-failed") is False
+        assert lm.requires_human("in-progress") is False
 
     def test_requires_human_prefixed(self, plm: LabelManager) -> None:
-        assert plm.requires_human("bot:blocked-needs-human") is True
+        assert plm.requires_human("bot:needs-human") is True
+        assert plm.requires_human("needs-human") is True  # base name still matches after strip
+
+    def test_requires_human_custom_label(self) -> None:
+        """Custom label_needs_human config value is recognized."""
+        cfg = _StubConfig(label_needs_human="human-needed")
+        lm = LabelManager(cfg)  # type: ignore[arg-type]
+        assert lm.requires_human("human-needed") is True
+        assert lm.requires_human("needs-human") is False  # default no longer matches
+        assert lm.requires_human_any(["human-needed", "bug"]) is True
+        assert lm.requires_human_any(["needs-human", "bug"]) is False
+
+    def test_requires_human_custom_label_prefixed(self) -> None:
+        """Custom label_needs_human with prefix is recognized."""
+        cfg = _StubConfig(label_needs_human="human-needed", label_prefix="bot")
+        lm = LabelManager(cfg)  # type: ignore[arg-type]
+        assert lm.requires_human("bot:human-needed") is True
+        assert lm.requires_human("human-needed") is True  # base name matches after strip
+        assert lm.requires_human("needs-human") is False  # old default doesn't match
 
     def test_requires_human_any(self, lm: LabelManager) -> None:
         assert lm.requires_human_any(["needs-human", "bug"]) is True
@@ -343,3 +363,26 @@ class TestToLabelConfigDict:
         assert d["blocked"] == "bot:blocked"
         assert d["in_progress"] == "bot:in-progress"
         assert d["code_reviewed"] == "bot:code-reviewed"
+
+    def test_custom_review_labels(self) -> None:
+        """Custom code_review_label and code_reviewed_label are used."""
+        cfg = _StubConfig(
+            code_review_label="review-me",
+            code_reviewed_label="reviewed-ok",
+        )
+        lm = LabelManager(cfg)  # type: ignore[arg-type]
+        d = lm.to_label_config_dict()
+        assert d["code_review"] == "review-me"
+        assert d["code_reviewed"] == "reviewed-ok"
+
+    def test_custom_review_labels_prefixed(self) -> None:
+        """Custom review labels with prefix are resolved correctly."""
+        cfg = _StubConfig(
+            code_review_label="review-me",
+            code_reviewed_label="reviewed-ok",
+            label_prefix="bot",
+        )
+        lm = LabelManager(cfg)  # type: ignore[arg-type]
+        d = lm.to_label_config_dict()
+        assert d["code_review"] == "bot:review-me"
+        assert d["code_reviewed"] == "bot:reviewed-ok"

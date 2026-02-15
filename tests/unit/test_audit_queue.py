@@ -76,11 +76,11 @@ class TestBlockingLabelFiltering:
         assert "blocked-failed" in entry.detail
 
     def test_blocked_needs_human_label_returns_needs_human(self, sample_config):
-        """Issue with 'blocked-needs-human' label should return NEEDS_HUMAN reason."""
+        """Issue with 'needs-human' label should return NEEDS_HUMAN reason."""
         issue = Issue(
             number=1,
             title="Needs human issue",
-            labels=["blocked-needs-human", "agent:backend"],
+            labels=["needs-human", "agent:backend"],
             body="",
         )
 
@@ -93,7 +93,7 @@ class TestBlockingLabelFiltering:
         )
 
         assert entry.status == SkipReason.NEEDS_HUMAN
-        assert "blocked-needs-human" in entry.detail
+        assert "needs-human" in entry.detail
 
     def test_blocked_cross_milestone_label_skips_issue(self, sample_config):
         """Issue with 'blocked-cross-milestone' label should be skipped."""

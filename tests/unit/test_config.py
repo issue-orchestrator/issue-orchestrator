@@ -2416,6 +2416,24 @@ triage:
         errors = config.validate()
         assert "triage.priority must be a tier like 'P0'..'P9'" in errors
 
+
+class TestValidationConfig:
+    """Tests for validation.* configuration."""
+
+    def test_pre_push_dirty_check_all_is_valid(self):
+        config = Config()
+        config.validation.pre_push_dirty_check = "all"
+
+        errors = config.validate()
+        assert not any("validation.pre_push_dirty_check" in err for err in errors)
+
+    def test_pre_push_dirty_check_invalid_fails_validation(self):
+        config = Config()
+        config.validation.pre_push_dirty_check = "invalid-mode"
+
+        errors = config.validate()
+        assert "validation.pre_push_dirty_check must be one of: tracked, unstaged, all, off" in errors
+
 class TestConfigSectionErrors:
     """Test clear error messages for invalid config sections."""
 

@@ -110,6 +110,9 @@ class StubWorkingCopy:
     def has_uncommitted_changes(self, worktree: Path) -> bool:
         return False
 
+    def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool:
+        return False
+
     def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
         return []
 

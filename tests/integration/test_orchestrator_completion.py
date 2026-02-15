@@ -99,6 +99,7 @@ def mock_git_adapter():
     adapter = MagicMock()
     adapter.get_current_branch = Mock(return_value="issue-123")
     adapter.has_uncommitted_changes = Mock(return_value=False)
+    adapter.has_tracked_changes = Mock(return_value=False)
     adapter.push = Mock(return_value=MagicMock(success=True, message="Pushed"))
     adapter.rebase_on_branch = Mock(return_value=MagicMock(success=True, message="Rebased"))
     adapter.create_branch_from_current = Mock()
