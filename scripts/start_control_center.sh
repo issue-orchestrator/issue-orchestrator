@@ -219,12 +219,24 @@ show_startup_info() {
   echo "  Commit: ${commit_sha}"
 }
 
+is_linked_worktree() {
+  # In a linked worktree, --git-dir points to .git/worktrees/<name>
+  # while --git-common-dir points to the shared base .git directory.
+  local git_dir
+  local git_common_dir
+  git_dir=$(cd "${ROOT_DIR}" && git rev-parse --path-format=absolute --git-dir 2>/dev/null || echo "")
+  git_common_dir=$(cd "${ROOT_DIR}" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || echo "")
+
+  [[ -n "${git_dir}" && -n "${git_common_dir}" && "${git_dir}" != "${git_common_dir}" ]]
+}
+
 # --- Main ---
 stop_all_orchestrators
 
-# Pull latest code when running from the base repo (main branch).
-# Skip automatically in worktrees — they have their own branches.
-if [[ -z "$(cd "${ROOT_DIR}" && git rev-parse --show-superproject-working-tree 2>/dev/null)" ]]; then
+# Pull latest code only when running from the base repo on main/master.
+if is_linked_worktree; then
+  echo "=== Skipping git pull (linked worktree detected) ==="
+else
   git_pull
 fi
 
@@ -233,7 +245,7 @@ ensure_deps
 ensure_port_free
 show_startup_info
 
-# Use unified entry point - it handles dashboard lifecycle
+# Start control center entrypoint directly for deterministic startup.
 # IO_DEV disables static file caching so CSS/JS changes are visible immediately
 export IO_DEV=1
-exec "${VENV_PATH}/bin/issue-orchestrator" "$@"
+exec "${VENV_PATH}/bin/python" -m issue_orchestrator.entrypoints.control_center --port "${PORT}" "$@"
