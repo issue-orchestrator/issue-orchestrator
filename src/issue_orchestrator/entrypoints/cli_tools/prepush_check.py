@@ -133,7 +133,7 @@ def _run_validation_gate(
     return 1
 
 
-def run_prepush_check(verbose: bool = False) -> int:
+def run_prepush_check(verbose: bool = False, dirty_only: bool = False) -> int:
     """Run pre-push validation check.
 
     This function:
@@ -145,6 +145,7 @@ def run_prepush_check(verbose: bool = False) -> int:
 
     Args:
         verbose: Whether to print status messages
+        dirty_only: If True, enforce only dirty-tree policy and skip validation command.
 
     Returns:
         Exit code (0 = passed, 1 = failed, 2 = error)
@@ -155,6 +156,11 @@ def run_prepush_check(verbose: bool = False) -> int:
     dirty_result = _run_dirty_guard(worktree, dirty_check, verbose)
     if dirty_result is not None:
         return dirty_result
+
+    if dirty_only:
+        if verbose:
+            print("Dirty-tree check passed")
+        return 0
 
     if not cmd:
         if verbose:
@@ -181,6 +187,11 @@ def main() -> None:
         action="store_true",
         help="Suppress all output",
     )
+    parser.add_argument(
+        "--dirty-only",
+        action="store_true",
+        help="Run only dirty-tree guard (skip validation command)",
+    )
 
     args = parser.parse_args()
 
@@ -188,7 +199,7 @@ def main() -> None:
         logging.disable(logging.CRITICAL)
 
     try:
-        exit_code = run_prepush_check(verbose=args.verbose)
+        exit_code = run_prepush_check(verbose=args.verbose, dirty_only=args.dirty_only)
         sys.exit(exit_code)
     except Exception as e:
         if not args.quiet:

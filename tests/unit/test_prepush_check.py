@@ -4,7 +4,6 @@ import pytest
 import tempfile
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
 
 from issue_orchestrator.entrypoints.cli_tools.prepush_check import (
     load_validation_cmd,
@@ -308,5 +307,51 @@ validation:
             captured = capsys.readouterr()
             assert result == 1
             assert "Invalid validation.pre_push_dirty_check value" in captured.out
+        finally:
+            os.chdir(orig_cwd)
+
+    def test_dirty_only_skips_validation_command(self, temp_worktree):
+        """Dirty-only mode should not execute validation command."""
+        import os
+
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        marker_file = temp_worktree / "validation_ran"
+        config_path = config_dir / "default.yaml"
+        config_path.write_text(f"""
+validation:
+  cmd: "touch {marker_file} && exit 1"
+  pre_push_dirty_check: "tracked"
+""")
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=False, dirty_only=True)
+            assert result == 0
+            assert not marker_file.exists()
+        finally:
+            os.chdir(orig_cwd)
+
+    def test_dirty_only_still_blocks_when_dirty(self, temp_worktree):
+        """Dirty-only mode must still enforce dirty-tree policy."""
+        import os
+
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "echo 'ok'"
+  pre_push_dirty_check: "tracked"
+""")
+
+        (temp_worktree / "README.md").write_text("dirty")
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=False, dirty_only=True)
+            assert result == 1
         finally:
             os.chdir(orig_cwd)

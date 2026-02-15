@@ -92,6 +92,7 @@ class GitAdapter(Protocol):
     def list_branch_names(self, worktree: Path) -> list[str]: ...
     def get_current_branch(self, worktree: Path) -> str | None: ...
     def has_uncommitted_changes(self, worktree: Path) -> bool: ...
+    def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool: ...
     def default_branch(self, repo_root: Path, remote: str = "origin") -> str: ...
 
 
@@ -292,13 +293,39 @@ class CompletionProcessor:
             if branch in ("main", "master"):
                 return False, f"Cannot push: on protected branch '{branch}'"
 
-        # Check for uncommitted changes if push is requested
+        # Enforce dirty-tree policy from YAML if push is requested
         if RequestedAction.PUSH_BRANCH in record.requested_actions:
-            if self.git_adapter.has_uncommitted_changes(worktree):
-                logger.warning(
-                    "Worktree has uncommitted changes, will push anyway"
-                )
-                # This is a warning, not a failure - agent may have left uncommitted changes
+            ok, reason = self._check_dirty_policy(worktree)
+            if not ok:
+                return False, reason
+
+        return True, ""
+
+    def _check_dirty_policy(self, worktree: Path) -> tuple[bool, str]:
+        """Apply validation.pre_push_dirty_check policy before push actions."""
+        mode = (
+            self._config.validation.pre_push_dirty_check
+            if self._config is not None
+            else "off"
+        )
+
+        if mode == "off":
+            return True, ""
+        if mode == "tracked":
+            dirty = self.git_adapter.has_tracked_changes(worktree, include_staged=True)
+        elif mode == "unstaged":
+            dirty = self.git_adapter.has_tracked_changes(worktree, include_staged=False)
+        else:
+            return False, (
+                "Invalid validation.pre_push_dirty_check value: "
+                f"{mode!r} (expected tracked|unstaged|off)"
+            )
+
+        if dirty:
+            return False, (
+                "Tracked files are dirty; commit or stash before pushing. "
+                "Override with validation.pre_push_dirty_check."
+            )
 
         return True, ""
 

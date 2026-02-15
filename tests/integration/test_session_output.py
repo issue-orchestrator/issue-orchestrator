@@ -76,6 +76,9 @@ class DummyGitAdapter:
     def has_uncommitted_changes(self, worktree: Path) -> bool:
         return False
 
+    def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool:
+        return False
+
 
 def _write_completion(path: Path, record: CompletionRecord) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
