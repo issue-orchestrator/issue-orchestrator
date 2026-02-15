@@ -1097,9 +1097,37 @@ class TestCompletionProcessorDirtyPolicy:
         result = processor.process(worktree, issue_number=123, issue_title="Test")
 
         assert not result.success
-        assert "tracked files are dirty" in result.message.lower()
+        assert "working tree is dirty" in result.message.lower()
         mock_git_adapter.push.assert_not_called()
         mock_pr_adapter.add_comment.assert_called_once()
+
+    def test_push_rejected_when_all_mode_and_untracked_present(
+        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
+    ):
+        config = Config()
+        config.validation.pre_push_dirty_check = "all"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            event_bus=event_bus,
+            session_output=FileSystemSessionOutput(),
+            label_config={},
+            config=config,
+        )
+        mock_git_adapter.has_uncommitted_changes.return_value = True
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Test")
+
+        assert not result.success
+        assert "working tree is dirty" in result.message.lower()
+        mock_git_adapter.push.assert_not_called()
 
     def test_push_allowed_when_dirty_check_off(
         self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion

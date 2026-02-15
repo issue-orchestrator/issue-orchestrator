@@ -287,6 +287,29 @@ validation:
         finally:
             os.chdir(orig_cwd)
 
+    def test_blocks_when_all_mode_with_untracked_files(self, temp_worktree):
+        """Mode 'all' blocks when untracked files are present."""
+        import os
+
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "echo 'ok'"
+  pre_push_dirty_check: "all"
+""")
+
+        (temp_worktree / "new_untracked.txt").write_text("new file")
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=False)
+            assert result == 1
+        finally:
+            os.chdir(orig_cwd)
+
     def test_rejects_invalid_dirty_mode(self, temp_worktree, capsys):
         """Test invalid dirty mode exits 1 and reports error when verbose."""
         import os

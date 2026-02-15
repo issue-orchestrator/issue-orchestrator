@@ -33,7 +33,7 @@ def find_worktree_root() -> Path:
     return cwd
 
 
-DIRTY_CHECK_MODES = {"tracked", "unstaged", "off"}
+DIRTY_CHECK_MODES = {"tracked", "unstaged", "all", "off"}
 
 
 def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
@@ -68,10 +68,21 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
         if verbose:
             print(
                 "Invalid validation.pre_push_dirty_check value: "
-                f"{mode!r} (expected tracked|unstaged|off)"
+                f"{mode!r} (expected tracked|unstaged|all|off)"
             )
         return 1
     if mode == "off":
+        return None
+    if mode == "all":
+        working_copy = GitWorkingCopy()
+        if working_copy.has_uncommitted_changes(worktree):
+            if verbose:
+                print(
+                    "Working tree is dirty (tracked or untracked files); "
+                    "commit, add, or stash before pushing. "
+                    "Override with validation.pre_push_dirty_check."
+                )
+            return 1
         return None
 
     include_staged = mode == "tracked"

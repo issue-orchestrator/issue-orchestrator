@@ -315,15 +315,17 @@ class CompletionProcessor:
             dirty = self.git_adapter.has_tracked_changes(worktree, include_staged=True)
         elif mode == "unstaged":
             dirty = self.git_adapter.has_tracked_changes(worktree, include_staged=False)
+        elif mode == "all":
+            dirty = self.git_adapter.has_uncommitted_changes(worktree)
         else:
             return False, (
                 "Invalid validation.pre_push_dirty_check value: "
-                f"{mode!r} (expected tracked|unstaged|off)"
+                f"{mode!r} (expected tracked|unstaged|all|off)"
             )
 
         if dirty:
             return False, (
-                "Tracked files are dirty; commit or stash before pushing. "
+                "Working tree is dirty; commit/add/stash before pushing. "
                 "Override with validation.pre_push_dirty_check."
             )
 

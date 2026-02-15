@@ -266,7 +266,7 @@ class ValidationConfig:
     """
     cmd: Optional[str] = None  # Command to run (e.g., "make validate")
     timeout_seconds: int = 300  # Default 5 minutes
-    pre_push_dirty_check: str = "tracked"  # "tracked" | "unstaged" | "off"
+    pre_push_dirty_check: str = "tracked"  # "tracked" | "unstaged" | "all" | "off"
     coverage_guardrail: CoverageGuardrailConfig = field(default_factory=CoverageGuardrailConfig)
 
 
@@ -2205,6 +2205,10 @@ class Config:
 
         if self.triage.priority is not None and not re.fullmatch(r"P\d", self.triage.priority.strip()):
             errors.append("triage.priority must be a tier like 'P0'..'P9'")
+        if self.validation.pre_push_dirty_check not in {"tracked", "unstaged", "all", "off"}:
+            errors.append(
+                "validation.pre_push_dirty_check must be one of: tracked, unstaged, all, off"
+            )
 
         return errors
 
