@@ -22,6 +22,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _resolve_repo_python(repo_root: Path) -> str:
+    """Resolve the Python interpreter from the target repo's venv.
+
+    Falls back to sys.executable if no venv exists at repo_root.
+    """
+    venv_python = repo_root / ".venv" / "bin" / "python"
+    if venv_python.exists():
+        return str(venv_python)
+    return sys.executable
+
+
 def get_e2e_role(
     e2e_config: "E2EConfig",
     instance_id: str | None = None,
@@ -119,9 +130,14 @@ class E2ERunnerManager:
         if stop_on_first_failure and "-x" not in effective_pytest_args:
             effective_pytest_args.append("-x")
 
+        # Use the target repo's venv Python, not the parent process's interpreter.
+        # When the control center runs from a worktree, sys.executable points to
+        # that worktree's venv which may lack dependencies needed by the E2E tests.
+        python = _resolve_repo_python(repo_root)
+
         # Build command
         cmd = [
-            sys.executable,
+            python,
             "-m",
             "issue_orchestrator.entrypoints.e2e_worker",
             "--repo-root",
@@ -287,8 +303,9 @@ class E2ERunnerManager:
             effective_pytest_args.append("-x")
 
         # Build command with --deselect for passed tests
+        python = _resolve_repo_python(repo_root)
         cmd = [
-            sys.executable,
+            python,
             "-m",
             "issue_orchestrator.entrypoints.e2e_worker",
             "--repo-root",
