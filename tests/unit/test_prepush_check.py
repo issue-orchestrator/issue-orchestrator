@@ -378,3 +378,58 @@ validation:
             assert result == 1
         finally:
             os.chdir(orig_cwd)
+
+    def test_verbose_output_lists_dirty_files(self, temp_worktree, capsys):
+        """Verbose dirty guard output should include dirty file paths."""
+        import os
+
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "echo 'ok'"
+  pre_push_dirty_check: "tracked"
+""")
+
+        (temp_worktree / "README.md").write_text("dirty")
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=True)
+            captured = capsys.readouterr()
+            assert result == 1
+            assert "Dirty files (showing up to 20):" in captured.out
+            assert "README.md" in captured.out
+        finally:
+            os.chdir(orig_cwd)
+
+    def test_verbose_output_clips_dirty_file_list(self, temp_worktree, capsys):
+        """Dirty file listing should be clipped with ellipsis for long lists."""
+        import os
+
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "echo 'ok'"
+  pre_push_dirty_check: "all"
+""")
+
+        for i in range(25):
+            (temp_worktree / f"new_{i:02}.txt").write_text("x")
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=True)
+            captured = capsys.readouterr()
+            assert result == 1
+            assert "Dirty files (showing up to 20):" in captured.out
+            assert "new_00.txt" in captured.out
+            assert "... and " in captured.out
+            assert " more" in captured.out
+        finally:
+            os.chdir(orig_cwd)

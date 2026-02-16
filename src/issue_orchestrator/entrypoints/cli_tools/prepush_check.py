@@ -34,6 +34,7 @@ def find_worktree_root() -> Path:
 
 
 DIRTY_CHECK_MODES = {"tracked", "unstaged", "all", "off"}
+DIRTY_FILE_LIST_LIMIT = 20
 
 
 def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
@@ -62,6 +63,61 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
     return None, 0, dirty_check
 
 
+def _git_name_only(worktree: Path, args: list[str]) -> list[str]:
+    """Run a git command and return non-empty output lines."""
+    runner = LocalCommandRunner()
+    result = runner.run(
+        ["git", *args],
+        cwd=worktree,
+    )
+    if result.returncode != 0:
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _collect_dirty_files(worktree: Path, mode: str) -> list[str]:
+    """Collect dirty files for display in guard failure output."""
+    if mode == "all":
+        runner = LocalCommandRunner()
+        result = runner.run(
+            ["git", "status", "--porcelain"],
+            cwd=worktree,
+        )
+        if result.returncode != 0:
+            return []
+        files: list[str] = []
+        for line in result.stdout.splitlines():
+            if not line:
+                continue
+            path = line[3:] if len(line) >= 4 else line
+            if " -> " in path:
+                path = path.split(" -> ", 1)[1]
+            files.append(path.strip().strip('"'))
+        return sorted(set(files))
+
+    if mode == "tracked":
+        unstaged = _git_name_only(worktree, ["diff", "--name-only"])
+        staged = _git_name_only(worktree, ["diff", "--cached", "--name-only"])
+        return sorted(set([*unstaged, *staged]))
+
+    if mode == "unstaged":
+        return sorted(set(_git_name_only(worktree, ["diff", "--name-only"])))
+
+    return []
+
+
+def _print_dirty_files(worktree: Path, mode: str) -> None:
+    """Print dirty file list, clipped for readability."""
+    files = _collect_dirty_files(worktree, mode)
+    if not files:
+        return
+    print(f"Dirty files (showing up to {DIRTY_FILE_LIST_LIMIT}):")
+    for path in files[:DIRTY_FILE_LIST_LIMIT]:
+        print(f"  - {path}")
+    if len(files) > DIRTY_FILE_LIST_LIMIT:
+        print(f"  ... and {len(files) - DIRTY_FILE_LIST_LIMIT} more")
+
+
 def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
     """Return exit code if dirty guard should block, else None."""
     if mode not in DIRTY_CHECK_MODES:
@@ -82,6 +138,7 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
                     "commit, add, or stash before pushing. "
                     "Override with validation.pre_push_dirty_check."
                 )
+                _print_dirty_files(worktree, mode)
             return 1
         return None
 
@@ -94,6 +151,7 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
                 "Ignored files are allowed. "
                 "Override with validation.pre_push_dirty_check."
             )
+            _print_dirty_files(worktree, mode)
         return 1
     return None
 

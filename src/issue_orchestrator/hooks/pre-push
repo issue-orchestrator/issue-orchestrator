@@ -5,11 +5,21 @@
 set -e
 
 # Enforce dirty-tree policy from YAML before any push-time checks.
-if command -v python3 &> /dev/null; then
-    if ! python3 -m issue_orchestrator.entrypoints.cli_tools.prepush_check --dirty-only -v 2>/dev/null; then
-        echo "ERROR: Dirty-tree guard failed." >&2
-        exit 1
-    fi
+PYTHON_BIN=""
+if [ -x ".venv/bin/python" ]; then
+    PYTHON_BIN=".venv/bin/python"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+fi
+
+if [ -z "$PYTHON_BIN" ]; then
+    echo "ERROR: Python not found; cannot run dirty-tree guard." >&2
+    exit 1
+fi
+
+if ! "$PYTHON_BIN" -m issue_orchestrator.entrypoints.cli_tools.prepush_check --dirty-only -v; then
+    echo "ERROR: Dirty-tree guard failed." >&2
+    exit 1
 fi
 
 # ============================================================================
