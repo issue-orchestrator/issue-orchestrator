@@ -732,8 +732,18 @@ Timestamp: {self._now_iso()}
         if not lines:
             return None
 
-        issue_token = f"issue-{issue_number}"
-        session_token = f"session_id={session_name}"
+        issue_patterns = (
+            re.compile(rf"\[issue-{issue_number}\]"),
+            re.compile(rf"\bissue={issue_number}\b"),
+            re.compile(rf"\bissue_number={issue_number}\b"),
+            re.compile(rf"\bissue_key=[^\s:]+:{issue_number}\b"),
+            re.compile(rf"\bissue-{issue_number}\b"),
+            re.compile(rf"/issues/{issue_number}\b"),
+        )
+        session_patterns = (
+            re.compile(rf"\bsession={re.escape(session_name)}\b"),
+            re.compile(rf"\bsession_id={re.escape(session_name)}\b"),
+        )
 
         # Try to find session start by run_id marker
         segment = lines
@@ -750,11 +760,13 @@ Timestamp: {self._now_iso()}
         if not found_marker and started_at:
             segment = self._filter_lines_by_timestamp(lines, started_at)
 
-        scoped = [
-            line
-            for line in segment[-2000:]
-            if issue_token in line or session_token in line
-        ]
+        scoped = []
+        for line in segment[-2000:]:
+            if any(pattern.search(line) for pattern in session_patterns):
+                scoped.append(line)
+                continue
+            if any(pattern.search(line) for pattern in issue_patterns):
+                scoped.append(line)
         if not scoped:
             scoped = lines[-max_lines:]
 

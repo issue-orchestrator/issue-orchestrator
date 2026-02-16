@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,26 @@ logger = logging.getLogger(__name__)
 
 # Global dashboard PID file location
 DASHBOARD_PID_FILE = Path.home() / ".config" / "issue-orchestrator" / "dashboard.pid"
+
+
+def _is_port_available(port: int) -> bool:
+    """Return True when localhost:port can be bound for a new server."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def _find_available_dashboard_port(default_port: int = 19080, max_offset: int = 20) -> int:
+    """Pick the first available dashboard port, preferring default_port."""
+    for candidate in range(default_port, default_port + max_offset + 1):
+        if _is_port_available(candidate):
+            return candidate
+    # Fail-safe fallback: keep deterministic default if no free port found in window.
+    return default_port
 
 
 @dataclass
@@ -415,8 +436,9 @@ def get_best_entry_point(state: SystemState) -> dict[str, Any]:
         }
 
     # Need to start dashboard
+    start_port = _find_available_dashboard_port(default_port=19080)
     return {
         "action": "start_dashboard",
-        "port": 19080,  # Default dashboard port
+        "port": start_port,
         "repo_path": active_repo_path,
     }

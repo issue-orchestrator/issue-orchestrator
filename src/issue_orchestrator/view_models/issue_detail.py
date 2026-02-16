@@ -377,6 +377,19 @@ _OUTCOME_EVENTS = frozenset({
     "issue.completed",
 })
 
+_CYCLE_ANCHOR_EVENTS = frozenset({
+    "session.started",
+    "rework.started",
+    "rework.launching",
+    "review.started",
+    "triage.launching",
+})
+
+
+def _has_cycle_anchor(events: list[dict[str, Any]]) -> bool:
+    """Return True when events contain a cycle-starting anchor."""
+    return any(str(evt.get("event") or "") in _CYCLE_ANCHOR_EVENTS for evt in events)
+
 
 def filter_last_run_cycles(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Filter cycles to only those from the latest lifecycle.
@@ -446,10 +459,19 @@ def _build_signal_journey_cycles(
             coding_cycle = 0
         groups.setdefault(coding_cycle, []).append((event, lifecycle))
 
+    has_anchored_group = any(
+        _has_cycle_anchor([event for event, _ in group_items])
+        for group_items in groups.values()
+    )
+
     cycles: list[dict[str, Any]] = []
     for cycle_num in sorted(groups):
         items = groups[cycle_num]
         cycle_events = [e for e, _lc in items]
+        # Ignore preamble buckets (e.g., claim.acquired) when there are
+        # no cycle anchors in this group and at least one anchored group exists.
+        if not _has_cycle_anchor(cycle_events) and has_anchored_group:
+            continue
         lifecycle = items[0][1] if items else 1
         cycles.append(_finalize_cycle_from_events(
             len(cycles) + 1, lifecycle, cycle_num,
@@ -599,6 +621,7 @@ def _build_annotated_journey_cycles(
     annotated = _annotate_lifecycle(events)
 
     cycles: list[dict[str, Any]] = []
+    orphan_events: list[tuple[dict[str, Any], int, int]] = []
     current_cycle_events: list[tuple[dict[str, Any], int, int]] = []
     current_lifecycle = 0
     current_iteration = 0
@@ -609,6 +632,12 @@ def _build_annotated_journey_cycles(
         if event_name in _JOURNEY_SKIP_EVENTS:
             continue
         if any(event_name.startswith(p) for p in _JOURNEY_SKIP_PREFIXES):
+            continue
+
+        # Events before the first true iteration (e.g., claim.acquired) are
+        # kept only as a fallback when no real cycles exist.
+        if lifecycle <= 0 or iteration <= 0:
+            orphan_events.append((event, lifecycle, iteration))
             continue
 
         if (lifecycle != current_lifecycle or iteration != current_iteration) and (lifecycle > 0 and iteration > 0):
@@ -631,6 +660,13 @@ def _build_annotated_journey_cycles(
         cycles.append(_finalize_cycle(
             len(cycles) + 1, current_lifecycle, current_iteration,
             current_cycle_events, today, context,
+        ))
+
+    # Backward-compatible fallback for historical logs that contain no
+    # cycle anchors at all (e.g., review-only artifacts).
+    if not cycles and orphan_events:
+        cycles.append(_finalize_cycle(
+            1, 0, 0, orphan_events, today, context,
         ))
 
     for i, cycle in enumerate(cycles):

@@ -19,6 +19,7 @@ import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
 from typing import Any
 
 import uvicorn
@@ -125,6 +126,11 @@ def main() -> int:
         help="Enable debug logging",
     )
     parser.add_argument(
+        "--debug-http",
+        action="store_true",
+        help="Enable HTTP access logs",
+    )
+    parser.add_argument(
         "--no-browser",
         action="store_true",
         help="Don't open browser automatically",
@@ -136,6 +142,9 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+
+    # Default engine target repo to where Control Center was launched from.
+    os.environ.setdefault("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", str(Path.cwd().resolve()))
 
     # Configure logging
     log_level = logging.DEBUG if args.debug else logging.INFO
@@ -180,6 +189,7 @@ def main() -> int:
             host=args.host,
             port=args.port,
             log_level="info" if not args.debug else "debug",
+            access_log=args.debug_http,
         )
         return 0
     except KeyboardInterrupt:

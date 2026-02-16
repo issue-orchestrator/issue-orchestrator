@@ -1816,6 +1816,7 @@
             transition: transform 0.05s;
         }
     </style>
+    <link rel="stylesheet" href="/static/css/ui_primitives.css">
 </head>
 <body>
     <div class="app-layout">
@@ -2663,6 +2664,7 @@
             theme: localStorage.getItem('theme') || 'system',
             dashboardStatus: null
         };
+        const pendingRepoStarts = new Set();
 
         const DISCOVERED_STALE_MS = 5 * 60 * 1000;
 
@@ -3006,7 +3008,14 @@
                 }
             }
 
-            // Fall back to first running, then first registered
+            // Fall back to current launch directory repo when available.
+            const currentDirRepo = state.repos.find(r => r.is_current_dir);
+            if (currentDirRepo) {
+                selectRepo(currentDirRepo.path, null, 'registered');
+                return;
+            }
+
+            // Then first running, then first registered.
             const running = state.repos.find(r => {
                 const s = r.status || {};
                 return s.state === 'running' || s.state === 'partial';
@@ -3372,6 +3381,10 @@
             return !repo.configs || repo.configs.length === 0;
         }
 
+        function isRepoStartPending(path) {
+            return pendingRepoStarts.has(path);
+        }
+
         function renderRepos() {
             const container = document.getElementById('reposContent');
             const discovered = state.discoveredRepos || [];
@@ -3497,14 +3510,15 @@
             if (isNeedsSetup) {
                 actions = `<button class="btn btn-primary" data-action="setup" data-path="${escapeHtml(repo.path)}">Setup</button>`;
             } else if (isNotRunning) {
+                const pendingStart = isRepoStartPending(repo.path);
                 actions = `
-                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}" disabled>Open engine</button>
-                    <button class="btn btn-primary" data-action="start" data-path="${escapeHtml(repo.path)}">Start engine</button>
-                    <button class="btn" data-action="start-paused" data-path="${escapeHtml(repo.path)}">Start paused</button>
+                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}" disabled>Open dashboard</button>
+                    <button class="btn btn-primary" data-action="start" data-path="${escapeHtml(repo.path)}" ${pendingStart ? 'disabled' : ''}>${pendingStart ? 'Starting...' : 'Start engine'}</button>
+                    <button class="btn" data-action="start-paused" data-path="${escapeHtml(repo.path)}" ${pendingStart ? 'disabled' : ''}>${pendingStart ? 'Starting paused...' : 'Start paused'}</button>
                 `;
             } else {
                 actions = `
-                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open engine</button>
+                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open dashboard</button>
                     <button class="btn" data-action="${isPaused ? 'resume' : 'pause'}" data-path="${escapeHtml(repo.path)}">${isPaused ? 'Resume engine' : 'Pause engine'}</button>
                     <button class="btn btn-danger btn-sm" data-action="stop" data-path="${escapeHtml(repo.path)}">Stop engine</button>
                 `;
@@ -3730,10 +3744,11 @@
                     : state.theme;
                 iframe.src = `http://localhost:${port}/?embedded=1&theme=${encodeURIComponent(iframeTheme)}`;
             } else {
+                const pendingStart = isRepoStartPending(repo.path);
                 loading.innerHTML = `
                     <p>Repository engine is not running.</p>
-                    <button class="btn btn-primary btn-sm" data-action="start" data-path="${escapeHtml(repo.path)}">Start engine</button>
-                    <button class="btn btn-sm" data-action="start-paused" data-path="${escapeHtml(repo.path)}">Start paused</button>
+                    <button class="btn btn-primary btn-sm" data-action="start" data-path="${escapeHtml(repo.path)}" ${pendingStart ? 'disabled' : ''}>${pendingStart ? 'Starting...' : 'Start engine'}</button>
+                    <button class="btn btn-sm" data-action="start-paused" data-path="${escapeHtml(repo.path)}" ${pendingStart ? 'disabled' : ''}>${pendingStart ? 'Starting paused...' : 'Start paused'}</button>
                 `;
                 loading.style.display = 'block';
                 // Attach action handlers to the inline buttons
@@ -3800,7 +3815,16 @@
         }
 
         async function startRepo(path, configName = null, startPaused = false) {
+            if (pendingRepoStarts.has(path)) {
+                return;
+            }
+            pendingRepoStarts.add(path);
             try {
+                if (state.currentView === 'repositories') {
+                    renderRepos();
+                } else if (state.currentView === 'activity' && state.activeRepo?.path === path) {
+                    loadActivityView(path);
+                }
                 // Determine config to use:
                 // 1. Explicit configName parameter
                 // 2. Active repo's config (if same path)
@@ -3846,6 +3870,13 @@
                 }
             } catch (error) {
                 showToast(error.message, 'error');
+            } finally {
+                pendingRepoStarts.delete(path);
+                if (state.currentView === 'repositories') {
+                    renderRepos();
+                } else if (state.currentView === 'activity' && state.activeRepo?.path === path) {
+                    loadActivityView(path);
+                }
             }
         }
 

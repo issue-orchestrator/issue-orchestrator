@@ -79,7 +79,15 @@ def create_mock_orchestrator():
     lm.blocked = "blocked"
     lm.needs_human = "blocked-needs-human"
     lm.blocked_failed = "blocked-failed"
+    lm.pr_pending = "pr-pending"
     lm.in_progress = "in-progress"
+    lm.get_blocking = MagicMock(
+        side_effect=lambda labels: [
+            label for label in labels
+            if label in {"blocked", "blocked-needs-human", "blocked-failed"}
+        ],
+    )
+    lm.is_pr_pending = MagicMock(side_effect=lambda labels: "pr-pending" in labels)
 
     # Mock event context for snapshot (use public property)
     mock.event_context = MagicMock()
@@ -306,6 +314,77 @@ class TestControlCenterTemplate:
         assert 'id="sidebarRepoList"' not in body
         assert "nav-repo-list" not in body
         assert "nav-repo-item" not in body
+
+
+class TestControlCenterRepoContext:
+    """Control Center should prefer the repo root it was launched from."""
+
+    def test_control_repos_prioritizes_preferred_repo(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_supervisor: MagicMock,
+    ) -> None:
+        from issue_orchestrator.infra import repo_registry
+
+        preferred = tmp_path / "preferred"
+        other = tmp_path / "other"
+        preferred.mkdir()
+        other.mkdir()
+
+        repos = [
+            SimpleNamespace(
+                path=str(other),
+                name="other",
+                added_at="2026-01-01T00:00:00+00:00",
+                selected_config="default.yaml",
+                health=None,
+            )
+        ]
+
+        def fake_list_repos():
+            return list(repos)
+
+        def fake_add_repo(path: str):
+            repos.append(
+                SimpleNamespace(
+                    path=str(Path(path)),
+                    name=Path(path).name,
+                    added_at="2026-01-01T00:00:00+00:00",
+                    selected_config="default.yaml",
+                    health=None,
+                )
+            )
+            return repos[-1]
+
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", str(preferred))
+        monkeypatch.setattr(repo_registry, "list_repos", fake_list_repos)
+        monkeypatch.setattr(repo_registry, "add_repo", fake_add_repo)
+        mock_supervisor.status.return_value = SupervisorStatus(state="stopped")
+
+        response = supervisor_client.get("/control/repos")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["repos"][0]["path"] == str(preferred)
+        assert data["repos"][1]["path"] == str(other)
+
+    def test_control_info_exposes_preferred_repo_root(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        preferred = tmp_path / "preferred"
+        preferred.mkdir()
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", str(preferred))
+
+        response = supervisor_client.get("/control/info")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["preferred_repo_root"] == str(preferred)
 
 
 # --- Test: Refresh Endpoint ---
@@ -3294,6 +3373,9 @@ class TestRetryIssueEndpoint:
             removed_labels.append((issue_number, label))
 
         mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.get_issue_labels = MagicMock(
+            return_value=["agent:web", "blocked", "pr-pending"]
+        )
         mock_orch.repository_host.remove_label = MagicMock(
             side_effect=track_remove_label
         )
@@ -3308,8 +3390,10 @@ class TestRetryIssueEndpoint:
         # Verify correct labels were targeted for removal
         removed_issue_numbers = [num for num, _ in removed_labels]
         assert all(num == 123 for num in removed_issue_numbers)
-        # Should attempt to remove blocked, blocked-needs-human, blocked-failed
-        assert len(removed_labels) == 3
+        # Should attempt to remove blocked + pr-pending (retry-gating labels)
+        assert len(removed_labels) == 2
+        assert (123, "blocked") in removed_labels
+        assert (123, "pr-pending") in removed_labels
 
     def test_retry_handles_label_removal_failure_gracefully(
         self, client_with_orchestrator
@@ -3319,6 +3403,9 @@ class TestRetryIssueEndpoint:
 
         # Mock the repository_host to raise exception on label removal
         mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.get_issue_labels = MagicMock(
+            return_value=["blocked", "pr-pending"]
+        )
         mock_orch.repository_host.remove_label = MagicMock(
             side_effect=Exception("Label not found")
         )

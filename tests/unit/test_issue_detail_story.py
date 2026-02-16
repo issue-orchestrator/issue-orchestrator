@@ -717,6 +717,38 @@ class TestJourneyCycles:
         assert cycles[0]["lifecycle"] == 0
         assert cycles[0]["iteration"] == 0
 
+    def test_claim_preamble_not_numbered_when_real_cycles_exist_legacy(self):
+        """Pre-session claim events should not become numbered cycles."""
+        events = [
+            _evt("claim.acquired", timestamp="2026-02-09T14:00:00Z"),
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z"),
+            _evt("session.started", timestamp="2026-02-09T14:40:00Z"),
+            _evt("session.completed", timestamp="2026-02-09T14:50:00Z"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 2
+        assert [c["iteration"] for c in cycles] == [1, 2]
+        assert all(c["lifecycle"] >= 1 for c in cycles)
+        step_events = [step["event"] for c in cycles for step in c["steps"]]
+        assert "claim.acquired" not in step_events
+
+    def test_claim_preamble_not_numbered_when_real_cycles_exist_signal(self):
+        """Signal path should also drop preamble groups with no cycle anchor."""
+        events = [
+            _evt("claim.acquired", timestamp="2026-02-09T14:00:00Z"),
+            _evt("session.started", timestamp="2026-02-09T14:10:00Z", rework_cycle=0),
+            _evt("session.completed", timestamp="2026-02-09T14:30:00Z", rework_cycle=0),
+            _evt("session.started", timestamp="2026-02-09T14:40:00Z", rework_cycle=1),
+            _evt("session.completed", timestamp="2026-02-09T14:50:00Z", rework_cycle=1),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 2
+        assert [c["iteration"] for c in cycles] == [1, 2]
+        assert all(c["lifecycle"] >= 1 for c in cycles)
+        step_events = [step["event"] for c in cycles for step in c["steps"]]
+        assert "claim.acquired" not in step_events
+
 
 # ── Cycle Outcome Derivation ────────────────────────────────────────────
 

@@ -223,6 +223,16 @@ def blocked_summary(labels: list[str], lm: LabelManager, dependency_summary: str
     return " • ".join(reasons) if reasons else None
 
 
+def _display_labels(labels: list[str], lm: LabelManager) -> list[str]:
+    """Labels shown as pills in UI cards.
+
+    Include orchestrator-owned labels and agent routing labels.
+    """
+    visible = set(lm.get_ours(labels))
+    visible.update(label for label in labels if label.startswith("agent:"))
+    return sorted(visible)
+
+
 def _relative_time(dt_str: str) -> str:
     """Convert ISO timestamp to relative time like '2h ago'."""
     try:
@@ -396,7 +406,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
-            "orchestrator_labels": sorted(lm.get_ours(list(session.issue.labels))),
+            "orchestrator_labels": _display_labels(list(session.issue.labels), lm),
             **_refresh_meta(state, config, session.issue.number),
         })
 
@@ -501,7 +511,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "blocked_summary": blocked,
             "merge_pending": lm.is_pr_pending(issue.labels),
             "dependency_blocked": is_dependency_blocked,
-            "orchestrator_labels": sorted(lm.get_ours(list(issue.labels))),
+            "orchestrator_labels": _display_labels(list(issue.labels), lm),
             **_refresh_meta(state, config, issue.number),
         }
         if is_blocked:
@@ -576,6 +586,11 @@ def _normalize_status_reason(reason: str | None) -> str | None:
     if trimmed.lower().startswith("synced "):
         return None
     return trimmed
+
+
+def _sort_by_issue_number(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deterministic default ordering for dashboard issue lists."""
+    return sorted(items, key=lambda item: int(item.get("issue_number", 0)))
 
 
 def _build_e2e_running_items(e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
@@ -770,7 +785,7 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
-            "orchestrator_labels": sorted(lm.get_ours(list(issue.labels))),
+            "orchestrator_labels": _display_labels(list(issue.labels), lm),
             **_refresh_meta(state, config, issue.number),
         })
     return cards
@@ -1087,6 +1102,11 @@ def build_dashboard_view_model(
         history_items, history_blocked = _build_history_items(state, config)
         blocked_items.extend(history_blocked)
 
+        active_items = _sort_by_issue_number(active_items)
+        queue_items = _sort_by_issue_number(queue_items)
+        blocked_items = _sort_by_issue_number(blocked_items)
+        history_items = _sort_by_issue_number(history_items)
+
         now_ts = datetime.now(timezone.utc).timestamp()
         _attach_refresh_meta(active_items, state, config, now_ts)
         _attach_refresh_meta(queue_items, state, config, now_ts)
@@ -1096,9 +1116,11 @@ def build_dashboard_view_model(
 
         # Completed = items the agent finished this session
         completed_items = [item for item in history_items if item.get("status") == "completed"]
+        completed_items = _sort_by_issue_number(completed_items)
 
         # Awaiting merge = items with PRs ready for human merge
         awaiting_merge_items = _build_awaiting_merge_items(queue_items, blocked_items, history_items)
+        awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
 
         # Backlog used only for scope_summary.in_scope_total (not a kanban column)
         backlog_items = _exclude_flow_overlaps(

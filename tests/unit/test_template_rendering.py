@@ -88,7 +88,9 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
 
     soup = render_dashboard(jinja_env, vm)
 
-    assert soup.select_one("#tab-kanban.active") is not None
+    active_tab = soup.select_one("#tab-dashboard.active")
+    assert active_tab is not None
+    assert active_tab.get("data-tab") == "kanban"
     columns = soup.select(".kanban-column")
     assert len(columns) == 5
     column_ids = [col["data-column"] for col in columns]
@@ -118,6 +120,8 @@ def test_kanban_blocked_column_is_expandable(jinja_env):
     filter_btns = blocked_col.select(".filter-btn")
     assert len(filter_btns) == 3
     assert [btn.text.strip() for btn in filter_btns] == ["All", "New", "Viewed"]
+    badge_texts = [badge.text.strip() for badge in blocked_col.select(".card-badges .badge")]
+    assert "agent:web" in badge_texts
 
 
 def test_kanban_completed_column_session_scoped(jinja_env):
@@ -215,8 +219,9 @@ def test_embedded_header_elements_in_tab_bar(jinja_env):
     )
     soup = render_dashboard(jinja_env, vm)
     # Embedded header elements exist in the tab bar (hidden by default, shown by JS when embedded)
-    tab_bar = soup.select_one(".board-tabs")
+    tab_bar = soup.select_one(".dashboard-tabs")
     assert tab_bar.select_one("#embeddedBack") is not None
+    assert tab_bar.select_one("#embeddedBackLabel") is not None
     assert tab_bar.select_one("#embeddedRepoName") is not None
     assert tab_bar.select_one("#embeddedBadge") is not None
     assert tab_bar.select_one("#embeddedScopeBtn") is not None

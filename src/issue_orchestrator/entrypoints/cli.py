@@ -1,6 +1,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import shutil
 import sys
 from pathlib import Path
@@ -1821,6 +1822,10 @@ def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused 
             stdout=subprocess.DEVNULL,
             stderr=stderr_file,
             start_new_session=True,
+            env={
+                **os.environ,
+                "ISSUE_ORCHESTRATOR_CC_REPO_ROOT": str(Path.cwd().resolve()),
+            },
         )
 
         # Health check: verify server is actually responding

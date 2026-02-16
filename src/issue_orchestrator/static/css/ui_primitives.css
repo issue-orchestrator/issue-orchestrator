@@ -1,0 +1,51 @@
+/*
+ * Shared UI primitives for controls used across Control Center and Dashboard.
+ * Keep this focused on common behavior and state styling.
+ */
+
+.ui-btn,
+.btn:not(.btn-icon),
+.issue-action-btn,
+.settings-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    border: 1px solid var(--border-color, var(--border, #d0d7de));
+    background: var(--bg-card, var(--bg-panel, #f6f8fa));
+    color: var(--text-primary, var(--text, #24292f));
+    transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
+    text-decoration: none;
+}
+
+.ui-btn:hover:not(:disabled),
+.btn:not(.btn-icon):hover:not(:disabled),
+.issue-action-btn:hover:not(:disabled),
+.settings-btn:hover:not(:disabled) {
+    border-color: var(--accent-blue, var(--accent, #4a9eff));
+}
+
+.ui-btn:active:not(:disabled),
+.btn:not(.btn-icon):active:not(:disabled),
+.issue-action-btn:active:not(:disabled),
+.settings-btn:active:not(:disabled) {
+    background: rgba(78, 161, 255, 0.10);
+    border-color: var(--accent-blue, var(--accent, #4a9eff));
+}
+
+.ui-btn:disabled,
+.btn:not(.btn-icon):disabled,
+.issue-action-btn:disabled,
+.settings-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+    color: var(--text-muted, #6e7781);
+    border-color: var(--border-color, var(--border, #d0d7de));
+    background: color-mix(in srgb, var(--bg-card, var(--bg-panel, #f6f8fa)) 75%, #0000 25%);
+    box-shadow: none;
+}

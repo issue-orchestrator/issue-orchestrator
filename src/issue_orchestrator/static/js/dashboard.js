@@ -21,6 +21,22 @@ const FLOW_FRESHNESS_PRESETS = {
     economy: { enabled: true, staleSeconds: 3600, cooldownSeconds: 300 },
 };
 const FLOW_BUDGET_MULTIPLIER = { low: 1.7, medium: 1.0, high: 0.6 };
+const issueRowState = window.issueRowState;
+const expandedColumnState = window.expandedColumnState;
+const compactCardState = window.compactCardState;
+const uiActionContract = window.uiActionContract;
+if (!issueRowState) {
+    throw new Error('issueRowState helper not loaded');
+}
+if (!expandedColumnState) {
+    throw new Error('expandedColumnState helper not loaded');
+}
+if (!compactCardState) {
+    throw new Error('compactCardState helper not loaded');
+}
+if (!uiActionContract) {
+    throw new Error('uiActionContract helper not loaded');
+}
 
 function applyDashboardTheme(theme) {
     // When embedded in CC iframe, honor ?theme= param or postMessage from parent
@@ -31,6 +47,10 @@ function applyDashboardTheme(theme) {
         effectiveTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     }
     document.documentElement.setAttribute('data-theme', effectiveTheme);
+}
+
+function navigateBackToRepositories() {
+    window.parent.postMessage({ type: 'cc-back-to-repos' }, '*');
 }
 
 // When embedded in CC iframe, hide dashboard header and show embedded header in tab bar
@@ -50,9 +70,15 @@ if (isEmbedded) {
         // Populate repo name from server-rendered data
         const repoEl = document.getElementById('embeddedRepoName');
         if (repoEl) repoEl.textContent = window.dashboardData?.repo || '';
-        // Back button → tell parent CC to go back to repositories
+        // Back button: repositories in normal mode, collapse in expanded mode
         document.getElementById('embeddedBack')?.addEventListener('click', () => {
-            window.parent.postMessage({ type: 'cc-back-to-repos' }, '*');
+            const expanded = document.querySelector('.kanban-column.expanded[data-expanded="true"]');
+            const columnId = expanded?.dataset?.column;
+            if (columnId) {
+                toggleColumnExpand(columnId);
+            } else {
+                navigateBackToRepositories();
+            }
         });
         // (i) scope button → toggle scope-summary as a dropdown below tab bar
         document.getElementById('embeddedScopeBtn')?.addEventListener('click', (e) => {
@@ -67,7 +93,19 @@ if (isEmbedded) {
                 scope.classList.remove('scope-open');
             }
         });
+        updateEmbeddedBackButtonVisibility();
     });
+}
+
+function updateEmbeddedBackButtonVisibility() {
+    if (!isEmbedded) return;
+    const back = document.getElementById('embeddedBack');
+    const label = document.getElementById('embeddedBackLabel');
+    if (!back || !label) return;
+    const hasExpandedColumn = Boolean(document.querySelector('.kanban-column.expanded[data-expanded="true"]'));
+    back.style.display = '';
+    label.textContent = hasExpandedColumn ? 'Back to dashboard' : 'Back to repositories';
+    back.setAttribute('aria-label', hasExpandedColumn ? 'Back to dashboard' : 'Back to repositories');
 }
 
 // Listen for messages from parent (CC iframe embedding)
@@ -258,6 +296,7 @@ async function refreshIssueRows(vm, rowsOverride = null) {
 
     const nextIds = new Set(rows.map(row => String(row.issue_number)));
     const existingGroups = Array.from(list.querySelectorAll('.issue-row-group[data-issue]'));
+    const existingById = new Map(existingGroups.map((group) => [group.dataset.issue, group]));
     existingGroups.forEach(group => {
         if (!nextIds.has(group.dataset.issue)) {
             group.remove();
@@ -268,20 +307,35 @@ async function refreshIssueRows(vm, rowsOverride = null) {
     let insertAfter = header;
     rows.forEach(row => {
         const id = String(row.issue_number);
-        const selector = `.issue-row-group[data-issue=\"${cssEscape(id)}\"]`;
-        const existing = list.querySelector(selector);
-        const wrapper = document.createElement('div');
-        wrapper.innerHTML = row.html.trim();
-        const newNode = wrapper.firstElementChild;
-        if (!newNode) {
+        const existing = existingById.get(id) || null;
+        const nextFingerprint = issueRowState.computeIssueRowFingerprint(row);
+
+        let node = existing;
+        const shouldReplace = !existing || existing.dataset.rowFingerprint !== nextFingerprint;
+        if (shouldReplace) {
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = row.html.trim();
+            const newNode = wrapper.firstElementChild;
+            if (!newNode) {
+                return;
+            }
+            newNode.dataset.rowFingerprint = nextFingerprint;
+            if (existing) {
+                existing.replaceWith(newNode);
+            }
+            node = newNode;
+        } else if (node) {
+            node.dataset.rowFingerprint = nextFingerprint;
+        }
+
+        if (!node) {
             return;
         }
-        if (existing) {
-            existing.replaceWith(newNode);
-        } else {
-            insertAfter.after(newNode);
+
+        if (node.previousElementSibling !== insertAfter) {
+            insertAfter.after(node);
         }
-        insertAfter = newNode;
+        insertAfter = node;
     });
 
     ensureEmptyState(vm, rows.length > 0);
@@ -379,7 +433,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
         // If a column is expanded, refresh its content
         const expandedCol = document.querySelector('.kanban-column.expanded');
         if (expandedCol) {
-            loadExpandedColumn(expandedCol.dataset.column);
+            loadExpandedColumn(expandedCol.dataset.column, { viewModel });
         }
 
         if (reloadOnListChange && viewModel.startup_status === 'complete') {
@@ -502,6 +556,10 @@ async function refreshAgentLog(issueNumber, forceScroll = false) {
     if (data.error) {
         const msg = data.error + (data.hint ? '\n\n' + data.hint : '');
         document.getElementById('logStatus').textContent = msg;
+        const logPre = document.getElementById('logPre');
+        if (logPre) {
+            logPre.textContent = msg;
+        }
         return;
     }
 
@@ -1524,10 +1582,13 @@ function switchTab(tab) {
 }
 
 // Keyboard navigation for tabs (accessibility)
-const tabOrder = ['kanban', 'e2e'];
-document.querySelectorAll('.board-tabs .tab').forEach(tabBtn => {
+const tabButtons = Array.from(document.querySelectorAll('.dashboard-tabs .tab'));
+const tabOrder = tabButtons
+    .map((btn) => btn.dataset.tab)
+    .filter((tabName) => typeof tabName === 'string' && tabName.length > 0);
+tabButtons.forEach(tabBtn => {
     tabBtn.addEventListener('keydown', (e) => {
-        const currentTab = tabBtn.id.replace('tab-', '');
+        const currentTab = tabBtn.dataset.tab || tabBtn.id.replace('tab-', '');
         const currentIndex = tabOrder.indexOf(currentTab);
         let newIndex = currentIndex;
 
@@ -1546,7 +1607,7 @@ document.querySelectorAll('.board-tabs .tab').forEach(tabBtn => {
         }
 
         if (newIndex !== currentIndex) {
-            const newTabBtn = document.getElementById('tab-' + tabOrder[newIndex]);
+            const newTabBtn = document.querySelector(`.dashboard-tabs .tab[data-tab="${tabOrder[newIndex]}"]`);
             if (newTabBtn) {
                 newTabBtn.focus();
             }
@@ -1588,70 +1649,116 @@ function clearIssuesViewed(numbers) {
 
 // ── Kanban column expand/collapse ──
 
-function renderCompactCards(container, items) {
-    // Build a fingerprint from issue numbers to detect actual changes
-    const newIds = items.map(c => c.issue_number).join(',');
-    const existingCards = container.querySelectorAll('.issue-card[data-issue]');
-    const oldIds = Array.from(existingCards).map(el => el.dataset.issue).join(',');
-
-    // Same issue set — update card text in place to avoid DOM jitter
-    if (newIds === oldIds && items.length > 0) {
-        for (const card of items) {
-            const el = container.querySelector(`.issue-card[data-issue="${card.issue_number}"]`);
-            if (!el) continue;
-            const phaseLine = card.phase || card.state_label || '';
-            const ageStr = card.phase_age ? ` \u00b7 ${card.phase_age}` : '';
-            const lineEl = el.querySelector('.card-line');
-            if (lineEl) lineEl.innerHTML = `${phaseLine}${ageStr}`;
-        }
-        return;
+function renderCompactCardHtml(card) {
+    const n = card.issue_number;
+    const staleAttr = card.is_stale ? 'true' : 'false';
+    const staleDot = card.is_stale
+        ? `<span class="stale-dot" title="${card.stale_reason || 'Issue may be stale'}" aria-label="Issue data may be stale"></span>`
+        : '';
+    const staleBadge = card.is_stale
+        ? '<span class="badge badge-stale" title="Data may be stale">stale</span>'
+        : '';
+    const ghLink = card.issue_url
+        ? `<a class="card-gh" href="${card.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">&#x2197;</a>`
+        : '';
+    const phaseLine = card.phase || card.state_label || '';
+    const ageStr = card.phase_age ? ` &middot; ${card.phase_age}` : '';
+    let detailLine = '';
+    if (card.summary) {
+        detailLine = `<div class="card-line card-muted">${card.summary}</div>`;
     }
+    const orchLabels = card.orchestrator_labels || [];
+    const orchPills = orchLabels.map(l => `<span class="badge badge-orch">${l}</span>`).join('');
+    const allBadges = orchPills + staleBadge;
+    const badgesDiv = allBadges
+        ? `<div class="card-badges">${allBadges}</div>`
+        : '';
+    return `<div class="issue-card" data-issue="${n}" data-stale="${staleAttr}" data-last-refresh-age-seconds="${card.last_refreshed_age_seconds || 0}">
+        <div class="card-top">
+            <button class="card-focus" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="Focus issue #${n}">
+                #${n} ${card.title}
+            </button>
+            <div class="card-head-actions">
+                ${staleDot}
+                <button class="card-refresh-btn" onclick="refreshIssueCard(${n}, this);event.stopPropagation();" title="Refresh issue #${n} from GitHub" aria-label="Refresh issue #${n}">&#x27F3;</button>
+                ${ghLink}
+                <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
+            </div>
+        </div>
+        <div class="card-line">${phaseLine}${ageStr}</div>
+        ${detailLine}
+        ${badgesDiv}
+    </div>`;
+}
 
+function renderCompactCards(container, items) {
     if (!items.length) {
         container.innerHTML = '<div class="column-empty">No items</div>';
         return;
     }
-    container.innerHTML = items.map(card => {
-        const n = card.issue_number;
-        const staleAttr = card.is_stale ? 'true' : 'false';
-        const staleDot = card.is_stale
-            ? `<span class="stale-dot" title="${card.stale_reason || 'Issue may be stale'}" aria-label="Issue data may be stale"></span>`
-            : '';
-        const staleBadge = card.is_stale
-            ? '<span class="badge badge-stale" title="Data may be stale">stale</span>'
-            : '';
-        const ghLink = card.issue_url
-            ? `<a class="card-gh" href="${card.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">&#x2197;</a>`
-            : '';
-        const phaseLine = card.phase || card.state_label || '';
-        const ageStr = card.phase_age ? ` &middot; ${card.phase_age}` : '';
-        let detailLine = '';
-        if (card.summary) {
-            detailLine = `<div class="card-line card-muted">${card.summary}</div>`;
+
+    const nextIds = new Set(items.map((card) => String(card.issue_number)));
+    const existingCards = Array.from(container.querySelectorAll('.issue-card[data-issue]'));
+    const existingById = new Map(existingCards.map((card) => [card.dataset.issue, card]));
+    existingCards.forEach((card) => {
+        if (!nextIds.has(card.dataset.issue)) {
+            card.remove();
         }
-        const orchLabels = card.orchestrator_labels || [];
-        const orchPills = orchLabels.map(l => `<span class="badge badge-orch">${l}</span>`).join('');
-        const allBadges = orchPills + staleBadge;
-        const badgesDiv = allBadges
-            ? `<div class="card-badges">${allBadges}</div>`
-            : '';
-        return `<div class="issue-card" data-issue="${n}" data-stale="${staleAttr}" data-last-refresh-age-seconds="${card.last_refreshed_age_seconds || 0}">
-            <div class="card-top">
-                <button class="card-focus" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="Focus issue #${n}">
-                    #${n} ${card.title}
-                </button>
-                <div class="card-head-actions">
-                    ${staleDot}
-                    <button class="card-refresh-btn" onclick="refreshIssueCard(${n}, this);event.stopPropagation();" title="Refresh issue #${n} from GitHub" aria-label="Refresh issue #${n}">&#x27F3;</button>
-                    ${ghLink}
-                    <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
-                </div>
-            </div>
-            <div class="card-line">${phaseLine}${ageStr}</div>
-            ${detailLine}
-            ${badgesDiv}
-        </div>`;
-    }).join('');
+    });
+
+    let insertAfter = null;
+    for (const card of items) {
+        const id = String(card.issue_number);
+        const existing = existingById.get(id) || null;
+        const nextFingerprint = compactCardState.computeCompactCardFingerprint(card);
+        let node = existing;
+
+        if (!existing || existing.dataset.cardFingerprint !== nextFingerprint) {
+            const wrapper = document.createElement('div');
+            wrapper.innerHTML = renderCompactCardHtml(card).trim();
+            const newNode = wrapper.firstElementChild;
+            if (!newNode) continue;
+            newNode.dataset.cardFingerprint = nextFingerprint;
+            if (existing) {
+                existing.replaceWith(newNode);
+            } else if (insertAfter) {
+                insertAfter.after(newNode);
+            } else {
+                container.prepend(newNode);
+            }
+            node = newNode;
+        } else {
+            existing.dataset.cardFingerprint = nextFingerprint;
+        }
+
+        if (!node) continue;
+        if (insertAfter) {
+            if (node.previousElementSibling !== insertAfter) {
+                insertAfter.after(node);
+            }
+        } else if (node.parentElement !== container || node !== container.firstElementChild) {
+            container.prepend(node);
+        }
+        insertAfter = node;
+    }
+}
+
+const expandedColumnFingerprints = new Map();
+
+function getSelectedIssueSet(columnId) {
+    return new Set(getSelectedIssueNumbers(columnId));
+}
+
+function reapplyExpandedSelections(columnId, selectedIssues) {
+    if (!selectedIssues || selectedIssues.size === 0) return;
+    const col = document.querySelector(`[data-column="${columnId}"]`);
+    if (!col) return;
+    col.querySelectorAll('.expanded-card').forEach(card => {
+        const issueNumber = Number(card.dataset.issue);
+        const checkbox = card.querySelector('.card-checkbox');
+        if (!checkbox || isNaN(issueNumber)) return;
+        checkbox.checked = selectedIssues.has(issueNumber);
+    });
 }
 
 function toggleColumnExpand(columnId) {
@@ -1670,7 +1777,16 @@ function toggleColumnExpand(columnId) {
         // Reset checkboxes and bulk bar so stale state doesn't flash on re-expand
         c.querySelectorAll('.card-checkbox:checked').forEach(cb => { cb.checked = false; });
         const bar = c.querySelector('.bulk-action-bar');
-        if (bar) { bar.style.display = 'none'; bar.querySelector('.selected-count').textContent = '0 selected'; }
+        if (bar) {
+            bar.style.display = 'none';
+            const countEl = bar.querySelector('.selected-count');
+            if (countEl) countEl.textContent = '0 selected';
+            if (c.dataset.column === 'blocked') {
+                bar.querySelectorAll('.issue-action-btn').forEach((btn) => {
+                    btn.disabled = true;
+                });
+            }
+        }
     });
 
     if (!isExpanded) {
@@ -1684,63 +1800,84 @@ function toggleColumnExpand(columnId) {
         document.querySelectorAll('.kanban-column:not(.expanded)').forEach(c => {
             c.classList.add('collapsed-peer');
         });
-        loadExpandedColumn(columnId);
+        updateBulkBar(columnId);
+        loadExpandedColumn(columnId, { forceRebuild: true });
     }
+
+    document.body.classList.toggle('column-focus-mode', !isExpanded);
+    updateEmbeddedBackButtonVisibility();
 }
 
-async function loadExpandedColumn(columnId) {
+async function loadExpandedColumn(columnId, options = {}) {
+    const forceRebuild = Boolean(options.forceRebuild);
+    let vm = options.viewModel || null;
     const col = document.querySelector(`[data-column="${columnId}"]`);
     if (!col) return;
     const expandedList = col.querySelector('.expanded-cards-list');
     if (!expandedList) return;
-
-    // Force-hide bulk bar immediately (fresh cards will have no selections)
-    const bulkBar = col.querySelector('.bulk-action-bar');
-    if (bulkBar) bulkBar.style.display = 'none';
+    const previousSelection = getSelectedIssueSet(columnId);
 
     try {
-        const resp = await fetch(`/api/view-model?tab=${columnId}`);
-        if (!resp.ok) return;
-        const vm = await resp.json();
-        // Determine which items to show based on column
-        let items = [];
-        if (columnId === 'queued') items = vm.queue_items || [];
-        else if (columnId === 'blocked') items = vm.blocked_items || [];
-        else if (columnId === 'awaiting-merge') items = vm.awaiting_merge_items || [];
-        else if (columnId === 'completed') items = vm.completed_items || [];
+        if (!vm) {
+            const resp = await fetch(`/api/view-model?tab=${columnId}`);
+            if (!resp.ok) return;
+            vm = await resp.json();
+        }
+        const items = expandedColumnState.getExpandedItemsFromViewModel(vm, columnId);
+        const nextFingerprint = expandedColumnState.computeExpandedItemsFingerprint(items, {
+            columnId,
+            viewedIssueNumbers: columnId === 'blocked' ? [...getViewedIssues()] : [],
+        });
+        const prevFingerprint = expandedColumnFingerprints.get(columnId);
+        const shouldRebuild = forceRebuild || prevFingerprint !== nextFingerprint;
 
-        const viewed = columnId === 'blocked' ? getViewedIssues() : new Set();
+        if (shouldRebuild) {
+            const viewed = columnId === 'blocked' ? getViewedIssues() : new Set();
+            expandedList.innerHTML = items.map(item => {
+                const isViewed = viewed.has(item.issue_number);
+                const n = item.issue_number;
+                const orchLabels = item.orchestrator_labels || [];
+                const orchPills = orchLabels.map((label) => `<span class="badge badge-orch">${label}</span>`).join('');
+                const badgesDiv = orchPills
+                    ? `<div class="card-badges">${orchPills}</div>`
+                    : '';
+                return `
+                <div class="expanded-card${isViewed ? ' viewed' : ''}" data-issue="${n}" data-viewed="${isViewed}">
+                    <input type="checkbox" class="card-checkbox" onchange="updateBulkBar('${columnId}')">
+                    <div class="card-content">
+                        <button class="card-focus" onclick="openIssueDetail(${n}, this);event.stopPropagation();"
+                                title="Focus issue #${n}">
+                            #${n} ${item.title || ''}
+                        </button>
+                        <div class="card-line card-muted">${item.detail_label || item.status || ''}</div>
+                        ${badgesDiv}
+                    </div>
+                    <div class="card-actions">
+                        ${columnId === 'blocked' ? `<button class="card-action-btn card-action-unblock" onclick="unblockSingle(${n}, this);event.stopPropagation();" title="Unblock issue #${n}">Unblock</button>` : ''}
+                        ${columnId === 'blocked' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingle(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n}">Reset & Retry</button>` : ''}
+                        ${item.issue_url ? `<a class="card-gh" href="${item.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">↗</a>` : ''}
+                        ${item.pr_url ? `<a class="card-action-btn" href="${item.pr_url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">PR</a>` : ''}
+                        <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
+                    </div>
+                </div>`;
+            }).join('');
+            expandedColumnFingerprints.set(columnId, nextFingerprint);
+            const reconciledSelection = new Set(
+                expandedColumnState.reconcileSelectedIssues([...previousSelection], items),
+            );
+            reapplyExpandedSelections(columnId, reconciledSelection);
+        }
 
-        expandedList.innerHTML = items.map(item => {
-            const isViewed = viewed.has(item.issue_number);
-            const n = item.issue_number;
-            return `
-            <div class="expanded-card${isViewed ? ' viewed' : ''}" data-issue="${n}" data-viewed="${isViewed}">
-                <input type="checkbox" class="card-checkbox" onchange="updateBulkBar('${columnId}')">
-                <div class="card-content">
-                    <button class="card-focus" onclick="openIssueDetail(${n}, this);event.stopPropagation();"
-                            title="Focus issue #${n}">
-                        #${n} ${item.title || ''}
-                    </button>
-                    <div class="card-line card-muted">${item.detail_label || item.status || ''}</div>
-                </div>
-                <div class="card-actions">
-                    ${columnId === 'blocked' ? `<button class="card-action-btn card-action-unblock" onclick="unblockSingle(${n}, this);event.stopPropagation();" title="Unblock issue #${n}">Unblock</button>` : ''}
-                    ${item.issue_url ? `<a class="card-gh" href="${item.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">↗</a>` : ''}
-                    ${item.pr_url ? `<a class="card-action-btn" href="${item.pr_url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">PR</a>` : ''}
-                    <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
-                </div>
-            </div>`;
-        }).join('');
-
-        // Update "N new" badge on blocked column header
+        // Update blocked-only derived UI even when list body is unchanged.
         if (columnId === 'blocked') {
-            updateBlockedNewCount(col, items, viewed);
+            updateBlockedNewCount(col, items, getViewedIssues());
             applyBlockedFilter(col);
         }
+        updateBulkBar(columnId);
     } catch (e) {
         console.error('Failed to load expanded column:', e);
         expandedList.innerHTML = '<div class="column-empty">Failed to load items</div>';
+        expandedColumnFingerprints.delete(columnId);
     }
 }
 
@@ -1789,9 +1926,18 @@ function updateBulkBar(columnId) {
     const checked = col.querySelectorAll('.card-checkbox:checked');
     const bar = col.querySelector('.bulk-action-bar');
     if (!bar) return;
-    bar.style.display = checked.length > 0 ? 'flex' : 'none';
+    const alwaysVisible = columnId === 'blocked';
+    bar.style.display = alwaysVisible || checked.length > 0 ? 'flex' : 'none';
     const countEl = bar.querySelector('.selected-count');
-    if (countEl) countEl.textContent = `${checked.length} selected`;
+    if (countEl) {
+        countEl.textContent = checked.length > 0 ? `${checked.length} selected` : 'No issues selected';
+    }
+    if (alwaysVisible) {
+        const actionButtons = bar.querySelectorAll('.issue-action-btn');
+        actionButtons.forEach((btn) => {
+            btn.disabled = checked.length === 0;
+        });
+    }
 }
 
 function getSelectedIssueNumbers(columnId) {
@@ -1804,13 +1950,15 @@ function getSelectedIssueNumbers(columnId) {
 }
 
 async function unblockSingle(issueNumber, btn) {
-    if (!await showConfirm(`Unblock issue #${issueNumber} and move it back to queued?`, btn)) return;
+    const confirmMsg = `Requeue issue #${issueNumber}?\n\nThis will REMOVE retry-gating labels (including blocking labels and pr-pending).\n\nIt will NOT delete local worktree or remote branch.`;
+    if (!await showConfirm(confirmMsg, btn)) return;
     if (btn) btn.disabled = true;
     try {
-        const resp = await fetch('/api/bulk-retry', {
-            method: 'POST',
+        const req = uiActionContract.buildUnblockRequest([issueNumber]);
+        const resp = await fetch(req.endpoint, {
+            method: req.method,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issue_numbers: [issueNumber] }),
+            body: JSON.stringify(req.body),
         });
         if (resp.ok) {
             showToast(`Unblocked #${issueNumber} → Queued`);
@@ -1830,12 +1978,14 @@ async function unblockSingle(issueNumber, btn) {
 async function bulkUnblock() {
     const numbers = getSelectedIssueNumbers('blocked');
     if (!numbers.length) return;
-    if (!await showConfirm(`Unblock ${numbers.length} issue(s) and move them back to queued?`)) return;
+    const confirmMsg = `Requeue ${numbers.length} issue(s)?\n\nThis will REMOVE retry-gating labels (including blocking labels and pr-pending).\n\nIt will NOT delete local worktrees or remote branches.`;
+    if (!await showConfirm(confirmMsg)) return;
     try {
-        const resp = await fetch('/api/bulk-retry', {
-            method: 'POST',
+        const req = uiActionContract.buildUnblockRequest(numbers);
+        const resp = await fetch(req.endpoint, {
+            method: req.method,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issue_numbers: numbers }),
+            body: JSON.stringify(req.body),
         });
         if (resp.ok) {
             showToast(`Unblocking ${numbers.length} issue(s) → Queued`);
@@ -1847,6 +1997,62 @@ async function bulkUnblock() {
     } catch (e) {
         console.error('Bulk unblock failed:', e);
         showToast('Bulk unblock failed: network error', true);
+    }
+}
+
+async function bulkResetRetry() {
+    const numbers = getSelectedIssueNumbers('blocked');
+    if (!numbers.length) return;
+    const confirmMsg = `Full reset and requeue ${numbers.length} issue(s)?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Orchestrator labels\n\nIssues will return to available state for a fresh retry.`;
+    if (!await showConfirm(confirmMsg)) return;
+    try {
+        const req = uiActionContract.buildResetRetryRequest(numbers);
+        const res = await fetch(req.endpoint, {
+            method: req.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.reset && data.reset.length > 0) {
+            showToast(`Reset ${data.reset.length} issue(s) → Queued`);
+            await refreshViewModel();
+        } else if (res.ok && data.failed && data.failed.length > 0) {
+            showToast(`Failed to reset some issues: ${data.failed.map((f) => f.error).join(', ')}`, true);
+        } else {
+            showToast(data.error || `Reset failed (${res.status})`, true);
+        }
+    } catch (e) {
+        console.error('Bulk reset failed:', e);
+        showToast('Bulk reset failed: network error', true);
+    }
+}
+
+async function resetRetrySingle(issueNumber, btn) {
+    const confirmMsg = `Full reset and requeue issue #${issueNumber}?\n\nThis will DELETE:\n• Local worktree\n• Remote branch\n• Orchestrator labels\n\nIssue will return to available state for a fresh retry.`;
+    if (!await showConfirm(confirmMsg, btn)) return;
+    if (btn) btn.disabled = true;
+    try {
+        const req = uiActionContract.buildResetRetryRequest([issueNumber]);
+        const res = await fetch(req.endpoint, {
+            method: req.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.reset && data.reset.length > 0) {
+            showToast(`Reset #${issueNumber} → Queued`);
+            await refreshViewModel();
+        } else if (res.ok && data.failed && data.failed.length > 0) {
+            showToast(`Reset failed: ${data.failed.map((f) => f.error).join(', ')}`, true);
+            if (btn) btn.disabled = false;
+        } else {
+            showToast(data.error || `Reset failed (${res.status})`, true);
+            if (btn) btn.disabled = false;
+        }
+    } catch (e) {
+        console.error('Single reset failed:', e);
+        showToast('Reset failed: network error', true);
+        if (btn) btn.disabled = false;
     }
 }
 
@@ -1913,10 +2119,11 @@ async function bulkDeprioritize() {
     const numbers = getSelectedIssueNumbers('queued');
     if (!numbers.length) return;
     try {
-        const resp = await fetch('/api/bulk-deprioritize', {
-            method: 'POST',
+        const req = uiActionContract.buildBulkDeprioritizeRequest(numbers);
+        const resp = await fetch(req.endpoint, {
+            method: req.method,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issue_numbers: numbers }),
+            body: JSON.stringify(req.body),
         });
         if (resp.ok) {
             showToast(`Deprioritized ${numbers.length} issue(s)`);
@@ -2721,7 +2928,7 @@ const timelineModal = document.getElementById('timelineModal');
 const issueDetailDrawer = document.getElementById('issueDetailDrawer');
 let issueDetailData = null;
 let lastIssueDetailTrigger = null;
-let journeyFilter = 'last-run'; // 'last-run' or 'all'
+let journeyFilter = 'latest-run'; // 'latest-run' or 'all'
 
 async function openTimelineModal(issueNumber) {
     if (!timelineModal) return;
@@ -2800,13 +3007,15 @@ async function unblockFromDrawer() {
     if (!issueDetailData) return;
     const n = issueDetailData.issue_number;
     const btn = document.getElementById('issueDetailUnblockBtn');
-    if (!await showConfirm(`Unblock issue #${n} and move it back to queued?`, btn)) return;
+    const confirmMsg = `Requeue issue #${n}?\n\nThis will REMOVE retry-gating labels (including blocking labels and pr-pending).\n\nIt will NOT delete local worktree or remote branch.`;
+    if (!await showConfirm(confirmMsg, btn)) return;
     if (btn) btn.disabled = true;
     try {
-        const resp = await fetch('/api/bulk-retry', {
-            method: 'POST',
+        const req = uiActionContract.buildUnblockRequest([n]);
+        const resp = await fetch(req.endpoint, {
+            method: req.method,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issue_numbers: [n] }),
+            body: JSON.stringify(req.body),
         });
         if (resp.ok) {
             showToast(`Unblocked #${n} → Queued`);
@@ -2830,7 +3039,7 @@ async function unblockFromDrawer() {
 
 function filterJourneyCycles(cycles, filter) {
     if (filter === 'all' || cycles.length === 0) return cycles;
-    // "last-run": filter to max lifecycle value
+    // "latest-run": filter to max lifecycle value (current run, may contain multiple cycles)
     const maxLifecycle = Math.max(...cycles.map(c => c.lifecycle || 0));
     if (maxLifecycle > 0) {
         return cycles.filter(c => c.lifecycle === maxLifecycle);
@@ -2851,12 +3060,12 @@ function renderJourneyTimeline(container, data) {
 
 function _renderJourneyCycles(container, allCycles) {
     const cycles = filterJourneyCycles(allCycles, journeyFilter);
-    const isLastRun = journeyFilter === 'last-run';
+    const isLatestRun = journeyFilter === 'latest-run';
     const isAll = journeyFilter === 'all';
     const issueNum = issueDetailData ? issueDetailData.issue_number : null;
 
     let html = `<div class="journey-filter">
-        <button class="journey-filter-btn ${isLastRun ? 'active' : ''}" onclick="setJourneyFilter('last-run')">Last run</button>
+        <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" onclick="setJourneyFilter('latest-run')" title="Show the current run (all cycles in the latest lifecycle)">Latest run</button>
         <button class="journey-filter-btn ${isAll ? 'active' : ''}" onclick="setJourneyFilter('all')">All</button>
         <button class="journey-filter-btn journey-copy-btn" onclick="copyJourneyTimeline()" title="Copy timeline as text">Copy</button>
     </div>`;
@@ -2869,7 +3078,7 @@ function _renderJourneyCycles(container, allCycles) {
 
     for (let i = 0; i < cycles.length; i++) {
         const c = cycles[i];
-        const expanded = c.expanded;
+        const expanded = journeyFilter === 'latest-run' ? true : c.expanded;
         const toggle = expanded ? '\u25be' : '\u25b8';
         const bodyClass = expanded ? '' : ' collapsed';
         const cycleId = `journey-cycle-${i}`;
@@ -3040,11 +3249,11 @@ function _renderLegacyJourneySteps(container, allSteps) {
     const steps = (filter === 'all' || allSteps.length === 0)
         ? allSteps
         : _legacyFilterBySessionStart(allSteps);
-    const isLastRun = filter === 'last-run';
+    const isLatestRun = filter === 'latest-run';
     const isAll = filter === 'all';
 
     let html = `<div class="journey-filter">
-        <button class="journey-filter-btn ${isLastRun ? 'active' : ''}" onclick="setJourneyFilter('last-run')">Last run</button>
+        <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" onclick="setJourneyFilter('latest-run')" title="Show the current run (all cycles in the latest lifecycle)">Latest run</button>
         <button class="journey-filter-btn ${isAll ? 'active' : ''}" onclick="setJourneyFilter('all')">All</button>
         <button class="journey-filter-btn journey-copy-btn" onclick="copyJourneyTimeline()" title="Copy timeline as text">Copy</button>
     </div>`;
@@ -3632,7 +3841,7 @@ async function unblockSelectedIssues() {
 
     // Confirm
     const needsHumanSelected = Array.from(checkedBoxes).filter(cb => cb.dataset.needsHuman === 'true').length;
-    let confirmMsg = `Unblock and retry ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''}?`;
+    let confirmMsg = `Requeue ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''}?\n\nThis will REMOVE retry-gating labels (including blocking labels and pr-pending).\n\nIt will NOT delete local worktrees or remote branches.`;
     if (needsHumanSelected > 0) {
         confirmMsg += `\n\n⚠️ ${needsHumanSelected} issue${needsHumanSelected > 1 ? 's have' : ' has'} 'needs-human' label - make sure you've addressed the concern.`;
     }
@@ -3643,10 +3852,11 @@ async function unblockSelectedIssues() {
     blockedUnblockBtn.textContent = 'Unblocking...';
 
     try {
-        const res = await fetch('/api/unblock-retry', {
-            method: 'POST',
+        const req = uiActionContract.buildUnblockRequest(issueNumbers);
+        const res = await fetch(req.endpoint, {
+            method: req.method,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issues: issueNumbers }),
+            body: JSON.stringify(req.body),
         });
         const data = await res.json();
 
@@ -3673,7 +3883,7 @@ async function resetSelectedIssues() {
     if (issueNumbers.length === 0) return;
 
     // Confirm with warning about destructive nature
-    const confirmMsg = `Reset and retry ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''}?\n\nThis will DELETE:\n\u2022 Local worktrees\n\u2022 Remote branches\n\u2022 Blocking labels\n\nIssues will return to available state for a fresh retry.`;
+    const confirmMsg = `Full reset and requeue ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''}?\n\nThis will DELETE:\n\u2022 Local worktrees\n\u2022 Remote branches\n\u2022 Orchestrator labels\n\nIssues will return to available state for a fresh retry.`;
     if (!await showConfirm(confirmMsg, blockedResetBtn)) return;
 
     // Disable buttons during request
@@ -3682,10 +3892,11 @@ async function resetSelectedIssues() {
     blockedUnblockBtn.disabled = true;
 
     try {
-        const res = await fetch('/api/reset-retry', {
-            method: 'POST',
+        const req = uiActionContract.buildResetRetryRequest(issueNumbers);
+        const res = await fetch(req.endpoint, {
+            method: req.method,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issues: issueNumbers }),
+            body: JSON.stringify(req.body),
         });
         const data = await res.json();
 
@@ -3800,10 +4011,11 @@ async function retryIssue(issueNumber, event) {
     btn.innerHTML = '<span aria-hidden="true">⏳</span> Retrying...';
 
     try {
-        const res = await fetch(`/api/issues/${issueNumber}/retry`, {
-            method: 'POST',
+        const req = uiActionContract.buildIssueRetryRequest(issueNumber);
+        const res = await fetch(req.endpoint, {
+            method: req.method,
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
+            body: JSON.stringify(req.body),
         });
         const data = await res.json();
 
@@ -4005,6 +4217,16 @@ async function viewClaudeLog(issueNumber) {
         const data = await res.json();
         if (data.error) {
             showToast(data.error, 'error');
+            document.getElementById('modalTitle').textContent = `Claude Log #${issueNumber}`;
+            document.getElementById('modalBody').innerHTML = `
+                <div class="timeline-empty">
+                    ${escapeHtml(data.error)}
+                    <div style="margin-top:8px;color:var(--text-muted);font-size:12px;">
+                        This run may predate manifest log capture or logs may have been rotated.
+                    </div>
+                </div>
+            `;
+            document.getElementById('modalOverlay').classList.add('visible');
             return;
         }
         renderClaudeLogViewer(data);
@@ -4278,17 +4500,22 @@ function showConfirm(message, anchorEl) {
         // Position near anchor
         if (anchorEl) {
             const rect = anchorEl.getBoundingClientRect();
-            const boxW = 280, boxH = 120;
+            // Use rendered size instead of fixed estimates so long messages still fit.
+            const boxW = box.offsetWidth || 280;
+            const boxH = box.offsetHeight || 120;
+            const margin = 8;
             let top = rect.bottom + 6;
             let left = rect.left + rect.width / 2 - boxW / 2;
             // Keep on screen
-            if (top + boxH > window.innerHeight) top = rect.top - boxH - 6;
-            if (left < 8) left = 8;
-            if (left + boxW > window.innerWidth - 8) left = window.innerWidth - boxW - 8;
+            if (top + boxH > window.innerHeight - margin) top = rect.top - boxH - 6;
+            if (top < margin) top = margin;
+            if (left < margin) left = margin;
+            if (left + boxW > window.innerWidth - margin) left = window.innerWidth - boxW - margin;
             box.style.position = 'fixed';
+            box.style.transform = 'none';
             box.style.top = top + 'px';
             box.style.left = left + 'px';
-            box.style.width = boxW + 'px';
+            box.style.maxWidth = `min(320px, ${window.innerWidth - margin * 2}px)`;
         }
 
         function cleanup(result) {

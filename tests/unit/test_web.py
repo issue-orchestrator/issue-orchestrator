@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from issue_orchestrator.entrypoints.web import app, get_orchestrator, set_orchestrator, set_server
 from issue_orchestrator.contracts.public import ShutdownRequestedPayload, StartupCompletePayload
+from issue_orchestrator.control.label_manager import LabelManager
 
 
 @pytest.fixture(autouse=True)
@@ -784,6 +785,43 @@ class TestHistoryEndpoints:
         assert response.json()["retrying"] == 1
         assert len(mock_orch.state.session_history) == 0
         assert 1 not in mock_orch.state.completed_today
+
+    def test_unblock_retry_removes_blocking_and_pr_pending_labels(self):
+        """Unblock endpoint removes all labels that prevent scheduling."""
+        mock_orch = create_mock_orchestrator()
+        lm = LabelManager(mock_orch.config)
+        mock_orch.deps.label_manager = lm
+        mock_orch.deps.action_applier = MagicMock()
+        mock_orch.deps.action_applier.apply.return_value = Mock(success=True, error=None)
+        mock_orch.repository_host.get_issue_labels.return_value = [
+            "agent:web",
+            lm.blocked,
+            lm.pr_pending,
+        ]
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Issue 4057",
+                agent_type="agent:web",
+                status="blocked",
+                runtime_minutes=5,
+            ),
+        ]
+        mock_orch.state.completed_today = [4057]
+
+        set_orchestrator(mock_orch)
+
+        client = TestClient(app)
+        response = client.post("/api/unblock-retry", json={"issues": [4057]})
+
+        assert response.status_code == 200
+        assert response.json()["unblocked"] == [4057]
+        removed = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]
+        assert lm.blocked in removed
+        assert lm.pr_pending in removed
+        assert all(entry.issue_number != 4057 for entry in mock_orch.state.session_history)
+        assert 4057 not in mock_orch.state.completed_today
+        mock_orch.request_refresh.assert_called_once()
 
     def test_get_history_dedupes_to_latest_per_issue(self):
         """History endpoint returns only the latest entry for each issue."""

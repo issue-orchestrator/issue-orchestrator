@@ -45,6 +45,7 @@ E2E Test Runner API endpoints:
 import asyncio
 import json
 import logging
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -78,6 +79,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
 
 logger = logging.getLogger(__name__)
+_PREFERRED_REPO_ROOT_ENV = "ISSUE_ORCHESTRATOR_CC_REPO_ROOT"
 
 # Default E2E config (used when orchestrator not available)
 from ..infra.config import E2EConfig
@@ -158,6 +160,20 @@ def set_control_actions(actions: ControlCenterActions) -> None:
     """Inject control-center action service (for testing)."""
     global _control_actions
     _control_actions = actions
+
+
+def _preferred_repo_root() -> Path | None:
+    """Resolve preferred repo root for this Control Center process."""
+    raw = os.environ.get(_PREFERRED_REPO_ROOT_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        root = Path(raw).resolve()
+    except (OSError, ValueError):
+        return None
+    if not root.exists() or not root.is_dir():
+        return None
+    return root
 
 
 # Track orchestrator child PIDs for zombie reaping (used by control_center).
@@ -966,13 +982,10 @@ async def retry_issue(issue_number: int) -> JSONResponse:
 
     try:
         lm = _orchestrator.deps.label_manager
+        from ..control.retry_policy import labels_to_remove_for_retry
 
-        # Remove blocking labels
-        labels_to_remove = [
-            lm.blocked,
-            lm.needs_human,
-            lm.blocked_failed,
-        ]
+        current_labels = _orchestrator.repository_host.get_issue_labels(issue_number)
+        labels_to_remove = labels_to_remove_for_retry(current_labels, lm)
 
         removed = []
         for label in labels_to_remove:
@@ -2119,16 +2132,35 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
     """
     import httpx
 
-    from ..infra.repo_registry import list_repos
+    from ..infra.repo_registry import add_repo, list_repos
     from ..infra.config import list_configs, get_config_path, Config
 
     sv = get_supervisor()
+    preferred_root = _preferred_repo_root()
+    preferred_repo = str(preferred_root) if preferred_root else None
+
     repos = list_repos()
+    if preferred_repo and all(repo.path != preferred_repo for repo in repos):
+        try:
+            add_repo(preferred_repo)
+            repos = list_repos()
+        except ValueError:
+            # Another process/request may have registered it first.
+            repos = list_repos()
+
+    if preferred_repo:
+        repos = sorted(
+            repos,
+            key=lambda repo: 0 if repo.path == preferred_repo else 1,
+        )
+
+    cwd = Path.cwd().resolve()
     result = []
 
     for repo in repos:
         # Get status for each repo
         path = Path(repo.path)
+        path_resolved = path.resolve() if path.exists() else path
 
         # Check if multi-instance mode is configured
         expected_instances = 1
@@ -2150,6 +2182,7 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
             "name": repo.name,
             "added_at": repo.added_at,
             "exists": path.exists(),
+            "is_current_dir": (path_resolved == cwd),
             "configs": available_configs,
             "selected_config": repo.selected_config,
             "expected_instances": expected_instances,
@@ -2261,8 +2294,10 @@ async def control_info() -> JSONResponse:
     from ..infra.repo_identity import get_repo_head_sha
     repo_root = Path.cwd()
     commit_sha = get_repo_head_sha(repo_root)
+    preferred_root = _preferred_repo_root()
     return JSONResponse({
         "repo_root": str(repo_root),
+        "preferred_repo_root": str(preferred_root) if preferred_root else None,
         "commit_sha": commit_sha,
         "commit_short": commit_sha[:7] if commit_sha else None,
     })

@@ -155,8 +155,14 @@ is_our_process() {
 ensure_port_free() {
   local pids attempt
 
-  # Get all PIDs using the port (there may be multiple - parent/child)
-  pids=$(lsof -ti :"${PORT}" 2>/dev/null || echo "")
+  # Only LISTEN sockets can block server bind. Established client connections
+  # should not be treated as port conflicts.
+  port_listener_pids() {
+    lsof -nP -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null || true
+  }
+
+  # Get listener PIDs on the port (there may be multiple - parent/child)
+  pids=$(port_listener_pids)
 
   if [[ -z "${pids}" ]]; then
     return 0  # Port is free
@@ -177,7 +183,7 @@ ensure_port_free() {
   # Wait for port to be freed (up to 5 seconds)
   for attempt in {1..10}; do
     sleep 0.5
-    if ! lsof -ti :"${PORT}" >/dev/null 2>&1; then
+    if [[ -z "$(port_listener_pids)" ]]; then
       echo "Port ${PORT} is now free"
       return 0
     fi
@@ -185,7 +191,7 @@ ensure_port_free() {
 
   # SIGTERM didn't work, try SIGKILL
   echo "Graceful shutdown timed out, trying SIGKILL..."
-  pids=$(lsof -ti :"${PORT}" 2>/dev/null || echo "")
+  pids=$(port_listener_pids)
   local killed_any=false
   for pid in ${pids}; do
     if is_our_process "${pid}"; then
@@ -197,7 +203,7 @@ ensure_port_free() {
 
   # Final wait
   sleep 1
-  if lsof -ti :"${PORT}" >/dev/null 2>&1; then
+  if [[ -n "$(port_listener_pids)" ]]; then
     if [[ "${killed_any}" == "false" ]]; then
       echo "ERROR: Port ${PORT} is in use by non-orchestrator process(es)"
     else
@@ -248,4 +254,5 @@ show_startup_info
 # Start control center entrypoint directly for deterministic startup.
 # IO_DEV disables static file caching so CSS/JS changes are visible immediately
 export IO_DEV=1
+export ISSUE_ORCHESTRATOR_CC_REPO_ROOT="${ROOT_DIR}"
 exec "${VENV_PATH}/bin/python" -m issue_orchestrator.entrypoints.control_center --port "${PORT}" "$@"

@@ -69,6 +69,24 @@ For issue-orchestrator specifically:
 - Use consistent button styles for similar actions
 - Position similar controls in predictable locations
 
+### 6. Action Semantics Verification (Required)
+
+UI buttons are adapters, not policy owners.
+
+- Define/extend a **UI action contract** before wiring new buttons:
+  - action id
+  - endpoint + payload shape
+  - expected state transition/invariants
+- Verify action behavior primarily below UI:
+  - domain/policy unit tests (pure logic)
+  - API behavior tests (state + labels + eligibility effects)
+- Keep UI tests focused on:
+  - wiring to the contract
+  - enable/disable affordance rules
+  - rendering parity (compact vs expanded, etc.)
+
+When a bug is found in UI behavior, add a lower-layer regression test first, then patch UI wiring.
+
 ## Control Center Layout Reference
 
 ```
@@ -100,3 +118,6 @@ Hidden by default (toggle reveals):
 - [ ] Is the primary user flow still minimal clicks?
 - [ ] Does the default state serve the common case?
 - [ ] Are advanced features clearly labeled but not hidden behind vague terms?
+- [ ] Is there a UI action contract entry for each changed button/action?
+- [ ] Are action semantics verified by non-UI tests (domain/API), not just UI tests?
+- [ ] Do compact and expanded views use the same policy and display semantics?

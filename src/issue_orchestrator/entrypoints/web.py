@@ -2518,18 +2518,19 @@ async def open_file(request: Request) -> JSONResponse:
 
 @app.post("/api/unblock-retry")
 async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901 - multi-step unblock with state transitions
-    """Remove blocking labels from issues and trigger a refresh.
+    """Remove retry-blocking labels from issues and trigger a refresh.
 
     JSON body:
         issues: list[int] - Issue numbers to unblock
 
-    Removes all blocking labels from each issue, clears them from history,
+    Removes all blocking labels and ``pr-pending`` from each issue, clears them from history,
     and triggers a single refresh so they'll be picked up on the next cycle.
     """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     from ..control.actions import RemoveLabelAction
+    from ..control.retry_policy import labels_to_remove_for_retry
 
     try:
         body = await request.json()
@@ -2550,12 +2551,12 @@ async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901 - m
 
     for issue_number in issue_numbers:
         try:
-            # Get current labels to find blocking ones
+            # Get current labels to find labels that prevent requeue
             current_labels = repository_host.get_issue_labels(issue_number)
-            blocking_labels = lm.get_blocking(current_labels)
+            labels_to_remove = labels_to_remove_for_retry(current_labels, lm)
 
-            if blocking_labels:
-                for label in blocking_labels:
+            if labels_to_remove:
+                for label in labels_to_remove:
                     action = RemoveLabelAction(
                         issue_number=issue_number,
                         label=label,
