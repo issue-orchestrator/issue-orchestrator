@@ -34,6 +34,7 @@ def find_worktree_root() -> Path:
 
 
 DIRTY_CHECK_MODES = {"tracked", "unstaged", "all", "off"}
+DIRTY_FILE_LIST_LIMIT = 20
 
 
 def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
@@ -62,6 +63,18 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
     return None, 0, dirty_check
 
 
+def _print_dirty_files(working_copy: GitWorkingCopy, worktree: Path, mode: str) -> None:
+    """Print dirty file list, clipped for readability."""
+    files = working_copy.list_dirty_files(worktree, mode)
+    if not files:
+        return
+    print(f"Dirty files (showing up to {DIRTY_FILE_LIST_LIMIT}):")
+    for path in files[:DIRTY_FILE_LIST_LIMIT]:
+        print(f"  - {path}")
+    if len(files) > DIRTY_FILE_LIST_LIMIT:
+        print(f"  ... and {len(files) - DIRTY_FILE_LIST_LIMIT} more")
+
+
 def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
     """Return exit code if dirty guard should block, else None."""
     if mode not in DIRTY_CHECK_MODES:
@@ -73,8 +86,8 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
         return 1
     if mode == "off":
         return None
+    working_copy = GitWorkingCopy()
     if mode == "all":
-        working_copy = GitWorkingCopy()
         if working_copy.has_uncommitted_changes(worktree):
             if verbose:
                 print(
@@ -82,11 +95,11 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
                     "commit, add, or stash before pushing. "
                     "Override with validation.pre_push_dirty_check."
                 )
+                _print_dirty_files(working_copy, worktree, mode)
             return 1
         return None
 
     include_staged = mode == "tracked"
-    working_copy = GitWorkingCopy()
     if working_copy.has_tracked_changes(worktree, include_staged=include_staged):
         if verbose:
             print(
@@ -94,6 +107,7 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
                 "Ignored files are allowed. "
                 "Override with validation.pre_push_dirty_check."
             )
+            _print_dirty_files(working_copy, worktree, mode)
         return 1
     return None
 

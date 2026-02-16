@@ -227,6 +227,65 @@ class TestHasUncommittedChanges:
             assert has_changes is True  # Safer to assume dirty
 
 
+class TestListDirtyFiles:
+    """Tests for list_dirty_files method."""
+
+    def test_list_dirty_files_unstaged_mode(self, git_wc, worktree_path):
+        """Unstaged mode should only include unstaged tracked files."""
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.return_value = MagicMock(
+                returncode=0,
+                stdout="b.txt\0a.txt\0",
+                stderr="",
+            )
+
+            files = git_wc.list_dirty_files(worktree_path, "unstaged")
+
+            assert files == ["a.txt", "b.txt"]
+            mock_run.assert_called_once_with(
+                worktree_path,
+                ["diff", "--name-only", "-z"],
+            )
+
+    def test_list_dirty_files_tracked_mode(self, git_wc, worktree_path):
+        """Tracked mode should include unstaged and staged tracked files."""
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="a.txt\0", stderr=""),
+                MagicMock(returncode=0, stdout="b.txt\0a.txt\0", stderr=""),
+            ]
+
+            files = git_wc.list_dirty_files(worktree_path, "tracked")
+
+            assert files == ["a.txt", "b.txt"]
+
+    def test_list_dirty_files_all_mode(self, git_wc, worktree_path):
+        """All mode should include tracked and untracked files."""
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = [
+                MagicMock(returncode=0, stdout="tracked-unstaged.py\0", stderr=""),
+                MagicMock(returncode=0, stdout="tracked-staged.py\0", stderr=""),
+                MagicMock(returncode=0, stdout="new-untracked.txt\0", stderr=""),
+            ]
+
+            files = git_wc.list_dirty_files(worktree_path, "all")
+
+            assert files == [
+                "new-untracked.txt",
+                "tracked-staged.py",
+                "tracked-unstaged.py",
+            ]
+
+    def test_list_dirty_files_git_error_returns_empty(self, git_wc, worktree_path):
+        """Error handling should return empty list."""
+        with patch.object(git_wc, "_run_git") as mock_run:
+            mock_run.side_effect = git_error(stderr="error")
+
+            files = git_wc.list_dirty_files(worktree_path, "all")
+
+            assert files == []
+
+
 class TestGetCommitsAheadOfMain:
     """Tests for get_commits_ahead_of_main method."""
 

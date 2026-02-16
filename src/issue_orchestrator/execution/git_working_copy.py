@@ -164,6 +164,42 @@ class GitWorkingCopy:
             logger.warning("Failed to check tracked changes in %s", worktree)
             return True  # Assume dirty on error (safer)
 
+    def _list_paths_from_nul_output(self, output: str) -> list[str]:
+        """Parse NUL-delimited path output from git commands."""
+        return [path for path in output.split("\0") if path]
+
+    def list_dirty_files(self, worktree: Path, mode: str) -> list[str]:
+        """List dirty file paths for guard diagnostics.
+
+        Args:
+            worktree: Path to the worktree directory.
+            mode: One of "tracked", "unstaged", or "all".
+
+        Returns:
+            Sorted unique file paths. Returns empty list on error.
+        """
+        try:
+            files: set[str] = set()
+
+            unstaged = self._run_git(worktree, ["diff", "--name-only", "-z"])
+            files.update(self._list_paths_from_nul_output(unstaged.stdout))
+
+            if mode in {"tracked", "all"}:
+                staged = self._run_git(worktree, ["diff", "--cached", "--name-only", "-z"])
+                files.update(self._list_paths_from_nul_output(staged.stdout))
+
+            if mode == "all":
+                untracked = self._run_git(
+                    worktree,
+                    ["ls-files", "--others", "--exclude-standard", "-z"],
+                )
+                files.update(self._list_paths_from_nul_output(untracked.stdout))
+
+            return sorted(files)
+        except GitError:
+            logger.warning("Failed to list dirty files in %s", worktree)
+            return []
+
     def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
         """Get commits that are ahead of main branch."""
         try:
