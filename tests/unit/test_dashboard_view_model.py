@@ -470,6 +470,9 @@ def test_view_model_includes_provider_circuits():
             self.config = config
             self.deps = deps
             self.shutdown_requested = False
+        
+        def get_provider_circuit_states(self):
+            return self.deps.provider_resilience.list_circuit_states()
 
     now = datetime.now(timezone.utc)
     circuit_store = InMemoryProviderCircuitStore()
@@ -494,9 +497,12 @@ def test_view_model_includes_provider_circuits():
 
     class MockDeps:
         def __init__(self, circuit_store):
-            self.provider_resilience = type('obj', (object,), {
-                'store': circuit_store,
-            })()
+            class MockProviderResilience:
+                def __init__(self, store):
+                    self.store = store
+                def list_circuit_states(self):
+                    return self.store.list_all()
+            self.provider_resilience = MockProviderResilience(circuit_store)
 
     orchestrator = OrchestratorWithDeps(
         state=state,

@@ -146,6 +146,14 @@ class Orchestrator:
     def state_lock(self) -> threading.RLock:
         return self._state_lock
 
+    def get_provider_circuit_states(self):
+        """Get all current provider circuit states for UI display.
+        
+        Returns a list of circuit states, allowing the view model to access this information
+        without reaching into internal dependencies.
+        """
+        return self.deps.provider_resilience.list_circuit_states()
+
     def kill_session(self, name: str) -> None:
         """Kill a session by terminal ID (public wrapper)."""
         self._kill_session(name)

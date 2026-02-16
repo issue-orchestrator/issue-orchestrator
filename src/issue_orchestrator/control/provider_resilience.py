@@ -26,6 +26,10 @@ class ProviderResilienceManager:
     def get_state(self, provider: str) -> ProviderCircuitState | None:
         return self.store.get(provider)
 
+    def list_circuit_states(self) -> list[ProviderCircuitState]:
+        """Get all current provider circuit states."""
+        return self.store.list_all()
+
     def is_open(self, provider: str, now: datetime | None = None) -> bool:
         if not provider:
             return False
