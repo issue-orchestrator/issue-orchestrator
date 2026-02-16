@@ -21,9 +21,6 @@ import time
 from pathlib import Path
 
 import pytest
-from libtmux import Server
-from libtmux.exc import LibTmuxException
-from libtmux._internal.query_list import ObjectDoesNotExist
 
 from tests.e2e.conftest import (
     OrchestratorProcess,
@@ -74,14 +71,13 @@ def cleanup_stale_orchestrators(config_path: Path, tmux_session: str = "orchestr
             except (ProcessLookupError, ValueError):
                 pass
         time.sleep(1)
-    # Kill tmux session using libtmux
+    # Kill tmux session if tmux is available
     try:
-        server = Server()
-        session = server.sessions.get(session_name=tmux_session)
-        if session:
-            session.kill()
-    except (LibTmuxException, ObjectDoesNotExist):
-        # Session doesn't exist or server not running - that's fine
+        subprocess.run(
+            ["tmux", "kill-session", "-t", tmux_session],
+            capture_output=True,
+        )
+    except FileNotFoundError:
         pass
 
 

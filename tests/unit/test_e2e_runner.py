@@ -8,6 +8,7 @@ from unittest.mock import patch, MagicMock
 from issue_orchestrator.infra.e2e_runner import (
     E2ERunnerManager,
     E2EAlreadyRunning,
+    _resolve_repo_python,
     get_e2e_runner_manager,
     maybe_trigger_e2e,
 )
@@ -457,3 +458,96 @@ class TestLogFileCapture:
             assert "log_path" in result
             assert result["log_path"].endswith(".log")
             assert "e2e" in result["log_path"]
+
+
+class TestResolveRepoPython:
+    """Test _resolve_repo_python uses the repo's venv when available."""
+
+    def test_uses_repo_venv_when_exists(self, tmp_path: Path):
+        """When repo_root has .venv/bin/python, use it."""
+        venv_python = tmp_path / ".venv" / "bin" / "python"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.touch()
+
+        result = _resolve_repo_python(tmp_path)
+        assert result == str(venv_python)
+
+    def test_falls_back_to_sys_executable(self, tmp_path: Path):
+        """When no venv exists, fall back to sys.executable."""
+        import sys
+
+        result = _resolve_repo_python(tmp_path)
+        assert result == sys.executable
+
+    def test_worker_uses_repo_venv(self, tmp_path: Path):
+        """Verify the E2E worker subprocess gets the repo's Python, not sys.executable."""
+        import sys
+
+        venv_python = tmp_path / ".venv" / "bin" / "python"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.touch()
+
+        manager = E2ERunnerManager()
+        with patch("subprocess.Popen") as popen_mock, \
+             patch("builtins.open", MagicMock()):
+            proc = MagicMock()
+            proc.pid = 12345
+            proc.poll.return_value = None
+            popen_mock.return_value = proc
+
+            manager.start(
+                repo_root=tmp_path,
+                orchestrator_id="test-orch",
+                pytest_args=["tests/e2e"],
+            )
+
+            cmd = popen_mock.call_args[0][0]
+            assert cmd[0] == str(venv_python), (
+                f"Expected repo venv python {venv_python}, got {cmd[0]}"
+            )
+            assert cmd[0] != sys.executable
+
+    def test_resume_run_uses_repo_venv(self, tmp_path: Path):
+        """Verify _resume_run also uses the repo's Python, not sys.executable."""
+        import sys
+
+        venv_python = tmp_path / ".venv" / "bin" / "python"
+        venv_python.parent.mkdir(parents=True)
+        venv_python.touch()
+
+        # Set up DB with an interrupted run so start_or_resume triggers _resume_run
+        db_path = tmp_path / ".issue-orchestrator" / "e2e.db"
+        db_path.parent.mkdir(parents=True)
+        db = E2EDB(db_path)
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e", "-v"],
+            commit_sha="abc123",
+            branch="main",
+        )
+        # Add a passed test so resume path is taken (not "no progress, start fresh")
+        db.upsert_test_result(run_id, "tests/e2e/test_foo.py::test_bar", "passed", 1.0)
+        # Mark as interrupted so get_interrupted_run() finds it
+        db.finish_run(run_id, "interrupted")
+
+        manager = E2ERunnerManager()
+        with patch("subprocess.Popen") as popen_mock, \
+             patch("builtins.open", MagicMock()):
+            proc = MagicMock()
+            proc.pid = 12345
+            proc.poll.return_value = None
+            popen_mock.return_value = proc
+
+            result = manager.start_or_resume(
+                repo_root=tmp_path,
+                orchestrator_id="test-orch",
+                pytest_args=["tests/e2e", "-v"],
+            )
+
+            assert result["resumed"] is True
+            cmd = popen_mock.call_args[0][0]
+            assert cmd[0] == str(venv_python), (
+                f"Expected repo venv python {venv_python}, got {cmd[0]}"
+            )
+            assert cmd[0] != sys.executable
