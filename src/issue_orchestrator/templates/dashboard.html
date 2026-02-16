@@ -47,6 +47,22 @@
             </div>
         </header>
 
+        {% set open_providers = provider_circuits|selectattr('is_open')|list %}
+        {% if open_providers %}
+        <section class="provider-outage-banner" role="alert" aria-live="polite">
+            <div class="outage-content">
+                <span class="outage-icon" aria-hidden="true">⚠️</span>
+                <div class="outage-details">
+                    <strong>Provider Unavailable:</strong>
+                    {% for circuit in open_providers %}
+                        <span class="provider-name" title="Last error: {{ circuit.last_error_summary or 'Unknown' }}">{{ circuit.provider }}</span>{% if not loop.last %}, {% endif %}
+                    {% endfor %}
+                    — circuit breaker active
+                </div>
+            </div>
+        </section>
+        {% endif %}
+
         <section class="scope-summary" aria-label="Current scope">
             <div class="scope-line">
                 <span class="scope-label">Scope</span>

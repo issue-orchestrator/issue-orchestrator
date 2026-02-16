@@ -65,6 +65,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuits: list[dict[str, Any]]  # Circuit breaker status for providers
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -103,11 +104,13 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuits": self.provider_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
     def dashboard_data(self) -> dict[str, Any]:
         github_usage = gh_audit.get_live_usage_snapshot()
+        open_circuits = [c for c in self.provider_circuits if c.get("is_open")]
         return {
             "startupComplete": self.startup_status == "complete",
             "paused": self.paused,
@@ -122,6 +125,8 @@ class DashboardViewModel:
             "scope": self.scope_summary,
             "refresh": self.scope_summary.get("refresh", {}),
             "githubUsage": github_usage,
+            "providerCircuits": self.provider_circuits,
+            "openCircuits": open_circuits,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
         }
@@ -163,6 +168,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuits": self.provider_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -1206,6 +1212,25 @@ def build_dashboard_view_model(
             "refresh": refresh_status,
         }
 
+    # Build provider circuit status list
+    provider_circuits: list[dict[str, Any]] = []
+    if orchestrator and hasattr(orchestrator, "deps"):
+        try:
+            provider_resilience = orchestrator.deps.provider_resilience
+            now = datetime.now(timezone.utc)
+            for circuit_state in provider_resilience.store.list_all():
+                is_open = circuit_state.open_until is not None and circuit_state.open_until > now
+                provider_circuits.append({
+                    "provider": circuit_state.provider,
+                    "is_open": is_open,
+                    "open_until": circuit_state.open_until.isoformat() if circuit_state.open_until else None,
+                    "consecutive_outages": circuit_state.consecutive_outages,
+                    "last_error_summary": circuit_state.last_error_summary,
+                    "updated_at": circuit_state.updated_at.isoformat(),
+                })
+        except (AttributeError, TypeError):
+            pass
+
     return DashboardViewModel(
         issues=issues,
         active_items=active_items,
@@ -1243,4 +1268,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuits=provider_circuits,
     )
