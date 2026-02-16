@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -454,3 +454,82 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_includes_provider_circuits():
+    """Test that provider circuit status is included in the view model."""
+    from issue_orchestrator.ports.provider_resilience import ProviderCircuitState, InMemoryProviderCircuitStore
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    # Create a mock orchestrator with provider resilience dependencies
+    class OrchestratorWithDeps:
+        def __init__(self, state, config, deps):
+            self.state = state
+            self.config = config
+            self.deps = deps
+            self.shutdown_requested = False
+
+    now = datetime.now(timezone.utc)
+    circuit_store = InMemoryProviderCircuitStore()
+    # Add an open circuit
+    open_state = ProviderCircuitState(
+        provider="claude",
+        open_until=now + timedelta(minutes=30),
+        consecutive_outages=2,
+        last_error_summary="Rate limited",
+        updated_at=now,
+    )
+    circuit_store.save(open_state)
+    # Add a closed circuit
+    closed_state = ProviderCircuitState(
+        provider="github",
+        open_until=None,
+        consecutive_outages=1,
+        last_error_summary="Previous timeout",
+        updated_at=now,
+    )
+    circuit_store.save(closed_state)
+
+    class MockDeps:
+        def __init__(self, circuit_store):
+            self.provider_resilience = type('obj', (object,), {
+                'store': circuit_store,
+            })()
+
+    orchestrator = OrchestratorWithDeps(
+        state=state,
+        config=config,
+        deps=MockDeps(circuit_store),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Verify provider circuits are in the view model
+    assert view_model.provider_circuits is not None
+    assert len(view_model.provider_circuits) == 2
+
+    # Check the open circuit
+    claude_circuit = next(c for c in view_model.provider_circuits if c["provider"] == "claude")
+    assert claude_circuit["is_open"] is True
+    assert claude_circuit["consecutive_outages"] == 2
+    assert claude_circuit["last_error_summary"] == "Rate limited"
+
+    # Check the closed circuit
+    github_circuit = next(c for c in view_model.provider_circuits if c["provider"] == "github")
+    assert github_circuit["is_open"] is False
+    assert github_circuit["open_until"] is None
+
+    # Verify the data is in dashboard_data
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuits" in dashboard_data
+    assert "openCircuits" in dashboard_data
+    assert len(dashboard_data["openCircuits"]) == 1
+    assert dashboard_data["openCircuits"][0]["provider"] == "claude"
