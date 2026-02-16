@@ -1,5 +1,6 @@
 """Unit tests for the prepush_check module."""
 
+import os
 import pytest
 import tempfile
 import subprocess
@@ -128,7 +129,6 @@ class TestRunPrepushCheck:
 
     def test_returns_0_when_no_config(self, temp_worktree):
         """Test returns 0 (pass) when no config exists."""
-        import os
         orig_cwd = os.getcwd()
         try:
             os.chdir(temp_worktree)
@@ -139,7 +139,6 @@ class TestRunPrepushCheck:
 
     def test_returns_0_when_validation_passes(self, temp_worktree):
         """Test returns 0 when validation passes."""
-        import os
 
         # Create config with passing command
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
@@ -161,7 +160,6 @@ validation:
 
     def test_returns_1_when_validation_fails(self, temp_worktree):
         """Test returns 1 when validation fails."""
-        import os
 
         # Create config with failing command
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
@@ -183,7 +181,6 @@ validation:
 
     def test_uses_cache_on_second_run(self, temp_worktree):
         """Test uses cache on second run."""
-        import os
 
         # Create config with command that creates a file (to track runs)
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
@@ -217,7 +214,6 @@ validation:
 
     def test_blocks_when_tracked_dirty(self, temp_worktree):
         """Test blocks push when tracked files are dirty."""
-        import os
 
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
@@ -241,7 +237,6 @@ validation:
 
     def test_allows_when_dirty_check_off(self, temp_worktree):
         """Test allows push when dirty check is disabled."""
-        import os
 
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
@@ -264,8 +259,6 @@ validation:
 
     def test_allows_staged_when_unstaged_mode(self, temp_worktree):
         """Test unstaged mode allows staged changes."""
-        import os
-        import subprocess
 
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
@@ -289,7 +282,6 @@ validation:
 
     def test_blocks_when_all_mode_with_untracked_files(self, temp_worktree):
         """Mode 'all' blocks when untracked files are present."""
-        import os
 
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
@@ -312,7 +304,6 @@ validation:
 
     def test_rejects_invalid_dirty_mode(self, temp_worktree, capsys):
         """Test invalid dirty mode exits 1 and reports error when verbose."""
-        import os
 
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
@@ -335,7 +326,6 @@ validation:
 
     def test_dirty_only_skips_validation_command(self, temp_worktree):
         """Dirty-only mode should not execute validation command."""
-        import os
 
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
@@ -358,7 +348,6 @@ validation:
 
     def test_dirty_only_still_blocks_when_dirty(self, temp_worktree):
         """Dirty-only mode must still enforce dirty-tree policy."""
-        import os
 
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
@@ -381,7 +370,6 @@ validation:
 
     def test_verbose_output_lists_dirty_files(self, temp_worktree, capsys):
         """Verbose dirty guard output should include dirty file paths."""
-        import os
 
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
@@ -407,7 +395,6 @@ validation:
 
     def test_verbose_output_clips_dirty_file_list(self, temp_worktree, capsys):
         """Dirty file listing should be clipped with ellipsis for long lists."""
-        import os
 
         config_dir = temp_worktree / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
