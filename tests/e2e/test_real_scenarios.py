@@ -71,11 +71,14 @@ def cleanup_stale_orchestrators(config_path: Path, tmux_session: str = "orchestr
             except (ProcessLookupError, ValueError):
                 pass
         time.sleep(1)
-    # Kill tmux session if it exists
-    subprocess.run(
-        ["tmux", "kill-session", "-t", tmux_session],
-        capture_output=True,
-    )
+    # Kill tmux session if tmux is available
+    try:
+        subprocess.run(
+            ["tmux", "kill-session", "-t", tmux_session],
+            capture_output=True,
+        )
+    except FileNotFoundError:
+        pass
 
 
 def start_orchestrator_with_config(
