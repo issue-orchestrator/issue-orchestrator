@@ -547,6 +547,31 @@ let logFollow = true;
 let logIssue = null;
 let logRunDir = null;
 
+function clearDiagnosticsActionMessage() {
+    const msg = document.getElementById('diagActionMessage');
+    if (!msg) return;
+    msg.textContent = '';
+    msg.style.display = 'none';
+}
+
+function showDiagnosticsActionMessage(message) {
+    const msg = document.getElementById('diagActionMessage');
+    if (!msg) {
+        showToast(message, 'error');
+        return;
+    }
+    msg.textContent = String(message || 'Action failed');
+    msg.style.display = 'block';
+}
+
+function reportActionError(message, surface = 'toast') {
+    if (surface === 'inline') {
+        showDiagnosticsActionMessage(message);
+        return;
+    }
+    showToast(message, 'error');
+}
+
 function isNearBottom(element, threshold = 24) {
     return element.scrollTop + element.clientHeight >= element.scrollHeight - threshold;
 }
@@ -608,11 +633,12 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
     }
 }
 
-async function openAgentLog(issueNumber, logLabel = 'Most Recent Session Log', runDir = null) {
+async function openAgentLog(issueNumber, logLabel = 'Most Recent Session Log', runDir = null, errorSurface = 'toast') {
     if (!runDir) {
-        showToast('Session log requires run context. Open from a timeline entry.', 'error');
+        reportActionError('Session log requires run context. Open from a timeline entry.', errorSurface);
         return;
     }
+    clearDiagnosticsActionMessage();
     logIssue = issueNumber;
     logRunDir = runDir;
     const logContent = `
@@ -650,8 +676,8 @@ async function openAgentLog(issueNumber, logLabel = 'Most Recent Session Log', r
     }, 2000);
 }
 
-function openAgentLogAction(issueNumber, runDir = null, logLabel = 'Most Recent Session Log') {
-    return openAgentLog(issueNumber, logLabel, runDir);
+function openAgentLogAction(issueNumber, runDir = null, logLabel = 'Most Recent Session Log', errorSurface = 'toast') {
+    return openAgentLog(issueNumber, logLabel, runDir, errorSurface);
 }
 
 async function openSessionManifest(issueNumber, runDir = null) {
@@ -661,7 +687,9 @@ async function openSessionManifest(issueNumber, runDir = null) {
     const res = await fetch(`/api/dialog/session-diagnostics/${issueNumber}${suffix}`);
     const data = await res.json();
     if (data.error) {
-        showToast(data.error, 'error');
+        document.getElementById('modalTitle').textContent = `Session Diagnostics #${issueNumber}`;
+        document.getElementById('modalBody').innerHTML = `<div class="diag-action-message" style="display:block;">${escapeHtml(data.error)}</div>`;
+        document.getElementById('modalOverlay').classList.add('visible');
         return;
     }
 
@@ -697,6 +725,7 @@ async function openSessionManifest(issueNumber, runDir = null) {
     const hasActions = actions.length > 0;
 
     let html = '<div class="diag-modal">';
+    html += '<div id="diagActionMessage" class="diag-action-message"></div>';
     html += '<div class="diag-header">';
     html += `<div class="diag-header-title">Issue #${issueNumber} Diagnostics</div>`;
     html += `<div class="diag-chip-row">${chips}</div>`;
@@ -829,14 +858,14 @@ function _renderDialogActionButton(action, labelOverride, cssClass) {
     if (action.type === 'open_agent_log') {
         if (!action.run_dir) return '';
         const runDirFirstArg = `${JSON.stringify(String(action.run_dir))}, `;
-        return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'Most Recent Session Log')">${label}</button>`;
+        return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'Most Recent Session Log', 'inline')">${label}</button>`;
     }
     if (action.type === 'view_claude_log') {
         if (!action.run_dir) return '';
-        return `<button class="${cssClass}" onclick="viewClaudeLog(${action.issue_number}${runDirArg})">${label}</button>`;
+        return `<button class="${cssClass}" onclick="viewClaudeLog(${action.issue_number}${runDirArg}, 'inline')">${label}</button>`;
     }
     if (action.type === 'open_orchestrator_log') {
-        return `<button class="${cssClass}" onclick="openFilteredOrchestratorLog(${action.issue_number}${runDirArg})">${label}</button>`;
+        return `<button class="${cssClass}" onclick="openFilteredOrchestratorLog(${action.issue_number}${runDirArg}, 'inline')">${label}</button>`;
     }
     if (action.type === 'open_review_feedback') {
         return `<button class="${cssClass}" onclick="openReviewFeedback(${action.issue_number})">${label}</button>`;
@@ -4797,8 +4826,9 @@ function openPath(path) {
     openLogFile(path);
 }
 
-async function openFilteredOrchestratorLog(issueNumber, runDir = null) {
+async function openFilteredOrchestratorLog(issueNumber, runDir = null, errorSurface = 'toast') {
     try {
+        clearDiagnosticsActionMessage();
         showToast('Generating issue-scoped orchestrator log...');
         const params = new URLSearchParams();
         if (runDir) params.set('run_dir', runDir);
@@ -4806,29 +4836,30 @@ async function openFilteredOrchestratorLog(issueNumber, runDir = null) {
         const res = await fetch(`/api/session/orchestrator-log/${issueNumber}${suffix}`);
         const data = await res.json();
         if (data.error) {
-            showToast(data.error, 'error');
+            reportActionError(data.error, errorSurface);
             return;
         }
         openPath(data.filtered_log_path);
     } catch (err) {
-        showToast(`Failed to get orchestrator log: ${err.message}`, 'error');
+        reportActionError(`Failed to get orchestrator log: ${err.message}`, errorSurface);
     }
 }
 
 // Claude Log Viewer
-async function viewClaudeLog(issueNumber, runDir = null) {
+async function viewClaudeLog(issueNumber, runDir = null, errorSurface = 'toast') {
     if (!runDir) {
-        showToast('Claude log requires run context. Open from a timeline entry.', 'error');
+        reportActionError('Claude log requires run context. Open from a timeline entry.', errorSurface);
         return;
     }
     try {
+        clearDiagnosticsActionMessage();
         showToast('Loading Claude log...');
         const params = new URLSearchParams({ limit: '500' });
         params.set('run_dir', runDir);
         const res = await fetch(`/api/session/claude-log/${issueNumber}?${params.toString()}`);
         const data = await res.json();
         if (data.error) {
-            showToast(data.error, 'error');
+            reportActionError(data.error, errorSurface);
             document.getElementById('modalTitle').textContent = `Claude Session Log #${issueNumber}`;
             document.getElementById('modalBody').innerHTML = `
                 <div class="timeline-empty">

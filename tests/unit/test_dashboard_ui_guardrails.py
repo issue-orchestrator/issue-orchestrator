@@ -291,6 +291,15 @@ def test_session_diagnostics_actions_use_primary_plus_more_menu() -> None:
     assert "openSessionManifest(action.issue_number, action.run_dir || null)" in js
 
 
+def test_diagnostics_action_errors_render_inline_in_modal() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "openSessionManifest")
+    assert "diagActionMessage" in body
+    assert "showToast(data.error" not in body
+    assert "reportActionError(" in js
+    assert "'inline'" in js
+
+
 def test_timeline_event_actions_use_primary_plus_more_menu() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderTimelineEventActions")
