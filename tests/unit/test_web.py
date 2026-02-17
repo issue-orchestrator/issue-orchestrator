@@ -36,6 +36,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
+from issue_orchestrator.domain.event_taxonomy import infer_event_intent
 from issue_orchestrator.timeline import TimelineArtifact, TimelineEvent, TimelineStream
 
 
@@ -153,8 +154,26 @@ def build_timeline_event(
     task: str | None = None,
     rework_cycle: int | None = None,
     reviewer_agent: str | None = None,
+    logical_run: int = 1,
+    logical_cycle: int | None = None,
+    logical_phase: str | None = None,
+    timeline_schema_version: int = 3,
 ) -> TimelineEvent:
     """Build a TimelineEvent with sensible defaults for intent-focused tests."""
+    inferred_intent = infer_event_intent(event_name=event_name, task=task)
+    inferred_phase = logical_phase
+    if inferred_phase is None:
+        if inferred_intent.value == "review":
+            inferred_phase = "review"
+        elif inferred_intent.value == "rework":
+            inferred_phase = "rework"
+        elif inferred_intent.value == "orchestrator":
+            inferred_phase = "orchestrator"
+        else:
+            inferred_phase = "coding"
+    if logical_cycle is None:
+        logical_cycle = (rework_cycle + 1) if isinstance(rework_cycle, int) and rework_cycle >= 0 else 1
+
     return TimelineEvent(
         event_id=event_id,
         timestamp=timestamp,
@@ -174,6 +193,12 @@ def build_timeline_event(
         task=task,
         rework_cycle=rework_cycle,
         reviewer_agent=reviewer_agent,
+        timeline_schema_version=timeline_schema_version,
+        review_oriented=(inferred_intent.value == "review"),
+        event_intent=inferred_intent.value,
+        logical_run=logical_run,
+        logical_cycle=logical_cycle,
+        logical_phase=inferred_phase,
     )
 
 
@@ -1589,6 +1614,11 @@ class TestApiTimelineEndpoint:
                     run_id="20260206-000000Z",
                     run_dir="/tmp/worktree/.issue-orchestrator/sessions/20260206-000000Z__issue-123",
                     artifacts=[TimelineArtifact("worktree", "Worktree", "/tmp/worktree")],
+                    timeline_schema_version=3,
+                    event_intent="coding",
+                    logical_run=1,
+                    logical_cycle=1,
+                    logical_phase="coding",
                 ),
                 TimelineEvent(
                     event_id="e2",
@@ -1606,6 +1636,11 @@ class TestApiTimelineEndpoint:
                         TimelineArtifact("review_comment", "Review Comment", "https://example/pr/1#issuecomment-1"),
                         TimelineArtifact("completion_record", "Completion", "/tmp/worktree/completion.json"),
                     ],
+                    timeline_schema_version=3,
+                    event_intent="coding",
+                    logical_run=1,
+                    logical_cycle=1,
+                    logical_phase="coding",
                 ),
             ],
         )
@@ -1736,6 +1771,7 @@ class TestApiTimelineEndpoint:
                 "session.started",
                 event_id="e3",
                 timestamp="2026-02-09T11:00:00Z",
+                logical_run=2,
                 rework_cycle=0,
                 agent="agent:backend",
             ),
@@ -1744,6 +1780,7 @@ class TestApiTimelineEndpoint:
                 event_id="e4",
                 timestamp="2026-02-09T11:30:00Z",
                 status="completed",
+                logical_run=2,
                 rework_cycle=0,
             ),
         ])
@@ -1842,6 +1879,7 @@ class TestApiTimelineEndpoint:
                 event_id="e4",
                 timestamp="2026-02-09T09:00:00Z",
                 status="started",
+                logical_run=2,
                 agent="agent:backend",
             ),
             build_timeline_event(
@@ -1849,6 +1887,7 @@ class TestApiTimelineEndpoint:
                 event_id="e5",
                 timestamp="2026-02-09T09:30:00Z",
                 status="completed",
+                logical_run=2,
             ),
         ])
 
@@ -1880,6 +1919,7 @@ class TestApiTimelineEndpoint:
                 event_id="e3",
                 timestamp="2026-02-09T10:00:00Z",
                 status="started",
+                logical_run=2,
                 rework_cycle=0,
                 agent="agent:backend",
             ),
@@ -1888,6 +1928,7 @@ class TestApiTimelineEndpoint:
                 event_id="e4",
                 timestamp="2026-02-09T10:30:00Z",
                 status="completed",
+                logical_run=2,
                 rework_cycle=0,
             ),
         ])
@@ -1925,6 +1966,7 @@ class TestApiTimelineEndpoint:
                 timestamp="2026-02-09T11:00:00Z",
                 status="started",
                 run_id="run-2",
+                logical_run=2,
                 rework_cycle=0,
                 agent="agent:backend",
             ),
@@ -1934,6 +1976,7 @@ class TestApiTimelineEndpoint:
                 timestamp="2026-02-09T11:30:00Z",
                 status="completed",
                 run_id="run-2",
+                logical_run=2,
                 rework_cycle=0,
             ),
         ])
@@ -2110,6 +2153,52 @@ class TestApiTimelineEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_issue_detail_reports_logical_semantics_missing_when_events_lack_fields(self):
+        """Issue detail should fail fast on events missing logical semantics."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+            ),
+        ]
+        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+            issue_number=123,
+            events=[
+                TimelineEvent(
+                    event_id="e1",
+                    timestamp="2026-02-09T10:00:00Z",
+                    event="session.started",
+                    issue_number=123,
+                    phase="in_progress",
+                    step="started",
+                    status="started",
+                    level="phase",
+                    summary=None,
+                    parent_key="session:issue-123",
+                    artifacts=[],
+                    timeline_schema_version=3,
+                    event_intent="coding",
+                ),
+            ],
+        )
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/issue-detail/123")
+            assert response.status_code == 200
+            payload = response.json()
+            diagnostic = payload["summary"].get("timeline_diagnostic")
+            assert diagnostic is not None
+            assert diagnostic["state"] == "logical_semantics_missing"
+            assert diagnostic["dropped_missing_semantics"] == 1
+            assert "logical_semantics_missing" in diagnostic["signals"]
+        finally:
+            set_orchestrator(None)
+
     def test_issue_detail_latest_logical_run_keeps_review_with_rework(self):
         """Latest run must be logical lifecycle, not physical run_id ordering."""
         payload = fetch_issue_detail_payload([
@@ -2215,7 +2304,11 @@ class TestApiTimelineEndpoint:
                     parent_key="session:issue-123",
                     artifacts=[],
                     run_dir="/tmp/wt/.issue-orchestrator/sessions/20260216-000000Z__coding-1",
-                    timeline_schema_version=2,
+                    timeline_schema_version=3,
+                    event_intent="coding",
+                    logical_run=1,
+                    logical_cycle=1,
+                    logical_phase="coding",
                 ),
             ],
         )
@@ -2256,6 +2349,11 @@ class TestApiTimelineEndpoint:
                     parent_key="issue:123",
                     artifacts=[],
                     removed=["pr-pending"],
+                    timeline_schema_version=3,
+                    event_intent="orchestrator",
+                    logical_run=2,
+                    logical_cycle=1,
+                    logical_phase="orchestrator",
                 ),
                 TimelineEvent(
                     event_id="e2",
@@ -2270,7 +2368,11 @@ class TestApiTimelineEndpoint:
                     parent_key="session:issue-123",
                     artifacts=[],
                     run_dir="/tmp/wt/.issue-orchestrator/sessions/20260216-000000Z__coding-1",
-                    timeline_schema_version=2,
+                    timeline_schema_version=3,
+                    event_intent="coding",
+                    logical_run=2,
+                    logical_cycle=1,
+                    logical_phase="coding",
                 ),
             ],
         )
@@ -2567,7 +2669,11 @@ class TestTimelineActionWiring:
                     parent_key="session:issue-123",
                     artifacts=[],
                     run_dir="/tmp/wt/.issue-orchestrator/sessions/20260216-000000Z__coding-1",
-                    timeline_schema_version=2,
+                    timeline_schema_version=3,
+                    event_intent="coding",
+                    logical_run=1,
+                    logical_cycle=1,
+                    logical_phase="coding",
                 ),
             ],
         )
@@ -2638,15 +2744,19 @@ class TestTimelineActionWiring:
 
         _timeline_event_default_actions(issue_number=1, add_action=_capture)
         _timeline_event_recommended_actions(
+            event={"event": "session.started", "event_intent": "coding"},
             event_name="session.started", issue_number=1, add_action=_capture,
         )
         _timeline_event_recommended_actions(
+            event={"event": "session.failed", "event_intent": "coding"},
             event_name="session.failed", issue_number=1, add_action=_capture,
         )
         _timeline_event_recommended_actions(
+            event={"event": "validation.failed", "event_intent": "orchestrator"},
             event_name="validation.failed", issue_number=1, add_action=_capture,
         )
         _timeline_event_recommended_actions(
+            event={"event": "review.comment_added", "event_intent": "review"},
             event_name="review.comment_added", issue_number=1, add_action=_capture,
         )
 
@@ -2664,7 +2774,7 @@ class TestTimelineActionWiring:
         event = {
             "event": "review.comment_added",
             "issue_number": 4057,
-            "timeline_schema_version": 2,
+            "timeline_schema_version": 3,
             "run_dir": "/tmp/wt/.issue-orchestrator/sessions/20260216-000000Z__issue-4057",
             "artifacts": [
                 {"type": "pull_request", "label": "PR", "value": "https://github.com/org/repo/pull/4124"},
@@ -2707,10 +2817,10 @@ class TestTimelineActionWiring:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
 
         run_dir = "/tmp/wt/.issue-orchestrator/sessions/20260216-000000Z__issue-1"
-        review_actions = _timeline_event_actions({"event": "review.approved", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": 2}, 1)
-        coding_actions = _timeline_event_actions({"event": "session.started", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": 2}, 1)
-        rework_actions = _timeline_event_actions({"event": "rework.started", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": 2}, 1)
-        fallback_actions = _timeline_event_actions({"event": "issue.unblocked", "issue_number": 1, "timeline_schema_version": 2}, 1)
+        review_actions = _timeline_event_actions({"event": "review.approved", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": 3}, 1)
+        coding_actions = _timeline_event_actions({"event": "session.started", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": 3}, 1)
+        rework_actions = _timeline_event_actions({"event": "rework.started", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": 3}, 1)
+        fallback_actions = _timeline_event_actions({"event": "issue.unblocked", "issue_number": 1, "timeline_schema_version": 3}, 1)
 
         def _label(actions: list[dict[str, Any]]) -> str:
             return next(action["label"] for action in actions if action.get("type") == "open_agent_log")
@@ -2724,7 +2834,7 @@ class TestTimelineActionWiring:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
 
         actions_without_run_dir = _timeline_event_actions(
-            {"event": "session.started", "issue_number": 1, "timeline_schema_version": 2},
+            {"event": "session.started", "issue_number": 1, "timeline_schema_version": 3},
             1,
         )
         types_without_run_dir = {action.get("type") for action in actions_without_run_dir}
@@ -2736,7 +2846,7 @@ class TestTimelineActionWiring:
                 "event": "session.started",
                 "issue_number": 1,
                 "run_dir": "/tmp/wt/.issue-orchestrator/sessions/20260216-000000Z__issue-1",
-                "timeline_schema_version": 2,
+                "timeline_schema_version": 3,
             },
             1,
         )
@@ -2748,7 +2858,16 @@ class TestTimelineActionWiring:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
 
         actions_without_run_dir = _timeline_event_actions(
-            {"event": "review.comment_added", "issue_number": 1, "timeline_schema_version": 2},
+            {
+                "event": "review.comment_added",
+                "issue_number": 1,
+                "timeline_schema_version": 3,
+                "event_intent": "review",
+                "review_oriented": True,
+                "logical_run": 1,
+                "logical_cycle": 1,
+                "logical_phase": "review",
+            },
             1,
         )
         warning_actions = [
@@ -2764,7 +2883,7 @@ class TestTimelineActionWiring:
                 "event": "review.comment_added",
                 "issue_number": 1,
                 "run_dir": "/tmp/wt/.issue-orchestrator/sessions/20260216-000000Z__issue-1",
-                "timeline_schema_version": 2,
+                "timeline_schema_version": 3,
             },
             1,
         )

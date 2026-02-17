@@ -19,8 +19,8 @@ from .domain.event_taxonomy import (
 )
 from .ports.timeline_store import TimelineRecord
 
-TIMELINE_SCHEMA_VERSION = 2
-MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION = 2
+TIMELINE_SCHEMA_VERSION = 3
+MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -63,6 +63,9 @@ class TimelineEvent:
     unsupported_schema: bool = False
     review_oriented: bool = False
     event_intent: str = EventIntent.SYSTEM.value
+    logical_run: int | None = None
+    logical_cycle: int | None = None
+    logical_phase: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -98,6 +101,12 @@ class TimelineEvent:
         d["unsupported_schema"] = self.unsupported_schema
         d["review_oriented"] = self.review_oriented
         d["event_intent"] = self.event_intent
+        if self.logical_run is not None:
+            d["logical_run"] = self.logical_run
+        if self.logical_cycle is not None:
+            d["logical_cycle"] = self.logical_cycle
+        if self.logical_phase:
+            d["logical_phase"] = self.logical_phase
         return d
 
 
@@ -150,9 +159,15 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
     added = _string_list_or_none(data.get("added"))
     removed = _string_list_or_none(data.get("removed"))
     timeline_schema_version = _timeline_schema_version_from_data(data)
+    logical_run = data.get("logical_run") if isinstance(data.get("logical_run"), int) else None
+    logical_cycle = data.get("logical_cycle") if isinstance(data.get("logical_cycle"), int) else None
+    logical_phase = data.get("logical_phase") if isinstance(data.get("logical_phase"), str) else None
     unsupported_schema = (
         timeline_schema_version is None
         or timeline_schema_version < MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION
+        or logical_run is None
+        or logical_cycle is None
+        or not logical_phase
     )
     review_oriented_raw = data.get("review_oriented")
     if isinstance(review_oriented_raw, bool):
@@ -192,6 +207,9 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         unsupported_schema=unsupported_schema,
         review_oriented=review_oriented,
         event_intent=event_intent,
+        logical_run=logical_run,
+        logical_cycle=logical_cycle,
+        logical_phase=logical_phase,
     )
 
 

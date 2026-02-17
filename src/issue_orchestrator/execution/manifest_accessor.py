@@ -76,7 +76,7 @@ class ManifestAccessor:
 
         session_output = FileSystemSessionOutput()
         session_candidate = session_output.get_log_path(worktree_path, session_name)
-        if session_candidate.exists() and session_candidate.stat().st_size > 0:
+        if session_candidate and session_candidate.exists() and session_candidate.stat().st_size > 0:
             return self._artifact_stream("agent_log", session_candidate)
         for candidate_name in ("session.log", "pane.log", "provider-runner/stdout.log"):
             candidate_path = run_dir / candidate_name

@@ -273,7 +273,11 @@ def test_timeline_writer_preserves_sequenced_event_id_and_schema() -> None:
     record = store.records[0]
     assert record.event_id == "77"
     assert record.data["schema"] == 1
-    assert record.data["timeline_schema_version"] == 2
+    assert record.data["timeline_schema_version"] == 3
+    assert record.data["event_intent"] == "coding"
+    assert record.data["logical_run"] == 1
+    assert record.data["logical_cycle"] == 1
+    assert record.data["logical_phase"] == "coding"
 
 
 def test_routed_timeline_store_routes_by_worktree_path(tmp_path: Path) -> None:

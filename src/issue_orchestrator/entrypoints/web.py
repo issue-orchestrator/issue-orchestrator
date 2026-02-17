@@ -1214,21 +1214,21 @@ async def get_session_manifest(
     context = _resolve_issue_session_context(issue_number)
     worktree_path = context.worktree_path
     session_name = context.session_name
-    run_dir = context.run_dir
+    resolved_run_dir = context.run_dir
 
     if requested_run_dir:
         candidate = Path(requested_run_dir)
         if candidate.exists():
-            run_dir = candidate
+            resolved_run_dir = candidate
 
-    if run_dir:
+    if resolved_run_dir:
         from ..execution.session_output_adapter import FileSystemSessionOutput
 
         session_output_manager = FileSystemSessionOutput()
         if not session_name:
-            session_name = session_output_manager.session_name_from_path(str(run_dir))
-        session_output_manager.attach_claude_log(run_dir)
-        return _manifest_response(run_dir, session_name)
+            session_name = session_output_manager.session_name_from_path(str(resolved_run_dir))
+        session_output_manager.attach_claude_log(resolved_run_dir)
+        return _manifest_response(resolved_run_dir, session_name)
 
     if not worktree_path:
         return JSONResponse({
@@ -1238,18 +1238,18 @@ async def get_session_manifest(
 
     from ..execution.session_output_adapter import FileSystemSessionOutput
     session_output_helper = FileSystemSessionOutput()
-    run_dir = session_output_helper.find_run_dir_for_issue(
+    resolved_run_dir = session_output_helper.find_run_dir_for_issue(
         worktree_path,
         issue_number,
     )
-    if not run_dir:
+    if not resolved_run_dir:
         return JSONResponse({
             "error": "No session run found",
             "hint": "Session may not have started or output was removed",
         }, status_code=404)
-    session_output_helper.attach_claude_log(run_dir)
+    session_output_helper.attach_claude_log(resolved_run_dir)
 
-    return _manifest_response(run_dir, session_name)
+    return _manifest_response(resolved_run_dir, session_name)
 
 
 @app.get("/api/session/worktree/{issue_number}")
@@ -1336,12 +1336,18 @@ async def get_issue_timeline(issue_number: int) -> JSONResponse:
     reader = _orchestrator.deps.timeline_reader
     stream = reader.read(issue_number, limit=2000)
     payload = stream.to_dict()
-    events = _filter_timeline_events(payload.get("events", []))
+    raw_events = payload.get("events", [])
+    filtered_events = _filter_timeline_events(raw_events)
+    events, dropped_missing_semantics = _retain_semantic_timeline_events(filtered_events)
     events = _decorate_timeline_events(events, issue_number)
     payload["events"] = events
     payload["phase_toc"] = _build_phase_toc(events)
     payload["cycles"] = _build_timeline_cycles(events)
-    diagnostic = _timeline_missing_diagnostic(issue_number, events)
+    diagnostic = _timeline_missing_diagnostic(
+        issue_number,
+        events,
+        dropped_missing_semantics=dropped_missing_semantics,
+    )
     if diagnostic:
         payload["diagnostic"] = diagnostic
     return JSONResponse(payload)
@@ -1356,7 +1362,9 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
     reader = _orchestrator.deps.timeline_reader
     stream = reader.read(issue_number, limit=2000)
     timeline = stream.to_dict()
-    events = _filter_timeline_events(timeline.get("events", []))
+    raw_events = timeline.get("events", [])
+    filtered_events = _filter_timeline_events(raw_events)
+    events, dropped_missing_semantics = _retain_semantic_timeline_events(filtered_events)
     events = _decorate_timeline_events(events, issue_number)
     phase_toc = _build_phase_toc(events)
     cycles = _build_timeline_cycles(events)
@@ -1372,7 +1380,11 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
         cycles=cycles,
         context=context,
     )
-    diagnostic = _timeline_missing_diagnostic(issue_number, events)
+    diagnostic = _timeline_missing_diagnostic(
+        issue_number,
+        events,
+        dropped_missing_semantics=dropped_missing_semantics,
+    )
     if diagnostic:
         summary = payload.get("summary")
         if isinstance(summary, dict):
@@ -1562,6 +1574,8 @@ def _latest_history_entries(session_history: list[Any], limit: int = 50) -> list
 def _timeline_missing_diagnostic(
     issue_number: int,
     events: list[dict[str, Any]],
+    *,
+    dropped_missing_semantics: int = 0,
 ) -> dict[str, Any] | None:
     """Return diagnostic details when timeline is unexpectedly empty."""
     if events or not _orchestrator:
@@ -1586,6 +1600,9 @@ def _timeline_missing_diagnostic(
     if context.run_dir is not None:
         signals.append("session_run_present")
 
+    if dropped_missing_semantics > 0:
+        signals.append("logical_semantics_missing")
+
     if not signals:
         return None
 
@@ -1597,13 +1614,32 @@ def _timeline_missing_diagnostic(
     from ..infra.repo_identity import state_dir
 
     timeline_db_path = state_dir(_orchestrator.config.repo_root) / "timeline.sqlite"
+    state = "logical_semantics_missing" if dropped_missing_semantics > 0 else "expected_history_missing"
     return {
-        "state": "expected_history_missing",
+        "state": state,
         "signals": signals,
         "expected_timeline_store": str(timeline_db_path),
         "expected_timeline_store_exists": timeline_db_path.exists(),
         "resolved_run_dir": str(context.run_dir) if context.run_dir else None,
+        "dropped_missing_semantics": dropped_missing_semantics,
     }
+
+
+def _retain_semantic_timeline_events(events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Keep only events with required logical semantics for correctness-first rendering."""
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for event in events:
+        if (
+            isinstance(event.get("logical_run"), int)
+            and isinstance(event.get("logical_cycle"), int)
+            and isinstance(event.get("logical_phase"), str)
+            and bool(str(event.get("logical_phase") or "").strip())
+        ):
+            kept.append(event)
+        else:
+            dropped += 1
+    return kept, dropped
 
 
 def _latest_session_history_entry(issue_number: int) -> Any | None:
