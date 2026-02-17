@@ -161,6 +161,63 @@ def test_retry_handler_uses_ui_action_contract() -> None:
     assert "/api/issues/" not in body
 
 
+def test_requeue_paths_use_optimistic_requeue_helper() -> None:
+    js = _read(DASHBOARD_JS)
+    for fn in (
+        "unblockSingle",
+        "bulkUnblock",
+        "bulkResetRetry",
+        "resetRetrySingle",
+        "retryExpandedSingle",
+        "bulkRetryAwaitingMerge",
+        "bulkRetryCompleted",
+        "retryIssue",
+        "unblockFromDrawer",
+        "unblockSelectedIssues",
+        "resetSelectedIssues",
+    ):
+        body = _function_body(js, fn)
+        assert "applyOptimisticRequeue(" in body
+        assert "location.reload()" not in body
+
+
+def test_menu_retry_handler_uses_contract_and_refresh_not_reload() -> None:
+    js = _read(DASHBOARD_JS)
+    marker = "menuRetry?.addEventListener('click'"
+    start = js.find(marker)
+    assert start != -1
+    snippet = js[start : start + 1400]
+    assert "uiActionContract.buildIssueRetryRequest" in snippet
+    assert "applyOptimisticRequeue(" in snippet
+    assert "await refreshViewModel()" in snippet
+    assert "location.reload()" not in snippet
+
+
+def test_context_menu_orchestrator_log_avoids_legacy_agent_log_endpoint() -> None:
+    js = _read(DASHBOARD_JS)
+    marker = "menuLog?.addEventListener('click'"
+    start = js.find(marker)
+    assert start != -1
+    snippet = js[start : start + 700]
+    assert "openFilteredOrchestratorLog(" in snippet
+    assert "/api/log/" not in snippet
+
+
+def test_context_menu_retry_statuses_include_awaiting_merge() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "showContextMenu")
+    assert "normalizedStatus = statusLower.replace(/_/g, '-')" in body
+    assert "effectiveHistoryStatus = (isCompactCardMenu && columnId) ? columnId : normalizedStatus" in body
+    assert "'awaiting-merge'" in body
+
+
+def test_compact_menu_infers_column_id_from_parent_column() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "openCompactCardActionsMenu")
+    assert "button?.closest('.kanban-column')?.dataset?.column" in body
+    assert "columnId: String(columnId || '')" in body
+
+
 def test_embedded_back_hidden_when_column_expanded() -> None:
     js = _read(DASHBOARD_JS)
     assert "function updateEmbeddedBackButtonVisibility()" in js

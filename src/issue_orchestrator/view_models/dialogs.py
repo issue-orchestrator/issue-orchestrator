@@ -108,11 +108,25 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     actions: list[dict[str, Any]] = []
     if ctx.run_dir:
         actions.append({"type": "open_path", "label": "Open Session Dir", "path": ctx.run_dir})
-
-    actions.append({"type": "open_agent_log", "label": "View Session Log", "issue_number": ctx.issue_number})
+        actions.append(
+            {
+                "type": "open_agent_log",
+                "label": "View Session Log",
+                "issue_number": ctx.issue_number,
+                "run_dir": ctx.run_dir,
+            }
+        )
 
     if ctx.claude_log_path:
-        actions.append({"type": "view_claude_log", "label": "View Claude Log", "issue_number": ctx.issue_number})
+        if ctx.run_dir:
+            actions.append(
+                {
+                    "type": "view_claude_log",
+                    "label": "View Claude Log",
+                    "issue_number": ctx.issue_number,
+                    "run_dir": ctx.run_dir,
+                }
+            )
         actions.append({
             "type": "open_path",
             "label": "Open Claude Log File",
@@ -125,7 +139,15 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
             "path": ctx.claude_log_dir,
         })
 
-    actions.append({"type": "open_orchestrator_log", "label": "Open Orchestrator Log", "issue_number": ctx.issue_number})
+    if ctx.run_dir:
+        actions.append(
+            {
+                "type": "open_orchestrator_log",
+                "label": "Open Orchestrator Log",
+                "issue_number": ctx.issue_number,
+                "run_dir": ctx.run_dir,
+            }
+        )
 
     if ctx.orchestrator_log:
         actions.append({

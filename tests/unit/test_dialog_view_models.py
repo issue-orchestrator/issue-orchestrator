@@ -165,6 +165,12 @@ def test_build_session_diagnostics_dialog_actions():
     assert "open_agent_log" in action_types
     assert "view_claude_log" in action_types
     assert "open_orchestrator_log" in action_types
+    agent_log_action = next(action for action in dialog["actions"] if action["type"] == "open_agent_log")
+    claude_action = next(action for action in dialog["actions"] if action["type"] == "view_claude_log")
+    orchestrator_action = next(action for action in dialog["actions"] if action["type"] == "open_orchestrator_log")
+    assert agent_log_action["run_dir"] == "/run/dir"
+    assert claude_action["run_dir"] == "/run/dir"
+    assert orchestrator_action["run_dir"] == "/run/dir"
 
     paths = {action.get("path") for action in dialog["actions"] if "path" in action}
     assert "/run/dir" in paths
@@ -191,6 +197,11 @@ def test_build_session_diagnostics_dialog_fallbacks_without_worktree():
     rows = _rows_to_map(dialog["rows"])
     assert rows["Session"] == "fallback-session"
     assert rows["Worktree"] == "-"
+    agent_log_action = next(action for action in dialog["actions"] if action["type"] == "open_agent_log")
+    orchestrator_action = next(action for action in dialog["actions"] if action["type"] == "open_orchestrator_log")
+    assert agent_log_action["run_dir"] == "/run/fallback"
+    assert orchestrator_action["run_dir"] == "/run/fallback"
+    assert all(action["type"] != "view_claude_log" for action in dialog["actions"])
 
     paths = {action.get("path") for action in dialog["actions"] if "path" in action}
     assert "/run/fallback" in paths
