@@ -1339,6 +1339,34 @@ class TestOrchestratorLaunchReviewSession:
         # Should have tried to restore
         mock_restorer.restore_sessions.assert_called_once()
 
+    def test_does_not_append_duplicate_restored_review_terminal(self, launcher_bundle):
+        launcher_bundle.session_exists_override[0] = lambda name: name == "review-456"
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-feature",
+            _issue_number=123,
+        )
+        existing_session = MagicMock()
+        existing_session.terminal_id = "review-456"
+        existing_session.issue = MagicMock(number=123)
+
+        state = OrchestratorState()
+        state.pending_reviews = [review]
+        state.active_sessions = [existing_session]
+
+        duplicate_restored = MagicMock()
+        duplicate_restored.terminal_id = "review-456"
+        duplicate_restored.issue = MagicMock(number=123)
+        mock_restorer = MagicMock()
+        mock_restorer.restore_sessions.return_value = [duplicate_restored]
+
+        orchestrator_launch_review_session(review, state, launcher_bundle.launcher, mock_restorer)
+
+        assert len(state.active_sessions) == 1
+        assert state.active_sessions[0].terminal_id == "review-456"
+
 
 class TestOrchestratorLaunchReworkSession:
     """Tests for orchestrator_launch_rework_session function."""
@@ -1492,6 +1520,27 @@ class TestRestoreRunningSessions:
 
         assert len(active_sessions) == 1
         assert active_sessions[0] == mock_session
+
+    def test_deduplicates_by_terminal_id(self):
+        existing = MagicMock()
+        existing.terminal_id = "issue-123"
+        existing.issue = MagicMock(number=123)
+        duplicate = MagicMock()
+        duplicate.terminal_id = "issue-123"
+        duplicate.issue = MagicMock(number=123)
+        active_sessions = [existing]
+
+        mock_restorer = MagicMock()
+        mock_restorer.restore_sessions.return_value = [duplicate]
+
+        restore_running_sessions(
+            running=[{"tab_name": "issue-123", "issue_number": 123}],
+            active_sessions=active_sessions,
+            session_restorer=mock_restorer,
+        )
+
+        assert len(active_sessions) == 1
+        assert active_sessions[0].terminal_id == "issue-123"
 
 
 # =============================================================================

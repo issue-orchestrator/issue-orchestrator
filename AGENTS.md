@@ -28,6 +28,31 @@ Before starting any work, post a short “Plan & Scope” message:
 
 If scope changes while working, post an updated Plan & Scope before proceeding.
 
+## Test-First Rule (Required, Prominent)
+
+For any bug fix or behavior change, follow test-first by default:
+
+1. Add or update a **non-UI test** that captures the expected behavior.
+2. Confirm it fails for the current implementation.
+3. Implement the fix.
+4. Re-run tests and confirm they pass.
+
+UI validation is not sufficient acceptance criteria by itself.
+Behavior must be verified at the backend/domain/API layer first, with UI as a thin adapter on top.
+
+## Proactive Reliability Rule (Required)
+
+Do not wait for user-reported UI anomalies to expand coverage.
+
+When implementing any behavior change (bug fix, feature, or refactor):
+
+1. Add or update a failing non-UI test for the reported case.
+2. Proactively add adjacent scenario tests for likely variants and edge cases.
+3. Implement the fix at the owner abstraction layer (domain/API), not with UI-only patches.
+4. Run the full touched test suites before reporting completion.
+
+Default stance: if a scenario can be modeled and tested below the UI, do it now.
+
 ## Alignment Check Trigger
 
 If a user says “discuss” or “explore”, do not implement until you:

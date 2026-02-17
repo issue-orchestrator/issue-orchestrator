@@ -216,9 +216,12 @@
                             <button class="issue-action-btn" onclick="bulkMarkViewed()" disabled title="Mark selected blocked issues as viewed in this browser">Mark Viewed</button>
                             <button class="issue-action-btn" onclick="bulkClearViewed()" disabled title="Clear viewed state for selected blocked issues in this browser">Clear Viewed</button>
                             {% elif column.id == 'awaiting-merge' %}
-                            <button class="issue-action-btn" onclick="bulkOpenPRs()">Open PRs</button>
+                            <button class="issue-action-btn" onclick="bulkOpenPRs()" disabled>Open PRs</button>
+                            <button class="issue-action-btn" onclick="bulkRetryAwaitingMerge()" disabled title="Remove pr-pending and requeue selected issues for another run">Retry</button>
+                            {% elif column.id == 'completed' %}
+                            <button class="issue-action-btn" onclick="bulkRetryCompleted()" disabled title="Requeue selected completed issues for another run">Retry</button>
                             {% elif column.id == 'queued' %}
-                            <button class="issue-action-btn" onclick="bulkDeprioritize()">Deprioritize</button>
+                            <button class="issue-action-btn" onclick="bulkDeprioritize()" disabled>Deprioritize</button>
                             {% endif %}
                         </div>
                     </div>
@@ -304,10 +307,10 @@
             <a class="issue-action-btn" id="issueDetailGitHubBtn" href="#" target="_blank" rel="noopener noreferrer">GitHub ↗</a>
         </div>
         <div class="issue-detail-status" id="issueDetailStatus"></div>
-        <h3 class="issue-detail-section-title">Journey</h3>
+        <h3 class="issue-detail-section-title">Timeline</h3>
         <div class="issue-detail-journey" id="issueDetailJourney"></div>
         <details class="issue-detail-section" id="issueDetailPrevCycles" style="display:none;">
-            <summary id="issueDetailPrevCyclesSummary">Previous cycles</summary>
+            <summary id="issueDetailPrevCyclesSummary">Previous runs</summary>
             <div id="issueDetailPrevCyclesBody"></div>
         </details>
         <details class="issue-detail-section" id="issueDetailRawEvents">

@@ -13,6 +13,7 @@
     }
 
     function computeCompactCardFingerprint(card) {
+        const cardId = card?.card_id ?? '';
         const issueNumber = card?.issue_number ?? '';
         const title = card?.title ?? '';
         const stateLabel = card?.state_label ?? '';
@@ -24,6 +25,7 @@
         const issueUrl = card?.issue_url ?? '';
         const labels = normalizeLabels(card?.orchestrator_labels).join(',');
         return [
+            cardId,
             issueNumber,
             title,
             stateLabel,

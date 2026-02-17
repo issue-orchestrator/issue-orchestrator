@@ -544,13 +544,18 @@ async function postVisibility(visibleIssueNumbers) {
 let logPoller = null;
 let logFollow = true;
 let logIssue = null;
+let logRunDir = null;
 
 function isNearBottom(element, threshold = 24) {
     return element.scrollTop + element.clientHeight >= element.scrollHeight - threshold;
 }
 
-async function refreshAgentLog(issueNumber, forceScroll = false) {
-    const res = await fetch(`/api/log/local/${issueNumber}`);
+async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) {
+    const effectiveRunDir = runDir || logRunDir;
+    const params = new URLSearchParams();
+    if (effectiveRunDir) params.set('run_dir', effectiveRunDir);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(`/api/log/local/${issueNumber}${suffix}`);
     const data = await res.json();
 
     if (data.error) {
@@ -582,8 +587,9 @@ async function refreshAgentLog(issueNumber, forceScroll = false) {
     }
 }
 
-async function openAgentLog(issueNumber) {
+async function openAgentLog(issueNumber, logLabel = 'Most Recent Session Log', runDir = null) {
     logIssue = issueNumber;
+    logRunDir = runDir;
     const logContent = `
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
             <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);">
@@ -599,7 +605,7 @@ async function openAgentLog(issueNumber) {
         <div style="color:var(--text-muted);font-size:11px;margin-top:10px;">Log: <span id="logPath"></span></div>
     `;
 
-    document.getElementById('modalTitle').textContent = `Agent UI Log #${issueNumber}`;
+    document.getElementById('modalTitle').textContent = `${logLabel} #${issueNumber}`;
     document.getElementById('modalBody').innerHTML = logContent;
     document.getElementById('modalOverlay').classList.add('visible');
 
@@ -610,12 +616,12 @@ async function openAgentLog(issueNumber) {
         });
     }
 
-    await refreshAgentLog(issueNumber, true);
+    await refreshAgentLog(issueNumber, true, runDir);
     if (logPoller) {
         clearInterval(logPoller);
     }
     logPoller = setInterval(() => {
-        refreshAgentLog(issueNumber, false);
+        refreshAgentLog(issueNumber, false, runDir);
     }, 2000);
 }
 
@@ -734,17 +740,18 @@ function renderDialogRows(rows, options = {}) {
 function renderDialogAction(action) {
     if (!action) return '';
     const label = escapeHtml(action.label || 'Action');
+    const runDirArg = action.run_dir ? `, ${JSON.stringify(String(action.run_dir))}` : '';
     if (action.type === 'open_path') {
         return `<button class="btn-secondary" onclick="openPath('${escapeHtml(action.path)}')">${label}</button>`;
     }
     if (action.type === 'open_agent_log') {
-        return `<button class="btn-secondary" onclick="openAgentLog(${action.issue_number})">${label}</button>`;
+        return `<button class="btn-secondary" onclick="openAgentLog(${action.issue_number}, 'Most Recent Session Log'${runDirArg})">${label}</button>`;
     }
     if (action.type === 'view_claude_log') {
-        return `<button class="btn-secondary" onclick="viewClaudeLog(${action.issue_number})">${label}</button>`;
+        return `<button class="btn-secondary" onclick="viewClaudeLog(${action.issue_number}${runDirArg})">${label}</button>`;
     }
     if (action.type === 'open_orchestrator_log') {
-        return `<button class="btn-secondary" onclick="openFilteredOrchestratorLog(${action.issue_number})">${label}</button>`;
+        return `<button class="btn-secondary" onclick="openFilteredOrchestratorLog(${action.issue_number}${runDirArg})">${label}</button>`;
     }
     return '';
 }
@@ -1651,6 +1658,7 @@ function clearIssuesViewed(numbers) {
 
 function renderCompactCardHtml(card) {
     const n = card.issue_number;
+    const cardId = String(card.card_id || `issue-${n}`);
     const staleAttr = card.is_stale ? 'true' : 'false';
     const staleDot = card.is_stale
         ? `<span class="stale-dot" title="${card.stale_reason || 'Issue may be stale'}" aria-label="Issue data may be stale"></span>`
@@ -1673,7 +1681,7 @@ function renderCompactCardHtml(card) {
     const badgesDiv = allBadges
         ? `<div class="card-badges">${allBadges}</div>`
         : '';
-    return `<div class="issue-card" data-issue="${n}" data-stale="${staleAttr}" data-last-refresh-age-seconds="${card.last_refreshed_age_seconds || 0}">
+    return `<div class="issue-card" data-card-id="${cardId}" data-issue="${n}" data-stale="${staleAttr}" data-last-refresh-age-seconds="${card.last_refreshed_age_seconds || 0}">
         <div class="card-top">
             <button class="card-focus" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="Focus issue #${n}">
                 #${n} ${card.title}
@@ -1697,18 +1705,19 @@ function renderCompactCards(container, items) {
         return;
     }
 
-    const nextIds = new Set(items.map((card) => String(card.issue_number)));
-    const existingCards = Array.from(container.querySelectorAll('.issue-card[data-issue]'));
-    const existingById = new Map(existingCards.map((card) => [card.dataset.issue, card]));
+    const nextIds = new Set(items.map((card) => String(card.card_id || `issue-${card.issue_number}`)));
+    const existingCards = Array.from(container.querySelectorAll('.issue-card[data-card-id], .issue-card[data-issue]'));
+    const existingById = new Map(existingCards.map((card) => [String(card.dataset.cardId || `issue-${card.dataset.issue || ''}`), card]));
     existingCards.forEach((card) => {
-        if (!nextIds.has(card.dataset.issue)) {
+        const existingId = String(card.dataset.cardId || `issue-${card.dataset.issue || ''}`);
+        if (!nextIds.has(existingId)) {
             card.remove();
         }
     });
 
     let insertAfter = null;
     for (const card of items) {
-        const id = String(card.issue_number);
+        const id = String(card.card_id || `issue-${card.issue_number}`);
         const existing = existingById.get(id) || null;
         const nextFingerprint = compactCardState.computeCompactCardFingerprint(card);
         let node = existing;
@@ -1841,6 +1850,10 @@ async function loadExpandedColumn(columnId, options = {}) {
                 const badgesDiv = orchPills
                     ? `<div class="card-badges">${orchPills}</div>`
                     : '';
+                const detailText = item.detail_label || item.status || '';
+                const detailDiv = detailText
+                    ? `<div class="card-line card-muted">${detailText}</div>`
+                    : '';
                 return `
                 <div class="expanded-card${isViewed ? ' viewed' : ''}" data-issue="${n}" data-viewed="${isViewed}">
                     <input type="checkbox" class="card-checkbox" onchange="updateBulkBar('${columnId}')">
@@ -1849,12 +1862,14 @@ async function loadExpandedColumn(columnId, options = {}) {
                                 title="Focus issue #${n}">
                             #${n} ${item.title || ''}
                         </button>
-                        <div class="card-line card-muted">${item.detail_label || item.status || ''}</div>
+                        ${detailDiv}
                         ${badgesDiv}
                     </div>
                     <div class="card-actions">
                         ${columnId === 'blocked' ? `<button class="card-action-btn card-action-unblock" onclick="unblockSingle(${n}, this);event.stopPropagation();" title="Unblock issue #${n}">Unblock</button>` : ''}
                         ${columnId === 'blocked' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingle(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n}">Reset & Retry</button>` : ''}
+                        ${columnId === 'awaiting-merge' ? `<button class="card-action-btn card-action-unblock" onclick="retryExpandedSingle(${n}, 'awaiting-merge', this);event.stopPropagation();" title="Remove pr-pending and requeue issue #${n}">Retry</button>` : ''}
+                        ${columnId === 'completed' ? `<button class="card-action-btn card-action-unblock" onclick="retryExpandedSingle(${n}, 'completed', this);event.stopPropagation();" title="Requeue issue #${n} for another run">Retry</button>` : ''}
                         ${item.issue_url ? `<a class="card-gh" href="${item.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">↗</a>` : ''}
                         ${item.pr_url ? `<a class="card-action-btn" href="${item.pr_url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">PR</a>` : ''}
                         <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
@@ -1926,18 +1941,17 @@ function updateBulkBar(columnId) {
     const checked = col.querySelectorAll('.card-checkbox:checked');
     const bar = col.querySelector('.bulk-action-bar');
     if (!bar) return;
-    const alwaysVisible = columnId === 'blocked';
+    const alwaysVisibleColumns = new Set(['blocked', 'awaiting-merge', 'completed']);
+    const alwaysVisible = alwaysVisibleColumns.has(columnId);
     bar.style.display = alwaysVisible || checked.length > 0 ? 'flex' : 'none';
     const countEl = bar.querySelector('.selected-count');
     if (countEl) {
         countEl.textContent = checked.length > 0 ? `${checked.length} selected` : 'No issues selected';
     }
-    if (alwaysVisible) {
-        const actionButtons = bar.querySelectorAll('.issue-action-btn');
-        actionButtons.forEach((btn) => {
-            btn.disabled = checked.length === 0;
-        });
-    }
+    const actionButtons = bar.querySelectorAll('.issue-action-btn');
+    actionButtons.forEach((btn) => {
+        btn.disabled = checked.length === 0;
+    });
 }
 
 function getSelectedIssueNumbers(columnId) {
@@ -2113,6 +2127,109 @@ function bulkOpenPRs() {
         const link = card.querySelector('.card-gh');
         if (link && link.href) window.open(link.href, '_blank');
     });
+}
+
+async function retryExpandedSingle(issueNumber, columnId, btn) {
+    if (columnId === 'awaiting-merge') {
+        const confirmMsg = `Retry issue #${issueNumber} from Awaiting Merge?\n\nThis will REMOVE pr-pending and requeue the issue for another run.\n\nUse this when you want new work despite an existing PR state.`;
+        if (!await showConfirm(confirmMsg, btn)) return;
+        if (btn) btn.disabled = true;
+        try {
+            const req = uiActionContract.buildUnblockRequest([issueNumber]);
+            const resp = await fetch(req.endpoint, {
+                method: req.method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(req.body),
+            });
+            if (resp.ok) {
+                showToast(`Retrying #${issueNumber} from Awaiting Merge`);
+                await refreshViewModel();
+            } else {
+                const data = await resp.json().catch(() => ({}));
+                showToast(data.error || `Retry failed (${resp.status})`, true);
+                if (btn) btn.disabled = false;
+            }
+        } catch (e) {
+            console.error('Retry failed:', e);
+            showToast('Retry failed: network error', true);
+            if (btn) btn.disabled = false;
+        }
+        return;
+    }
+
+    const confirmMsg = `Retry completed issue #${issueNumber}?\n\nThis will requeue the issue for another run.\nUse this when you want the agent to re-run with newer context.`;
+    if (!await showConfirm(confirmMsg, btn)) return;
+    if (btn) btn.disabled = true;
+    try {
+        const req = uiActionContract.buildBulkRetryRequest([issueNumber]);
+        const resp = await fetch(req.endpoint, {
+            method: req.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.retried && data.retried.length > 0) {
+            showToast(`Retrying completed issue #${issueNumber}`);
+            await refreshViewModel();
+        } else {
+            showToast(data.error || `Retry failed (${resp.status})`, true);
+            if (btn) btn.disabled = false;
+        }
+    } catch (e) {
+        console.error('Retry failed:', e);
+        showToast('Retry failed: network error', true);
+        if (btn) btn.disabled = false;
+    }
+}
+
+async function bulkRetryAwaitingMerge() {
+    const numbers = getSelectedIssueNumbers('awaiting-merge');
+    if (!numbers.length) return;
+    const confirmMsg = `Retry ${numbers.length} Awaiting Merge issue(s)?\n\nThis will REMOVE pr-pending and requeue selected issues for another run.\n\nUse this when you intentionally want a new run before merge.`;
+    if (!await showConfirm(confirmMsg)) return;
+    try {
+        const req = uiActionContract.buildUnblockRequest(numbers);
+        const resp = await fetch(req.endpoint, {
+            method: req.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+        });
+        if (resp.ok) {
+            showToast(`Retrying ${numbers.length} Awaiting Merge issue(s)`);
+            await refreshViewModel();
+        } else {
+            const data = await resp.json().catch(() => ({}));
+            showToast(data.error || `Retry failed (${resp.status})`, true);
+        }
+    } catch (e) {
+        console.error('Bulk retry failed:', e);
+        showToast('Bulk retry failed: network error', true);
+    }
+}
+
+async function bulkRetryCompleted() {
+    const numbers = getSelectedIssueNumbers('completed');
+    if (!numbers.length) return;
+    const confirmMsg = `Retry ${numbers.length} completed issue(s)?\n\nThis will requeue selected issues for another run.\nUse this when you want re-execution with newer context or codebase changes.`;
+    if (!await showConfirm(confirmMsg)) return;
+    try {
+        const req = uiActionContract.buildBulkRetryRequest(numbers);
+        const resp = await fetch(req.endpoint, {
+            method: req.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok && data.retried && data.retried.length > 0) {
+            showToast(`Retrying ${data.retried.length} completed issue(s)`);
+            await refreshViewModel();
+        } else {
+            showToast(data.error || `Retry failed (${resp.status})`, true);
+        }
+    } catch (e) {
+        console.error('Bulk retry failed:', e);
+        showToast('Bulk retry failed: network error', true);
+    }
 }
 
 async function bulkDeprioritize() {
@@ -2661,7 +2778,7 @@ if (contextMenuEnabled) {
             logContent += `<p style="color:var(--text-muted);font-size:11px;margin-top:10px;">Log: ${data.log_path}</p>`;
 
             // Show in modal
-            document.getElementById('modalTitle').textContent = `Session Log #${issueNumber}`;
+            document.getElementById('modalTitle').textContent = `Latest Session Log #${issueNumber}`;
             document.getElementById('modalBody').innerHTML = logContent;
             document.getElementById('modalOverlay').classList.add('visible');
         }
@@ -3037,29 +3154,17 @@ async function unblockFromDrawer() {
 // Journey cycles — collapsible lifecycle groups
 // ---------------------------------------------------------------------------
 
-function filterJourneyCycles(cycles, filter) {
-    if (filter === 'all' || cycles.length === 0) return cycles;
-    // "latest-run": filter to max lifecycle value (current run, may contain multiple cycles)
-    const maxLifecycle = Math.max(...cycles.map(c => c.lifecycle || 0));
-    if (maxLifecycle > 0) {
-        return cycles.filter(c => c.lifecycle === maxLifecycle);
-    }
-    // Fallback: show all
-    return cycles;
+function filterRuns(runs, filter) {
+    if (!runs.length || filter === 'all') return runs;
+    return [runs[runs.length - 1]];
 }
 
 function renderJourneyTimeline(container, data) {
-    const cycles = data.journey_cycles;
-    if (cycles && cycles.length > 0) {
-        _renderJourneyCycles(container, cycles);
-    } else {
-        // Legacy fallback for payloads without journey_cycles
-        _renderLegacyJourneySteps(container, data.journey_steps || []);
-    }
+    _renderJourneyRuns(container, data.runs || []);
 }
 
-function _renderJourneyCycles(container, allCycles) {
-    const cycles = filterJourneyCycles(allCycles, journeyFilter);
+function _renderJourneyRuns(container, allRuns) {
+    const runs = filterRuns(allRuns, journeyFilter);
     const isLatestRun = journeyFilter === 'latest-run';
     const isAll = journeyFilter === 'all';
     const issueNum = issueDetailData ? issueDetailData.issue_number : null;
@@ -3070,49 +3175,78 @@ function _renderJourneyCycles(container, allCycles) {
         <button class="journey-filter-btn journey-copy-btn" onclick="copyJourneyTimeline()" title="Copy timeline as text">Copy</button>
     </div>`;
 
-    if (cycles.length === 0) {
+    if (runs.length === 0) {
         html += '<div class="timeline-empty">No activity recorded.</div>';
         container.innerHTML = html;
         return;
     }
 
-    for (let i = 0; i < cycles.length; i++) {
-        const c = cycles[i];
-        const expanded = journeyFilter === 'latest-run' ? true : c.expanded;
-        const toggle = expanded ? '\u25be' : '\u25b8';
-        const bodyClass = expanded ? '' : ' collapsed';
-        const cycleId = `journey-cycle-${i}`;
-        const agentPill = c.agent ? `<span class="journey-cycle-agent">(${escapeHtml(c.agent)})</span>` : '';
-        const retryInfo = c.retry_count > 0 ? `<span class="journey-cycle-retries">${c.retry_count} ${c.retry_count === 1 ? 'retry' : 'retries'}</span>` : '';
-        const outcomeClass = _cycleOutcomeClass(c.outcome || '');
-        const artifacts = c.artifacts || {};
-        const hasArtifacts = artifacts.log_url || artifacts.pr_url || artifacts.has_review_feedback;
+    for (let runIndex = 0; runIndex < runs.length; runIndex++) {
+        const run = runs[runIndex];
+        const runExpanded = journeyFilter === 'latest-run' ? true : Boolean(run.expanded);
+        const runToggle = runExpanded ? '\u25be' : '\u25b8';
+        const runId = `journey-run-${runIndex}`;
+        const runBodyClass = runExpanded ? '' : ' collapsed';
+        html += `<div class="journey-run" id="${runId}">
+            <div class="journey-cycle-header" onclick="toggleJourneyCycle('${runId}')">
+                <span class="journey-cycle-toggle">${runToggle}</span>
+                <span class="journey-cycle-label">Run ${run.run_number || (runIndex + 1)}</span>
+                <span class="journey-cycle-outcome ${_cycleOutcomeClass(run.outcome || '')}">\u2014 ${escapeHtml(run.outcome || 'In progress')}</span>
+                <span class="journey-cycle-time">${escapeHtml(run.time_label || '')}</span>
+            </div>
+            <div class="journey-cycle-body${runBodyClass}" id="${runId}-body">`;
 
-        html += `<div class="journey-cycle" id="${cycleId}">
+        const cycles = run.cycles || [];
+        for (let cycleIndex = 0; cycleIndex < cycles.length; cycleIndex++) {
+            const c = cycles[cycleIndex];
+            const cycleId = `journey-cycle-${runIndex}-${cycleIndex}`;
+            const cycleExpanded = journeyFilter === 'latest-run' ? true : Boolean(c.expanded);
+            const toggle = cycleExpanded ? '\u25be' : '\u25b8';
+            const bodyClass = cycleExpanded ? '' : ' collapsed';
+            const displayCycleNumber = c.cycle_in_run || c.cycle || (cycleIndex + 1);
+            const agentPill = c.agent ? `<span class="journey-cycle-agent">(${escapeHtml(c.agent)})</span>` : '';
+            const retryInfo = c.retry_count > 0 ? `<span class="journey-cycle-retries">${c.retry_count} ${c.retry_count === 1 ? 'retry' : 'retries'}</span>` : '';
+            const outcomeClass = _cycleOutcomeClass(c.outcome || '');
+            const artifacts = c.artifacts || {};
+            const hasArtifacts = artifacts.log_url || artifacts.pr_url || artifacts.has_review_feedback;
+
+            html += `<div class="journey-cycle" id="${cycleId}">
             <div class="journey-cycle-header" onclick="toggleJourneyCycle('${cycleId}')">
                 <span class="journey-cycle-toggle">${toggle}</span>
-                <span class="journey-cycle-label">Cycle ${c.cycle}</span>
+                <span class="journey-cycle-label">Cycle ${displayCycleNumber}</span>
                 ${agentPill}
                 ${retryInfo}
                 <span class="journey-cycle-outcome ${outcomeClass}">\u2014 ${escapeHtml(c.outcome || 'In progress')}</span>
                 <span class="journey-cycle-time">${escapeHtml(c.time_label || '')}</span>
-                ${hasArtifacts ? `<span class="journey-cycle-artifacts-btn" onclick="event.stopPropagation(); toggleArtifactPopover('${cycleId}', ${issueNum})" title="Cycle artifacts">\ud83d\udcce</span>` : ''}
+                ${hasArtifacts ? `<span class="journey-cycle-artifacts-btn" onclick="event.stopPropagation(); toggleArtifactPopover(${runIndex}, ${cycleIndex}, ${issueNum})" title="Cycle artifacts">\ud83d\udcce</span>` : ''}
             </div>
             <div class="journey-cycle-body${bodyClass}" id="${cycleId}-body">`;
 
-        const steps = c.steps || [];
-        for (const s of steps) {
-            const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
-            const detail = s.detail ? `<div class="journey-detail">${escapeHtml(s.detail)}</div>` : '';
-            const actions = renderTimelineEventActions(s.actions || []);
-            html += `<div class="journey-step ${statusClass}">
-                <span class="journey-time">${escapeHtml(s.time_label || '')}</span>
-                <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
-                ${actions}
-                ${detail}
-            </div>`;
-        }
+            const phaseGroups = Array.isArray(c.phase_groups) && c.phase_groups.length > 0
+                ? c.phase_groups
+                : [{ key: 'events', label: '', steps: c.steps || [] }];
+            for (const group of phaseGroups) {
+                html += `<div class="journey-phase-group">`;
+                if (group.label) {
+                    html += `<div class="journey-phase-header">${escapeHtml(group.label)}</div>`;
+                }
+                const steps = group.steps || [];
+                for (const s of steps) {
+                    const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
+                    const detail = s.detail ? `<div class="journey-detail">${escapeHtml(s.detail)}</div>` : '';
+                    const actions = renderTimelineEventActions(s.actions || []);
+                    html += `<div class="journey-step ${statusClass}">
+                    <span class="journey-time">${escapeHtml(s.time_label || '')}</span>
+                    <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
+                    ${actions}
+                    ${detail}
+                </div>`;
+                }
+                html += `</div>`;
+            }
 
+            html += `</div></div>`;
+        }
         html += `</div></div>`;
     }
 
@@ -3127,7 +3261,7 @@ function _renderJourneyCycles(container, allCycles) {
                     const action = JSON.parse(actionTarget.dataset.action);
                     runTimelineEventAction(action);
                 } catch (err) {
-                    console.error('Failed to parse journey action:', err);
+                    console.error('Failed to parse run action:', err);
                     showToast('Unable to execute action', 'error');
                 }
             }
@@ -3145,30 +3279,31 @@ function _cycleOutcomeClass(outcome) {
 }
 
 function toggleJourneyCycle(cycleId) {
+    const cycleNode = document.getElementById(cycleId);
     const body = document.getElementById(cycleId + '-body');
-    const header = document.querySelector(`#${cycleId} .journey-cycle-toggle`);
-    if (!body) return;
+    if (!body || !cycleNode) return;
+    const header = cycleNode.querySelector(':scope > .journey-cycle-header .journey-cycle-toggle');
     const isCollapsed = body.classList.contains('collapsed');
     body.classList.toggle('collapsed');
     if (header) header.textContent = isCollapsed ? '\u25be' : '\u25b8';
 }
 
-function toggleArtifactPopover(cycleId, issueNumber) {
+function toggleArtifactPopover(runIndex, cycleIndex, issueNumber) {
     // Close any existing popover
     const existing = document.querySelector('.journey-artifact-popover');
     if (existing) {
         const existingParent = existing.closest('.journey-cycle');
         existing.remove();
-        if (existingParent && existingParent.id === cycleId) return; // Toggle off
+        if (existingParent && existingParent.id === `journey-cycle-${runIndex}-${cycleIndex}`) return; // Toggle off
     }
 
+    const cycleId = `journey-cycle-${runIndex}-${cycleIndex}`;
     const cycleEl = document.getElementById(cycleId);
     if (!cycleEl || !issueDetailData) return;
 
-    // Find cycle data
-    const allCycles = issueDetailData.journey_cycles || [];
-    const cycleIndex = parseInt(cycleId.split('-').pop(), 10);
-    const cycleData = filterJourneyCycles(allCycles, journeyFilter)[cycleIndex];
+    const allRuns = filterRuns(issueDetailData.runs || [], journeyFilter);
+    const runData = allRuns[runIndex];
+    const cycleData = runData?.cycles?.[cycleIndex];
     if (!cycleData) return;
 
     const artifacts = cycleData.artifacts || {};
@@ -3232,73 +3367,6 @@ function openDiagnoseFromCycle(issueNumber) {
     openTimelineModal(issueNumber);
 }
 
-// --- Legacy fallback: delete when all timelines have lifecycle field ---
-const _SESSION_START_EVENTS = new Set([
-    'session.started', 'rework.started', 'rework.launching',
-]);
-
-function _legacyFilterBySessionStart(steps) {
-    for (let i = steps.length - 1; i >= 0; i--) {
-        if (_SESSION_START_EVENTS.has(steps[i].event)) return steps.slice(i);
-    }
-    return steps.slice(-10);
-}
-
-function _renderLegacyJourneySteps(container, allSteps) {
-    const filter = journeyFilter;
-    const steps = (filter === 'all' || allSteps.length === 0)
-        ? allSteps
-        : _legacyFilterBySessionStart(allSteps);
-    const isLatestRun = filter === 'latest-run';
-    const isAll = filter === 'all';
-
-    let html = `<div class="journey-filter">
-        <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" onclick="setJourneyFilter('latest-run')" title="Show the current run (all cycles in the latest lifecycle)">Latest run</button>
-        <button class="journey-filter-btn ${isAll ? 'active' : ''}" onclick="setJourneyFilter('all')">All</button>
-        <button class="journey-filter-btn journey-copy-btn" onclick="copyJourneyTimeline()" title="Copy timeline as text">Copy</button>
-    </div>`;
-
-    if (steps.length === 0) {
-        html += '<div class="timeline-empty">No activity recorded.</div>';
-        container.innerHTML = html;
-        return;
-    }
-
-    let currentDay = '';
-    const issueNum = issueDetailData ? issueDetailData.issue_number : null;
-    for (const s of steps) {
-        if (s.day && s.day !== currentDay) {
-            currentDay = s.day;
-            html += `<div class="journey-day-header">${escapeHtml(formatJourneyDay(s.day))}</div>`;
-        }
-        const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
-        const actions = _legacyJourneyStepActions(s, issueNum);
-        const detail = s.detail
-            ? `<div class="journey-detail">${escapeHtml(s.detail)}</div>`
-            : '';
-        html += `<div class="journey-step ${statusClass}">
-            <span class="journey-time">${escapeHtml(s.time_label || '')}</span>
-            <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
-            ${actions}
-            ${detail}
-        </div>`;
-    }
-    container.innerHTML = html;
-}
-
-function _legacyJourneyStepActions(step, issueNumber) {
-    if (!issueNumber) return '';
-    const ev = step.event || '';
-    if (ev === 'session.started' || ev === 'session.completed' || ev === 'session.failed' || ev === 'session.blocked') {
-        return `<button class="journey-action" onclick="openAgentLog(${issueNumber})" title="View transcript">transcript</button>`;
-    }
-    if (ev === 'review.changes_requested' || ev === 'review.approved' || ev === 'review.started') {
-        return `<button class="journey-action" onclick="openReviewFeedback(${issueNumber})" title="View review feedback">feedback</button>`;
-    }
-    return '';
-}
-// --- End legacy ---
-
 function setJourneyFilter(filter) {
     journeyFilter = filter;
     if (issueDetailData) {
@@ -3310,55 +3378,27 @@ function setJourneyFilter(filter) {
 function copyJourneyTimeline() {
     if (!issueDetailData) return;
 
-    // Prefer cycle-grouped data, fallback to flat steps
-    const cycles = issueDetailData.journey_cycles || [];
-    if (cycles.length > 0) {
-        const filtered = filterJourneyCycles(cycles, journeyFilter);
-        if (filtered.length === 0) {
-            showToast('No timeline to copy', true);
-            return;
-        }
-        const issueNum = issueDetailData.issue_number;
-        const title = issueDetailData.title || '';
-        let text = `Issue #${issueNum}: ${title}\n`;
-        for (const c of filtered) {
-            const agent = c.agent ? ` (${c.agent})` : '';
-            text += `\nCycle ${c.cycle}${agent} \u2014 ${c.outcome || 'In progress'}  ${c.time_label || ''}\n`;
-            for (const s of (c.steps || [])) {
-                const time = s.time_label || '';
-                const narrative = s.narrative || s.event || '';
-                text += `  ${time}  ${narrative}\n`;
-                if (s.detail) text += `    ${s.detail}\n`;
-            }
-        }
-        navigator.clipboard.writeText(text.trim()).then(
-            () => showToast('Timeline copied'),
-            () => showToast('Failed to copy', true)
-        );
-        return;
-    }
-
-    // Legacy flat steps
-    const steps = (journeyFilter === 'all')
-        ? (issueDetailData.journey_steps || [])
-        : _legacyFilterBySessionStart(issueDetailData.journey_steps || []);
-    if (steps.length === 0) {
+    const runs = filterRuns(issueDetailData.runs || [], journeyFilter);
+    if (runs.length === 0) {
         showToast('No timeline to copy', true);
         return;
     }
     const issueNum = issueDetailData.issue_number;
     const title = issueDetailData.title || '';
     let text = `Issue #${issueNum}: ${title}\n`;
-    let currentDay = '';
-    for (const s of steps) {
-        if (s.day && s.day !== currentDay) {
-            currentDay = s.day;
-            text += `\n--- ${currentDay} ---\n`;
+    for (const run of runs) {
+        text += `\nRun ${run.run_number || '?'} \u2014 ${run.outcome || 'In progress'}  ${run.time_label || ''}\n`;
+        for (const c of (run.cycles || [])) {
+            const agent = c.agent ? ` (${c.agent})` : '';
+            const cycleNum = c.cycle_in_run || c.cycle || '?';
+            text += `  Cycle ${cycleNum}${agent} \u2014 ${c.outcome || 'In progress'}  ${c.time_label || ''}\n`;
+            for (const s of (c.steps || [])) {
+                const time = s.time_label || '';
+                const narrative = s.narrative || s.event || '';
+                text += `    ${time}  ${narrative}\n`;
+                if (s.detail) text += `      ${s.detail}\n`;
+            }
         }
-        const time = s.time_label || '';
-        const narrative = s.narrative || s.event || '';
-        text += `${time}  ${narrative}\n`;
-        if (s.detail) text += `  ${s.detail}\n`;
     }
     navigator.clipboard.writeText(text.trim()).then(
         () => showToast('Timeline copied'),
@@ -3406,16 +3446,30 @@ async function openReviewFeedback(issueNumber) {
         if (issueDetailData) {
             const events = issueDetailData.events || [];
             const reviewEvents = events.filter(e =>
-                e.event === 'review.changes_requested' || e.event === 'review.approved'
+                e.event === 'review.changes_requested' ||
+                e.event === 'review.approved' ||
+                e.event === 'review.comment_added'
             );
             if (reviewEvents.length > 0) {
                 html += '<div style="margin-bottom:8px;font-size:12px;color:var(--text-muted);">From timeline events:</div>';
                 for (const evt of reviewEvents) {
-                    const label = evt.event === 'review.approved' ? 'Approved' : 'Changes Requested';
+                    const label =
+                        evt.event === 'review.approved' ? 'Approved'
+                            : evt.event === 'review.changes_requested' ? 'Changes Requested'
+                                : 'Review Comment Posted';
                     const time = evt.timestamp ? new Date(evt.timestamp).toLocaleString() : '';
+                    let commentLink = '';
+                    if (evt.event === 'review.comment_added') {
+                        const reviewComment = (evt.artifacts || []).find(a => a.type === 'review_comment' && a.value);
+                        if (reviewComment) {
+                            commentLink = `<div style="font-size:12px;margin-top:6px;"><a href="${escapeHtml(reviewComment.value)}" target="_blank" rel="noopener noreferrer">Open review comment on GitHub ↗</a></div>`;
+                        }
+                    }
                     html += `<div style="margin-bottom:10px;padding:8px;background:var(--bg);border-radius:4px;">
                         <div style="font-weight:600;font-size:12px;">${escapeHtml(label)} ${time ? `<span style="font-weight:400;color:var(--text-muted);">${escapeHtml(time)}</span>` : ''}</div>
                         ${evt.summary ? `<div style="font-size:12px;margin-top:4px;">${escapeHtml(evt.summary)}</div>` : ''}
+                        ${evt.detail ? `<div style="font-size:12px;margin-top:4px;color:var(--text-muted);">${escapeHtml(evt.detail)}</div>` : ''}
+                        ${commentLink}
                     </div>`;
                 }
             }
@@ -3468,13 +3522,13 @@ function renderIssueDetail() {
     const journeyEl = document.getElementById('issueDetailJourney');
     renderJourneyTimeline(journeyEl, d);
 
-    // Previous cycles (collapsed)
+    // Previous runs (collapsed)
     const prevSection = document.getElementById('issueDetailPrevCycles');
-    const prevCycles = d.previous_cycles || [];
-    const prevCount = d.previous_cycles_count || prevCycles.length;
+    const prevCycles = d.previous_runs || [];
+    const prevCount = d.previous_runs_count || prevCycles.length;
     if (prevCount > 0) {
         prevSection.style.display = '';
-        document.getElementById('issueDetailPrevCyclesSummary').textContent = `Previous cycles (${prevCount})`;
+        document.getElementById('issueDetailPrevCyclesSummary').textContent = `Previous runs (${prevCount})`;
         document.getElementById('issueDetailPrevCyclesBody').innerHTML = prevCycles.map(c => `
             <div class="prev-cycle-card">
                 <strong>Cycle ${escapeHtml(String(c.cycle || '?'))}</strong>
@@ -3659,16 +3713,21 @@ function runTimelineEventAction(action) {
         window.open(action.url, '_blank', 'noopener,noreferrer');
         return;
     }
+    if (action.type === 'open_review_feedback' && action.issue_number) {
+        openReviewFeedback(action.issue_number);
+        return;
+    }
     if (action.type === 'open_agent_log' && action.issue_number) {
-        openAgentLog(action.issue_number);
+        const label = action.label ? String(action.label).replace(/^View\s+/, '') : 'Most Recent Session Log';
+        openAgentLog(action.issue_number, label, action.run_dir || null);
         return;
     }
     if (action.type === 'view_claude_log' && action.issue_number) {
-        viewClaudeLog(action.issue_number);
+        viewClaudeLog(action.issue_number, action.run_dir || null);
         return;
     }
     if (action.type === 'open_orchestrator_log' && action.issue_number) {
-        openFilteredOrchestratorLog(action.issue_number);
+        openFilteredOrchestratorLog(action.issue_number, action.run_dir || null);
         return;
     }
     if (action.type === 'open_session_diagnostics' && action.issue_number) {
@@ -4155,7 +4214,7 @@ function renderDiagnosis(issueNumber, data) {
     // View log button - uses sanitized viewer
     html += `
         <button class="open-log-btn" onclick="openAgentLog(${issueNumber})">
-            View Session Log
+            View Most Recent Session Log
         </button>
     `;
 
@@ -4188,15 +4247,18 @@ function openPath(path) {
     openLogFile(path);
 }
 
-async function openFilteredOrchestratorLog(issueNumber) {
+async function openFilteredOrchestratorLog(issueNumber, runDir = null) {
     try {
-        showToast('Generating filtered log...');
-        const res = await fetch(`/api/session/orchestrator-log/${issueNumber}`);
+        showToast('Generating issue-scoped orchestrator log...');
+        const params = new URLSearchParams();
+        if (runDir) params.set('run_dir', runDir);
+        const suffix = params.toString() ? `?${params.toString()}` : '';
+        const res = await fetch(`/api/session/orchestrator-log/${issueNumber}${suffix}`);
         const data = await res.json();
         if (data.error) {
             // Fall back to full log if available
             if (data.full_log_path) {
-                showToast('Could not filter log, opening full log', 'error');
+                showToast('Could not filter issue log, opening full orchestrator log ↗', 'error');
                 openPath(data.full_log_path);
             } else {
                 showToast(data.error, 'error');
@@ -4210,14 +4272,16 @@ async function openFilteredOrchestratorLog(issueNumber) {
 }
 
 // Claude Log Viewer
-async function viewClaudeLog(issueNumber) {
+async function viewClaudeLog(issueNumber, runDir = null) {
     try {
         showToast('Loading Claude log...');
-        const res = await fetch(`/api/session/claude-log/${issueNumber}?limit=500`);
+        const params = new URLSearchParams({ limit: '500' });
+        if (runDir) params.set('run_dir', runDir);
+        const res = await fetch(`/api/session/claude-log/${issueNumber}?${params.toString()}`);
         const data = await res.json();
         if (data.error) {
             showToast(data.error, 'error');
-            document.getElementById('modalTitle').textContent = `Claude Log #${issueNumber}`;
+            document.getElementById('modalTitle').textContent = `Claude Session Log #${issueNumber}`;
             document.getElementById('modalBody').innerHTML = `
                 <div class="timeline-empty">
                     ${escapeHtml(data.error)}
@@ -4274,7 +4338,7 @@ function renderClaudeLogViewer(data) {
     const modal = document.getElementById('modalOverlay');
     const modalEl = modal.querySelector('.modal');
     modalEl.classList.add('log-viewer-modal');
-    openModal(`Claude Log #${data.issue_number}`, html);
+    openModal(`Claude Session Log #${data.issue_number}`, html);
 }
 
 function getEntryType(entry) {

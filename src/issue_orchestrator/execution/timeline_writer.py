@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from ..events.catalog import EVENT_SCHEMA_VERSION
 from ..ports.event_sink import TraceEvent
 from ..ports.timeline_store import TimelineRecord, TimelineStore
 from ..ports.timeline_writer import TimelineWriter
@@ -29,8 +30,11 @@ class DefaultTimelineWriter(TimelineWriter):
             timestamp = timestamp.replace(tzinfo=timezone.utc)
         timestamp = timestamp.astimezone(timezone.utc)
         safe_data = _normalize_json(event.data)
+        if isinstance(safe_data, dict) and "schema" not in safe_data:
+            safe_data["schema"] = EVENT_SCHEMA_VERSION
+        record_event_id = str(event.event_id) if event.event_id is not None else str(uuid4())
         record = TimelineRecord(
-            event_id=str(uuid4()),
+            event_id=record_event_id,
             timestamp=timestamp.isoformat(),
             event=event.name,
             data=safe_data,

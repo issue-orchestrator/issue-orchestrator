@@ -96,6 +96,12 @@ class TestReviewDetail:
         assert detail is not None
         assert "3/3" in detail
 
+    def test_comment_added_uses_excerpt(self) -> None:
+        data = {"comment_excerpt": "Please extract this helper and add a test for edge-case labels."}
+        detail = _detail_from_data("review.comment_added", data, "Posted review comment")
+        assert detail is not None
+        assert "extract this helper" in detail
+
 
 class TestNeedsHumanDetail:
     def test_question(self) -> None:

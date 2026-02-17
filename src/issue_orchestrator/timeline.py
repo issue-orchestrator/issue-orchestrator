@@ -40,6 +40,10 @@ class TimelineEvent:
     run_dir: str | None = None
     agent: str | None = None
     task: str | None = None
+    rework_cycle: int | None = None
+    reviewer_agent: str | None = None
+    added: list[str] | None = None
+    removed: list[str] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -62,6 +66,14 @@ class TimelineEvent:
             d["agent"] = self.agent
         if self.task:
             d["task"] = self.task
+        if self.rework_cycle is not None:
+            d["rework_cycle"] = self.rework_cycle
+        if self.reviewer_agent:
+            d["reviewer_agent"] = self.reviewer_agent
+        if self.added is not None:
+            d["added"] = self.added
+        if self.removed is not None:
+            d["removed"] = self.removed
         return d
 
 
@@ -109,6 +121,10 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
     artifacts = _artifacts_from_data(data)
     agent = data.get("agent") if isinstance(data.get("agent"), str) else None
     task = data.get("task") if isinstance(data.get("task"), str) else None
+    rework_cycle = data.get("rework_cycle") if isinstance(data.get("rework_cycle"), int) else None
+    reviewer_agent = data.get("reviewer_agent") if isinstance(data.get("reviewer_agent"), str) else None
+    added = _string_list_or_none(data.get("added"))
+    removed = _string_list_or_none(data.get("removed"))
     return TimelineEvent(
         event_id=record.event_id,
         timestamp=record.timestamp,
@@ -126,7 +142,18 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         artifacts=artifacts,
         agent=agent,
         task=task,
+        rework_cycle=rework_cycle,
+        reviewer_agent=reviewer_agent,
+        added=added,
+        removed=removed,
     )
+
+
+def _string_list_or_none(value: Any) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    items = [item for item in value if isinstance(item, str)]
+    return items if items else None
 
 
 def _phase_for_event(event_name: str) -> str:
@@ -302,6 +329,9 @@ def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail
 
     elif event_name == "review.approved":
         _add_if_new(parts, data.get("review_summary"), summary_str)
+
+    elif event_name == "review.comment_added":
+        _add_if_new(parts, data.get("comment_excerpt"), summary_str)
 
     elif event_name == "review.escalated":
         rework = data.get("rework_cycle")

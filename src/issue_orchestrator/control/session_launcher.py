@@ -1976,7 +1976,7 @@ def orchestrator_launch_review_session(
     # Always remove from pending after attempting launch
     state.pending_reviews = [r for r in state.pending_reviews if r.pr_number != review.pr_number]
     if result.success and result.session:
-        state.active_sessions.append(result.session)
+        _append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
         # Terminal exists but we can't track it - try to restore/adopt it
         session_name = f"review-{review.pr_number}"
@@ -1985,7 +1985,7 @@ def orchestrator_launch_review_session(
             already_tracked=state.active_sessions,
         )
         if restored:
-            state.active_sessions.extend(restored)
+            _append_unique_active_sessions(state.active_sessions, restored)
             logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
         else:
             logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
@@ -2013,7 +2013,7 @@ def orchestrator_launch_rework_session(
     # Always remove from pending after attempting launch
     state.pending_reworks = [r for r in state.pending_reworks if r.issue_key != rework.issue_key]
     if result.success and result.session:
-        state.active_sessions.append(result.session)
+        _append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
         # Terminal exists but we can't track it - try to restore/adopt it
         issue_number = rework.resolve_issue_number()
@@ -2026,7 +2026,7 @@ def orchestrator_launch_rework_session(
             already_tracked=state.active_sessions,
         )
         if restored:
-            state.active_sessions.extend(restored)
+            _append_unique_active_sessions(state.active_sessions, restored)
             logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
         else:
             logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
@@ -2237,6 +2237,27 @@ def _warn_if_slow(obs_elapsed: float, session: Session) -> None:
     )
 
 
+def _append_unique_active_sessions(
+    active_sessions: list[Session],
+    incoming: list[Session],
+) -> int:
+    """Append sessions while preserving unique terminal identity."""
+    existing_ids = {s.terminal_id for s in active_sessions}
+    added = 0
+    for session in incoming:
+        if session.terminal_id in existing_ids:
+            logger.warning(
+                "[ACTIVE_SESSIONS] Duplicate terminal suppressed: %s (issue=%s)",
+                session.terminal_id,
+                session.issue.number,
+            )
+            continue
+        active_sessions.append(session)
+        existing_ids.add(session.terminal_id)
+        added += 1
+    return added
+
+
 def _observe_active_session(
     state: "OrchestratorState",
     session: Session,
@@ -2354,7 +2375,8 @@ def restore_running_sessions(
     session_restorer: "SessionRestorer",
 ) -> None:
     """Restore running sessions - moved per method table."""
-    active_sessions.extend(session_restorer.restore_sessions(running, active_sessions))
+    restored = session_restorer.restore_sessions(running, active_sessions)
+    _append_unique_active_sessions(active_sessions, restored)
 
 
 def parse_session_ref(
@@ -2419,5 +2441,5 @@ def orchestrator_launch_session(
     """
     result = session_launcher.launch_issue_session(issue, state.active_sessions)
     if result.success and result.session:
-        state.active_sessions.append(result.session)
+        _append_unique_active_sessions(state.active_sessions, [result.session])
     return result.session if result.success else None

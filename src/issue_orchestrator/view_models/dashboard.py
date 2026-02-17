@@ -385,6 +385,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             terminal_hint = "Click to view agent UI log"
 
         items.append({
+            "card_id": session.terminal_id,
             "issue_number": session.issue.number,
             "title": session.issue.title,
             "agent_type": agent_label,
@@ -566,6 +567,8 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": status_reason if entry.status != "completed" else None,
+            # History records with an open PR belong in Awaiting Merge, not Completed.
+            "merge_pending": entry.status == "completed" and bool(entry.pr_url),
             **_refresh_meta(state, config, entry.issue_number),
         }
         if entry.status in ("blocked", "needs_human", "failed", "timed_out"):
@@ -741,6 +744,7 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
     phase_age = item.get("time") or ""
     blocked = item.get("blocked_summary") or ""
     return {
+        "card_id": item.get("card_id") or f"issue-{item.get('issue_number')}",
         "issue_number": item.get("issue_number"),
         "title": item.get("title", ""),
         "state_label": state_label or item.get("status", ""),
@@ -822,6 +826,65 @@ def _exclude_flow_overlaps(
         for issue_number in [_to_issue_number(item.get("issue_number"))]
         if issue_number is not None and issue_number not in occupied_numbers
     ]
+
+
+def _issue_numbers(items: list[dict[str, Any]]) -> set[int]:
+    """Extract numeric issue numbers from card items."""
+    numbers: set[int] = set()
+    for item in items:
+        raw = item.get("issue_number")
+        if isinstance(raw, int):
+            numbers.add(raw)
+        elif isinstance(raw, str) and raw.isdigit():
+            numbers.add(int(raw))
+    return numbers
+
+
+def _exclude_issue_numbers(
+    items: list[dict[str, Any]],
+    excluded_numbers: set[int],
+) -> list[dict[str, Any]]:
+    """Return items whose issue number is not in excluded_numbers."""
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        raw = item.get("issue_number")
+        issue_number: int | None = None
+        if isinstance(raw, int):
+            issue_number = raw
+        elif isinstance(raw, str) and raw.isdigit():
+            issue_number = int(raw)
+        if issue_number is None or issue_number not in excluded_numbers:
+            filtered.append(item)
+    return filtered
+
+
+def _apply_lane_precedence(
+    queue_items: list[dict[str, Any]],
+    active_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    awaiting_merge_items: list[dict[str, Any]],
+    completed_items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Enforce single-lane ownership across non-running lanes.
+
+    Precedence:
+    running > blocked > awaiting-merge > queued > completed
+    """
+    active_numbers = _issue_numbers(active_items)
+    blocked_filtered = _exclude_issue_numbers(blocked_items, active_numbers)
+    blocked_numbers = _issue_numbers(blocked_filtered)
+
+    awaiting_filtered = _exclude_issue_numbers(awaiting_merge_items, active_numbers | blocked_numbers)
+    awaiting_numbers = _issue_numbers(awaiting_filtered)
+
+    queue_filtered = _exclude_issue_numbers(queue_items, active_numbers | blocked_numbers | awaiting_numbers)
+    queue_numbers = _issue_numbers(queue_filtered)
+
+    completed_filtered = _exclude_issue_numbers(
+        completed_items,
+        active_numbers | blocked_numbers | awaiting_numbers | queue_numbers,
+    )
+    return queue_filtered, blocked_filtered, awaiting_filtered, completed_filtered
 
 
 def _build_awaiting_merge_items(
@@ -1121,6 +1184,19 @@ def build_dashboard_view_model(
         # Awaiting merge = items with PRs ready for human merge
         awaiting_merge_items = _build_awaiting_merge_items(queue_items, blocked_items, history_items)
         awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
+
+        queue_items, blocked_items, awaiting_merge_items, completed_items = _apply_lane_precedence(
+            queue_items=queue_items,
+            active_items=active_items,
+            blocked_items=blocked_items,
+            awaiting_merge_items=awaiting_merge_items,
+            completed_items=completed_items,
+        )
+
+        queue_items = _sort_by_issue_number(queue_items)
+        blocked_items = _sort_by_issue_number(blocked_items)
+        awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
+        completed_items = _sort_by_issue_number(completed_items)
 
         # Backlog used only for scope_summary.in_scope_total (not a kanban column)
         backlog_items = _exclude_flow_overlaps(

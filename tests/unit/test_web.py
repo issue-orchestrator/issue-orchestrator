@@ -1,7 +1,9 @@
 """Unit tests for the FastAPI web module."""
 
+import json
 import pytest
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch, Mock, AsyncMock
 from fastapi.testclient import TestClient
 
@@ -26,6 +28,7 @@ from issue_orchestrator.domain.models import (
     Issue,
     Session,
     SessionHistoryEntry,
+    PendingReview,
     OrchestratorState,
     AgentConfig,
     SessionStatus,
@@ -128,6 +131,73 @@ def create_session(issue, worktree_path="/tmp/worktree-1", branch_name="feature/
         worktree_path=Path(worktree_path),
         branch_name=branch_name,
     )
+
+
+def build_timeline_event(
+    event_name: str,
+    *,
+    issue_number: int = 123,
+    event_id: str = "e1",
+    timestamp: str = "2026-02-06T00:00:00Z",
+    phase: str = "in_progress",
+    step: str | None = None,
+    status: str = "started",
+    level: str = "phase",
+    summary: str | None = None,
+    parent_key: str | None = None,
+    artifacts: list[TimelineArtifact] | None = None,
+    detail: str | None = None,
+    run_id: str | None = None,
+    run_dir: str | None = None,
+    agent: str | None = None,
+    task: str | None = None,
+    rework_cycle: int | None = None,
+    reviewer_agent: str | None = None,
+) -> TimelineEvent:
+    """Build a TimelineEvent with sensible defaults for intent-focused tests."""
+    return TimelineEvent(
+        event_id=event_id,
+        timestamp=timestamp,
+        event=event_name,
+        issue_number=issue_number,
+        phase=phase,
+        step=step or event_name.split(".")[-1],
+        status=status,
+        level=level,
+        summary=summary,
+        parent_key=parent_key or f"session:issue-{issue_number}",
+        artifacts=artifacts or [],
+        detail=detail,
+        run_id=run_id,
+        run_dir=run_dir,
+        agent=agent,
+        task=task,
+        rework_cycle=rework_cycle,
+        reviewer_agent=reviewer_agent,
+    )
+
+
+def fetch_issue_detail_payload(
+    events: list[TimelineEvent],
+    *,
+    issue_number: int = 123,
+    title: str = "Detail Issue",
+) -> dict[str, Any]:
+    """Call /api/issue-detail with a mocked timeline and return JSON payload."""
+    mock_orch = create_mock_orchestrator()
+    mock_orch.state.cached_queue_issues = [create_issue(issue_number, title)]
+    mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+        issue_number=issue_number,
+        events=events,
+    )
+    set_orchestrator(mock_orch)
+    try:
+        client = TestClient(app)
+        response = client.get(f"/api/issue-detail/{issue_number}")
+        assert response.status_code == 200
+        return response.json()
+    finally:
+        set_orchestrator(None)
 
 
 class TestDashboardEndpoint:
@@ -1562,44 +1632,446 @@ class TestApiTimelineEndpoint:
 
     def test_issue_detail_returns_payload(self):
         """Issue detail endpoint returns drawer payload."""
-        from issue_orchestrator.entrypoints import web
-        mock_orch = create_mock_orchestrator()
-        mock_orch.state.cached_queue_issues = [create_issue(123, "Detail Issue")]
-
-        stream = TimelineStream(
-            issue_number=123,
-            events=[
-                TimelineEvent(
-                    event_id="e1",
-                    timestamp="2026-02-06T00:00:00Z",
-                    event="session.started",
-                    issue_number=123,
-                    phase="in_progress",
-                    step="started",
-                    status="started",
-                    level="phase",
-                    summary="started",
-                    parent_key="session:issue-123",
-                    artifacts=[],
-                ),
-            ],
+        payload = fetch_issue_detail_payload(
+            [build_timeline_event("session.started", summary="started")]
         )
-        mock_orch.deps.timeline_reader.read.return_value = stream
+        assert payload["issue_number"] == 123
+        assert payload["title"] == "Detail Issue"
+        assert "summary" in payload
+        assert "events" in payload
+        assert "cycles" in payload
+        assert "actions" in payload
 
+
+    def test_issue_detail_starts_new_lifecycle_after_completion_without_review(self):
+        """Signal path: a new coding session after completion becomes a new lifecycle."""
+        payload = fetch_issue_detail_payload([
+            build_timeline_event(
+                "session.started",
+                event_id="e1",
+                timestamp="2026-02-09T10:00:00Z",
+                rework_cycle=0,
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e2",
+                timestamp="2026-02-09T10:30:00Z",
+                status="completed",
+                rework_cycle=0,
+            ),
+            build_timeline_event(
+                "session.started",
+                event_id="e3",
+                timestamp="2026-02-09T11:00:00Z",
+                rework_cycle=0,
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e4",
+                timestamp="2026-02-09T11:30:00Z",
+                status="completed",
+                rework_cycle=0,
+            ),
+        ])
+
+        runs = payload["runs"]
+        journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
+        assert len(journey_cycles) == 2
+        lifecycles = [cycle["lifecycle"] for cycle in journey_cycles]
+        assert lifecycles[1] > lifecycles[0]
+        assert payload["run_count"] == 2
+
+    def test_issue_detail_review_continuation_stays_in_same_lifecycle(self):
+        """Signal path: completion followed by review remains one lifecycle/run."""
+        payload = fetch_issue_detail_payload([
+            build_timeline_event(
+                "session.started",
+                event_id="e1",
+                timestamp="2026-02-09T10:00:00Z",
+                rework_cycle=0,
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e2",
+                timestamp="2026-02-09T10:30:00Z",
+                status="completed",
+                rework_cycle=0,
+            ),
+            build_timeline_event(
+                "review.started",
+                event_id="e3",
+                timestamp="2026-02-09T10:31:00Z",
+                status="started",
+                phase="reviewing",
+                rework_cycle=0,
+            ),
+            build_timeline_event(
+                "review.changes_requested",
+                event_id="e4",
+                timestamp="2026-02-09T10:32:00Z",
+                status="failed",
+                phase="reviewing",
+                rework_cycle=0,
+                reviewer_agent="agent:reviewer",
+            ),
+            build_timeline_event(
+                "rework.started",
+                event_id="e5",
+                timestamp="2026-02-09T10:40:00Z",
+                status="started",
+                phase="rework",
+                rework_cycle=1,
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e6",
+                timestamp="2026-02-09T11:00:00Z",
+                status="completed",
+                rework_cycle=1,
+            ),
+        ])
+
+        runs = payload["runs"]
+        journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
+        assert len(journey_cycles) == 2
+        assert [cycle["iteration"] for cycle in journey_cycles] == [1, 2]
+        assert {cycle["lifecycle"] for cycle in journey_cycles} == {1}
+        assert payload["run_count"] == 1
+
+    def test_issue_detail_manual_unblock_without_event_starts_new_lifecycle(self):
+        """Manual label removal (no issue.unblocked event) still creates a new run lifecycle."""
+        payload = fetch_issue_detail_payload([
+            build_timeline_event(
+                "session.started",
+                event_id="e1",
+                timestamp="2026-02-08T10:00:00Z",
+                status="started",
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e2",
+                timestamp="2026-02-08T10:30:00Z",
+                status="completed",
+            ),
+            build_timeline_event(
+                "issue.blocked",
+                event_id="e3",
+                timestamp="2026-02-08T10:40:00Z",
+                status="failed",
+                phase="blocked",
+            ),
+            build_timeline_event(
+                "session.started",
+                event_id="e4",
+                timestamp="2026-02-09T09:00:00Z",
+                status="started",
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e5",
+                timestamp="2026-02-09T09:30:00Z",
+                status="completed",
+            ),
+        ])
+
+        runs = payload["runs"]
+        journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
+        assert len(journey_cycles) == 2
+        lifecycles = [cycle["lifecycle"] for cycle in journey_cycles]
+        assert lifecycles[1] > lifecycles[0]
+        assert payload["run_count"] == 2
+
+    def test_issue_detail_signal_events_split_from_legacy_lifecycle(self):
+        """Legacy timeline followed by signal-era events should split runs."""
+        payload = fetch_issue_detail_payload([
+            build_timeline_event(
+                "session.started",
+                event_id="e1",
+                timestamp="2026-02-08T10:00:00Z",
+                status="started",
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e2",
+                timestamp="2026-02-08T10:30:00Z",
+                status="completed",
+            ),
+            build_timeline_event(
+                "session.started",
+                event_id="e3",
+                timestamp="2026-02-09T10:00:00Z",
+                status="started",
+                rework_cycle=0,
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e4",
+                timestamp="2026-02-09T10:30:00Z",
+                status="completed",
+                rework_cycle=0,
+            ),
+        ])
+
+        runs = payload["runs"]
+        journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
+        assert len(journey_cycles) == 2
+        lifecycles = [cycle["lifecycle"] for cycle in journey_cycles]
+        assert lifecycles[1] > lifecycles[0]
+        assert payload["run_count"] == 2
+
+    def test_issue_detail_includes_cycle_run_id_for_latest_run_filtering(self):
+        """Journey cycles should carry run_id + cycle_in_run for latest-run rendering."""
+        payload = fetch_issue_detail_payload([
+            build_timeline_event(
+                "session.started",
+                event_id="e1",
+                timestamp="2026-02-09T10:00:00Z",
+                status="started",
+                run_id="run-1",
+                rework_cycle=0,
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e2",
+                timestamp="2026-02-09T10:30:00Z",
+                status="completed",
+                run_id="run-1",
+                rework_cycle=0,
+            ),
+            build_timeline_event(
+                "session.started",
+                event_id="e3",
+                timestamp="2026-02-09T11:00:00Z",
+                status="started",
+                run_id="run-2",
+                rework_cycle=0,
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e4",
+                timestamp="2026-02-09T11:30:00Z",
+                status="completed",
+                run_id="run-2",
+                rework_cycle=0,
+            ),
+        ])
+
+        runs = payload["runs"]
+        journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
+        assert len(journey_cycles) == 2
+        assert [cycle["run_id"] for cycle in journey_cycles] == ["run-1", "run-2"]
+        assert [cycle["cycle_in_run"] for cycle in journey_cycles] == [1, 1]
+
+    def test_issue_detail_drops_claim_preamble_when_real_cycles_exist(self):
+        """Claim-only preamble should not appear as its own numbered cycle."""
+        payload = fetch_issue_detail_payload([
+            build_timeline_event(
+                "claim.acquired",
+                event_id="e1",
+                timestamp="2026-02-09T09:50:00Z",
+                status="completed",
+                phase="in_progress",
+            ),
+            build_timeline_event(
+                "session.started",
+                event_id="e2",
+                timestamp="2026-02-09T10:00:00Z",
+                status="started",
+                rework_cycle=0,
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e3",
+                timestamp="2026-02-09T10:30:00Z",
+                status="completed",
+                rework_cycle=0,
+            ),
+        ])
+
+        runs = payload["runs"]
+        journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
+        assert len(journey_cycles) == 1
+        step_events = [step["event"] for step in journey_cycles[0]["steps"]]
+        assert "claim.acquired" not in step_events
+
+    def test_issue_detail_drops_claim_event_inside_signal_cycle(self):
+        """Claim events are hidden even when they share the active signal cycle."""
+        payload = fetch_issue_detail_payload([
+            build_timeline_event(
+                "session.started",
+                event_id="e1",
+                timestamp="2026-02-09T10:00:00Z",
+                status="started",
+                rework_cycle=0,
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "claim.acquired",
+                event_id="e2",
+                timestamp="2026-02-09T10:01:00Z",
+                status="completed",
+                rework_cycle=0,
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e3",
+                timestamp="2026-02-09T10:30:00Z",
+                status="completed",
+                rework_cycle=0,
+            ),
+        ])
+
+        runs = payload["runs"]
+        journey_cycles = [cycle for run in runs for cycle in run["cycles"]]
+        assert len(journey_cycles) == 1
+        step_events = [step["event"] for step in journey_cycles[0]["steps"]]
+        assert "claim.acquired" not in step_events
+
+    def test_issue_detail_reports_expected_history_missing_when_empty(self):
+        """Issue detail should surface diagnostic when history exists but timeline is empty."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+            ),
+        ]
+        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+            issue_number=123,
+            events=[],
+        )
         set_orchestrator(mock_orch)
         try:
             client = TestClient(app)
             response = client.get("/api/issue-detail/123")
             assert response.status_code == 200
             payload = response.json()
-            assert payload["issue_number"] == 123
-            assert payload["title"] == "Detail Issue"
-            assert "summary" in payload
-            assert "events" in payload
-            assert "cycles" in payload
-            assert "actions" in payload
+            diagnostic = payload["summary"].get("timeline_diagnostic")
+            assert diagnostic is not None
+            assert diagnostic["state"] == "expected_history_missing"
+            assert "session_history_present" in diagnostic["signals"]
+            assert diagnostic["expected_timeline_store"].endswith("/timeline.sqlite")
+            assert diagnostic["expected_timeline_store_exists"] is False
+            assert "Timeline data missing" in payload["status_explanation"]
         finally:
             set_orchestrator(None)
+
+    def test_timeline_reports_expected_history_missing_when_empty(self):
+        """Timeline endpoint should include diagnostics for missing expected history."""
+        mock_orch = create_mock_orchestrator()
+        mock_orch.state.pending_reviews = [
+            PendingReview(
+                issue_key=FakeIssueKey(name="123"),
+                _issue_number=123,
+                pr_number=456,
+                pr_url="https://example.com/pr/456",
+                branch_name="123-test",
+            ),
+        ]
+        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+            issue_number=123,
+            events=[],
+        )
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/timeline/123")
+            assert response.status_code == 200
+            payload = response.json()
+            diagnostic = payload.get("diagnostic")
+            assert diagnostic is not None
+            assert diagnostic["state"] == "expected_history_missing"
+            assert "pending_review_present" in diagnostic["signals"]
+            assert diagnostic["expected_timeline_store"].endswith("/timeline.sqlite")
+            assert diagnostic["expected_timeline_store_exists"] is False
+        finally:
+            set_orchestrator(None)
+
+    def test_issue_detail_latest_logical_run_keeps_review_with_rework(self):
+        """Latest run must be logical lifecycle, not physical run_id ordering."""
+        payload = fetch_issue_detail_payload([
+            build_timeline_event(
+                "session.started",
+                event_id="e1",
+                timestamp="2026-02-16T02:13:47Z",
+                status="started",
+                run_id="20260216-071346Z",
+                rework_cycle=0,
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e2",
+                timestamp="2026-02-16T02:19:00Z",
+                status="completed",
+                run_id="20260216-071346Z",
+                rework_cycle=0,
+            ),
+            build_timeline_event(
+                "review.started",
+                event_id="e3",
+                timestamp="2026-02-16T02:19:10Z",
+                status="started",
+                run_id="20260216-075116Z",
+                rework_cycle=0,
+                task="review",
+            ),
+            build_timeline_event(
+                "review.changes_requested",
+                event_id="e4",
+                timestamp="2026-02-16T02:22:00Z",
+                status="failed",
+                run_id="20260216-075116Z",
+                rework_cycle=0,
+                task="review",
+            ),
+            build_timeline_event(
+                "rework.started",
+                event_id="e5",
+                timestamp="2026-02-16T02:47:51Z",
+                status="started",
+                run_id="20260216-074751Z",
+                rework_cycle=1,
+                agent="agent:backend",
+            ),
+            build_timeline_event(
+                "session.completed",
+                event_id="e6",
+                timestamp="2026-02-16T03:00:00Z",
+                status="completed",
+                run_id="20260216-074751Z",
+                rework_cycle=1,
+            ),
+        ])
+
+        assert payload["run_count"] == 1
+        latest_run = payload["runs"][-1]
+        review_events = [
+            step["event"]
+            for cycle in latest_run["cycles"]
+            for step in cycle.get("steps", [])
+            if str(step.get("event", "")).startswith("review.")
+        ]
+        assert review_events, "Latest logical run should include review events"
+        assert latest_run.get("session_run_ids") == [
+            "20260216-071346Z",
+            "20260216-075116Z",
+            "20260216-074751Z",
+        ]
 
     def test_timeline_filters_label_churn_events(self):
         """Timeline endpoint omits noisy issue.labels_changed events."""
@@ -1849,6 +2321,7 @@ class TestTimelineActionWiring:
     _ACTION_ENDPOINT_MAP: dict[str, str | None] = {
         "open_path": "/api/open-file",
         "open_url": None,  # client-side window.open, no HTTP call
+        "open_review_feedback": None,  # in-app modal from existing issue detail payload
         "open_agent_log": "/api/log/local/{issue_number}",
         "view_claude_log": "/api/session/claude-log/{issue_number}",
         "open_orchestrator_log": "/api/session/orchestrator-log/{issue_number}",
@@ -1871,6 +2344,7 @@ class TestTimelineActionWiring:
         # Generate actions for representative events to collect all possible types
         representative_events = [
             {"event": "session.started", "issue_number": 1},
+            {"event": "review.comment_added", "issue_number": 1},
             {"event": "session.completed", "issue_number": 1},
             {"event": "session.failed", "issue_number": 1},
             {"event": "validation.failed", "issue_number": 1},
@@ -1908,8 +2382,8 @@ class TestTimelineActionWiring:
                 f"but no matching route found in the FastAPI app."
             )
 
-    def test_issue_detail_journey_steps_carry_actions(self) -> None:
-        """Journey cycle steps must pass through event actions for ⋯ menus."""
+    def test_issue_detail_run_steps_carry_actions(self) -> None:
+        """Run cycle steps must pass through event actions for ⋯ menus."""
         mock_orch = create_mock_orchestrator()
         mock_orch.state.cached_queue_issues = [create_issue(123, "Wire Test")]
 
@@ -1940,9 +2414,11 @@ class TestTimelineActionWiring:
             assert response.status_code == 200
             payload = response.json()
 
-            # Journey cycles must exist and carry actions on steps
-            cycles = payload.get("journey_cycles", [])
-            assert len(cycles) > 0, "Expected at least one journey cycle"
+            # Run cycles must exist and carry actions on steps
+            runs = payload.get("runs", [])
+            assert len(runs) > 0, "Expected at least one run"
+            cycles = runs[0].get("cycles", [])
+            assert len(cycles) > 0, "Expected at least one cycle"
             steps = cycles[0].get("steps", [])
             assert len(steps) > 0, "Expected at least one step in cycle"
 
@@ -1983,6 +2459,9 @@ class TestTimelineActionWiring:
         _timeline_event_recommended_actions(
             event_name="validation.failed", issue_number=1, add_action=_capture,
         )
+        _timeline_event_recommended_actions(
+            event_name="review.comment_added", issue_number=1, add_action=_capture,
+        )
 
         default_types = {a["type"] for a in captured}
         unregistered = default_types - set(self._ACTION_ENDPOINT_MAP)
@@ -1990,6 +2469,67 @@ class TestTimelineActionWiring:
             f"Action types in default/recommended helpers not in wiring registry: "
             f"{unregistered}"
         )
+
+    def test_timeline_artifact_types_produce_viewable_actions(self) -> None:
+        """All known timeline artifact types should map to a usable UI action."""
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+
+        event = {
+            "event": "review.comment_added",
+            "issue_number": 4057,
+            "run_dir": "/tmp/wt/.issue-orchestrator/sessions/20260216-000000Z__issue-4057",
+            "artifacts": [
+                {"type": "pull_request", "label": "PR", "value": "https://github.com/org/repo/pull/4124"},
+                {"type": "review_comment", "label": "Review Comment", "value": "https://github.com/org/repo/pull/4124#discussion_r1"},
+                {"type": "completion_record", "label": "Completion", "value": "/tmp/wt/.issue-orchestrator/completion.json"},
+                {"type": "worktree", "label": "Worktree", "value": "/tmp/wt"},
+                {"type": "validation", "label": "Validation", "value": "/tmp/wt/.issue-orchestrator/validation.json"},
+                {"type": "run_dir", "label": "Run Dir", "value": "/tmp/wt/.issue-orchestrator/sessions/20260216-000000Z__issue-4057"},
+            ],
+        }
+        actions = _timeline_event_actions(event, 4057)
+        assert actions, "Expected at least one action from timeline event artifacts"
+
+        open_url_labels = {
+            action["label"]
+            for action in actions
+            if action.get("type") == "open_url"
+        }
+        open_paths = {
+            action["path"]
+            for action in actions
+            if action.get("type") == "open_path"
+        }
+        run_scoped = {
+            action["type"]
+            for action in actions
+            if action.get("run_dir") == "/tmp/wt/.issue-orchestrator/sessions/20260216-000000Z__issue-4057"
+        }
+        assert "Open PR ↗" in open_url_labels
+        assert "Open Review Comment ↗" in open_url_labels
+        assert "/tmp/wt/.issue-orchestrator/completion.json" in open_paths
+        assert "/tmp/wt" in open_paths
+        assert "/tmp/wt/.issue-orchestrator/validation.json" in open_paths
+        assert "/tmp/wt/.issue-orchestrator/sessions/20260216-000000Z__issue-4057" in open_paths
+        assert "open_agent_log" in run_scoped
+        assert "view_claude_log" in run_scoped
+        assert "open_orchestrator_log" in run_scoped
+
+    def test_agent_log_action_label_matches_event_context(self) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+
+        review_actions = _timeline_event_actions({"event": "review.approved", "issue_number": 1}, 1)
+        coding_actions = _timeline_event_actions({"event": "session.started", "issue_number": 1}, 1)
+        rework_actions = _timeline_event_actions({"event": "rework.started", "issue_number": 1}, 1)
+        fallback_actions = _timeline_event_actions({"event": "issue.unblocked", "issue_number": 1}, 1)
+
+        def _label(actions: list[dict[str, Any]]) -> str:
+            return next(action["label"] for action in actions if action.get("type") == "open_agent_log")
+
+        assert _label(review_actions) == "View Reviewer Session Log"
+        assert _label(coding_actions) == "View Coding Session Log"
+        assert _label(rework_actions) == "View Rework Session Log"
+        assert _label(fallback_actions) == "View Most Recent Session Log"
 
 
 class TestKillSessionEndpoint:
@@ -2179,6 +2719,264 @@ class TestGetSessionLogEndpoint:
 
         assert response.status_code == 503
         assert "error" in response.json()
+
+
+class TestIssueLogEndpointsUseLatestHistory:
+    """Issue log endpoints should resolve latest history entry, not oldest."""
+
+    def test_agent_ui_log_prefers_latest_history_entry(self, tmp_path: Path):
+        """GET /api/log/local should read from newest run when issue appears multiple times."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+
+        old_worktree = tmp_path / "wt-old"
+        old_worktree.mkdir(parents=True)
+        old_run = session_output.start_run(old_worktree, "issue-123", issue_number=123)
+        old_run.log_path.write_text("old run log line\n")
+
+        new_worktree = tmp_path / "wt-new"
+        new_worktree.mkdir(parents=True)
+        new_run = session_output.start_run(new_worktree, "issue-123", issue_number=123)
+        new_run.log_path.write_text("new run log line\n")
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123 old",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=1,
+                worktree_path=old_worktree,
+            ),
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123 new",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=1,
+                worktree_path=new_worktree,
+            ),
+        ]
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/log/local/123")
+            assert response.status_code == 200
+            payload = response.json()
+            assert any("new run log line" in line for line in payload["lines"])
+            assert str(new_worktree) in payload["log_path"]
+        finally:
+            set_orchestrator(None)
+
+    def test_claude_log_prefers_latest_history_entry(self, tmp_path: Path):
+        """GET /api/session/claude-log should use newest run for repeated issue history."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+
+        old_worktree = tmp_path / "wt-old-claude"
+        old_worktree.mkdir(parents=True)
+        old_run = session_output.start_run(old_worktree, "issue-123", issue_number=123)
+        old_claude = old_run.run_dir / "old-claude.jsonl"
+        old_claude.write_text('{"type":"assistant","content":"old"}\n')
+        session_output.update_manifest(old_run.run_dir, {"claude_log_path": str(old_claude)})
+
+        new_worktree = tmp_path / "wt-new-claude"
+        new_worktree.mkdir(parents=True)
+        new_run = session_output.start_run(new_worktree, "issue-123", issue_number=123)
+        new_claude = new_run.run_dir / "new-claude.jsonl"
+        new_claude.write_text('{"type":"assistant","content":"new"}\n')
+        session_output.update_manifest(new_run.run_dir, {"claude_log_path": str(new_claude)})
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123 old",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=1,
+                worktree_path=old_worktree,
+            ),
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123 new",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=1,
+                worktree_path=new_worktree,
+            ),
+        ]
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/session/claude-log/123")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["log_path"] == str(new_claude)
+            assert payload["entry_count"] == 1
+            assert payload["entries"][0]["content"] == "new"
+        finally:
+            set_orchestrator(None)
+
+    def test_claude_log_attaches_from_manifest_dir_when_path_missing(self, tmp_path: Path):
+        """GET /api/session/claude-log should attach log on demand if manifest has only claude_log_dir."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+
+        worktree = tmp_path / "wt-claude-attach"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        claude_dir = tmp_path / "claude-logs"
+        claude_dir.mkdir(parents=True)
+        claude_log = claude_dir / "session.jsonl"
+        claude_log.write_text('{"type":"assistant","content":"attached"}\n')
+        session_output.update_manifest(
+            run.run_dir,
+            {
+                "claude_log_dir": str(claude_dir),
+                "claude_log_path": "",
+            },
+        )
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=1,
+                worktree_path=worktree,
+            ),
+        ]
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/session/claude-log/123")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["log_path"] == str(claude_log)
+            assert payload["entry_count"] == 1
+            assert payload["entries"][0]["content"] == "attached"
+        finally:
+            set_orchestrator(None)
+
+    def test_claude_log_honors_run_dir_query(self, tmp_path: Path):
+        """GET /api/session/claude-log should read the requested run when run_dir is provided."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+
+        worktree = tmp_path / "wt-claude-run-query"
+        worktree.mkdir(parents=True)
+        run_a = session_output.start_run(worktree, "review-1", issue_number=123)
+        log_a = run_a.run_dir / "a.jsonl"
+        log_a.write_text('{"type":"assistant","content":"from-run-a"}\n')
+        session_output.update_manifest(run_a.run_dir, {"claude_log_path": str(log_a)})
+
+        run_b = session_output.start_run(worktree, "review-2", issue_number=123)
+        log_b = run_b.run_dir / "b.jsonl"
+        log_b.write_text('{"type":"assistant","content":"from-run-b"}\n')
+        session_output.update_manifest(run_b.run_dir, {"claude_log_path": str(log_b)})
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=1,
+                worktree_path=worktree,
+            ),
+        ]
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/session/claude-log/123?run_dir={run_a.run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["run_dir"] == str(run_a.run_dir)
+            assert payload["entries"][0]["content"] == "from-run-a"
+        finally:
+            set_orchestrator(None)
+
+    def test_orchestrator_log_honors_run_dir_query(self, tmp_path: Path):
+        """GET /api/session/orchestrator-log should write tail into requested run_dir."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        mock_orch.config.repo_root = tmp_path / "repo"
+        mock_orch.config.repo_root.mkdir(parents=True)
+        orch_log = mock_orch.config.repo_root / ".issue-orchestrator" / "state" / "logs" / "orchestrator.log"
+        orch_log.parent.mkdir(parents=True, exist_ok=True)
+        orch_log.write_text("2026-02-16 [SESSION_RUN_START] run_id=test session=review-1 issue=123\n")
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-orch-run-query"
+        worktree.mkdir(parents=True)
+        run_a = session_output.start_run(worktree, "review-1", issue_number=123)
+        run_b = session_output.start_run(worktree, "review-2", issue_number=123)
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=1,
+                worktree_path=worktree,
+            ),
+        ]
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/session/orchestrator-log/123?run_dir={run_a.run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["filtered_log_path"].startswith(str(run_a.run_dir))
+            assert not payload["filtered_log_path"].startswith(str(run_b.run_dir))
+        finally:
+            set_orchestrator(None)
+
+
+class TestIssueSessionContextIsolation:
+    def test_resolve_context_does_not_scan_sibling_worktrees(self, tmp_path: Path):
+        """Session context must not pick runs from sibling worktrees/repos."""
+        from issue_orchestrator.entrypoints.web import _resolve_issue_session_context
+
+        mock_orch = create_mock_orchestrator()
+        repo_a = tmp_path / "repo-a"
+        repo_a.mkdir(parents=True)
+        repo_b = tmp_path / "repo-b"
+        sibling_run = repo_b / ".issue-orchestrator" / "sessions" / "20260216-120000Z__issue-4057"
+        sibling_run.mkdir(parents=True)
+        (sibling_run / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "session_name": "issue-4057",
+                    "run_id": "20260216-120000Z",
+                    "run_dir": str(sibling_run),
+                    "issue_number": 4057,
+                }
+            ),
+            encoding="utf-8",
+        )
+        mock_orch.config.repo_root = repo_a
+        mock_orch.state.active_sessions = []
+        mock_orch.state.session_history = []
+        set_orchestrator(mock_orch)
+        try:
+            ctx = _resolve_issue_session_context(4057)
+            assert ctx.run_dir is None
+            assert ctx.worktree_path is None
+            assert ctx.session_name is None
+        finally:
+            set_orchestrator(None)
 
 
 class TestLogCleaning:

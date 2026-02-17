@@ -46,7 +46,7 @@ from ..execution import (
     QueueCacheStore,
     TimelineEventSink,
     DefaultTimelineReader,
-    FileSystemTimelineStore,
+    SqliteTimelineStore,
     TimelineStoreConfig,
     DefaultTimelineWriter,
 )
@@ -487,8 +487,8 @@ def build_orchestrator(
     runner = PluggySessionRunner(pm)
 
     # Timeline store + reader/writer + event sink
-    timeline_store = FileSystemTimelineStore(
-        config.repo_root,
+    timeline_store = SqliteTimelineStore(
+        state_dir(config.repo_root) / "timeline.sqlite",
         TimelineStoreConfig(max_records=config.timeline.max_records),
     )
     timeline_reader = DefaultTimelineReader(timeline_store)

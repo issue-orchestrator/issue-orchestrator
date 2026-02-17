@@ -19,6 +19,7 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.view_models.dashboard import (
+    _apply_lane_precedence,
     _exclude_flow_overlaps,
     _normalize_status_reason,
     build_dashboard_view_model,
@@ -83,10 +84,12 @@ def test_view_model_active_session_and_dashboard_data():
     assert view_model.issues == view_model.active_items
     assert view_model.active_items[0]["status"] == "active"
     assert view_model.active_items[0]["flow_stage"] == "review"
+    assert view_model.active_items[0]["card_id"] == "review-12"
     assert view_model.active_items[0]["action_hint"] == "Click to view agent UI log"
     assert view_model.flow_columns
     assert view_model.flow_columns[1]["id"] == "running"
     assert view_model.flow_columns[1]["count"] == 1
+    assert view_model.flow_columns[1]["items"][0]["card_id"] == "review-12"
 
     dashboard_data = view_model.dashboard_data()
     assert dashboard_data["paused"] is False
@@ -231,6 +234,35 @@ def test_pr_pending_issue_not_shown_in_queued_flow_column():
     assert any(item["issue_number"] == 4072 for item in view_model.awaiting_merge_items)
 
 
+def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
+    config = _make_config()
+    state = OrchestratorState(
+        startup_status="complete",
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Provider circuit breaker dashboard",
+                agent_type="agent:backend",
+                status="completed",
+                runtime_minutes=12,
+                pr_url="https://github.com/test/repo/pull/4124",
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert any(item["issue_number"] == 4057 for item in view_model.awaiting_merge_items)
+    assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
+
+
 def test_view_model_includes_refresh_staleness_meta():
     config = _make_config()
     agent_config = _make_agent_config()
@@ -340,6 +372,30 @@ def test_exclude_flow_overlaps_handles_string_issue_numbers():
     assert result == []
 
 
+def test_lane_precedence_enforces_single_lane_membership():
+    queue_items = [{"issue_number": 1, "title": "Queue 1"}, {"issue_number": 5, "title": "Queue 5"}]
+    active_items = [
+        {"issue_number": 2, "title": "Running 2a"},
+        {"issue_number": 2, "title": "Running 2b"},  # Multiple running cards for same issue are allowed
+    ]
+    blocked_items = [{"issue_number": 2, "title": "Blocked 2"}, {"issue_number": 3, "title": "Blocked 3"}]
+    awaiting_merge_items = [{"issue_number": 3, "title": "Awaiting 3"}, {"issue_number": 4, "title": "Awaiting 4"}]
+    completed_items = [{"issue_number": 1, "title": "Done 1"}, {"issue_number": 4, "title": "Done 4"}, {"issue_number": 6, "title": "Done 6"}]
+
+    queue_out, blocked_out, awaiting_out, completed_out = _apply_lane_precedence(
+        queue_items=queue_items,
+        active_items=active_items,
+        blocked_items=blocked_items,
+        awaiting_merge_items=awaiting_merge_items,
+        completed_items=completed_items,
+    )
+
+    assert [i["issue_number"] for i in blocked_out] == [3]  # #2 suppressed by running
+    assert [i["issue_number"] for i in awaiting_out] == [4]  # #3 suppressed by blocked
+    assert [i["issue_number"] for i in queue_out] == [1, 5]  # unchanged here
+    assert [i["issue_number"] for i in completed_out] == [6]  # #1/#4 suppressed by queue/awaiting
+
+
 def test_normalize_status_reason_drops_sync_noise() -> None:
     assert _normalize_status_reason("Synced 10s ago") is None
     assert _normalize_status_reason(" synced 5m ago ") is None
@@ -380,6 +436,47 @@ def test_view_model_history_dedupes_latest_per_issue():
     combined = view_model.history_items + view_model.blocked_items
     assert len([item for item in combined if item["issue_number"] == 10]) == 1
     assert any(item["status"] == "blocked" for item in combined if item["issue_number"] == 10)
+
+
+def test_completed_excludes_issues_visible_in_running_lane():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+    issue = Issue(number=12, title="Fix bug", labels=["agent:web"])
+    active_session = Session(
+        key=SessionKey(issue=FakeIssueKey("12"), task=TaskKind.CODE),
+        issue=issue,
+        agent_config=agent_config,
+        terminal_id="issue-12",
+        worktree_path=Path("/tmp/worktree-12"),
+        branch_name="feature/12",
+        started_at=datetime.now() - timedelta(minutes=1),
+    )
+    state = OrchestratorState(
+        startup_status="complete",
+        active_sessions=[active_session],
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=12,
+                title="Fix bug",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert any(item["issue_number"] == 12 for item in view_model.active_items)
+    assert all(item["issue_number"] != 12 for item in view_model.completed_items)
 
 
 def test_view_model_e2e_items_from_provider():

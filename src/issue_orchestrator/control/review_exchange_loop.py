@@ -12,12 +12,18 @@ from typing import Any
 
 from ..agent_runner import AgentRunner, RunSpec
 from ..domain.models import AgentConfig
+from ..infra.logging_config import get_repo_log_path
 from ..infra.env import ENV_PREFIX
 from ..ports.session_output import SessionOutput
 from ..ports import EventSink, TraceEvent
 from ..events import EventName, EventContext
 
 logger = logging.getLogger(__name__)
+
+
+def _escape_claude_project_path(path: Path) -> str:
+    cleaned = str(path).lstrip("/")
+    return "-" + cleaned.replace("/", "-")
 
 
 @dataclass(frozen=True)
@@ -64,11 +70,15 @@ def run_review_exchange_loop(
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     session_name = f"review-exchange-{issue_number}-{timestamp}"
+    claude_project_dir = Path.home() / ".claude" / "projects" / _escape_claude_project_path(worktree_path)
     run = session_output.start_run(
         worktree_path,
         session_name,
         issue_number=issue_number,
         agent_label=coder_label,
+        backend="subprocess",
+        claude_log_dir=str(claude_project_dir),
+        orchestrator_log=str(get_repo_log_path(worktree_path)),
     )
     run_dir = run.run_dir
     exchange_dir = run_dir / "review-exchange"

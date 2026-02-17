@@ -48,7 +48,7 @@ from .provider_circuit_store import SQLiteProviderCircuitStore
 from .queue_cache_store import QueueCacheStore
 from .timeline_event_sink import TimelineEventSink
 from .timeline_reader import DefaultTimelineReader
-from .timeline_store import FileSystemTimelineStore, TimelineStoreConfig
+from .timeline_store import FileSystemTimelineStore, RoutedTimelineStore, SqliteTimelineStore, TimelineStoreConfig
 from .timeline_writer import DefaultTimelineWriter
 
 __all__ = [
@@ -89,6 +89,8 @@ __all__ = [
     "TimelineEventSink",
     "DefaultTimelineReader",
     "FileSystemTimelineStore",
+    "RoutedTimelineStore",
+    "SqliteTimelineStore",
     "TimelineStoreConfig",
     "DefaultTimelineWriter",
 ]

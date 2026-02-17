@@ -69,7 +69,7 @@ def _write_manifest(worktree: Path, session_name: str, log_path: Path) -> Path:
     return run_dir
 
 
-def _make_session(worktree: Path) -> Session:
+def _make_session(worktree: Path, session_name: str = "issue-7") -> Session:
     issue = Issue(number=7, title="Test", labels=["agent:web"])
     agent_config = AgentConfig(prompt_path=worktree / "prompt.txt", model="sonnet", timeout_minutes=30)
     issue_key = FakeIssueKey(name="7")
@@ -78,7 +78,7 @@ def _make_session(worktree: Path) -> Session:
         key=session_key,
         issue=issue,
         agent_config=agent_config,
-        terminal_id="issue-7",
+        terminal_id=session_name,
         worktree_path=worktree,
         branch_name="feature/7",
     )
@@ -92,7 +92,7 @@ def test_session_logs_and_phases(sample_orchestrator, tmp_path):
         log_path = worktree / "claude.jsonl"
         log_path.write_text("{\"type\": \"assistant\", \"content\": \"hello\"}\n")
         _write_manifest(worktree, "coding-1", log_path)
-        session = _make_session(worktree)
+        session = _make_session(worktree, session_name="coding-1")
         sample_orchestrator.state.active_sessions = [session]
 
         port = _find_free_port()

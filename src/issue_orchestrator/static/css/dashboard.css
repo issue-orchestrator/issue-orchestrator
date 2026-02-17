@@ -546,7 +546,7 @@ body.column-focus-mode .column-expanded {
     border-radius: 10px;
     padding: 8px 10px;
     display: grid;
-    grid-template-columns: auto 1fr;
+    grid-template-columns: auto 1fr auto;
     gap: 4px 8px;
     align-items: start;
 }
@@ -558,8 +558,11 @@ body.column-focus-mode .column-expanded {
     min-width: 0;
 }
 .expanded-card .card-actions {
-    grid-column: 2;
+    grid-column: 3;
+    grid-row: 1;
     display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
     gap: 6px;
     align-items: center;
 }
@@ -1015,6 +1018,22 @@ body.column-focus-mode .column-expanded {
 .journey-cycle-artifacts-btn { cursor: pointer; font-size: 12px; flex-shrink: 0; }
 .journey-cycle-body { padding-left: 20px; }
 .journey-cycle-body.collapsed { display: none; }
+.journey-phase-group {
+    margin-left: 8px;
+    padding-left: 10px;
+    border-left: 1px solid rgba(128, 128, 128, 0.28);
+}
+.journey-phase-header {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin: 8px 0 4px;
+}
+.journey-phase-header:first-child {
+    margin-top: 0;
+}
 
 .journey-artifact-popover {
     position: absolute;

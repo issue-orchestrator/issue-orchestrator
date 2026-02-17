@@ -10,6 +10,7 @@
     const ENDPOINTS = {
         UNBLOCK_RETRY: '/api/unblock-retry',
         RESET_RETRY: '/api/reset-retry',
+        BULK_RETRY: '/api/bulk-retry',
         BULK_DEPRIORITIZE: '/api/bulk-deprioritize',
     };
 
@@ -47,6 +48,15 @@
         };
     }
 
+    function buildBulkRetryRequest(issueNumbers) {
+        const issue_numbers = normalizeIssueNumbers(issueNumbers);
+        return {
+            endpoint: ENDPOINTS.BULK_RETRY,
+            method: 'POST',
+            body: { issue_numbers },
+        };
+    }
+
     function buildIssueRetryRequest(issueNumber) {
         const normalized = normalizeIssueNumbers([issueNumber]);
         return {
@@ -61,6 +71,7 @@
         normalizeIssueNumbers,
         buildUnblockRequest,
         buildResetRetryRequest,
+        buildBulkRetryRequest,
         buildBulkDeprioritizeRequest,
         buildIssueRetryRequest,
     };

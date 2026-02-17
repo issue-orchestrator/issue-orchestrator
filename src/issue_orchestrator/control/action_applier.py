@@ -342,12 +342,14 @@ class ActionApplier:
             logger.info(issue_log(action.number, "Comment added (%d chars)"), len(action.comment))
             # Emit review comment event for PR-targeted comments.
             if action.is_pr:
+                excerpt = action.comment.strip().replace("\n", " ")
                 self.events.publish(TraceEvent(
                     EventName.REVIEW_COMMENT_ADDED,
                     {
                         "issue_number": action.number,
                         "pr_number": action.number,
                         "comment_url": comment_url,
+                        "comment_excerpt": excerpt[:180] if excerpt else "",
                         "summary": "Posted review comment",
                     },
                 ))

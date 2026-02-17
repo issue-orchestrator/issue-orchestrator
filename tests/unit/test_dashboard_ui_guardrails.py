@@ -40,6 +40,8 @@ def test_unblock_paths_use_unblock_api() -> None:
     assert "/api/unblock-retry" in contract_js
     assert "buildUnblockRequest" in contract_js
     assert "issues" in contract_js
+    assert "/api/bulk-retry" in contract_js
+    assert "buildBulkRetryRequest" in contract_js
 
 
 def test_blocked_bulk_buttons_default_disabled_in_template() -> None:
@@ -48,6 +50,18 @@ def test_blocked_bulk_buttons_default_disabled_in_template() -> None:
     assert re.search(r'onclick="bulkResetRetry\(\)"\s+disabled', html)
     assert re.search(r'onclick="bulkMarkViewed\(\)"\s+disabled', html)
     assert re.search(r'onclick="bulkClearViewed\(\)"\s+disabled', html)
+
+
+def test_completed_and_awaiting_merge_bulk_buttons_default_disabled_in_template() -> None:
+    html = _read(DASHBOARD_TEMPLATE)
+    assert re.search(r'onclick="bulkRetryAwaitingMerge\(\)"\s+disabled', html)
+    assert re.search(r'onclick="bulkRetryCompleted\(\)"\s+disabled', html)
+
+
+def test_issue_detail_uses_timeline_label_not_journey() -> None:
+    html = _read(DASHBOARD_TEMPLATE)
+    assert '<h3 class="issue-detail-section-title">Timeline</h3>' in html
+    assert '<h3 class="issue-detail-section-title">Journey</h3>' not in html
 
 
 def test_dashboard_loads_ui_state_helpers_before_dashboard_js() -> None:
@@ -73,6 +87,8 @@ def test_compact_cards_use_fingerprint_delta_path() -> None:
     body = _function_body(js, "renderCompactCards")
     assert "computeCompactCardFingerprint" in body
     assert "dataset.cardFingerprint" in body
+    assert "card.card_id" in body
+    assert "dataset.cardId" in body
 
 
 def test_expanded_cards_render_label_badges() -> None:
@@ -85,6 +101,7 @@ def test_expanded_cards_render_label_badges() -> None:
     assert "badge-orch" in snippet
     assert "card-badges" in snippet
     assert "resetRetrySingle" in snippet
+    assert "retryExpandedSingle" in snippet
 
 
 def test_unblock_handlers_use_ui_action_contract() -> None:
@@ -123,6 +140,20 @@ def test_deprioritize_handler_uses_ui_action_contract() -> None:
     assert "/api/bulk-deprioritize" not in body
 
 
+def test_bulk_retry_completed_handler_uses_ui_action_contract() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "bulkRetryCompleted")
+    assert "uiActionContract.buildBulkRetryRequest" in body
+    assert "/api/bulk-retry" not in body
+
+
+def test_bulk_retry_awaiting_merge_handler_uses_ui_action_contract() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "bulkRetryAwaitingMerge")
+    assert "uiActionContract.buildUnblockRequest" in body
+    assert "/api/unblock-retry" not in body
+
+
 def test_retry_handler_uses_ui_action_contract() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "retryIssue")
@@ -140,6 +171,12 @@ def test_embedded_back_hidden_when_column_expanded() -> None:
     assert "document.body.classList.toggle('column-focus-mode', !isExpanded);" in body
 
 
+def test_update_bulk_bar_keeps_retry_columns_visible() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "updateBulkBar")
+    assert "blocked', 'awaiting-merge', 'completed'" in body
+
+
 def test_e2e_tab_hidden_in_column_focus_mode() -> None:
     css = _read(DASHBOARD_CSS)
     assert "body.column-focus-mode #tab-e2e" in css
@@ -150,3 +187,31 @@ def test_embedded_back_controls_share_primary_button_style() -> None:
     css = _read(DASHBOARD_CSS)
     assert ".embedded-back {" in css
     assert "color: var(--text);" in css
+
+
+def test_journey_cycle_labels_use_run_local_numbering() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "_renderJourneyRuns")
+    assert "const displayCycleNumber = c.cycle_in_run || c.cycle || (cycleIndex + 1);" in body
+
+
+def test_journey_renders_phase_group_headers() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "_renderJourneyRuns")
+    assert "c.phase_groups" in body
+    assert "journey-phase-header" in body
+
+
+def test_toggle_journey_cycle_targets_own_header_toggle() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "toggleJourneyCycle")
+    assert "const cycleNode = document.getElementById(cycleId);" in body
+    assert ":scope > .journey-cycle-header .journey-cycle-toggle" in body
+
+
+def test_review_feedback_modal_includes_review_comment_events_and_details() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "openReviewFeedback")
+    assert "review.comment_added" in body
+    assert "evt.detail" in body
+    assert "Open review comment on GitHub" in body
