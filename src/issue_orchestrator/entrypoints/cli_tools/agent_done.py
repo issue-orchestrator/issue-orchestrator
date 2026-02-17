@@ -87,6 +87,7 @@ STATUS_TO_ACTIONS = {
     ],
     AgentStatus.APPROVED: [
         RequestedAction.ADD_CODE_REVIEWED_LABEL,
+        RequestedAction.REMOVE_NEEDS_REWORK_LABEL,
         RequestedAction.REMOVE_CODE_REVIEW_LABEL,
         RequestedAction.POST_COMMENT,
     ],
