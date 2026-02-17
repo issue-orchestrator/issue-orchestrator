@@ -148,11 +148,22 @@ class Orchestrator:
 
     def get_provider_circuit_states(self):
         """Get all current provider circuit states for UI display.
-        
+
         Returns a list of circuit states, allowing the view model to access this information
         without reaching into internal dependencies.
         """
         return self.deps.provider_resilience.list_circuit_states()
+
+    def is_provider_circuit_open(self, provider: str) -> bool:
+        """Check if a provider circuit is open (unavailable).
+
+        Args:
+            provider: The provider name to check
+
+        Returns:
+            True if the circuit is open, False otherwise
+        """
+        return self.deps.provider_resilience.is_open(provider)
 
     def kill_session(self, name: str) -> None:
         """Kill a session by terminal ID (public wrapper)."""

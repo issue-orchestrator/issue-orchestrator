@@ -1212,9 +1212,8 @@ def build_dashboard_view_model(
     # Build provider circuit status list
     provider_circuits: list[dict[str, Any]] = []
     if orchestrator:
-        now = datetime.now(timezone.utc)
         for circuit_state in orchestrator.get_provider_circuit_states():
-            is_open = orchestrator.provider_resilience.is_open(circuit_state.provider, now)
+            is_open = orchestrator.is_provider_circuit_open(circuit_state.provider)
             provider_circuits.append({
                 "provider": circuit_state.provider,
                 "is_open": is_open,

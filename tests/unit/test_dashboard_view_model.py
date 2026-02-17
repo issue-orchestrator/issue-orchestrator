@@ -494,6 +494,9 @@ def test_view_model_includes_provider_circuits():
         def get_provider_circuit_states(self):
             return self.deps.provider_resilience.list_circuit_states()
 
+        def is_provider_circuit_open(self, provider: str) -> bool:
+            return self.deps.provider_resilience.is_open(provider)
+
     now = datetime.now(timezone.utc)
     circuit_store = InMemoryProviderCircuitStore()
     # Add an open circuit
