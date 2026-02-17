@@ -1,8 +1,8 @@
 {
-  "issue_number": null,
-  "log_path": "/Users/brucegordon/dev/issue-orchestrator-wt-ui-iteration-4057/.issue-orchestrator/sessions/20260217-133839Z__issue-4057/session.log",
-  "run_dir": "/Users/brucegordon/dev/issue-orchestrator-wt-ui-iteration-4057/.issue-orchestrator/sessions/20260217-133839Z__issue-4057",
-  "run_id": "20260217-133839Z",
-  "session_name": "issue-4057",
-  "started_at": "2026-02-17T13:38:39.652804+00:00"
+  "issue_number": 4057,
+  "log_path": "/Users/brucegordon/dev/issue-orchestrator-wt-ui-iteration-4057/.issue-orchestrator/sessions/20260217-150656Z__coding-1/session.log",
+  "run_dir": "/Users/brucegordon/dev/issue-orchestrator-wt-ui-iteration-4057/.issue-orchestrator/sessions/20260217-150656Z__coding-1",
+  "run_id": "20260217-150656Z",
+  "session_name": "coding-1",
+  "started_at": "2026-02-17T15:06:56.007785+00:00"
 }

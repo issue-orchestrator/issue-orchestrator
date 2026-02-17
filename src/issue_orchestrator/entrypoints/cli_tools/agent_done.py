@@ -124,7 +124,28 @@ def extract_pr_verification_status(pr_body: str) -> tuple[bool, str | None]:
     return (False, None)
 
 
-def _record_validation_artifacts(  # noqa: C901 - handles multiple artifact types (manifest, stdout, stderr) with conditional paths
+def _copy_validation_log(
+    session_output: FileSystemSessionOutput,
+    run_dir: Path,
+    worktree_root: Path,
+    log_path: str | None,
+    log_type: str,
+) -> None:
+    """Copy a validation log file (stdout or stderr) to run directory."""
+    if not log_path:
+        return
+    src = worktree_root / log_path
+    if not src.exists():
+        return
+    dest = run_dir / f"validation-{log_type}.log"
+    try:
+        dest.write_text(src.read_text(errors="ignore"))
+        session_output.update_manifest(run_dir, {f"validation_{log_type}": str(dest)})
+    except OSError:
+        logger.debug("Failed to write validation %s for %s", log_type, run_dir)
+
+
+def _record_validation_artifacts(
     worktree_root: Path,
     session_id: str | None,
     validation_result: AgentGateResult,
@@ -139,8 +160,11 @@ def _record_validation_artifacts(  # noqa: C901 - handles multiple artifact type
 
     session_output = FileSystemSessionOutput()
     run_dir = session_output.ensure_run_dir(worktree_root, session_id)
+    run_dir_record_path = run_dir / "validation-record.json"
     updates: dict[str, str] = {}
-    if record_path:
+    if run_dir_record_path.exists():
+        updates["validation_record_path"] = str(run_dir_record_path)
+    elif record_path:
         updates["validation_record_path"] = record_path
     updates["validation_status"] = "passed" if validation_result.passed else "failed"
     if not validation_result.passed:
@@ -152,24 +176,8 @@ def _record_validation_artifacts(  # noqa: C901 - handles multiple artifact type
     if not record:
         return
 
-    if record.stdout_path:
-        stdout_src = worktree_root / record.stdout_path
-        if stdout_src.exists():
-            stdout_dest = run_dir / "validation-stdout.log"
-            try:
-                stdout_dest.write_text(stdout_src.read_text(errors="ignore"))
-                session_output.update_manifest(run_dir, {"validation_stdout": str(stdout_dest)})
-            except OSError:
-                logger.debug("Failed to write validation stdout for %s", run_dir)
-    if record.stderr_path:
-        stderr_src = worktree_root / record.stderr_path
-        if stderr_src.exists():
-            stderr_dest = run_dir / "validation-stderr.log"
-            try:
-                stderr_dest.write_text(stderr_src.read_text(errors="ignore"))
-                session_output.update_manifest(run_dir, {"validation_stderr": str(stderr_dest)})
-            except OSError:
-                logger.debug("Failed to write validation stderr for %s", run_dir)
+    _copy_validation_log(session_output, run_dir, worktree_root, record.stdout_path, "stdout")
+    _copy_validation_log(session_output, run_dir, worktree_root, record.stderr_path, "stderr")
 
 
 def die(message: str) -> NoReturn:
