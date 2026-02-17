@@ -396,7 +396,35 @@ def _build_runs(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     Logical runs are lifecycle-based (coding + review + rework chain),
     not individual physical session launches.
     """
-    return _logical_run_projector.build_runs(cycles)
+    runs = _logical_run_projector.build_runs(cycles)
+    if not runs:
+        return runs
+
+    latest = runs[-1]
+    if not _run_contains_review_events(latest):
+        latest["outcome"] = _coerce_non_review_latest_outcome(str(latest.get("outcome") or ""))
+        for cycle in latest.get("cycles", []):
+            cycle["outcome"] = _coerce_non_review_latest_outcome(str(cycle.get("outcome") or ""))
+    return runs
+
+
+def _run_contains_review_events(run: dict[str, Any]) -> bool:
+    for cycle in run.get("cycles", []):
+        steps = cycle.get("steps")
+        if not isinstance(steps, list):
+            continue
+        if any(str(step.get("event") or "").startswith("review.") for step in steps if isinstance(step, dict)):
+            return True
+    return False
+
+
+def _coerce_non_review_latest_outcome(outcome: str) -> str:
+    lower = outcome.strip().lower()
+    if "approved" in lower or "completed" in lower or "awaiting merge" in lower:
+        if lower.startswith("rework"):
+            return "Rework \u2192 In progress"
+        return "In progress"
+    return outcome
 
 
 def _build_journey_cycles(

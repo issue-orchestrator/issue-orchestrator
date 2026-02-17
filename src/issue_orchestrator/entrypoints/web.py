@@ -60,6 +60,7 @@ from ..execution.manifest_accessor import (
     ManifestAccessor,
     RunIdentity,
 )
+from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..domain.event_taxonomy import (
     EventIntent,
     is_review_oriented_event,
@@ -67,7 +68,8 @@ from ..domain.event_taxonomy import (
     is_review_event_name,
     is_session_event_name,
 )
-from ..timeline import MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION
+from ..timeline import MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION, TIMELINE_SCHEMA_VERSION
+from ..control.label_manager import LabelManager
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
@@ -393,6 +395,31 @@ def _response_json(response: JSONResponse) -> dict:
     return json.loads(body.decode("utf-8"))
 
 
+def _build_dashboard_vm_sync(orchestrator: Any, queue_page: int, active_tab: str, e2e_page: int):
+    return build_dashboard_view_model(
+        orchestrator,
+        queue_page=queue_page,
+        active_tab=active_tab,
+        e2e_page=e2e_page,
+    )
+
+
+def _render_issue_rows_sync(template, view_model) -> list[dict[str, Any]]:
+    rows = []
+    for issue in view_model.issues:
+        html = template.render(
+            issue=issue,
+            active_tab=view_model.active_tab,
+            github_owner=view_model.github_owner,
+            github_repo=view_model.github_repo,
+        )
+        rows.append({
+            "issue_number": issue.get("issue_number"),
+            "html": html,
+        })
+    return rows
+
+
 @app.get("/favicon.ico")
 async def favicon():
     """Serve the logo as favicon."""
@@ -425,15 +452,25 @@ async def dashboard(request: Request, orchestrator=Depends(get_orchestrator)) ->
 
     templates = get_templates()
     template = templates.get_template("dashboard.html")
-    view_model = build_dashboard_view_model(
+    vm_start = time.time()
+    view_model = await asyncio.to_thread(
+        _build_dashboard_vm_sync,
         orchestrator,
-        queue_page=queue_page,
-        active_tab=active_tab,
-        e2e_page=e2e_page,
+        queue_page,
+        active_tab,
+        e2e_page,
     )
-    html = template.render(**view_model.template_context())
+    vm_elapsed = time.time() - vm_start
+    render_start = time.time()
+    html = await asyncio.to_thread(template.render, **view_model.template_context())
+    render_elapsed = time.time() - render_start
     total_elapsed = time.time() - request_start
-    logger.info("[dashboard] Total request time: %.2fs", total_elapsed)
+    logger.info(
+        "[dashboard] Total request time: %.2fs (view_model=%.2fs render=%.2fs)",
+        total_elapsed,
+        vm_elapsed,
+        render_elapsed,
+    )
     return HTMLResponse(content=html)
 
 
@@ -453,11 +490,12 @@ async def get_view_model(
         e2e_page = 1
     active_tab = request.query_params.get("tab", "flow")
 
-    view_model = build_dashboard_view_model(
+    view_model = await asyncio.to_thread(
+        _build_dashboard_vm_sync,
         orchestrator,
-        queue_page=queue_page,
-        active_tab=active_tab,
-        e2e_page=e2e_page,
+        queue_page,
+        active_tab,
+        e2e_page,
     )
     return DashboardViewModelPayload.model_validate(view_model.to_dict())
 
@@ -479,27 +517,14 @@ async def get_view_model_snapshot(
     queue_page = page
     active_tab = tab
 
-    view_model = build_dashboard_view_model(
-        orchestrator,
-        queue_page=queue_page,
-        active_tab=active_tab,
-        e2e_page=e2e_page,
-    )
-
     templates = get_templates()
     row_template = templates.get_template("issue_row.html")
-    rows = []
-    for issue in view_model.issues:
-        html = row_template.render(
-            issue=issue,
-            active_tab=view_model.active_tab,
-            github_owner=view_model.github_owner,
-            github_repo=view_model.github_repo,
-        )
-        rows.append({
-            "issue_number": issue.get("issue_number"),
-            "html": html,
-        })
+
+    def _build_snapshot_sync() -> tuple[Any, list[dict[str, Any]]]:
+        vm = _build_dashboard_vm_sync(orchestrator, queue_page, active_tab, e2e_page)
+        return vm, _render_issue_rows_sync(row_template, vm)
+
+    view_model, rows = await asyncio.to_thread(_build_snapshot_sync)
 
     return ViewModelSnapshotPayload.model_validate({
         "view_model": view_model.to_dict(),
@@ -523,28 +548,14 @@ async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator
         e2e_page = 1
     active_tab = request.query_params.get("tab", "flow")
 
-    view_model = build_dashboard_view_model(
-        orchestrator,
-        queue_page=queue_page,
-        active_tab=active_tab,
-        e2e_page=e2e_page,
-    )
-
     templates = get_templates()
     template = templates.get_template("issue_row.html")
 
-    rows = []
-    for issue in view_model.issues:
-        html = template.render(
-            issue=issue,
-            active_tab=view_model.active_tab,
-            github_owner=view_model.github_owner,
-            github_repo=view_model.github_repo,
-        )
-        rows.append({
-            "issue_number": issue.get("issue_number"),
-            "html": html,
-        })
+    def _build_rows_sync() -> tuple[Any, list[dict[str, Any]]]:
+        vm = _build_dashboard_vm_sync(orchestrator, queue_page, active_tab, e2e_page)
+        return vm, _render_issue_rows_sync(template, vm)
+
+    view_model, rows = await asyncio.to_thread(_build_rows_sync)
 
     return IssueRowsPayload.model_validate({
         "rows": rows,
@@ -925,38 +936,163 @@ async def refresh_issue(issue_number: int) -> JSONResponse:
     })
 
 
+def _label_manager_for_api() -> LabelManager:
+    deps_lm = getattr(getattr(_orchestrator, "deps", None), "label_manager", None)
+    if isinstance(deps_lm, LabelManager):
+        return deps_lm
+    assert _orchestrator is not None
+    return LabelManager(_orchestrator.config)
+
+
+def _terminate_issue_and_hold(issue_number: int, sessions: list[Any]) -> dict[str, Any]:
+    """Terminate running sessions and apply a hold guard to prevent auto-requeue."""
+    assert _orchestrator is not None
+    from datetime import datetime
+    from ..domain.models import SessionHistoryEntry
+
+    state = _orchestrator.state
+    repo = _orchestrator.repository_host
+    lm = _label_manager_for_api()
+
+    killed_sessions: list[str] = []
+    errors: list[str] = []
+    pr_numbers = sorted(
+        {
+            int(s.pr_number)
+            for s in sessions
+            if getattr(s, "pr_number", None) is not None
+        }
+    )
+
+    for session in sessions:
+        try:
+            _orchestrator.kill_session(session.terminal_id)
+            killed_sessions.append(session.terminal_id)
+        except Exception as exc:
+            errors.append(f"{session.terminal_id}: {exc}")
+
+    # Remove all active sessions for the issue regardless of per-session kill result.
+    state.active_sessions = [s for s in state.active_sessions if s.issue.number != issue_number]
+
+    # Purge all in-memory scheduling vectors for this issue.
+    state.pending_reviews = [r for r in state.pending_reviews if r.issue_number != issue_number]
+    state.pending_reworks = [
+        r for r in state.pending_reworks
+        if r.resolve_issue_number() != issue_number
+    ]
+    state.pending_triage_reviews = [
+        r for r in state.pending_triage_reviews
+        if r.issue_number != issue_number
+    ]
+    state.pending_validation_retries = [
+        r for r in state.pending_validation_retries
+        if r.issue_number != issue_number
+    ]
+    state.discovered_reviews = [
+        r for r in state.discovered_reviews
+        if r.issue_number != issue_number
+    ]
+    state.discovered_reworks = [
+        r for r in state.discovered_reworks
+        if r.issue_number != issue_number
+    ]
+    state.discovered_failures = [
+        r for r in state.discovered_failures
+        if r.issue_number != issue_number
+    ]
+    state.immediate_cleanups = [
+        c for c in state.immediate_cleanups
+        if c.issue_number != issue_number
+    ]
+
+    # Record explicit operator termination so dashboard lanes keep this issue visible as blocked.
+    primary_session = sessions[0]
+    agent_label = primary_session.agent_label
+    if not agent_label:
+        for label in primary_session.issue.labels:
+            if label.startswith("agent:"):
+                agent_label = label
+                break
+    if not agent_label:
+        agent_label = "agent:unknown"
+    state.session_history.append(
+        SessionHistoryEntry(
+            issue_number=issue_number,
+            title=primary_session.issue.title,
+            agent_type=agent_label,
+            status="blocked",
+            runtime_minutes=primary_session.runtime_minutes,
+            status_reason="Terminated by operator",
+            worktree_path=primary_session.worktree_path,
+            completed_at=datetime.now(),
+        )
+    )
+
+    # Guard against immediate relaunch until operator retries/unblocks.
+    state.failed_this_cycle.add(issue_number)
+
+    # Label policy:
+    # - issue: add blocked-failed guard, remove in-progress/pr-pending
+    # - linked PR(s): add blocked-failed and remove needs-rework (scanner trigger)
+    label_ops: list[tuple[str, int, str]] = [
+        ("add", issue_number, lm.blocked_failed),
+        ("remove", issue_number, lm.in_progress),
+        ("remove", issue_number, lm.pr_pending),
+    ]
+    for pr_number in pr_numbers:
+        label_ops.extend(
+            [
+                ("add", pr_number, lm.blocked_failed),
+                ("remove", pr_number, lm.needs_rework),
+            ]
+        )
+
+    for op, number, label in label_ops:
+        try:
+            if op == "add":
+                repo.add_label(number, label)
+            else:
+                repo.remove_label(number, label)
+        except Exception as exc:
+            logger.warning(
+                "[terminate] label %s failed (%s #%d): %s",
+                op,
+                label,
+                number,
+                exc,
+            )
+
+    return {
+        "killed_sessions": killed_sessions,
+        "errors": errors,
+        "hold_label": lm.blocked_failed,
+    }
+
+
 @app.post("/api/kill/{issue_number}")
 async def kill_session(issue_number: int) -> JSONResponse:
-    """Force kill a specific session."""
+    """Force terminate an issue session and prevent automatic relaunch."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    # Find the session
-    session = None
-    for s in _orchestrator.state.active_sessions:
-        if s.issue.number == issue_number:
-            session = s
-            break
-
-    if not session:
+    sessions = [s for s in _orchestrator.state.active_sessions if s.issue.number == issue_number]
+    if not sessions:
         return JSONResponse({"error": f"Session #{issue_number} not found"}, status_code=404)
 
-    # Kill the session
-    try:
-        _orchestrator.kill_session(session.terminal_id)
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to kill session: {e}"}, status_code=500)
-
-    # Remove from active sessions
-    _orchestrator.state.active_sessions = [
-        s for s in _orchestrator.state.active_sessions
-        if s.issue.number != issue_number
-    ]
+    terminated = _terminate_issue_and_hold(issue_number, sessions)
+    if not terminated["killed_sessions"]:
+        return JSONResponse(
+            {"error": "Failed to terminate session(s)", "details": terminated["errors"]},
+            status_code=500,
+        )
 
     return JSONResponse({
-        "status": "killed",
+        "status": "terminated",
         "issue_number": issue_number,
-        "title": session.issue.title,
+        "title": sessions[0].issue.title,
+        "killed_sessions": terminated["killed_sessions"],
+        "hold_label": terminated["hold_label"],
+        "errors": terminated["errors"],
     })
 
 
@@ -1343,6 +1479,16 @@ async def get_issue_timeline(issue_number: int) -> JSONResponse:
     payload["events"] = events
     payload["phase_toc"] = _build_phase_toc(events)
     payload["cycles"] = _build_timeline_cycles(events)
+    if is_timeline_trace_enabled():
+        logger.info(
+            "[TIMELINE] api.timeline issue=%s raw=%s filtered=%s semantic=%s dropped_missing_semantics=%s cycles=%s",
+            issue_number,
+            len(raw_events),
+            len(filtered_events),
+            len(events),
+            dropped_missing_semantics,
+            len(payload["cycles"]) if isinstance(payload.get("cycles"), list) else 0,
+        )
     diagnostic = _timeline_missing_diagnostic(
         issue_number,
         events,
@@ -1380,6 +1526,24 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
         cycles=cycles,
         context=context,
     )
+    if is_timeline_trace_enabled():
+        runs = payload.get("runs")
+        run_count = len(runs) if isinstance(runs, list) else 0
+        cycle_count = sum(
+            len(run.get("cycles", []))
+            for run in runs
+            if isinstance(run, dict) and isinstance(run.get("cycles"), list)
+        ) if isinstance(runs, list) else 0
+        logger.info(
+            "[TIMELINE] api.issue_detail issue=%s raw=%s filtered=%s semantic=%s dropped_missing_semantics=%s runs=%s cycles=%s",
+            issue_number,
+            len(raw_events),
+            len(filtered_events),
+            len(events),
+            dropped_missing_semantics,
+            run_count,
+            cycle_count,
+        )
     diagnostic = _timeline_missing_diagnostic(
         issue_number,
         events,
@@ -1630,7 +1794,11 @@ def _retain_semantic_timeline_events(events: list[dict[str, Any]]) -> tuple[list
     kept: list[dict[str, Any]] = []
     dropped = 0
     for event in events:
+        timeline_schema_version = event.get("timeline_schema_version")
         if (
+            isinstance(timeline_schema_version, int)
+            and timeline_schema_version == TIMELINE_SCHEMA_VERSION
+            and
             isinstance(event.get("logical_run"), int)
             and isinstance(event.get("logical_cycle"), int)
             and isinstance(event.get("logical_phase"), str)
@@ -1722,7 +1890,19 @@ def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -
     decorated: list[dict[str, Any]] = []
     for event in events:
         event_with_actions = dict(event)
-        event_with_actions["actions"] = _timeline_event_actions(event, issue_number)
+        try:
+            event_with_actions["actions"] = _timeline_event_actions(event, issue_number)
+        except Exception as exc:
+            # UI should keep rendering even if one event's optional actions cannot be resolved.
+            logger.warning(
+                "Timeline action decoration failed (issue=%s event=%s run_dir=%s): %s",
+                issue_number,
+                event.get("event"),
+                event.get("run_dir"),
+                exc,
+            )
+            event_with_actions["actions"] = []
+            event_with_actions["actions_error"] = str(exc)
         decorated.append(event_with_actions)
     return decorated
 
@@ -1805,17 +1985,19 @@ def _timeline_event_default_actions(
     *,
     issue_number: int,
     agent_log_label: str = "View Most Recent Session Log",
+    include_run_scoped: bool = True,
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
     """Add default diagnostics and log actions shown for every timeline event."""
-    add_action(
-        {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
-        f"agent:{issue_number}",
-    )
-    add_action(
-        {"type": "view_claude_log", "label": "View Claude Session Log", "issue_number": issue_number},
-        f"claude:{issue_number}",
-    )
+    if include_run_scoped:
+        add_action(
+            {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
+            f"agent:{issue_number}",
+        )
+        add_action(
+            {"type": "view_claude_log", "label": "View Claude Session Log", "issue_number": issue_number},
+            f"claude:{issue_number}",
+        )
     add_action(
         {"type": "open_orchestrator_log", "label": "Open Orchestrator Log for This Issue ↗", "issue_number": issue_number},
         f"orchestrator:{issue_number}",
@@ -1830,6 +2012,21 @@ def _timeline_event_default_actions(
     )
 
 
+def _agent_log_is_usable(log_path: Path) -> bool:
+    """Return True when the session log contains meaningful, non-empty content."""
+    try:
+        if not log_path.exists():
+            return False
+        content = log_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    if not lines:
+        return False
+    # Treat extremely short fragments as unusable so UI avoids dead-end actions.
+    return any(len(line) >= 8 for line in lines)
+
+
 def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -1842,11 +2039,43 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
         "open_agent_log",
         "view_claude_log",
     }
+    run_scoped_validated: set[str] = set()
+
+    def _require_run_scoped_action_artifact(action_type: str) -> None:
+        if action_type in run_scoped_validated:
+            return
+        if not event_run_dir:
+            raise RuntimeError(
+                f"timeline run-scoped action requires run_dir: issue={issue_number} event={event_name} action={action_type}"
+            )
+        identity = RunIdentity(issue_number=issue_number, run_dir=Path(event_run_dir))
+        accessor = ManifestAccessor(identity)
+        if action_type == "open_agent_log":
+            artifact = accessor.get_agent_log()
+            if not _agent_log_is_usable(artifact.path):
+                raise RuntimeError(
+                    f"run-scoped agent log is empty/unusable: issue={issue_number} event={event_name} run_dir={event_run_dir}"
+                )
+        elif action_type == "view_claude_log":
+            artifact = accessor.get_claude_log()
+        else:
+            raise RuntimeError(
+                f"unsupported run-scoped action type: issue={issue_number} event={event_name} action={action_type}"
+            )
+        if not artifact.path.exists():
+            raise RuntimeError(
+                f"resolved artifact path missing: issue={issue_number} event={event_name} action={action_type} run_dir={event_run_dir}"
+            )
+        run_scoped_validated.add(action_type)
 
     def _add_action(action: dict[str, Any], dedupe_value: str) -> None:
         action_type = str(action.get("type") or "")
         if action_type in run_scoped_action_types and not event_run_dir:
-            return
+            raise RuntimeError(
+                f"timeline run-scoped action missing run_dir: issue={issue_number} event={event_name} action={action_type}"
+            )
+        if action_type in run_scoped_action_types:
+            _require_run_scoped_action_artifact(action_type)
         if event_run_dir and action_type in {
             "open_agent_log",
             "view_claude_log",
@@ -1861,35 +2090,15 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
         actions.append(action)
 
     if timeline_schema_version < MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION:
-        _add_action(
-            {
-                "type": "open_session_diagnostics",
-                "label": f"Unsupported Timeline Event Version v{timeline_schema_version} (Diagnostics…)",
-                "issue_number": issue_number,
-            },
-            f"unsupported-version:{issue_number}:{event_name}:{timeline_schema_version}",
+        raise RuntimeError(
+            "timeline event has unsupported schema version: "
+            f"issue={issue_number} event={event_name} version={timeline_schema_version} "
+            f"min_supported={MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION}"
         )
-        logger.warning(
-            "Timeline event has unsupported schema version: issue=%s event=%s version=%s",
-            issue_number,
-            event_name,
-            timeline_schema_version,
-        )
-        return actions
 
     if _timeline_event_requires_run_dir(event) and not event_run_dir:
-        _add_action(
-            {
-                "type": "open_session_diagnostics",
-                "label": "Run Context Missing (Diagnostics…)",
-                "issue_number": issue_number,
-            },
-            f"missing-run-dir:{issue_number}:{event_name}",
-        )
-        logger.warning(
-            "Timeline event missing run_dir for run-scoped event: issue=%s event=%s",
-            issue_number,
-            event_name,
+        raise RuntimeError(
+            f"timeline event missing required run_dir: issue={issue_number} event={event_name}"
         )
 
     _timeline_event_recommended_actions(
@@ -1907,6 +2116,7 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
     _timeline_event_default_actions(
         issue_number=issue_number,
         agent_log_label=agent_log_label,
+        include_run_scoped=bool(event_run_dir),
         add_action=_add_action,
     )
     return actions
@@ -2290,8 +2500,9 @@ async def get_info() -> JSONResponse:
 
     state = _orchestrator.state
     config = _orchestrator.config
-    from ..infra.repo_identity import get_repo_head_sha
-    commit_sha = get_repo_head_sha(config.repo_root)
+    from ..infra.repo_identity import build_repo_identity
+    repo_identity = build_repo_identity(config.repo_root)
+    commit_sha = repo_identity.commit_sha
 
     return JSONResponse({
         "version": "0.1.0",  # TODO: get from package
@@ -2301,6 +2512,7 @@ async def get_info() -> JSONResponse:
         "terminal_backend": config.terminal_adapter or "subprocess",
         "commit_sha": commit_sha,
         "commit_short": commit_sha[:7] if commit_sha else None,
+        "repo_identity": repo_identity.to_dict(),
         "max_sessions": config.max_concurrent_sessions,
         "active_sessions": len(state.active_sessions),
         "completed_today": len(state.completed_today),
@@ -2494,34 +2706,26 @@ async def bulk_retry(request: Request) -> JSONResponse:
 
 @app.post("/api/bulk-kill")
 async def bulk_kill(request: Request) -> JSONResponse:
-    """Kill sessions and re-queue for retry."""
+    """Terminate sessions and hold issues until explicit retry/unblock."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
     body = await request.json()
     issue_numbers = body.get("issue_numbers", [])
-    state = _orchestrator.state
-    killed = []
+    terminated: list[int] = []
+    failed: list[dict[str, Any]] = []
     for num in issue_numbers:
-        # Kill active session if any
-        for session in list(state.active_sessions):
-            if session.issue.number == num:
-                try:
-                    _orchestrator.kill_session(session.terminal_id)
-                except Exception:
-                    pass
-                state.active_sessions = [
-                    s for s in state.active_sessions
-                    if s.issue.number != num
-                ]
-        # Remove from history
-        state.session_history = [
-            entry for entry in state.session_history
-            if entry.issue_number != num
-        ]
-        if num in state.completed_today:
-            state.completed_today.remove(num)
-        killed.append(num)
-    return JSONResponse({"killed": killed})
+        sessions = [s for s in _orchestrator.state.active_sessions if s.issue.number == num]
+        if not sessions:
+            failed.append({"issue_number": num, "error": "Session not found"})
+            continue
+        result = _terminate_issue_and_hold(num, sessions)
+        if result["killed_sessions"]:
+            terminated.append(num)
+        else:
+            failed.append(
+                {"issue_number": num, "error": "Failed to terminate", "details": result["errors"]}
+            )
+    return JSONResponse({"terminated": terminated, "failed": failed})
 
 
 @app.post("/api/bulk-deprioritize")

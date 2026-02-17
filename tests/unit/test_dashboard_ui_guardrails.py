@@ -211,6 +211,18 @@ def test_context_menu_retry_statuses_include_awaiting_merge() -> None:
     assert "'awaiting-merge'" in body
 
 
+def test_compact_card_context_menu_action_mapping_is_column_consistent() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "showContextMenu")
+    assert "const isBlockedHistory = effectiveHistoryStatus === 'blocked' || effectiveHistoryStatus === 'needs-human';" in body
+    assert "const otherRetryStatuses = new Set(['failed', 'completed', 'timed-out', 'awaiting-merge']);" in body
+    assert "menuUnblock.style.display = '';" in body
+    assert "menuResetRetry.style.display = '';" in body
+    assert "menuRetry.style.display = '';" in body
+    assert "setMenuVisible(menuLog, !isCompactCardMenu && !isBlockedHistory);" in body
+    assert "setMenuVisible(menuAgentLog, !isCompactCardMenu && !isBlockedHistory);" in body
+
+
 def test_compact_menu_infers_column_id_from_parent_column() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "openCompactCardActionsMenu")

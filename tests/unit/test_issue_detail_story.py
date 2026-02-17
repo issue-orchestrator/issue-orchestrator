@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from issue_orchestrator.timeline import TIMELINE_SCHEMA_VERSION
 from issue_orchestrator.view_models.issue_detail import (
     IssueStoryContext,
     _build_journey_cycles,
@@ -68,7 +69,7 @@ def _evt(
         "status": status,
         "step": event.split(".")[-1],
         "phase": "in_progress",
-        "timeline_schema_version": 3,
+        "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
         "event_intent": intent,
         "review_oriented": intent == "review",
         "logical_run": logical_run,
@@ -187,3 +188,26 @@ def test_build_issue_detail_view_model_returns_runs() -> None:
     )
     assert payload["run_count"] == 2
     assert payload["runs"][1]["expanded"] is True
+
+
+def test_latest_run_without_review_events_not_marked_completed() -> None:
+    events = [
+        _evt("session.started", timestamp="2026-02-16T10:00:00Z", logical_run=1, logical_cycle=1, agent="agent:backend"),
+        _evt("session.completed", timestamp="2026-02-16T10:05:00Z", logical_run=1, logical_cycle=1, status="completed"),
+        _evt("review.started", timestamp="2026-02-16T10:06:00Z", logical_run=1, logical_cycle=1, task="review"),
+        _evt("review.approved", timestamp="2026-02-16T10:07:00Z", logical_run=1, logical_cycle=1, task="review", status="completed"),
+        _evt("rework.started", timestamp="2026-02-16T11:00:00Z", logical_run=2, logical_cycle=1, task="rework", agent="agent:backend"),
+        _evt("session.completed", timestamp="2026-02-16T11:10:00Z", logical_run=2, logical_cycle=1, status="completed"),
+    ]
+    payload = build_issue_detail_view_model(
+        issue_number=4064,
+        title="Latest run invariant",
+        issue_url="https://github.com/org/repo/issues/4064",
+        events=events,
+        phase_toc=[],
+        cycles=[],
+        context=_ctx(flow_stage="in_progress"),
+    )
+    latest = payload["runs"][-1]
+    assert "completed" not in str(latest["outcome"]).lower()
+    assert "approved" not in str(latest["outcome"]).lower()
