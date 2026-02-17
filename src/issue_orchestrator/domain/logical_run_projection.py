@@ -47,7 +47,7 @@ class LogicalRunProjector:
             cycle["cycle_in_run"] = by_run_counts[run_key]
         return cycles
 
-    def build_runs(self, cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def build_runs(self, cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:  # noqa: C901
         """Group cycle rows into logical runs."""
         if not cycles:
             return []

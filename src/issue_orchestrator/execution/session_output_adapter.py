@@ -704,7 +704,7 @@ Timestamp: {self._now_iso()}
         self._ensure_symlink(run_dir / CLAUDE_SESSION_LOG_NAME, log_path)
         return log_path
 
-    def write_orchestrator_tail(
+    def write_orchestrator_tail(  # noqa: C901
         self,
         run_dir: Path,
         log_path: Path,

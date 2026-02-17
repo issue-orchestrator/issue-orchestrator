@@ -67,7 +67,7 @@ class TimelineEvent:
     logical_cycle: int | None = None
     logical_phase: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:  # noqa: C901
         d: dict[str, Any] = {
             "event_id": self.event_id,
             "timestamp": self.timestamp,
