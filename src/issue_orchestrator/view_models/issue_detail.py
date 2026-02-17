@@ -6,6 +6,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from ..domain.event_taxonomy import (
+    EventIntent,
+    infer_event_intent,
+    is_issue_event_name,
+    is_review_event_name,
+    is_review_oriented_event,
+    is_rework_event_name,
+    is_validation_event_name,
+)
 from ..domain.logical_run_projection import LogicalRunProjector
 
 
@@ -387,7 +396,6 @@ _CYCLE_ANCHOR_EVENTS = frozenset({
     "review.started",
     "triage.launching",
 })
-_CYCLE_CONTINUATION_PREFIXES = ("review.",)
 _CYCLE_CONTINUATION_EVENTS = frozenset({
     "issue.pr_created",
     "issue.pr_rejected",
@@ -403,7 +411,7 @@ def _is_cycle_continuation_event(event_name: str) -> bool:
     """Return True for events that continue the same run after completion."""
     if event_name in _CYCLE_CONTINUATION_EVENTS:
         return True
-    return any(event_name.startswith(prefix) for prefix in _CYCLE_CONTINUATION_PREFIXES)
+    return is_review_event_name(event_name)
 
 
 def filter_last_run_cycles(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -466,6 +474,7 @@ def _build_signal_journey_cycles(
     # Group journey-visible events by (lifecycle, coding_cycle). Using coding_cycle
     # alone can accidentally merge cycles across distinct runs.
     groups: dict[tuple[int, int], list[tuple[dict[str, Any], int]]] = {}
+    inferred_cycle_by_lifecycle: dict[int, int] = {}
     for idx, event in enumerate(events):
         event_name = str(event.get("event") or "")
         if event_name in _JOURNEY_SKIP_EVENTS:
@@ -477,9 +486,15 @@ def _build_signal_journey_cycles(
         if "rework_cycle" in event:
             rc = event.get("rework_cycle") or 0
             coding_cycle = rc + 1
+            inferred_cycle_by_lifecycle[lifecycle] = coding_cycle
         else:
-            # Legacy event: group into cycle 0 (will be renumbered later)
-            coding_cycle = 0
+            # Some events (notably review_exchange.*) may not carry rework_cycle.
+            # Keep them in the active cycle for this lifecycle instead of
+            # incorrectly opening an implicit "cycle 0".
+            coding_cycle = inferred_cycle_by_lifecycle.get(lifecycle, 0)
+            if coding_cycle == 0 and event_name in _ITERATION_START:
+                coding_cycle = 1
+                inferred_cycle_by_lifecycle[lifecycle] = coding_cycle
         groups.setdefault((lifecycle, coding_cycle), []).append((event, lifecycle))
 
     has_anchored_group = any(
@@ -859,7 +874,7 @@ def _build_phase_groups(
     steps: list[dict[str, Any]],
     iteration: int,
 ) -> list[dict[str, Any]]:
-    """Group cycle steps into user-facing phase buckets (coding/rework/review)."""
+    """Group cycle steps into user-facing phase buckets."""
     groups: list[dict[str, Any]] = []
     current_key: str | None = None
 
@@ -881,9 +896,29 @@ def _phase_key_for_event(evt: dict[str, Any], iteration: int) -> str:
     """Map an event to a phase key for cycle rendering."""
     event_name = str(evt.get("event") or "")
     task = str(evt.get("task") or "")
-    if event_name.startswith("review.") or task == "review":
+    intent_raw = evt.get("event_intent")
+    intent = intent_raw if isinstance(intent_raw, str) else infer_event_intent(event_name=event_name, task=task).value
+
+    if intent == EventIntent.ORCHESTRATOR.value:
+        return "orchestrator"
+    if intent == EventIntent.REVIEW.value:
         return "review"
-    if event_name.startswith("rework."):
+    if intent == EventIntent.REWORK.value:
+        return "rework"
+    if intent == EventIntent.CODING.value:
+        return "rework" if iteration > 1 else "coding"
+
+    if is_validation_event_name(event_name) or is_issue_event_name(event_name):
+        return "orchestrator"
+    if event_name in {
+        "session.validation_passed",
+        "session.validation_retry_needed",
+        "session.validation_failed",
+    }:
+        return "orchestrator"
+    if is_review_oriented_event(event_name=event_name, task=task):
+        return "review"
+    if is_rework_event_name(event_name):
         return "rework"
     return "rework" if iteration > 1 else "coding"
 
@@ -891,6 +926,8 @@ def _phase_key_for_event(evt: dict[str, Any], iteration: int) -> str:
 def _phase_label_for_key(key: str) -> str:
     if key == "review":
         return "Review"
+    if key == "orchestrator":
+        return "Orchestrator"
     if key == "rework":
         return "Rework"
     return "Coding"
@@ -920,8 +957,13 @@ def _derive_cycle_outcome(
     # Prefix with "Rework → " when iteration > 1, but not for review-dominated cycles
     if iteration > 1:
         is_review_cycle = any(
-            str(e.get("task") or "") == "review"
-            or str(e.get("event") or "").startswith("review.")
+            (
+                str(e.get("event_intent") or "") == EventIntent.REVIEW.value
+                or is_review_oriented_event(
+                    event_name=str(e.get("event") or ""),
+                    task=str(e.get("task") or ""),
+                )
+            )
             for e in events
         )
         if not is_review_cycle:
@@ -1031,29 +1073,29 @@ def _collect_cycle_artifacts(events: list[dict[str, Any]]) -> dict[str, Any]:  #
 
 
 def _format_date_time_label(timestamp: Any) -> str:
-    """Format a timestamp to 'Feb 9, 2:10 PM' style for cycle headers."""
+    """Format a timestamp to 'Feb 9, 2:10:30 PM' style for cycle headers."""
     if not timestamp:
         return ""
     ts = str(timestamp)
     try:
         dt = datetime.fromisoformat(ts)
-        time_part = dt.strftime("%-I:%M %p").lstrip("0")
+        time_part = dt.strftime("%-I:%M:%S %p").lstrip("0")
         date_part = dt.strftime("%b %-d")
         return f"{date_part}, {time_part}"
     except (ValueError, TypeError):
         if "T" in ts and len(ts) >= 19:
-            return ts[:16].replace("T", " ")
+            return ts[:19].replace("T", " ")
         return ts
 
 
 def _format_time_label(timestamp: Any, today: str = "") -> str:
-    """Format a timestamp to a label like '8:15 PM' (today) or 'Feb 8, 8:15 PM' (other days)."""
+    """Format a timestamp to a label like '8:15:30 PM' (today) or 'Feb 8, 8:15:30 PM' (other days)."""
     if not timestamp:
         return ""
     ts = str(timestamp)
     try:
         dt = datetime.fromisoformat(ts)
-        time_part = dt.strftime("%-I:%M %p").lstrip("0")
+        time_part = dt.strftime("%-I:%M:%S %p").lstrip("0")
         if today and ts[:10] == today:
             return time_part
         # Include short date for non-today events
@@ -1062,7 +1104,7 @@ def _format_time_label(timestamp: Any, today: str = "") -> str:
     except (ValueError, TypeError):
         # Fallback: show the time portion
         if "T" in ts and len(ts) >= 19:
-            return ts[11:16]
+            return ts[11:19]
         return ts
 
 

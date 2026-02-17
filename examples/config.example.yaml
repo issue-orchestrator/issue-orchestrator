@@ -133,7 +133,7 @@ review:
   max_rework_cycles: 10
   reviewer_feedback_cache_minutes: 5
   exchange:
-    mode: "via-draft-pr"         # via-mcp, via-local-loop, via-draft-pr (auto optional)
+    mode: "via-local-loop"       # via-local-loop, via-draft-pr, via-mcp (auto optional)
     probe:
       schedule: "daily"          # startup, daily, interval, manual
       interval_days: 1            # used when schedule=interval

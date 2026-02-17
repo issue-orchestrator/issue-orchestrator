@@ -763,7 +763,7 @@ def _load_review_section(config: "Config", review_section: dict) -> None:
         "reviewer-keep-current-approach",
     )
     exchange_section = review_section.get("exchange", {})
-    config.review_exchange_mode = exchange_section.get("mode", "via-draft-pr")
+    config.review_exchange_mode = exchange_section.get("mode", "via-local-loop")
     probe_section = exchange_section.get("probe", {})
     if isinstance(probe_section, dict):
         config.review_exchange_probe_schedule = probe_section.get("schedule", "daily")
@@ -1259,7 +1259,7 @@ class Config:
     review_keep_current_approach_label: str = "reviewer-keep-current-approach"
 
     # Review exchange mode (via-mcp, via-local-loop, or via-draft-pr review)
-    review_exchange_mode: str = "via-draft-pr"
+    review_exchange_mode: str = "via-local-loop"
     review_exchange_probe_schedule: str = "daily"  # startup, daily, interval, manual
     review_exchange_probe_interval_days: int = 1
     review_exchange_max_rounds: int = 10
@@ -1395,7 +1395,7 @@ class Config:
 
     def _serialization_exchange_dict(self) -> dict:
         exchange_dict: dict = {}
-        if self.review_exchange_mode != "via-draft-pr":
+        if self.review_exchange_mode != "via-local-loop":
             exchange_dict["mode"] = self.review_exchange_mode
         if self.review_exchange_probe_schedule != "daily" or self.review_exchange_probe_interval_days != 1:
             exchange_dict["probe"] = {

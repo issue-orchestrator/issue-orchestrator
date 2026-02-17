@@ -340,6 +340,28 @@ def _pending_issue_numbers(state) -> dict[str, set[int]]:
     }
 
 
+def _is_synthetic_session_title(title: str) -> bool:
+    normalized = title.strip()
+    return (
+        normalized.startswith("Review PR #")
+        or normalized.startswith("Rework #")
+        or normalized.startswith("Rework PR #")
+    )
+
+
+def _canonical_issue_title(state, issue_number: int, fallback_title: str) -> str:
+    for issue in state.cached_queue_issues:
+        if issue.number == issue_number and issue.title:
+            return issue.title
+    for entry in reversed(state.session_history):
+        if entry.issue_number != issue_number:
+            continue
+        title = (entry.title or "").strip()
+        if title and not _is_synthetic_session_title(title):
+            return title
+    return fallback_title
+
+
 def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *, lm: LabelManager) -> tuple[list[dict[str, Any]], set[int]]:
     if queue_page != 1:
         return [], seen_issues
@@ -387,7 +409,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
         items.append({
             "card_id": session.terminal_id,
             "issue_number": session.issue.number,
-            "title": session.issue.title,
+            "title": _canonical_issue_title(state, session.issue.number, session.issue.title),
             "agent_type": agent_label,
             "status": status,
             "status_reason": status_reason,

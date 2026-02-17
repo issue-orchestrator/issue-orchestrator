@@ -712,7 +712,7 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
-        completion_path = get_completion_path(issue.agent_type, session_name=session_name)
+        completion_path = get_completion_path(issue.agent_type, session_name=ctx.phase_name)
         self._session_output.update_manifest(
             run.run_dir,
             {"completion_path": completion_path},
@@ -955,7 +955,7 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
-        completion_path = get_completion_path(agent_label, session_name=session_name)
+        completion_path = get_completion_path(agent_label, session_name=ctx.phase_name)
         self._session_output.update_manifest(
             run.run_dir,
             {"completion_path": completion_path},
@@ -1239,7 +1239,7 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
-        completion_path = get_completion_path(rework.agent_type, session_name=session_name)
+        completion_path = get_completion_path(rework.agent_type, session_name=ctx.phase_name)
         self._session_output.update_manifest(
             run.run_dir,
             {"completion_path": completion_path},

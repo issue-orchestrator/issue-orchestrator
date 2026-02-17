@@ -340,7 +340,7 @@ class CompletionProcessor:
         comment_body: str,
     ) -> None:
         """Emit trace event for a posted review comment (if trace events are configured)."""
-        if not self._trace_events or not self._event_context:
+        if self._trace_events is None or self._event_context is None:
             return
         excerpt = comment_body.strip().replace("\n", " ")
         payload = {
@@ -353,6 +353,58 @@ class CompletionProcessor:
         self._trace_events.publish(
             TraceEvent(
                 EventName.REVIEW_COMMENT_ADDED,
+                self._event_context.enrich(payload),
+            )
+        )
+
+    def _emit_review_started(
+        self,
+        *,
+        issue_number: int,
+        reviewer_label: str | None,
+        exchange_mode: str,
+    ) -> None:
+        """Emit trace event when local review exchange starts."""
+        if self._trace_events is None or self._event_context is None:
+            return
+        payload = {
+            "issue_number": issue_number,
+            "task": "review",
+            "agent": reviewer_label or "",
+            "review_exchange_mode": exchange_mode,
+        }
+        self._trace_events.publish(
+            TraceEvent(
+                EventName.REVIEW_STARTED,
+                self._event_context.enrich(payload),
+            )
+        )
+
+    def _emit_review_outcome(
+        self,
+        *,
+        issue_number: int,
+        reviewer_label: str | None,
+        exchange_mode: str,
+        approved: bool,
+        rounds: int | None,
+        summary: str,
+    ) -> None:
+        """Emit review terminal event from local exchange outcome."""
+        if self._trace_events is None or self._event_context is None:
+            return
+        payload = {
+            "issue_number": issue_number,
+            "task": "review",
+            "agent": reviewer_label or "",
+            "review_exchange_mode": exchange_mode,
+            "rounds": rounds,
+            "summary": summary,
+        }
+        event_name = EventName.REVIEW_APPROVED if approved else EventName.REVIEW_CHANGES_REQUESTED
+        self._trace_events.publish(
+            TraceEvent(
+                event_name,
                 self._event_context.enrich(payload),
             )
         )
@@ -1032,29 +1084,6 @@ class CompletionProcessor:
         pr_title = f"#{issue_number}: {issue_title}"
         pr_body = self._build_pr_body(record, issue_number)
 
-        # Check for existing PR to reuse
-        if self._pr_collision_strategy in {"reuse_open", "new_branch"}:
-            existing_pr = self._get_open_pr_for_issue(issue_number)
-            if existing_pr:
-                actions_taken.append(f"Reused PR #{existing_pr.number}")
-                logger.info(
-                    "Reused existing PR #%d for issue #%d: %s",
-                    existing_pr.number,
-                    issue_number,
-                    existing_pr.url,
-                )
-                return self._ActionResult(pr_url=existing_pr.url, skip_remaining=True)
-
-        # Maybe switch branch for PR collision
-        if self._pr_collision_strategy == "new_branch":
-            branch = self._maybe_switch_branch_for_pr_collision(
-                worktree=worktree,
-                branch=branch,
-                issue_number=issue_number,
-                actions_taken=actions_taken,
-                skip_hooks=skip_hooks,
-            )
-
         exchange_mode, exchange_result, exchange_halt = self._run_review_exchange_if_needed(
             worktree=worktree,
             issue_number=issue_number,
@@ -1066,6 +1095,43 @@ class CompletionProcessor:
         )
         if exchange_halt:
             return self._ActionResult(halt=True)
+
+        # Check for existing PR to reuse after review exchange succeeds.
+        if self._pr_collision_strategy in {"reuse_open", "new_branch"}:
+            existing_pr = self._get_open_pr_for_issue(issue_number)
+            if existing_pr:
+                actions_taken.append(f"Reused PR #{existing_pr.number}")
+                logger.info(
+                    "Reused existing PR #%d for issue #%d: %s",
+                    existing_pr.number,
+                    issue_number,
+                    existing_pr.url,
+                )
+                review_exchange_completed = False
+                if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
+                    review_exchange_completed = True
+                    self._finalize_review_exchange_pr(
+                        issue_number=issue_number,
+                        pr_number=existing_pr.number,
+                        exchange_mode=exchange_mode,
+                        exchange_result=exchange_result,
+                        actions_taken=actions_taken,
+                    )
+                return self._ActionResult(
+                    pr_url=existing_pr.url,
+                    skip_remaining=True,
+                    review_exchange_completed=review_exchange_completed,
+                )
+
+        # Maybe switch branch for PR collision
+        if self._pr_collision_strategy == "new_branch":
+            branch = self._maybe_switch_branch_for_pr_collision(
+                worktree=worktree,
+                branch=branch,
+                issue_number=issue_number,
+                actions_taken=actions_taken,
+                skip_hooks=skip_hooks,
+            )
 
         # Create the PR
         logger.info("Creating PR for #%d: branch=%s", issue_number, branch)
@@ -1086,26 +1152,12 @@ class CompletionProcessor:
             review_exchange_completed = False
             if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
                 review_exchange_completed = True
-                label = self._get_label("code_reviewed")
-                self.label_adapter.add_label(pr.number, label)
-                actions_taken.append(f"Added '{label}' label to PR #{pr.number}")
-                review_label = self._get_label("code_review")
-                self.label_adapter.remove_label(pr.number, review_label)
-                actions_taken.append(f"Removed '{review_label}' label from PR #{pr.number}")
-                comment = (
-                    f"✅ Review completed via {exchange_mode} loop.\n\n"
-                    f"- Rounds: {exchange_result.rounds}\n"
-                    f"- Outcome: {exchange_result.reason}\n"
-                )
-                if self._config and self._config.review_exchange_require_validation:
-                    comment += "- Validation: required and passed\n"
-                comment_url = self.pr_adapter.add_comment(pr.number, comment)
-                actions_taken.append(f"Posted review completion comment to PR #{pr.number}")
-                self._emit_review_comment_added(
+                self._finalize_review_exchange_pr(
                     issue_number=issue_number,
                     pr_number=pr.number,
-                    comment_url=comment_url,
-                    comment_body=comment,
+                    exchange_mode=exchange_mode,
+                    exchange_result=exchange_result,
+                    actions_taken=actions_taken,
                 )
             return self._ActionResult(
                 branch=branch,
@@ -1114,6 +1166,38 @@ class CompletionProcessor:
             )
 
         return self._ActionResult(branch=branch)
+
+    def _finalize_review_exchange_pr(
+        self,
+        *,
+        issue_number: int,
+        pr_number: int,
+        exchange_mode: str,
+        exchange_result: Any,
+        actions_taken: list[str],
+    ) -> None:
+        """Apply review-exchange completion labels/comment to a PR."""
+        label = self._get_label("code_reviewed")
+        self.label_adapter.add_label(pr_number, label)
+        actions_taken.append(f"Added '{label}' label to PR #{pr_number}")
+        review_label = self._get_label("code_review")
+        self.label_adapter.remove_label(pr_number, review_label)
+        actions_taken.append(f"Removed '{review_label}' label from PR #{pr_number}")
+        comment = (
+            f"✅ Review completed via {exchange_mode} loop.\n\n"
+            f"- Rounds: {exchange_result.rounds}\n"
+            f"- Outcome: {exchange_result.reason}\n"
+        )
+        if self._config and self._config.review_exchange_require_validation:
+            comment += "- Validation: required and passed\n"
+        comment_url = self.pr_adapter.add_comment(pr_number, comment)
+        actions_taken.append(f"Posted review completion comment to PR #{pr_number}")
+        self._emit_review_comment_added(
+            issue_number=issue_number,
+            pr_number=pr_number,
+            comment_url=comment_url,
+            comment_body=comment,
+        )
 
     def _run_review_exchange_if_needed(
         self,
@@ -1133,6 +1217,12 @@ class CompletionProcessor:
             return None, None, True
         if exchange_mode not in {"via-mcp", "via-local-loop"}:
             return exchange_mode, None, False
+        reviewer_label = self._resolve_reviewer_label(agent_label) if agent_label else None
+        self._emit_review_started(
+            issue_number=issue_number,
+            reviewer_label=reviewer_label,
+            exchange_mode=exchange_mode,
+        )
         require_validation = bool(
             self._config and self._config.review_exchange_require_validation
         )
@@ -1144,7 +1234,28 @@ class CompletionProcessor:
         if existing_outcome:
             if existing_outcome.status == "ok":
                 actions_taken.append("Review exchange passed (cached)")
+                reviewer_summary = (
+                    existing_outcome.reviewer_response.response_text
+                    if getattr(existing_outcome, "reviewer_response", None)
+                    else "Review approved via cached exchange summary"
+                )
+                self._emit_review_outcome(
+                    issue_number=issue_number,
+                    reviewer_label=reviewer_label,
+                    exchange_mode=exchange_mode,
+                    approved=True,
+                    rounds=getattr(existing_outcome, "rounds", None),
+                    summary=reviewer_summary,
+                )
                 return exchange_mode, existing_outcome, False
+            self._emit_review_outcome(
+                issue_number=issue_number,
+                reviewer_label=reviewer_label,
+                exchange_mode=exchange_mode,
+                approved=False,
+                rounds=getattr(existing_outcome, "rounds", None),
+                summary=f"Review exchange halted: {existing_outcome.reason}",
+            )
             errors.append(
                 f"review_exchange: {existing_outcome.status} ({existing_outcome.reason})"
             )
@@ -1158,11 +1269,32 @@ class CompletionProcessor:
             agent_label=agent_label,
         )
         if exchange_result.status != "ok":
+            self._emit_review_outcome(
+                issue_number=issue_number,
+                reviewer_label=reviewer_label,
+                exchange_mode=exchange_mode,
+                approved=False,
+                rounds=getattr(exchange_result, "rounds", None),
+                summary=f"Review exchange halted: {exchange_result.reason}",
+            )
             errors.append(
                 f"review_exchange: {exchange_result.status} ({exchange_result.reason})"
             )
             return exchange_mode, exchange_result, True
         actions_taken.append("Review exchange passed")
+        reviewer_summary = (
+            exchange_result.reviewer_response.response_text
+            if exchange_result.reviewer_response
+            else "Review approved"
+        )
+        self._emit_review_outcome(
+            issue_number=issue_number,
+            reviewer_label=reviewer_label,
+            exchange_mode=exchange_mode,
+            approved=True,
+            rounds=exchange_result.rounds,
+            summary=reviewer_summary,
+        )
         if session_name and exchange_result.summary:
             validation_record_path: Path | None = None
             if exchange_result.exchange_dir:

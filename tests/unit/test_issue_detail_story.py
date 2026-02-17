@@ -539,12 +539,28 @@ class TestFormatTimeLabel:
     def test_iso_timestamp(self):
         result = _format_time_label("2026-02-09T20:15:00Z")
         assert result  # Should produce some time string
+        assert ":15:00" in result
 
     def test_empty_string(self):
         assert _format_time_label("") == ""
 
     def test_none(self):
         assert _format_time_label(None) == ""
+
+    def test_non_today_includes_date_and_seconds(self):
+        result = _format_time_label("2026-02-08T20:15:30Z", today="2026-02-09")
+        assert "Feb" in result
+        assert ":15:30" in result
+
+
+def test_cycle_header_time_label_includes_seconds():
+    events = [
+        _evt("session.started", timestamp="2026-02-09T10:00:05Z", rework_cycle=0),
+        _evt("session.completed", timestamp="2026-02-09T10:01:10Z", rework_cycle=0),
+    ]
+    cycles = _build_journey_cycles(events, "2026-02-09")
+    assert len(cycles) == 1
+    assert ":00:05" in cycles[0]["time_label"]
 
 
 # ── Lifecycle Detection ─────────────────────────────────────────────────
@@ -1291,6 +1307,95 @@ class TestSignalJourneyCycles:
         groups = cycles[0]["phase_groups"]
         assert [g["label"] for g in groups] == ["Rework", "Review"]
         assert all(g["steps"] for g in groups)
+
+    def test_cycle_phase_groups_do_not_backslide_after_review(self):
+        """A cycle should not alternate Coding/Review/Coding for mixed events."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T10:00:00Z", rework_cycle=0, agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T10:10:00Z", rework_cycle=0),
+            _evt("review.started", timestamp="2026-02-09T10:11:00Z", rework_cycle=0, task="review"),
+            _evt("review.comment_added", timestamp="2026-02-09T10:12:00Z", rework_cycle=0, task="review"),
+            # Validation is orchestrator-owned, not review-owned.
+            _evt("session.validation_retry_needed", timestamp="2026-02-09T10:13:00Z", rework_cycle=0),
+            _evt("review.approved", timestamp="2026-02-09T10:14:00Z", rework_cycle=0, task="review"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 1
+        groups = cycles[0]["phase_groups"]
+        assert [g["label"] for g in groups] == ["Coding", "Review", "Orchestrator", "Review"]
+
+    def test_cycle_phase_groups_map_validation_and_queueing_to_orchestrator(self):
+        """Validation and queue/publish events must render as orchestrator phase."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T10:00:00Z", rework_cycle=0, agent="agent:backend"),
+            _evt("validation.completed", timestamp="2026-02-09T10:01:00Z", rework_cycle=0),
+            _evt("session.completed", timestamp="2026-02-09T10:02:00Z", rework_cycle=0),
+            _evt("issue.pr_created", timestamp="2026-02-09T10:03:00Z", rework_cycle=0),
+            _evt("review.queued", timestamp="2026-02-09T10:04:00Z", rework_cycle=0),
+            _evt("review.started", timestamp="2026-02-09T10:05:00Z", rework_cycle=0, task="review"),
+            _evt("validation.completed", timestamp="2026-02-09T10:06:00Z", rework_cycle=0),
+            _evt("review.approved", timestamp="2026-02-09T10:07:00Z", rework_cycle=0, task="review"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 1
+        groups = cycles[0]["phase_groups"]
+        assert [g["label"] for g in groups] == [
+            "Coding",
+            "Orchestrator",
+            "Coding",
+            "Orchestrator",
+            "Review",
+            "Orchestrator",
+            "Review",
+        ]
+        validation_events = {
+            step["event"]
+            for group in groups
+            if group["label"] == "Orchestrator"
+            for step in group["steps"]
+        }
+        assert "validation.completed" in validation_events
+
+    def test_cycle_phase_groups_map_session_validation_passed_to_orchestrator(self):
+        """session.validation_passed must not render under Coding/Review buckets."""
+        events = [
+            _evt("session.started", timestamp="2026-02-09T10:00:00Z", rework_cycle=0, agent="agent:backend"),
+            _evt("session.completed", timestamp="2026-02-09T10:01:00Z", rework_cycle=0),
+            _evt("review.started", timestamp="2026-02-09T10:02:00Z", rework_cycle=0, task="review"),
+            _evt("review.comment_added", timestamp="2026-02-09T10:03:00Z", rework_cycle=0, task="review"),
+            _evt("session.validation_passed", timestamp="2026-02-09T10:04:00Z", rework_cycle=0),
+            _evt("review.approved", timestamp="2026-02-09T10:05:00Z", rework_cycle=0, task="review"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 1
+        groups = cycles[0]["phase_groups"]
+        assert [g["label"] for g in groups] == ["Coding", "Review", "Orchestrator", "Review"]
+
+    def test_signal_cycles_keep_review_exchange_events_with_active_rework_cycle(self):
+        """review_exchange.* events without rework_cycle stay in the active rework cycle."""
+        events = [
+            _evt("rework.started", timestamp="2026-02-09T10:00:00Z", rework_cycle=1, agent="agent:backend"),
+            _evt("review.started", timestamp="2026-02-09T10:01:00Z", task="review"),
+            _evt("review_exchange.started", timestamp="2026-02-09T10:02:00Z", task="review"),
+            _evt("review_exchange.round_started", timestamp="2026-02-09T10:03:00Z", task="review"),
+            _evt("review_exchange.round_completed", timestamp="2026-02-09T10:04:00Z", task="review"),
+            _evt("session.started", timestamp="2026-02-09T10:05:00Z", task="code", agent="agent:backend"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        assert len(cycles) == 1
+        cycle = cycles[0]
+        assert cycle["iteration"] == 2
+        groups = cycle["phase_groups"]
+        labels = [g["label"] for g in groups]
+        assert "Coding" not in labels
+        assert labels[:2] == ["Rework", "Review"]
+        review_events = [
+            step["event"]
+            for group in groups
+            if group["label"] == "Review"
+            for step in group["steps"]
+        ]
+        assert "review_exchange.started" in review_events
 
     def test_last_run_filter_prefers_latest_lifecycle_over_run_id(self):
         """Latest-run filtering should use logical lifecycle grouping."""

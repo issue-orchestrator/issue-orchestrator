@@ -518,6 +518,15 @@ class TestLaunchIssueSession:
         assert result.session.terminal_id == "issue-123"
         assert result.session.key.task == TaskKind.CODE
 
+    def test_issue_completion_path_uses_phase_name_not_terminal_alias(self, session_launcher, sample_issue):
+        """Issue completion path must use coding phase path to avoid stale terminal aliases."""
+        result = session_launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        assert result.session is not None
+        assert "/sessions/coding-1/" in result.session.completion_path
+        assert "/sessions/issue-123/" not in result.session.completion_path
+
     def test_fails_when_no_agent_type(self, session_launcher):
         """Verify fails when issue has no agent type label (line 195)."""
         issue = Issue(number=123, title="No agent", labels=[], repo="test/repo")
@@ -761,6 +770,23 @@ class TestLaunchReviewSession:
         assert result.session.terminal_id == "review-456"
         assert result.session.key.task == TaskKind.REVIEW
 
+    def test_review_completion_path_uses_phase_name_not_terminal_alias(self, session_launcher):
+        """Review completion path must use review phase path to avoid stale PR session aliases."""
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-feature",
+            _issue_number=123,
+        )
+
+        result = session_launcher.launch_review_session(review, active_sessions=[])
+
+        assert result.success is True
+        assert result.session is not None
+        assert "/sessions/review-1/" in result.session.completion_path
+        assert "/sessions/review-456/" not in result.session.completion_path
+
     def test_fails_when_no_review_agent_configured(self, session_launcher):
         """Verify fails when no code review agent configured (line 418)."""
         session_launcher.config.code_review_agent = None
@@ -932,6 +958,21 @@ class TestLaunchReworkSession:
 
         assert result.success is True
         # Uses fallback branch name when no PR
+
+    def test_rework_completion_path_uses_phase_name_not_terminal_alias(self, session_launcher):
+        """Rework completion path must target run phase directory (coding-N), not rework-<issue> alias."""
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,  # coding attempt 2
+        )
+
+        result = session_launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        assert result.session is not None
+        assert "/sessions/coding-2/" in result.session.completion_path
+        assert "/sessions/rework-123/" not in result.session.completion_path
 
     def test_fails_when_agent_config_missing(self, session_launcher):
         """Verify fails when agent config not found (line 585)."""

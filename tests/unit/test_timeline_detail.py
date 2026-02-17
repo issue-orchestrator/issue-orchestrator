@@ -140,3 +140,10 @@ class TestTruncation:
         assert detail is not None
         assert len(detail) <= 200
         assert detail.endswith("\u2026")
+
+    def test_review_comment_allows_longer_detail(self) -> None:
+        comment = "x" * 350
+        data = {"comment_excerpt": comment}
+        detail = _detail_from_data("review.comment_added", data, "Posted review comment")
+        assert detail is not None
+        assert detail == comment

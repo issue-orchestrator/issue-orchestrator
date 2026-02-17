@@ -215,3 +215,58 @@ def test_review_feedback_modal_includes_review_comment_events_and_details() -> N
     assert "review.comment_added" in body
     assert "evt.detail" in body
     assert "Open review comment on GitHub" in body
+
+
+def test_review_feedback_modal_resolves_requested_issue_detail() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "openReviewFeedback")
+    assert "issueDetailData.issue_number === issueNumber" in body
+    assert "fetch(`/api/issue-detail/${issueNumber}`)" in body
+
+
+def test_session_diagnostics_actions_use_primary_plus_more_menu() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderGroupedDialogActions")
+    assert "primaryTypes" in body
+    assert "More ▾" in body
+    assert "diag-more-menu" in body
+    assert "Issue-Scoped Orchestrator Log" in js
+    assert "openSessionManifest(action.issue_number, action.run_dir || null)" in js
+
+
+def test_timeline_event_actions_use_primary_plus_more_menu() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderTimelineEventActions")
+    assert "primaryTypes" in body
+    assert "timeline-more-menu" in body
+    assert "More ▾" in body
+    assert "_timelineActionShortLabel" in js
+
+
+def test_journey_action_delegate_handles_more_items_and_closes_menus() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "_renderJourneyRuns")
+    assert ".timeline-action-btn, .timeline-more-item" in body
+    assert "closeTimelineEventMenus(ownerMenu)" in body
+    assert "closeTimelineEventMenus();" in body
+
+
+def test_toggle_journey_cycle_closes_open_timeline_menus() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "toggleJourneyCycle")
+    assert "closeTimelineEventMenus();" in body
+
+
+def test_journey_empty_state_uses_diagnostic_when_timeline_missing() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "_renderJourneyRuns")
+    assert "timelineDiagnostic" in body
+    assert "expected_history_missing" in body
+    assert "Timeline data missing" in body
+    assert "Expected timeline store" in body
+
+
+def test_journey_empty_state_falls_back_to_no_activity_when_no_diagnostic() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "_renderJourneyRuns")
+    assert "No activity recorded." in body

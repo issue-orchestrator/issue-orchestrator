@@ -1291,11 +1291,60 @@ body.column-focus-mode .column-expanded {
     color: var(--text);
     border-color: rgba(136, 196, 255, 0.5);
 }
+.timeline-event-menu[open] .timeline-event-menu-trigger {
+    color: var(--text);
+    border-color: rgba(136, 196, 255, 0.55);
+    background: color-mix(in srgb, var(--bg-hover) 60%, var(--bg-panel));
+}
 .timeline-event-menu-items {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
     margin-top: 6px;
+}
+.timeline-more-menu {
+    position: relative;
+}
+.timeline-more-trigger {
+    list-style: none;
+    border: 1px solid var(--border);
+    background: color-mix(in srgb, var(--bg-panel) 78%, transparent);
+    border-radius: 6px;
+    color: var(--text-muted);
+    font-size: 11px;
+    padding: 3px 8px;
+    cursor: pointer;
+}
+.timeline-more-trigger::-webkit-details-marker {
+    display: none;
+}
+.timeline-more-items {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    left: auto;
+    z-index: 12;
+    min-width: min(240px, calc(100vw - 48px));
+    max-width: min(320px, calc(100vw - 24px));
+    display: grid;
+    gap: 4px;
+    padding: 4px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-panel);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+.timeline-more-item {
+    border: none;
+    background: transparent;
+    text-align: left;
+    color: var(--text);
+    border-radius: 6px;
+    font-size: 12px;
+    padding: 7px 9px;
+}
+.timeline-more-item:hover {
+    background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
 }
 .timeline-action-divider {
     width: 100%;
@@ -1393,6 +1442,48 @@ body.column-focus-mode .column-expanded {
     display: flex;
     flex-wrap: wrap;
     gap: 6px;
+}
+.diag-primary-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+.diag-more-wrap {
+    position: relative;
+}
+.diag-more-btn {
+    white-space: nowrap;
+}
+.diag-more-menu {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    min-width: 240px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    padding: 4px;
+    display: none;
+    z-index: 20;
+}
+.diag-more-menu.visible {
+    display: block;
+}
+.diag-more-item {
+    width: 100%;
+    text-align: left;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    border-radius: 6px;
+    padding: 7px 9px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.diag-more-item:hover {
+    background: color-mix(in srgb, var(--bg-hover) 70%, transparent);
 }
 .diag-empty {
     font-size: 11px;

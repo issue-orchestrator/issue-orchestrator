@@ -99,6 +99,43 @@ def test_view_model_active_session_and_dashboard_data():
     assert dashboard_data["refresh"]["fetchLayerEnabled"] is True
 
 
+def test_active_item_prefers_canonical_issue_title_over_rework_title():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+
+    issue = Issue(number=4057, title="Rework #4124", labels=["agent:web", "in-progress"])
+    session_key = SessionKey(issue=FakeIssueKey("4057"), task=TaskKind.REWORK)
+    session = Session(
+        key=session_key,
+        issue=issue,
+        agent_config=agent_config,
+        terminal_id="rework-4057",
+        worktree_path=Path("/tmp/worktree-4057"),
+        branch_name="feature/4057",
+        started_at=datetime.now() - timedelta(minutes=2),
+    )
+
+    state = OrchestratorState(
+        active_sessions=[session],
+        startup_status="complete",
+        cached_queue_issues=[
+            Issue(number=4057, title="UI: Surface provider circuit breaker status", labels=["agent:web"]),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.active_items[0]["title"] == "UI: Surface provider circuit breaker status"
+
+
 def test_view_model_queue_and_blocked_items():
     config = _make_config()
     agent_config = _make_agent_config()

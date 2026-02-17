@@ -349,7 +349,7 @@ class ActionApplier:
                         "issue_number": action.number,
                         "pr_number": action.number,
                         "comment_url": comment_url,
-                        "comment_excerpt": excerpt[:180] if excerpt else "",
+                        "comment_excerpt": excerpt if excerpt else "",
                         "summary": "Posted review comment",
                     },
                 ))

@@ -5,6 +5,19 @@ from __future__ import annotations
 from issue_orchestrator.domain.logical_run_projection import LogicalRunProjector
 
 
+def _first_run(runs: list[dict[str, object]]) -> dict[str, object]:
+    assert runs
+    return runs[0]
+
+
+def _first_cycle(run: dict[str, object]) -> dict[str, object]:
+    cycles = run.get("cycles")
+    assert isinstance(cycles, list) and cycles
+    cycle = cycles[0]
+    assert isinstance(cycle, dict)
+    return cycle
+
+
 def test_build_runs_groups_by_lifecycle_not_physical_run_id() -> None:
     projector = LogicalRunProjector()
     cycles = [
@@ -14,8 +27,9 @@ def test_build_runs_groups_by_lifecycle_not_physical_run_id() -> None:
 
     runs = projector.build_runs(cycles)
     assert len(runs) == 1
-    assert runs[0]["run_key"] == "lifecycle:1"
-    assert runs[0]["session_run_ids"] == ["run-a", "run-b"]
+    run = _first_run(runs)
+    assert run["run_key"] == "lifecycle:1"
+    assert run["session_run_ids"] == ["run-a", "run-b"]
 
 
 def test_filter_last_run_cycles_prefers_latest_lifecycle() -> None:
@@ -49,5 +63,6 @@ def test_build_runs_marks_older_in_progress_as_superseded() -> None:
     ]
 
     runs = projector.build_runs(cycles)
-    assert runs[0]["outcome"] == "Superseded"
-    assert runs[0]["cycles"][0]["outcome"] == "Superseded"
+    first_run = _first_run(runs)
+    assert first_run["outcome"] == "Superseded"
+    assert _first_cycle(first_run)["outcome"] == "Superseded"

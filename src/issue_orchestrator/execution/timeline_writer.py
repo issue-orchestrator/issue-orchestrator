@@ -9,7 +9,9 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from ..domain.event_taxonomy import EventIntent, infer_event_intent, is_review_oriented_event
 from ..events.catalog import EVENT_SCHEMA_VERSION
+from ..timeline import TIMELINE_SCHEMA_VERSION
 from ..ports.event_sink import TraceEvent
 from ..ports.timeline_store import TimelineRecord, TimelineStore
 from ..ports.timeline_writer import TimelineWriter
@@ -32,6 +34,20 @@ class DefaultTimelineWriter(TimelineWriter):
         safe_data = _normalize_json(event.data)
         if isinstance(safe_data, dict) and "schema" not in safe_data:
             safe_data["schema"] = EVENT_SCHEMA_VERSION
+        if isinstance(safe_data, dict) and "timeline_schema_version" not in safe_data:
+            safe_data["timeline_schema_version"] = TIMELINE_SCHEMA_VERSION
+        if isinstance(safe_data, dict) and "review_oriented" not in safe_data:
+            task = safe_data.get("task")
+            safe_data["review_oriented"] = is_review_oriented_event(
+                event_name=event.name,
+                task=task if isinstance(task, str) else None,
+            )
+        if isinstance(safe_data, dict) and "event_intent" not in safe_data:
+            task = safe_data.get("task")
+            safe_data["event_intent"] = infer_event_intent(
+                event_name=event.name,
+                task=task if isinstance(task, str) else None,
+            ).value
         record_event_id = str(event.event_id) if event.event_id is not None else str(uuid4())
         record = TimelineRecord(
             event_id=record_event_id,

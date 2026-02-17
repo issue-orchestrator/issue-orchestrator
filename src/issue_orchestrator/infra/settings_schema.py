@@ -551,12 +551,12 @@ class ReviewSettings(BaseModel):
         },
     )
     exchange_mode: Literal["via-draft-pr", "via-mcp", "via-local-loop", "auto"] = Field(
-        "via-draft-pr",
+        "via-local-loop",
         title="Review Exchange Mode",
         description="Review exchange mode (via-mcp loop, local loop, or via-draft-pr review)",
         json_schema_extra={
-            "doc_examples": ["via-draft-pr", "via-mcp", "auto"],
-            "doc_notes": "Draft PR mode is the default and requires no extra setup.",
+            "doc_examples": ["via-local-loop", "via-draft-pr", "via-mcp", "auto"],
+            "doc_notes": "Local loop is the default; use via-draft-pr for GitHub-mediated review cycles.",
             "section": "Code Review Workflow",
             "config_attr": "review_exchange_mode",
             "yaml_path": "review.exchange.mode",

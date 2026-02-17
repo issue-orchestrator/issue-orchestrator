@@ -768,7 +768,7 @@ Timestamp: {self._now_iso()}
             if any(pattern.search(line) for pattern in issue_patterns):
                 scoped.append(line)
         if not scoped:
-            scoped = lines[-max_lines:]
+            return None
 
         tail_lines = scoped[-max_lines:]
         tail_path = run_dir / ORCHESTRATOR_TAIL_NAME

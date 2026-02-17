@@ -125,7 +125,7 @@ def test_sqlite_timeline_store_preserves_run_dir_payload(tmp_path: Path) -> None
     assert records[0].data["task"] == "code"
 
 
-def test_sqlite_timeline_store_migrates_legacy_jsonl_once(tmp_path: Path) -> None:
+def test_sqlite_timeline_store_ignores_legacy_jsonl_files(tmp_path: Path) -> None:
     legacy_dir = tmp_path / "timeline"
     legacy_dir.mkdir(parents=True)
     legacy_path = legacy_dir / "issue-4057.jsonl"
@@ -152,16 +152,9 @@ def test_sqlite_timeline_store_migrates_legacy_jsonl_once(tmp_path: Path) -> Non
         tmp_path / "timeline.sqlite",
         config=TimelineStoreConfig(max_records=10),
     )
+    # Forward-only policy: legacy JSONL is ignored by the SQLite store.
     records = store.read(4057)
-    assert [record.event_id for record in records] == ["legacy-1", "legacy-2"]
-
-    # Re-initializing should not duplicate migrated rows.
-    store_again = SqliteTimelineStore(
-        tmp_path / "timeline.sqlite",
-        config=TimelineStoreConfig(max_records=10),
-    )
-    records_again = store_again.read(4057)
-    assert [record.event_id for record in records_again] == ["legacy-1", "legacy-2"]
+    assert records == []
 
 
 def test_filesystem_and_sqlite_store_roundtrip_equivalence(tmp_path: Path) -> None:
@@ -280,6 +273,7 @@ def test_timeline_writer_preserves_sequenced_event_id_and_schema() -> None:
     record = store.records[0]
     assert record.event_id == "77"
     assert record.data["schema"] == 1
+    assert record.data["timeline_schema_version"] == 2
 
 
 def test_routed_timeline_store_routes_by_worktree_path(tmp_path: Path) -> None:

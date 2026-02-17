@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-import re
+import logging
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -17,6 +18,8 @@ from uuid import uuid4
 from ..infra.repo_identity import state_dir
 from ..infra.sqlite_connection import open_sqlite
 from ..ports.timeline_store import TimelineRecord, TimelineStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -58,7 +61,8 @@ class SqliteTimelineStore(TimelineStore):
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = self._get_connection()
         conn.executescript(_SQLITE_SCHEMA)
-        self._migrate_legacy_jsonl_if_needed(conn)
+        if _timeline_trace_enabled():
+            logger.info("[TIMELINE] trace enabled db=%s", self._db_path)
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -90,6 +94,14 @@ class SqliteTimelineStore(TimelineStore):
             )
             self._trim_if_needed(tx, issue_number)
             self._trim_total_if_needed(tx)
+        if _timeline_trace_enabled():
+            logger.info(
+                "[TIMELINE] append db=%s issue=%s event=%s event_id=%s",
+                self._db_path,
+                issue_number,
+                record.event,
+                record.event_id,
+            )
 
     def read(self, issue_number: int, limit: int | None = None) -> list[TimelineRecord]:
         conn = self._get_connection()
@@ -133,12 +145,28 @@ class SqliteTimelineStore(TimelineStore):
                     data=data,
                 )
             )
+        if _timeline_trace_enabled():
+            logger.info(
+                "[TIMELINE] read db=%s issue=%s count=%s limit=%s",
+                self._db_path,
+                issue_number,
+                len(records),
+                limit,
+            )
         return records
 
     def _trim_if_needed(self, conn: sqlite3.Connection, issue_number: int) -> None:
         max_records = self._config.max_records
         if max_records <= 0:
             return
+        before_count = 0
+        if _timeline_trace_enabled():
+            row = conn.execute(
+                "SELECT COUNT(*) AS count FROM timeline_events WHERE issue_number = ?",
+                (issue_number,),
+            ).fetchone()
+            before_count = int(row["count"]) if row else 0
+
         conn.execute(
             """
             DELETE FROM timeline_events
@@ -153,11 +181,32 @@ class SqliteTimelineStore(TimelineStore):
             """,
             (issue_number, issue_number, max_records),
         )
+        if _timeline_trace_enabled():
+            after_row = conn.execute(
+                "SELECT COUNT(*) AS count FROM timeline_events WHERE issue_number = ?",
+                (issue_number,),
+            ).fetchone()
+            after_count = int(after_row["count"]) if after_row else 0
+            deleted = max(0, before_count - after_count)
+            logger.info(
+                "[TIMELINE] trim_issue db=%s issue=%s max=%s before=%s after=%s deleted=%s",
+                self._db_path,
+                issue_number,
+                max_records,
+                before_count,
+                after_count,
+                deleted,
+            )
 
     def _trim_total_if_needed(self, conn: sqlite3.Connection) -> None:
         max_total_records = self._config.max_total_records
         if max_total_records <= 0:
             return
+        before_count = 0
+        if _timeline_trace_enabled():
+            row = conn.execute("SELECT COUNT(*) AS count FROM timeline_events").fetchone()
+            before_count = int(row["count"]) if row else 0
+
         conn.execute(
             """
             DELETE FROM timeline_events
@@ -170,44 +219,18 @@ class SqliteTimelineStore(TimelineStore):
             """,
             (max_total_records,),
         )
-
-    def _migrate_legacy_jsonl_if_needed(self, conn: sqlite3.Connection) -> None:
-        existing = conn.execute("SELECT COUNT(*) AS count FROM timeline_events").fetchone()
-        if existing is not None and int(existing["count"]) > 0:
-            return
-
-        legacy_dir = self._db_path.parent / "timeline"
-        if not legacy_dir.exists():
-            return
-
-        issue_files = sorted(legacy_dir.glob("issue-*.jsonl"))
-        if not issue_files:
-            return
-
-        for issue_file in issue_files:
-            issue_number = _issue_number_from_filename(issue_file)
-            if issue_number is None:
-                continue
-            for record in _load_records(issue_file):
-                payload = json.dumps(record.data, sort_keys=True, default=str)
-                conn.execute(
-                    """
-                    INSERT INTO timeline_events (issue_number, event_id, timestamp, event, data_json)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        issue_number,
-                        record.event_id,
-                        record.timestamp,
-                        record.event,
-                        payload,
-                    ),
-                )
-            self._trim_if_needed(conn, issue_number)
-
-        self._trim_total_if_needed(conn)
-        conn.commit()
-
+        if _timeline_trace_enabled():
+            after_row = conn.execute("SELECT COUNT(*) AS count FROM timeline_events").fetchone()
+            after_count = int(after_row["count"]) if after_row else 0
+            deleted = max(0, before_count - after_count)
+            logger.info(
+                "[TIMELINE] trim_total db=%s max=%s before=%s after=%s deleted=%s",
+                self._db_path,
+                max_total_records,
+                before_count,
+                after_count,
+                deleted,
+            )
 
 class FileSystemTimelineStore(TimelineStore):
     """Append-only JSONL timeline store per issue."""
@@ -265,17 +288,9 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-_ISSUE_TIMELINE_FILE_RE = re.compile(r"^issue-(\d+)\.jsonl$")
-
-
-def _issue_number_from_filename(path: Path) -> int | None:
-    match = _ISSUE_TIMELINE_FILE_RE.match(path.name)
-    if not match:
-        return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
+def _timeline_trace_enabled() -> bool:
+    value = os.environ.get("ISSUE_ORCHESTRATOR_TIMELINE_TRACE", "")
+    return value.lower() in {"1", "true", "yes", "on"}
 
 
 def _load_records(path: Path, limit: int | None = None) -> Iterable[TimelineRecord]:

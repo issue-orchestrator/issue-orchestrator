@@ -1888,7 +1888,7 @@
                 <div>
                     <h1 class="header-title" id="viewTitle">Repository Engines</h1>
                     <div class="header-subtitle">Control Center window visibility is independent from repository engine runtime.</div>
-                    <div class="active-summary" id="activeSummary">0 Running · 0 Paused · 0 Not running</div>
+                    <div class="active-summary" id="activeSummary">Registered engines: 0 Running · 0 Paused · 0 Stopped</div>
                 </div>
                 <div class="header-actions">
                     <button class="btn btn-danger btn-sm" id="shutdownBtn">
@@ -2665,6 +2665,7 @@
             dashboardStatus: null
         };
         const pendingRepoStarts = new Set();
+        const pendingRepoStops = new Set();
 
         const DISCOVERED_STALE_MS = 5 * 60 * 1000;
 
@@ -2884,7 +2885,7 @@
             if (notRunning.length > 0) {
                 hasItems = true;
                 html += `<div class="dropdown-section">
-                    <div class="dropdown-section-label">Not running</div>
+                    <div class="dropdown-section-label">Stopped (registered)</div>
                     ${notRunning.map(r => renderDropdownItem(r, false)).join('')}
                 </div>`;
             }
@@ -3385,6 +3386,10 @@
             return pendingRepoStarts.has(path);
         }
 
+        function isRepoStopPending(path) {
+            return pendingRepoStops.has(path);
+        }
+
         function renderRepos() {
             const container = document.getElementById('reposContent');
             const discovered = state.discoveredRepos || [];
@@ -3517,10 +3522,11 @@
                     <button class="btn" data-action="start-paused" data-path="${escapeHtml(repo.path)}" ${pendingStart ? 'disabled' : ''}>${pendingStart ? 'Starting paused...' : 'Start paused'}</button>
                 `;
             } else {
+                const pendingStop = isRepoStopPending(repo.path);
                 actions = `
                     <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open dashboard</button>
                     <button class="btn" data-action="${isPaused ? 'resume' : 'pause'}" data-path="${escapeHtml(repo.path)}">${isPaused ? 'Resume engine' : 'Pause engine'}</button>
-                    <button class="btn btn-danger btn-sm" data-action="stop" data-path="${escapeHtml(repo.path)}">Stop engine</button>
+                    <button class="btn btn-danger btn-sm" data-action="stop" data-path="${escapeHtml(repo.path)}" ${pendingStop ? 'disabled' : ''}>${pendingStop ? 'Stopping...' : 'Stop engine'}</button>
                 `;
             }
 
@@ -3554,8 +3560,8 @@
             if (!el) return;
             const runningCount = state.repos.filter(r => getRepoState(r) === 'running').length;
             const pausedCount = state.repos.filter(r => getRepoState(r) === 'paused').length;
-            const notRunningCount = state.repos.filter(r => getRepoState(r) === 'not running').length;
-            el.textContent = `${runningCount} Running · ${pausedCount} Paused · ${notRunningCount} Not running`;
+            const stoppedCount = state.repos.filter(r => getRepoState(r) === 'not running').length;
+            el.textContent = `Registered engines: ${runningCount} Running · ${pausedCount} Paused · ${stoppedCount} Stopped`;
         }
 
         function updateRecoveryBanner() {
@@ -3915,6 +3921,12 @@
         }
 
         async function stopRepo(path) {
+            if (!path) {
+                showToast('Missing repository path for stop request', 'error');
+                return;
+            }
+            if (pendingRepoStops.has(path)) return;
+
             const repo = state.repos.find(r => r.path === path);
             const repoName = repo?.name || path;
             const confirmed = window.confirm(
@@ -3923,6 +3935,14 @@
                 'You can start the engine again from Control Center.'
             );
             if (!confirmed) return;
+
+            pendingRepoStops.add(path);
+            if (state.currentView === 'repositories') {
+                renderRepos();
+            } else if (state.currentView === 'activity' && state.activeRepo?.path === path) {
+                loadActivityView(path);
+            }
+
             try {
                 const response = await fetch('/control/orchestrator/stop', {
                     method: 'POST',
@@ -3930,20 +3950,44 @@
                     body: JSON.stringify({ repo_root: path })
                 });
 
-                if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.detail || 'Failed to stop');
+                let payload = null;
+                try {
+                    payload = await response.json();
+                } catch (_) {
+                    payload = null;
                 }
 
-                showToast('Repository engine stopped', 'success');
+                if (!response.ok) {
+                    const detail = payload?.detail || payload?.error;
+                    throw new Error(detail || `Failed to stop repository engine (HTTP ${response.status})`);
+                }
+
+                if (payload?.status === 'not_running') {
+                    showToast('Repository engine was already stopped', 'info');
+                } else {
+                    showToast('Repository engine stopped', 'success');
+                }
 
                 if (state.currentView === 'activity' && state.activeRepo?.path === path) {
                     switchView('repositories');
                 }
-
-                await loadRepos();
             } catch (error) {
-                showToast(error.message, 'error');
+                const message = error instanceof TypeError
+                    ? 'Failed to reach Control Center while stopping engine. Refresh and try again.'
+                    : (error?.message || 'Failed to stop repository engine');
+                showToast(message, 'error');
+            } finally {
+                pendingRepoStops.delete(path);
+                try {
+                    await loadRepos(true);
+                } catch (_) {
+                    // Best effort: UI already showed the stop error above.
+                }
+                if (state.currentView === 'repositories') {
+                    renderRepos();
+                } else if (state.currentView === 'activity' && state.activeRepo?.path === path) {
+                    loadActivityView(path);
+                }
             }
         }
 
@@ -4038,7 +4082,13 @@
         // ============================================
         // Shutdown
         // ============================================
-        function showShutdownModal() {
+        async function showShutdownModal() {
+            try {
+                await loadRepos(true);
+            } catch (_) {
+                // If Control Center API is unavailable, fall back to current local state.
+            }
+
             const active = state.repos.filter(r => {
                 const s = r.status || {};
                 return s.state === 'running' || s.state === 'partial' || s.paused;

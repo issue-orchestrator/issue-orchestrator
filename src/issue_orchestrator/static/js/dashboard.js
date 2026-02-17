@@ -552,14 +552,34 @@ function isNearBottom(element, threshold = 24) {
 
 async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) {
     const effectiveRunDir = runDir || logRunDir;
+    if (!effectiveRunDir) {
+        const msg = 'Session log requires a run-scoped action (missing run_dir).';
+        document.getElementById('logStatus').textContent = msg;
+        const logPre = document.getElementById('logPre');
+        if (logPre) logPre.textContent = msg;
+        return;
+    }
     const params = new URLSearchParams();
-    if (effectiveRunDir) params.set('run_dir', effectiveRunDir);
+    params.set('run_dir', effectiveRunDir);
     const suffix = params.toString() ? `?${params.toString()}` : '';
     const res = await fetch(`/api/log/local/${issueNumber}${suffix}`);
     const data = await res.json();
 
     if (data.error) {
-        const msg = data.error + (data.hint ? '\n\n' + data.hint : '');
+        let msg = data.error + (data.hint ? '\n\n' + data.hint : '');
+        if (data.diagnostic && typeof data.diagnostic === 'object') {
+            const d = data.diagnostic;
+            const checked = Array.isArray(d.checked_paths) ? d.checked_paths.filter(Boolean) : [];
+            const detail = [
+                d.worktree_path ? `worktree: ${d.worktree_path}` : '',
+                d.session_name ? `session: ${d.session_name}` : '',
+                d.resolved_run_dir ? `run_dir: ${d.resolved_run_dir}` : '',
+                checked.length ? `checked:\n- ${checked.join('\n- ')}` : '',
+            ].filter(Boolean).join('\n');
+            if (detail) {
+                msg += `\n\n${detail}`;
+            }
+        }
         document.getElementById('logStatus').textContent = msg;
         const logPre = document.getElementById('logPre');
         if (logPre) {
@@ -588,6 +608,10 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
 }
 
 async function openAgentLog(issueNumber, logLabel = 'Most Recent Session Log', runDir = null) {
+    if (!runDir) {
+        showToast('Session log requires run context. Open from a timeline entry.', 'error');
+        return;
+    }
     logIssue = issueNumber;
     logRunDir = runDir;
     const logContent = `
@@ -625,8 +649,15 @@ async function openAgentLog(issueNumber, logLabel = 'Most Recent Session Log', r
     }, 2000);
 }
 
-async function openSessionManifest(issueNumber) {
-    const res = await fetch(`/api/dialog/session-diagnostics/${issueNumber}`);
+function openAgentLogAction(issueNumber, runDir = null, logLabel = 'Most Recent Session Log') {
+    return openAgentLog(issueNumber, logLabel, runDir);
+}
+
+async function openSessionManifest(issueNumber, runDir = null) {
+    const params = new URLSearchParams();
+    if (runDir) params.set('run_dir', runDir);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(`/api/dialog/session-diagnostics/${issueNumber}${suffix}`);
     const data = await res.json();
     if (data.error) {
         showToast(data.error, 'error');
@@ -662,9 +693,7 @@ async function openSessionManifest(issueNumber) {
     const overviewRows = rows.filter(row => overviewKeys.has(String(row.label || '').toLowerCase()));
     const pathRows = rows.filter(row => !overviewKeys.has(String(row.label || '').toLowerCase()));
 
-    const pathActions = actions.filter(action => action.type === 'open_path');
-    const logActions = actions.filter(action => action.type !== 'open_path');
-    const hasActions = pathActions.length > 0 || logActions.length > 0;
+    const hasActions = actions.length > 0;
 
     let html = '<div class="diag-modal">';
     html += '<div class="diag-header">';
@@ -685,24 +714,7 @@ async function openSessionManifest(issueNumber) {
 
     if (hasActions) {
         html += '<div class="diag-actions">';
-        if (pathActions.length > 0) {
-            html += '<section class="diag-section">';
-            html += '<div class="diag-section-title">Artifacts</div>';
-            html += '<div class="diag-action-group">';
-            for (const action of pathActions) {
-                html += renderDialogAction(action);
-            }
-            html += '</div></section>';
-        }
-        if (logActions.length > 0) {
-            html += '<section class="diag-section">';
-            html += '<div class="diag-section-title">Logs & Tools</div>';
-            html += '<div class="diag-action-group">';
-            for (const action of logActions) {
-                html += renderDialogAction(action);
-            }
-            html += '</div></section>';
-        }
+        html += renderGroupedDialogActions(actions);
         html += '</div>';
     } else {
         html += '<div class="diag-empty">No diagnostic actions available for this run.</div>';
@@ -738,22 +750,119 @@ function renderDialogRows(rows, options = {}) {
 }
 
 function renderDialogAction(action) {
+    return renderDialogActionWithLabel(action);
+}
+
+function renderGroupedDialogActions(actions) {
+    const items = (actions || []).map(action => ({
+        action,
+        label: _dialogActionShortLabel(action),
+    }));
+    if (items.length === 0) return '';
+
+    const primaryTypes = ['open_review_feedback', 'open_agent_log', 'view_claude_log'];
+    const primary = [];
+    const used = new Set();
+    for (const type of primaryTypes) {
+        const item = items.find(candidate => String(candidate.action?.type || '') === type);
+        if (!item) continue;
+        primary.push(item);
+        used.add(item);
+    }
+
+    const secondary = items.filter(item => !used.has(item));
+
+    let html = '<section class="diag-section">';
+    html += '<div class="diag-section-title">Actions</div>';
+    html += '<div class="diag-primary-actions">';
+    for (const item of primary) {
+        html += renderDialogActionWithLabel(item.action, item.label);
+    }
+    if (secondary.length > 0) {
+        html += '<div class="diag-more-wrap">';
+        html += '<button class="btn-secondary diag-more-btn" type="button" onclick="toggleDiagMoreMenu(event, this)">More ▾</button>';
+        html += '<div class="diag-more-menu">';
+        for (const item of secondary) {
+            html += renderDialogActionMenuItem(item.action, item.label);
+        }
+        html += '</div></div>';
+    }
+    html += '</div></section>';
+    return html;
+}
+
+function _dialogActionShortLabel(action) {
+    if (!action) return 'Action';
+    const type = String(action.type || '');
+    const label = String(action.label || '');
+    if (type === 'open_agent_log') return 'Session Log';
+    if (type === 'view_claude_log') return 'Claude Log';
+    if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
+    if (type === 'open_review_feedback') return 'Review Feedback';
+    if (type === 'open_session_diagnostics') return 'Diagnostics';
+    if (type === 'open_path') {
+        const normalized = label.replace(/^Open\s+/i, '').replace(/\s+↗$/, '').trim();
+        if (/^completion$/i.test(normalized)) return 'Completion Record';
+        if (/^validation$/i.test(normalized)) return 'Validation Record';
+        if (/^run dir$/i.test(normalized)) return 'Run Directory';
+        return normalized || 'Path';
+    }
+    return label || 'Action';
+}
+
+function renderDialogActionWithLabel(action, labelOverride = null) {
+    return _renderDialogActionButton(action, labelOverride, 'btn-secondary');
+}
+
+function renderDialogActionMenuItem(action, labelOverride = null) {
+    return _renderDialogActionButton(action, labelOverride, 'diag-more-item');
+}
+
+function _renderDialogActionButton(action, labelOverride, cssClass) {
     if (!action) return '';
-    const label = escapeHtml(action.label || 'Action');
+    const label = escapeHtml(labelOverride || action.label || 'Action');
     const runDirArg = action.run_dir ? `, ${JSON.stringify(String(action.run_dir))}` : '';
     if (action.type === 'open_path') {
-        return `<button class="btn-secondary" onclick="openPath('${escapeHtml(action.path)}')">${label}</button>`;
+        return `<button class="${cssClass}" onclick="openPath('${escapeHtml(action.path)}')">${label}</button>`;
     }
     if (action.type === 'open_agent_log') {
-        return `<button class="btn-secondary" onclick="openAgentLog(${action.issue_number}, 'Most Recent Session Log'${runDirArg})">${label}</button>`;
+        const runDirFirstArg = action.run_dir ? `${JSON.stringify(String(action.run_dir))}, ` : 'null, ';
+        return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'Most Recent Session Log')">${label}</button>`;
     }
     if (action.type === 'view_claude_log') {
-        return `<button class="btn-secondary" onclick="viewClaudeLog(${action.issue_number}${runDirArg})">${label}</button>`;
+        return `<button class="${cssClass}" onclick="viewClaudeLog(${action.issue_number}${runDirArg})">${label}</button>`;
     }
     if (action.type === 'open_orchestrator_log') {
-        return `<button class="btn-secondary" onclick="openFilteredOrchestratorLog(${action.issue_number}${runDirArg})">${label}</button>`;
+        return `<button class="${cssClass}" onclick="openFilteredOrchestratorLog(${action.issue_number}${runDirArg})">${label}</button>`;
+    }
+    if (action.type === 'open_review_feedback') {
+        return `<button class="${cssClass}" onclick="openReviewFeedback(${action.issue_number})">${label}</button>`;
+    }
+    if (action.type === 'open_session_diagnostics') {
+        return `<button class="${cssClass}" onclick="openSessionManifest(${action.issue_number}${runDirArg})">${label}</button>`;
     }
     return '';
+}
+
+function toggleDiagMoreMenu(event, button) {
+    event.stopPropagation();
+    const wrap = button.closest('.diag-more-wrap');
+    if (!wrap) return;
+    const menu = wrap.querySelector('.diag-more-menu');
+    if (!menu) return;
+
+    const currentlyVisible = menu.classList.contains('visible');
+    closeDiagMoreMenus();
+    if (!currentlyVisible) {
+        menu.classList.add('visible');
+        document.addEventListener('click', closeDiagMoreMenus, { once: true });
+    }
+}
+
+function closeDiagMoreMenus() {
+    document.querySelectorAll('.diag-more-menu.visible').forEach(menu => {
+        menu.classList.remove('visible');
+    });
 }
 
 async function sendAgentInput(issueNumber) {
@@ -802,9 +911,9 @@ async function handleClick(row) {
     if (action === 'focus') {
         if (terminalBackend === 'subprocess') {
             try {
-                await openAgentLog(issueNumber);
+                await openSessionManifest(issueNumber);
             } catch (err) {
-                showToast('Failed to open agent log', 'error');
+                showToast('Failed to open session diagnostics', 'error');
             }
             return;
         }
@@ -2789,7 +2898,7 @@ if (contextMenuEnabled) {
         contextMenu.classList.remove('visible');
         if (currentRow) {
             const issueNumber = currentRow.dataset.issue;
-            await openAgentLog(issueNumber);
+            await openSessionManifest(issueNumber);
         }
     });
 
@@ -3168,6 +3277,7 @@ function _renderJourneyRuns(container, allRuns) {
     const isLatestRun = journeyFilter === 'latest-run';
     const isAll = journeyFilter === 'all';
     const issueNum = issueDetailData ? issueDetailData.issue_number : null;
+    const timelineDiagnostic = issueDetailData?.summary?.timeline_diagnostic || null;
 
     let html = `<div class="journey-filter">
         <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" onclick="setJourneyFilter('latest-run')" title="Show the current run (all cycles in the latest lifecycle)">Latest run</button>
@@ -3176,7 +3286,14 @@ function _renderJourneyRuns(container, allRuns) {
     </div>`;
 
     if (runs.length === 0) {
-        html += '<div class="timeline-empty">No activity recorded.</div>';
+        if (timelineDiagnostic && timelineDiagnostic.state === 'expected_history_missing') {
+            const signals = Array.isArray(timelineDiagnostic.signals) ? timelineDiagnostic.signals.join(', ') : 'unknown';
+            const store = timelineDiagnostic.expected_timeline_store || 'unknown';
+            html += `<div class="timeline-empty">Timeline data missing (signals: ${escapeHtml(signals)}).</div>`;
+            html += `<div class="timeline-empty">Expected timeline store: <code>${escapeHtml(store)}</code></div>`;
+        } else {
+            html += '<div class="timeline-empty">No activity recorded.</div>';
+        }
         container.innerHTML = html;
         return;
     }
@@ -3255,15 +3372,26 @@ function _renderJourneyRuns(container, allRuns) {
     // Wire up delegated click handler for action buttons inside journey steps
     if (!container.dataset.journeyActionsBound) {
         container.addEventListener('click', (event) => {
-            const actionTarget = event.target.closest('.timeline-action-btn');
+            const actionTarget = event.target.closest('.timeline-action-btn, .timeline-more-item');
             if (actionTarget && actionTarget.dataset.action) {
                 try {
                     const action = JSON.parse(actionTarget.dataset.action);
+                    closeTimelineEventMenus();
                     runTimelineEventAction(action);
                 } catch (err) {
                     console.error('Failed to parse run action:', err);
                     showToast('Unable to execute action', 'error');
                 }
+                return;
+            }
+            const menuTrigger = event.target.closest('.timeline-event-menu-trigger');
+            if (menuTrigger) {
+                const ownerMenu = menuTrigger.closest('.timeline-event-menu');
+                closeTimelineEventMenus(ownerMenu);
+                return;
+            }
+            if (!event.target.closest('.timeline-event-menu')) {
+                closeTimelineEventMenus();
             }
         });
         container.dataset.journeyActionsBound = 'true';
@@ -3279,6 +3407,7 @@ function _cycleOutcomeClass(outcome) {
 }
 
 function toggleJourneyCycle(cycleId) {
+    closeTimelineEventMenus();
     const cycleNode = document.getElementById(cycleId);
     const body = document.getElementById(cycleId + '-body');
     if (!body || !cycleNode) return;
@@ -3289,6 +3418,7 @@ function toggleJourneyCycle(cycleId) {
 }
 
 function toggleArtifactPopover(runIndex, cycleIndex, issueNumber) {
+    closeTimelineEventMenus();
     // Close any existing popover
     const existing = document.querySelector('.journey-artifact-popover');
     if (existing) {
@@ -3309,10 +3439,13 @@ function toggleArtifactPopover(runIndex, cycleIndex, issueNumber) {
     const artifacts = cycleData.artifacts || {};
     let items = '';
 
+    const cycleRunDir = cycleData.run_dir || null;
+
     if (artifacts.log_url) {
         items += `<a href="${escapeHtml(artifacts.log_url)}" target="_blank" rel="noopener noreferrer">View log transcript</a>`;
     } else if (issueNumber) {
-        items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openAgentLog(${issueNumber})">View log transcript</a>`;
+        const runDirArg = cycleRunDir ? `${JSON.stringify(String(cycleRunDir))}, ` : 'null, ';
+        items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openAgentLogAction(${issueNumber}, ${runDirArg}'Cycle Session Log')">View log transcript</a>`;
     }
 
     if (artifacts.pr_url) {
@@ -3325,7 +3458,8 @@ function toggleArtifactPopover(runIndex, cycleIndex, issueNumber) {
     }
 
     if (issueNumber) {
-        items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openDiagnoseFromCycle(${issueNumber})">Diagnose</a>`;
+        const diagnoseArg = cycleRunDir ? `, ${JSON.stringify(String(cycleRunDir))}` : '';
+        items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openDiagnoseFromCycle(${issueNumber}${diagnoseArg})">Diagnose</a>`;
     }
 
     if (!items) return;
@@ -3362,8 +3496,12 @@ function closeArtifactPopover() {
     document.removeEventListener('keydown', _closePopoverOnEscape);
 }
 
-function openDiagnoseFromCycle(issueNumber) {
-    // Reuse existing failure-diagnosis endpoint
+function openDiagnoseFromCycle(issueNumber, runDir = null) {
+    // Route to run-scoped diagnostics when available.
+    if (runDir) {
+        openSessionManifest(issueNumber, runDir);
+        return;
+    }
     openTimelineModal(issueNumber);
 }
 
@@ -3441,10 +3579,26 @@ async function openReviewFeedback(issueNumber) {
             return;
         }
 
-        // No local feedback — try to show the reviewer's completion summary from events
+        // No local feedback — use timeline events for the requested issue.
+        let detailForIssue = null;
+        if (issueDetailData && issueDetailData.issue_number === issueNumber) {
+            detailForIssue = issueDetailData;
+        } else {
+            const detailRes = await fetch(`/api/issue-detail/${issueNumber}`);
+            if (detailRes.ok) {
+                detailForIssue = await detailRes.json();
+            }
+        }
+
+        // Fall back to currently loaded drawer detail if it matches and fetch did not resolve.
+        if (!detailForIssue && issueDetailData && issueDetailData.issue_number === issueNumber) {
+            detailForIssue = issueDetailData;
+        }
+
+        // Try to show the reviewer's completion summary from events
         let html = '';
-        if (issueDetailData) {
-            const events = issueDetailData.events || [];
+        if (detailForIssue) {
+            const events = detailForIssue.events || [];
             const reviewEvents = events.filter(e =>
                 e.event === 'review.changes_requested' ||
                 e.event === 'review.approved' ||
@@ -3684,23 +3838,64 @@ function renderTimelineArtifacts(artifacts) {
 
 function renderTimelineEventActions(actions) {
     if (!actions || actions.length === 0) return '';
-    let diagnosticsDividerInserted = false;
-    const items = actions.map(action => {
-        let prefix = '';
-        if (!diagnosticsDividerInserted && action.type === 'open_session_diagnostics') {
-            prefix = '<div class="timeline-action-divider" role="separator" aria-hidden="true"></div>';
-            diagnosticsDividerInserted = true;
-        }
+    const normalized = actions.map(action => ({ action, label: _timelineActionShortLabel(action) }));
+    const primaryTypes = ['open_agent_log', 'view_claude_log', 'open_review_feedback'];
+    const primary = [];
+    const seen = new Set();
+    for (const type of primaryTypes) {
+        const item = normalized.find(candidate => String(candidate.action?.type || '') === type);
+        if (!item) continue;
+        primary.push(item);
+        seen.add(item);
+    }
+    const secondary = normalized.filter(item => !seen.has(item));
+
+    const renderBtn = (action, label, cssClass = 'timeline-action-btn') => {
         const payload = escapeAttr(JSON.stringify(action));
-        const label = escapeHtml(action.label || 'Action');
-        return `${prefix}<button type="button" class="timeline-action-btn" data-action="${payload}">${label}</button>`;
-    }).join('');
+        return `<button type="button" class="${cssClass}" data-action="${payload}">${escapeHtml(label)}</button>`;
+    };
+
+    const primaryItems = primary.map(item => renderBtn(item.action, item.label)).join('');
+    const secondaryItems = secondary.map(item => renderBtn(item.action, item.label, 'timeline-more-item')).join('');
+    const more = secondaryItems
+        ? `<details class="timeline-more-menu"><summary class="timeline-more-trigger">More ▾</summary><div class="timeline-more-items">${secondaryItems}</div></details>`
+        : '';
+
     return `
         <details class="timeline-event-menu">
             <summary class="timeline-event-menu-trigger" title="Open actions menu" aria-label="Open actions menu">⋯</summary>
-            <div class="timeline-event-menu-items">${items}</div>
+            <div class="timeline-event-menu-items">${primaryItems}${more}</div>
         </details>
     `;
+}
+
+function _timelineActionShortLabel(action) {
+    if (!action) return 'Action';
+    const type = String(action.type || '');
+    const label = String(action.label || '').trim();
+    if (type === 'open_agent_log') return 'Session Log';
+    if (type === 'view_claude_log') return 'Claude Log';
+    if (type === 'open_review_feedback') return 'Review Feedback';
+    if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
+    if (type === 'open_session_diagnostics') return 'Diagnostics';
+    if (type === 'open_path') {
+        const normalized = label.replace(/^Open\s+/i, '').replace(/\s+↗$/, '').trim();
+        if (/^completion$/i.test(normalized)) return 'Completion Record';
+        if (/^validation$/i.test(normalized)) return 'Validation Record';
+        if (/^run dir$/i.test(normalized)) return 'Run Directory';
+        return normalized || 'Path';
+    }
+    return label || 'Action';
+}
+
+function closeTimelineEventMenus(exceptMenu = null) {
+    document.querySelectorAll('.timeline-event-menu[open]').forEach(menu => {
+        if (exceptMenu && menu === exceptMenu) return;
+        menu.removeAttribute('open');
+    });
+    document.querySelectorAll('.timeline-more-menu[open]').forEach(menu => {
+        menu.removeAttribute('open');
+    });
 }
 
 function runTimelineEventAction(action) {
@@ -3719,7 +3914,7 @@ function runTimelineEventAction(action) {
     }
     if (action.type === 'open_agent_log' && action.issue_number) {
         const label = action.label ? String(action.label).replace(/^View\s+/, '') : 'Most Recent Session Log';
-        openAgentLog(action.issue_number, label, action.run_dir || null);
+        openAgentLogAction(action.issue_number, action.run_dir || null, label);
         return;
     }
     if (action.type === 'view_claude_log' && action.issue_number) {
@@ -3731,7 +3926,7 @@ function runTimelineEventAction(action) {
         return;
     }
     if (action.type === 'open_session_diagnostics' && action.issue_number) {
-        openSessionManifest(action.issue_number);
+        openSessionManifest(action.issue_number, action.run_dir || null);
         return;
     }
     showToast(`Unsupported timeline action: ${action.type}`, 'error');
@@ -3755,7 +3950,7 @@ function formatTimestamp(timestamp) {
 function openPhaseDetails() {
     if (currentPhaseData && currentPhaseData.run_dir) {
         // Open the session manifest modal with this specific run
-        openSessionManifest(currentPhaseIssue);
+        openSessionManifest(currentPhaseIssue, currentPhaseData.run_dir);
         closePhaseModal();
     }
 }
@@ -4213,8 +4408,8 @@ function renderDiagnosis(issueNumber, data) {
 
     // View log button - uses sanitized viewer
     html += `
-        <button class="open-log-btn" onclick="openAgentLog(${issueNumber})">
-            View Most Recent Session Log
+        <button class="open-log-btn" onclick="openSessionManifest(${issueNumber})">
+            Open Session Diagnostics
         </button>
     `;
 
@@ -4256,13 +4451,7 @@ async function openFilteredOrchestratorLog(issueNumber, runDir = null) {
         const res = await fetch(`/api/session/orchestrator-log/${issueNumber}${suffix}`);
         const data = await res.json();
         if (data.error) {
-            // Fall back to full log if available
-            if (data.full_log_path) {
-                showToast('Could not filter issue log, opening full orchestrator log ↗', 'error');
-                openPath(data.full_log_path);
-            } else {
-                showToast(data.error, 'error');
-            }
+            showToast(data.error, 'error');
             return;
         }
         openPath(data.filtered_log_path);
@@ -4273,10 +4462,14 @@ async function openFilteredOrchestratorLog(issueNumber, runDir = null) {
 
 // Claude Log Viewer
 async function viewClaudeLog(issueNumber, runDir = null) {
+    if (!runDir) {
+        showToast('Claude log requires run context. Open from a timeline entry.', 'error');
+        return;
+    }
     try {
         showToast('Loading Claude log...');
         const params = new URLSearchParams({ limit: '500' });
-        if (runDir) params.set('run_dir', runDir);
+        params.set('run_dir', runDir);
         const res = await fetch(`/api/session/claude-log/${issueNumber}?${params.toString()}`);
         const data = await res.json();
         if (data.error) {

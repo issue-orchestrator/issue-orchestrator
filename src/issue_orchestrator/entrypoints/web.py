@@ -55,6 +55,19 @@ from ..contracts.ui_openapi_models import (
     IssueRowPayload,
 )
 from ..control.queue_cache import QueueCache, QueueMutationStatus
+from ..execution.manifest_accessor import (
+    ArtifactNotFoundError,
+    ManifestAccessor,
+    RunIdentity,
+)
+from ..domain.event_taxonomy import (
+    EventIntent,
+    is_review_oriented_event,
+    is_rework_event_name,
+    is_review_event_name,
+    is_session_event_name,
+)
+from ..timeline import MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
@@ -79,6 +92,7 @@ class IssueSessionContext:
     worktree_path: Path | None = None
     session_name: str | None = None
     run_dir: Path | None = None
+
 
 # Pattern to match ANSI escape sequences and control characters:
 # - \x1b[...m (SGR - colors, bold, etc.)
@@ -580,9 +594,12 @@ async def get_doctor_dialog() -> DoctorDialogPayload | JSONResponse:
 
 
 @app.get("/api/dialog/session-diagnostics/{issue_number}", response_model=SessionDiagnosticsDialogPayload)
-async def get_session_diagnostics_dialog(issue_number: int) -> SessionDiagnosticsDialogPayload | JSONResponse:
+async def get_session_diagnostics_dialog(
+    issue_number: int,
+    run_dir: str | None = None,
+) -> SessionDiagnosticsDialogPayload | JSONResponse:
     """Get view model for session diagnostics dialog."""
-    response = await get_session_manifest(issue_number)
+    response = await get_session_manifest(issue_number, run_dir=run_dir)
     if response.status_code != 200:
         return response
     payload = _response_json(response)
@@ -1082,45 +1099,26 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..execution.session_output_adapter import FileSystemSessionOutput
-
-    context = _resolve_issue_session_context(issue_number)
-    worktree_path = context.worktree_path
-    session_name = context.session_name
-    resolved_run_dir = context.run_dir
-    if run_dir:
-        candidate = Path(run_dir)
-        if candidate.exists():
-            resolved_run_dir = candidate
-            inferred_worktree = _worktree_path_from_run_dir(candidate)
-            if inferred_worktree:
-                worktree_path = inferred_worktree
-            session_name = FileSystemSessionOutput().session_name_from_path(str(candidate))
-    if not worktree_path:
+    if not run_dir:
         return JSONResponse({
-            "error": f"No worktree path found for issue #{issue_number}",
-            "hint": "Session may have been cleaned up or never started"
-        }, status_code=404)
+            "error": "run_dir is required",
+            "hint": "Open logs from a run-scoped timeline action.",
+        }, status_code=400)
 
-    session_output = FileSystemSessionOutput()
-
-    log_path = None
-    if session_name:
-        log_path = session_output.get_log_path(worktree_path, session_name)
-    if not log_path and resolved_run_dir:
-        for candidate_name in ("session.log", "pane.log", "provider-runner/stdout.log"):
-            candidate_path = resolved_run_dir / candidate_name
-            if candidate_path.exists() and candidate_path.stat().st_size > 0:
-                log_path = candidate_path
-                break
-    if not log_path:
-        log_path = session_output.find_latest_session_log_path(worktree_path)
-
-    if not log_path:
+    run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
+    accessor = ManifestAccessor(run_identity)
+    try:
+        artifact = accessor.get_agent_log()
+    except ArtifactNotFoundError as e:
         return JSONResponse({
             "error": "No agent UI log found",
             "hint": "Session may not have started or logging was not enabled",
+            "diagnostic": {
+                "run_dir": str(run_identity.run_dir),
+                "detail": str(e),
+            },
         }, status_code=404)
+    log_path = artifact.path
 
     try:
         all_lines = log_path.read_text(errors="ignore").splitlines()
@@ -1204,20 +1202,31 @@ def _manifest_response(
 
 
 @app.get("/api/session/manifest/{issue_number}")
-async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901, PLR0912 - manifest lookup with multiple path strategies
+async def get_session_manifest(
+    issue_number: int,
+    run_dir: str | None = None,
+) -> JSONResponse:  # noqa: C901, PLR0912 - manifest lookup with multiple path strategies
     """Get the session manifest for an issue."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
+    requested_run_dir = run_dir
     context = _resolve_issue_session_context(issue_number)
     worktree_path = context.worktree_path
     session_name = context.session_name
     run_dir = context.run_dir
 
+    if requested_run_dir:
+        candidate = Path(requested_run_dir)
+        if candidate.exists():
+            run_dir = candidate
+
     if run_dir:
         from ..execution.session_output_adapter import FileSystemSessionOutput
 
         session_output_manager = FileSystemSessionOutput()
+        if not session_name:
+            session_name = session_output_manager.session_name_from_path(str(run_dir))
         session_output_manager.attach_claude_log(run_dir)
         return _manifest_response(run_dir, session_name)
 
@@ -1501,15 +1510,20 @@ def _build_timeline_cycles(events: list[dict[str, Any]]) -> list[dict[str, Any]]
     cycles: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     cycle_number = 0
-    cycle_phases = {"in_progress", "reviewing", "rework", "triage"}
+    cycle_phases = {"in_progress", "reviewing", "rework", "triage", "orchestrator"}
+    cycle_start_events = {"session.started", "rework.started", "review.started", "triage.launching"}
 
     for event in events:
+        event_name = str(event.get("event") or "")
         phase = str(event.get("phase") or "system")
         if phase not in cycle_phases:
             continue
 
+        # Do not start a new cycle from orchestration-only events.
+        if current is None and event_name not in cycle_start_events:
+            continue
+
         # A new session.started event means a new cycle — close the previous one
-        event_name = str(event.get("event") or "")
         if current is not None and event_name == "session.started":
             cycles.append(current)
             current = None
@@ -1645,11 +1659,27 @@ def _resolve_issue_session_context(issue_number: int) -> IssueSessionContext:
 
 def _filter_timeline_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop high-volume low-signal events from timeline payloads."""
-    return [
-        event
-        for event in events
-        if str(event.get("event")) not in _NOISY_TIMELINE_EVENTS
-    ]
+    filtered: list[dict[str, Any]] = []
+    for event in events:
+        event_name = str(event.get("event"))
+        if event_name in _NOISY_TIMELINE_EVENTS and not _is_high_signal_timeline_event(event):
+            continue
+        filtered.append(event)
+    return filtered
+
+
+def _is_high_signal_timeline_event(event: dict[str, Any]) -> bool:
+    """Return True for otherwise-noisy events that affect lifecycle semantics."""
+    event_name = str(event.get("event"))
+    if event_name != "issue.labels_changed":
+        return False
+    removed = event.get("removed")
+    if not isinstance(removed, list):
+        return False
+    return any(
+        isinstance(label, str) and label.split(":", 1)[0] == "pr-pending"
+        for label in removed
+    )
 
 
 def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -> list[dict[str, Any]]:
@@ -1663,13 +1693,14 @@ def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -
 
 def _timeline_event_recommended_actions(
     *,
+    event: dict[str, Any],
     event_name: str,
     issue_number: int,
     agent_log_label: str = "View Most Recent Session Log",
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
     """Add event-specific suggested actions."""
-    if event_name.startswith("review."):
+    if bool(event.get("review_oriented")) or is_review_event_name(event_name):
         add_action(
             {"type": "open_review_feedback", "label": "View Review Feedback", "issue_number": issue_number},
             f"review-feedback:{issue_number}",
@@ -1769,9 +1800,17 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
     event_name = str(event.get("event") or "")
     agent_log_label = _agent_log_label_for_event(event)
     event_run_dir = str(event.get("run_dir") or "")
+    timeline_schema_version_raw = event.get("timeline_schema_version")
+    timeline_schema_version = timeline_schema_version_raw if isinstance(timeline_schema_version_raw, int) else 0
+    run_scoped_action_types = {
+        "open_agent_log",
+        "view_claude_log",
+    }
 
     def _add_action(action: dict[str, Any], dedupe_value: str) -> None:
         action_type = str(action.get("type") or "")
+        if action_type in run_scoped_action_types and not event_run_dir:
+            return
         if event_run_dir and action_type in {
             "open_agent_log",
             "view_claude_log",
@@ -1785,7 +1824,40 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
         seen.add(key)
         actions.append(action)
 
+    if timeline_schema_version < MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION:
+        _add_action(
+            {
+                "type": "open_session_diagnostics",
+                "label": f"Unsupported Timeline Event Version v{timeline_schema_version} (Diagnostics…)",
+                "issue_number": issue_number,
+            },
+            f"unsupported-version:{issue_number}:{event_name}:{timeline_schema_version}",
+        )
+        logger.warning(
+            "Timeline event has unsupported schema version: issue=%s event=%s version=%s",
+            issue_number,
+            event_name,
+            timeline_schema_version,
+        )
+        return actions
+
+    if _timeline_event_requires_run_dir(event) and not event_run_dir:
+        _add_action(
+            {
+                "type": "open_session_diagnostics",
+                "label": "Run Context Missing (Diagnostics…)",
+                "issue_number": issue_number,
+            },
+            f"missing-run-dir:{issue_number}:{event_name}",
+        )
+        logger.warning(
+            "Timeline event missing run_dir for run-scoped event: issue=%s event=%s",
+            issue_number,
+            event_name,
+        )
+
     _timeline_event_recommended_actions(
+        event=event,
         event_name=event_name,
         issue_number=issue_number,
         agent_log_label=agent_log_label,
@@ -1804,15 +1876,27 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
     return actions
 
 
+def _timeline_event_requires_run_dir(event: dict[str, Any]) -> bool:
+    """Return True when a timeline event is expected to be tied to a run directory."""
+    event_name = str(event.get("event") or "")
+    return (
+        event_name in _TIMELINE_START_EVENTS
+        or is_session_event_name(event_name)
+        or bool(event.get("review_oriented"))
+        or is_rework_event_name(event_name)
+    )
+
+
 def _agent_log_label_for_event(event: dict[str, Any]) -> str:
     """Describe which session log the user will see for this event."""
     event_name = str(event.get("event") or "")
     task = str(event.get("task") or "").strip().lower()
-    if event_name.startswith("review.") or task == "review":
+    intent = str(event.get("event_intent") or "")
+    if intent == EventIntent.REVIEW.value or bool(event.get("review_oriented")) or is_review_oriented_event(event_name=event_name, task=task):
         return "View Reviewer Session Log"
-    if event_name.startswith("rework.") or task == "rework":
+    if intent == EventIntent.REWORK.value or is_rework_event_name(event_name) or task == "rework":
         return "View Rework Session Log"
-    if event_name.startswith("session.") or task in {"code", "coding"}:
+    if intent == EventIntent.CODING.value or is_session_event_name(event_name) or task in {"code", "coding"}:
         return "View Coding Session Log"
     return "View Most Recent Session Log"
 
@@ -1826,14 +1910,6 @@ def _worktree_path_from_run_dir(run_dir: Path) -> Path | None:
     if idx <= 0:
         return None
     return Path(*parts[:idx])
-
-
-def _claude_projects_dir_for_worktree(worktree_path: Path) -> Path:
-    """Return ~/.claude/projects path for a worktree."""
-    escaped = str(worktree_path).replace("/", "-")
-    if not escaped.startswith("-"):
-        escaped = f"-{escaped}"
-    return Path.home() / ".claude" / "projects" / escaped
 
 
 def _issue_title_for(issue_number: int) -> str:
@@ -1942,8 +2018,7 @@ async def get_filtered_orchestrator_log(issue_number: int, run_dir: str | None =
 
     if not tail_path:
         return JSONResponse({
-            "error": "Could not generate filtered log",
-            "full_log_path": str(log_path),
+            "error": f"No issue-scoped orchestrator log entries found for issue #{issue_number}",
         }, status_code=500)
 
     return JSONResponse({
@@ -1963,70 +2038,25 @@ async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval
     """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    from ..domain.run_manifest import RunManifest
-    from ..execution.session_output_adapter import FileSystemSessionOutput
-
-    session_output_mgr = FileSystemSessionOutput()
-
-    context = _resolve_issue_session_context(issue_number)
-    resolved_run_dir = context.run_dir
-    resolved_worktree_path = context.worktree_path
-    if run_dir:
-        candidate = Path(run_dir)
-        if candidate.exists():
-            resolved_run_dir = candidate
-            inferred_worktree = _worktree_path_from_run_dir(candidate)
-            if inferred_worktree:
-                resolved_worktree_path = inferred_worktree
-
-    if not resolved_run_dir:
-        return JSONResponse({"error": f"No session found for issue #{issue_number}"}, status_code=404)
-
-    # Get claude_log_path from manifest via RunManifest
+    if not run_dir:
+        return JSONResponse({
+            "error": "run_dir is required",
+            "hint": "Open Claude log from a run-scoped timeline action.",
+        }, status_code=400)
+    run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
+    accessor = ManifestAccessor(run_identity)
     try:
-        manifest = RunManifest.load(resolved_run_dir)
-    except FileNotFoundError:
-        return JSONResponse({"error": "Session manifest not found"}, status_code=404)
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
-
-    claude_log_path = manifest.claude_log_path
-    if not claude_log_path:
-        attached = session_output_mgr.attach_claude_log(resolved_run_dir)
-        if attached:
-            claude_log_path = str(attached)
-
-    if not claude_log_path and resolved_worktree_path:
-        claude_projects = _claude_projects_dir_for_worktree(resolved_worktree_path)
-        if claude_projects.exists():
-            jsonl_files = sorted(
-                claude_projects.glob("*.jsonl"),
-                key=lambda f: f.stat().st_mtime,
-                reverse=True,
-            )
-            if jsonl_files:
-                claude_log_path = str(jsonl_files[0])
-                session_output_mgr.update_manifest(
-                    resolved_run_dir,
-                    {
-                        "claude_log_path": claude_log_path,
-                        "claude_log_dir": str(claude_projects),
-                    },
-                )
-
-    if not claude_log_path:
+        artifact = accessor.get_claude_log()
+    except ArtifactNotFoundError as e:
         return JSONResponse(
             {
-                "error": "No Claude log path in manifest",
-                "run_dir": str(resolved_run_dir),
+                "error": "Claude log not found",
+                "run_dir": str(run_identity.run_dir),
+                "detail": str(e),
             },
             status_code=404,
         )
-
-    log_path = Path(claude_log_path)
-    if not log_path.exists():
-        return JSONResponse({"error": f"Claude log file not found: {claude_log_path}"}, status_code=404)
+    log_path = artifact.path
 
     # Parse JSONL file
     entries = []
@@ -2049,7 +2079,7 @@ async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval
     return JSONResponse({
         "log_path": str(log_path),
         "issue_number": issue_number,
-        "run_dir": str(resolved_run_dir),
+        "run_dir": str(run_identity.run_dir),
         "entry_count": len(entries),
         "entries": entries,
     })
