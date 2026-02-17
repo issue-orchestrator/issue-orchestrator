@@ -26,10 +26,30 @@ def jinja_env() -> Environment:
 
 
 @dataclass
+class _MockProviderResilience:
+    """Mock provider resilience manager for tests."""
+
+    def is_open(self, provider: str, now: datetime | None = None) -> bool:  # pylint: disable=unused-argument
+        """Always return False for tests."""
+        return False
+
+    def list_circuit_states(self) -> list:
+        """Return empty list for tests."""
+        return []
+
+
+@dataclass
 class OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+
+    def __post_init__(self) -> None:
+        self.provider_resilience = _MockProviderResilience()
+
+    def get_provider_circuit_states(self) -> list:
+        """Return empty list of provider circuit states for tests."""
+        return []
 
 
 def make_config() -> Config:

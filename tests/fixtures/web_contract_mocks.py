@@ -1,10 +1,23 @@
 """Shared mocks for web contract tests."""
 
+from datetime import datetime
 from pathlib import Path
 
 from issue_orchestrator.domain.models import AgentConfig, OrchestratorState
 from issue_orchestrator.events import EventHub
 from issue_orchestrator.infra.config import Config
+
+
+class MockProviderResilienceManager:
+    """Mock provider resilience manager for tests."""
+
+    def is_open(self, provider: str, now: datetime | None = None) -> bool:  # pylint: disable=unused-argument
+        """Always return False for tests."""
+        return False
+
+    def list_circuit_states(self) -> list:
+        """Return empty list for tests."""
+        return []
 
 
 class MockOrchestratorForWeb:
@@ -26,6 +39,7 @@ class MockOrchestratorForWeb:
         self.config = self._create_mock_config()
         self._shutdown_requested = False
         self._event_hub = EventHub()
+        self.provider_resilience = MockProviderResilienceManager()
 
     @property
     def event_hub(self) -> EventHub:
@@ -87,3 +101,7 @@ class MockOrchestratorForWeb:
             "warnings": [],
             "suggestions": [],
         }
+
+    def get_provider_circuit_states(self) -> list:
+        """Return empty list of provider circuit states for mock."""
+        return []

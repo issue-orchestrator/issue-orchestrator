@@ -26,11 +26,30 @@ from issue_orchestrator.view_models.dashboard import (
 from issue_orchestrator.contracts.public import DashboardViewModelContract
 
 
+class _MockProviderResilience:
+    """Mock provider resilience manager for unit tests."""
+
+    def is_open(self, provider: str, now: datetime | None = None) -> bool:  # pylint: disable=unused-argument
+        """Always return False for tests."""
+        return False
+
+    def list_circuit_states(self) -> list:
+        """Return empty list for tests."""
+        return []
+
+
 @dataclass
 class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+
+    def __post_init__(self) -> None:
+        self.provider_resilience = _MockProviderResilience()
+
+    def get_provider_circuit_states(self) -> list:
+        """Return empty list of provider circuit states for tests."""
+        return []
 
 
 def _make_config() -> Config:
@@ -470,7 +489,8 @@ def test_view_model_includes_provider_circuits():
             self.config = config
             self.deps = deps
             self.shutdown_requested = False
-        
+            self.provider_resilience = deps.provider_resilience
+
         def get_provider_circuit_states(self):
             return self.deps.provider_resilience.list_circuit_states()
 
@@ -502,6 +522,12 @@ def test_view_model_includes_provider_circuits():
                     self.store = store
                 def list_circuit_states(self):
                     return self.store.list_all()
+                def is_open(self, provider: str, now: datetime | None = None) -> bool:
+                    state = self.store.get(provider)
+                    if state is None or state.open_until is None:
+                        return False
+                    now = now or datetime.now(timezone.utc)
+                    return state.open_until > now
             self.provider_resilience = MockProviderResilience(circuit_store)
 
     orchestrator = OrchestratorWithDeps(
@@ -533,9 +559,8 @@ def test_view_model_includes_provider_circuits():
     assert github_circuit["is_open"] is False
     assert github_circuit["open_until"] is None
 
-    # Verify the data is in dashboard_data
-    dashboard_data = view_model.dashboard_data()
-    assert "providerCircuits" in dashboard_data
-    assert "openCircuits" in dashboard_data
-    assert len(dashboard_data["openCircuits"]) == 1
-    assert dashboard_data["openCircuits"][0]["provider"] == "claude"
+    # Verify provider circuits are accessible at the top level of the view model
+    # (not in dashboard_data, which contains only the public HTTP contract fields)
+    open_circuits = [c for c in view_model.provider_circuits if c.get("is_open")]
+    assert len(open_circuits) == 1
+    assert open_circuits[0]["provider"] == "claude"

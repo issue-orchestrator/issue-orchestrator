@@ -110,7 +110,6 @@ class DashboardViewModel:
 
     def dashboard_data(self) -> dict[str, Any]:
         github_usage = gh_audit.get_live_usage_snapshot()
-        open_circuits = [c for c in self.provider_circuits if c.get("is_open")]
         return {
             "startupComplete": self.startup_status == "complete",
             "paused": self.paused,
@@ -125,8 +124,6 @@ class DashboardViewModel:
             "scope": self.scope_summary,
             "refresh": self.scope_summary.get("refresh", {}),
             "githubUsage": github_usage,
-            "providerCircuits": self.provider_circuits,
-            "openCircuits": open_circuits,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
         }
@@ -1214,21 +1211,18 @@ def build_dashboard_view_model(
 
     # Build provider circuit status list
     provider_circuits: list[dict[str, Any]] = []
-    if orchestrator and hasattr(orchestrator, "get_provider_circuit_states"):
-        try:
-            now = datetime.now(timezone.utc)
-            for circuit_state in orchestrator.get_provider_circuit_states():
-                is_open = circuit_state.open_until is not None and circuit_state.open_until > now
-                provider_circuits.append({
-                    "provider": circuit_state.provider,
-                    "is_open": is_open,
-                    "open_until": circuit_state.open_until.isoformat() if circuit_state.open_until else None,
-                    "consecutive_outages": circuit_state.consecutive_outages,
-                    "last_error_summary": circuit_state.last_error_summary,
-                    "updated_at": circuit_state.updated_at.isoformat(),
-                })
-        except (AttributeError, TypeError):
-            pass
+    if orchestrator:
+        now = datetime.now(timezone.utc)
+        for circuit_state in orchestrator.get_provider_circuit_states():
+            is_open = orchestrator.provider_resilience.is_open(circuit_state.provider, now)
+            provider_circuits.append({
+                "provider": circuit_state.provider,
+                "is_open": is_open,
+                "open_until": circuit_state.open_until.isoformat() if circuit_state.open_until else None,
+                "consecutive_outages": circuit_state.consecutive_outages,
+                "last_error_summary": circuit_state.last_error_summary,
+                "updated_at": circuit_state.updated_at.isoformat(),
+            })
 
     return DashboardViewModel(
         issues=issues,
