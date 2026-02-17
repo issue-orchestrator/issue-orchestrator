@@ -10,6 +10,7 @@ if TYPE_CHECKING:
     from ..control.planner import Plan
     from ..control.session_manager import SessionRef, SessionType
     from ..ports.session_runner import DiscoveredSession
+    from ..ports.provider_resilience import ProviderCircuitState
 
 from ..events import EventName, EventContext, EventHub
 from ..control.orchestrator_support import (
@@ -146,7 +147,7 @@ class Orchestrator:
     def state_lock(self) -> threading.RLock:
         return self._state_lock
 
-    def get_provider_circuit_states(self):
+    def get_provider_circuit_states(self) -> list["ProviderCircuitState"]:
         """Get all current provider circuit states for UI display.
 
         Returns a list of circuit states, allowing the view model to access this information
