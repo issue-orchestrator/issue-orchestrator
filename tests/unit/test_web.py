@@ -1319,6 +1319,15 @@ class TestIssueRowsEndpoint:
                 self.config.repo = "test/repo"
                 self.config.repo_root = Path("/tmp/repo")
                 self.shutdown_requested = False
+                # Mock provider resilience for provider circuit state access
+                self.provider_resilience = SimpleNamespace(
+                    is_open=lambda provider, now=None: False,
+                    list_circuit_states=lambda: [],
+                )
+
+            def get_provider_circuit_states(self) -> list:
+                """Return empty list of provider circuit states for tests."""
+                return []
 
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())
