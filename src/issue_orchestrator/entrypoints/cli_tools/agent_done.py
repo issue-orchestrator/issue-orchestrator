@@ -124,25 +124,39 @@ def extract_pr_verification_status(pr_body: str) -> tuple[bool, str | None]:
     return (False, None)
 
 
+def _validation_manifest_updates(validation_result: AgentGateResult, record_path: str | None) -> dict[str, str]:
+    """Build manifest fields that summarize validation state."""
+    updates: dict[str, str] = {
+        "validation_status": "passed" if validation_result.passed else "failed",
+    }
+    if record_path:
+        updates["validation_record_path"] = record_path
+    if not validation_result.passed:
+        updates["validation_reason"] = validation_result.reason
+    return updates
+
+
 def _copy_validation_log(
-    session_output: FileSystemSessionOutput,
-    run_dir: Path,
+    *,
     worktree_root: Path,
-    log_path: str | None,
-    log_type: str,
+    run_dir: Path,
+    source_path: str | None,
+    destination_name: str,
+    manifest_key: str,
+    session_output: FileSystemSessionOutput,
 ) -> None:
-    """Copy a validation log file (stdout or stderr) to run directory."""
-    if not log_path:
+    """Copy one validation log artifact into the session run directory."""
+    if not source_path:
         return
-    src = worktree_root / log_path
+    src = worktree_root / source_path
     if not src.exists():
         return
-    dest = run_dir / f"validation-{log_type}.log"
+    dest = run_dir / destination_name
     try:
         dest.write_text(src.read_text(errors="ignore"))
-        session_output.update_manifest(run_dir, {f"validation_{log_type}": str(dest)})
+        session_output.update_manifest(run_dir, {manifest_key: str(dest)})
     except OSError:
-        logger.debug("Failed to write validation %s for %s", log_type, run_dir)
+        logger.debug("Failed to write validation log %s for %s", destination_name, run_dir)
 
 
 def _record_validation_artifacts(
@@ -160,24 +174,31 @@ def _record_validation_artifacts(
 
     session_output = FileSystemSessionOutput()
     run_dir = session_output.ensure_run_dir(worktree_root, session_id)
-    run_dir_record_path = run_dir / "validation-record.json"
-    updates: dict[str, str] = {}
-    if run_dir_record_path.exists():
-        updates["validation_record_path"] = str(run_dir_record_path)
-    elif record_path:
-        updates["validation_record_path"] = record_path
-    updates["validation_status"] = "passed" if validation_result.passed else "failed"
-    if not validation_result.passed:
-        updates["validation_reason"] = validation_result.reason
-
+    run_record_path = run_dir / "validation-record.json"
+    effective_record_path = str(run_record_path) if run_record_path.exists() else record_path
+    updates = _validation_manifest_updates(validation_result, effective_record_path)
     if updates:
         session_output.update_manifest(run_dir, updates)
 
     if not record:
         return
 
-    _copy_validation_log(session_output, run_dir, worktree_root, record.stdout_path, "stdout")
-    _copy_validation_log(session_output, run_dir, worktree_root, record.stderr_path, "stderr")
+    _copy_validation_log(
+        worktree_root=worktree_root,
+        run_dir=run_dir,
+        source_path=record.stdout_path,
+        destination_name="validation-stdout.log",
+        manifest_key="validation_stdout",
+        session_output=session_output,
+    )
+    _copy_validation_log(
+        worktree_root=worktree_root,
+        run_dir=run_dir,
+        source_path=record.stderr_path,
+        destination_name="validation-stderr.log",
+        manifest_key="validation_stderr",
+        session_output=session_output,
+    )
 
 
 def die(message: str) -> NoReturn:
