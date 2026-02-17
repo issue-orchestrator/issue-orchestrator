@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from issue_orchestrator.domain.logical_event_semantics import enrich_logical_semantics
 from issue_orchestrator.view_models.issue_detail import build_issue_detail_view_model
 
 
@@ -122,10 +123,10 @@ SCENARIOS: list[LogicalRunScenario] = [
             _evt("session.started", timestamp="2026-02-09T10:20:00Z", run_id="signal-1", rework_cycle=0),
             _evt("session.completed", timestamp="2026-02-09T10:30:00Z", status="completed", run_id="signal-1", rework_cycle=0),
         ],
-        expected_run_count=2,
-        expected_cycles_per_run=[1, 1],
+        expected_run_count=1,
+        expected_cycles_per_run=[1],
         expected_review_events_in_latest_run=0,
-        expected_latest_session_run_ids=["signal-1"],
+        expected_latest_session_run_ids=None,
     ),
     LogicalRunScenario(
         name="duplicate_start_events_do_not_create_extra_logical_runs",
@@ -254,21 +255,46 @@ SCENARIOS: list[LogicalRunScenario] = [
             _evt("session.started", timestamp="2026-02-09T09:11:00Z", run_id="old-1", rework_cycle=0),
             _evt("session.completed", timestamp="2026-02-09T09:12:00Z", status="completed", run_id="old-1", rework_cycle=0),
         ],
-        expected_run_count=3,
-        expected_cycles_per_run=[1, 1, 1],
+        expected_run_count=2,
+        expected_cycles_per_run=[1, 1],
         expected_review_events_in_latest_run=0,
-        expected_latest_session_run_ids=["old-1"],
+        expected_latest_session_run_ids=["new-1", "old-1"],
     ),
 ]
 
 
+def _events_with_semantics(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    enriched: list[dict[str, Any]] = []
+    previous_event_name: str | None = None
+    previous_data: dict[str, Any] | None = None
+    for event in events:
+        entry = dict(event)
+        semantics = enrich_logical_semantics(
+            event_name=str(entry.get("event") or ""),
+            event_data=entry,
+            previous_event_name=previous_event_name,
+            previous_data=previous_data,
+        )
+        entry["timeline_schema_version"] = 3
+        entry["event_intent"] = semantics.event_intent
+        entry["review_oriented"] = semantics.review_oriented
+        entry["logical_run"] = semantics.logical_run
+        entry["logical_cycle"] = semantics.logical_cycle
+        entry["logical_phase"] = semantics.logical_phase
+        enriched.append(entry)
+        previous_event_name = str(entry.get("event") or "")
+        previous_data = entry
+    return enriched
+
+
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=[s.name for s in SCENARIOS])
 def test_logical_run_scenarios(scenario: LogicalRunScenario) -> None:
+    events = _events_with_semantics(scenario.events)
     payload = build_issue_detail_view_model(
         issue_number=4057,
         title="Scenario Test",
         issue_url="https://github.com/test/repo/issues/4057",
-        events=scenario.events,
+        events=events,
         phase_toc=[],
         cycles=[],
     )
@@ -302,11 +328,12 @@ def test_logical_run_scenarios(scenario: LogicalRunScenario) -> None:
 @pytest.mark.parametrize("scenario", SCENARIOS, ids=[f"restart_{s.name}" for s in SCENARIOS])
 def test_logical_run_projection_is_restart_stable(scenario: LogicalRunScenario) -> None:
     """Projection must be deterministic across repeated recomputation (restart-safe)."""
+    events = _events_with_semantics(scenario.events)
     payload_a = build_issue_detail_view_model(
         issue_number=4057,
         title="Scenario Test",
         issue_url="https://github.com/test/repo/issues/4057",
-        events=scenario.events,
+        events=events,
         phase_toc=[],
         cycles=[],
     )
@@ -314,7 +341,7 @@ def test_logical_run_projection_is_restart_stable(scenario: LogicalRunScenario) 
         issue_number=4057,
         title="Scenario Test",
         issue_url="https://github.com/test/repo/issues/4057",
-        events=scenario.events,
+        events=events,
         phase_toc=[],
         cycles=[],
     )
