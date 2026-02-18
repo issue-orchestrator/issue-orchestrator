@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -19,7 +19,6 @@ from issue_orchestrator.domain.models import (
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.view_models.dashboard import (
-    _apply_lane_precedence,
     _exclude_flow_overlaps,
     _normalize_status_reason,
     build_dashboard_view_model,
@@ -27,11 +26,30 @@ from issue_orchestrator.view_models.dashboard import (
 from issue_orchestrator.contracts.public import DashboardViewModelContract
 
 
+class _MockProviderResilience:
+    """Mock provider resilience manager for unit tests."""
+
+    def is_open(self, provider: str, now: datetime | None = None) -> bool:  # pylint: disable=unused-argument
+        """Always return False for tests."""
+        return False
+
+    def list_circuit_states(self) -> list:
+        """Return empty list for tests."""
+        return []
+
+
 @dataclass
 class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+
+    def __post_init__(self) -> None:
+        self.provider_resilience = _MockProviderResilience()
+
+    def get_provider_circuit_states(self) -> list:
+        """Return empty list of provider circuit states for tests."""
+        return []
 
 
 def _make_config() -> Config:
@@ -84,13 +102,10 @@ def test_view_model_active_session_and_dashboard_data():
     assert view_model.issues == view_model.active_items
     assert view_model.active_items[0]["status"] == "active"
     assert view_model.active_items[0]["flow_stage"] == "review"
-    assert view_model.active_items[0]["card_id"] == "review-12"
     assert view_model.active_items[0]["action_hint"] == "Click to view agent UI log"
     assert view_model.flow_columns
     assert view_model.flow_columns[1]["id"] == "running"
     assert view_model.flow_columns[1]["count"] == 1
-    assert view_model.flow_columns[1]["expandable"] is True
-    assert view_model.flow_columns[1]["items"][0]["card_id"] == "review-12"
 
     dashboard_data = view_model.dashboard_data()
     assert dashboard_data["paused"] is False
@@ -98,43 +113,6 @@ def test_view_model_active_session_and_dashboard_data():
     assert dashboard_data["agents"] == ["agent:web"]
     assert "scope" in dashboard_data
     assert dashboard_data["refresh"]["fetchLayerEnabled"] is True
-
-
-def test_active_item_prefers_canonical_issue_title_over_rework_title():
-    config = _make_config()
-    agent_config = _make_agent_config()
-    config.agents = {"agent:web": agent_config}
-
-    issue = Issue(number=4057, title="Rework #4124", labels=["agent:web", "in-progress"])
-    session_key = SessionKey(issue=FakeIssueKey("4057"), task=TaskKind.REWORK)
-    session = Session(
-        key=session_key,
-        issue=issue,
-        agent_config=agent_config,
-        terminal_id="rework-4057",
-        worktree_path=Path("/tmp/worktree-4057"),
-        branch_name="feature/4057",
-        started_at=datetime.now() - timedelta(minutes=2),
-    )
-
-    state = OrchestratorState(
-        active_sessions=[session],
-        startup_status="complete",
-        cached_queue_issues=[
-            Issue(number=4057, title="UI: Surface provider circuit breaker status", labels=["agent:web"]),
-        ],
-    )
-    orchestrator = _OrchestratorStub(state=state, config=config)
-
-    view_model = build_dashboard_view_model(
-        orchestrator,
-        queue_page=1,
-        active_tab="flow",
-        e2e_page=1,
-        e2e_status_provider=lambda _: {"enabled": False, "running": False},
-    )
-
-    assert view_model.active_items[0]["title"] == "UI: Surface provider circuit breaker status"
 
 
 def test_view_model_queue_and_blocked_items():
@@ -272,72 +250,6 @@ def test_pr_pending_issue_not_shown_in_queued_flow_column():
     assert any(item["issue_number"] == 4072 for item in view_model.awaiting_merge_items)
 
 
-def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
-    config = _make_config()
-    state = OrchestratorState(
-        startup_status="complete",
-        session_history=[
-            SessionHistoryEntry(
-                issue_number=4057,
-                title="Provider circuit breaker dashboard",
-                agent_type="agent:backend",
-                status="completed",
-                runtime_minutes=12,
-                pr_url="https://github.com/test/repo/pull/4124",
-            ),
-        ],
-    )
-    orchestrator = _OrchestratorStub(state=state, config=config)
-
-    view_model = build_dashboard_view_model(
-        orchestrator,
-        queue_page=1,
-        active_tab="kanban",
-        e2e_page=1,
-        e2e_status_provider=lambda _: {"enabled": False, "running": False},
-    )
-
-    assert any(item["issue_number"] == 4057 for item in view_model.awaiting_merge_items)
-    assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
-
-
-def test_completed_history_without_pr_url_does_not_enter_completed_lane():
-    config = _make_config()
-    agent_config = _make_agent_config()
-    config.agents = {"agent:web": agent_config}
-    open_issue = Issue(
-        number=4057,
-        title="Provider circuit breaker dashboard",
-        labels=["agent:web"],
-    )
-    state = OrchestratorState(
-        startup_status="complete",
-        cached_queue_issues=[open_issue],
-        session_history=[
-            SessionHistoryEntry(
-                issue_number=4057,
-                title="Provider circuit breaker dashboard",
-                agent_type="agent:web",
-                status="completed",
-                runtime_minutes=12,
-                pr_url=None,
-            ),
-        ],
-    )
-    orchestrator = _OrchestratorStub(state=state, config=config)
-
-    view_model = build_dashboard_view_model(
-        orchestrator,
-        queue_page=1,
-        active_tab="kanban",
-        e2e_page=1,
-        e2e_status_provider=lambda _: {"enabled": False, "running": False},
-    )
-
-    assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
-    assert any(item["issue_number"] == 4057 for item in view_model.queue_items)
-
-
 def test_view_model_includes_refresh_staleness_meta():
     config = _make_config()
     agent_config = _make_agent_config()
@@ -447,30 +359,6 @@ def test_exclude_flow_overlaps_handles_string_issue_numbers():
     assert result == []
 
 
-def test_lane_precedence_enforces_single_lane_membership():
-    queue_items = [{"issue_number": 1, "title": "Queue 1"}, {"issue_number": 5, "title": "Queue 5"}]
-    active_items = [
-        {"issue_number": 2, "title": "Running 2a"},
-        {"issue_number": 2, "title": "Running 2b"},  # Multiple running cards for same issue are allowed
-    ]
-    blocked_items = [{"issue_number": 2, "title": "Blocked 2"}, {"issue_number": 3, "title": "Blocked 3"}]
-    awaiting_merge_items = [{"issue_number": 3, "title": "Awaiting 3"}, {"issue_number": 4, "title": "Awaiting 4"}]
-    completed_items = [{"issue_number": 1, "title": "Done 1"}, {"issue_number": 4, "title": "Done 4"}, {"issue_number": 6, "title": "Done 6"}]
-
-    queue_out, blocked_out, awaiting_out, completed_out = _apply_lane_precedence(
-        queue_items=queue_items,
-        active_items=active_items,
-        blocked_items=blocked_items,
-        awaiting_merge_items=awaiting_merge_items,
-        completed_items=completed_items,
-    )
-
-    assert [i["issue_number"] for i in blocked_out] == [3]  # #2 suppressed by running
-    assert [i["issue_number"] for i in awaiting_out] == [4]  # #3 suppressed by blocked
-    assert [i["issue_number"] for i in queue_out] == [1, 5]  # unchanged here
-    assert [i["issue_number"] for i in completed_out] == [6]  # #1/#4 suppressed by queue/awaiting
-
-
 def test_normalize_status_reason_drops_sync_noise() -> None:
     assert _normalize_status_reason("Synced 10s ago") is None
     assert _normalize_status_reason(" synced 5m ago ") is None
@@ -513,30 +401,17 @@ def test_view_model_history_dedupes_latest_per_issue():
     assert any(item["status"] == "blocked" for item in combined if item["issue_number"] == 10)
 
 
-def test_completed_excludes_issues_visible_in_running_lane():
+def test_view_model_routes_unclassified_issue_to_blocked_state_drift():
     config = _make_config()
-    agent_config = _make_agent_config()
-    config.agents = {"agent:web": agent_config}
-    issue = Issue(number=12, title="Fix bug", labels=["agent:web"])
-    active_session = Session(
-        key=SessionKey(issue=FakeIssueKey("12"), task=TaskKind.CODE),
-        issue=issue,
-        agent_config=agent_config,
-        terminal_id="issue-12",
-        worktree_path=Path("/tmp/worktree-12"),
-        branch_name="feature/12",
-        started_at=datetime.now() - timedelta(minutes=1),
-    )
     state = OrchestratorState(
         startup_status="complete",
-        active_sessions=[active_session],
         session_history=[
             SessionHistoryEntry(
-                issue_number=12,
-                title="Fix bug",
+                issue_number=4057,
+                title="Publish failed",
                 agent_type="agent:web",
-                status="completed",
-                runtime_minutes=5,
+                status="in_progress",
+                runtime_minutes=8,
             ),
         ],
     )
@@ -550,8 +425,46 @@ def test_completed_excludes_issues_visible_in_running_lane():
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
 
-    assert any(item["issue_number"] == 12 for item in view_model.active_items)
-    assert all(item["issue_number"] != 12 for item in view_model.completed_items)
+    drift_item = next(
+        item for item in view_model.blocked_items
+        if item["issue_number"] == 4057
+    )
+    assert "state-drift" in (drift_item.get("blocked_summary") or "")
+    assert "state-drift" in (drift_item.get("orchestrator_labels") or [])
+
+
+def test_view_model_marks_multi_classified_issue_as_state_drift():
+    config = _make_config()
+    issue = Issue(number=77, title="Conflicting state", labels=["agent:web", "blocked"])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=77,
+                title="Conflicting state",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=3,
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    drift_item = next(
+        item for item in view_model.blocked_items
+        if item["issue_number"] == 77
+    )
+    assert "multi-classified" in (drift_item.get("blocked_summary") or "")
+    assert "state-drift" in (drift_item.get("orchestrator_labels") or [])
 
 
 def test_view_model_e2e_items_from_provider():
@@ -626,3 +539,97 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_includes_provider_circuits():
+    """Test that provider circuit status is included in the view model."""
+    from issue_orchestrator.ports.provider_resilience import ProviderCircuitState, InMemoryProviderCircuitStore
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    # Create a mock orchestrator with provider resilience dependencies
+    class OrchestratorWithDeps:
+        def __init__(self, state, config, deps):
+            self.state = state
+            self.config = config
+            self.deps = deps
+            self.shutdown_requested = False
+            self.provider_resilience = deps.provider_resilience
+
+        def get_provider_circuit_states(self):
+            return self.deps.provider_resilience.list_circuit_states()
+
+        def is_provider_circuit_open(self, provider: str) -> bool:
+            return self.deps.provider_resilience.is_open(provider)
+
+    now = datetime.now(timezone.utc)
+    circuit_store = InMemoryProviderCircuitStore()
+    # Add an open circuit
+    open_state = ProviderCircuitState(
+        provider="claude",
+        open_until=now + timedelta(minutes=30),
+        consecutive_outages=2,
+        last_error_summary="Rate limited",
+        updated_at=now,
+    )
+    circuit_store.save(open_state)
+    # Add a closed circuit
+    closed_state = ProviderCircuitState(
+        provider="github",
+        open_until=None,
+        consecutive_outages=1,
+        last_error_summary="Previous timeout",
+        updated_at=now,
+    )
+    circuit_store.save(closed_state)
+
+    class MockDeps:
+        def __init__(self, circuit_store):
+            class MockProviderResilience:
+                def __init__(self, store):
+                    self.store = store
+                def list_circuit_states(self):
+                    return self.store.list_all()
+                def is_open(self, provider: str, now: datetime | None = None) -> bool:
+                    state = self.store.get(provider)
+                    if state is None or state.open_until is None:
+                        return False
+                    now = now or datetime.now(timezone.utc)
+                    return state.open_until > now
+            self.provider_resilience = MockProviderResilience(circuit_store)
+
+    orchestrator = OrchestratorWithDeps(
+        state=state,
+        config=config,
+        deps=MockDeps(circuit_store),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Verify provider circuits are in the view model
+    assert view_model.provider_circuits is not None
+    assert len(view_model.provider_circuits) == 2
+
+    # Check the open circuit
+    claude_circuit = next(c for c in view_model.provider_circuits if c["provider"] == "claude")
+    assert claude_circuit["is_open"] is True
+    assert claude_circuit["consecutive_outages"] == 2
+    assert claude_circuit["last_error_summary"] == "Rate limited"
+
+    # Check the closed circuit
+    github_circuit = next(c for c in view_model.provider_circuits if c["provider"] == "github")
+    assert github_circuit["is_open"] is False
+    assert github_circuit["open_until"] is None
+
+    # Verify provider circuits are accessible at the top level of the view model
+    # (not in dashboard_data, which contains only the public HTTP contract fields)
+    open_circuits = [c for c in view_model.provider_circuits if c.get("is_open")]
+    assert len(open_circuits) == 1
+    assert open_circuits[0]["provider"] == "claude"

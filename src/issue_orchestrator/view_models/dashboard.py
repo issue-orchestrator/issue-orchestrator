@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import copy
 import json
-import threading
 import time
 from typing import Any, Callable
 
@@ -19,19 +17,6 @@ from ..infra import gh_audit
 
 QUEUE_PAGE_SIZE = 20
 E2E_PAGE_SIZE = 15
-E2E_STATUS_CACHE_TTL_SECONDS = 1.5
-_E2E_STATUS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
-_E2E_STATUS_CACHE_LOCK = threading.Lock()
-
-
-def _e2e_status_cache_key(config: Any) -> str:
-    return f"{str(config.repo_root)}::{config.orchestrator_id}"
-
-
-def invalidate_e2e_status_cache(config: Any) -> None:
-    key = _e2e_status_cache_key(config)
-    with _E2E_STATUS_CACHE_LOCK:
-        _E2E_STATUS_CACHE.pop(key, None)
 
 
 @dataclass(frozen=True)
@@ -80,6 +65,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuits: list[dict[str, Any]]  # Circuit breaker status for providers
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -118,6 +104,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuits": self.provider_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -178,6 +165,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuits": self.provider_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -236,16 +224,6 @@ def blocked_summary(labels: list[str], lm: LabelManager, dependency_summary: str
     if dependency_summary:
         reasons.append(dependency_summary)
     return " • ".join(reasons) if reasons else None
-
-
-def _display_labels(labels: list[str], lm: LabelManager) -> list[str]:
-    """Labels shown as pills in UI cards.
-
-    Include orchestrator-owned labels and agent routing labels.
-    """
-    visible = set(lm.get_ours(labels))
-    visible.update(label for label in labels if label.startswith("agent:"))
-    return sorted(visible)
 
 
 def _relative_time(dt_str: str) -> str:
@@ -355,28 +333,6 @@ def _pending_issue_numbers(state) -> dict[str, set[int]]:
     }
 
 
-def _is_synthetic_session_title(title: str) -> bool:
-    normalized = title.strip()
-    return (
-        normalized.startswith("Review PR #")
-        or normalized.startswith("Rework #")
-        or normalized.startswith("Rework PR #")
-    )
-
-
-def _canonical_issue_title(state, issue_number: int, fallback_title: str) -> str:
-    for issue in state.cached_queue_issues:
-        if issue.number == issue_number and issue.title:
-            return issue.title
-    for entry in reversed(state.session_history):
-        if entry.issue_number != issue_number:
-            continue
-        title = (entry.title or "").strip()
-        if title and not _is_synthetic_session_title(title):
-            return title
-    return fallback_title
-
-
 def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *, lm: LabelManager) -> tuple[list[dict[str, Any]], set[int]]:
     if queue_page != 1:
         return [], seen_issues
@@ -422,9 +378,8 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             terminal_hint = "Click to view agent UI log"
 
         items.append({
-            "card_id": session.terminal_id,
             "issue_number": session.issue.number,
-            "title": _canonical_issue_title(state, session.issue.number, session.issue.title),
+            "title": session.issue.title,
             "agent_type": agent_label,
             "status": status,
             "status_reason": status_reason,
@@ -444,7 +399,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
-            "orchestrator_labels": _display_labels(list(session.issue.labels), lm),
+            "orchestrator_labels": sorted(lm.get_ours(list(session.issue.labels))),
             **_refresh_meta(state, config, session.issue.number),
         })
 
@@ -549,7 +504,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "blocked_summary": blocked,
             "merge_pending": lm.is_pr_pending(issue.labels),
             "dependency_blocked": is_dependency_blocked,
-            "orchestrator_labels": _display_labels(list(issue.labels), lm),
+            "orchestrator_labels": sorted(lm.get_ours(list(issue.labels))),
             **_refresh_meta(state, config, issue.number),
         }
         if is_blocked:
@@ -571,9 +526,6 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
     history_items: list[dict[str, Any]] = []
     blocked_items: list[dict[str, Any]] = []
     for entry in latest_history_entries_by_issue(state.session_history, limit=50):
-        # Completed-without-PR is not a terminal lane; let queue data drive placement.
-        if entry.status == "completed" and not entry.pr_url:
-            continue
         url = entry.pr_url if entry.pr_url else issue_url_for(config, entry.issue_number)
         action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
         status_reason = _normalize_status_reason(getattr(entry, "status_reason", None))
@@ -607,8 +559,6 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": status_reason if entry.status != "completed" else None,
-            # History records with an open PR belong in Awaiting Merge, not Completed.
-            "merge_pending": entry.status == "completed" and bool(entry.pr_url),
             **_refresh_meta(state, config, entry.issue_number),
         }
         if entry.status in ("blocked", "needs_human", "failed", "timed_out"):
@@ -617,6 +567,129 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             history_items.append(item)
 
     return history_items, blocked_items
+
+
+def _issue_number_or_none(raw: Any) -> int | None:
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, str) and raw.isdigit():
+        return int(raw)
+    return None
+
+
+def _apply_state_drift_fallback(
+    *,
+    state,
+    config,
+    lm: LabelManager,
+    active_items: list[dict[str, Any]],
+    queue_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    awaiting_merge_items: list[dict[str, Any]],
+    completed_items: list[dict[str, Any]],
+) -> None:
+    """Force unclassified or multi-classified issues into blocked with explicit drift reason."""
+    source_info: dict[int, tuple[str, list[str]]] = {}
+
+    for issue in state.cached_queue_issues:
+        source_info[issue.number] = (issue.title, list(issue.labels))
+    for session in state.active_sessions:
+        source_info[session.issue.number] = (session.issue.title, list(session.issue.labels))
+    for entry in latest_history_entries_by_issue(state.session_history, limit=200):
+        source_info.setdefault(entry.issue_number, (entry.title, []))
+
+    bucket_members: dict[str, set[int]] = {
+        "queued": {
+            issue_number
+            for item in queue_items
+            if (issue_number := _issue_number_or_none(item.get("issue_number"))) is not None
+        },
+        "running": {
+            issue_number
+            for item in active_items
+            if (issue_number := _issue_number_or_none(item.get("issue_number"))) is not None
+        },
+        "blocked": {
+            issue_number
+            for item in blocked_items
+            if (issue_number := _issue_number_or_none(item.get("issue_number"))) is not None
+        },
+        "awaiting_merge": {
+            issue_number
+            for item in awaiting_merge_items
+            if (issue_number := _issue_number_or_none(item.get("issue_number"))) is not None
+        },
+        "completed": {
+            issue_number
+            for item in completed_items
+            if (issue_number := _issue_number_or_none(item.get("issue_number"))) is not None
+        },
+    }
+
+    blocked_by_issue: dict[int, dict[str, Any]] = {}
+    for item in blocked_items:
+        issue_number = _issue_number_or_none(item.get("issue_number"))
+        if issue_number is not None:
+            blocked_by_issue[issue_number] = item
+
+    for issue_number, (title, labels) in source_info.items():
+        memberships = [
+            bucket_name
+            for bucket_name, members in bucket_members.items()
+            if issue_number in members
+        ]
+        if len(memberships) == 1:
+            continue
+        if len(memberships) == 0:
+            reason = "state-drift: unclassified; issue was not placed in any flow bucket."
+        else:
+            reason = (
+                "state-drift: multi-classified across "
+                + ", ".join(memberships)
+                + "."
+            )
+
+        if issue_number in blocked_by_issue:
+            item = blocked_by_issue[issue_number]
+            existing = str(item.get("blocked_summary") or item.get("status_reason") or "").strip()
+            if reason not in existing:
+                merged_reason = f"{existing} | {reason}" if existing else reason
+                item["blocked_summary"] = merged_reason
+                item["status_reason"] = merged_reason
+                item["detail_reason"] = merged_reason
+            item["detail_label"] = "state-drift"
+            labels_list = list(item.get("orchestrator_labels") or [])
+            if "state-drift" not in labels_list:
+                labels_list.append("state-drift")
+            item["orchestrator_labels"] = labels_list
+            continue
+
+        blocked_item = {
+            "issue_number": issue_number,
+            "title": title or f"Issue #{issue_number}",
+            "agent_type": "unknown",
+            "status": "blocked",
+            "status_reason": reason,
+            "detail_label": "state-drift",
+            "detail_reason": reason,
+            "time": "",
+            "action": "open",
+            "action_icon": "↗",
+            "action_hint": "Click to open issue on GitHub",
+            "url": issue_url_for(config, issue_number),
+            "issue_url": issue_url_for(config, issue_number),
+            "pr_url": "",
+            "has_terminal": False,
+            "worktree_path": "",
+            "flow_stage": "blocked",
+            "flow_stage_label": "Blocked",
+            "flow_steps": flow_steps_for("blocked"),
+            "blocked_summary": reason,
+            "orchestrator_labels": sorted(set(["state-drift", *lm.get_ours(labels)])),
+            **_refresh_meta(state, config, issue_number),
+        }
+        blocked_items.append(blocked_item)
+        blocked_by_issue[issue_number] = blocked_item
 
 
 def _normalize_status_reason(reason: str | None) -> str | None:
@@ -629,11 +702,6 @@ def _normalize_status_reason(reason: str | None) -> str | None:
     if trimmed.lower().startswith("synced "):
         return None
     return trimmed
-
-
-def _sort_by_issue_number(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Deterministic default ordering for dashboard issue lists."""
-    return sorted(items, key=lambda item: int(item.get("issue_number", 0)))
 
 
 def _build_e2e_running_items(e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
@@ -784,7 +852,6 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
     phase_age = item.get("time") or ""
     blocked = item.get("blocked_summary") or ""
     return {
-        "card_id": item.get("card_id") or f"issue-{item.get('issue_number')}",
         "issue_number": item.get("issue_number"),
         "title": item.get("title", ""),
         "state_label": state_label or item.get("status", ""),
@@ -829,7 +896,7 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
-            "orchestrator_labels": _display_labels(list(issue.labels), lm),
+            "orchestrator_labels": sorted(lm.get_ours(list(issue.labels))),
             **_refresh_meta(state, config, issue.number),
         })
     return cards
@@ -868,65 +935,6 @@ def _exclude_flow_overlaps(
     ]
 
 
-def _issue_numbers(items: list[dict[str, Any]]) -> set[int]:
-    """Extract numeric issue numbers from card items."""
-    numbers: set[int] = set()
-    for item in items:
-        raw = item.get("issue_number")
-        if isinstance(raw, int):
-            numbers.add(raw)
-        elif isinstance(raw, str) and raw.isdigit():
-            numbers.add(int(raw))
-    return numbers
-
-
-def _exclude_issue_numbers(
-    items: list[dict[str, Any]],
-    excluded_numbers: set[int],
-) -> list[dict[str, Any]]:
-    """Return items whose issue number is not in excluded_numbers."""
-    filtered: list[dict[str, Any]] = []
-    for item in items:
-        raw = item.get("issue_number")
-        issue_number: int | None = None
-        if isinstance(raw, int):
-            issue_number = raw
-        elif isinstance(raw, str) and raw.isdigit():
-            issue_number = int(raw)
-        if issue_number is None or issue_number not in excluded_numbers:
-            filtered.append(item)
-    return filtered
-
-
-def _apply_lane_precedence(
-    queue_items: list[dict[str, Any]],
-    active_items: list[dict[str, Any]],
-    blocked_items: list[dict[str, Any]],
-    awaiting_merge_items: list[dict[str, Any]],
-    completed_items: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
-    """Enforce single-lane ownership across non-running lanes.
-
-    Precedence:
-    running > blocked > awaiting-merge > queued > completed
-    """
-    active_numbers = _issue_numbers(active_items)
-    blocked_filtered = _exclude_issue_numbers(blocked_items, active_numbers)
-    blocked_numbers = _issue_numbers(blocked_filtered)
-
-    awaiting_filtered = _exclude_issue_numbers(awaiting_merge_items, active_numbers | blocked_numbers)
-    awaiting_numbers = _issue_numbers(awaiting_filtered)
-
-    queue_filtered = _exclude_issue_numbers(queue_items, active_numbers | blocked_numbers | awaiting_numbers)
-    queue_numbers = _issue_numbers(queue_filtered)
-
-    completed_filtered = _exclude_issue_numbers(
-        completed_items,
-        active_numbers | blocked_numbers | awaiting_numbers | queue_numbers,
-    )
-    return queue_filtered, blocked_filtered, awaiting_filtered, completed_filtered
-
-
 def _build_awaiting_merge_items(
     queue_items: list[dict[str, Any]],
     blocked_items: list[dict[str, Any]],
@@ -962,7 +970,7 @@ def _build_flow_columns(
             "title": "Running",
             "count": len(active_items),
             "items": [_compact_card(item, "running") for item in active_items[:12]],
-            "expandable": True,
+            "expandable": False,
         },
         {
             "id": "blocked",
@@ -1050,16 +1058,6 @@ def _get_e2e_status(config) -> dict[str, Any]:
     orchestrator_id = config.orchestrator_id
     runner = get_e2e_runner_manager()
     proc_status = runner.status(orchestrator_id)
-    cache_key = _e2e_status_cache_key(config)
-    now_mono = time.monotonic()
-    with _E2E_STATUS_CACHE_LOCK:
-        cached_entry = _E2E_STATUS_CACHE.get(cache_key)
-    if cached_entry is not None:
-        cached_at, cached_payload = cached_entry
-        if (now_mono - cached_at) < E2E_STATUS_CACHE_TTL_SECONDS:
-            cached_running = bool(cached_payload.get("running"))
-            if cached_running == bool(proc_status.get("running")):
-                return copy.deepcopy(cached_payload)
 
     db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
     last_run = None
@@ -1089,7 +1087,7 @@ def _get_e2e_status(config) -> dict[str, Any]:
 
     next_run = get_next_run_info(config, config.repo_root, run_obj)
 
-    payload = {
+    return {
         "enabled": True,
         "running": proc_status["running"],
         "pid": proc_status.get("pid"),
@@ -1101,9 +1099,6 @@ def _get_e2e_status(config) -> dict[str, Any]:
         "untriaged_count": untriaged_count,
         "low_stability": low_stability,
     }
-    with _E2E_STATUS_CACHE_LOCK:
-        _E2E_STATUS_CACHE[cache_key] = (now_mono, payload)
-    return copy.deepcopy(payload)
 
 
 def _build_e2e_view_model(
@@ -1218,11 +1213,6 @@ def build_dashboard_view_model(
         history_items, history_blocked = _build_history_items(state, config)
         blocked_items.extend(history_blocked)
 
-        active_items = _sort_by_issue_number(active_items)
-        queue_items = _sort_by_issue_number(queue_items)
-        blocked_items = _sort_by_issue_number(blocked_items)
-        history_items = _sort_by_issue_number(history_items)
-
         now_ts = datetime.now(timezone.utc).timestamp()
         _attach_refresh_meta(active_items, state, config, now_ts)
         _attach_refresh_meta(queue_items, state, config, now_ts)
@@ -1232,24 +1222,19 @@ def build_dashboard_view_model(
 
         # Completed = items the agent finished this session
         completed_items = [item for item in history_items if item.get("status") == "completed"]
-        completed_items = _sort_by_issue_number(completed_items)
 
         # Awaiting merge = items with PRs ready for human merge
         awaiting_merge_items = _build_awaiting_merge_items(queue_items, blocked_items, history_items)
-        awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
-
-        queue_items, blocked_items, awaiting_merge_items, completed_items = _apply_lane_precedence(
-            queue_items=queue_items,
+        _apply_state_drift_fallback(
+            state=state,
+            config=config,
+            lm=lm,
             active_items=active_items,
+            queue_items=queue_items,
             blocked_items=blocked_items,
             awaiting_merge_items=awaiting_merge_items,
             completed_items=completed_items,
         )
-
-        queue_items = _sort_by_issue_number(queue_items)
-        blocked_items = _sort_by_issue_number(blocked_items)
-        awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
-        completed_items = _sort_by_issue_number(completed_items)
 
         # Backlog used only for scope_summary.in_scope_total (not a kanban column)
         backlog_items = _exclude_flow_overlaps(
@@ -1357,6 +1342,20 @@ def build_dashboard_view_model(
             "refresh": refresh_status,
         }
 
+    # Build provider circuit status list
+    provider_circuits: list[dict[str, Any]] = []
+    if orchestrator:
+        for circuit_state in orchestrator.get_provider_circuit_states():
+            is_open = orchestrator.is_provider_circuit_open(circuit_state.provider)
+            provider_circuits.append({
+                "provider": circuit_state.provider,
+                "is_open": is_open,
+                "open_until": circuit_state.open_until.isoformat() if circuit_state.open_until else None,
+                "consecutive_outages": circuit_state.consecutive_outages,
+                "last_error_summary": circuit_state.last_error_summary,
+                "updated_at": circuit_state.updated_at.isoformat(),
+            })
+
     return DashboardViewModel(
         issues=issues,
         active_items=active_items,
@@ -1394,4 +1393,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuits=provider_circuits,
     )
