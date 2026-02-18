@@ -1901,8 +1901,19 @@ def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -
                 event.get("run_dir"),
                 exc,
             )
-            event_with_actions["actions"] = _timeline_event_fallback_actions(event, issue_number)
-            event_with_actions["actions_error"] = str(exc)
+            error_message = str(exc)
+            fallback_actions = _timeline_event_fallback_actions(event, issue_number)
+            fallback_actions.append(
+                {
+                    "type": "show_actions_error",
+                    "label": "What is missing?",
+                    "issue_number": issue_number,
+                    "error_message": error_message,
+                    "error_messages": [error_message],
+                }
+            )
+            event_with_actions["actions"] = fallback_actions
+            event_with_actions["actions_error"] = error_message
         decorated.append(event_with_actions)
     return decorated
 
@@ -2058,6 +2069,7 @@ def _agent_log_is_usable(log_path: Path) -> bool:
 def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+    action_warnings: list[str] = []
     event_name = str(event.get("event") or "")
     agent_log_label = _agent_log_label_for_event(event)
     event_run_dir = str(event.get("run_dir") or "")
@@ -2105,10 +2117,13 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
         if action_type in run_scoped_action_types:
             try:
                 _require_run_scoped_action_artifact(action_type)
-            except Exception:
+            except Exception as exc:
                 # Degrade per-action: keep other actions visible when one
                 # optional run-scoped artifact (e.g. Claude log mapping) is absent.
                 if action_type == "view_claude_log":
+                    action_warnings.append(
+                        f"{action_type} unavailable: {exc}"
+                    )
                     return
                 raise
         if event_run_dir and action_type in {
@@ -2154,6 +2169,19 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
         include_run_scoped=bool(event_run_dir),
         add_action=_add_action,
     )
+    if action_warnings:
+        # Preserve all missing-item diagnostics for this event in one explicit action.
+        joined = " | ".join(action_warnings)
+        _add_action(
+            {
+                "type": "show_actions_error",
+                "label": "What is missing?",
+                "issue_number": issue_number,
+                "error_message": joined,
+                "error_messages": action_warnings,
+            },
+            f"missing:{issue_number}:{joined}",
+        )
     return actions
 
 

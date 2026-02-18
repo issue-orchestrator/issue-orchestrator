@@ -591,10 +591,34 @@ def _build_cycle_step(evt: dict[str, Any], today: str) -> dict[str, Any]:
         "status": str(evt.get("status") or ""),
         "event": event_name,
     }
+    detail_parts: list[str] = []
     detail = evt.get("detail")
     if detail:
-        step_dict["detail"] = str(detail)
+        detail_parts.append(str(detail))
+    actions_error = evt.get("actions_error")
+    if isinstance(actions_error, str) and actions_error.strip():
+        detail_parts.append(f"Missing timeline artifacts/actions: {actions_error.strip()}")
     actions = evt.get("actions")
+    if isinstance(actions, list):
+        missing_messages: list[str] = []
+        for action in actions:
+            if not isinstance(action, dict) or str(action.get("type") or "") != "show_actions_error":
+                continue
+            raw_messages = action.get("error_messages")
+            if isinstance(raw_messages, list):
+                for msg in raw_messages:
+                    if isinstance(msg, str) and msg.strip():
+                        missing_messages.append(msg.strip())
+            raw_message = action.get("error_message")
+            if isinstance(raw_message, str) and raw_message.strip():
+                missing_messages.append(raw_message.strip())
+        if missing_messages:
+            unique_messages = list(dict.fromkeys(missing_messages))
+            detail_parts.append(
+                "Missing timeline artifacts/actions: " + " | ".join(unique_messages)
+            )
+    if detail_parts:
+        step_dict["detail"] = " | ".join(detail_parts)
     if actions:
         step_dict["actions"] = actions
     return step_dict

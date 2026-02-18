@@ -4273,6 +4273,7 @@ function _timelineActionShortLabel(action) {
     if (type === 'open_review_feedback') return 'Review Feedback';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
     if (type === 'open_session_diagnostics') return 'Diagnostics';
+    if (type === 'show_actions_error') return 'What is missing?';
     if (type === 'open_path') {
         const normalized = label.replace(/^Open\s+/i, '').replace(/\s+↗$/, '').trim();
         if (/^completion$/i.test(normalized)) return 'Completion Record';
@@ -4322,6 +4323,22 @@ function runTimelineEventAction(action) {
     }
     if (action.type === 'open_session_diagnostics' && action.issue_number) {
         openSessionManifest(action.issue_number, action.run_dir || null);
+        return;
+    }
+    if (action.type === 'show_actions_error') {
+        const rawMessages = Array.isArray(action.error_messages) ? action.error_messages : [];
+        const normalized = rawMessages
+            .filter(msg => typeof msg === 'string' && msg.trim().length > 0)
+            .map(msg => msg.trim());
+        const fallback = typeof action.error_message === 'string' ? action.error_message.trim() : '';
+        if (normalized.length === 0 && fallback) normalized.push(fallback);
+        if (normalized.length === 0) {
+            showToast('No missing artifact details available', 'warning');
+            return;
+        }
+        const issueSuffix = action.issue_number ? ` #${action.issue_number}` : '';
+        const lines = normalized.map(msg => `<li>${escapeHtml(msg)}</li>`).join('');
+        openModal(`What is missing${issueSuffix}`, `<ul class="diag-actions-list">${lines}</ul>`);
         return;
     }
     showToast(`Unsupported timeline action: ${action.type}`, 'error');

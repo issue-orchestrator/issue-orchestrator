@@ -2203,7 +2203,12 @@ class TestApiTimelineEndpoint:
             assert response.status_code == 200
             payload = response.json()
             assert payload["events"][0]["event"] == "session.started"
-            assert payload["events"][0]["actions"] == []
+            action_types = {
+                action.get("type")
+                for action in (payload["events"][0].get("actions") or [])
+                if isinstance(action, dict)
+            }
+            assert "show_actions_error" in action_types
             assert "actions_error" in payload["events"][0]
             assert payload["events"][1]["event"] == "issue.pr_created"
         finally:
@@ -3093,6 +3098,7 @@ class TestTimelineActionWiring:
         assert "open_agent_log" in action_types
         assert "open_session_diagnostics" in action_types
         assert "view_claude_log" not in action_types
+        assert "show_actions_error" in action_types
 
     def test_run_scoped_event_without_run_dir_fails_fast(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
