@@ -48,6 +48,7 @@ logger = logging.getLogger(__name__)
 # Keep in sync with completion_handler.py's critical error detection
 ERROR_PREFIX_PUSH = "push_branch"
 ERROR_PREFIX_CREATE_PR = "create_pr"
+ERROR_PREFIX_PUBLISH_BLOCKED = "publish_blocked"
 _DIRTY_CHECK_IGNORED_EXACT = {
     ".issue-orchestrator/session-latest.json",
     ".issue-orchestrator/ai-gate-state.json",
@@ -599,16 +600,17 @@ class CompletionProcessor:
         # Validate worktree state
         valid, reason = self.validate_worktree_state(worktree, record)
         if not valid:
+            tagged_reason = f"{ERROR_PREFIX_PUBLISH_BLOCKED}: {reason}"
             self._report_processing_failure_comment(
                 issue_number=issue_number,
-                errors=[reason],
+                errors=[tagged_reason],
                 actions_taken=[],
                 diagnostic_path=None,
             )
             return ProcessingResult(
                 success=False,
                 message=f"Validation failed: {reason}",
-                errors=[reason],
+                errors=[tagged_reason],
             )
 
         # Check publish gate if actions require it
