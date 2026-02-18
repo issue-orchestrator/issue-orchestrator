@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 
 from issue_orchestrator.domain.logical_event_semantics import enrich_logical_semantics
+from issue_orchestrator.timeline import TIMELINE_SCHEMA_VERSION
 from issue_orchestrator.view_models.issue_detail import build_issue_detail_view_model
 
 
@@ -227,6 +228,26 @@ SCENARIOS: list[LogicalRunScenario] = [
         expected_latest_session_run_ids=["run-1", "review-1"],
     ),
     LogicalRunScenario(
+        name="review_exchange_halt_failed_then_restart_creates_new_run",
+        events=[
+            _evt("session.started", timestamp="2026-02-09T08:38:39Z", run_id="code-1", rework_cycle=0),
+            _evt("review.started", timestamp="2026-02-09T08:42:02Z", run_id="review-1", rework_cycle=0, task="review"),
+            _evt("review.changes_requested", timestamp="2026-02-09T08:51:14Z", status="failed", run_id="review-1", rework_cycle=0),
+            _evt("session.failed", timestamp="2026-02-09T08:52:33Z", status="failed", run_id="code-1"),
+            _evt("validation.completed", timestamp="2026-02-09T08:52:34Z", status="completed"),
+            _evt("session.started", timestamp="2026-02-09T10:06:57Z", run_id="code-2", rework_cycle=0),
+            _evt("review.started", timestamp="2026-02-09T10:11:31Z", run_id="review-2", rework_cycle=0, task="review"),
+            _evt("review.changes_requested", timestamp="2026-02-09T10:16:45Z", status="failed", run_id="review-2", rework_cycle=0),
+            _evt("session.failed", timestamp="2026-02-09T10:19:23Z", status="failed", run_id="code-2"),
+            _evt("validation.completed", timestamp="2026-02-09T10:19:24Z", status="completed"),
+            _evt("session.started", timestamp="2026-02-09T10:28:40Z", run_id="code-3", rework_cycle=0),
+        ],
+        expected_run_count=3,
+        expected_cycles_per_run=[1, 1, 1],
+        expected_review_events_in_latest_run=0,
+        expected_latest_session_run_ids=["code-3"],
+    ),
+    LogicalRunScenario(
         name="long_history_latest_run_derived_from_tail_activity",
         events=[
             _evt("session.started", timestamp="2026-02-09T08:00:00Z", run_id="old-1", rework_cycle=0),
@@ -275,12 +296,13 @@ def _events_with_semantics(events: list[dict[str, Any]]) -> list[dict[str, Any]]
             previous_event_name=previous_event_name,
             previous_data=previous_data,
         )
-        entry["timeline_schema_version"] = 3
+        entry["timeline_schema_version"] = TIMELINE_SCHEMA_VERSION
         entry["event_intent"] = semantics.event_intent
         entry["review_oriented"] = semantics.review_oriented
         entry["logical_run"] = semantics.logical_run
         entry["logical_cycle"] = semantics.logical_cycle
         entry["logical_phase"] = semantics.logical_phase
+        entry["_logical_restart_pending"] = semantics.restart_pending
         enriched.append(entry)
         previous_event_name = str(entry.get("event") or "")
         previous_data = entry

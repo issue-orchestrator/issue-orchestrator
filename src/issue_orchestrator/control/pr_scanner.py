@@ -22,6 +22,7 @@ from ..domain.branch_naming import extract_issue_number_from_branch
 from ..ports import EventSink, TraceEvent
 from ..ports.pull_request_tracker import PRInfo
 from ..infra import gh_audit
+from ..infra.timeline_trace import is_timeline_trace_enabled
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
@@ -186,13 +187,34 @@ class PRScanner:
             # Extract issue number from branch name (reliable, orchestrator-controlled)
             # Fall back to PR body parsing if branch doesn't match pattern
             issue_number = self._extract_issue_number_from_pr(pr)
+            if is_timeline_trace_enabled():
+                logger.info(
+                    "[TIMELINE] scanner.rework_candidate pr=%s issue=%s labels=%s queued=%s active=%s",
+                    pr.number,
+                    issue_number,
+                    ",".join(pr.labels),
+                    issue_number in queued_issue_ids,
+                    issue_number in active_issue_numbers,
+                )
 
             # Skip if already queued
             if issue_number in queued_issue_ids:
+                if is_timeline_trace_enabled():
+                    logger.info(
+                        "[TIMELINE] scanner.rework_skip pr=%s issue=%s reason=already_queued",
+                        pr.number,
+                        issue_number,
+                    )
                 continue
 
             # Skip if already being worked on
             if issue_number in active_issue_numbers:
+                if is_timeline_trace_enabled():
+                    logger.info(
+                        "[TIMELINE] scanner.rework_skip pr=%s issue=%s reason=active_session",
+                        pr.number,
+                        issue_number,
+                    )
                 continue
 
             rework_cycle = self._get_rework_cycle_from_labels(pr.labels)
@@ -205,11 +227,26 @@ class PRScanner:
                     "[SCANNER] PR #%d already blocked (%s), skipping",
                     pr.number, ", ".join(blocking)
                 )
+                if is_timeline_trace_enabled():
+                    logger.info(
+                        "[TIMELINE] scanner.rework_skip pr=%s issue=%s reason=blocking_label blocking=%s",
+                        pr.number,
+                        issue_number,
+                        ",".join(blocking),
+                    )
                 continue
 
             # Check if exceeded max rework cycles
             if rework_cycle > self.config.max_rework_cycles:
                 escalations.append((pr.number, issue_number, rework_cycle))
+                if is_timeline_trace_enabled():
+                    logger.info(
+                        "[TIMELINE] scanner.rework_escalate pr=%s issue=%s cycle=%s max=%s",
+                        pr.number,
+                        issue_number,
+                        rework_cycle,
+                        self.config.max_rework_cycles,
+                    )
                 continue
 
             # Look up issue to get agent type (issue is source of truth)
@@ -240,6 +277,14 @@ class PRScanner:
             )
             results.append(rework)
             logger.info("[SCANNER] Found PR #%d for rework (cycle %d)", pr.number, rework_cycle)
+            if is_timeline_trace_enabled():
+                logger.info(
+                    "[TIMELINE] scanner.rework_queue pr=%s issue=%s cycle=%s agent=%s",
+                    pr.number,
+                    issue_number,
+                    rework_cycle,
+                    agent_type,
+                )
 
         if results or escalations:
             self.events.publish(
@@ -290,4 +335,3 @@ class PRScanner:
         if cycle is not None:
             return cycle + 1  # Next cycle
         return 1  # First rework
-

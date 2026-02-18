@@ -32,6 +32,17 @@ def test_get_agent_log_returns_run_scoped_log(tmp_path: Path) -> None:
     assert artifact.descriptor.length_bytes is not None
 
 
+def test_get_agent_log_prefers_non_empty_alternate_when_session_log_empty(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    (run_dir / "session.log").write_text("", encoding="utf-8")
+    provider_stdout = run_dir / "provider-runner" / "stdout.log"
+    provider_stdout.parent.mkdir(parents=True, exist_ok=True)
+    provider_stdout.write_text("provider output\n", encoding="utf-8")
+
+    artifact = accessor.get_agent_log()
+    assert artifact.path == provider_stdout
+
+
 def test_get_claude_log_reads_manifest_path(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
     claude = run_dir / "claude.jsonl"

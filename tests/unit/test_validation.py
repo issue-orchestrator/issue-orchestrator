@@ -269,6 +269,36 @@ class TestValidationRunner:
         assert stored.head_sha == record.head_sha
         assert stored.passed == record.passed
 
+    def test_run_writes_record_to_session_run_dir(self, runner, session_output_dir):
+        """Session run dirs should get a local validation-record.json copy."""
+        record = runner.run(
+            suite="agent_gate",
+            head_sha="session123",
+            command="echo 'ok'",
+            timeout_seconds=10,
+            session_output_dir=session_output_dir,
+        )
+
+        run_record_path = session_output_dir / "validation-record.json"
+        assert run_record_path.exists()
+        payload = json.loads(run_record_path.read_text())
+        assert payload["head_sha"] == record.head_sha
+        assert payload["passed"] == record.passed
+
+    def test_run_does_not_write_record_to_non_session_dir(self, runner, temp_worktree):
+        """Non-session output dirs should not get run-scoped validation-record.json."""
+        output_dir = temp_worktree / ".issue-orchestrator" / "tmp-validation-output"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        runner.run(
+            suite="agent_gate",
+            head_sha="nonsession123",
+            command="echo 'ok'",
+            timeout_seconds=10,
+            session_output_dir=output_dir,
+        )
+
+        assert not (output_dir / "validation-record.json").exists()
+
 
 class TestValidationCache:
     """Tests for ValidationCache."""

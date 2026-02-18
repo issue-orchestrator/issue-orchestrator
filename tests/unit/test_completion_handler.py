@@ -968,6 +968,77 @@ class TestReviewQueueDecision:
 
         assert result.should_queue_review is False
 
+    def test_review_exchange_halt_skips_review_queue(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Halted review exchange must not enqueue another review."""
+        config.code_review_agent = "agent:reviewer"
+        issue = make_issue(number=123)
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-123")
+
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=["review_exchange: stopped (reviewer_reports_no_progress)"],
+        )
+
+        assert result.should_queue_review is False
+
+    def test_review_exchange_halt_marks_issue_blocked_failed(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Halted review exchange must place issue on hold (blocked-failed) and release claim."""
+        config.code_review_agent = "agent:reviewer"
+        issue = make_issue(number=123, labels=["agent:test", "in-progress"])
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-123")
+
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=["review_exchange: stopped (reviewer_reports_no_progress)"],
+        )
+
+        add_labels = [a for a in result.actions if isinstance(a, AddLabelAction)]
+        remove_labels = [a for a in result.actions if isinstance(a, RemoveLabelAction)]
+
+        assert any(action.label == "blocked-failed" for action in add_labels)
+        assert any(action.label == "in-progress" for action in remove_labels)
+        assert not any(action.label == "pr-pending" for action in add_labels)
+
+    def test_review_exchange_halt_emits_failed_not_completed_events(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Halted review exchange should not emit completed/pr-created timeline events."""
+        issue = make_issue(number=123)
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-123")
+
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+        )
+        events = InMemoryEventSink()
+        handler = make_handler(config, events=events, repository_host=repository_host)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=["review_exchange: stopped (reviewer_reports_no_progress)"],
+        )
+
+        assert result.history_entry.status == SessionStatus.FAILED.value
+        assert events.has_event(str(EventName.SESSION_FAILED))
+        assert not events.has_event(str(EventName.SESSION_COMPLETED))
+        assert not events.has_event(str(EventName.ISSUE_PR_CREATED))
+
 
 # =============================================================================
 # Test: Label Action Generation

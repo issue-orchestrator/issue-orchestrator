@@ -3043,7 +3043,10 @@ class TestTimelineActionWiring:
         run = session_output.start_run(worktree, "issue-1", issue_number=1)
         run_dir = str(run.run_dir)
 
-        # Start events should expose agent log action even when output is sparse.
+        # Start events should expose agent log when a populated run-scoped log exists.
+        provider_stdout = run.run_dir / "provider-runner" / "stdout.log"
+        provider_stdout.parent.mkdir(parents=True, exist_ok=True)
+        provider_stdout.write_text("provider output\n", encoding="utf-8")
         sparse_actions = _timeline_event_actions(
             {
                 "event": "session.started",

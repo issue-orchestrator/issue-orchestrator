@@ -34,3 +34,37 @@ def test_pr_pending_removed_starts_new_logical_run() -> None:
     assert out.logical_run == 3
     assert out.logical_cycle == 1
     assert out.logical_phase == "orchestrator"
+
+
+def test_session_failed_then_new_start_starts_new_logical_run() -> None:
+    out = enrich_logical_semantics(
+        event_name="session.started",
+        event_data={"task": "code"},
+        previous_event_name="session.failed",
+        previous_data={"logical_run": 1, "logical_cycle": 1},
+    )
+    assert out.logical_run == 2
+    assert out.logical_cycle == 1
+    assert out.logical_phase == "coding"
+
+
+def test_terminal_then_interstitial_event_then_start_starts_new_logical_run() -> None:
+    interstitial = enrich_logical_semantics(
+        event_name="validation.completed",
+        event_data={},
+        previous_event_name="session.failed",
+        previous_data={"logical_run": 1, "logical_cycle": 1},
+    )
+    out = enrich_logical_semantics(
+        event_name="session.started",
+        event_data={"task": "code"},
+        previous_event_name="validation.completed",
+        previous_data={
+            "logical_run": interstitial.logical_run,
+            "logical_cycle": interstitial.logical_cycle,
+            "_logical_restart_pending": interstitial.restart_pending,
+        },
+    )
+    assert out.logical_run == 2
+    assert out.logical_cycle == 1
+    assert out.logical_phase == "coding"

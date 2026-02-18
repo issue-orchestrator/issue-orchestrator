@@ -21,7 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
-from .repo_identity import normalize_repo_root, state_dir
+from .repo_identity import normalize_repo_root, serialize_repo_identity, state_dir
 from .repo_lock import (
     AlreadyRunning,
     LockInfo,
@@ -32,6 +32,7 @@ from .repo_lock import (
 )
 
 logger = logging.getLogger(__name__)
+_EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
 
 
 @dataclass
@@ -150,6 +151,7 @@ def start(
     config_name: str = "default.yaml",
     instance_id: str | None = None,
     port: int | None = None,
+    expected_identity: dict[str, Any] | None = None,
     *,
     spawn_process: Callable[..., Any] | None = None,
 ) -> LockInfo:
@@ -187,6 +189,8 @@ def start(
 
     # Set up environment for the subprocess
     env = os.environ.copy()
+    if expected_identity is not None:
+        env[_EXPECTED_IDENTITY_ENV] = serialize_repo_identity(expected_identity)
     if instance_id:
         env["INSTANCE_ID"] = instance_id
         cmd.extend(["--instance-id", instance_id])
@@ -501,6 +505,7 @@ def start_instances(
     repo_root: Path | str,
     config_name: str = "default.yaml",
     count: int | None = None,
+    expected_identity: dict[str, Any] | None = None,
 ) -> list[LockInfo]:
     """Start multiple orchestrator instances for a repository.
 
@@ -523,7 +528,7 @@ def start_instances(
 
     if count <= 1:
         # Single instance mode - use legacy lock file
-        return [start(repo_root, config_name)]
+        return [start(repo_root, config_name, expected_identity=expected_identity)]
 
     # Multi-instance mode
     results = []
@@ -531,7 +536,13 @@ def start_instances(
         instance_id = f"orchestrator-{i}"
         port = find_free_port()
         try:
-            info = start(repo_root, config_name, instance_id=instance_id, port=port)
+            info = start(
+                repo_root,
+                config_name,
+                instance_id=instance_id,
+                port=port,
+                expected_identity=expected_identity,
+            )
             results.append(info)
             logger.info("Started instance %s on port %d", instance_id, port)
         except AlreadyRunning:
@@ -628,6 +639,7 @@ class SupervisorOps(Protocol):
         config_name: str = "default.yaml",
         instance_id: str | None = None,
         port: int | None = None,
+        expected_identity: dict[str, Any] | None = None,
     ) -> LockInfo: ...
 
     def stop(
@@ -648,6 +660,7 @@ class SupervisorOps(Protocol):
         repo_root: Path | str,
         config_name: str = "default.yaml",
         count: int | None = None,
+        expected_identity: dict[str, Any] | None = None,
     ) -> list[LockInfo]: ...
 
     def stop_all_instances(
@@ -670,8 +683,9 @@ class DefaultSupervisorOps:
         config_name: str = "default.yaml",
         instance_id: str | None = None,
         port: int | None = None,
+        expected_identity: dict[str, Any] | None = None,
     ) -> LockInfo:
-        return start(repo_root, config_name, instance_id, port)
+        return start(repo_root, config_name, instance_id, port, expected_identity)
 
     def stop(
         self,
@@ -694,8 +708,9 @@ class DefaultSupervisorOps:
         repo_root: Path | str,
         config_name: str = "default.yaml",
         count: int | None = None,
+        expected_identity: dict[str, Any] | None = None,
     ) -> list[LockInfo]:
-        return start_instances(repo_root, config_name, count)
+        return start_instances(repo_root, config_name, count, expected_identity)
 
     def stop_all_instances(
         self, repo_root: Path | str, force: bool = False

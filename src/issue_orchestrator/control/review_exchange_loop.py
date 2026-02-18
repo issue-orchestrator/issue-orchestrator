@@ -63,10 +63,18 @@ def run_review_exchange_loop(
     event_context: EventContext | None = None,
 ) -> ReviewExchangeOutcome:
     """Run the coder↔reviewer exchange loop and capture round-trip logs."""
+    run_dir: Path | None = None
+    run_id: str | None = None
+
     def _emit(event_name: EventName, payload: dict[str, Any]) -> None:
         if events is None or event_context is None:
             return
-        events.publish(TraceEvent(event_name, event_context.enrich(payload)))
+        enriched_payload = dict(payload)
+        if run_dir is not None:
+            enriched_payload["run_dir"] = str(run_dir)
+        if run_id is not None:
+            enriched_payload["session_run_id"] = run_id
+        events.publish(TraceEvent(event_name, event_context.enrich(enriched_payload)))
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
     session_name = f"review-exchange-{issue_number}-{timestamp}"
@@ -81,6 +89,7 @@ def run_review_exchange_loop(
         orchestrator_log=str(get_repo_log_path(worktree_path)),
     )
     run_dir = run.run_dir
+    run_id = run.run_id
     exchange_dir = run_dir / "review-exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
     session_output.update_manifest(run_dir, {"review_exchange_dir": str(exchange_dir)})

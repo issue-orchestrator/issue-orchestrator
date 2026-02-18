@@ -61,6 +61,12 @@ from ..domain.models import get_completion_path
 from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
 from ..infra.supervisor import DefaultSupervisorOps, MultiInstanceStatus, SupervisorOps
+from ..infra.repo_identity import (
+    RepoIdentity,
+    build_repo_identity,
+    deserialize_repo_identity,
+    diff_repo_identity,
+)
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import (
     AuditActionRequest,
@@ -80,6 +86,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 _PREFERRED_REPO_ROOT_ENV = "ISSUE_ORCHESTRATOR_CC_REPO_ROOT"
+_EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
 
 # Default E2E config (used when orchestrator not available)
 from ..infra.config import E2EConfig
@@ -1092,6 +1099,7 @@ async def shutdown_control_center(request: Request) -> JSONResponse:
 
     JSON body (optional):
         stop_orchestrators: bool - If True, stop all running orchestrators first
+        force_orchestrators: bool - If True, force stop orchestrators when stopping first
     """
     import os
     import signal
@@ -1106,16 +1114,19 @@ async def shutdown_control_center(request: Request) -> JSONResponse:
 
     # Parse optional body
     stop_orchestrators = False
+    force_orchestrators = False
     try:
         body = await request.json()
         stop_orchestrators = body.get("stop_orchestrators", False)
+        force_orchestrators = body.get("force_orchestrators", False)
     except json.JSONDecodeError:
         pass  # No body is fine, default to not stopping orchestrators
 
     logger.info(
-        "Shutdown requested (force): source=web_ui, client=%s, stop_orchestrators=%s, pid=%d",
+        "Shutdown requested (force): source=web_ui, client=%s, stop_orchestrators=%s, force_orchestrators=%s, pid=%d",
         client_host,
         stop_orchestrators,
+        force_orchestrators,
         os.getpid(),
     )
 
@@ -1129,7 +1140,7 @@ async def shutdown_control_center(request: Request) -> JSONResponse:
                 status_info = sv.status(path)
                 if status_info.state == "running":
                     logger.info("Stopping orchestrator for %s before shutdown", repo.path)
-                    if sv.stop(path):
+                    if sv.stop(path, force=force_orchestrators):
                         stopped_repos.append(repo.path)
 
     def delayed_shutdown():
@@ -1239,7 +1250,12 @@ def _load_config_port(repo_root: Path, config_name: str) -> int | None:
     return config.web_port
 
 
-def _detect_orchestrator_by_port(repo_root: Path, config_name: str) -> dict[str, Any] | None:
+def _detect_orchestrator_by_port(
+    repo_root: Path,
+    config_name: str,
+    *,
+    expected_identity: RepoIdentity | None = None,
+) -> dict[str, Any] | None:
     """Detect an orchestrator by probing the configured port.
 
     Returns info dict with port and metadata if an orchestrator responds
@@ -1264,6 +1280,21 @@ def _detect_orchestrator_by_port(repo_root: Path, config_name: str) -> dict[str,
         return None
 
     details: dict[str, Any] = {"port": port, "info": info}
+    observed_identity_payload = info.get("repo_identity")
+    if expected_identity and isinstance(observed_identity_payload, dict):
+        observed_identity = RepoIdentity(
+            repo_root=str(observed_identity_payload.get("repo_root", "")),
+            commit_sha=(str(observed_identity_payload["commit_sha"]) if observed_identity_payload.get("commit_sha") else None),
+            branch=(str(observed_identity_payload["branch"]) if observed_identity_payload.get("branch") else None),
+            working_tree_dirty=bool(observed_identity_payload.get("working_tree_dirty", False)),
+            dirty_fingerprint=(str(observed_identity_payload["dirty_fingerprint"]) if observed_identity_payload.get("dirty_fingerprint") else None),
+            source_root=(str(observed_identity_payload["source_root"]) if observed_identity_payload.get("source_root") else None),
+        )
+        identity_mismatch = diff_repo_identity(expected_identity, observed_identity)
+        if identity_mismatch:
+            details["identity_mismatch"] = identity_mismatch
+            details["observed_identity"] = observed_identity.to_dict()
+            details["expected_identity"] = expected_identity.to_dict()
     try:
         status_resp = httpx.get(f"{base_url}/api/status", timeout=0.6)
         if status_resp.status_code == 200:
@@ -1356,10 +1387,26 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
     if not config_name.endswith(".yaml"):
         config_name += ".yaml"
     force_restart = bool(body.get("force_restart", False))
+    expected_identity = build_repo_identity(repo_root)
 
     try:
-        detected = _detect_orchestrator_by_port(repo_root, config_name)
-        if detected and not force_restart:
+        detected = _detect_orchestrator_by_port(
+            repo_root,
+            config_name,
+            expected_identity=expected_identity,
+        )
+        if detected and detected.get("identity_mismatch"):
+            stopped = sv.stop_by_port(detected["port"], force=True)
+            if not stopped:
+                return JSONResponse({
+                    "error": "engine_identity_mismatch",
+                    "detail": "Mismatched engine detected and could not be stopped",
+                    "port": detected["port"],
+                    "expected_identity": detected.get("expected_identity"),
+                    "observed_identity": detected.get("observed_identity"),
+                    "identity_mismatch": detected.get("identity_mismatch"),
+                }, status_code=409)
+        elif detected and not force_restart:
             return JSONResponse({
                 "error": "orphaned_running",
                 "status": "running",
@@ -1391,6 +1438,7 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
             config=config,
             config_name=config_name,
             supervisor_ops=sv,
+            expected_identity=expected_identity.to_dict(),
         )
 
         if launch_result.status == "doctor_error":
@@ -1421,6 +1469,7 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
             "status": "started",
             "repo_root": str(repo_root),
             "config_name": config_name,
+            "repo_identity": expected_identity.to_dict(),
             "doctor": launch_result.doctor.to_dict(),
         }
         if launch_result.supervisor:
@@ -1444,7 +1493,11 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
                 import time
                 time.sleep(0.5)
                 # Try starting again
-                info = sv.start(repo_root, config_name=config_name)
+                info = sv.start(
+                    repo_root,
+                    config_name=config_name,
+                    expected_identity=expected_identity.to_dict(),
+                )
                 # Track PID for zombie reaping
                 _track_launched_pids({"pid": info.pid})
                 return JSONResponse({
@@ -2291,15 +2344,23 @@ async def list_repos_endpoint() -> JSONResponse:
 @control_app.get("/control/info")
 async def control_info() -> JSONResponse:
     """Get control center build info."""
-    from ..infra.repo_identity import get_repo_head_sha
     repo_root = Path.cwd()
-    commit_sha = get_repo_head_sha(repo_root)
+    identity = build_repo_identity(repo_root)
     preferred_root = _preferred_repo_root()
+    expected_identity_raw = os.environ.get(_EXPECTED_IDENTITY_ENV, "").strip()
+    expected_identity = None
+    if expected_identity_raw:
+        try:
+            expected_identity = deserialize_repo_identity(expected_identity_raw).to_dict()
+        except Exception:
+            expected_identity = None
     return JSONResponse({
         "repo_root": str(repo_root),
         "preferred_repo_root": str(preferred_root) if preferred_root else None,
-        "commit_sha": commit_sha,
-        "commit_short": commit_sha[:7] if commit_sha else None,
+        "commit_sha": identity.commit_sha,
+        "commit_short": identity.commit_sha[:7] if identity.commit_sha else None,
+        "repo_identity": identity.to_dict(),
+        "expected_engine_identity": expected_identity,
     })
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.sqlite_maintenance import run_backups_if_due
 from issue_orchestrator.infra.repo_identity import state_dir
+from issue_orchestrator.infra.sqlite_registry import list_sqlite_databases
 
 
 def _create_sqlite_db(path: Path) -> None:
@@ -74,3 +75,14 @@ def test_retention_zero_disables_backups(tmp_path):
 
     backup_root = tmp_path / ".issue-orchestrator" / "backups" / "sqlite"
     assert not (backup_root / "publish_jobs").exists()
+
+
+def test_sqlite_registry_includes_timeline_db(tmp_path):
+    config = Config()
+    config.repo_root = tmp_path
+
+    databases = list_sqlite_databases(config)
+    timeline = next((db for db in databases if db.key == "timeline"), None)
+
+    assert timeline is not None
+    assert timeline.path_fn(config) == state_dir(tmp_path) / "timeline.sqlite"

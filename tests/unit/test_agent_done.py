@@ -125,6 +125,7 @@ class TestStatusToActions:
         """Test approved status requests label changes and comment."""
         actions = STATUS_TO_ACTIONS[AgentStatus.APPROVED]
         assert RequestedAction.ADD_CODE_REVIEWED_LABEL in actions
+        assert RequestedAction.REMOVE_NEEDS_REWORK_LABEL in actions
         assert RequestedAction.REMOVE_CODE_REVIEW_LABEL in actions
         assert RequestedAction.POST_COMMENT in actions
 
@@ -522,6 +523,7 @@ class TestBuildCompletionRecord:
         assert record.risk_level == "low"
         assert record.checks_passed == ["tests_added"]
         assert RequestedAction.ADD_CODE_REVIEWED_LABEL in record.requested_actions
+        assert RequestedAction.REMOVE_NEEDS_REWORK_LABEL in record.requested_actions
 
     def test_build_changes_requested_record(self):
         """Test building completion record for changes_requested status."""
@@ -1010,7 +1012,9 @@ validation:
             )
             assert manifest_path.exists()
             manifest = json.loads(manifest_path.read_text())
-            assert manifest.get("validation_record_path")
+            validation_record_path = manifest.get("validation_record_path")
+            assert validation_record_path
+            assert str(validation_record_path).endswith("validation-record.json")
             assert manifest.get("validation_status") == "failed"
         finally:
             os.chdir(original_cwd)

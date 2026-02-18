@@ -24,7 +24,18 @@ stop_all_orchestrators() {
     echo "${cc_pids}" | xargs kill 2>/dev/null || true
   fi
 
-  # 2. Claude agent sessions (orchestrator-spawned)
+  # 2. Repository engine/orchestrator processes
+  local orch_pids
+  orch_pids=$(pgrep -f 'issue_orchestrator\.entrypoints\.run_orchestrator' 2>/dev/null || echo "")
+  if [[ -n "${orch_pids}" ]]; then
+    found_any=true
+    local orch_count
+    orch_count=$(echo "${orch_pids}" | wc -l | tr -d ' ')
+    echo "  Killing ${orch_count} orchestrator engine process(es)..."
+    echo "${orch_pids}" | xargs kill 2>/dev/null || true
+  fi
+
+  # 3. Claude agent sessions (orchestrator-spawned)
   local agent_pids
   agent_pids=$(pgrep -f 'claude.*--permission-mode bypassPermissions' 2>/dev/null || echo "")
   if [[ -n "${agent_pids}" ]]; then
@@ -35,7 +46,7 @@ stop_all_orchestrators() {
     echo "${agent_pids}" | xargs kill 2>/dev/null || true
   fi
 
-  # 3. Validate runners
+  # 4. Validate runners
   local vr_pids
   vr_pids=$(pgrep -f 'issue_orchestrator\.entrypoints\.cli_tools\.validate_runner' 2>/dev/null || echo "")
   if [[ -n "${vr_pids}" ]]; then
@@ -46,7 +57,7 @@ stop_all_orchestrators() {
     echo "${vr_pids}" | xargs kill 2>/dev/null || true
   fi
 
-  # 4. Playwright drivers (spawned by orchestrator)
+  # 5. Playwright drivers (spawned by orchestrator)
   local pw_pids
   pw_pids=$(pgrep -f 'playwright/driver.*run-driver' 2>/dev/null || echo "")
   if [[ -n "${pw_pids}" ]]; then
@@ -65,7 +76,7 @@ stop_all_orchestrators() {
   local remaining
   for _ in {1..10}; do
     sleep 0.5
-    remaining=$(pgrep -f 'issue_orchestrator\.entrypoints\.control_center|claude.*--permission-mode bypassPermissions|issue_orchestrator\.entrypoints\.cli_tools\.validate_runner' 2>/dev/null || echo "")
+    remaining=$(pgrep -f 'issue_orchestrator\.entrypoints\.control_center|issue_orchestrator\.entrypoints\.run_orchestrator|claude.*--permission-mode bypassPermissions|issue_orchestrator\.entrypoints\.cli_tools\.validate_runner' 2>/dev/null || echo "")
     if [[ -z "${remaining}" ]]; then
       echo "  All processes stopped"
       return 0
@@ -77,7 +88,7 @@ stop_all_orchestrators() {
   echo "${remaining}" | xargs kill -9 2>/dev/null || true
   sleep 1
 
-  remaining=$(pgrep -f 'issue_orchestrator\.entrypoints\.control_center|claude.*--permission-mode bypassPermissions|issue_orchestrator\.entrypoints\.cli_tools\.validate_runner' 2>/dev/null || echo "")
+  remaining=$(pgrep -f 'issue_orchestrator\.entrypoints\.control_center|issue_orchestrator\.entrypoints\.run_orchestrator|claude.*--permission-mode bypassPermissions|issue_orchestrator\.entrypoints\.cli_tools\.validate_runner' 2>/dev/null || echo "")
   if [[ -n "${remaining}" ]]; then
     echo "  WARNING: Some processes survived SIGKILL: ${remaining}"
   else

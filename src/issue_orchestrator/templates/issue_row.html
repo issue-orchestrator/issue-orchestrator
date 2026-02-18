@@ -87,6 +87,12 @@
         </span>
         <span class="issue-time">{{ issue.time if issue.time else '-' }}</span>
         <span class="issue-actions">
+            <button class="issue-row-menu-btn"
+                    onclick="openRowActionsMenu(event, this)"
+                    aria-label="Open actions for issue #{{ issue.issue_number }}"
+                    title="More actions">
+                ⋮
+            </button>
             {% if active_tab == 'e2e' and issue.is_e2e %}
             {# E2E tab actions #}
             {% if issue.e2e_running %}

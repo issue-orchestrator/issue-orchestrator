@@ -665,17 +665,20 @@ def test_run_scoped_artifact_usability_enforces_non_empty_log_and_run_dir(
         web.set_orchestrator(None)
 
 
-def test_run_scoped_log_action_offered_for_start_event_with_empty_session_log(
+def test_run_scoped_log_action_offered_for_start_event_with_alternate_non_empty_log(
     sample_config,
     mock_repository_host,
 ):
-    """Start events should still offer session log action even when log is sparse."""
+    """Start events should offer log action when a non-empty run-scoped log exists."""
     orch, timeline_writer = _build_orchestrator_with_sqlite_timeline(sample_config, mock_repository_host)
     issue_number = 4062
     run_dir = _start_run_with_artifacts(
         sample_config.repo_root, issue_number=issue_number, session_name="issue-4062-code"
     )
     Path(run_dir, "session.log").write_text("", encoding="utf-8")
+    provider_log = Path(run_dir) / "provider-runner" / "stdout.log"
+    provider_log.parent.mkdir(parents=True, exist_ok=True)
+    provider_log.write_text("provider output\n", encoding="utf-8")
     orch.state.cached_queue_issues = [
         Issue(number=issue_number, title="Empty log action guardrail", labels=["agent:backend"]),
     ]

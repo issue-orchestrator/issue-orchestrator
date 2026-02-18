@@ -19,8 +19,8 @@ from .domain.event_taxonomy import (
 )
 from .ports.timeline_store import TimelineRecord
 
-TIMELINE_SCHEMA_VERSION = 3
-MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION = 3
+TIMELINE_SCHEMA_VERSION = 4
+MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)

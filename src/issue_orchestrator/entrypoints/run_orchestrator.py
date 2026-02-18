@@ -18,11 +18,13 @@ import argparse
 import asyncio
 import atexit
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+_EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
 
 
 def parse_args() -> argparse.Namespace:
@@ -86,7 +88,23 @@ async def run(
     from ..entrypoints.bootstrap import build_orchestrator
     from ..entrypoints.web import run_with_web_dashboard
     from ..infra.config import Config
+    from ..infra.repo_identity import (
+        build_repo_identity,
+        deserialize_repo_identity,
+        diff_repo_identity,
+    )
     from ..infra.repo_lock import acquire_lock, release_lock, touch_lock
+
+    expected_identity_raw = os.environ.get(_EXPECTED_IDENTITY_ENV, "").strip()
+    if expected_identity_raw:
+        expected_identity = deserialize_repo_identity(expected_identity_raw)
+        observed_identity = build_repo_identity(repo_root)
+        mismatches = diff_repo_identity(expected_identity, observed_identity)
+        if mismatches:
+            raise RuntimeError(
+                "Engine identity mismatch at startup: "
+                f"{mismatches}. expected={expected_identity.to_dict()} observed={observed_identity.to_dict()}"
+            )
 
     # Acquire the repository lock (instance-specific if multi-instance)
     instance_str = f" instance={instance_id}" if instance_id else ""
@@ -174,8 +192,6 @@ def main() -> int:
     )
 
     # Change to repo root
-    import os
-
     os.chdir(args.repo_root)
 
     try:

@@ -240,6 +240,7 @@ class ValidationRunner:
 
         # Write record
         self.store.write(record)
+        self._write_run_dir_record_if_session_dir(session_output_dir, record)
 
         logger.info(
             "Validation suite '%s' %s (exit_code=%d)",
@@ -260,6 +261,25 @@ class ValidationRunner:
         })
 
         return record
+
+    def _write_run_dir_record_if_session_dir(
+        self,
+        session_output_dir: Path,
+        record: ValidationRecord,
+    ) -> None:
+        """Write run-scoped validation record for orchestrated session run dirs.
+
+        Session-scoped review/coder flows expect `validation-record.json` in the
+        run directory under `.issue-orchestrator/sessions/...`.
+        """
+        sessions_root = (self.store.worktree / ".issue-orchestrator" / "sessions").resolve()
+        try:
+            session_output_dir.resolve().relative_to(sessions_root)
+        except ValueError:
+            return
+
+        run_record_path = session_output_dir / "validation-record.json"
+        run_record_path.write_text(json.dumps(record.to_dict(), indent=2))
 
 
 class ValidationCache:

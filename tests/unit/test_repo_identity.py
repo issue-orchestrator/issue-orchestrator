@@ -1,4 +1,11 @@
-from issue_orchestrator.infra.repo_identity import get_repo_head_sha
+from issue_orchestrator.infra.repo_identity import (
+    RepoIdentity,
+    build_repo_identity,
+    deserialize_repo_identity,
+    diff_repo_identity,
+    get_repo_head_sha,
+    serialize_repo_identity,
+)
 
 
 def test_get_repo_head_sha_from_git_dir(tmp_path):
@@ -29,3 +36,53 @@ def test_get_repo_head_sha_from_worktree_file(tmp_path):
     (repo / ".git").write_text(f"gitdir: {worktree_git}\n")
 
     assert get_repo_head_sha(repo) == "def456"
+
+
+def test_repo_identity_roundtrip_serialization():
+    identity = RepoIdentity(
+        repo_root="/tmp/repo",
+        commit_sha="abc123",
+        branch="main",
+        working_tree_dirty=True,
+        dirty_fingerprint="deadbeef",
+        source_root="/tmp/repo/src",
+    )
+
+    serialized = serialize_repo_identity(identity)
+    restored = deserialize_repo_identity(serialized)
+
+    assert restored == identity
+
+
+def test_diff_repo_identity_reports_mismatches():
+    expected = RepoIdentity(
+        repo_root="/tmp/repo",
+        commit_sha="abc123",
+        branch="main",
+        working_tree_dirty=False,
+        dirty_fingerprint=None,
+        source_root="/tmp/repo/src",
+    )
+    observed = RepoIdentity(
+        repo_root="/tmp/repo",
+        commit_sha="def456",
+        branch="feature",
+        working_tree_dirty=True,
+        dirty_fingerprint="f00dbabe",
+        source_root="/tmp/repo/src",
+    )
+
+    mismatches = diff_repo_identity(expected, observed)
+
+    assert mismatches["commit_sha"] == {"expected": "abc123", "observed": "def456"}
+    assert mismatches["branch"] == {"expected": "main", "observed": "feature"}
+    assert mismatches["working_tree_dirty"] == {"expected": False, "observed": True}
+    assert mismatches["dirty_fingerprint"] == {"expected": None, "observed": "f00dbabe"}
+
+
+def test_build_repo_identity_for_non_git_dir(tmp_path):
+    identity = build_repo_identity(tmp_path)
+
+    assert identity.repo_root == str(tmp_path.resolve())
+    assert identity.commit_sha is None
+    assert identity.working_tree_dirty is False

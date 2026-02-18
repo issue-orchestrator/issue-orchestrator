@@ -2467,6 +2467,16 @@
             <div class="modal-body">
                 <p id="shutdownSummaryText">This closes the Control Center window and dashboard server. Repository engines keep running independently.</p>
                 <p class="form-hint" id="shutdownRunningText" style="margin-top: 10px;">Checking currently running engines...</p>
+                <div class="form-group" style="margin-top: 12px;">
+                    <label class="checkbox-label">
+                        <input type="checkbox" id="shutdownStopOrchestrators">
+                        Stop running repository engines before closing
+                    </label>
+                    <label class="checkbox-label" style="margin-top: 8px;">
+                        <input type="checkbox" id="shutdownForceOrchestrators">
+                        Force stop running engines (kill if graceful stop fails)
+                    </label>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn" id="cancelShutdown">Cancel</button>
@@ -3378,6 +3388,14 @@
             return repo.status?.port || null;
         }
 
+        function buildDashboardUrl(port, options = {}) {
+            const params = new URLSearchParams();
+            if (options.embedded) params.set('embedded', '1');
+            if (options.theme) params.set('theme', options.theme);
+            const query = params.toString();
+            return `http://127.0.0.1:${port}/${query ? `?${query}` : ''}`;
+        }
+
         function needsSetup(repo) {
             return !repo.configs || repo.configs.length === 0;
         }
@@ -3527,6 +3545,7 @@
                     <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open dashboard</button>
                     <button class="btn" data-action="${isPaused ? 'resume' : 'pause'}" data-path="${escapeHtml(repo.path)}">${isPaused ? 'Resume engine' : 'Pause engine'}</button>
                     <button class="btn btn-danger btn-sm" data-action="stop" data-path="${escapeHtml(repo.path)}" ${pendingStop ? 'disabled' : ''}>${pendingStop ? 'Stopping...' : 'Stop engine'}</button>
+                    <button class="btn btn-danger btn-sm" data-action="stop-force" data-path="${escapeHtml(repo.path)}" ${pendingStop ? 'disabled' : ''}>${pendingStop ? 'Stopping...' : 'Force stop'}</button>
                 `;
             }
 
@@ -3748,7 +3767,7 @@
                 const iframeTheme = state.theme === 'system'
                     ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
                     : state.theme;
-                iframe.src = `http://localhost:${port}/?embedded=1&theme=${encodeURIComponent(iframeTheme)}`;
+                iframe.src = buildDashboardUrl(port, { embedded: true, theme: iframeTheme });
             } else {
                 const pendingStart = isRepoStartPending(repo.path);
                 loading.innerHTML = `
@@ -3780,6 +3799,9 @@
                     break;
                 case 'stop':
                     await stopRepo(path);
+                    break;
+                case 'stop-force':
+                    await stopRepo(path, true);
                     break;
                 case 'view':
                     switchView('activity', path);
@@ -3920,7 +3942,7 @@
             }
         }
 
-        async function stopRepo(path) {
+        async function stopRepo(path, force = false) {
             if (!path) {
                 showToast('Missing repository path for stop request', 'error');
                 return;
@@ -3930,9 +3952,9 @@
             const repo = state.repos.find(r => r.path === path);
             const repoName = repo?.name || path;
             const confirmed = window.confirm(
-                `Stop engine for ${repoName}?\n\n` +
-                'This requests a graceful stop: running sessions are allowed to finish and state is kept. ' +
-                'You can start the engine again from Control Center.'
+                force
+                    ? `Force stop engine for ${repoName}?\n\nThis may terminate active sessions immediately if graceful shutdown fails.`
+                    : `Stop engine for ${repoName}?\n\nThis requests a graceful stop: running sessions are allowed to finish and state is kept. You can start the engine again from Control Center.`
             );
             if (!confirmed) return;
 
@@ -3947,7 +3969,7 @@
                 const response = await fetch('/control/orchestrator/stop', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path })
+                    body: JSON.stringify({ repo_root: path, force })
                 });
 
                 let payload = null;
@@ -3965,7 +3987,7 @@
                 if (payload?.status === 'not_running') {
                     showToast('Repository engine was already stopped', 'info');
                 } else {
-                    showToast('Repository engine stopped', 'success');
+                    showToast(force ? 'Repository engine force-stopped' : 'Repository engine stopped', 'success');
                 }
 
                 if (state.currentView === 'activity' && state.activeRepo?.path === path) {
@@ -4103,6 +4125,10 @@
 
             const summary = document.getElementById('shutdownSummaryText');
             const running = document.getElementById('shutdownRunningText');
+            const stopEngines = document.getElementById('shutdownStopOrchestrators');
+            const forceStop = document.getElementById('shutdownForceOrchestrators');
+            if (stopEngines) stopEngines.checked = false;
+            if (forceStop) forceStop.checked = false;
             if (summary) {
                 summary.textContent = 'This closes the Control Center window and dashboard server. Repository engines keep running independently.';
             }
@@ -4120,7 +4146,28 @@
 
         async function confirmShutdown() {
             try {
-                await fetch('/control/shutdown', { method: 'POST' });
+                const stopOrchestrators = Boolean(document.getElementById('shutdownStopOrchestrators')?.checked);
+                const forceOrchestrators = Boolean(document.getElementById('shutdownForceOrchestrators')?.checked);
+                if (forceOrchestrators && !stopOrchestrators) {
+                    showToast('Enable "Stop running repository engines" to use force stop.', 'error');
+                    return;
+                }
+                if (stopOrchestrators) {
+                    const confirmMsg = forceOrchestrators
+                        ? 'Close Control Center and FORCE-stop all running repository engines first?'
+                        : 'Close Control Center and stop all running repository engines first?';
+                    if (!window.confirm(confirmMsg)) {
+                        return;
+                    }
+                }
+                await fetch('/control/shutdown', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        stop_orchestrators: stopOrchestrators,
+                        force_orchestrators: forceOrchestrators,
+                    }),
+                });
                 document.getElementById('shutdownModal').classList.remove('active');
                 // Try to close the tab; if blocked, show a "closed" landing page
                 setTimeout(() => {

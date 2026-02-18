@@ -1724,6 +1724,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     validation_error: Optional[str] = None,
     validation_error_file: Optional[str] = None,
     review_exchange_completed: bool = False,
+    review_exchange_halted: bool = False,
     blocked_label: Optional[str] = None,
     blocked_reason: Optional[str] = None,
     completion_detail: Optional[dict[str, Any]] = None,
@@ -1796,6 +1797,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         processing_errors=processing_errors,
         diagnostic_path=diagnostic_path,
         review_exchange_completed=review_exchange_completed,
+        review_exchange_halted=review_exchange_halted,
         blocked_label=blocked_label,
         blocked_reason=blocked_reason,
         completion_detail=completion_detail,
@@ -2078,6 +2080,7 @@ def process_active_sessions(
         validation_error = decision.validation_error
         validation_error_file = decision.validation_error_file
         review_exchange_completed = False
+        review_exchange_halted = False
         if decision.processing_result:
             if decision.processing_result.pr_url:
                 pr_url_hint = decision.processing_result.pr_url
@@ -2086,6 +2089,7 @@ def process_active_sessions(
             if decision.processing_result.diagnostic_path:
                 diagnostic_path = decision.processing_result.diagnostic_path
             review_exchange_completed = decision.processing_result.review_exchange_completed
+            review_exchange_halted = decision.processing_result.review_exchange_halted
         handle_session_completion(
             session, decision.status, state, completion_handler, action_applier,
             observer, worktree_manager, kill_session_fn, config,
@@ -2095,6 +2099,7 @@ def process_active_sessions(
             validation_error=validation_error,
             validation_error_file=str(validation_error_file) if validation_error_file else None,
             review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
             blocked_label=decision.blocked_label,
             blocked_reason=decision.blocked_reason,
             completion_detail=decision.completion_detail,

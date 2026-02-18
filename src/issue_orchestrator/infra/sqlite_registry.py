@@ -83,4 +83,12 @@ def list_sqlite_databases(config: Config) -> list[SQLiteDatabase]:
             backup=True,
             enforce_pragmas=True,
         ),
+        SQLiteDatabase(
+            key="timeline",
+            label="Timeline",
+            path_fn=lambda cfg: _state_db(cfg, "timeline.sqlite"),
+            enabled_fn=lambda cfg: True,
+            backup=True,
+            enforce_pragmas=True,
+        ),
     ]

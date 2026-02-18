@@ -125,6 +125,10 @@ class FileSystemSessionOutput:
             "retention_pinned": retention_pinned,
         }
         self._write_json(manifest_path, manifest)
+        # Create run-scoped session log eagerly so run-scoped artifact resolution is valid
+        # from session.started onward, even before terminal output is streamed.
+        if not log_path.exists():
+            log_path.write_text("", encoding="utf-8")
 
         if claude_log_dir:
             self._write_text(run_dir / "claude-log.path", claude_log_dir)
@@ -1112,12 +1116,12 @@ Timestamp: {self._now_iso()}
         """
         for filename in (SESSION_LOG_NAME, PANE_LOG_NAME):
             candidate = run_dir / filename
-            if candidate.exists() and candidate.stat().st_size > 0:
+            if candidate.exists():
                 return candidate
 
         # Subprocess backend: agent output goes to provider-runner/stdout.log
         provider_stdout = run_dir / "provider-runner" / "stdout.log"
-        if provider_stdout.exists() and provider_stdout.stat().st_size > 0:
+        if provider_stdout.exists():
             return provider_stdout
 
         return None

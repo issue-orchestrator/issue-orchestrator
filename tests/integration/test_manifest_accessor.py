@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from issue_orchestrator.execution.manifest_accessor import ManifestAccessor, RunIdentity
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
@@ -97,3 +99,46 @@ def test_manifest_accessor_get_validation_record_integration(tmp_path: Path) -> 
     assert artifact.descriptor.artifact_type == "validation_record"
     assert artifact.path == validation
     assert artifact.descriptor.content_type == "application/json"
+
+
+def test_manifest_accessor_rejects_empty_completion_record(tmp_path: Path) -> None:
+    accessor, worktree, run_dir = _build_accessor(tmp_path)
+    completion_rel = ".issue-orchestrator/sessions/issue-123/completion-backend.json"
+    completion = worktree / completion_rel
+    completion.parent.mkdir(parents=True, exist_ok=True)
+    completion.write_text("", encoding="utf-8")
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "session_name": "issue-123",
+                "run_id": run_dir.name.split("__", 1)[0],
+                "run_dir": str(run_dir),
+                "completion_path": completion_rel,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileNotFoundError, match="empty"):
+        accessor.get_completion_record()
+
+
+def test_manifest_accessor_rejects_invalid_validation_json(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    validation_rel = "validation.json"
+    validation = run_dir / validation_rel
+    validation.write_text("{invalid", encoding="utf-8")
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "session_name": "issue-123",
+                "run_id": run_dir.name.split("__", 1)[0],
+                "run_dir": str(run_dir),
+                "validation_record_path": validation_rel,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileNotFoundError, match="invalid JSON"):
+        accessor.get_validation_record()

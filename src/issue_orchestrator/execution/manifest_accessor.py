@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 
 from ..domain.run_manifest import RunManifest
@@ -75,13 +76,29 @@ class ManifestAccessor:
             raise ArtifactNotFoundError(f"failed to infer session name from run_dir: {run_dir}")
 
         session_output = FileSystemSessionOutput()
+        candidates: list[Path] = []
         session_candidate = session_output.get_log_path(worktree_path, session_name)
-        if session_candidate and session_candidate.exists() and session_candidate.stat().st_size > 0:
-            return self._artifact_stream("agent_log", session_candidate)
+        if session_candidate:
+            candidates.append(session_candidate)
         for candidate_name in ("session.log", "pane.log", "provider-runner/stdout.log"):
             candidate_path = run_dir / candidate_name
-            if candidate_path.exists() and candidate_path.stat().st_size > 0:
-                return self._artifact_stream("agent_log", candidate_path)
+            if candidate_path not in candidates:
+                candidates.append(candidate_path)
+        existing = [candidate for candidate in candidates if candidate.exists()]
+        non_empty: list[Path] = []
+        for candidate in existing:
+            try:
+                if candidate.stat().st_size > 0:
+                    non_empty.append(candidate)
+            except OSError:
+                continue
+        if non_empty:
+            return self._artifact_stream("agent_log", non_empty[0])
+        if existing:
+            candidates_str = ", ".join(str(path) for path in existing)
+            raise ArtifactNotFoundError(
+                f"agent_log candidates are empty under run_dir={run_dir}: {candidates_str}"
+            )
         raise ArtifactNotFoundError(
             f"agent_log not found in run-scoped paths under: {run_dir}"
         )
@@ -113,6 +130,8 @@ class ManifestAccessor:
             path = worktree / path
         if not path.exists():
             raise ArtifactNotFoundError(f"completion record not found: {path}")
+        self._require_non_empty(path, artifact_name="completion record")
+        self._require_valid_json(path, artifact_name="completion record")
         return self._artifact_stream(
             "completion_record",
             path,
@@ -130,6 +149,8 @@ class ManifestAccessor:
             path = self.run_identity.run_dir / path
         if not path.exists():
             raise ArtifactNotFoundError(f"validation record not found: {path}")
+        self._require_non_empty(path, artifact_name="validation record")
+        self._require_valid_json(path, artifact_name="validation record")
         return self._artifact_stream(
             "validation_record",
             path,
@@ -162,3 +183,17 @@ class ManifestAccessor:
             ).isoformat(),
         )
         return ArtifactStream(descriptor=descriptor, path=path)
+
+    def _require_non_empty(self, path: Path, *, artifact_name: str) -> None:
+        size = path.stat().st_size
+        if size <= 0:
+            raise ArtifactNotFoundError(f"{artifact_name} is empty: {path}")
+
+    def _require_valid_json(self, path: Path, *, artifact_name: str) -> None:
+        try:
+            text = path.read_text(encoding="utf-8")
+            json.loads(text)
+        except UnicodeDecodeError as exc:
+            raise ArtifactNotFoundError(f"{artifact_name} is not utf-8: {path}") from exc
+        except json.JSONDecodeError as exc:
+            raise ArtifactNotFoundError(f"{artifact_name} is invalid JSON: {path}") from exc
