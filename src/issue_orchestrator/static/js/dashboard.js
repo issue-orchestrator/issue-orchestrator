@@ -2454,7 +2454,7 @@ if (contextMenuEnabled) {
             logContent += `<p style="color:var(--text-muted);font-size:11px;margin-top:10px;">Log: ${data.log_path}</p>`;
 
             // Show in modal
-            document.getElementById('modalTitle').textContent = `Session Log #${issueNumber}`;
+            document.getElementById('modalTitle').textContent = `UI Log #${issueNumber}`;
             document.getElementById('modalBody').innerHTML = logContent;
             document.getElementById('modalOverlay').classList.add('visible');
         }
@@ -2895,7 +2895,7 @@ function _renderJourneyCycles(container, allCycles) {
         for (const s of steps) {
             const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
             const detail = s.detail ? `<div class="journey-detail">${escapeHtml(s.detail)}</div>` : '';
-            const actions = renderTimelineEventActions(s.actions || []);
+            const actions = renderTimelineEventActions(s, s.actions || []);
             html += `<div class="journey-step ${statusClass}">
                 <span class="journey-time">${escapeHtml(s.time_label || '')}</span>
                 <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
@@ -3436,6 +3436,11 @@ function renderTimelineArtifacts(artifacts) {
 }
 
 function renderTimelineEventActions(evt, actions) {
+    // Backward compatibility: allow renderTimelineEventActions(actions)
+    if (actions === undefined && Array.isArray(evt)) {
+        actions = evt;
+        evt = {};
+    }
     if (!actions || actions.length === 0) return '';
     const remainingActions = [...actions];
     const primaryDefs = timelinePrimaryActionsForEvent(evt);
@@ -3488,8 +3493,8 @@ function timelinePrimaryActionsForEvent(evt) {
     const actions = [];
     if (isSessionPhase) {
         actions.push({
-            label: 'UI Session',
-            missingReason: 'UI Session is not available yet for this event.',
+            label: 'UI Log',
+            missingReason: 'UI Log is not available yet for this event.',
             matcher: (action) => action?.type === 'open_agent_log',
         });
     }
@@ -4036,7 +4041,7 @@ function renderDiagnosis(issueNumber, data) {
     // View log button - uses sanitized viewer
     html += `
         <button class="open-log-btn" onclick="openAgentLog(${issueNumber})">
-            View Session Log
+            View UI Log
         </button>
     `;
 

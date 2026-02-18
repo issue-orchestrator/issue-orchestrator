@@ -444,8 +444,9 @@ def _build_signal_journey_cycles(
     # Compute lifecycle number per event index
     lifecycle_per_event = _compute_lifecycle_per_event(events)
 
-    # Group journey-visible events by coding_cycle
-    groups: dict[int, list[tuple[dict[str, Any], int]]] = {}  # cycle -> [(event, lifecycle)]
+    # Group journey-visible events by (lifecycle, coding_cycle) so
+    # same rework_cycle values from prior runs/lifecycles don't merge.
+    groups: dict[tuple[int, int], list[dict[str, Any]]] = {}
     for idx, event in enumerate(events):
         event_name = str(event.get("event") or "")
         if event_name in _JOURNEY_SKIP_EVENTS:
@@ -460,15 +461,13 @@ def _build_signal_journey_cycles(
         else:
             # Legacy event: group into cycle 0 (will be renumbered later)
             coding_cycle = 0
-        groups.setdefault(coding_cycle, []).append((event, lifecycle))
+        groups.setdefault((lifecycle, coding_cycle), []).append(event)
 
     cycles: list[dict[str, Any]] = []
-    for cycle_num in sorted(groups):
-        items = groups[cycle_num]
-        cycle_events = [e for e, _lc in items]
-        lifecycle = items[0][1] if items else 1
+    for lifecycle, iteration in sorted(groups):
+        cycle_events = groups[(lifecycle, iteration)]
         cycles.append(_finalize_cycle_from_events(
-            len(cycles) + 1, lifecycle, cycle_num,
+            len(cycles) + 1, lifecycle, iteration,
             cycle_events, today, context,
         ))
 
@@ -495,9 +494,21 @@ def _compute_lifecycle_per_event(
     needs_new_lifecycle = False
     seen_legacy = False
     seen_signal_boundary = False
+    last_run_scope: str | None = None
 
     for event in events:
         event_name = str(event.get("event") or "")
+        run_scope = _run_scope_key(event)
+
+        # Treat run identity changes as lifecycle boundaries. This keeps
+        # "Last run" focused on one orchestrator run even without terminal events.
+        if (
+            run_scope
+            and last_run_scope
+            and run_scope != last_run_scope
+        ):
+            lifecycle += 1
+            needs_new_lifecycle = False
 
         if needs_new_lifecycle and (
             event_name in _ITERATION_START or event_name in _LIFECYCLE_RESTART
@@ -518,8 +529,21 @@ def _compute_lifecycle_per_event(
             needs_new_lifecycle = False
 
         result.append(lifecycle)
+        if run_scope:
+            last_run_scope = run_scope
 
     return result
+
+
+def _run_scope_key(event: dict[str, Any]) -> str | None:
+    """Return stable run identity for lifecycle boundary detection."""
+    run_id = event.get("run_id")
+    if isinstance(run_id, str) and run_id:
+        return f"run:{run_id}"
+    run_dir = event.get("run_dir")
+    if isinstance(run_dir, str) and run_dir:
+        return f"dir:{run_dir}"
+    return None
 
 
 def _finalize_cycle_from_events(

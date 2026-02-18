@@ -903,11 +903,10 @@ class TestSignalJourneyCycles:
                  rework_cycle=None),
         ]
         cycles = _build_journey_cycles(events, "2026-02-10")
-        # All events share rework_cycle=None → single cycle, but lifecycle changes
-        assert len(cycles) == 1
-        # Lifecycle is assigned to the first event; the first event in the cycle
-        # is in lifecycle 1 since the terminal event comes LATER
+        # Same rework_cycle across two lifecycles should produce separate cycles
+        assert len(cycles) == 2
         assert cycles[0]["lifecycle"] == 1
+        assert cycles[1]["lifecycle"] == 2
 
     def test_backward_compat_no_rework_cycle(self):
         """Events without any rework_cycle use legacy annotated path."""
@@ -1029,6 +1028,34 @@ class TestSignalJourneyCycles:
         cycles = _build_journey_cycles(events, "2026-02-09")
         filtered = filter_last_run_cycles(cycles)
         assert len(filtered) == len(cycles), "No terminal events → all cycles shown"
+
+    def test_last_run_filter_splits_on_run_id_change_signal_path(self):
+        """Signal path: run_id changes create a new lifecycle without terminal events."""
+        events = [
+            _evt(
+                "session.started",
+                timestamp="2026-02-09T10:00:00Z",
+                agent="agent:backend",
+                rework_cycle=0,
+                run_id="run-1",
+            ),
+            _evt("session.completed", timestamp="2026-02-09T10:30:00Z", rework_cycle=0, run_id="run-1"),
+            _evt(
+                "session.started",
+                timestamp="2026-02-09T11:00:00Z",
+                agent="agent:backend",
+                rework_cycle=0,
+                run_id="run-2",
+            ),
+            _evt("session.completed", timestamp="2026-02-09T11:30:00Z", rework_cycle=0, run_id="run-2"),
+        ]
+        cycles = _build_journey_cycles(events, "2026-02-09")
+        lifecycles = {c["lifecycle"] for c in cycles}
+        assert lifecycles == {1, 2}
+
+        filtered = filter_last_run_cycles(cycles)
+        assert len(filtered) == 1
+        assert filtered[0]["lifecycle"] == 2
 
     def test_last_run_filter_manual_unblock_no_event(self):
         """Block event followed by sessions with no issue.unblocked event (manual unblock).

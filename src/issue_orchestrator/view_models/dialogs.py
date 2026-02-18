@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any
 
 
@@ -81,21 +80,13 @@ class SessionDiagnosticsContext:
 
 
 def _join_worktree_path(worktree: str, rel_path: Any) -> str:
-    """Resolve manifest path to an openable filesystem path.
-
-    - Absolute path values are returned as-is.
-    - Relative path values are resolved under worktree.
-    - Missing worktree + relative path returns empty string.
-    """
+    """Join worktree + manifest-relative path when both are present."""
+    if not worktree:
+        return ""
     rel_value = str(rel_path or "")
     if not rel_value:
         return ""
-    rel_candidate = Path(rel_value)
-    if rel_candidate.is_absolute():
-        return str(rel_candidate)
-    if not worktree:
-        return ""
-    return str(Path(worktree) / rel_candidate)
+    return f"{worktree}/{rel_value}"
 
 
 def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[DialogRow]:
@@ -117,25 +108,11 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     actions: list[dict[str, Any]] = []
     if ctx.run_dir:
         actions.append({"type": "open_path", "label": "Open Session Dir", "path": ctx.run_dir})
-        actions.append(
-            {
-                "type": "open_agent_log",
-                "label": "View Session Log",
-                "issue_number": ctx.issue_number,
-                "run_dir": ctx.run_dir,
-            }
-        )
+
+    actions.append({"type": "open_agent_log", "label": "UI Log", "issue_number": ctx.issue_number})
 
     if ctx.claude_log_path:
-        if ctx.run_dir:
-            actions.append(
-                {
-                    "type": "view_claude_log",
-                    "label": "View Claude Log",
-                    "issue_number": ctx.issue_number,
-                    "run_dir": ctx.run_dir,
-                }
-            )
+        actions.append({"type": "view_claude_log", "label": "View Claude Log", "issue_number": ctx.issue_number})
         actions.append({
             "type": "open_path",
             "label": "Open Claude Log File",
@@ -148,15 +125,7 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
             "path": ctx.claude_log_dir,
         })
 
-    if ctx.run_dir:
-        actions.append(
-            {
-                "type": "open_orchestrator_log",
-                "label": "Open Orchestrator Log",
-                "issue_number": ctx.issue_number,
-                "run_dir": ctx.run_dir,
-            }
-        )
+    actions.append({"type": "open_orchestrator_log", "label": "Open Orchestrator Log", "issue_number": ctx.issue_number})
 
     if ctx.orchestrator_log:
         actions.append({

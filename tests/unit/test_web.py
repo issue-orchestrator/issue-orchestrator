@@ -1727,7 +1727,7 @@ class TestApiTimelineEndpoint:
             )
             completion_labels = [action["label"] for action in completion_actions]
             review_index = completion_labels.index("Open Review Comment ↗")
-            diagnostics_index = completion_labels.index("Diagnostics…")
+            diagnostics_index = completion_labels.index("Diagnostics")
             assert review_index < diagnostics_index
         finally:
             set_orchestrator(None)
