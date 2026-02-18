@@ -48,6 +48,17 @@ logger = logging.getLogger(__name__)
 # Keep in sync with completion_handler.py's critical error detection
 ERROR_PREFIX_PUSH = "push_branch"
 ERROR_PREFIX_CREATE_PR = "create_pr"
+_DIRTY_CHECK_IGNORED_EXACT = {
+    ".issue-orchestrator/session-latest.json",
+    ".issue-orchestrator/ai-gate-state.json",
+    ".issue-orchestrator/timeline.sqlite",
+    ".issue-orchestrator/timeline.sqlite-shm",
+    ".issue-orchestrator/timeline.sqlite-wal",
+}
+_DIRTY_CHECK_IGNORED_PREFIXES = (
+    ".issue-orchestrator/backups/",
+)
+_DIRTY_FILES_REASON_LIMIT = 8
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -95,6 +106,7 @@ class GitAdapter(Protocol):
     def get_current_branch(self, worktree: Path) -> str | None: ...
     def has_uncommitted_changes(self, worktree: Path) -> bool: ...
     def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool: ...
+    def list_dirty_files(self, worktree: Path, mode: str) -> list[str]: ...
     def default_branch(self, repo_root: Path, remote: str = "origin") -> str: ...
 
 
@@ -315,6 +327,7 @@ class CompletionProcessor:
 
         if mode == "off":
             return True, ""
+        list_mode = mode
         if mode == "tracked":
             dirty = self.git_adapter.has_tracked_changes(worktree, include_staged=True)
         elif mode == "unstaged":
@@ -328,12 +341,34 @@ class CompletionProcessor:
             )
 
         if dirty:
-            return False, (
+            dirty_files = self.git_adapter.list_dirty_files(worktree, list_mode)
+            blocking_files = [path for path in dirty_files if not self._is_ignored_dirty_path(path)]
+            if dirty_files and not blocking_files:
+                logger.info(
+                    "Dirty-check ignored runtime-only files for %s: %s",
+                    worktree,
+                    ", ".join(dirty_files),
+                )
+                return True, ""
+            reason = (
                 "Working tree is dirty; commit/add/stash before pushing. "
                 "Override with validation.pre_push_dirty_check."
             )
+            if blocking_files:
+                preview = ", ".join(blocking_files[:_DIRTY_FILES_REASON_LIMIT])
+                remaining = len(blocking_files) - _DIRTY_FILES_REASON_LIMIT
+                suffix = f" (+{remaining} more)" if remaining > 0 else ""
+                reason = f"{reason} Dirty files: {preview}{suffix}."
+            return False, reason
 
         return True, ""
+
+    @staticmethod
+    def _is_ignored_dirty_path(path: str) -> bool:
+        normalized = path.replace("\\", "/")
+        if normalized in _DIRTY_CHECK_IGNORED_EXACT:
+            return True
+        return any(normalized.startswith(prefix) for prefix in _DIRTY_CHECK_IGNORED_PREFIXES)
 
     def _emit_review_comment_added(
         self,

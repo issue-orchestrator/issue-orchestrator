@@ -88,6 +88,7 @@ def mock_git_adapter():
     adapter.get_current_branch = Mock(return_value="issue-123")
     adapter.has_uncommitted_changes = Mock(return_value=False)
     adapter.has_tracked_changes = Mock(return_value=False)
+    adapter.list_dirty_files = Mock(return_value=[])
     return adapter
 
 
@@ -1370,6 +1371,7 @@ class TestCompletionProcessorDirtyPolicy:
             config=config,
         )
         mock_git_adapter.has_tracked_changes.return_value = True
+        mock_git_adapter.list_dirty_files.return_value = ["src/feature.py", "README.md"]
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH],
@@ -1381,6 +1383,7 @@ class TestCompletionProcessorDirtyPolicy:
 
         assert not result.success
         assert "working tree is dirty" in result.message.lower()
+        assert "dirty files: src/feature.py, readme.md." in result.message.lower()
         mock_git_adapter.push.assert_not_called()
         mock_pr_adapter.add_comment.assert_called_once()
 
@@ -1399,6 +1402,7 @@ class TestCompletionProcessorDirtyPolicy:
             config=config,
         )
         mock_git_adapter.has_uncommitted_changes.return_value = True
+        mock_git_adapter.list_dirty_files.return_value = ["tmp.out"]
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH],
@@ -1411,6 +1415,34 @@ class TestCompletionProcessorDirtyPolicy:
         assert not result.success
         assert "working tree is dirty" in result.message.lower()
         mock_git_adapter.push.assert_not_called()
+
+    def test_push_allows_runtime_only_dirty_files(
+        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
+    ):
+        config = Config()
+        config.validation.pre_push_dirty_check = "tracked"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            event_bus=event_bus,
+            session_output=FileSystemSessionOutput(),
+            label_config={},
+            config=config,
+        )
+        mock_git_adapter.has_tracked_changes.return_value = True
+        mock_git_adapter.list_dirty_files.return_value = [".issue-orchestrator/session-latest.json"]
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Test")
+
+        assert result.success
+        mock_git_adapter.push.assert_called_once()
 
     def test_push_allowed_when_dirty_check_off(
         self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
