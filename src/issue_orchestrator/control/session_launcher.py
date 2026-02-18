@@ -252,6 +252,23 @@ class SessionLauncher:
                 )
         return all_ok
 
+    def _interrupted_retry_guard_label(self, mode: str) -> str:
+        retry_cfg = self.config.retry.interrupted_sessions
+        if mode == "coding":
+            return retry_cfg.coding_guard_label
+        return retry_cfg.review_guard_label
+
+    def _clear_interrupted_retry_guard_label(self, *, issue_number: int, mode: str, context: str) -> None:
+        """Best-effort cleanup of interrupted retry guard at launch boundary."""
+        guard_label = self._interrupted_retry_guard_label(mode)
+        self._apply_actions([
+            RemoveLabelAction(
+                issue_number=issue_number,
+                label=guard_label,
+                reason=f"{mode} session relaunched - clearing interrupted retry guard",
+            ),
+        ], context=context)
+
     def _build_session_env(
         self,
         *,
@@ -655,6 +672,13 @@ class SessionLauncher:
         if self.config.setup_worktree:
             self._run_setup_commands(worktree_path)
 
+        # New coding attempt starts now; clear interrupted retry guard.
+        self._clear_interrupted_retry_guard_label(
+            issue_number=issue.number,
+            mode="coding",
+            context="launch_clear_interrupted_guard_coding",
+        )
+
         # Add in-progress label
         step_start = time.time()
         in_progress_label = self._lm.in_progress
@@ -925,6 +949,12 @@ class SessionLauncher:
             "session_key": session_key.stable_id(),
             "agent": agent_label,
         })
+        # New review attempt starts now; clear interrupted retry guard.
+        self._clear_interrupted_retry_guard_label(
+            issue_number=review.issue_number,
+            mode="review",
+            context="launch_clear_interrupted_guard_review",
+        )
 
         logger.info(
             "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
@@ -1179,6 +1209,12 @@ class SessionLauncher:
             "agent": rework.agent_type,
             "rework_cycle": rework.rework_cycle,
         })
+        # Rework is a coding retry attempt; clear interrupted retry guard.
+        self._clear_interrupted_retry_guard_label(
+            issue_number=issue_number,
+            mode="coding",
+            context="launch_clear_interrupted_guard_rework",
+        )
 
         logger.info(
             "[SESSION_RUN_START] run_id=%s session=%s issue=%s",

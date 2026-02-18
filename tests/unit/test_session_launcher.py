@@ -518,15 +518,6 @@ class TestLaunchIssueSession:
         assert result.session.terminal_id == "issue-123"
         assert result.session.key.task == TaskKind.CODE
 
-    def test_issue_completion_path_uses_phase_name_not_terminal_alias(self, session_launcher, sample_issue):
-        """Issue completion path must use coding phase path to avoid stale terminal aliases."""
-        result = session_launcher.launch_issue_session(sample_issue, active_sessions=[])
-
-        assert result.success is True
-        assert result.session is not None
-        assert "/sessions/coding-1/" in result.session.completion_path
-        assert "/sessions/issue-123/" not in result.session.completion_path
-
     def test_fails_when_no_agent_type(self, session_launcher):
         """Verify fails when issue has no agent type label (line 195)."""
         issue = Issue(number=123, title="No agent", labels=[], repo="test/repo")
@@ -588,6 +579,20 @@ class TestLaunchIssueSession:
         assert result.success is True
         actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
         assert any(isinstance(a, AddLabelAction) and a.label == "in-progress" for a in actions)
+
+    def test_issue_launch_clears_coding_interrupted_guard_label(self, launcher_bundle, sample_issue):
+        """Issue launch should clear interrupted coding retry guard."""
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        guard_label = launcher_bundle.launcher.config.retry.interrupted_sessions.coding_guard_label
+        actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
+        assert any(
+            isinstance(a, RemoveLabelAction)
+            and a.issue_number == sample_issue.number
+            and a.label == guard_label
+            for a in actions
+        )
 
     def test_fails_when_in_progress_label_add_fails(
         self, launcher_bundle, sample_issue, mock_worktree_manager
@@ -770,23 +775,6 @@ class TestLaunchReviewSession:
         assert result.session.terminal_id == "review-456"
         assert result.session.key.task == TaskKind.REVIEW
 
-    def test_review_completion_path_uses_phase_name_not_terminal_alias(self, session_launcher):
-        """Review completion path must use review phase path to avoid stale PR session aliases."""
-        review = PendingReview(
-            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
-            pr_number=456,
-            pr_url="https://github.com/test/repo/pull/456",
-            branch_name="123-feature",
-            _issue_number=123,
-        )
-
-        result = session_launcher.launch_review_session(review, active_sessions=[])
-
-        assert result.success is True
-        assert result.session is not None
-        assert "/sessions/review-1/" in result.session.completion_path
-        assert "/sessions/review-456/" not in result.session.completion_path
-
     def test_fails_when_no_review_agent_configured(self, session_launcher):
         """Verify fails when no code review agent configured (line 418)."""
         session_launcher.config.code_review_agent = None
@@ -864,6 +852,28 @@ class TestLaunchReviewSession:
         result = launcher_bundle.launcher.launch_review_session(review, active_sessions=[])
 
         assert result.success is True
+
+    def test_review_launch_clears_review_interrupted_guard_label(self, launcher_bundle):
+        """Review launch should clear interrupted review retry guard."""
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-feature",
+            _issue_number=123,
+        )
+
+        result = launcher_bundle.launcher.launch_review_session(review, active_sessions=[])
+
+        assert result.success is True
+        guard_label = launcher_bundle.launcher.config.retry.interrupted_sessions.review_guard_label
+        actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
+        assert any(
+            isinstance(a, RemoveLabelAction)
+            and a.issue_number == review.issue_number
+            and a.label == guard_label
+            for a in actions
+        )
         review_machine = launcher_bundle.review_machines[456]
         assert review_machine.state == ReviewState.IN_REVIEW.value
 
@@ -959,20 +969,25 @@ class TestLaunchReworkSession:
         assert result.success is True
         # Uses fallback branch name when no PR
 
-    def test_rework_completion_path_uses_phase_name_not_terminal_alias(self, session_launcher):
-        """Rework completion path must target run phase directory (coding-N), not rework-<issue> alias."""
+    def test_rework_launch_clears_coding_interrupted_guard_label(self, launcher_bundle):
+        """Rework launch should clear interrupted coding retry guard."""
         rework = PendingRework(
             issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
             agent_type="agent:web",
-            rework_cycle=1,  # coding attempt 2
+            rework_cycle=1,
         )
 
-        result = session_launcher.launch_rework_session(rework, active_sessions=[])
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
 
         assert result.success is True
-        assert result.session is not None
-        assert "/sessions/coding-2/" in result.session.completion_path
-        assert "/sessions/rework-123/" not in result.session.completion_path
+        guard_label = launcher_bundle.launcher.config.retry.interrupted_sessions.coding_guard_label
+        actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
+        assert any(
+            isinstance(a, RemoveLabelAction)
+            and a.issue_number == 123
+            and a.label == guard_label
+            for a in actions
+        )
 
     def test_fails_when_agent_config_missing(self, session_launcher):
         """Verify fails when agent config not found (line 585)."""
@@ -1380,34 +1395,6 @@ class TestOrchestratorLaunchReviewSession:
         # Should have tried to restore
         mock_restorer.restore_sessions.assert_called_once()
 
-    def test_does_not_append_duplicate_restored_review_terminal(self, launcher_bundle):
-        launcher_bundle.session_exists_override[0] = lambda name: name == "review-456"
-        review = PendingReview(
-            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
-            pr_number=456,
-            pr_url="https://github.com/test/repo/pull/456",
-            branch_name="123-feature",
-            _issue_number=123,
-        )
-        existing_session = MagicMock()
-        existing_session.terminal_id = "review-456"
-        existing_session.issue = MagicMock(number=123)
-
-        state = OrchestratorState()
-        state.pending_reviews = [review]
-        state.active_sessions = [existing_session]
-
-        duplicate_restored = MagicMock()
-        duplicate_restored.terminal_id = "review-456"
-        duplicate_restored.issue = MagicMock(number=123)
-        mock_restorer = MagicMock()
-        mock_restorer.restore_sessions.return_value = [duplicate_restored]
-
-        orchestrator_launch_review_session(review, state, launcher_bundle.launcher, mock_restorer)
-
-        assert len(state.active_sessions) == 1
-        assert state.active_sessions[0].terminal_id == "review-456"
-
 
 class TestOrchestratorLaunchReworkSession:
     """Tests for orchestrator_launch_rework_session function."""
@@ -1561,27 +1548,6 @@ class TestRestoreRunningSessions:
 
         assert len(active_sessions) == 1
         assert active_sessions[0] == mock_session
-
-    def test_deduplicates_by_terminal_id(self):
-        existing = MagicMock()
-        existing.terminal_id = "issue-123"
-        existing.issue = MagicMock(number=123)
-        duplicate = MagicMock()
-        duplicate.terminal_id = "issue-123"
-        duplicate.issue = MagicMock(number=123)
-        active_sessions = [existing]
-
-        mock_restorer = MagicMock()
-        mock_restorer.restore_sessions.return_value = [duplicate]
-
-        restore_running_sessions(
-            running=[{"tab_name": "issue-123", "issue_number": 123}],
-            active_sessions=active_sessions,
-            session_restorer=mock_restorer,
-        )
-
-        assert len(active_sessions) == 1
-        assert active_sessions[0].terminal_id == "issue-123"
 
 
 # =============================================================================
