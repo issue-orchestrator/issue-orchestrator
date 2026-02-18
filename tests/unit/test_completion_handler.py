@@ -251,6 +251,29 @@ class TestHistoryEntryCreation:
         assert result.history_entry.status == "failed"
         assert "push" in result.history_entry.status_reason.lower() or "pr" in result.history_entry.status_reason.lower()
 
+    def test_completed_with_publish_blocked_error_records_failed_status(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Publish-blocked finalize failures (dirty-tree gate) should be FAILED in history."""
+        from issue_orchestrator.control.completion_processor import ERROR_PREFIX_PUBLISH_BLOCKED
+
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        processing_errors = [
+            f"{ERROR_PREFIX_PUBLISH_BLOCKED}: Working tree is dirty; commit/add/stash before pushing."
+        ]
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=processing_errors,
+        )
+
+        assert result.history_entry.status == "failed"
+        assert "push" in result.history_entry.status_reason.lower() or "pr" in result.history_entry.status_reason.lower()
+
     def test_completed_without_errors_records_completed_status(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
@@ -1099,6 +1122,32 @@ class TestLabelActionGeneration:
 
         assert remove_label is not None
         assert remove_label.label == config.get_label_in_progress()
+
+    def test_publish_blocked_error_generates_blocked_failed_actions(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Completed+publish-blocked should yield blocked-failed + comment + release claim."""
+        from issue_orchestrator.control.completion_processor import ERROR_PREFIX_PUBLISH_BLOCKED
+
+        issue = make_issue(number=321)
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[
+                f"{ERROR_PREFIX_PUBLISH_BLOCKED}: Working tree is dirty; commit/add/stash before pushing."
+            ],
+        )
+
+        actions = result.actions
+        assert any(isinstance(a, AddLabelAction) and a.label == "blocked-failed" for a in actions)
+        assert any(isinstance(a, RemoveLabelAction) and a.label == config.get_label_in_progress() for a in actions)
+        assert any(
+            isinstance(a, AddCommentAction) and "Processing Failed" in a.comment
+            for a in actions
+        )
 
     def test_failure_generates_blocked_needs_human_label_and_comment(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path

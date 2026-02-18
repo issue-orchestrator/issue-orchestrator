@@ -32,7 +32,11 @@ from ..domain.session_key import TaskKind
 from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
 from ..ports.session_output import SessionOutput
 from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
-from .completion_processor import ERROR_PREFIX_PUSH, ERROR_PREFIX_CREATE_PR
+from .completion_processor import (
+    ERROR_PREFIX_PUSH,
+    ERROR_PREFIX_CREATE_PR,
+    ERROR_PREFIX_PUBLISH_BLOCKED,
+)
 from .reconciliation import build_expected_for_mutation, ExpectedState
 from ..domain.triage_manifest import TriageManifest
 from pathlib import Path
@@ -91,11 +95,13 @@ def _read_triage_manifest(session: Session) -> TriageManifest | None:
 
 
 def _has_critical_errors(processing_errors: Optional[list[str]]) -> bool:
-    """Check if processing_errors contains critical push/PR failures."""
+    """Check if processing_errors contains critical publish/finalize failures."""
     if not processing_errors:
         return False
     return any(
-        error.startswith(ERROR_PREFIX_PUSH) or error.startswith(ERROR_PREFIX_CREATE_PR)
+        error.startswith(ERROR_PREFIX_PUSH)
+        or error.startswith(ERROR_PREFIX_CREATE_PR)
+        or error.startswith(ERROR_PREFIX_PUBLISH_BLOCKED)
         for error in processing_errors
     )
 
@@ -1342,7 +1348,11 @@ class CompletionHandler:
         # Check for critical processing errors (push/PR creation failures)
         critical_errors = [
             error for error in (processing_errors or [])
-            if error.startswith(ERROR_PREFIX_PUSH) or error.startswith(ERROR_PREFIX_CREATE_PR)
+            if (
+                error.startswith(ERROR_PREFIX_PUSH)
+                or error.startswith(ERROR_PREFIX_CREATE_PR)
+                or error.startswith(ERROR_PREFIX_PUBLISH_BLOCKED)
+            )
         ]
 
         # If agent said "completed" but critical processing failed, treat as blocked-failed
