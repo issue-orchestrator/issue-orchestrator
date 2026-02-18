@@ -1901,10 +1901,38 @@ def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -
                 event.get("run_dir"),
                 exc,
             )
-            event_with_actions["actions"] = []
+            event_with_actions["actions"] = _timeline_event_fallback_actions(event, issue_number)
             event_with_actions["actions_error"] = str(exc)
         decorated.append(event_with_actions)
     return decorated
+
+
+def _timeline_event_fallback_actions(event: dict[str, Any], issue_number: int) -> list[dict[str, Any]]:
+    """Build safe fallback actions when strict run-scoped decoration fails."""
+    actions: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add_action(action: dict[str, Any], dedupe_value: str) -> None:
+        action_type = str(action.get("type") or "")
+        key = (action_type, dedupe_value)
+        if key in seen:
+            return
+        seen.add(key)
+        actions.append(action)
+
+    # Keep direct artifact access where possible.
+    _timeline_event_artifact_actions(
+        event=event,
+        issue_number=issue_number,
+        add_action=_add_action,
+    )
+    # Always keep diagnostics entrypoints, but avoid ambiguous run-scoped log actions.
+    _timeline_event_default_actions(
+        issue_number=issue_number,
+        include_run_scoped=False,
+        add_action=_add_action,
+    )
+    return actions
 
 
 def _timeline_event_recommended_actions(

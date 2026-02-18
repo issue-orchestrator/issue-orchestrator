@@ -11,6 +11,7 @@
 <body>
     <a href="#mainContent" class="skip-link">Skip to main content</a>
     <div class="container">
+        <div id="engineRestartBanner" class="engine-restart-banner" style="display:none;" role="status" aria-live="polite"></div>
         <header>
             <div class="header-left">
                 <h1>Issue Orchestrator</h1>
@@ -163,6 +164,9 @@
                                         <span class="stale-dot" title="{{ card.stale_reason or 'Issue may be stale' }}" aria-label="Issue data may be stale"></span>
                                         {% endif %}
                                         <button class="card-refresh-btn" onclick="refreshIssueCard({{ card.issue_number }}, this);event.stopPropagation();" title="Refresh issue #{{ card.issue_number }} from GitHub" aria-label="Refresh issue #{{ card.issue_number }}">&#x27F3;</button>
+                                        {% if card.state_label == 'running' %}
+                                        <button class="card-kill-btn" onclick="killSession({{ card.issue_number }}, event)" title="Cancel / terminate issue #{{ card.issue_number }}" aria-label="Cancel issue #{{ card.issue_number }}">&#x23F9;</button>
+                                        {% endif %}
                                         {% if card.issue_url %}
                                         <a class="card-gh" href="{{ card.issue_url }}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">&#x2197;</a>
                                         {% endif %}
@@ -220,6 +224,10 @@
                             <button class="issue-action-btn" onclick="bulkRetryAwaitingMerge()" disabled title="Remove pr-pending and requeue selected issues for another run">Retry</button>
                             {% elif column.id == 'completed' %}
                             <button class="issue-action-btn" onclick="bulkRetryCompleted()" disabled title="Requeue selected completed issues for another run">Retry</button>
+                            {% elif column.id == 'running' %}
+                            <button class="issue-action-btn" onclick="bulkKillRunning()" disabled title="Terminate selected running issues and place them on hold">Cancel Selected</button>
+                            <button class="issue-action-btn" data-requires-selection="false" onclick="bulkKillAllRunning()" title="Terminate all running issues and place them on hold">Cancel All Running</button>
+                            <button class="issue-action-btn" onclick="bulkRefreshRunning()" disabled title="Refresh selected running issues from GitHub">Refresh Selected</button>
                             {% elif column.id == 'queued' %}
                             <button class="issue-action-btn" onclick="bulkDeprioritize()" disabled>Deprioritize</button>
                             {% endif %}
@@ -499,6 +507,24 @@
             </div>
         </div>
     </div>
+
+    <div id="contextMenu" class="context-menu" role="menu" aria-label="Issue actions">
+        <button id="menuFocus" class="context-menu-item" role="menuitem">Focus</button>
+        <button id="menuFinder" class="context-menu-item" role="menuitem">Open Worktree</button>
+        <button id="menuLog" class="context-menu-item" role="menuitem">Open Orchestrator Log</button>
+        <button id="menuAgentLog" class="context-menu-item" role="menuitem">View Agent Session Log</button>
+        <button id="menuPrompt" class="context-menu-item" role="menuitem">View Agent Prompt</button>
+        <button id="menuPR" class="context-menu-item" role="menuitem">Open PR ↗</button>
+        <button id="menuKill" class="context-menu-item danger" role="menuitem">Cancel / Terminate</button>
+        <div id="menuDepsDivider" class="context-menu-divider" style="display:none;"></div>
+        <div id="menuDepsLabel" class="context-menu-label" style="display:none;">Dependencies</div>
+        <div id="menuDepsContainer"></div>
+        <div id="menuHistoryDivider" class="context-menu-divider" style="display:none;"></div>
+        <button id="menuUnblock" class="context-menu-item" role="menuitem" style="display:none;">Unblock</button>
+        <button id="menuResetRetry" class="context-menu-item" role="menuitem" style="display:none;">Reset &amp; Retry</button>
+        <button id="menuRetry" class="context-menu-item" role="menuitem" style="display:none;">Retry</button>
+    </div>
+    <div id="toast" role="status" aria-live="polite"></div>
 
     <script>
       window.dashboardData = {{ dashboard_data | tojson }};

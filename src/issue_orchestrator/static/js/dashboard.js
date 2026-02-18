@@ -3019,7 +3019,6 @@ const menuFocus = document.getElementById('menuFocus');
 const menuFinder = document.getElementById('menuFinder');
 const menuLog = document.getElementById('menuLog');
 const menuAgentLog = document.getElementById('menuAgentLog');
-const menuInput = document.getElementById('menuInput');
 const menuPrompt = document.getElementById('menuPrompt');
 const menuKill = document.getElementById('menuKill');
 const menuPR = document.getElementById('menuPR');
@@ -3036,7 +3035,7 @@ const contextMenuEnabled = Boolean(contextMenu);
 
 // Add keyboard support to all context menu items
 if (contextMenuEnabled) {
-    [menuFocus, menuFinder, menuLog, menuAgentLog, menuInput, menuPrompt, menuKill, menuPR, menuUnblock, menuResetRetry, menuRetry]
+    [menuFocus, menuFinder, menuLog, menuAgentLog, menuPrompt, menuKill, menuPR, menuUnblock, menuResetRetry, menuRetry]
         .filter(Boolean)
         .forEach(addKeyboardSupport);
 }
@@ -3077,7 +3076,6 @@ function showContextMenu(e, row) {
 
     const hasTerminal = row.dataset.hasTerminal === 'true';
     setMenuVisible(menuKill, hasTerminal);
-    setMenuVisible(menuInput, hasTerminal);
     // Compact-card menus avoid ambiguous log/session entries.
     setMenuVisible(menuLog, !isCompactCardMenu && !isBlockedHistory);
     setMenuVisible(menuAgentLog, !isCompactCardMenu && !isBlockedHistory);
@@ -3120,7 +3118,6 @@ function showContextMenu(e, row) {
         menuFinder,
         menuLog,
         menuAgentLog,
-        menuInput,
         menuPrompt,
         menuPR,
         menuKill,
@@ -3272,27 +3269,6 @@ if (contextMenuEnabled) {
         if (currentRow) {
             const issueNumber = currentRow.dataset.issue;
             await openSessionManifest(issueNumber);
-        }
-    });
-
-    menuInput?.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        contextMenu.classList.remove('visible');
-        if (currentRow && !menuInput.classList.contains('disabled')) {
-            const issueNumber = currentRow.dataset.issue;
-            openModal(
-                `Send Input #${issueNumber}`,
-                `
-                    <div style="display:flex;flex-direction:column;gap:12px;">
-                        <label for="agentInput" class="form-label">Input</label>
-                        <textarea id="agentInput" class="form-textarea" rows="6" placeholder="Type a message or command (e.g., /exit)"></textarea>
-                        <div style="display:flex;justify-content:flex-end;gap:8px;">
-                            <button class="btn-secondary" onclick="closeModal()">Cancel</button>
-                            <button class="btn-primary" onclick="sendAgentInput(${issueNumber})">Send</button>
-                        </div>
-                    </div>
-                `
-            );
         }
     });
 

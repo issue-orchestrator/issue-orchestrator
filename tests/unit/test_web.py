@@ -3039,7 +3039,7 @@ class TestTimelineActionWiring:
         run_dir = str(run.run_dir)
 
         # No usable run artifacts yet: this is a contract violation.
-        with pytest.raises(FileNotFoundError):
+        with pytest.raises(RuntimeError, match="run-scoped agent log is empty/unusable"):
             _timeline_event_actions(
                 {
                     "event": "session.started",
@@ -3109,6 +3109,31 @@ class TestTimelineActionWiring:
         run_scoped_types = {action.get("type") for action in actions_with_run_dir}
         assert "open_agent_log" in run_scoped_types
         assert "view_claude_log" in run_scoped_types
+
+    def test_decorate_timeline_events_preserves_fallback_actions_when_strict_actions_fail(self) -> None:
+        from issue_orchestrator.entrypoints.web import _decorate_timeline_events
+
+        events = [
+            {
+                "event": "session.started",
+                "issue_number": 4057,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+                "artifacts": [
+                    {"type": "worktree", "label": "Worktree", "value": "/tmp/wt-4057"},
+                ],
+            }
+        ]
+
+        decorated = _decorate_timeline_events(events, 4057)
+        assert len(decorated) == 1
+        payload = decorated[0]
+        action_types = {action.get("type") for action in payload.get("actions", [])}
+
+        assert "open_path" in action_types
+        assert "open_orchestrator_log" in action_types
+        assert "open_session_diagnostics" in action_types
+        assert "open_agent_log" not in action_types
+        assert "actions_error" in payload
 
 
 class TestKillSessionEndpoint:
