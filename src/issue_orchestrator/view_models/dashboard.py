@@ -577,90 +577,71 @@ def _issue_number_or_none(raw: Any) -> int | None:
     return None
 
 
-def _apply_state_drift_fallback(
-    *,
-    state,
-    config,
-    lm: LabelManager,
-    active_items: list[dict[str, Any]],
-    queue_items: list[dict[str, Any]],
-    blocked_items: list[dict[str, Any]],
-    awaiting_merge_items: list[dict[str, Any]],
-    completed_items: list[dict[str, Any]],
-) -> None:
-    """Force unclassified or multi-classified issues into blocked with explicit drift reason."""
+def _build_source_info(state) -> dict[int, tuple[str, list[str]]]:
+    """Gather issue metadata from state: (title, labels)."""
     source_info: dict[int, tuple[str, list[str]]] = {}
-
     for issue in state.cached_queue_issues:
         source_info[issue.number] = (issue.title, list(issue.labels))
     for session in state.active_sessions:
         source_info[session.issue.number] = (session.issue.title, list(session.issue.labels))
     for entry in latest_history_entries_by_issue(state.session_history, limit=200):
         source_info.setdefault(entry.issue_number, (entry.title, []))
+    return source_info
 
-    bucket_members: dict[str, set[int]] = {
-        "queued": {
-            issue_number
-            for item in queue_items
-            if (issue_number := _issue_number_or_none(item.get("issue_number"))) is not None
-        },
-        "running": {
-            issue_number
-            for item in active_items
-            if (issue_number := _issue_number_or_none(item.get("issue_number"))) is not None
-        },
-        "blocked": {
-            issue_number
-            for item in blocked_items
-            if (issue_number := _issue_number_or_none(item.get("issue_number"))) is not None
-        },
-        "awaiting_merge": {
-            issue_number
-            for item in awaiting_merge_items
-            if (issue_number := _issue_number_or_none(item.get("issue_number"))) is not None
-        },
-        "completed": {
-            issue_number
-            for item in completed_items
-            if (issue_number := _issue_number_or_none(item.get("issue_number"))) is not None
-        },
+
+def _build_bucket_members(
+    active_items: list[dict[str, Any]],
+    queue_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    awaiting_merge_items: list[dict[str, Any]],
+    completed_items: list[dict[str, Any]],
+) -> dict[str, set[int]]:
+    """Extract issue numbers from each flow bucket."""
+    bucket_members: dict[str, set[int | None]] = {
+        "queued": {_issue_number_or_none(item.get("issue_number")) for item in queue_items},
+        "running": {_issue_number_or_none(item.get("issue_number")) for item in active_items},
+        "blocked": {_issue_number_or_none(item.get("issue_number")) for item in blocked_items},
+        "awaiting_merge": {_issue_number_or_none(item.get("issue_number")) for item in awaiting_merge_items},
+        "completed": {_issue_number_or_none(item.get("issue_number")) for item in completed_items},
     }
+    for members in bucket_members.values():
+        members.discard(None)
+    # Now all None values are removed, safe to return as dict[str, set[int]]
+    return bucket_members  # type: ignore[return-value]
 
-    blocked_by_issue: dict[int, dict[str, Any]] = {}
-    for item in blocked_items:
-        issue_number = _issue_number_or_none(item.get("issue_number"))
-        if issue_number is not None:
-            blocked_by_issue[issue_number] = item
 
-    for issue_number, (title, labels) in source_info.items():
-        memberships = [
-            bucket_name
-            for bucket_name, members in bucket_members.items()
-            if issue_number in members
-        ]
-        if len(memberships) == 1:
-            continue
-        if len(memberships) == 0:
-            reason = "state-drift: unclassified; issue was not placed in any flow bucket."
-        else:
-            reason = (
-                "state-drift: multi-classified across "
-                + ", ".join(memberships)
-                + "."
-            )
+def _get_drift_reason(memberships: list[str]) -> str:
+    """Generate drift reason message based on classification."""
+    if len(memberships) == 0:
+        return "state-drift: unclassified; issue was not placed in any flow bucket."
+    return "state-drift: multi-classified across " + ", ".join(memberships) + "."
 
-        if issue_number in blocked_by_issue:
-            item = blocked_by_issue[issue_number]
-            existing = str(item.get("blocked_summary") or item.get("status_reason") or "").strip()
-            if reason not in existing:
-                merged_reason = f"{existing} | {reason}" if existing else reason
-                item["blocked_summary"] = merged_reason
-                item["status_reason"] = merged_reason
-                item["detail_reason"] = merged_reason
-            item["detail_label"] = "state-drift"
-            item["state_drift"] = True
-            continue
 
+def _handle_drifted_issue(
+    issue_number: int,
+    title: str,
+    labels: list[str],
+    reason: str,
+    blocked_by_issue: dict[int, dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    state,
+    config,
+    lm: LabelManager,
+) -> None:
+    """Update or create blocked item for a drifted issue."""
+    if issue_number in blocked_by_issue:
+        # Update existing blocked item
+        item = blocked_by_issue[issue_number]
+        existing = str(item.get("blocked_summary") or item.get("status_reason") or "").strip()
+        if reason not in existing:
+            merged_reason = f"{existing} | {reason}" if existing else reason
+            item["blocked_summary"] = merged_reason
+            item["status_reason"] = merged_reason
+            item["detail_reason"] = merged_reason
+        item["detail_label"] = "state-drift"
+        item["state_drift"] = True
+    else:
+        # Create new blocked item
         blocked_item = {
             "issue_number": issue_number,
             "title": title or f"Issue #{issue_number}",
@@ -688,6 +669,51 @@ def _apply_state_drift_fallback(
         }
         blocked_items.append(blocked_item)
         blocked_by_issue[issue_number] = blocked_item
+
+
+def _apply_state_drift_fallback(
+    *,
+    state,
+    config,
+    lm: LabelManager,
+    active_items: list[dict[str, Any]],
+    queue_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    awaiting_merge_items: list[dict[str, Any]],
+    completed_items: list[dict[str, Any]],
+) -> None:
+    """Force unclassified or multi-classified issues into blocked with explicit drift reason."""
+    # Build source info from state
+    source_info = _build_source_info(state)
+
+    # Build bucket membership
+    bucket_members = _build_bucket_members(
+        active_items, queue_items, blocked_items, awaiting_merge_items, completed_items
+    )
+
+    # Index existing blocked items
+    blocked_by_issue: dict[int, dict[str, Any]] = {}
+    for item in blocked_items:
+        issue_number = _issue_number_or_none(item.get("issue_number"))
+        if issue_number is not None:
+            blocked_by_issue[issue_number] = item
+
+    # Process unclassified/multi-classified issues
+    for issue_number, (title, labels) in source_info.items():
+        memberships = [
+            bucket_name
+            for bucket_name, members in bucket_members.items()
+            if issue_number in members
+        ]
+        # Skip properly classified issues
+        if len(memberships) == 1:
+            continue
+
+        # Generate drift reason and handle the issue
+        reason = _get_drift_reason(memberships)
+        _handle_drifted_issue(
+            issue_number, title, labels, reason, blocked_by_issue, blocked_items, state, config, lm
+        )
 
 
 def _normalize_status_reason(reason: str | None) -> str | None:
