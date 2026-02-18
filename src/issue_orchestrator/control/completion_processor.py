@@ -1381,8 +1381,10 @@ class CompletionProcessor:
             validation_record_path: Path | None = None
             if exchange_result.exchange_dir:
                 candidate = exchange_result.exchange_dir.parent / "validation-record.json"
-                if candidate.exists():
-                    validation_record_path = candidate
+                # Store the expected validation record path even if it doesn't exist yet.
+                # The reviewer may write a validation record during review exchange, or the
+                # validation gate may write it afterwards. We check if it exists when loading.
+                validation_record_path = candidate
             self.session_output.store_review_exchange_summary(
                 worktree,
                 session_name,

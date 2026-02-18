@@ -543,25 +543,39 @@ Timestamp: {self._now_iso()}
         worktree_path: Path,
         session_name: str,
     ) -> ReviewExchangeSummary | None:
-        run_dir = self.find_run_dir(worktree_path, session_name=session_name)
-        if not run_dir:
+        # Check all run directories for this session, starting with the most recent.
+        # This is needed because the review exchange summary may be in an earlier run
+        # if the current run hasn't had the review exchange yet.
+        base_dir = self.sessions_base_dir(worktree_path)
+        if not base_dir.exists():
             return None
-        manifest = self.read_manifest(run_dir) or {}
-        manifest_dir = manifest.get("review_exchange_dir")
-        exchange_dir = Path(manifest_dir) if manifest_dir else run_dir / REVIEW_EXCHANGE_DIR_NAME
-        summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
-        if not summary_path.exists():
-            return None
-        summary = self._read_json(summary_path)
-        if not isinstance(summary, dict):
-            return None
-        validation_path = run_dir / VALIDATION_RECORD_NAME
-        return ReviewExchangeSummary(
-            summary=summary,
-            exchange_dir=exchange_dir,
-            summary_path=summary_path,
-            validation_record_path=validation_path if validation_path.exists() else None,
+
+        candidates = sorted(
+            [
+                d
+                for d in base_dir.iterdir()
+                if d.is_dir() and d.name.endswith(f"__{session_name}")
+            ],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
         )
+
+        for run_dir in candidates:
+            manifest = self.read_manifest(run_dir) or {}
+            manifest_dir = manifest.get("review_exchange_dir")
+            exchange_dir = Path(manifest_dir) if manifest_dir else run_dir / REVIEW_EXCHANGE_DIR_NAME
+            summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
+            if summary_path.exists():
+                summary = self._read_json(summary_path)
+                if isinstance(summary, dict):
+                    validation_path = run_dir / VALIDATION_RECORD_NAME
+                    return ReviewExchangeSummary(
+                        summary=summary,
+                        exchange_dir=exchange_dir,
+                        summary_path=summary_path,
+                        validation_record_path=validation_path if validation_path.exists() else None,
+                    )
+        return None
 
     # -------------------------------------------------------------------------
     # Review Feedback (per-cycle storage for diagnostics)
