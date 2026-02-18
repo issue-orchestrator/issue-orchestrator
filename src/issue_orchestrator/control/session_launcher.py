@@ -256,6 +256,7 @@ class SessionLauncher:
         self,
         *,
         completion_path: str,
+        session_id: str,
         agent_label: str,
         issue_number: int,
         run_dir: Path,
@@ -273,6 +274,7 @@ class SessionLauncher:
         orch_bin = Path(sys.executable).parent
         return (
             f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
+            f" {ENV_PREFIX}SESSION_ID='{session_id}'"
             f" {ENV_PREFIX}AGENT_LABEL='{agent_label}'"
             f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
             f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
@@ -719,6 +721,7 @@ class SessionLauncher:
         )
         env_exports = self._build_session_env(
             completion_path=completion_path,
+            session_id=run.session_name,
             agent_label=issue.agent_type,
             issue_number=issue.number,
             run_dir=run.run_dir,
@@ -962,6 +965,7 @@ class SessionLauncher:
         )
         env_exports = self._build_session_env(
             completion_path=completion_path,
+            session_id=run.session_name,
             agent_label=agent_label,
             issue_number=review.issue_number,
             run_dir=run.run_dir,
@@ -1246,6 +1250,7 @@ class SessionLauncher:
         )
         env_exports = self._build_session_env(
             completion_path=completion_path,
+            session_id=run.session_name,
             agent_label=rework.agent_type,
             issue_number=issue_number,
             run_dir=run.run_dir,

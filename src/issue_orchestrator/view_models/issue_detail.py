@@ -6,12 +6,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from ..domain.event_taxonomy import (
-    EventIntent,
-    infer_event_intent,
-)
-from ..domain.logical_run_projection import LogicalRunProjector
-
 
 # ---------------------------------------------------------------------------
 # Context dataclass — assembled by the web endpoint from orchestrator state
@@ -32,9 +26,6 @@ class IssueStoryContext:
     pr_number: int | None = None
 
 
-_logical_run_projector = LogicalRunProjector()
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -50,10 +41,12 @@ def build_issue_detail_view_model(
 ) -> dict[str, Any]:
     """Build issue detail payload used by the dashboard drawer."""
     today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-    timeline_steps = _build_journey_steps(events, today)
-    previous_runs = _build_previous_cycles(cycles, today)
-    run_cycles = _build_journey_cycles(events, today, context)
-    runs = _build_runs(run_cycles)
+    journey = _build_journey_steps(events, today)
+    prev_cycles = _build_previous_cycles(cycles, today)
+    journey_cycles = _build_journey_cycles(events, today, context)
+
+    # Lifecycle count: max lifecycle number across cycles
+    lifecycle_count = max((c["lifecycle"] for c in journey_cycles), default=0)
 
     return {
         "issue_number": issue_number,
@@ -69,11 +62,11 @@ def build_issue_detail_view_model(
         ],
         # Story fields
         "status_explanation": _build_status_explanation(context, events),
-        "timeline_steps": timeline_steps,
-        "runs": runs,
-        "run_count": len(runs),
-        "previous_runs": previous_runs,
-        "previous_runs_count": len(previous_runs),
+        "journey_steps": journey,
+        "journey_cycles": journey_cycles,
+        "lifecycle_count": lifecycle_count,
+        "previous_cycles": prev_cycles,
+        "previous_cycles_count": len(prev_cycles),
         "raw_events_count": len(events),
         "blocked_detail": _build_blocked_detail(context, events),
     }
@@ -242,7 +235,7 @@ def _find_last_event(
 # ---------------------------------------------------------------------------
 
 # Events that are noise in the journey — too low-level for user narrative
-_JOURNEY_SKIP_PREFIXES = ("observation.", "cleanup.", "tick.", "orchestrator.", "apply.", "worktree.", "completion.", "stale.", "pr.", "claim.")
+_JOURNEY_SKIP_PREFIXES = ("observation.", "cleanup.", "tick.", "orchestrator.", "apply.", "worktree.", "completion.", "stale.", "pr.")
 _JOURNEY_SKIP_EVENTS = frozenset({
     "issue.labels_changed",
     "issue.claimed",
@@ -305,7 +298,7 @@ def _build_journey_steps(
         time_label = _format_time_label(ts, today)
         day = str(ts)[:10] if ts else ""
 
-        detail = event.get("detail")
+        detail = _normalize_detail(event.get("detail"))
         step_dict: dict[str, Any] = {
             "timestamp": ts,
             "time_label": time_label,
@@ -357,10 +350,33 @@ def _format_agent(event: dict[str, Any]) -> str:
     return raw
 
 
+def _normalize_detail(detail: Any) -> str | None:
+    """Normalize repeated detail fragments for readability."""
+    if not detail:
+        return None
+    value = str(detail).strip()
+    if not value:
+        return None
+    if " | " not in value:
+        return value
+    parts = [p.strip() for p in value.split(" | ") if p.strip()]
+    if not parts:
+        return None
+    deduped = list(dict.fromkeys(parts))
+    return " | ".join(deduped)
+
+
 
 # ---------------------------------------------------------------------------
 # Journey cycles — collapsible lifecycle groups
 # ---------------------------------------------------------------------------
+
+# Events that mark the boundary of a lifecycle (issue fully blocked or done)
+_LIFECYCLE_TERMINAL = frozenset({"issue.blocked", "issue.needs_human", "issue.completed"})
+# Events that restart a lifecycle after a terminal state
+_LIFECYCLE_RESTART = frozenset({"issue.unblocked"})
+# Events that start a new iteration (code/review/rework) within a lifecycle
+_ITERATION_START = frozenset({"session.started", "rework.started", "rework.launching"})
 
 # Outcome derivation: last significant event → outcome label
 _OUTCOME_EVENTS = frozenset({
@@ -381,50 +397,15 @@ _OUTCOME_EVENTS = frozenset({
 def filter_last_run_cycles(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Filter cycles to only those from the latest lifecycle.
 
-    Mirrors the frontend ``Latest run`` intent (logical run), so backend and
-    UI share the same semantics.
-
-    Returns all cycles from max lifecycle when available; falls back to run_id
-    grouping only for legacy payloads without lifecycle annotations.
+    Mirrors the frontend ``filterJourneyCycles('last-run')`` logic so it can
+    be tested without the UI.  Returns all cycles if no lifecycle info exists.
     """
-    return _logical_run_projector.filter_last_run_cycles(cycles)
-
-
-def _build_runs(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Group cycle rows into logical runs for UI rendering.
-
-    Logical runs are lifecycle-based (coding + review + rework chain),
-    not individual physical session launches.
-    """
-    runs = _logical_run_projector.build_runs(cycles)
-    if not runs:
-        return runs
-
-    latest = runs[-1]
-    if not _run_contains_review_events(latest):
-        latest["outcome"] = _coerce_non_review_latest_outcome(str(latest.get("outcome") or ""))
-        for cycle in latest.get("cycles", []):
-            cycle["outcome"] = _coerce_non_review_latest_outcome(str(cycle.get("outcome") or ""))
-    return runs
-
-
-def _run_contains_review_events(run: dict[str, Any]) -> bool:
-    for cycle in run.get("cycles", []):
-        steps = cycle.get("steps")
-        if not isinstance(steps, list):
-            continue
-        if any(str(step.get("event") or "").startswith("review.") for step in steps if isinstance(step, dict)):
-            return True
-    return False
-
-
-def _coerce_non_review_latest_outcome(outcome: str) -> str:
-    lower = outcome.strip().lower()
-    if "approved" in lower or "completed" in lower or "awaiting merge" in lower:
-        if lower.startswith("rework"):
-            return "Rework \u2192 In progress"
-        return "In progress"
-    return outcome
+    if not cycles:
+        return cycles
+    max_lifecycle = max(c.get("lifecycle", 0) for c in cycles)
+    if max_lifecycle <= 0:
+        return cycles
+    return [c for c in cycles if c.get("lifecycle") == max_lifecycle]
 
 
 def _build_journey_cycles(
@@ -432,65 +413,113 @@ def _build_journey_cycles(
     today: str,
     context: IssueStoryContext | None = None,
 ) -> list[dict[str, Any]]:
-    """Build collapsible cycle groups from backend-owned logical semantics."""
-    if not _has_logical_semantics(events):
-        return []
-    return _build_semantic_journey_cycles(events, today, context)
+    """Build collapsible cycle groups from all events.
+
+    Two paths:
+    1. **Signal-based** (new): when events carry ``rework_cycle``, group by
+       ``coding_cycle = (rework_cycle or 0) + 1``.  Lifecycle boundaries
+       come from terminal event scanning.
+    2. **Annotation-based** (legacy): for historical events without
+       ``rework_cycle``, use ``_annotate_lifecycle`` to infer cycles.
+    """
+    has_rework_signal = any("rework_cycle" in e for e in events)
+
+    if has_rework_signal:
+        return _build_signal_journey_cycles(events, today, context)
+
+    # Legacy path — fall back to annotation-based approach
+    return _build_annotated_journey_cycles(events, today, context)
 
 
-def _has_logical_semantics(events: list[dict[str, Any]]) -> bool:
-    if not events:
-        return False
-    return all(
-        isinstance(e.get("logical_run"), int)
-        and isinstance(e.get("logical_cycle"), int)
-        and isinstance(e.get("logical_phase"), str)
-        for e in events
-    )
-
-
-def _required_int(event: dict[str, Any], key: str) -> int:
-    value = event.get(key)
-    if not isinstance(value, int):
-        raise ValueError(f"timeline event missing required int field: {key}")
-    return value
-
-
-def _build_semantic_journey_cycles(
+def _build_signal_journey_cycles(
     events: list[dict[str, Any]],
     today: str,
     context: IssueStoryContext | None = None,
 ) -> list[dict[str, Any]]:
-    """Group events using backend-owned logical semantics."""
-    grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
-    for event in events:
+    """Group events into cycles using the ``rework_cycle`` signal.
+
+    ``coding_cycle = (rework_cycle or 0) + 1``.
+    Lifecycle boundaries are detected from terminal events.
+    """
+    # Compute lifecycle number per event index
+    lifecycle_per_event = _compute_lifecycle_per_event(events)
+
+    # Group journey-visible events by coding_cycle
+    groups: dict[int, list[tuple[dict[str, Any], int]]] = {}  # cycle -> [(event, lifecycle)]
+    for idx, event in enumerate(events):
         event_name = str(event.get("event") or "")
         if event_name in _JOURNEY_SKIP_EVENTS:
             continue
         if any(event_name.startswith(p) for p in _JOURNEY_SKIP_PREFIXES):
             continue
-        logical_run = _required_int(event, "logical_run")
-        logical_cycle = _required_int(event, "logical_cycle")
-        grouped.setdefault((logical_run, logical_cycle), []).append(event)
+
+        lifecycle = lifecycle_per_event[idx]
+        if "rework_cycle" in event:
+            rc = event.get("rework_cycle") or 0
+            coding_cycle = rc + 1
+        else:
+            # Legacy event: group into cycle 0 (will be renumbered later)
+            coding_cycle = 0
+        groups.setdefault(coding_cycle, []).append((event, lifecycle))
 
     cycles: list[dict[str, Any]] = []
-    for idx, key in enumerate(sorted(grouped.keys()), start=1):
-        logical_run, logical_cycle = key
-        raw_events = grouped[key]
-        cycle = _finalize_cycle_from_events(
-            idx,
-            logical_run,
-            logical_cycle,
-            raw_events,
-            today,
-            context,
-        )
-        cycles.append(cycle)
+    for cycle_num in sorted(groups):
+        items = groups[cycle_num]
+        cycle_events = [e for e, _lc in items]
+        lifecycle = items[0][1] if items else 1
+        cycles.append(_finalize_cycle_from_events(
+            len(cycles) + 1, lifecycle, cycle_num,
+            cycle_events, today, context,
+        ))
 
     if cycles:
         cycles[-1]["expanded"] = True
 
-    return _annotate_cycle_in_run(cycles)
+    return cycles
+
+
+def _compute_lifecycle_per_event(
+    events: list[dict[str, Any]],
+) -> list[int]:
+    """Assign lifecycle numbers based on terminal event boundaries.
+
+    Lifecycle increments when a new session starts after a terminal event
+    (issue.blocked, issue.needs_human, issue.completed) or after issue.unblocked.
+
+    Also increments at the boundary between legacy events (no ``rework_cycle``
+    key) and signal-era events (with ``rework_cycle`` key) so that "Last run"
+    filtering can separate old and new activity.
+    """
+    result: list[int] = []
+    lifecycle = 1
+    needs_new_lifecycle = False
+    seen_legacy = False
+    seen_signal_boundary = False
+
+    for event in events:
+        event_name = str(event.get("event") or "")
+
+        if needs_new_lifecycle and (
+            event_name in _ITERATION_START or event_name in _LIFECYCLE_RESTART
+        ):
+            lifecycle += 1
+            needs_new_lifecycle = False
+
+        if event_name in _LIFECYCLE_TERMINAL:
+            needs_new_lifecycle = True
+
+        # Treat transition from legacy → signal era as a lifecycle boundary
+        has_signal = "rework_cycle" in event
+        if not has_signal:
+            seen_legacy = True
+        elif seen_legacy and not seen_signal_boundary:
+            seen_signal_boundary = True
+            lifecycle += 1
+            needs_new_lifecycle = False
+
+        result.append(lifecycle)
+
+    return result
 
 
 def _finalize_cycle_from_events(
@@ -528,17 +557,6 @@ def _finalize_cycle_from_events(
     # Time label from first event
     first_ts = raw_events[0].get("timestamp") or "" if raw_events else ""
     time_label = _format_date_time_label(first_ts)
-    run_id = next(
-        (str(evt.get("run_id")) for evt in raw_events if evt.get("run_id")),
-        None,
-    )
-    session_run_ids = [
-        run for run in dict.fromkeys(
-            str(evt.get("run_id"))
-            for evt in raw_events
-            if evt.get("run_id")
-        )
-    ]
 
     # Outcome from last significant event
     outcome = _derive_cycle_outcome(raw_events, iteration, context)
@@ -546,16 +564,34 @@ def _finalize_cycle_from_events(
     # Artifacts
     artifacts = _collect_cycle_artifacts(raw_events)
 
-    # Nested journey steps + phase groups
-    steps = [_build_cycle_step(evt, today) for evt in raw_events]
-    phase_groups = _build_phase_groups(raw_events, steps, iteration)
+    # Nested journey steps
+    steps: list[dict[str, Any]] = []
+    for evt in raw_events:
+        event_name = str(evt.get("event") or "")
+        narrative = _event_to_narrative(evt)
+        ts = evt.get("timestamp") or ""
+        step_time = _format_time_label(ts, today)
+        step_dict: dict[str, Any] = {
+            "timestamp": ts,
+            "time_label": step_time,
+            "day": str(ts)[:10] if ts else "",
+            "narrative": narrative,
+            "status": str(evt.get("status") or ""),
+            "event": event_name,
+        }
+        detail = _normalize_detail(evt.get("detail"))
+        if detail:
+            step_dict["detail"] = str(detail)
+        # Pass through actions so journey cycle events have ⋯ menus
+        actions = evt.get("actions")
+        if actions:
+            step_dict["actions"] = actions
+        steps.append(step_dict)
 
     return {
         "cycle": cycle_number,
         "lifecycle": lifecycle,
         "iteration": iteration,
-        "run_id": run_id,
-        "session_run_ids": session_run_ids,
         "agent": agent,
         "reviewer_agent": reviewer_agent,
         "retry_count": retry_count,
@@ -564,125 +600,158 @@ def _finalize_cycle_from_events(
         "expanded": False,
         "artifacts": artifacts,
         "steps": steps,
-        "phase_groups": phase_groups,
     }
 
 
-def _annotate_cycle_in_run(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Annotate cycles with a run-local sequence number.
-
-    Uses ``run_id`` when available. Falls back to lifecycle grouping when
-    ``run_id`` is absent (legacy timelines).
-    """
-    return _logical_run_projector.annotate_cycle_in_run(cycles)
-
-
-def _build_cycle_step(evt: dict[str, Any], today: str) -> dict[str, Any]:
-    """Build one journey step entry from a timeline event."""
-    event_name = str(evt.get("event") or "")
-    narrative = _event_to_narrative(evt)
-    ts = evt.get("timestamp") or ""
-    step_time = _format_time_label(ts, today)
-    step_dict: dict[str, Any] = {
-        "timestamp": ts,
-        "time_label": step_time,
-        "day": str(ts)[:10] if ts else "",
-        "narrative": narrative,
-        "status": str(evt.get("status") or ""),
-        "event": event_name,
-    }
-    detail_parts: list[str] = []
-    detail = evt.get("detail")
-    if detail:
-        detail_parts.append(str(detail))
-    actions_error = evt.get("actions_error")
-    if isinstance(actions_error, str) and actions_error.strip():
-        detail_parts.append(f"Missing timeline artifacts/actions: {actions_error.strip()}")
-    actions = evt.get("actions")
-    if isinstance(actions, list):
-        missing_messages: list[str] = []
-        for action in actions:
-            if not isinstance(action, dict) or str(action.get("type") or "") != "show_actions_error":
-                continue
-            raw_messages = action.get("error_messages")
-            if isinstance(raw_messages, list):
-                for msg in raw_messages:
-                    if isinstance(msg, str) and msg.strip():
-                        missing_messages.append(msg.strip())
-            raw_message = action.get("error_message")
-            if isinstance(raw_message, str) and raw_message.strip():
-                missing_messages.append(raw_message.strip())
-        if missing_messages:
-            unique_messages = list(dict.fromkeys(missing_messages))
-            detail_parts.append(
-                "Missing timeline artifacts/actions: " + " | ".join(unique_messages)
-            )
-    if detail_parts:
-        step_dict["detail"] = " | ".join(detail_parts)
-    if actions:
-        step_dict["actions"] = actions
-    return step_dict
-
-
-def _build_phase_groups(
-    raw_events: list[dict[str, Any]],
-    steps: list[dict[str, Any]],
-    iteration: int,
+def _build_annotated_journey_cycles(
+    events: list[dict[str, Any]],
+    today: str,
+    context: IssueStoryContext | None = None,
 ) -> list[dict[str, Any]]:
-    """Group cycle steps into user-facing phase buckets."""
-    groups: list[dict[str, Any]] = []
-    current_key: str | None = None
+    """Legacy path: build cycles using ``_annotate_lifecycle`` inference.
 
-    for evt, step in zip(raw_events, steps, strict=False):
-        phase_key = _phase_key_for_event(evt, iteration)
-        if current_key != phase_key:
-            groups.append({
-                "key": phase_key,
-                "label": _phase_label_for_key(phase_key),
-                "steps": [],
-            })
-            current_key = phase_key
-        groups[-1]["steps"].append(step)
+    Used for historical events that lack ``rework_cycle`` signals.
+    """
+    annotated = _annotate_lifecycle(events)
 
-    return groups
+    cycles: list[dict[str, Any]] = []
+    current_cycle_events: list[tuple[dict[str, Any], int, int]] = []
+    current_lifecycle = 0
+    current_iteration = 0
+
+    for event, lifecycle, iteration in annotated:
+        event_name = str(event.get("event") or "")
+
+        if event_name in _JOURNEY_SKIP_EVENTS:
+            continue
+        if any(event_name.startswith(p) for p in _JOURNEY_SKIP_PREFIXES):
+            continue
+
+        if (lifecycle != current_lifecycle or iteration != current_iteration) and (lifecycle > 0 and iteration > 0):
+            if current_cycle_events:
+                cycles.append(_finalize_cycle(
+                    len(cycles) + 1, current_lifecycle, current_iteration,
+                    current_cycle_events, today, context,
+                ))
+            current_cycle_events = []
+            current_lifecycle = lifecycle
+            current_iteration = iteration
+
+        if current_lifecycle == 0 and lifecycle > 0:
+            current_lifecycle = lifecycle
+            current_iteration = iteration
+
+        current_cycle_events.append((event, lifecycle, iteration))
+
+    if current_cycle_events:
+        cycles.append(_finalize_cycle(
+            len(cycles) + 1, current_lifecycle, current_iteration,
+            current_cycle_events, today, context,
+        ))
+
+    for i, cycle in enumerate(cycles):
+        cycle["expanded"] = i == len(cycles) - 1
+
+    return cycles
 
 
-def _phase_key_for_event(evt: dict[str, Any], iteration: int) -> str:
-    """Map an event to a phase key for cycle rendering."""
-    logical_phase = str(evt.get("logical_phase") or "").strip().lower()
-    if logical_phase in {"coding", "review", "rework", "orchestrator"}:
-        return logical_phase
+def _annotate_lifecycle(
+    events: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], int, int]]:
+    """Run lifecycle/iteration state machine over all events.
 
-    intent_raw = evt.get("event_intent")
-    intent = (
-        intent_raw
-        if isinstance(intent_raw, str) and intent_raw
-        else infer_event_intent(
-            event_name=str(evt.get("event") or ""),
-            task=str(evt.get("task") or ""),
-        ).value
-    )
+    Returns (event, lifecycle, iteration) triples.
+    """
+    result: list[tuple[dict[str, Any], int, int]] = []
+    lifecycle = 0
+    iteration = 0
+    needs_new_lifecycle = True
 
-    if intent == EventIntent.ORCHESTRATOR.value:
-        return "orchestrator"
-    if intent == EventIntent.REVIEW.value:
-        return "review"
-    if intent == EventIntent.REWORK.value:
-        return "rework"
-    if intent == EventIntent.CODING.value:
-        return "rework" if iteration > 1 else "coding"
+    for event in events:
+        event_name = str(event.get("event") or "")
 
-    return "rework" if iteration > 1 else "coding"
+        if needs_new_lifecycle and event_name in _ITERATION_START:
+            lifecycle += 1
+            iteration = 1
+            needs_new_lifecycle = False
+        elif event_name in _LIFECYCLE_RESTART:
+            lifecycle += 1
+            iteration = 0
+            needs_new_lifecycle = False
+        elif event_name in _ITERATION_START:
+            iteration += 1
+
+        if event_name in _LIFECYCLE_TERMINAL:
+            needs_new_lifecycle = True
+
+        result.append((event, lifecycle, iteration))
+
+    return result
 
 
-def _phase_label_for_key(key: str) -> str:
-    if key == "review":
-        return "Review"
-    if key == "orchestrator":
-        return "Orchestrator"
-    if key == "rework":
-        return "Rework"
-    return "Coding"
+def _finalize_cycle(
+    cycle_number: int,
+    lifecycle: int,
+    iteration: int,
+    annotated_events: list[tuple[dict[str, Any], int, int]],
+    today: str,
+    context: IssueStoryContext | None,
+) -> dict[str, Any]:
+    """Build one cycle dict from its annotated events."""
+    raw_events = [e for e, _l, _i in annotated_events]
+
+    # Agent label: from the first session-start event in the cycle
+    agent = ""
+    for evt in raw_events:
+        a = _format_agent(evt)
+        if a:
+            agent = a
+            break
+
+    # Time label from first event
+    first_ts = raw_events[0].get("timestamp") or "" if raw_events else ""
+    time_label = _format_date_time_label(first_ts)
+
+    # Outcome from last significant event
+    outcome = _derive_cycle_outcome(raw_events, iteration, context)
+
+    # Artifacts
+    artifacts = _collect_cycle_artifacts(raw_events)
+
+    # Nested journey steps (same shape as flat journey_steps)
+    steps: list[dict[str, Any]] = []
+    for evt in raw_events:
+        event_name = str(evt.get("event") or "")
+        narrative = _event_to_narrative(evt)
+        ts = evt.get("timestamp") or ""
+        step_time = _format_time_label(ts, today)
+        step_dict: dict[str, Any] = {
+            "timestamp": ts,
+            "time_label": step_time,
+            "day": str(ts)[:10] if ts else "",
+            "narrative": narrative,
+            "status": str(evt.get("status") or ""),
+            "event": event_name,
+        }
+        detail = _normalize_detail(evt.get("detail"))
+        if detail:
+            step_dict["detail"] = str(detail)
+        actions = evt.get("actions")
+        if actions:
+            step_dict["actions"] = actions
+        steps.append(step_dict)
+
+    return {
+        "cycle": cycle_number,
+        "lifecycle": lifecycle,
+        "iteration": iteration,
+        "agent": agent,
+        "outcome": outcome,
+        "time_label": time_label,
+        "expanded": False,
+        "artifacts": artifacts,
+        "steps": steps,
+    }
 
 
 def _derive_cycle_outcome(
@@ -709,7 +778,8 @@ def _derive_cycle_outcome(
     # Prefix with "Rework → " when iteration > 1, but not for review-dominated cycles
     if iteration > 1:
         is_review_cycle = any(
-            str(e.get("event_intent") or "") == EventIntent.REVIEW.value
+            str(e.get("task") or "") == "review"
+            or str(e.get("event") or "").startswith("review.")
             for e in events
         )
         if not is_review_cycle:
@@ -819,29 +889,29 @@ def _collect_cycle_artifacts(events: list[dict[str, Any]]) -> dict[str, Any]:  #
 
 
 def _format_date_time_label(timestamp: Any) -> str:
-    """Format a timestamp to 'Feb 9, 2:10:30 PM' style for cycle headers."""
+    """Format a timestamp to 'Feb 9, 2:10 PM' style for cycle headers."""
     if not timestamp:
         return ""
     ts = str(timestamp)
     try:
         dt = datetime.fromisoformat(ts)
-        time_part = dt.strftime("%-I:%M:%S %p").lstrip("0")
+        time_part = dt.strftime("%-I:%M %p").lstrip("0")
         date_part = dt.strftime("%b %-d")
         return f"{date_part}, {time_part}"
     except (ValueError, TypeError):
         if "T" in ts and len(ts) >= 19:
-            return ts[:19].replace("T", " ")
+            return ts[:16].replace("T", " ")
         return ts
 
 
 def _format_time_label(timestamp: Any, today: str = "") -> str:
-    """Format a timestamp to a label like '8:15:30 PM' (today) or 'Feb 8, 8:15:30 PM' (other days)."""
+    """Format a timestamp to a label like '8:15 PM' (today) or 'Feb 8, 8:15 PM' (other days)."""
     if not timestamp:
         return ""
     ts = str(timestamp)
     try:
         dt = datetime.fromisoformat(ts)
-        time_part = dt.strftime("%-I:%M:%S %p").lstrip("0")
+        time_part = dt.strftime("%-I:%M %p").lstrip("0")
         if today and ts[:10] == today:
             return time_part
         # Include short date for non-today events
@@ -850,7 +920,7 @@ def _format_time_label(timestamp: Any, today: str = "") -> str:
     except (ValueError, TypeError):
         # Fallback: show the time portion
         if "T" in ts and len(ts) >= 19:
-            return ts[11:19]
+            return ts[11:16]
         return ts
 
 

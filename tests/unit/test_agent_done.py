@@ -21,6 +21,7 @@ from issue_orchestrator.entrypoints.cli_tools.agent_done import (
     STATUS_TO_OUTCOME,
     STATUS_TO_ACTIONS,
     die,
+    get_issue_number,
     get_session_id,
     validate_fields,
     format_comment_body,
@@ -173,6 +174,29 @@ class TestGetSessionId:
             assert session_id.startswith("standalone-")
             # Should contain date-time pattern
             assert "-" in session_id
+
+    def test_prefers_prefixed_session_id_env(self):
+        """ISSUE_ORCHESTRATOR_SESSION_ID should take precedence."""
+        prefixed = f"{ENV_PREFIX}SESSION_ID"
+        with patch.dict(
+            os.environ,
+            {prefixed: "prefixed-session", "ORCHESTRATOR_SESSION_ID": "legacy-session"},
+            clear=True,
+        ):
+            assert get_session_id() == "prefixed-session"
+
+
+class TestGetIssueNumber:
+    """Test issue number resolution from environment."""
+
+    def test_prefers_prefixed_issue_number_env(self):
+        prefixed = f"{ENV_PREFIX}ISSUE_NUMBER"
+        with patch.dict(
+            os.environ,
+            {prefixed: "4057", "ORCHESTRATOR_ISSUE_NUMBER": "1"},
+            clear=True,
+        ):
+            assert get_issue_number() == 4057
 
 
 class TestValidateFields:

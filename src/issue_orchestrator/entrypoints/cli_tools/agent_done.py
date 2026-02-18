@@ -211,11 +211,11 @@ def die(message: str) -> NoReturn:
 def get_session_id() -> str:
     """Get session ID from environment or generate one.
 
-    The orchestrator sets ORCHESTRATOR_SESSION_ID when launching agents.
+    The orchestrator sets ISSUE_ORCHESTRATOR_SESSION_ID when launching agents.
+    Legacy ORCHESTRATOR_SESSION_ID is also accepted for compatibility.
     If not set, we generate a timestamp-based ID for standalone usage.
     """
-    import os
-    session_id = os.environ.get("ORCHESTRATOR_SESSION_ID")
+    session_id = get_env("SESSION_ID") or os.environ.get("ORCHESTRATOR_SESSION_ID")
     if session_id:
         return session_id
     # Fallback for standalone usage
@@ -225,10 +225,11 @@ def get_session_id() -> str:
 def get_issue_number() -> Optional[int]:
     """Get issue number from environment.
 
-    The orchestrator sets ORCHESTRATOR_ISSUE_NUMBER when launching agents.
+    The orchestrator sets ISSUE_ORCHESTRATOR_ISSUE_NUMBER when launching agents.
+    Legacy ORCHESTRATOR_ISSUE_NUMBER is also accepted for compatibility.
     Returns None if not set (standalone usage).
     """
-    issue_str = os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
+    issue_str = get_env("ISSUE_NUMBER") or os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
     if issue_str:
         try:
             return int(issue_str)
@@ -512,7 +513,8 @@ def trigger_orchestrator_resume(verbose: bool = False) -> tuple[bool, str | None
     the orchestrator to pick up the completion and continue the flow
     (create PR, run review, etc.).
 
-    Requires ORCHESTRATOR_API_PORT and ORCHESTRATOR_ISSUE_NUMBER env vars,
+    Requires ISSUE_ORCHESTRATOR_API_PORT and ISSUE_ORCHESTRATOR_ISSUE_NUMBER env vars
+    (legacy ORCHESTRATOR_* vars are also accepted),
     which are set automatically when launching debug sessions from the web UI.
 
     Args:
@@ -524,15 +526,15 @@ def trigger_orchestrator_resume(verbose: bool = False) -> tuple[bool, str | None
     import urllib.request
     import urllib.error
 
-    port = os.environ.get("ORCHESTRATOR_API_PORT")
-    issue_number = os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
+    port = get_env("API_PORT") or os.environ.get("ORCHESTRATOR_API_PORT")
+    issue_number = get_env("ISSUE_NUMBER") or os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
 
     if not port or not issue_number:
         missing = []
         if not port:
-            missing.append("ORCHESTRATOR_API_PORT")
+            missing.append("ISSUE_ORCHESTRATOR_API_PORT")
         if not issue_number:
-            missing.append("ORCHESTRATOR_ISSUE_NUMBER")
+            missing.append("ISSUE_ORCHESTRATOR_ISSUE_NUMBER")
         return False, (
             f"Cannot resume: missing environment variables: {', '.join(missing)}. "
             f"Completion record written. Resume processing from the web UI."
@@ -870,13 +872,20 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
 
     # Write completion record
     output_path = write_completion_record(record)
+    output_path_abs = output_path.resolve()
 
-    print(f"Completion record written to: {output_path}")
+    print(f"Completion record written to: {output_path_abs}")
     print(f"Status: {status}")
     print(f"Session: {record.session_id}")
     if validation_result:
         validation_status = "passed" if validation_result.passed else "failed"
         print(f"Validation: {validation_status}")
+        if validation_result.record_path:
+            print(f"Validation record: {Path(validation_result.record_path).resolve()}")
+        if validation_result.record and validation_result.record.stdout_path:
+            print(f"Validation stdout: {Path(validation_result.record.stdout_path).resolve()}")
+        if validation_result.record and validation_result.record.stderr_path:
+            print(f"Validation stderr: {Path(validation_result.record.stderr_path).resolve()}")
 
     # Handle --resume flag: trigger orchestrator to process completion
     if args.resume:
