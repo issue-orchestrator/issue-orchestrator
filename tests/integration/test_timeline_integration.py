@@ -665,11 +665,11 @@ def test_run_scoped_artifact_usability_enforces_non_empty_log_and_run_dir(
         web.set_orchestrator(None)
 
 
-def test_run_scoped_log_action_not_offered_for_empty_session_log(
+def test_run_scoped_log_action_offered_for_start_event_with_empty_session_log(
     sample_config,
     mock_repository_host,
 ):
-    """Empty/near-empty session logs should not advertise run-scoped session-log actions."""
+    """Start events should still offer session log action even when log is sparse."""
     orch, timeline_writer = _build_orchestrator_with_sqlite_timeline(sample_config, mock_repository_host)
     issue_number = 4062
     run_dir = _start_run_with_artifacts(
@@ -701,7 +701,7 @@ def test_run_scoped_log_action_not_offered_for_empty_session_log(
         assert isinstance(steps, list) and steps
         actions = steps[0].get("actions") or []
         assert isinstance(actions, list)
-        assert all(action.get("type") != "open_agent_log" for action in actions)
+        assert any(action.get("type") == "open_agent_log" for action in actions)
     finally:
         web.set_orchestrator(None)
 

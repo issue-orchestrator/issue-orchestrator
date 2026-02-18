@@ -3033,7 +3033,7 @@ class TestTimelineActionWiring:
         assert "open_agent_log" in types_with_run_dir
         assert "view_claude_log" in types_with_run_dir
 
-    def test_run_scoped_actions_require_usable_artifacts(self, tmp_path: Path) -> None:
+    def test_run_scoped_start_events_allow_session_log_even_when_sparse(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
@@ -3043,17 +3043,19 @@ class TestTimelineActionWiring:
         run = session_output.start_run(worktree, "issue-1", issue_number=1)
         run_dir = str(run.run_dir)
 
-        # No usable run artifacts yet: this is a contract violation.
-        with pytest.raises(RuntimeError, match="run-scoped agent log is empty/unusable"):
-            _timeline_event_actions(
-                {
-                    "event": "session.started",
-                    "issue_number": 1,
-                    "run_dir": run_dir,
-                    "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
-                },
-                1,
-            )
+        # Start events should expose agent log action even when output is sparse.
+        sparse_actions = _timeline_event_actions(
+            {
+                "event": "session.started",
+                "issue_number": 1,
+                "run_dir": run_dir,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            1,
+        )
+        sparse_types = {action.get("type") for action in sparse_actions}
+        assert "open_agent_log" in sparse_types
+        assert "view_claude_log" not in sparse_types
 
         # Add usable agent log + claude log manifest binding.
         (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")

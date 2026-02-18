@@ -2051,11 +2051,14 @@ def _timeline_event_default_actions(
     )
 
 
-def _agent_log_is_usable(log_path: Path) -> bool:
-    """Return True when the session log contains meaningful, non-empty content."""
+def _agent_log_is_usable(log_path: Path, *, event_name: str) -> bool:
+    """Return True when run-scoped agent log should be exposed in timeline actions."""
     try:
         if not log_path.exists():
             return False
+        # Start events should always expose the session log, even when output is sparse.
+        if event_name in _TIMELINE_START_EVENTS:
+            return True
         content = log_path.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return False
@@ -2092,7 +2095,7 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
         accessor = ManifestAccessor(identity)
         if action_type == "open_agent_log":
             artifact = accessor.get_agent_log()
-            if not _agent_log_is_usable(artifact.path):
+            if not _agent_log_is_usable(artifact.path, event_name=event_name):
                 raise RuntimeError(
                     f"run-scoped agent log is empty/unusable: issue={issue_number} event={event_name} run_dir={event_run_dir}"
                 )
