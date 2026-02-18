@@ -15,7 +15,9 @@ from issue_orchestrator.control.session_controller import SessionController, Ses
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.domain.models import SessionStatus, CompletionRecord, CompletionOutcome, RequestedAction
+from issue_orchestrator.events import EventName
 from issue_orchestrator.ports import NullEventSink
+from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
@@ -548,3 +550,51 @@ class TestSessionControllerValidationCaching:
 
         # Command runner should NOT have been called
         assert len(command_runner.run_calls) == 0
+
+
+class TestRunScopedSessionEvents:
+    def test_processing_completed_event_requires_and_emits_run_dir(self, tmp_path):
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+        events = InMemoryEventSink()
+        session_output = FileSystemSessionOutput()
+        controller = SessionController(
+            completion_processor=processor,
+            events=events,
+            session_output=session_output,
+            working_copy=StubWorkingCopy(),
+        )
+
+        worktree = tmp_path / "wt-processing"
+        worktree.mkdir(parents=True)
+        run_dir = session_output.ensure_run_dir(worktree, "issue-123")
+
+        decision = controller.decide_outcome(
+            observation=SessionObservationResult.terminated(runtime_minutes=1.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Issue 123",
+            session_name="issue-123",
+        )
+        assert decision.status == SessionStatus.COMPLETED
+
+        evt = events.last_event(str(EventName.SESSION_PROCESSING_COMPLETED))
+        assert evt is not None
+        assert evt.data["run_dir"] == str(run_dir)
+
+    def test_emit_event_fails_fast_for_run_scoped_event_without_run_dir(self):
+        controller = SessionController(
+            completion_processor=MockCompletionProcessor(),
+            events=InMemoryEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
+        with pytest.raises(RuntimeError, match="run-scoped event emitted without run_dir"):
+            controller._emit_event(
+                EventName.SESSION_VALIDATION_PASSED,
+                {"issue_number": 1, "session_name": "issue-1"},
+            )

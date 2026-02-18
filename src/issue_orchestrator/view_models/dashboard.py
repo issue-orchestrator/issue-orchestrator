@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import copy
 import json
+import threading
 import time
 from typing import Any, Callable
 
@@ -17,6 +19,19 @@ from ..infra import gh_audit
 
 QUEUE_PAGE_SIZE = 20
 E2E_PAGE_SIZE = 15
+E2E_STATUS_CACHE_TTL_SECONDS = 1.5
+_E2E_STATUS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_E2E_STATUS_CACHE_LOCK = threading.Lock()
+
+
+def _e2e_status_cache_key(config: Any) -> str:
+    return f"{str(config.repo_root)}::{config.orchestrator_id}"
+
+
+def invalidate_e2e_status_cache(config: Any) -> None:
+    key = _e2e_status_cache_key(config)
+    with _E2E_STATUS_CACHE_LOCK:
+        _E2E_STATUS_CACHE.pop(key, None)
 
 
 @dataclass(frozen=True)
@@ -556,6 +571,9 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
     history_items: list[dict[str, Any]] = []
     blocked_items: list[dict[str, Any]] = []
     for entry in latest_history_entries_by_issue(state.session_history, limit=50):
+        # Completed-without-PR is not a terminal lane; let queue data drive placement.
+        if entry.status == "completed" and not entry.pr_url:
+            continue
         url = entry.pr_url if entry.pr_url else issue_url_for(config, entry.issue_number)
         action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
         status_reason = _normalize_status_reason(getattr(entry, "status_reason", None))
@@ -944,7 +962,7 @@ def _build_flow_columns(
             "title": "Running",
             "count": len(active_items),
             "items": [_compact_card(item, "running") for item in active_items[:12]],
-            "expandable": False,
+            "expandable": True,
         },
         {
             "id": "blocked",
@@ -1032,6 +1050,16 @@ def _get_e2e_status(config) -> dict[str, Any]:
     orchestrator_id = config.orchestrator_id
     runner = get_e2e_runner_manager()
     proc_status = runner.status(orchestrator_id)
+    cache_key = _e2e_status_cache_key(config)
+    now_mono = time.monotonic()
+    with _E2E_STATUS_CACHE_LOCK:
+        cached_entry = _E2E_STATUS_CACHE.get(cache_key)
+    if cached_entry is not None:
+        cached_at, cached_payload = cached_entry
+        if (now_mono - cached_at) < E2E_STATUS_CACHE_TTL_SECONDS:
+            cached_running = bool(cached_payload.get("running"))
+            if cached_running == bool(proc_status.get("running")):
+                return copy.deepcopy(cached_payload)
 
     db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
     last_run = None
@@ -1061,7 +1089,7 @@ def _get_e2e_status(config) -> dict[str, Any]:
 
     next_run = get_next_run_info(config, config.repo_root, run_obj)
 
-    return {
+    payload = {
         "enabled": True,
         "running": proc_status["running"],
         "pid": proc_status.get("pid"),
@@ -1073,6 +1101,9 @@ def _get_e2e_status(config) -> dict[str, Any]:
         "untriaged_count": untriaged_count,
         "low_stability": low_stability,
     }
+    with _E2E_STATUS_CACHE_LOCK:
+        _E2E_STATUS_CACHE[cache_key] = (now_mono, payload)
+    return copy.deepcopy(payload)
 
 
 def _build_e2e_view_model(

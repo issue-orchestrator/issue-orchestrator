@@ -89,6 +89,7 @@ def test_view_model_active_session_and_dashboard_data():
     assert view_model.flow_columns
     assert view_model.flow_columns[1]["id"] == "running"
     assert view_model.flow_columns[1]["count"] == 1
+    assert view_model.flow_columns[1]["expandable"] is True
     assert view_model.flow_columns[1]["items"][0]["card_id"] == "review-12"
 
     dashboard_data = view_model.dashboard_data()
@@ -298,6 +299,43 @@ def test_completed_history_with_pr_url_routes_to_awaiting_merge_not_completed():
 
     assert any(item["issue_number"] == 4057 for item in view_model.awaiting_merge_items)
     assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
+
+
+def test_completed_history_without_pr_url_does_not_enter_completed_lane():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    config.agents = {"agent:web": agent_config}
+    open_issue = Issue(
+        number=4057,
+        title="Provider circuit breaker dashboard",
+        labels=["agent:web"],
+    )
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[open_issue],
+        session_history=[
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Provider circuit breaker dashboard",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=12,
+                pr_url=None,
+            ),
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert all(item["issue_number"] != 4057 for item in view_model.completed_items)
+    assert any(item["issue_number"] == 4057 for item in view_model.queue_items)
 
 
 def test_view_model_includes_refresh_staleness_meta():

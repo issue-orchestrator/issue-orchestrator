@@ -100,6 +100,13 @@ def _has_critical_errors(processing_errors: Optional[list[str]]) -> bool:
     )
 
 
+def _has_review_exchange_errors(processing_errors: Optional[list[str]]) -> bool:
+    """Check if processing_errors contains review exchange halt/failure markers."""
+    if not processing_errors:
+        return False
+    return any(error.startswith("review_exchange:") for error in processing_errors)
+
+
 @dataclass
 class CompletionResult:
     """Result of processing a session completion."""
@@ -319,6 +326,7 @@ class CompletionHandler:
         processing_errors: Optional[list[str]] = None,
         diagnostic_path: Optional[str] = None,
         review_exchange_completed: bool = False,
+        review_exchange_halted: bool = False,
         blocked_label: Optional[str] = None,
         blocked_reason: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
@@ -347,6 +355,8 @@ class CompletionHandler:
             extra=log_context(issue_key=issue_key, session_id=session.terminal_id),
         )
 
+        review_exchange_halted = review_exchange_halted or _has_review_exchange_errors(processing_errors)
+
         # Fetch PR info if completed (or use hint from completion processor)
         pr_url, pr_number, pr_infos = self._fetch_pr_info(session, status, pr_url_hint=pr_url_hint)
         if pr_infos:
@@ -374,6 +384,13 @@ class CompletionHandler:
             )
             history_status = SessionStatus.FAILED
             history_status_reason = "Push or PR creation failed"
+        elif status == SessionStatus.COMPLETED and review_exchange_halted:
+            logger.info(
+                "[COMPLETION] Review exchange halted - using FAILED for history/trace: issue=%d",
+                session.issue.number,
+            )
+            history_status = SessionStatus.FAILED
+            history_status_reason = "Review exchange halted"
 
         # Create history entry
         history_entry = self._create_history_entry(
@@ -382,13 +399,13 @@ class CompletionHandler:
 
         # Emit trace events
         self._emit_trace_events(
-            session, status, pr_url, pr_number,
+            session, history_status, pr_url, pr_number,
             blocked_reason=blocked_reason,
             completion_detail=completion_detail,
         )
 
         # Update state machines
-        self._update_state_machines(session, status, pr_url)
+        self._update_state_machines(session, history_status, pr_url)
 
         # Determine cleanup strategy
         should_defer, pending_cleanup = self._determine_cleanup_strategy(
@@ -402,12 +419,14 @@ class CompletionHandler:
             pr_url,
             pr_number,
             review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
         )
 
         # Generate actions for label/comment changes (policy logic)
         completion_actions = list(self.generate_completion_actions(
             session, status, processing_errors=processing_errors,
             diagnostic_path=diagnostic_path,
+            review_exchange_halted=review_exchange_halted,
             blocked_label=blocked_label,
             blocked_reason=blocked_reason,
         ))
@@ -580,12 +599,14 @@ class CompletionHandler:
         """
         # Generate human-readable status reason
         status_reasons = {
-            SessionStatus.COMPLETED: "PR created successfully",
+            SessionStatus.COMPLETED: "Completed without PR",
             SessionStatus.BLOCKED: "Agent marked issue as blocked",
             SessionStatus.NEEDS_HUMAN: "Agent requested human input",
             SessionStatus.TIMED_OUT: f"Exceeded {session.agent_config.timeout_minutes} min timeout",
             SessionStatus.FAILED: "Session ended without PR or status update",
         }
+        if status == SessionStatus.COMPLETED and pr_url:
+            status_reasons[SessionStatus.COMPLETED] = "PR created successfully"
         status_reason = status_reason_override or status_reasons.get(status, "Unknown")
 
         return SessionHistoryEntry(
@@ -994,6 +1015,7 @@ class CompletionHandler:
         pr_url: Optional[str],
         pr_number: Optional[int] = None,
         review_exchange_completed: bool = False,
+        review_exchange_halted: bool = False,
     ) -> bool:
         """Determine if session should be added to discovered_reviews.
 
@@ -1004,6 +1026,11 @@ class CompletionHandler:
         if review_exchange_completed:
             logger.info(
                 "[REVIEW] Review exchange completed - skipping PR review queue",
+            )
+            return False
+        if review_exchange_halted:
+            logger.info(
+                "[REVIEW] Review exchange halted - skipping PR review queue",
             )
             return False
 
@@ -1284,6 +1311,7 @@ class CompletionHandler:
         status: SessionStatus,
         processing_errors: Optional[list[str]] = None,
         diagnostic_path: Optional[str] = None,
+        review_exchange_halted: bool = False,
         blocked_label: Optional[str] = None,
         blocked_reason: Optional[str] = None,
     ) -> tuple[Action, ...]:
@@ -1319,6 +1347,13 @@ class CompletionHandler:
                 session, critical_errors, diagnostic_path, expected
             ))
 
+        if status == SessionStatus.COMPLETED and review_exchange_halted:
+            logger.info(
+                "[COMPLETION] Review exchange halted - generating blocked-failed actions: issue=%d",
+                session.issue.number,
+            )
+            return tuple(self._generate_review_exchange_halted_actions(session, expected))
+
         # Dispatch to status-specific action generators
         if status == SessionStatus.TIMED_OUT:
             return tuple(self._generate_timeout_actions(session, expected))
@@ -1349,6 +1384,41 @@ class CompletionHandler:
         # Note: NEEDS_HUMAN keeps in-progress label to maintain ownership claim
         # This is intentional policy - the issue is still being worked on
         return ()
+
+    def _generate_review_exchange_halted_actions(
+        self,
+        session: Session,
+        expected: ExpectedState,
+    ) -> list[Action]:
+        """Generate hold actions when a review exchange halts without progress."""
+        issue_number = session.issue.number
+        return [
+            AddLabelAction(
+                issue_number=issue_number,
+                label=self._lm.blocked_failed,
+                reason="Review exchange halted with no progress",
+                expected=expected,
+            ),
+            AddCommentAction(
+                number=issue_number,
+                comment=(
+                    "⚠️ **Review Exchange Halted**\n\n"
+                    "The automated review exchange stopped because it could not make further progress.\n\n"
+                    f"- Session: `{session.terminal_id}`\n"
+                    f"- Runtime: {session.runtime_minutes:.1f} minutes\n\n"
+                    f"This issue has been marked as `{self._lm.blocked_failed}` and will not be retried automatically.\n"
+                    "Use Retry/Unblock when you want to run it again."
+                ),
+                reason="Notify that review exchange halted and issue is on hold",
+                expected=expected,
+            ),
+            RemoveLabelAction(
+                issue_number=issue_number,
+                label=self._lm.in_progress,
+                reason="Review exchange halted - releasing claim",
+                expected=expected,
+            ),
+        ]
 
 
 def launch_review_by_number(
