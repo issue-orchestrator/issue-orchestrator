@@ -1134,7 +1134,6 @@ class CompletionProcessor:
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
         pr_title = f"#{issue_number}: {issue_title}"
         pr_body = self._build_pr_body(record, issue_number)
-        review_run_dir = self.session_output.find_run_dir(worktree, session_name) if session_name else None
 
         exchange_mode, exchange_result, exchange_halt = self._run_review_exchange_if_needed(
             worktree=worktree,
@@ -1144,6 +1143,11 @@ class CompletionProcessor:
             agent_label=agent_label,
             errors=errors,
             actions_taken=actions_taken,
+        )
+        review_run_dir = self._resolve_review_exchange_run_dir(
+            exchange_outcome=exchange_result,
+            worktree=worktree,
+            session_name=session_name,
         )
         if exchange_halt:
             return self._ActionResult(halt=True)
@@ -1274,15 +1278,6 @@ class CompletionProcessor:
         if exchange_mode not in {"via-mcp", "via-local-loop"}:
             return exchange_mode, None, False
         reviewer_label = self._resolve_reviewer_label(agent_label) if agent_label else None
-        run_dir: Path | None = None
-        if session_name:
-            run_dir = self.session_output.find_run_dir(worktree, session_name)
-        self._emit_review_started(
-            issue_number=issue_number,
-            reviewer_label=reviewer_label,
-            exchange_mode=exchange_mode,
-            run_dir=run_dir,
-        )
         require_validation = bool(
             self._config and self._config.review_exchange_require_validation
         )
@@ -1292,6 +1287,17 @@ class CompletionProcessor:
             require_validation=require_validation,
         )
         if existing_outcome:
+            review_run_dir = self._resolve_review_exchange_run_dir(
+                exchange_outcome=existing_outcome,
+                worktree=worktree,
+                session_name=session_name,
+            )
+            self._emit_review_started(
+                issue_number=issue_number,
+                reviewer_label=reviewer_label,
+                exchange_mode=exchange_mode,
+                run_dir=review_run_dir,
+            )
             if existing_outcome.status == "ok":
                 actions_taken.append("Review exchange passed (cached)")
                 reviewer_summary = (
@@ -1306,7 +1312,7 @@ class CompletionProcessor:
                     approved=True,
                     rounds=getattr(existing_outcome, "rounds", None),
                     summary=reviewer_summary,
-                    run_dir=run_dir,
+                    run_dir=review_run_dir,
                 )
                 return exchange_mode, existing_outcome, False
             self._emit_review_outcome(
@@ -1316,7 +1322,7 @@ class CompletionProcessor:
                 approved=False,
                 rounds=getattr(existing_outcome, "rounds", None),
                 summary=f"Review exchange halted: {existing_outcome.reason}",
-                run_dir=run_dir,
+                run_dir=review_run_dir,
             )
             errors.append(
                 f"review_exchange: {existing_outcome.status} ({existing_outcome.reason})"
@@ -1330,6 +1336,17 @@ class CompletionProcessor:
             session_name=session_name,
             agent_label=agent_label,
         )
+        review_run_dir = self._resolve_review_exchange_run_dir(
+            exchange_outcome=exchange_result,
+            worktree=worktree,
+            session_name=session_name,
+        )
+        self._emit_review_started(
+            issue_number=issue_number,
+            reviewer_label=reviewer_label,
+            exchange_mode=exchange_mode,
+            run_dir=review_run_dir,
+        )
         if exchange_result.status != "ok":
             self._emit_review_outcome(
                 issue_number=issue_number,
@@ -1338,7 +1355,7 @@ class CompletionProcessor:
                 approved=False,
                 rounds=getattr(exchange_result, "rounds", None),
                 summary=f"Review exchange halted: {exchange_result.reason}",
-                run_dir=run_dir,
+                run_dir=review_run_dir,
             )
             errors.append(
                 f"review_exchange: {exchange_result.status} ({exchange_result.reason})"
@@ -1357,7 +1374,7 @@ class CompletionProcessor:
             approved=True,
             rounds=exchange_result.rounds,
             summary=reviewer_summary,
-            run_dir=run_dir,
+            run_dir=review_run_dir,
         )
         if session_name and exchange_result.summary:
             validation_record_path: Path | None = None
@@ -1372,6 +1389,27 @@ class CompletionProcessor:
                 validation_record_path=validation_record_path,
             )
         return exchange_mode, exchange_result, False
+
+    def _resolve_review_exchange_run_dir(
+        self,
+        *,
+        exchange_outcome: Any | None,
+        worktree: Path,
+        session_name: str | None,
+    ) -> Path | None:
+        """Resolve run_dir for review-exchange lifecycle events.
+
+        Prefer the dedicated review-exchange run dir; fall back to session run dir.
+        """
+        exchange_dir = getattr(exchange_outcome, "exchange_dir", None) if exchange_outcome else None
+        if exchange_dir:
+            try:
+                return Path(exchange_dir).parent
+            except TypeError:
+                logger.debug("Invalid exchange_dir on review exchange outcome: %r", exchange_dir)
+        if session_name:
+            return self.session_output.find_run_dir(worktree, session_name)
+        return None
 
     def _load_existing_review_exchange_outcome(
         self,

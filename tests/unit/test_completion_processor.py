@@ -505,8 +505,19 @@ class TestReviewExchangeExecution:
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
         )
         worktree = worktree_with_completion(record)
+        review_exchange_run = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260218-030043Z__review-exchange-123"
+        )
         processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
-            return_value=ReviewExchangeOutcome(status="ok", rounds=1, reason="reviewer_ok")
+            return_value=ReviewExchangeOutcome(
+                status="ok",
+                rounds=1,
+                reason="reviewer_ok",
+                exchange_dir=review_exchange_run / "review-exchange",
+            )
         )
 
         result = processor.process(
@@ -525,8 +536,12 @@ class TestReviewExchangeExecution:
         review_approved = sink.last_event(str(EventName.REVIEW_APPROVED))
         assert review_started is not None
         assert review_approved is not None
-        assert str(review_started.data.get("run_dir", "")).endswith("/.issue-orchestrator/sessions/test-session")
-        assert str(review_approved.data.get("run_dir", "")).endswith("/.issue-orchestrator/sessions/test-session")
+        assert str(review_started.data.get("run_dir", "")).endswith(
+            "/.issue-orchestrator/sessions/20260218-030043Z__review-exchange-123"
+        )
+        assert str(review_approved.data.get("run_dir", "")).endswith(
+            "/.issue-orchestrator/sessions/20260218-030043Z__review-exchange-123"
+        )
         review_events = [
             event
             for event in sink.events
@@ -535,7 +550,7 @@ class TestReviewExchangeExecution:
         assert review_events, "Expected review lifecycle events to be emitted"
         for event in review_events:
             assert str(event.data.get("run_dir", "")).endswith(
-                "/.issue-orchestrator/sessions/test-session"
+                "/.issue-orchestrator/sessions/20260218-030043Z__review-exchange-123"
             ), f"missing run_dir on {event.name}"
 
     def test_local_loop_failure_emits_review_changes_requested_trace_event(
@@ -569,8 +584,19 @@ class TestReviewExchangeExecution:
             requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
         )
         worktree = worktree_with_completion(record)
+        review_exchange_run = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260218-030044Z__review-exchange-123"
+        )
         processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
-            return_value=ReviewExchangeOutcome(status="error", rounds=1, reason="boom")
+            return_value=ReviewExchangeOutcome(
+                status="error",
+                rounds=1,
+                reason="boom",
+                exchange_dir=review_exchange_run / "review-exchange",
+            )
         )
 
         result = processor.process(
@@ -594,8 +620,12 @@ class TestReviewExchangeExecution:
         review_changes = sink.last_event(str(EventName.REVIEW_CHANGES_REQUESTED))
         assert review_started is not None
         assert review_changes is not None
-        assert str(review_started.data.get("run_dir", "")).endswith("/.issue-orchestrator/sessions/test-session")
-        assert str(review_changes.data.get("run_dir", "")).endswith("/.issue-orchestrator/sessions/test-session")
+        assert str(review_started.data.get("run_dir", "")).endswith(
+            "/.issue-orchestrator/sessions/20260218-030044Z__review-exchange-123"
+        )
+        assert str(review_changes.data.get("run_dir", "")).endswith(
+            "/.issue-orchestrator/sessions/20260218-030044Z__review-exchange-123"
+        )
 
     def test_exchange_uses_cached_summary_after_restart(
         self,
