@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -80,13 +81,21 @@ class SessionDiagnosticsContext:
 
 
 def _join_worktree_path(worktree: str, rel_path: Any) -> str:
-    """Join worktree + manifest-relative path when both are present."""
-    if not worktree:
-        return ""
+    """Resolve manifest path to an openable filesystem path.
+
+    - Absolute path values are returned as-is.
+    - Relative path values are resolved under worktree.
+    - Missing worktree + relative path returns empty string.
+    """
     rel_value = str(rel_path or "")
     if not rel_value:
         return ""
-    return f"{worktree}/{rel_value}"
+    rel_candidate = Path(rel_value)
+    if rel_candidate.is_absolute():
+        return str(rel_candidate)
+    if not worktree:
+        return ""
+    return str(Path(worktree) / rel_candidate)
 
 
 def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[DialogRow]:

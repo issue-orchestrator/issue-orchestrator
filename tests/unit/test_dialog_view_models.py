@@ -209,6 +209,24 @@ def test_build_session_diagnostics_dialog_fallbacks_without_worktree():
     assert "validate.json" not in paths
 
 
+def test_build_session_diagnostics_dialog_keeps_absolute_validation_path():
+    dialog = build_session_diagnostics_dialog(
+        9,
+        {
+            "manifest": {
+                "session_name": "sess-abs",
+                "worktree": "/wt",
+                "validation_record_path": "/wt/.issue-orchestrator/sessions/r1/validation-record.json",
+            },
+            "run_dir": "/run/r1",
+        },
+    )
+
+    paths = {action.get("path") for action in dialog["actions"] if "path" in action}
+    assert "/wt/.issue-orchestrator/sessions/r1/validation-record.json" in paths
+    assert "/wt//wt/.issue-orchestrator/sessions/r1/validation-record.json" not in paths
+
+
 def test_build_blocked_issues_dialog():
     dialog = build_blocked_issues_dialog({"blocked_issues": ["M1-1"]})
 

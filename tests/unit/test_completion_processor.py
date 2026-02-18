@@ -14,7 +14,7 @@ import json
 import pytest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, MagicMock, call, patch
 
 from issue_orchestrator.domain.models import (
     CompletionRecord,
@@ -521,6 +521,22 @@ class TestReviewExchangeExecution:
         assert str(EventName.REVIEW_STARTED) in event_names
         assert str(EventName.REVIEW_APPROVED) in event_names
         assert event_names.index(str(EventName.REVIEW_STARTED)) < event_names.index(str(EventName.REVIEW_APPROVED))
+        review_started = sink.last_event(str(EventName.REVIEW_STARTED))
+        review_approved = sink.last_event(str(EventName.REVIEW_APPROVED))
+        assert review_started is not None
+        assert review_approved is not None
+        assert str(review_started.data.get("run_dir", "")).endswith("/.issue-orchestrator/sessions/test-session")
+        assert str(review_approved.data.get("run_dir", "")).endswith("/.issue-orchestrator/sessions/test-session")
+        review_events = [
+            event
+            for event in sink.events
+            if str(event.name).startswith("review.")
+        ]
+        assert review_events, "Expected review lifecycle events to be emitted"
+        for event in review_events:
+            assert str(event.data.get("run_dir", "")).endswith(
+                "/.issue-orchestrator/sessions/test-session"
+            ), f"missing run_dir on {event.name}"
 
     def test_local_loop_failure_emits_review_changes_requested_trace_event(
         self,
@@ -565,12 +581,21 @@ class TestReviewExchangeExecution:
         )
 
         assert result.success is False
+        assert result.review_exchange_halted is True
+        assert result.pr_url is None
+        mock_pr_adapter.create_pr.assert_not_called()
         event_names = sink.event_names()
         assert str(EventName.REVIEW_STARTED) in event_names
         assert str(EventName.REVIEW_CHANGES_REQUESTED) in event_names
         assert event_names.index(str(EventName.REVIEW_STARTED)) < event_names.index(
             str(EventName.REVIEW_CHANGES_REQUESTED)
         )
+        review_started = sink.last_event(str(EventName.REVIEW_STARTED))
+        review_changes = sink.last_event(str(EventName.REVIEW_CHANGES_REQUESTED))
+        assert review_started is not None
+        assert review_changes is not None
+        assert str(review_started.data.get("run_dir", "")).endswith("/.issue-orchestrator/sessions/test-session")
+        assert str(review_changes.data.get("run_dir", "")).endswith("/.issue-orchestrator/sessions/test-session")
 
     def test_exchange_uses_cached_summary_after_restart(
         self,
@@ -913,6 +938,7 @@ class TestReviewExchangeExecution:
             outcome=CompletionOutcome.REVIEW_APPROVED,
             requested_actions=[
                 RequestedAction.ADD_CODE_REVIEWED_LABEL,
+                RequestedAction.REMOVE_NEEDS_REWORK_LABEL,
                 RequestedAction.REMOVE_CODE_REVIEW_LABEL,
                 RequestedAction.POST_COMMENT,
             ],
@@ -925,7 +951,9 @@ class TestReviewExchangeExecution:
 
         assert result.success
         mock_label_adapter.add_label.assert_called_once_with(42, "code-reviewed")
-        mock_label_adapter.remove_label.assert_called_once_with(42, "needs-code-review")
+        mock_label_adapter.remove_label.assert_has_calls(
+            [call(42, "needs-rework"), call(42, "needs-code-review")]
+        )
 
     def test_review_changes_requested_adds_needs_rework_removes_review_label(
         self, processor, mock_label_adapter, worktree_with_completion
@@ -1664,8 +1692,9 @@ class TestCompletionProcessorPublishGate:
         assert run_dir is not None
         assert (run_dir / "validation-stdout.log").read_text() == "validation stdout"
         assert (run_dir / "validation-stderr.log").read_text() == "validation stderr"
+        assert (run_dir / "validation-record.json").exists()
         manifest = json.loads((run_dir / "manifest.json").read_text())
-        assert "validation_record_path" in manifest
+        assert manifest.get("validation_record_path") == str(run_dir / "validation-record.json")
         # Verify manifest is updated with validation_passed=False for UI status derivation
         assert manifest.get("validation_passed") is False
         assert manifest.get("validation_failure_reason") == "Validation failed"

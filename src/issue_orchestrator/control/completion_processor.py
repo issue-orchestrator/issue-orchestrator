@@ -19,6 +19,7 @@ import json
 import re
 import logging
 import os
+import shutil
 import time
 import traceback
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ from ..domain.events import EventBus, SessionEvent
 from ..events import EventContext, EventName
 from ..ports import EventSink, TraceEvent
 from ..infra.issue_diagnostics import write_issue_diagnostic
+from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..infra.worktree_base import resolve_base_branch
 from ..ports.session_output import SessionOutput, ValidationRecord
 from .validation import PublishGate, ValidationRecordStore
@@ -107,6 +109,7 @@ class ProcessingResult:
     errors: list[str] | None = None
     diagnostic_path: str | None = None  # Path to detailed failure diagnostics
     review_exchange_completed: bool = False
+    review_exchange_halted: bool = False
 
 
 class CompletionProcessor:
@@ -338,6 +341,7 @@ class CompletionProcessor:
         pr_number: int,
         comment_url: str | None,
         comment_body: str,
+        run_dir: Path | None = None,
     ) -> None:
         """Emit trace event for a posted review comment (if trace events are configured)."""
         if self._trace_events is None or self._event_context is None:
@@ -350,6 +354,8 @@ class CompletionProcessor:
             "comment_excerpt": excerpt[:180] if excerpt else "",
             "summary": "Posted review comment",
         }
+        if run_dir is not None:
+            payload["run_dir"] = str(run_dir)
         self._trace_events.publish(
             TraceEvent(
                 EventName.REVIEW_COMMENT_ADDED,
@@ -363,6 +369,7 @@ class CompletionProcessor:
         issue_number: int,
         reviewer_label: str | None,
         exchange_mode: str,
+        run_dir: Path | None = None,
     ) -> None:
         """Emit trace event when local review exchange starts."""
         if self._trace_events is None or self._event_context is None:
@@ -373,6 +380,8 @@ class CompletionProcessor:
             "agent": reviewer_label or "",
             "review_exchange_mode": exchange_mode,
         }
+        if run_dir is not None:
+            payload["run_dir"] = str(run_dir)
         self._trace_events.publish(
             TraceEvent(
                 EventName.REVIEW_STARTED,
@@ -389,6 +398,7 @@ class CompletionProcessor:
         approved: bool,
         rounds: int | None,
         summary: str,
+        run_dir: Path | None = None,
     ) -> None:
         """Emit review terminal event from local exchange outcome."""
         if self._trace_events is None or self._event_context is None:
@@ -401,6 +411,8 @@ class CompletionProcessor:
             "rounds": rounds,
             "summary": summary,
         }
+        if run_dir is not None:
+            payload["run_dir"] = str(run_dir)
         event_name = EventName.REVIEW_APPROVED if approved else EventName.REVIEW_CHANGES_REQUESTED
         self._trace_events.publish(
             TraceEvent(
@@ -476,13 +488,24 @@ class CompletionProcessor:
         run_dir = self.session_output.ensure_run_dir(worktree, session_name)
         if record_path is None and record is not None:
             record_path = ValidationRecordStore(worktree).get_record_path(record.head_sha)
-        if record_path is not None:
+        run_dir_record_path = run_dir / "validation-record.json"
+        if not run_dir_record_path.exists() and record_path is not None and record_path.exists():
+            try:
+                shutil.copy2(record_path, run_dir_record_path)
+            except OSError:
+                logger.debug(
+                    "Failed to copy validation record from %s to %s",
+                    record_path,
+                    run_dir_record_path,
+                )
+        effective_record_path = run_dir_record_path if run_dir_record_path.exists() else record_path
+        if effective_record_path is not None:
             self.session_output.update_manifest(
                 run_dir,
-                {"validation_record_path": str(record_path)},
+                {"validation_record_path": str(effective_record_path)},
             )
             try:
-                (run_dir / "validation-record.path").write_text(str(record_path))
+                (run_dir / "validation-record.path").write_text(str(effective_record_path))
             except OSError:
                 logger.debug("Failed to write validation pointer for %s", run_dir)
 
@@ -807,6 +830,14 @@ class CompletionProcessor:
         for action in record.requested_actions:
             action_start = time.monotonic()
             logger.info("Executing action: %s for issue #%d", action.value, issue_number)
+            if is_timeline_trace_enabled():
+                logger.info(
+                    "[TIMELINE] completion.action_start issue=%s action=%s requested_actions=%s label_target=%s",
+                    issue_number,
+                    action.value,
+                    ",".join(a.value for a in record.requested_actions),
+                    label_target,
+                )
             try:
                 result = self._execute_single_action(
                     action=action,
@@ -855,6 +886,15 @@ class CompletionProcessor:
                     issue_number,
                     action_duration,
                 )
+                if is_timeline_trace_enabled():
+                    logger.info(
+                        "[TIMELINE] completion.action_end issue=%s action=%s elapsed=%.3f actions_taken=%s errors=%s",
+                        issue_number,
+                        action.value,
+                        action_duration,
+                        len(actions_taken),
+                        len(errors),
+                    )
             if halt_actions:
                 logger.warning(
                     "Halting remaining actions for issue #%d due to push failure",
@@ -964,6 +1004,7 @@ class CompletionProcessor:
             RequestedAction.ADD_NEEDS_HUMAN_LABEL: ("needs_human", issue_number, "add"),
             RequestedAction.ADD_CODE_REVIEWED_LABEL: ("code_reviewed", label_target, "add"),
             RequestedAction.ADD_NEEDS_REWORK_LABEL: ("needs_rework", label_target, "add"),
+            RequestedAction.REMOVE_NEEDS_REWORK_LABEL: ("needs_rework", label_target, "remove"),
             RequestedAction.REMOVE_CODE_REVIEW_LABEL: ("code_review", label_target, "remove"),
         }
         config = label_actions.get(action)
@@ -972,6 +1013,16 @@ class CompletionProcessor:
 
         label_key, target_number, operation = config
         label = self._get_label(label_key)
+        if is_timeline_trace_enabled():
+            logger.info(
+                "[TIMELINE] completion.label_mutation issue=%s action=%s operation=%s label_key=%s label=%s target=%s",
+                issue_number,
+                action.value,
+                operation,
+                label_key,
+                label,
+                target_number,
+            )
         if operation == "add":
             self.label_adapter.add_label(target_number, label)
             if target_number == issue_number:
@@ -1083,6 +1134,7 @@ class CompletionProcessor:
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
         pr_title = f"#{issue_number}: {issue_title}"
         pr_body = self._build_pr_body(record, issue_number)
+        review_run_dir = self.session_output.find_run_dir(worktree, session_name) if session_name else None
 
         exchange_mode, exchange_result, exchange_halt = self._run_review_exchange_if_needed(
             worktree=worktree,
@@ -1116,6 +1168,7 @@ class CompletionProcessor:
                         exchange_mode=exchange_mode,
                         exchange_result=exchange_result,
                         actions_taken=actions_taken,
+                        run_dir=review_run_dir,
                     )
                 return self._ActionResult(
                     pr_url=existing_pr.url,
@@ -1158,6 +1211,7 @@ class CompletionProcessor:
                     exchange_mode=exchange_mode,
                     exchange_result=exchange_result,
                     actions_taken=actions_taken,
+                    run_dir=review_run_dir,
                 )
             return self._ActionResult(
                 branch=branch,
@@ -1175,6 +1229,7 @@ class CompletionProcessor:
         exchange_mode: str,
         exchange_result: Any,
         actions_taken: list[str],
+        run_dir: Path | None = None,
     ) -> None:
         """Apply review-exchange completion labels/comment to a PR."""
         label = self._get_label("code_reviewed")
@@ -1197,6 +1252,7 @@ class CompletionProcessor:
             pr_number=pr_number,
             comment_url=comment_url,
             comment_body=comment,
+            run_dir=run_dir,
         )
 
     def _run_review_exchange_if_needed(
@@ -1218,10 +1274,14 @@ class CompletionProcessor:
         if exchange_mode not in {"via-mcp", "via-local-loop"}:
             return exchange_mode, None, False
         reviewer_label = self._resolve_reviewer_label(agent_label) if agent_label else None
+        run_dir: Path | None = None
+        if session_name:
+            run_dir = self.session_output.find_run_dir(worktree, session_name)
         self._emit_review_started(
             issue_number=issue_number,
             reviewer_label=reviewer_label,
             exchange_mode=exchange_mode,
+            run_dir=run_dir,
         )
         require_validation = bool(
             self._config and self._config.review_exchange_require_validation
@@ -1246,6 +1306,7 @@ class CompletionProcessor:
                     approved=True,
                     rounds=getattr(existing_outcome, "rounds", None),
                     summary=reviewer_summary,
+                    run_dir=run_dir,
                 )
                 return exchange_mode, existing_outcome, False
             self._emit_review_outcome(
@@ -1255,6 +1316,7 @@ class CompletionProcessor:
                 approved=False,
                 rounds=getattr(existing_outcome, "rounds", None),
                 summary=f"Review exchange halted: {existing_outcome.reason}",
+                run_dir=run_dir,
             )
             errors.append(
                 f"review_exchange: {existing_outcome.status} ({existing_outcome.reason})"
@@ -1276,6 +1338,7 @@ class CompletionProcessor:
                 approved=False,
                 rounds=getattr(exchange_result, "rounds", None),
                 summary=f"Review exchange halted: {exchange_result.reason}",
+                run_dir=run_dir,
             )
             errors.append(
                 f"review_exchange: {exchange_result.status} ({exchange_result.reason})"
@@ -1294,6 +1357,7 @@ class CompletionProcessor:
             approved=True,
             rounds=exchange_result.rounds,
             summary=reviewer_summary,
+            run_dir=run_dir,
         )
         if session_name and exchange_result.summary:
             validation_record_path: Path | None = None
@@ -1612,6 +1676,11 @@ class CompletionProcessor:
         # Clean up the completion record after processing to prevent re-processing
         self._cleanup_completion_record(worktree, completion_path, issue_number)
 
+        review_exchange_halted = any(
+            error.startswith("review_exchange:")
+            for error in errors
+        )
+
         return ProcessingResult(
             success=success,
             message=message,
@@ -1620,6 +1689,7 @@ class CompletionProcessor:
             diagnostic_path=diagnostic_path,
             errors=errors if errors else None,
             review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
         )
 
     def _cleanup_completion_record(
