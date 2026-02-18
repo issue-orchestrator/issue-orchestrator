@@ -26,7 +26,7 @@ def _evt(event: str, **kw: object) -> dict[str, object]:
 
 @dataclass(frozen=True)
 class ExpectedCycle:
-    lifecycle: int
+    lifecycle: int | None
     iteration: int
     retry_count: int
     outcome_contains: str
@@ -38,7 +38,7 @@ class JourneyScenario:
     today: str
     events: list[dict[str, object]]
     expected_cycles: list[ExpectedCycle]
-    expected_last_run_lifecycle: int
+    expected_last_run_lifecycle: int | None
     expected_last_run_count: int
 
 
@@ -98,6 +98,46 @@ SCENARIOS: list[JourneyScenario] = [
         expected_last_run_count=1,
     ),
     JourneyScenario(
+        name="split_on_run_dir_even_when_run_id_stays_constant",
+        today="2026-02-09",
+        events=[
+            _evt(
+                "session.started",
+                timestamp="2026-02-09T10:00:00Z",
+                rework_cycle=0,
+                run_id="orchestrator-process-run",
+                run_dir="/tmp/repo/.issue-orchestrator/sessions/20260218-100000Z__coding-1",
+            ),
+            _evt(
+                "session.completed",
+                timestamp="2026-02-09T10:20:00Z",
+                rework_cycle=0,
+                run_id="orchestrator-process-run",
+                run_dir="/tmp/repo/.issue-orchestrator/sessions/20260218-100000Z__coding-1",
+            ),
+            _evt(
+                "session.started",
+                timestamp="2026-02-09T10:30:00Z",
+                rework_cycle=0,
+                run_id="orchestrator-process-run",
+                run_dir="/tmp/repo/.issue-orchestrator/sessions/20260218-103000Z__coding-1",
+            ),
+            _evt(
+                "session.completed",
+                timestamp="2026-02-09T10:55:00Z",
+                rework_cycle=0,
+                run_id="orchestrator-process-run",
+                run_dir="/tmp/repo/.issue-orchestrator/sessions/20260218-103000Z__coding-1",
+            ),
+        ],
+        expected_cycles=[
+            ExpectedCycle(lifecycle=1, iteration=1, retry_count=0, outcome_contains="Completed"),
+            ExpectedCycle(lifecycle=2, iteration=1, retry_count=0, outcome_contains="Completed"),
+        ],
+        expected_last_run_lifecycle=2,
+        expected_last_run_count=1,
+    ),
+    JourneyScenario(
         name="review_outcome_tracks_per_run_without_merging",
         today="2026-02-09",
         events=[
@@ -115,6 +155,34 @@ SCENARIOS: list[JourneyScenario] = [
         expected_last_run_lifecycle=2,
         expected_last_run_count=1,
     ),
+    JourneyScenario(
+        name="mixed_legacy_signal_and_run_boundaries_remain_isolated",
+        today="2026-02-10",
+        events=[
+            # Legacy era (no rework_cycle), old run
+            _evt("session.started", timestamp="2026-02-08T09:00:00Z", run_id="legacy-run"),
+            _evt("session.completed", timestamp="2026-02-08T09:20:00Z", run_id="legacy-run"),
+            _evt("issue.blocked", timestamp="2026-02-08T09:25:00Z", run_id="legacy-run"),
+            # Signal era run #1
+            _evt("session.started", timestamp="2026-02-09T10:00:00Z", rework_cycle=0, run_id="signal-run-1"),
+            _evt("session.completed", timestamp="2026-02-09T10:25:00Z", rework_cycle=0, run_id="signal-run-1"),
+            _evt("review.changes_requested", timestamp="2026-02-09T10:28:00Z", rework_cycle=0, run_id="signal-run-1"),
+            _evt("rework.started", timestamp="2026-02-09T10:35:00Z", rework_cycle=1, run_id="signal-run-1"),
+            _evt("session.completed", timestamp="2026-02-09T10:58:00Z", rework_cycle=1, run_id="signal-run-1"),
+            # Signal era run #2 (same rework indexes, new run)
+            _evt("session.started", timestamp="2026-02-10T11:00:00Z", rework_cycle=0, run_id="signal-run-2"),
+            _evt("session.completed", timestamp="2026-02-10T11:20:00Z", rework_cycle=0, run_id="signal-run-2"),
+            _evt("review.approved", timestamp="2026-02-10T11:23:00Z", rework_cycle=0, run_id="signal-run-2"),
+        ],
+        expected_cycles=[
+            ExpectedCycle(lifecycle=None, iteration=0, retry_count=0, outcome_contains="Blocked"),
+            ExpectedCycle(lifecycle=None, iteration=1, retry_count=0, outcome_contains="Changes Requested"),
+            ExpectedCycle(lifecycle=None, iteration=2, retry_count=0, outcome_contains="Completed"),
+            ExpectedCycle(lifecycle=None, iteration=1, retry_count=0, outcome_contains="Approved"),
+        ],
+        expected_last_run_lifecycle=None,
+        expected_last_run_count=1,
+    ),
 ]
 
 
@@ -124,11 +192,17 @@ def test_journey_cycle_scenarios(scenario: JourneyScenario) -> None:
     assert len(cycles) == len(scenario.expected_cycles)
 
     for actual, expected in zip(cycles, scenario.expected_cycles):
-        assert actual["lifecycle"] == expected.lifecycle
+        if expected.lifecycle is not None:
+            assert actual["lifecycle"] == expected.lifecycle
         assert actual["iteration"] == expected.iteration
         assert actual["retry_count"] == expected.retry_count
         assert expected.outcome_contains in str(actual["outcome"])
 
     filtered = filter_last_run_cycles(cycles)
     assert len(filtered) == scenario.expected_last_run_count
-    assert all(c["lifecycle"] == scenario.expected_last_run_lifecycle for c in filtered)
+    expected_last_lifecycle = (
+        scenario.expected_last_run_lifecycle
+        if scenario.expected_last_run_lifecycle is not None
+        else max(c["lifecycle"] for c in cycles)
+    )
+    assert all(c["lifecycle"] == expected_last_lifecycle for c in filtered)

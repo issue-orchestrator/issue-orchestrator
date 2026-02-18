@@ -537,12 +537,13 @@ def _compute_lifecycle_per_event(
 
 def _run_scope_key(event: dict[str, Any]) -> str | None:
     """Return stable run identity for lifecycle boundary detection."""
-    run_id = event.get("run_id")
-    if isinstance(run_id, str) and run_id:
-        return f"run:{run_id}"
+    # Prefer run_dir: it is session-run scoped and reflects retries/relaunches.
     run_dir = event.get("run_dir")
     if isinstance(run_dir, str) and run_dir:
         return f"dir:{run_dir}"
+    run_id = event.get("run_id")
+    if isinstance(run_id, str) and run_id:
+        return f"run:{run_id}"
     return None
 
 

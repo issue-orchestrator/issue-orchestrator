@@ -2,6 +2,7 @@ from pathlib import Path
 import sqlite3
 
 from issue_orchestrator.events import EventName
+from issue_orchestrator.view_models.issue_detail import _build_journey_cycles, filter_last_run_cycles
 
 
 from issue_orchestrator.ports.working_copy import PushResult
@@ -624,3 +625,39 @@ def test_review_session_no_completion_marks_interrupted_retry(scenario_repo: Pat
         .wait_for_event(EventName.SESSION_FAILED) \
         .expect_issue_comment_contains("Review Session Interrupted") \
         .run()
+
+
+def test_issue_detail_last_run_excludes_prior_attempts(scenario_repo: Path):
+    """Integration path: two attempts for one issue should split last-run cycles."""
+    # First attempt
+    scenario("last_run_split_attempt_1", scenario_repo) \
+        .coder(script("coder_complete.sh")) \
+        .reviewer(script("reviewer_changes_requested.sh")) \
+        .review_exchange(mode="via-draft-pr") \
+        .wait_for_event(EventName.REVIEW_CHANGES_REQUESTED) \
+        .run()
+
+    # Second attempt on same issue
+    ctx = scenario("last_run_split_attempt_2", scenario_repo) \
+        .coder(script("coder_complete.sh")) \
+        .reviewer(script("reviewer_approved.sh")) \
+        .review_exchange(mode="via-draft-pr") \
+        .wait_for_event(EventName.REVIEW_APPROVED) \
+        .run()
+
+    timeline_events = [event.to_dict() for event in ctx.timeline_reader.read(1).events]
+    cycles = _build_journey_cycles(timeline_events, "2026-02-18")
+    filtered = filter_last_run_cycles(cycles)
+
+    assert len(cycles) >= 2
+    assert len(filtered) >= 1
+    latest_lifecycle = max(cycle["lifecycle"] for cycle in cycles)
+    assert all(cycle["lifecycle"] == latest_lifecycle for cycle in filtered)
+
+    # Ensure timeline actually captured multiple run directories (real attempts).
+    run_dirs = {
+        str(event.get("run_dir"))
+        for event in timeline_events
+        if event.get("run_dir")
+    }
+    assert len(run_dirs) >= 2
