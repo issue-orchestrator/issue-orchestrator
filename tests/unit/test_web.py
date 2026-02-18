@@ -3069,6 +3069,31 @@ class TestTimelineActionWiring:
         assert "open_agent_log" in present_types
         assert "view_claude_log" in present_types
 
+    def test_run_scoped_actions_keep_agent_log_when_claude_log_missing(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-claude-missing"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-1", issue_number=1)
+        (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+        # Intentionally do not attach claude_log_path in manifest.
+
+        actions = _timeline_event_actions(
+            {
+                "event": "session.started",
+                "issue_number": 1,
+                "run_dir": str(run.run_dir),
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            1,
+        )
+        action_types = {action.get("type") for action in actions}
+        assert "open_agent_log" in action_types
+        assert "open_session_diagnostics" in action_types
+        assert "view_claude_log" not in action_types
+
     def test_run_scoped_event_without_run_dir_fails_fast(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput

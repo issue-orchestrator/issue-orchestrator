@@ -2103,7 +2103,14 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
                 f"timeline run-scoped action missing run_dir: issue={issue_number} event={event_name} action={action_type}"
             )
         if action_type in run_scoped_action_types:
-            _require_run_scoped_action_artifact(action_type)
+            try:
+                _require_run_scoped_action_artifact(action_type)
+            except Exception:
+                # Degrade per-action: keep other actions visible when one
+                # optional run-scoped artifact (e.g. Claude log mapping) is absent.
+                if action_type == "view_claude_log":
+                    return
+                raise
         if event_run_dir and action_type in {
             "open_agent_log",
             "view_claude_log",
