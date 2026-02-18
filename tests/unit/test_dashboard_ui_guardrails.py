@@ -321,6 +321,12 @@ def test_timeline_event_actions_use_primary_plus_more_menu() -> None:
     assert "_timelineActionShortLabel" in js
 
 
+def test_timeline_modal_delegate_handles_more_items() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "renderTimeline")
+    assert ".timeline-action-btn, .timeline-more-item" in body
+
+
 def test_journey_action_delegate_handles_more_items_and_closes_menus() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "_renderJourneyRuns")

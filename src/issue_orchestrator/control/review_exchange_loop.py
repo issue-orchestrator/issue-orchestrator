@@ -11,7 +11,10 @@ from pathlib import Path
 from typing import Any
 
 from ..agent_runner import AgentRunner, RunSpec
+from ..control.validation import AgentGate
 from ..domain.models import AgentConfig
+from ..execution import GitWorkingCopy, LocalCommandRunner
+from ..infra.config import load_validation_config
 from ..infra.logging_config import get_repo_log_path
 from ..infra.env import ENV_PREFIX
 from ..ports.session_output import SessionOutput
@@ -115,6 +118,8 @@ def run_review_exchange_loop(
     try:
         for round_index in range(1, max_rounds + 1):
             current_round = round_index
+            if require_validation:
+                _refresh_run_validation_record(worktree_path=worktree_path, run_dir=run_dir)
             _emit(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
                 "issue_number": issue_number,
                 "session_name": session_name,
@@ -143,7 +148,8 @@ def run_review_exchange_loop(
                         response_type="changes_requested",
                         response_text=(
                             "Validation record missing or failed. "
-                            "Run make validate and record it via agent-done."
+                            "Validation is run per round by orchestrator; address "
+                            "the failing checks and continue."
                         ),
                         getting_closer=False,
                         raw_json=reviewer_response.raw_json,
@@ -477,9 +483,10 @@ def _build_reviewer_prompt(
     validation_note = ""
     if require_validation:
         validation_note = (
-            "Validation is required. Only respond ok if validation-record.json exists "
-            f"and passed in {run_dir}. If missing or failed, respond changes_requested "
-            "asking the coder to run make validate via agent-done."
+            "Validation is required. Validation is orchestrator-managed for each round. "
+            "Only respond ok if validation-record.json exists "
+            f"and passed in {run_dir}. If failed, respond changes_requested with "
+            "concrete fixes."
         )
     prior = ""
     if last_coder_text:
@@ -517,7 +524,8 @@ def _build_coder_prompt(
         f"Round {round_index}.\n"
         "Review the feedback below and update the worktree accordingly.\n"
         "If you disagree, set response_type=disagree and explain why.\n"
-        "Otherwise apply fixes, run make validate, and record it with agent-done.\n"
+        "Otherwise apply fixes and explain what changed.\n"
+        "Do not run agent-done in this loop.\n"
         f"Session output dir: {run_dir}\n"
         f"Reviewer feedback:\n{reviewer_feedback}\n"
         "Respond with exactly one line of JSON:\n"
@@ -559,6 +567,30 @@ def _validation_passed(run_dir: Path) -> bool:
     except json.JSONDecodeError:
         return False
     return bool(data.get("passed"))
+
+
+def _refresh_run_validation_record(*, worktree_path: Path, run_dir: Path) -> None:
+    """Run configured validation and ensure run-scoped validation record exists."""
+    validation_config = load_validation_config(worktree_path)
+    command = validation_config.get("cmd")
+    if not command:
+        raise RuntimeError(
+            "review exchange requires validation, but validation.cmd is not configured"
+        )
+    timeout_seconds = int(validation_config.get("timeout_seconds", 300))
+    gate = AgentGate(
+        worktree_path,
+        command_runner=LocalCommandRunner(),
+        working_copy=GitWorkingCopy(),
+        command=command,
+        timeout_seconds=timeout_seconds,
+    )
+    gate.run(session_output_dir=run_dir)
+    record_path = run_dir / "validation-record.json"
+    if not record_path.exists():
+        raise RuntimeError(
+            f"validation gate did not produce run-scoped validation record: {record_path}"
+        )
 
 
 def _write_prompt(exchange_dir: Path, round_index: int, role: str, prompt_text: str) -> Path:

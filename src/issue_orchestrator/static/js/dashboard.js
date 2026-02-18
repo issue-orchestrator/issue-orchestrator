@@ -790,7 +790,13 @@ function renderGroupedDialogActions(actions) {
     }));
     if (items.length === 0) return '';
 
-    const primaryTypes = ['open_review_feedback', 'open_agent_log', 'view_claude_log'];
+    const primaryTypes = [
+        'open_review_feedback',
+        'open_agent_log',
+        'view_claude_log',
+        'open_session_diagnostics',
+        'open_orchestrator_log',
+    ];
     const primary = [];
     const used = new Set();
     for (const type of primaryTypes) {
@@ -4198,7 +4204,7 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
             if (target && target.dataset.path) {
                 openPath(target.dataset.path);
             }
-            const actionTarget = event.target.closest('.timeline-action-btn');
+            const actionTarget = event.target.closest('.timeline-action-btn, .timeline-more-item');
             if (actionTarget && actionTarget.dataset.action) {
                 try {
                     const action = JSON.parse(actionTarget.dataset.action);
@@ -4236,7 +4242,13 @@ function renderTimelineEventActions(actions) {
         action,
         label: _timelineActionShortLabel(action),
     }));
-    const primaryTypes = ['open_review_feedback', 'open_agent_log', 'view_claude_log'];
+    const primaryTypes = [
+        'open_review_feedback',
+        'open_agent_log',
+        'view_claude_log',
+        'open_session_diagnostics',
+        'open_orchestrator_log',
+    ];
     const primary = [];
     const used = new Set();
     for (const type of primaryTypes) {
