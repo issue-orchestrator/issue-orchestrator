@@ -430,7 +430,7 @@ def test_view_model_routes_unclassified_issue_to_blocked_state_drift():
         if item["issue_number"] == 4057
     )
     assert "state-drift" in (drift_item.get("blocked_summary") or "")
-    assert "state-drift" in (drift_item.get("orchestrator_labels") or [])
+    assert drift_item.get("state_drift") is True
 
 
 def test_view_model_marks_multi_classified_issue_as_state_drift():
@@ -464,7 +464,7 @@ def test_view_model_marks_multi_classified_issue_as_state_drift():
         if item["issue_number"] == 77
     )
     assert "multi-classified" in (drift_item.get("blocked_summary") or "")
-    assert "state-drift" in (drift_item.get("orchestrator_labels") or [])
+    assert drift_item.get("state_drift") is True
 
 
 def test_view_model_e2e_items_from_provider():

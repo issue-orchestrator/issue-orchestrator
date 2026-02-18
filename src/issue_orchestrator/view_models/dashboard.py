@@ -658,10 +658,7 @@ def _apply_state_drift_fallback(
                 item["status_reason"] = merged_reason
                 item["detail_reason"] = merged_reason
             item["detail_label"] = "state-drift"
-            labels_list = list(item.get("orchestrator_labels") or [])
-            if "state-drift" not in labels_list:
-                labels_list.append("state-drift")
-            item["orchestrator_labels"] = labels_list
+            item["state_drift"] = True
             continue
 
         blocked_item = {
@@ -685,7 +682,8 @@ def _apply_state_drift_fallback(
             "flow_stage_label": "Blocked",
             "flow_steps": flow_steps_for("blocked"),
             "blocked_summary": reason,
-            "orchestrator_labels": sorted(set(["state-drift", *lm.get_ours(labels)])),
+            "orchestrator_labels": sorted(lm.get_ours(labels)),
+            "state_drift": True,
             **_refresh_meta(state, config, issue_number),
         }
         blocked_items.append(blocked_item)
