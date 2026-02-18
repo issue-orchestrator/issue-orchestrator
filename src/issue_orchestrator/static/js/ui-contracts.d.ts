@@ -154,6 +154,7 @@ export interface SessionDiagnosticsActionPayload {
   issue_number?: number | null;
   label: string;
   path?: string | null;
+  run_dir?: string | null;
   type: string;
   [key: string]: any;
 }

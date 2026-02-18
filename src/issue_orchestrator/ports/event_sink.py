@@ -35,6 +35,28 @@ class TraceEvent:
     timestamp: datetime = field(default_factory=datetime.now)
     event_id: int | None = None
 
+    _RUN_DIR_REQUIRED_EVENTS: frozenset[str] = field(
+        default=frozenset(
+            {
+                "review.started",
+                "rework.started",
+            }
+        ),
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate strict event invariants at construction time."""
+        if self.name not in self._RUN_DIR_REQUIRED_EVENTS:
+            return
+        run_dir = self.data.get("run_dir")
+        if not isinstance(run_dir, str) or not run_dir:
+            raise ValueError(
+                f"{self.name} requires non-empty run_dir in event data"
+            )
+
     @property
     def name(self) -> str:
         """Get the event name string for serialization."""

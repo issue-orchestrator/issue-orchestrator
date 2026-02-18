@@ -51,11 +51,24 @@ def _summarize_error(stdout: str, stderr: str) -> str | None:
     return text
 
 
+def _ensure_run_scoped_session_log(run_dir: Path) -> None:
+    """Guarantee run_dir/session.log resolves to provider-runner stdout."""
+    provider_stdout = run_dir / "provider-runner" / "stdout.log"
+    session_log = run_dir / "session.log"
+    session_log.parent.mkdir(parents=True, exist_ok=True)
+    provider_stdout.parent.mkdir(parents=True, exist_ok=True)
+
+    if session_log.exists() or session_log.is_symlink():
+        return
+    session_log.symlink_to(provider_stdout)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv or sys.argv[1:])
 
     run_dir = _resolve_run_dir(args)
     output_dir = run_dir / "provider-runner"
+    _ensure_run_scoped_session_log(run_dir)
 
     provider = args.provider or detect_ai_system_from_command(args.command) or None
     retry_policy = RetryPolicy(

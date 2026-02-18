@@ -490,13 +490,15 @@ async function postVisibility(visibleIssueNumbers) {
 let logPoller = null;
 let logFollow = true;
 let logIssue = null;
+let logRunDir = null;
 
 function isNearBottom(element, threshold = 24) {
     return element.scrollTop + element.clientHeight >= element.scrollHeight - threshold;
 }
 
-async function refreshAgentLog(issueNumber, forceScroll = false) {
-    const res = await fetch(`/api/log/local/${issueNumber}`);
+async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) {
+    const query = runDir ? `?run_dir=${encodeURIComponent(runDir)}` : '';
+    const res = await fetch(`/api/log/local/${issueNumber}${query}`);
     const data = await res.json();
 
     if (data.error) {
@@ -524,15 +526,18 @@ async function refreshAgentLog(issueNumber, forceScroll = false) {
     }
 }
 
-async function openAgentLog(issueNumber) {
+async function openAgentLog(issueNumber, runDir = null) {
     logIssue = issueNumber;
+    logRunDir = runDir;
+    const runDirParam = runDir ? JSON.stringify(runDir) : 'null';
     const logContent = `
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
             <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);">
                 <input type="checkbox" id="logFollowToggle" checked>
                 Follow
             </label>
-            <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="refreshAgentLog(${issueNumber}, true)">Refresh</button>
+            <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="refreshAgentLog(${issueNumber}, true, ${runDirParam})">Refresh</button>
+            <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="viewSessionPrompt(${issueNumber}, ${runDirParam})">View Prompt</button>
             <span id="logStatus" style="font-size:11px;color:var(--text-muted);"></span>
         </div>
         <div id="logScroll" style="max-height:420px;overflow:auto;background:var(--bg);padding:10px;border-radius:4px;">
@@ -552,13 +557,30 @@ async function openAgentLog(issueNumber) {
         });
     }
 
-    await refreshAgentLog(issueNumber, true);
+    await refreshAgentLog(issueNumber, true, runDir);
     if (logPoller) {
         clearInterval(logPoller);
     }
     logPoller = setInterval(() => {
-        refreshAgentLog(issueNumber, false);
+        refreshAgentLog(issueNumber, false, logRunDir);
     }, 2000);
+}
+
+async function viewSessionPrompt(issueNumber, runDir = null) {
+    const query = runDir ? `?run_dir=${encodeURIComponent(runDir)}` : '';
+    const res = await fetch(`/api/session/prompt/${issueNumber}${query}`);
+    const data = await res.json();
+    if (data.error) {
+        showToast(data.error, 'error');
+        return;
+    }
+    const body = `
+        <div style="display:flex;flex-direction:column;gap:8px;">
+            <div style="color:var(--text-muted);font-size:11px;">Prompt: ${escapeHtml(data.prompt_path || '')}</div>
+            <pre style="font-size:11px;max-height:420px;overflow:auto;background:var(--bg);padding:10px;border-radius:4px;white-space:pre-wrap;">${escapeHtml(data.content || '')}</pre>
+        </div>
+    `;
+    openModal(`Session Prompt #${issueNumber}`, body);
 }
 
 async function openSessionManifest(issueNumber) {
@@ -680,7 +702,12 @@ function renderDialogAction(action) {
         return `<button class="btn-secondary" onclick="openPath('${escapeHtml(action.path)}')">${label}</button>`;
     }
     if (action.type === 'open_agent_log') {
-        return `<button class="btn-secondary" onclick="openAgentLog(${action.issue_number})">${label}</button>`;
+        const runDirArg = action.run_dir ? JSON.stringify(action.run_dir) : 'null';
+        return `<button class="btn-secondary" onclick="openAgentLog(${action.issue_number}, ${runDirArg})">${label}</button>`;
+    }
+    if (action.type === 'view_session_prompt') {
+        const runDirArg = action.run_dir ? JSON.stringify(action.run_dir) : 'null';
+        return `<button class="btn-secondary" onclick="viewSessionPrompt(${action.issue_number}, ${runDirArg})">${label}</button>`;
     }
     if (action.type === 'view_claude_log') {
         return `<button class="btn-secondary" onclick="viewClaudeLog(${action.issue_number})">${label}</button>`;
@@ -3549,7 +3576,11 @@ function runTimelineEventAction(action) {
         return;
     }
     if (action.type === 'open_agent_log' && action.issue_number) {
-        openAgentLog(action.issue_number);
+        openAgentLog(action.issue_number, action.run_dir || null);
+        return;
+    }
+    if (action.type === 'view_session_prompt' && action.issue_number) {
+        viewSessionPrompt(action.issue_number, action.run_dir || null);
         return;
     }
     if (action.type === 'view_claude_log' && action.issue_number) {

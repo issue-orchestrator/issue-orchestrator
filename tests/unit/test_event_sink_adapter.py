@@ -19,6 +19,8 @@ from issue_orchestrator.execution.event_sink_adapter import (
 )
 from issue_orchestrator.ports.event_sink import TraceEvent
 
+RUN_SCOPED = {"run_dir": "/tmp/run"}
+
 
 class TestPluggyEventSink:
     """Test PluggyEventSink forwards events to pluggy hooks."""
@@ -28,11 +30,11 @@ class TestPluggyEventSink:
         mock_pm = MagicMock()
         sink = PluggyEventSink(mock_pm)
 
-        event = TraceEvent(EventName.SESSION_STARTED, {"issue_number": 42})
+        event = TraceEvent(EventName.SESSION_STARTED, {"issue_number": 42, **RUN_SCOPED})
         sink.publish(event)
 
         mock_pm.hook.on_trace_event.assert_called_once_with(
-            event=EventName.SESSION_STARTED, data={"issue_number": 42}
+            event=EventName.SESSION_STARTED, data={"issue_number": 42, **RUN_SCOPED}
         )
 
     def test_publish_swallows_hook_exceptions(self, caplog):
@@ -41,7 +43,7 @@ class TestPluggyEventSink:
         mock_pm.hook.on_trace_event.side_effect = RuntimeError("Hook exploded")
         sink = PluggyEventSink(mock_pm)
 
-        event = TraceEvent(EventName.SESSION_STARTED, {"issue_number": 42})
+        event = TraceEvent(EventName.SESSION_STARTED, {"issue_number": 42, **RUN_SCOPED})
 
         # Should not raise
         with caplog.at_level(logging.WARNING):
@@ -56,7 +58,7 @@ class TestPluggyEventSink:
         mock_pm = MagicMock()
         sink = PluggyEventSink(mock_pm)
 
-        sink.publish(TraceEvent(EventName.SESSION_STARTED, {"n": 1}))
+        sink.publish(TraceEvent(EventName.SESSION_STARTED, {"n": 1, **RUN_SCOPED}))
         sink.publish(TraceEvent(EventName.SESSION_COMPLETED, {"n": 2}))
         sink.publish(TraceEvent(EventName.ORCHESTRATOR_PAUSED, {}))
 
@@ -71,7 +73,7 @@ class TestCompositeEventSink:
         sink1, sink2, sink3 = MagicMock(), MagicMock(), MagicMock()
         composite = CompositeEventSink(sink1, sink2, sink3)
 
-        event = TraceEvent(EventName.SESSION_STARTED, {"test": True})
+        event = TraceEvent(EventName.SESSION_STARTED, {"test": True, **RUN_SCOPED})
         composite.publish(event)
 
         sink1.publish.assert_called_once_with(event)
@@ -84,7 +86,7 @@ class TestCompositeEventSink:
         sink2.publish.side_effect = RuntimeError("Sink 2 exploded")
         composite = CompositeEventSink(sink1, sink2, sink3)
 
-        event = TraceEvent(EventName.SESSION_STARTED, {"test": True})
+        event = TraceEvent(EventName.SESSION_STARTED, {"test": True, **RUN_SCOPED})
 
         with caplog.at_level(logging.WARNING):
             composite.publish(event)
@@ -105,7 +107,7 @@ class TestCompositeEventSink:
         sink2 = MagicMock()
         composite.add_sink(sink2)
 
-        event = TraceEvent(EventName.SESSION_STARTED, {})
+        event = TraceEvent(EventName.SESSION_STARTED, dict(RUN_SCOPED))
         composite.publish(event)
 
         sink1.publish.assert_called_once_with(event)
@@ -114,7 +116,7 @@ class TestCompositeEventSink:
     def test_empty_composite_is_no_op(self):
         """CompositeEventSink with no sinks doesn't fail."""
         composite = CompositeEventSink()
-        event = TraceEvent(EventName.SESSION_STARTED, {})
+        event = TraceEvent(EventName.SESSION_STARTED, dict(RUN_SCOPED))
 
         # Should not raise
         composite.publish(event)
@@ -135,7 +137,7 @@ class TestCompositeEventSink:
             sinks[i].publish.side_effect = RuntimeError(f"Sink {i} failed")
 
         composite = CompositeEventSink(*sinks)
-        event = TraceEvent(EventName.SESSION_STARTED, {})
+        event = TraceEvent(EventName.SESSION_STARTED, dict(RUN_SCOPED))
 
         # Should not raise
         composite.publish(event)
@@ -151,7 +153,7 @@ class TestLoggingEventSink:
     def test_logs_event_at_info_level(self, caplog):
         """Events are logged at INFO level."""
         sink = LoggingEventSink()
-        event = TraceEvent(EventName.SESSION_STARTED, {"issue_number": 42})
+        event = TraceEvent(EventName.SESSION_STARTED, {"issue_number": 42, **RUN_SCOPED})
 
         with caplog.at_level(logging.INFO, logger="issue_orchestrator.events"):
             sink.publish(event)
@@ -195,7 +197,7 @@ class TestEventSinkIntegration:
         outer_sink = MagicMock()
         outer_composite = CompositeEventSink(inner_composite, outer_sink)
 
-        event = TraceEvent(EventName.SESSION_STARTED, {})
+        event = TraceEvent(EventName.SESSION_STARTED, dict(RUN_SCOPED))
         outer_composite.publish(event)
 
         # All sinks receive the event

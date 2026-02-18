@@ -49,6 +49,7 @@ RETRY_PROMPT_NAME = "retry-prompt.md"
 # Other artifact names
 WORKTREE_NOTE_NAME = "worktree.json"
 SESSION_IDENTITY_NAME = "session-identity.json"
+SESSION_PROMPT_NAME = "session-prompt.txt"
 
 # Review exchange artifacts
 REVIEW_EXCHANGE_DIR_NAME = "review-exchange"
@@ -458,6 +459,17 @@ Timestamp: {self._now_iso()}
         logger.info("Wrote retry prompt to %s", prompt_path)
         return prompt_path
 
+    def write_session_prompt(
+        self,
+        run_dir: Path,
+        content: str,
+    ) -> Path:
+        """Write the run-scoped session prompt used to launch the agent."""
+        prompt_path = run_dir / SESSION_PROMPT_NAME
+        self._write_text(prompt_path, content)
+        logger.info("Wrote session prompt to %s", prompt_path)
+        return prompt_path
+
     def clear_retry_state(
         self,
         run_dir: Path,
@@ -694,6 +706,10 @@ Timestamp: {self._now_iso()}
         run_dir = self.find_run_dir(worktree_path, session_name=session_name)
         if not run_dir:
             return None
+        return self._find_log_in_run_dir(run_dir)
+
+    def get_log_path_for_run_dir(self, run_dir: Path) -> Path | None:
+        """Get the most relevant UI log path for a known run directory."""
         return self._find_log_in_run_dir(run_dir)
 
     def attach_claude_log(

@@ -1984,6 +1984,7 @@ class TestTimelineActionWiring:
         "open_path": "/api/open-file",
         "open_url": None,  # client-side window.open, no HTTP call
         "open_agent_log": "/api/log/local/{issue_number}",
+        "view_session_prompt": "/api/session/prompt/{issue_number}",
         "view_claude_log": "/api/session/claude-log/{issue_number}",
         "open_orchestrator_log": "/api/session/orchestrator-log/{issue_number}",
         "open_session_diagnostics": "/api/dialog/session-diagnostics/{issue_number}",
@@ -2107,15 +2108,24 @@ class TestTimelineActionWiring:
         def _capture(action: dict, _dedupe: str) -> None:
             captured.append(action)
 
-        _timeline_event_default_actions(issue_number=1, add_action=_capture)
+        _timeline_event_default_actions(issue_number=1, run_dir=None, add_action=_capture)
         _timeline_event_recommended_actions(
-            event_name="session.started", issue_number=1, add_action=_capture,
+            event={"event": "session.started", "run_dir": "/tmp/run"},
+            event_name="session.started",
+            issue_number=1,
+            add_action=_capture,
         )
         _timeline_event_recommended_actions(
-            event_name="session.failed", issue_number=1, add_action=_capture,
+            event={"event": "session.failed"},
+            event_name="session.failed",
+            issue_number=1,
+            add_action=_capture,
         )
         _timeline_event_recommended_actions(
-            event_name="validation.failed", issue_number=1, add_action=_capture,
+            event={"event": "validation.failed"},
+            event_name="validation.failed",
+            issue_number=1,
+            add_action=_capture,
         )
 
         default_types = {a["type"] for a in captured}
@@ -2124,6 +2134,44 @@ class TestTimelineActionWiring:
             f"Action types in default/recommended helpers not in wiring registry: "
             f"{unregistered}"
         )
+
+
+class TestRunScopedLogAndPromptEndpoints:
+    def test_agent_log_endpoint_uses_explicit_run_dir(self, tmp_path: Path) -> None:
+        mock_orch = create_mock_orchestrator()
+        set_orchestrator(mock_orch)
+        try:
+            run_dir = tmp_path / "run-1"
+            run_dir.mkdir(parents=True)
+            (run_dir / "session.log").write_text("hello from run-scoped log\n")
+
+            client = TestClient(app)
+            response = client.get(f"/api/log/local/123?run_dir={run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["issue_number"] == 123
+            assert any("hello from run-scoped log" in line for line in payload["lines"])
+        finally:
+            set_orchestrator(None)
+
+    def test_session_prompt_endpoint_reads_run_scoped_prompt(self, tmp_path: Path) -> None:
+        mock_orch = create_mock_orchestrator()
+        set_orchestrator(mock_orch)
+        try:
+            run_dir = tmp_path / "run-2"
+            run_dir.mkdir(parents=True)
+            prompt_path = run_dir / "session-prompt.txt"
+            prompt_path.write_text("Work on issue #123 and run agent-done.\n")
+
+            client = TestClient(app)
+            response = client.get(f"/api/session/prompt/123?run_dir={run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["issue_number"] == 123
+            assert payload["prompt_path"] == str(prompt_path)
+            assert "agent-done" in payload["content"]
+        finally:
+            set_orchestrator(None)
 
 
 class TestKillSessionEndpoint:

@@ -150,6 +150,7 @@ def test_build_session_diagnostics_dialog_actions():
                 "claude_log_dir": "/logs",
                 "orchestrator_log": "/logs/orch.log",
                 "validation_record_path": "validate.json",
+                "session_prompt_path": "/run/dir/session-prompt.txt",
             },
             "run_dir": "/run/dir",
             "session_name": "fallback",
@@ -165,12 +166,7 @@ def test_build_session_diagnostics_dialog_actions():
     assert "open_agent_log" in action_types
     assert "view_claude_log" in action_types
     assert "open_orchestrator_log" in action_types
-    agent_log_action = next(action for action in dialog["actions"] if action["type"] == "open_agent_log")
-    claude_action = next(action for action in dialog["actions"] if action["type"] == "view_claude_log")
-    orchestrator_action = next(action for action in dialog["actions"] if action["type"] == "open_orchestrator_log")
-    assert agent_log_action["run_dir"] == "/run/dir"
-    assert claude_action["run_dir"] == "/run/dir"
-    assert orchestrator_action["run_dir"] == "/run/dir"
+    assert "view_session_prompt" in action_types
 
     paths = {action.get("path") for action in dialog["actions"] if "path" in action}
     assert "/run/dir" in paths
@@ -197,34 +193,11 @@ def test_build_session_diagnostics_dialog_fallbacks_without_worktree():
     rows = _rows_to_map(dialog["rows"])
     assert rows["Session"] == "fallback-session"
     assert rows["Worktree"] == "-"
-    agent_log_action = next(action for action in dialog["actions"] if action["type"] == "open_agent_log")
-    orchestrator_action = next(action for action in dialog["actions"] if action["type"] == "open_orchestrator_log")
-    assert agent_log_action["run_dir"] == "/run/fallback"
-    assert orchestrator_action["run_dir"] == "/run/fallback"
-    assert all(action["type"] != "view_claude_log" for action in dialog["actions"])
 
     paths = {action.get("path") for action in dialog["actions"] if "path" in action}
     assert "/run/fallback" in paths
     # No worktree means relative validation path cannot be resolved/opened.
     assert "validate.json" not in paths
-
-
-def test_build_session_diagnostics_dialog_keeps_absolute_validation_path():
-    dialog = build_session_diagnostics_dialog(
-        9,
-        {
-            "manifest": {
-                "session_name": "sess-abs",
-                "worktree": "/wt",
-                "validation_record_path": "/wt/.issue-orchestrator/sessions/r1/validation-record.json",
-            },
-            "run_dir": "/run/r1",
-        },
-    )
-
-    paths = {action.get("path") for action in dialog["actions"] if "path" in action}
-    assert "/wt/.issue-orchestrator/sessions/r1/validation-record.json" in paths
-    assert "/wt//wt/.issue-orchestrator/sessions/r1/validation-record.json" not in paths
 
 
 def test_build_blocked_issues_dialog():

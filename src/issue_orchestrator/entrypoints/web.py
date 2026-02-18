@@ -1104,7 +1104,10 @@ async def get_session_log(issue_number: int) -> JSONResponse:  # noqa: C901 - lo
 
 @app.get("/api/log/local/{issue_number}")
 async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format detection and streaming
-    issue_number: int, offset: int = 0, limit: int = 200
+    issue_number: int,
+    offset: int = 0,
+    limit: int = 200,
+    run_dir: str | None = None,
 ) -> JSONResponse:
     """Get the local agent UI log for an issue.
 
@@ -1120,39 +1123,42 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
 
     worktree_path = None
     session = None
-    for s in _orchestrator.state.active_sessions:
-        if s.issue.number == issue_number:
-            worktree_path = s.worktree_path
-            session = s
-            break
-    if not worktree_path:
-        for entry in _orchestrator.state.session_history:
-            if entry.issue_number == issue_number:
-                worktree_path = getattr(entry, "worktree_path", None)
+    if not run_dir:
+        for s in _orchestrator.state.active_sessions:
+            if s.issue.number == issue_number:
+                worktree_path = s.worktree_path
+                session = s
                 break
-
-    if not worktree_path:
-        from ..execution.session_output_adapter import find_run_dir_for_issue
-
-        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
-        _, worktree_path = find_run_dir_for_issue(
-            _collect_worktree_bases(_orchestrator.config),
-            repo_name,
-            issue_number,
-        )
         if not worktree_path:
-            return JSONResponse({
-                "error": f"No worktree path found for issue #{issue_number}",
-                "hint": "Session may have been cleaned up or never started"
-            }, status_code=404)
+            for entry in _orchestrator.state.session_history:
+                if entry.issue_number == issue_number:
+                    worktree_path = getattr(entry, "worktree_path", None)
+                    break
+
+        if not worktree_path:
+            from ..execution.session_output_adapter import find_run_dir_for_issue
+
+            repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
+            _, worktree_path = find_run_dir_for_issue(
+                _collect_worktree_bases(_orchestrator.config),
+                repo_name,
+                issue_number,
+            )
+            if not worktree_path:
+                return JSONResponse({
+                    "error": f"No worktree path found for issue #{issue_number}",
+                    "hint": "Session may have been cleaned up or never started"
+                }, status_code=404)
 
     from ..execution.session_output_adapter import FileSystemSessionOutput
     session_output = FileSystemSessionOutput()
 
     log_path = None
-    if session:
+    if run_dir:
+        log_path = session_output.get_log_path_for_run_dir(Path(run_dir))
+    if not log_path and session and worktree_path:
         log_path = session_output.get_log_path(worktree_path, session.terminal_id)
-    if not log_path:
+    if not log_path and worktree_path:
         log_path = session_output.find_latest_session_log_path(worktree_path)
 
     if not log_path:
@@ -1650,19 +1656,36 @@ def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -
 
 def _timeline_event_recommended_actions(
     *,
+    event: dict[str, Any],
     event_name: str,
     issue_number: int,
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
     """Add event-specific suggested actions."""
+    run_dir = event.get("run_dir")
+    run_dir_str = run_dir if isinstance(run_dir, str) and run_dir else None
     if event_name in _TIMELINE_START_EVENTS:
         add_action(
-            {"type": "open_agent_log", "label": "UI Log", "issue_number": issue_number},
-            f"agent:{issue_number}",
+            {
+                "type": "open_agent_log",
+                "label": "UI Log",
+                "issue_number": issue_number,
+                "run_dir": run_dir_str,
+            },
+            f"agent:{issue_number}:{run_dir_str or ''}",
         )
         add_action(
             {"type": "view_claude_log", "label": "Claude Log", "issue_number": issue_number},
             f"claude:{issue_number}",
+        )
+        add_action(
+            {
+                "type": "view_session_prompt",
+                "label": "View Prompt",
+                "issue_number": issue_number,
+                "run_dir": run_dir_str,
+            },
+            f"prompt:{issue_number}:{run_dir_str or ''}",
         )
     if event_name.startswith("validation."):
         add_action(
@@ -1718,12 +1741,18 @@ def _timeline_event_artifact_actions(
 def _timeline_event_default_actions(
     *,
     issue_number: int,
+    run_dir: str | None,
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
     """Add default diagnostics and log actions shown for every timeline event."""
     add_action(
-        {"type": "open_agent_log", "label": "UI Log", "issue_number": issue_number},
-        f"agent:{issue_number}",
+        {
+            "type": "open_agent_log",
+            "label": "UI Log",
+            "issue_number": issue_number,
+            "run_dir": run_dir,
+        },
+        f"agent:{issue_number}:{run_dir or ''}",
     )
     add_action(
         {"type": "view_claude_log", "label": "Claude Log", "issue_number": issue_number},
@@ -1756,7 +1785,10 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
         seen.add(key)
         actions.append(action)
 
+    run_dir = event.get("run_dir")
+    run_dir_str = run_dir if isinstance(run_dir, str) and run_dir else None
     _timeline_event_recommended_actions(
+        event=event,
         event_name=event_name,
         issue_number=issue_number,
         add_action=_add_action,
@@ -1768,6 +1800,7 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
     )
     _timeline_event_default_actions(
         issue_number=issue_number,
+        run_dir=run_dir_str,
         add_action=_add_action,
     )
     return actions
@@ -1981,6 +2014,90 @@ async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval
         "entry_count": len(entries),
         "entries": entries,
     })
+
+
+def _latest_review_exchange_prompt(run_dir: Path) -> Path | None:
+    """Return newest review-exchange prompt artifact under run_dir if present."""
+    exchange_root = run_dir / "review-exchange"
+    if not exchange_root.exists():
+        return None
+    candidates = sorted(
+        list(exchange_root.glob("round-*/coder-prompt.txt"))
+        + list(exchange_root.glob("round-*/reviewer-prompt.txt")),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+@app.get("/api/session/prompt/{issue_number}")
+async def get_session_prompt_content(issue_number: int, run_dir: str | None = None) -> JSONResponse:
+    """Return run-scoped prompt content for a session."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    from ..domain.run_manifest import RunManifest
+    from ..execution.session_output_adapter import FileSystemSessionOutput, SESSION_PROMPT_NAME, find_run_dir_for_issue
+
+    session_output_mgr = FileSystemSessionOutput()
+    resolved_run_dir: Path | None = Path(run_dir) if run_dir else None
+
+    if resolved_run_dir is None:
+        worktree_path = None
+        for s in _orchestrator.state.active_sessions:
+            if s.issue.number == issue_number:
+                worktree_path = s.worktree_path
+                break
+        if not worktree_path:
+            for entry in _orchestrator.state.session_history:
+                if entry.issue_number == issue_number:
+                    worktree_path = getattr(entry, "worktree_path", None)
+                    break
+        if worktree_path:
+            resolved_run_dir = session_output_mgr.find_run_dir(Path(worktree_path))
+        if resolved_run_dir is None:
+            repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
+            resolved_run_dir, _ = find_run_dir_for_issue(
+                _collect_worktree_bases(_orchestrator.config),
+                repo_name,
+                issue_number,
+            )
+
+    if resolved_run_dir is None or not resolved_run_dir.exists():
+        return JSONResponse({"error": f"No session run found for issue #{issue_number}"}, status_code=404)
+
+    manifest_prompt_path: Path | None = None
+    try:
+        manifest = RunManifest.load(resolved_run_dir)
+        session_prompt_path = manifest.to_dict().get("session_prompt_path")
+        if isinstance(session_prompt_path, str) and session_prompt_path:
+            manifest_prompt_path = Path(session_prompt_path)
+    except Exception:
+        manifest_prompt_path = None
+
+    candidates = [
+        manifest_prompt_path,
+        resolved_run_dir / SESSION_PROMPT_NAME,
+        resolved_run_dir / "retry-prompt.md",
+        _latest_review_exchange_prompt(resolved_run_dir),
+    ]
+    prompt_path = next((p for p in candidates if p and p.exists() and p.stat().st_size > 0), None)
+    if not prompt_path:
+        return JSONResponse({"error": "No run-scoped prompt artifact found for this session"}, status_code=404)
+
+    try:
+        content = prompt_path.read_text(errors="ignore")
+    except OSError as exc:
+        return JSONResponse({"error": f"Failed to read prompt: {exc}"}, status_code=500)
+
+    return JSONResponse(
+        {
+            "issue_number": issue_number,
+            "run_dir": str(resolved_run_dir),
+            "prompt_path": str(prompt_path),
+            "content": content,
+        }
+    )
 
 
 @app.post("/api/prompt/{agent_type}")

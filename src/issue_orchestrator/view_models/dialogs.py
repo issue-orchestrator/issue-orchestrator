@@ -46,6 +46,7 @@ class SessionDiagnosticsContext:
     orchestrator_log: str
     diagnostic_path: str
     validation_path: str
+    session_prompt_path: str
 
     @classmethod
     def from_payload(
@@ -76,6 +77,7 @@ class SessionDiagnosticsContext:
             orchestrator_log=str(manifest.get("orchestrator_log") or ""),
             diagnostic_path=diagnostic_path,
             validation_path=validation_path,
+            session_prompt_path=str(manifest.get("session_prompt_path") or ""),
         )
 
 
@@ -109,7 +111,14 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     if ctx.run_dir:
         actions.append({"type": "open_path", "label": "Open Session Dir", "path": ctx.run_dir})
 
-    actions.append({"type": "open_agent_log", "label": "UI Log", "issue_number": ctx.issue_number})
+    actions.append(
+        {
+            "type": "open_agent_log",
+            "label": "UI Log",
+            "issue_number": ctx.issue_number,
+            "run_dir": ctx.run_dir,
+        }
+    )
 
     if ctx.claude_log_path:
         actions.append({"type": "view_claude_log", "label": "View Claude Log", "issue_number": ctx.issue_number})
@@ -142,6 +151,13 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
             "type": "open_path",
             "label": "Open Validation",
             "path": ctx.validation_path,
+        })
+    if ctx.session_prompt_path:
+        actions.append({
+            "type": "view_session_prompt",
+            "label": "View Prompt",
+            "issue_number": ctx.issue_number,
+            "run_dir": ctx.run_dir,
         })
     return actions
 

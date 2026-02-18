@@ -731,6 +731,13 @@ class SessionLauncher:
             logger.warning("[launch] Rebase failed - agent will need to resolve merge conflicts")
 
         # Build command
+        rendered_prompt = agent_config.render_initial_prompt(
+            issue_number=issue.number,
+            issue_title=issue.title,
+            worktree=worktree_path,
+            existing_work=existing_work,
+        )
+        prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command(
             issue_number=issue.number,
             issue_title=issue.title,
@@ -741,7 +748,10 @@ class SessionLauncher:
         completion_path = get_completion_path(issue.agent_type, session_name=ctx.phase_name)
         self._session_output.update_manifest(
             run.run_dir,
-            {"completion_path": completion_path},
+            {
+                "completion_path": completion_path,
+                "session_prompt_path": prompt_path,
+            },
         )
         env_exports = self._build_session_env(
             completion_path=completion_path,
@@ -823,6 +833,7 @@ class SessionLauncher:
             "run_dir": str(run.run_dir),
             "completion_path": completion_path,
             "completion_path_absolute": str(full_completion_path),
+            "session_prompt_path": prompt_path,
         }))
 
         # State machine transitions
@@ -980,6 +991,14 @@ class SessionLauncher:
         existing_work = self._build_review_existing_work(worktree_info, review.pr_number)
 
         # Build command
+        rendered_prompt = agent_config.render_initial_prompt(
+            issue_number=review.issue_number,
+            issue_title=f"Review PR #{review.pr_number}",
+            worktree=worktree_path,
+            pr_number=review.pr_number,
+            existing_work=existing_work,
+        )
+        prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command(
             issue_number=review.issue_number,
             issue_title=f"Review PR #{review.pr_number}",
@@ -991,7 +1010,10 @@ class SessionLauncher:
         completion_path = get_completion_path(agent_label, session_name=ctx.phase_name)
         self._session_output.update_manifest(
             run.run_dir,
-            {"completion_path": completion_path},
+            {
+                "completion_path": completion_path,
+                "session_prompt_path": prompt_path,
+            },
         )
         env_exports = self._build_session_env(
             completion_path=completion_path,
@@ -1056,6 +1078,7 @@ class SessionLauncher:
             "run_dir": str(run.run_dir),
             "completion_path": completion_path,
             "completion_path_absolute": str(full_completion_path),
+            "session_prompt_path": prompt_path,
         }))
 
         # State machine transition
@@ -1271,6 +1294,14 @@ class SessionLauncher:
             )
 
         # Build command
+        rendered_prompt = agent_config.render_initial_prompt(
+            issue_number=issue_number,
+            issue_title=f"Rework PR #{pr_number} (cycle {rework.rework_cycle})",
+            worktree=worktree_path,
+            pr_number=pr_number,
+            existing_work=existing_work,
+        )
+        prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command(
             issue_number=issue_number,
             issue_title=f"Rework PR #{pr_number} (cycle {rework.rework_cycle})",
@@ -1282,7 +1313,10 @@ class SessionLauncher:
         completion_path = get_completion_path(rework.agent_type, session_name=ctx.phase_name)
         self._session_output.update_manifest(
             run.run_dir,
-            {"completion_path": completion_path},
+            {
+                "completion_path": completion_path,
+                "session_prompt_path": prompt_path,
+            },
         )
         env_exports = self._build_session_env(
             completion_path=completion_path,
@@ -1347,6 +1381,7 @@ class SessionLauncher:
             "run_dir": str(run.run_dir),
             "completion_path": completion_path,
             "completion_path_absolute": str(full_completion_path),
+            "session_prompt_path": prompt_path,
         }))
 
         # Update rework cycle label
@@ -1593,6 +1628,11 @@ class SessionLauncher:
                 logger.warning("[launch] Setup command timed out: %s", cmd)
         setup_time = time.time() - step_start
         logger.info("[launch] Setup completed in %.1fs", setup_time)
+
+    def _persist_session_prompt(self, run_dir: Path, prompt_text: str) -> str:
+        """Persist rendered launch prompt into run-scoped artifacts."""
+        prompt_path = self._session_output.write_session_prompt(run_dir, prompt_text)
+        return str(prompt_path)
 
     def _wrap_provider_command(self, base_command: str, agent_config: "AgentConfig", run_dir: Path) -> str:
         """Wrap provider command with retry/circuit reporting."""

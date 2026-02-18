@@ -164,6 +164,7 @@ class SessionDiagnosticsActionPayload(BaseModel):
     issue_number: int | None = None
     label: str
     path: str | None = None
+    run_dir: str | None = None
     type: str
 
 class SessionDiagnosticsDialogPayload(BaseModel):

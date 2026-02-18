@@ -7,6 +7,7 @@ import sqlite3
 import pytest
 
 from issue_orchestrator.events import EventName
+from issue_orchestrator.entrypoints.web import _timeline_event_actions
 from issue_orchestrator.view_models.issue_detail import _build_journey_cycles, filter_last_run_cycles
 
 
@@ -746,3 +747,36 @@ def test_review_changes_requested_writes_feedback_artifact(scenario_repo: Path):
         "reviewer feedback artifact missing/empty; "
         f"candidates={', '.join(str(path) for path in feedback_paths)}"
     )
+
+
+def test_local_loop_run_artifacts_and_actions_are_run_scoped(scenario_repo: Path):
+    """via-local-loop should emit run-scoped actions with usable artifacts."""
+    ctx = scenario("local_loop_run_scoped_actions", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_pass.sh")) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .wait_for_event(EventName.REVIEW_EXCHANGE_COMPLETED) \
+        .run()
+
+    timeline_events = [event.to_dict() for event in ctx.timeline_reader.read(1).events]
+    run_dirs = sorted({
+        Path(str(event.get("run_dir")))
+        for event in timeline_events
+        if event.get("run_dir")
+    })
+    assert run_dirs, "expected at least one run_dir in timeline events"
+
+    for run_dir in run_dirs:
+        _assert_run_dir_has_core_artifacts(run_dir)
+
+    for event in timeline_events:
+        event_name = str(event.get("event") or "")
+        if not (event_name.startswith("session.") or event_name.startswith("review.") or event_name.startswith("rework.")):
+            continue
+        actions = _timeline_event_actions(event, 1)
+        action_types = {action["type"] for action in actions}
+        assert "open_agent_log" in action_types
+        assert "open_session_diagnostics" in action_types
+        if event_name in {"session.started", "review.started", "rework.started"}:
+            assert "view_session_prompt" in action_types
