@@ -15,8 +15,10 @@ from pathlib import Path
 from typing import Iterable, Iterator
 from uuid import uuid4
 
+from .timeline_artifact_expectations import RUN_SCOPED_TIMELINE_EVENTS, event_requires_run_dir
 from ..infra.repo_identity import state_dir
 from ..infra.sqlite_connection import open_sqlite
+from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..ports.timeline_store import TimelineRecord, TimelineStore
 
 logger = logging.getLogger(__name__)
@@ -35,12 +37,30 @@ CREATE TABLE IF NOT EXISTS timeline_events (
     event_id TEXT NOT NULL,
     timestamp TEXT NOT NULL,
     event TEXT NOT NULL,
-    data_json TEXT NOT NULL
+    run_dir TEXT NOT NULL DEFAULT '',
+    data_json TEXT NOT NULL,
+    CHECK (
+        event NOT IN ({run_scoped_events})
+        OR length(trim(run_dir)) > 0
+    )
 );
 
 CREATE INDEX IF NOT EXISTS idx_timeline_issue_sequence
     ON timeline_events(issue_number, sequence DESC);
+
+CREATE INDEX IF NOT EXISTS idx_timeline_issue_event_run_dir
+    ON timeline_events(issue_number, event, run_dir);
 """
+
+_SQLITE_SCHEMA_VERSION = 2
+
+
+def _quoted_csv(values: Iterable[str]) -> str:
+    return ", ".join(f"'{value}'" for value in sorted(values))
+
+
+def _sqlite_schema_sql() -> str:
+    return _SQLITE_SCHEMA.format(run_scoped_events=_quoted_csv(RUN_SCOPED_TIMELINE_EVENTS))
 
 
 class SqliteTimelineStore(TimelineStore):
@@ -51,6 +71,7 @@ class SqliteTimelineStore(TimelineStore):
         self._config = config or TimelineStoreConfig()
         self._local = threading.local()
         self._write_lock = threading.Lock()
+        self._db_inode: int | None = None
         self.initialize()
 
     @property
@@ -60,16 +81,66 @@ class SqliteTimelineStore(TimelineStore):
     def initialize(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = self._get_connection()
-        conn.executescript(_SQLITE_SCHEMA)
+        self._ensure_schema(conn)
+        self._db_inode = self._capture_db_inode()
         if _timeline_trace_enabled():
-            logger.info("[TIMELINE] trace enabled db=%s", self._db_path)
+            logger.info(
+                "[TIMELINE] trace enabled db=%s inode=%s",
+                self._db_path,
+                self._db_inode,
+            )
 
     def _get_connection(self) -> sqlite3.Connection:
+        self._assert_db_file_unchanged()
         conn = getattr(self._local, "conn", None)
         if conn is None:
             conn = open_sqlite(self._db_path, row_factory=sqlite3.Row)
+            self._ensure_schema(conn)
             self._local.conn = conn
+            if self._db_inode is None:
+                self._db_inode = self._capture_db_inode()
         return conn
+
+    def _ensure_schema(self, conn: sqlite3.Connection) -> None:
+        version_row = conn.execute("PRAGMA user_version").fetchone()
+        user_version = int(version_row[0]) if version_row else 0
+        if user_version != _SQLITE_SCHEMA_VERSION:
+            # No backwards-compatibility path: rebuild timeline table to enforce invariants.
+            conn.executescript(
+                """
+                DROP TABLE IF EXISTS timeline_events;
+                DROP INDEX IF EXISTS idx_timeline_issue_sequence;
+                DROP INDEX IF EXISTS idx_timeline_issue_event_run_dir;
+                """
+            )
+            conn.executescript(_sqlite_schema_sql())
+            conn.execute(f"PRAGMA user_version = {_SQLITE_SCHEMA_VERSION}")
+            conn.commit()
+            return
+        conn.executescript(_sqlite_schema_sql())
+
+    def _capture_db_inode(self) -> int | None:
+        try:
+            return os.stat(self._db_path).st_ino
+        except FileNotFoundError:
+            return None
+
+    def _assert_db_file_unchanged(self) -> None:
+        expected = self._db_inode
+        if expected is None:
+            return
+        current = self._capture_db_inode()
+        if current is None:
+            raise RuntimeError(
+                f"Timeline DB missing on disk: {self._db_path}. "
+                "Database file was removed while store is active."
+            )
+        if current != expected:
+            raise RuntimeError(
+                f"Timeline DB replaced on disk: {self._db_path} "
+                f"(expected inode={expected}, current inode={current}). "
+                "Failing fast to avoid split-brain timeline writes."
+            )
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -83,14 +154,20 @@ class SqliteTimelineStore(TimelineStore):
                 raise
 
     def append(self, issue_number: int, record: TimelineRecord) -> None:
+        run_dir_value = record.data.get("run_dir")
+        run_dir = run_dir_value.strip() if isinstance(run_dir_value, str) else ""
+        if event_requires_run_dir(record.event) and not run_dir:
+            raise RuntimeError(
+                f"timeline DB invariant failed: event={record.event} requires non-empty run_dir"
+            )
         payload = json.dumps(record.data, sort_keys=True, default=str)
         with self._transaction() as tx:
             tx.execute(
                 """
-                INSERT INTO timeline_events (issue_number, event_id, timestamp, event, data_json)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO timeline_events (issue_number, event_id, timestamp, event, run_dir, data_json)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (issue_number, record.event_id, record.timestamp, record.event, payload),
+                (issue_number, record.event_id, record.timestamp, record.event, run_dir, payload),
             )
             self._trim_if_needed(tx, issue_number)
             self._trim_total_if_needed(tx)
@@ -289,8 +366,7 @@ def _now_iso() -> str:
 
 
 def _timeline_trace_enabled() -> bool:
-    value = os.environ.get("ISSUE_ORCHESTRATOR_TIMELINE_TRACE", "")
-    return value.lower() in {"1", "true", "yes", "on"}
+    return is_timeline_trace_enabled()
 
 
 def _load_records(path: Path, limit: int | None = None) -> Iterable[TimelineRecord]:
