@@ -11,10 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from ..agent_runner import AgentRunner, RunSpec
-from ..control.validation import AgentGate
 from ..domain.models import AgentConfig
-from ..execution import GitWorkingCopy, LocalCommandRunner
-from ..infra.config import load_validation_config
 from ..infra.logging_config import get_repo_log_path
 from ..infra.env import ENV_PREFIX
 from ..ports.session_output import SessionOutput
@@ -22,6 +19,7 @@ from ..ports import EventSink, TraceEvent
 from ..events import EventName, EventContext
 
 logger = logging.getLogger(__name__)
+_CODER_PROTOCOL_RETRY_LIMIT = 2
 
 
 def _escape_claude_project_path(path: Path) -> str:
@@ -118,8 +116,6 @@ def run_review_exchange_loop(
     try:
         for round_index in range(1, max_rounds + 1):
             current_round = round_index
-            if require_validation:
-                _refresh_run_validation_record(worktree_path=worktree_path, run_dir=run_dir)
             _emit(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
                 "issue_number": issue_number,
                 "session_name": session_name,
@@ -224,6 +220,7 @@ def run_review_exchange_loop(
 
             last_reviewer_text = reviewer_response.response_text
 
+            coder_feedback = reviewer_response.response_text
             coder_response = _run_coder_round(
                 runner=runner,
                 worktree_path=worktree_path,
@@ -233,11 +230,65 @@ def run_review_exchange_loop(
                 issue_number=issue_number,
                 issue_title=issue_title,
                 coder_agent=coder_agent,
-                reviewer_feedback=reviewer_response.response_text,
+                reviewer_feedback=coder_feedback,
                 web_port=web_port,
                 session_name=session_name,
                 agent_label=coder_label,
             )
+            protocol_error = _validate_coder_protocol(run_dir, require_validation=require_validation)
+            retries_remaining = _CODER_PROTOCOL_RETRY_LIMIT
+            while protocol_error is not None and retries_remaining > 0:
+                retries_remaining -= 1
+                coder_feedback = (
+                    f"{reviewer_response.response_text}\n\n"
+                    "Protocol error from orchestrator:\n"
+                    f"{protocol_error}\n"
+                    "You must run `agent-done completed --implementation ... --problems ...` "
+                    "in this run so completion artifacts are written."
+                )
+                coder_response = _run_coder_round(
+                    runner=runner,
+                    worktree_path=worktree_path,
+                    run_dir=run_dir,
+                    exchange_dir=exchange_dir,
+                    round_index=round_index,
+                    issue_number=issue_number,
+                    issue_title=issue_title,
+                    coder_agent=coder_agent,
+                    reviewer_feedback=coder_feedback,
+                    web_port=web_port,
+                    session_name=session_name,
+                    agent_label=coder_label,
+                )
+                protocol_error = _validate_coder_protocol(
+                    run_dir, require_validation=require_validation
+                )
+
+            if protocol_error is not None:
+                summary = _write_summary(exchange_dir, round_index, reviewer_response)
+                _emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "round_index": round_index,
+                    "reviewer_response_type": reviewer_response.response_type,
+                    "coder_response_type": "protocol_error",
+                })
+                _emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "rounds": round_index,
+                    "status": "error",
+                    "reason": "coder_protocol_violation",
+                    "detail": protocol_error,
+                })
+                return ReviewExchangeOutcome(
+                    status="error",
+                    rounds=round_index,
+                    reason="coder_protocol_violation",
+                    reviewer_response=reviewer_response,
+                    exchange_dir=exchange_dir,
+                    summary=summary,
+                )
             _write_round_log(
                 exchange_dir=exchange_dir,
                 round_index=round_index,
@@ -483,10 +534,9 @@ def _build_reviewer_prompt(
     validation_note = ""
     if require_validation:
         validation_note = (
-            "Validation is required. Validation is orchestrator-managed for each round. "
-            "Only respond ok if validation-record.json exists "
-            f"and passed in {run_dir}. If failed, respond changes_requested with "
-            "concrete fixes."
+            "Validation is required. Only respond ok if validation-record.json exists "
+            f"and passed in {run_dir}. If missing or failed, respond changes_requested "
+            "asking the coder to run make validate via agent-done."
         )
     prior = ""
     if last_coder_text:
@@ -524,8 +574,8 @@ def _build_coder_prompt(
         f"Round {round_index}.\n"
         "Review the feedback below and update the worktree accordingly.\n"
         "If you disagree, set response_type=disagree and explain why.\n"
-        "Otherwise apply fixes and explain what changed.\n"
-        "Do not run agent-done in this loop.\n"
+        "Otherwise apply fixes, run `agent-done completed --implementation ... --problems ...`, "
+        "and explain what changed.\n"
         f"Session output dir: {run_dir}\n"
         f"Reviewer feedback:\n{reviewer_feedback}\n"
         "Respond with exactly one line of JSON:\n"
@@ -569,28 +619,25 @@ def _validation_passed(run_dir: Path) -> bool:
     return bool(data.get("passed"))
 
 
-def _refresh_run_validation_record(*, worktree_path: Path, run_dir: Path) -> None:
-    """Run configured validation and ensure run-scoped validation record exists."""
-    validation_config = load_validation_config(worktree_path)
-    command = validation_config.get("cmd")
-    if not command:
-        raise RuntimeError(
-            "review exchange requires validation, but validation.cmd is not configured"
-        )
-    timeout_seconds = int(validation_config.get("timeout_seconds", 300))
-    gate = AgentGate(
-        worktree_path,
-        command_runner=LocalCommandRunner(),
-        working_copy=GitWorkingCopy(),
-        command=command,
-        timeout_seconds=timeout_seconds,
-    )
-    gate.run(session_output_dir=run_dir)
-    record_path = run_dir / "validation-record.json"
-    if not record_path.exists():
-        raise RuntimeError(
-            f"validation gate did not produce run-scoped validation record: {record_path}"
-        )
+def _validate_coder_protocol(run_dir: Path, *, require_validation: bool) -> str | None:
+    completion_path = run_dir / "completion-coder.json"
+    if not completion_path.exists():
+        return f"missing completion artifact: {completion_path}"
+    if completion_path.stat().st_size <= 0:
+        return f"completion artifact is empty: {completion_path}"
+    try:
+        payload = json.loads(completion_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return f"completion artifact is not valid JSON: {completion_path}"
+    if not isinstance(payload, dict):
+        return f"completion artifact must be a JSON object: {completion_path}"
+    if require_validation:
+        validation_path = run_dir / "validation-record.json"
+        if not validation_path.exists():
+            return f"missing validation artifact: {validation_path}"
+        if validation_path.stat().st_size <= 0:
+            return f"validation artifact is empty: {validation_path}"
+    return None
 
 
 def _write_prompt(exchange_dir: Path, round_index: int, role: str, prompt_text: str) -> Path:

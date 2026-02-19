@@ -6,10 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
-
 from issue_orchestrator.control.review_exchange_loop import (
-    _refresh_run_validation_record,
     _run_agent_round,
     run_review_exchange_loop,
 )
@@ -106,41 +103,127 @@ def test_review_exchange_run_manifest_includes_claude_log_dir(tmp_path: Path, mo
     assert kwargs["orchestrator_log"].endswith(".issue-orchestrator/state/logs/orchestrator.log")
 
 
-def test_refresh_run_validation_record_requires_validation_command(tmp_path: Path, monkeypatch) -> None:
+def test_review_exchange_retries_coder_when_completion_artifact_missing(tmp_path: Path, monkeypatch) -> None:
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Prompt")
     worktree = tmp_path / "worktree"
     worktree.mkdir()
-    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-exchange"
     run_dir.mkdir(parents=True)
 
+    session_output = MagicMock()
+    session_output.start_run.return_value = SimpleNamespace(run_dir=run_dir, run_id="run-exchange")
+
+    class DummyRunner:
+        def __init__(self) -> None:
+            self.coder_calls = 0
+
+        def run(self, spec):
+            role = Path(spec.output_dir).name
+            if role == "reviewer":
+                return SimpleNamespace(
+                    succeeded=True,
+                    exit_code=0,
+                    timed_out=False,
+                    stdout='{"response_type":"changes_requested","getting_closer":true,"response_text":"fix"}\n',
+                    stderr="",
+                )
+            self.coder_calls += 1
+            if self.coder_calls == 2:
+                (run_dir / "completion-coder.json").write_text("{}", encoding="utf-8")
+            return SimpleNamespace(
+                succeeded=True,
+                exit_code=0,
+                timed_out=False,
+                stdout='{"response_type":"ok","response_text":"updated"}\n',
+                stderr="",
+            )
+
+    runner = DummyRunner()
     monkeypatch.setattr(
-        "issue_orchestrator.control.review_exchange_loop.load_validation_config",
-        lambda _worktree: {},
+        "issue_orchestrator.control.review_exchange_loop.AgentRunner", lambda: runner
     )
 
-    with pytest.raises(RuntimeError, match="validation\\.cmd is not configured"):
-        _refresh_run_validation_record(worktree_path=worktree, run_dir=run_dir)
+    coder_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+    reviewer_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+
+    outcome = run_review_exchange_loop(
+        session_output=session_output,
+        worktree_path=worktree,
+        issue_number=4057,
+        issue_title="Test",
+        coder_label="agent:backend",
+        reviewer_label="agent:reviewer",
+        coder_agent=coder_agent,
+        reviewer_agent=reviewer_agent,
+        max_rounds=1,
+        max_no_progress=1,
+        require_validation=False,
+        web_port=None,
+    )
+
+    assert runner.coder_calls == 2
+    assert outcome.status == "stopped"
+    assert outcome.reason == "max_rounds_exceeded"
 
 
-def test_refresh_run_validation_record_enforces_run_scoped_record(tmp_path: Path, monkeypatch) -> None:
+def test_review_exchange_fails_after_protocol_retries_exhausted(tmp_path: Path, monkeypatch) -> None:
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Prompt")
     worktree = tmp_path / "worktree"
     worktree.mkdir()
-    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-exchange"
     run_dir.mkdir(parents=True)
 
+    session_output = MagicMock()
+    session_output.start_run.return_value = SimpleNamespace(run_dir=run_dir, run_id="run-exchange")
+
+    class DummyRunner:
+        def __init__(self) -> None:
+            self.coder_calls = 0
+
+        def run(self, spec):
+            role = Path(spec.output_dir).name
+            if role == "reviewer":
+                return SimpleNamespace(
+                    succeeded=True,
+                    exit_code=0,
+                    timed_out=False,
+                    stdout='{"response_type":"changes_requested","getting_closer":true,"response_text":"fix"}\n',
+                    stderr="",
+                )
+            self.coder_calls += 1
+            return SimpleNamespace(
+                succeeded=True,
+                exit_code=0,
+                timed_out=False,
+                stdout='{"response_type":"ok","response_text":"updated"}\n',
+                stderr="",
+            )
+
+    runner = DummyRunner()
     monkeypatch.setattr(
-        "issue_orchestrator.control.review_exchange_loop.load_validation_config",
-        lambda _worktree: {"cmd": "make validate", "timeout_seconds": 90},
+        "issue_orchestrator.control.review_exchange_loop.AgentRunner", lambda: runner
     )
 
-    class DummyGate:
-        def __init__(self, _worktree, **_kwargs) -> None:
-            pass
+    coder_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+    reviewer_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
 
-        def run(self, *, session_output_dir: Path):
-            (session_output_dir / "validation-record.json").write_text('{"passed": true}', encoding="utf-8")
-            return None
+    outcome = run_review_exchange_loop(
+        session_output=session_output,
+        worktree_path=worktree,
+        issue_number=4057,
+        issue_title="Test",
+        coder_label="agent:backend",
+        reviewer_label="agent:reviewer",
+        coder_agent=coder_agent,
+        reviewer_agent=reviewer_agent,
+        max_rounds=1,
+        max_no_progress=1,
+        require_validation=False,
+        web_port=None,
+    )
 
-    monkeypatch.setattr("issue_orchestrator.control.review_exchange_loop.AgentGate", DummyGate)
-
-    _refresh_run_validation_record(worktree_path=worktree, run_dir=run_dir)
-    assert (run_dir / "validation-record.json").exists()
+    assert runner.coder_calls == 3
+    assert outcome.status == "error"
+    assert outcome.reason == "coder_protocol_violation"
