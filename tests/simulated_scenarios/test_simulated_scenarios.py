@@ -1,7 +1,13 @@
+import json
+import os
 from pathlib import Path
+import shutil
 import sqlite3
 
+import pytest
+
 from issue_orchestrator.events import EventName
+from issue_orchestrator.entrypoints.web import _timeline_event_actions
 
 
 from issue_orchestrator.ports.working_copy import PushResult
@@ -31,6 +37,41 @@ class LeaseRenewerOnce:
             return []
         self._used = True
         return list(sessions)
+
+
+def _assert_run_dir_has_core_artifacts(run_dir: Path) -> None:
+    """Fail-fast checks for run-scoped artifacts used by UI diagnostics/actions."""
+    assert run_dir.exists(), f"run_dir missing: {run_dir}"
+
+    manifest_path = run_dir / "manifest.json"
+    assert manifest_path.exists(), f"manifest missing under run_dir: {manifest_path}"
+    manifest = json.loads(manifest_path.read_text())
+
+    # Ensure manifest identity is populated and points back to this run directory.
+    assert manifest.get("run_dir") == str(run_dir)
+    assert manifest.get("session_name"), f"session_name missing in {manifest_path}"
+    assert manifest.get("run_id"), f"run_id missing in {manifest_path}"
+
+    # Agent output must be available via at least one canonical log path.
+    log_candidates = (
+        run_dir / "session.log",
+        run_dir / "provider-runner" / "stdout.log",
+        run_dir / "claude-session.jsonl",
+    )
+    usable = [p for p in log_candidates if p.exists() and p.stat().st_size > 0]
+    assert usable, (
+        "no usable run-scoped agent log candidates; "
+        f"run_dir={run_dir} candidates={', '.join(str(p) for p in log_candidates)}"
+    )
+
+
+_skip_if_no_agent_cli = pytest.mark.skipif(
+    (
+        (shutil.which("claude") is None or "CLAUDECODE" in os.environ)
+        and shutil.which("codex") is None
+    ),
+    reason="Agent CLI not available (claude/codex); skipping agent-backed scenario assertions",
+)
 
 
 def test_local_loop_happy_path_creates_non_draft_pr(scenario_repo: Path):
@@ -225,7 +266,7 @@ def test_review_exchange_cache_skips_agent_run(scenario_repo: Path):
         .coder(script("coder_dual_mode.sh")) \
         .reviewer(script("reviewer_ok.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False) \
-        .expect_event(EventName.REVIEW_EXCHANGE_STARTED) \
+        .expect_no_event(EventName.REVIEW_EXCHANGE_STARTED) \
         .run()
     assert ctx2 is not None
 
@@ -246,7 +287,7 @@ def test_review_exchange_cache_requires_validation(scenario_repo: Path):
         .reviewer(script("reviewer_ok_with_validation.sh", prompt=True)) \
         .validation(cmd=script("validate_pass.sh")) \
         .review_exchange(mode="via-local-loop", require_validation=True) \
-        .expect_event(EventName.REVIEW_EXCHANGE_STARTED) \
+        .expect_no_event(EventName.REVIEW_EXCHANGE_STARTED) \
         .run()
     assert ctx2 is not None
 
@@ -624,3 +665,89 @@ def test_review_session_no_completion_marks_interrupted_retry(scenario_repo: Pat
         .wait_for_event(EventName.SESSION_FAILED) \
         .expect_issue_comment_contains("Review Session Interrupted") \
         .run()
+
+
+@_skip_if_no_agent_cli
+def test_agent_sessions_emit_core_run_artifacts(scenario_repo: Path):
+    """Agent-backed coding/review scenarios must produce debuggable run artifacts."""
+    ctx = scenario("agent_run_artifacts", scenario_repo) \
+        .coder(script("coder_complete.sh")) \
+        .reviewer(script("reviewer_approved.sh")) \
+        .review_exchange(mode="via-draft-pr") \
+        .wait_for_event(EventName.REVIEW_APPROVED) \
+        .run()
+
+    agent_run_events = {
+        EventName.SESSION_STARTED.value,
+        EventName.REVIEW_STARTED.value,
+        EventName.REWORK_STARTED.value,
+    }
+    run_dirs = sorted({
+        Path(str(event.run_dir))
+        for event in ctx.timeline_since_baseline()
+        if event.run_dir and event.event in agent_run_events
+    })
+    assert run_dirs, "expected timeline events with run_dir for agent sessions"
+    for run_dir in run_dirs:
+        _assert_run_dir_has_core_artifacts(run_dir)
+
+
+@_skip_if_no_agent_cli
+def test_review_changes_requested_writes_feedback_artifact(scenario_repo: Path):
+    """Changes-requested review runs must persist reviewer-feedback.json in run_dir."""
+    ctx = scenario("review_feedback_artifact", scenario_repo) \
+        .coder(script("coder_complete.sh")) \
+        .reviewer(script("reviewer_changes_requested.sh")) \
+        .review_exchange(mode="via-draft-pr") \
+        .wait_for_event(EventName.REVIEW_CHANGES_REQUESTED) \
+        .run()
+
+    review_run_dirs = [
+        Path(str(event.run_dir))
+        for event in ctx.timeline_since_baseline()
+        if event.event == EventName.REVIEW_STARTED.value and event.run_dir
+    ]
+    assert review_run_dirs, "expected at least one review.started event with run_dir"
+
+    feedback_paths = [run_dir / "reviewer-feedback.json" for run_dir in review_run_dirs]
+    existing_feedback = [path for path in feedback_paths if path.exists() and path.stat().st_size > 0]
+    assert existing_feedback, (
+        "reviewer feedback artifact missing/empty; "
+        f"candidates={', '.join(str(path) for path in feedback_paths)}"
+    )
+
+
+def test_local_loop_run_artifacts_and_actions_are_run_scoped(scenario_repo: Path):
+    """via-local-loop should emit run-scoped actions with usable artifacts."""
+    ctx = scenario("local_loop_run_scoped_actions", scenario_repo) \
+        .coder(script("coder_dual_mode.sh")) \
+        .reviewer(script("reviewer_ok.sh", prompt=True)) \
+        .validation(cmd=script("validate_pass.sh")) \
+        .review_exchange(mode="via-local-loop", require_validation=False) \
+        .wait_for_event(EventName.REVIEW_EXCHANGE_COMPLETED) \
+        .run()
+
+    timeline_events = [event.to_dict() for event in ctx.timeline_reader.read(1).events]
+    agent_run_events = {
+        EventName.SESSION_STARTED.value,
+        EventName.REVIEW_STARTED.value,
+        EventName.REWORK_STARTED.value,
+    }
+    run_dirs = sorted({
+        Path(str(event.get("run_dir")))
+        for event in timeline_events
+        if event.get("run_dir") and str(event.get("event") or "") in agent_run_events
+    })
+    assert run_dirs, "expected at least one run_dir in timeline events"
+
+    for run_dir in run_dirs:
+        _assert_run_dir_has_core_artifacts(run_dir)
+
+    for event in timeline_events:
+        event_name = str(event.get("event") or "")
+        if event_name not in agent_run_events:
+            continue
+        actions = _timeline_event_actions(event, 1)
+        action_types = {action["type"] for action in actions}
+        assert "open_agent_log" in action_types
+        assert "open_session_diagnostics" in action_types

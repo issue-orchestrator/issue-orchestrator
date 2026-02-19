@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from ..contracts.run_manifest import validate_run_manifest_payload
 from ..ports.session_output import (
     ReviewExchangeSummary,
     SessionRun,
@@ -49,6 +50,7 @@ RETRY_PROMPT_NAME = "retry-prompt.md"
 # Other artifact names
 WORKTREE_NOTE_NAME = "worktree.json"
 SESSION_IDENTITY_NAME = "session-identity.json"
+SESSION_PROMPT_NAME = "session-prompt.txt"
 
 # Review exchange artifacts
 REVIEW_EXCHANGE_DIR_NAME = "review-exchange"
@@ -123,8 +125,26 @@ class FileSystemSessionOutput:
             "retention_days": retention_window_days,
             "retention_expires_at": retention_expires_at,
             "retention_pinned": retention_pinned,
+            "artifacts": {
+                "ui_log": {
+                    "kind": "session_log",
+                    "path": str(log_path),
+                    "content_type": "text/plain",
+                },
+                "agent_log": {
+                    "kind": "session_log",
+                    "path": str(log_path),
+                    "content_type": "text/plain",
+                },
+            },
         }
-        self._write_json(manifest_path, manifest)
+        self._write_json(
+            manifest_path,
+            validate_run_manifest_payload(
+                manifest,
+                strict_required_artifacts=True,
+            ),
+        )
         # Create run-scoped session log eagerly so run-scoped artifact resolution is valid
         # from session.started onward, even before terminal output is streamed.
         if not log_path.exists():
@@ -312,8 +332,16 @@ class FileSystemSessionOutput:
         """Update the manifest with additional data."""
         manifest_path = run_dir / MANIFEST_NAME
         manifest = self._read_json(manifest_path) or {}
+        self._bootstrap_manifest_identity(run_dir, manifest)
         manifest.update(updates)
-        self._write_json(manifest_path, manifest)
+        self._sync_manifest_artifacts(manifest)
+        self._write_json(
+            manifest_path,
+            validate_run_manifest_payload(
+                manifest,
+                strict_required_artifacts=True,
+            ),
+        )
 
     def read_manifest(
         self,
@@ -456,6 +484,18 @@ Timestamp: {self._now_iso()}
         prompt_path = run_dir / RETRY_PROMPT_NAME
         self._write_text(prompt_path, content)
         logger.info("Wrote retry prompt to %s", prompt_path)
+        return prompt_path
+
+    def write_session_prompt(
+        self,
+        run_dir: Path,
+        content: str,
+    ) -> Path:
+        """Write the run-scoped session prompt used to launch the agent."""
+        prompt_path = run_dir / SESSION_PROMPT_NAME
+        self._write_text(prompt_path, content)
+        self.update_manifest(run_dir, {"session_prompt_path": str(prompt_path)})
+        logger.info("Wrote session prompt to %s", prompt_path)
         return prompt_path
 
     def clear_retry_state(
@@ -694,6 +734,10 @@ Timestamp: {self._now_iso()}
         run_dir = self.find_run_dir(worktree_path, session_name=session_name)
         if not run_dir:
             return None
+        return self._find_log_in_run_dir(run_dir)
+
+    def get_log_path_for_run_dir(self, run_dir: Path) -> Path | None:
+        """Get the most relevant UI log path for a known run directory."""
         return self._find_log_in_run_dir(run_dir)
 
     def attach_claude_log(
@@ -1130,15 +1174,129 @@ Timestamp: {self._now_iso()}
         """
         for filename in (SESSION_LOG_NAME, PANE_LOG_NAME):
             candidate = run_dir / filename
-            if candidate.exists():
+            if candidate.exists() and candidate.stat().st_size > 0:
                 return candidate
 
         # Subprocess backend: agent output goes to provider-runner/stdout.log
         provider_stdout = run_dir / "provider-runner" / "stdout.log"
-        if provider_stdout.exists():
+        if provider_stdout.exists() and provider_stdout.stat().st_size > 0:
             return provider_stdout
 
         return None
+
+    @staticmethod
+    def _ensure_manifest_artifact(
+        manifest: dict[str, Any],
+        *,
+        name: str,
+        kind: str,
+        path: str | None,
+        content_type: str | None = None,
+    ) -> None:
+        if not path:
+            return
+        artifacts = manifest.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+            manifest["artifacts"] = artifacts
+        artifact: dict[str, Any] = {"kind": kind, "path": path}
+        if content_type:
+            artifact["content_type"] = content_type
+        artifacts[name] = artifact
+
+    def _sync_manifest_artifacts(self, manifest: dict[str, Any]) -> None:
+        """Derive canonical artifact entries from known manifest path fields."""
+        self._ensure_manifest_artifact(
+            manifest,
+            name="ui_log",
+            kind="session_log",
+            path=manifest.get("log_path"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="agent_log",
+            kind="session_log",
+            path=manifest.get("log_path"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="prompt",
+            kind="session_prompt",
+            path=manifest.get("session_prompt_path"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="completion_record",
+            kind="completion_record",
+            path=manifest.get("completion_record_path"),
+            content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="validation_record",
+            kind="validation_record",
+            path=manifest.get("validation_record_path"),
+            content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="validation_stdout",
+            kind="validation_stdout",
+            path=manifest.get("validation_stdout"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="validation_stderr",
+            kind="validation_stderr",
+            path=manifest.get("validation_stderr"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="diagnostic",
+            kind="diagnostic",
+            path=manifest.get("diagnostic_path"),
+            content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="claude_log",
+            kind="claude_jsonl",
+            path=manifest.get("claude_log_path"),
+            content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="orchestrator_tail",
+            kind="orchestrator_tail",
+            path=manifest.get("orchestrator_tail"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="review_exchange_summary",
+            kind="review_exchange_summary",
+            path=manifest.get("review_exchange_summary_path"),
+            content_type="application/json",
+        )
+
+    def _bootstrap_manifest_identity(self, run_dir: Path, manifest: dict[str, Any]) -> None:
+        """Fill required manifest identity fields for standalone or legacy paths."""
+        run_name = run_dir.name
+        run_id = manifest.get("run_id")
+        session_name = manifest.get("session_name")
+        if "__" in run_name:
+            parsed_run_id, parsed_session_name = run_name.split("__", 1)
+            run_id = run_id or parsed_run_id
+            session_name = session_name or parsed_session_name
+        manifest.setdefault("run_id", run_id or run_name)
+        manifest.setdefault("session_name", session_name or run_name)
+        manifest.setdefault("run_dir", str(run_dir))
+        manifest.setdefault("log_path", str(run_dir / SESSION_LOG_NAME))
 
 
 # -----------------------------------------------------------------------------

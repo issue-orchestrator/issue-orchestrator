@@ -35,7 +35,8 @@ from ..domain.models import (
 )
 from ..domain.events import EventBus, SessionEvent
 from ..events import EventContext, EventName
-from ..ports import EventSink, TraceEvent
+from ..ports import EventSink
+from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
 from ..infra.issue_diagnostics import write_issue_diagnostic
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..infra.worktree_base import resolve_base_branch
@@ -394,7 +395,7 @@ class CompletionProcessor:
         if run_dir is not None:
             payload["run_dir"] = str(run_dir)
         self._trace_events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.REVIEW_COMMENT_ADDED,
                 self._event_context.enrich(payload),
             )
@@ -406,25 +407,20 @@ class CompletionProcessor:
         issue_number: int,
         reviewer_label: str | None,
         exchange_mode: str,
-        run_dir: Path | None = None,
+        run_dir: Path,
     ) -> None:
         """Emit trace event when local review exchange starts."""
         if self._trace_events is None or self._event_context is None:
             return
-        payload = {
+        payload: RunScopedEventPayload = {
             "issue_number": issue_number,
             "task": "review",
             "agent": reviewer_label or "",
             "review_exchange_mode": exchange_mode,
+            "run_id": str(self._event_context.run_id),
+            "run_dir": str(run_dir),
         }
-        if run_dir is not None:
-            payload["run_dir"] = str(run_dir)
-        self._trace_events.publish(
-            TraceEvent(
-                EventName.REVIEW_STARTED,
-                self._event_context.enrich(payload),
-            )
-        )
+        self._trace_events.publish(make_run_scoped_event(EventName.REVIEW_STARTED, payload))
 
     def _emit_review_outcome(
         self,
@@ -452,7 +448,7 @@ class CompletionProcessor:
             payload["run_dir"] = str(run_dir)
         event_name = EventName.REVIEW_APPROVED if approved else EventName.REVIEW_CHANGES_REQUESTED
         self._trace_events.publish(
-            TraceEvent(
+            make_trace_event(
                 event_name,
                 self._event_context.enrich(payload),
             )
@@ -866,73 +862,32 @@ class CompletionProcessor:
         review_exchange_completed = False
 
         for action in record.requested_actions:
-            action_start = time.monotonic()
-            logger.info("Executing action: %s for issue #%d", action.value, issue_number)
-            if is_timeline_trace_enabled():
-                logger.info(
-                    "[TIMELINE] completion.action_start issue=%s action=%s requested_actions=%s label_target=%s",
-                    issue_number,
-                    action.value,
-                    ",".join(a.value for a in record.requested_actions),
-                    label_target,
-                )
-            try:
-                result = self._execute_single_action(
-                    action=action,
-                    worktree=worktree,
-                    record=record,
-                    issue_number=issue_number,
-                    issue_title=issue_title,
-                    label_target=label_target,
-                    branch=branch,
-                    session_name=session_name,
-                    agent_label=agent_label,
-                    actions_taken=actions_taken,
-                    errors=errors,
-                    error_details=error_details,
-                )
-                if result.halt:
-                    halt_actions = True
-                if result.branch:
-                    branch = result.branch
-                if result.pr_url:
-                    pr_url = result.pr_url
-                if result.review_exchange_completed:
-                    review_exchange_completed = True
-                if result.skip_remaining:
-                    continue
-
-            except Exception as e:
-                logger.exception(
-                    "Exception executing action %s for #%d: %s",
-                    action.value,
-                    issue_number,
-                    e,
-                )
-                errors.append(f"{action.value}: {e}")
-                error_details.append({
-                    "action": action.value,
-                    "error": str(e),
-                    "exception_type": type(e).__name__,
-                    "traceback": traceback.format_exc(),
-                })
-            finally:
-                action_duration = time.monotonic() - action_start
-                logger.info(
-                    "Action finished: %s for issue #%d in %.2fs",
-                    action.value,
-                    issue_number,
-                    action_duration,
-                )
-                if is_timeline_trace_enabled():
-                    logger.info(
-                        "[TIMELINE] completion.action_end issue=%s action=%s elapsed=%.3f actions_taken=%s errors=%s",
-                        issue_number,
-                        action.value,
-                        action_duration,
-                        len(actions_taken),
-                        len(errors),
-                    )
+            result = self._execute_action_with_observability(
+                action=action,
+                worktree=worktree,
+                record=record,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                label_target=label_target,
+                branch=branch,
+                session_name=session_name,
+                agent_label=agent_label,
+                actions_taken=actions_taken,
+                errors=errors,
+                error_details=error_details,
+            )
+            if result is None:
+                continue
+            if result.halt:
+                halt_actions = True
+            if result.branch:
+                branch = result.branch
+            if result.pr_url:
+                pr_url = result.pr_url
+            if result.review_exchange_completed:
+                review_exchange_completed = True
+            if result.skip_remaining:
+                continue
             if halt_actions:
                 logger.warning(
                     "Halting remaining actions for issue #%d due to push failure",
@@ -941,6 +896,80 @@ class CompletionProcessor:
                 break
 
         return branch, pr_url, review_exchange_completed
+
+    def _execute_action_with_observability(
+        self,
+        *,
+        action: RequestedAction,
+        worktree: Path,
+        record: CompletionRecord,
+        issue_number: int,
+        issue_title: str,
+        label_target: int,
+        branch: str | None,
+        session_name: str | None,
+        agent_label: str | None,
+        actions_taken: list[str],
+        errors: list[str],
+        error_details: list[dict[str, Any]],
+    ) -> "_ActionResult | None":
+        action_start = time.monotonic()
+        logger.info("Executing action: %s for issue #%d", action.value, issue_number)
+        if is_timeline_trace_enabled():
+            logger.info(
+                "[TIMELINE] completion.action_start issue=%s action=%s requested_actions=%s label_target=%s",
+                issue_number,
+                action.value,
+                ",".join(a.value for a in record.requested_actions),
+                label_target,
+            )
+        try:
+            return self._execute_single_action(
+                action=action,
+                worktree=worktree,
+                record=record,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                label_target=label_target,
+                branch=branch,
+                session_name=session_name,
+                agent_label=agent_label,
+                actions_taken=actions_taken,
+                errors=errors,
+                error_details=error_details,
+            )
+        except Exception as e:
+            logger.exception(
+                "Exception executing action %s for #%d: %s",
+                action.value,
+                issue_number,
+                e,
+            )
+            errors.append(f"{action.value}: {e}")
+            error_details.append({
+                "action": action.value,
+                "error": str(e),
+                "exception_type": type(e).__name__,
+                "traceback": traceback.format_exc(),
+            })
+            return None
+        finally:
+            action_duration = time.monotonic() - action_start
+            logger.info(
+                "Action finished: %s for issue #%d in %.2fs",
+                action.value,
+                issue_number,
+                action_duration,
+            )
+            if is_timeline_trace_enabled():
+                logger.info(
+                    "[TIMELINE] completion.action_end issue=%s action=%s elapsed=%.3f actions_taken=%s errors=%s",
+                    issue_number,
+                    action.value,
+                    action_duration,
+                    len(actions_taken),
+                    len(errors),
+                )
 
     @dataclass
     class _ActionResult:
@@ -1330,6 +1359,10 @@ class CompletionProcessor:
                 worktree=worktree,
                 session_name=session_name,
             )
+            if review_run_dir is None:
+                raise RuntimeError(
+                    f"review.started requires run_dir: issue={issue_number} session={session_name}"
+                )
             self._emit_review_started(
                 issue_number=issue_number,
                 reviewer_label=reviewer_label,
@@ -1379,6 +1412,10 @@ class CompletionProcessor:
             worktree=worktree,
             session_name=session_name,
         )
+        if review_run_dir is None:
+            raise RuntimeError(
+                f"review.started requires run_dir: issue={issue_number} session={session_name}"
+            )
         self._emit_review_started(
             issue_number=issue_number,
             reviewer_label=reviewer_label,

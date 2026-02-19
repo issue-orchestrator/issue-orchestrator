@@ -41,7 +41,14 @@ from issue_orchestrator.ports.working_copy import (
     PushResult,
     RebaseResult,
 )
-from issue_orchestrator.ports.event_sink import EventSink, TraceEvent, NullEventSink, InMemoryEventSink
+from issue_orchestrator.ports.event_sink import (
+    EventSink,
+    TraceEvent,
+    NullEventSink,
+    InMemoryEventSink,
+    make_trace_event,
+    make_run_scoped_event,
+)
 from issue_orchestrator.ports.session_runner import SessionRunner, NullSessionRunner
 from issue_orchestrator.ports.repository_host import RepositoryHost
 from issue_orchestrator.ports.issue_resolver import IssueResolver
@@ -99,6 +106,8 @@ __all__ = [
     "TraceEvent",
     "NullEventSink",
     "InMemoryEventSink",
+    "make_trace_event",
+    "make_run_scoped_event",
     # Terminal session management
     "SessionRunner",
     "NullSessionRunner",
