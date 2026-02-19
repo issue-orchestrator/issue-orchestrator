@@ -673,6 +673,14 @@ class CompletionHandler:
             "pr_url": pr_url,
             "runtime_minutes": session.runtime_minutes,
         }
+        completion_path_absolute = detail.get("completion_path_absolute")
+        if isinstance(completion_path_absolute, str) and completion_path_absolute.strip():
+            payload["completion_path_absolute"] = completion_path_absolute
+        else:
+            payload["completion_path_absolute"] = str((session.worktree_path / session.completion_path).resolve())
+        run_dir = self._session_output.find_run_dir(session.worktree_path, session.terminal_id)
+        if run_dir:
+            payload["run_dir"] = str(run_dir)
         for key in ("implementation", "problems", "review_summary", "review_issues", "risk_level"):
             if detail.get(key):
                 payload[key] = detail[key]

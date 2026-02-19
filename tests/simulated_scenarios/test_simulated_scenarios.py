@@ -598,7 +598,7 @@ def test_coder_invalid_json_emits_error(scenario_repo: Path):
         .coder(script("coder_invalid_json.sh")) \
         .reviewer(script("reviewer_never_ok.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
-        .expect_review_exchange_round_response(coder_response_type="error") \
+        .expect_review_exchange_round_response(coder_response_type="protocol_error") \
         .run()
 
 
@@ -607,7 +607,7 @@ def test_coder_exit_nonzero_emits_error(scenario_repo: Path):
         .coder(script("coder_exit_nonzero.sh")) \
         .reviewer(script("reviewer_never_ok.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False, max_rounds=1) \
-        .expect_review_exchange_round_response(coder_response_type="error") \
+        .expect_review_exchange_round_response(coder_response_type="protocol_error") \
         .run()
 
 

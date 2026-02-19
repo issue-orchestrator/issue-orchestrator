@@ -15,10 +15,11 @@ from issue_orchestrator.infra.config import Config
 from tests.conftest import MockGitHubAdapter, MockEventSink, build_test_orchestrator_deps
 from issue_orchestrator.execution import CompositeEventSink
 from issue_orchestrator.execution.timeline_event_sink import TimelineEventSink
-from issue_orchestrator.execution.timeline_store import FileSystemTimelineStore, TimelineStoreConfig
+from issue_orchestrator.execution.timeline_store import SqliteTimelineStore, TimelineStoreConfig
 from issue_orchestrator.execution.timeline_writer import DefaultTimelineWriter
 from issue_orchestrator.execution.timeline_reader import DefaultTimelineReader
 from issue_orchestrator.infra.orchestrator import Orchestrator
+from issue_orchestrator.infra.repo_identity import state_dir
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.planner import Planner
 from issue_orchestrator.control.workflows.review_workflow import ReviewWorkflow
@@ -272,8 +273,8 @@ def build_orchestrator(
     runner = runner or ScriptSessionRunner()
     worktree_manager = worktree_manager or TempWorktreeManager(base=repo_root)
     working_copy = working_copy or StubWorkingCopy()
-    timeline_store = FileSystemTimelineStore(
-        repo_root,
+    timeline_store = SqliteTimelineStore(
+        state_dir(repo_root) / "timeline.sqlite",
         TimelineStoreConfig(max_records=config.timeline.max_records),
     )
     timeline_writer = DefaultTimelineWriter(timeline_store)

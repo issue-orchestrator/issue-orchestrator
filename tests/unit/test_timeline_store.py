@@ -10,8 +10,6 @@ from pathlib import Path
 import pytest
 
 from issue_orchestrator.execution.timeline_store import (
-    FileSystemTimelineStore,
-    RoutedTimelineStore,
     SqliteTimelineStore,
     TimelineStoreConfig,
 )
@@ -32,31 +30,6 @@ class RecordingTimelineStore(TimelineStore):
 
     def read(self, issue_number: int, limit: int | None = None) -> list[TimelineRecord]:
         return self.records
-
-
-def test_timeline_store_trims_max_records(tmp_path: Path) -> None:
-    store = FileSystemTimelineStore(tmp_path, config=TimelineStoreConfig(max_records=2))
-    issue = 42
-    store.append(issue, TimelineRecord(event_id="1", timestamp="t1", event="e1", data={}))
-    store.append(issue, TimelineRecord(event_id="2", timestamp="t2", event="e2", data={}))
-    store.append(issue, TimelineRecord(event_id="3", timestamp="t3", event="e3", data={}))
-    store.append(issue, TimelineRecord(event_id="4", timestamp="t4", event="e4", data={}))
-    store.append(issue, TimelineRecord(event_id="5", timestamp="t5", event="e5", data={}))
-
-    records = store.read(issue)
-    assert [record.event_id for record in records] == ["4", "5"]
-
-
-def test_timeline_store_read_limit_returns_tail(tmp_path: Path) -> None:
-    store = FileSystemTimelineStore(tmp_path, config=TimelineStoreConfig(max_records=10))
-    issue = 7
-    store.append(issue, TimelineRecord(event_id="a", timestamp="t1", event="e1", data={}))
-    store.append(issue, TimelineRecord(event_id="b", timestamp="t2", event="e2", data={}))
-    store.append(issue, TimelineRecord(event_id="c", timestamp="t3", event="e3", data={}))
-
-    records = store.read(issue, limit=1)
-    assert len(records) == 1
-    assert records[0].event_id == "c"
 
 
 def test_sqlite_timeline_store_trims_max_records(tmp_path: Path) -> None:
@@ -204,54 +177,12 @@ def test_sqlite_timeline_store_requires_run_dir_for_run_scoped_events(tmp_path: 
         )
 
 
-def test_filesystem_and_sqlite_store_roundtrip_equivalence(tmp_path: Path) -> None:
-    fs_store = FileSystemTimelineStore(
-        tmp_path / "fs-root",
-        config=TimelineStoreConfig(max_records=50),
-    )
-    sqlite_store = SqliteTimelineStore(
-        tmp_path / "sqlite-root" / "timeline.sqlite",
-        config=TimelineStoreConfig(max_records=50, max_total_records=500),
-    )
-    records = [
-        TimelineRecord(
-            event_id="e1",
-            timestamp="2026-02-17T10:00:00Z",
-            event="session.started",
-            data={"issue_number": 4057, "run_dir": "/tmp/r1", "task": "code", "schema": 1},
-        ),
-        TimelineRecord(
-            event_id="e2",
-            timestamp="2026-02-17T10:05:00Z",
-            event="review.started",
-            data={"issue_number": 4057, "run_dir": "/tmp/r2", "task": "review", "schema": 1},
-        ),
-        TimelineRecord(
-            event_id="e3",
-            timestamp="2026-02-17T10:10:00Z",
-            event="review.approved",
-            data={"issue_number": 4057, "summary": "looks good", "schema": 1},
-        ),
-    ]
-    for record in records:
-        fs_store.append(4057, record)
-        sqlite_store.append(4057, record)
-
-    assert fs_store.read(4057) == sqlite_store.read(4057)
-    assert fs_store.read(4057, limit=2) == sqlite_store.read(4057, limit=2)
-
-
-def test_filesystem_and_sqlite_writer_equivalence_for_all_event_names(tmp_path: Path) -> None:
+def test_sqlite_writer_covers_all_event_names(tmp_path: Path) -> None:
     issue_number = 4057
-    fs_store = FileSystemTimelineStore(
-        tmp_path / "fs-root",
-        config=TimelineStoreConfig(max_records=10000),
-    )
     sqlite_store = SqliteTimelineStore(
         tmp_path / "sqlite-root" / "timeline.sqlite",
         config=TimelineStoreConfig(max_records=10000, max_total_records=20000),
     )
-    fs_writer = DefaultTimelineWriter(fs_store)
     sqlite_writer = DefaultTimelineWriter(sqlite_store)
 
     base_time = datetime(2026, 2, 17, 12, 0, 0, tzinfo=timezone.utc)
@@ -283,13 +214,11 @@ def test_filesystem_and_sqlite_writer_equivalence_for_all_event_names(tmp_path: 
             event_id=idx,
             timestamp=base_time + timedelta(minutes=idx),
         )
-        fs_writer.record(event)
         sqlite_writer.record(event)
 
-    fs_records = fs_store.read(issue_number)
     sqlite_records = sqlite_store.read(issue_number)
-    assert fs_records == sqlite_records
-    for record in fs_records:
+    assert len(sqlite_records) == len(EventName)
+    for record in sqlite_records:
         assert record.data["schema"] == EVENT_SCHEMA_VERSION
         assert record.data["timeline_schema_version"] == TIMELINE_SCHEMA_VERSION
 
@@ -419,48 +348,3 @@ def test_timeline_writer_requires_review_feedback_reference_for_review_comment_a
     )
     assert len(store.records) == 1
 
-
-def test_routed_timeline_store_routes_by_worktree_path(tmp_path: Path) -> None:
-    default_root = tmp_path / "repo-root"
-    issue_root = tmp_path / "issue-4057-worktree"
-    default_root.mkdir(parents=True)
-    issue_root.mkdir(parents=True)
-    store = RoutedTimelineStore(default_root, TimelineStoreConfig(max_records=10))
-
-    record = TimelineRecord(
-        event_id="r1",
-        timestamp="t1",
-        event="session.started",
-        data={"issue_number": 4057, "worktree_path": str(issue_root)},
-    )
-    store.append(4057, record)
-
-    default_timeline = default_root / ".issue-orchestrator" / "state" / "timeline" / "issue-4057.jsonl"
-    issue_timeline = issue_root / ".issue-orchestrator" / "state" / "timeline" / "issue-4057.jsonl"
-    assert not default_timeline.exists()
-    assert issue_timeline.exists()
-    assert store.owner_repo_root(4057) == issue_root.resolve()
-    assert len(store.read(4057)) == 1
-
-
-def test_routed_timeline_store_routes_by_run_dir(tmp_path: Path) -> None:
-    default_root = tmp_path / "repo-root"
-    issue_root = tmp_path / "issue-4072-worktree"
-    run_dir = issue_root / ".issue-orchestrator" / "sessions" / "20260216-100000Z__issue-4072"
-    run_dir.mkdir(parents=True)
-    default_root.mkdir(parents=True)
-    store = RoutedTimelineStore(default_root, TimelineStoreConfig(max_records=10))
-
-    store.append(
-        4072,
-        TimelineRecord(
-            event_id="r2",
-            timestamp="t2",
-            event="session.completed",
-            data={"issue_number": 4072, "run_dir": str(run_dir)},
-        ),
-    )
-
-    issue_timeline = issue_root / ".issue-orchestrator" / "state" / "timeline" / "issue-4072.jsonl"
-    assert issue_timeline.exists()
-    assert store.owner_repo_root(4072) == issue_root.resolve()
