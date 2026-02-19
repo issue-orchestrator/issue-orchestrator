@@ -60,6 +60,7 @@ from ..execution.manifest_accessor import (
     ManifestAccessor,
     RunIdentity,
 )
+from ..execution.label_ops import LabelOperation, apply_label_operations
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..domain.event_taxonomy import (
     EventIntent,
@@ -955,7 +956,6 @@ def _terminate_issue_and_hold(issue_number: int, sessions: list[Any]) -> dict[st
     lm = _label_manager_for_api()
 
     killed_sessions: list[str] = []
-    errors: list[str] = []
     pr_numbers = sorted(
         {
             int(s.pr_number)
@@ -964,109 +964,100 @@ def _terminate_issue_and_hold(issue_number: int, sessions: list[Any]) -> dict[st
         }
     )
 
-    for session in sessions:
-        try:
-            _orchestrator.kill_session(session.terminal_id)
-            killed_sessions.append(session.terminal_id)
-        except Exception as exc:
-            errors.append(f"{session.terminal_id}: {exc}")
-
-    # Remove all active sessions for the issue regardless of per-session kill result.
-    state.active_sessions = [s for s in state.active_sessions if s.issue.number != issue_number]
-
-    # Purge all in-memory scheduling vectors for this issue.
-    state.pending_reviews = [r for r in state.pending_reviews if r.issue_number != issue_number]
-    state.pending_reworks = [
-        r for r in state.pending_reworks
-        if r.resolve_issue_number() != issue_number
-    ]
-    state.pending_triage_reviews = [
-        r for r in state.pending_triage_reviews
-        if r.issue_number != issue_number
-    ]
-    state.pending_validation_retries = [
-        r for r in state.pending_validation_retries
-        if r.issue_number != issue_number
-    ]
-    state.discovered_reviews = [
-        r for r in state.discovered_reviews
-        if r.issue_number != issue_number
-    ]
-    state.discovered_reworks = [
-        r for r in state.discovered_reworks
-        if r.issue_number != issue_number
-    ]
-    state.discovered_failures = [
-        r for r in state.discovered_failures
-        if r.issue_number != issue_number
-    ]
-    state.immediate_cleanups = [
-        c for c in state.immediate_cleanups
-        if c.issue_number != issue_number
-    ]
-
-    # Record explicit operator termination so dashboard lanes keep this issue visible as blocked.
-    primary_session = sessions[0]
-    agent_label = primary_session.agent_label
-    if not agent_label:
-        for label in primary_session.issue.labels:
-            if label.startswith("agent:"):
-                agent_label = label
-                break
-    if not agent_label:
-        agent_label = "agent:unknown"
-    state.session_history.append(
-        SessionHistoryEntry(
-            issue_number=issue_number,
-            title=primary_session.issue.title,
-            agent_type=agent_label,
-            status="blocked",
-            runtime_minutes=primary_session.runtime_minutes,
-            status_reason="Terminated by operator",
-            worktree_path=primary_session.worktree_path,
-            completed_at=datetime.now(),
-        )
+    errors = _terminate_sessions(sessions=sessions, killed_sessions=killed_sessions)
+    _prune_issue_runtime_state(state=state, issue_number=issue_number)
+    _append_operator_termination_history(
+        state=state,
+        issue_number=issue_number,
+        primary_session=sessions[0],
+        session_entry_cls=SessionHistoryEntry,
+        now=datetime.now(),
     )
-
-    # Guard against immediate relaunch until operator retries/unblocks.
     state.failed_this_cycle.add(issue_number)
 
     # Label policy:
     # - issue: add blocked-failed guard, remove in-progress/pr-pending
     # - linked PR(s): add blocked-failed and remove needs-rework (scanner trigger)
-    label_ops: list[tuple[str, int, str]] = [
-        ("add", issue_number, lm.blocked_failed),
-        ("remove", issue_number, lm.in_progress),
-        ("remove", issue_number, lm.pr_pending),
+    label_ops: list[LabelOperation] = [
+        LabelOperation("add", issue_number, lm.blocked_failed),
+        LabelOperation("remove", issue_number, lm.in_progress),
+        LabelOperation("remove", issue_number, lm.pr_pending),
     ]
     for pr_number in pr_numbers:
         label_ops.extend(
             [
-                ("add", pr_number, lm.blocked_failed),
-                ("remove", pr_number, lm.needs_rework),
+                LabelOperation("add", pr_number, lm.blocked_failed),
+                LabelOperation("remove", pr_number, lm.needs_rework),
             ]
         )
-
-    for op, number, label in label_ops:
-        try:
-            if op == "add":
-                repo.add_label(number, label)
-            else:
-                repo.remove_label(number, label)
-        except Exception as exc:
-            logger.warning(
-                "[terminate] label %s failed (%s #%d): %s",
-                op,
-                label,
-                number,
-                exc,
-            )
+    apply_label_operations(
+        repo,
+        label_ops,
+        logger=logger,
+        log_prefix="[terminate]",
+    )
 
     return {
         "killed_sessions": killed_sessions,
         "errors": errors,
         "hold_label": lm.blocked_failed,
     }
+
+
+def _terminate_sessions(*, sessions: list[Any], killed_sessions: list[str]) -> list[str]:
+    assert _orchestrator is not None
+    errors: list[str] = []
+    for session in sessions:
+        try:
+            _orchestrator.kill_session(session.terminal_id)
+            killed_sessions.append(session.terminal_id)
+        except Exception as exc:
+            errors.append(f"{session.terminal_id}: {exc}")
+    return errors
+
+
+def _prune_issue_runtime_state(*, state: Any, issue_number: int) -> None:
+    state.active_sessions = [s for s in state.active_sessions if s.issue.number != issue_number]
+    state.pending_reviews = [r for r in state.pending_reviews if r.issue_number != issue_number]
+    state.pending_reworks = [r for r in state.pending_reworks if r.resolve_issue_number() != issue_number]
+    state.pending_triage_reviews = [r for r in state.pending_triage_reviews if r.issue_number != issue_number]
+    state.pending_validation_retries = [r for r in state.pending_validation_retries if r.issue_number != issue_number]
+    state.discovered_reviews = [r for r in state.discovered_reviews if r.issue_number != issue_number]
+    state.discovered_reworks = [r for r in state.discovered_reworks if r.issue_number != issue_number]
+    state.discovered_failures = [r for r in state.discovered_failures if r.issue_number != issue_number]
+    state.immediate_cleanups = [c for c in state.immediate_cleanups if c.issue_number != issue_number]
+
+
+def _resolve_agent_label(primary_session: Any) -> str:
+    agent_label = primary_session.agent_label
+    if agent_label:
+        return str(agent_label)
+    for label in primary_session.issue.labels:
+        if label.startswith("agent:"):
+            return label
+    return "agent:unknown"
+
+
+def _append_operator_termination_history(
+    *,
+    state: Any,
+    issue_number: int,
+    primary_session: Any,
+    session_entry_cls: Any,
+    now: Any,
+) -> None:
+    state.session_history.append(
+        session_entry_cls(
+            issue_number=issue_number,
+            title=primary_session.issue.title,
+            agent_type=_resolve_agent_label(primary_session),
+            status="blocked",
+            runtime_minutes=primary_session.runtime_minutes,
+            status_reason="Terminated by operator",
+            worktree_path=primary_session.worktree_path,
+            completed_at=now,
+        )
+    )
 
 
 @app.post("/api/kill/{issue_number}")
@@ -2069,6 +2060,74 @@ def _agent_log_is_usable(log_path: Path, *, event_name: str) -> bool:
     return any(len(line) >= 8 for line in lines)
 
 
+def _validate_timeline_event_requirements(
+    *,
+    event: dict[str, Any],
+    issue_number: int,
+    event_name: str,
+    timeline_schema_version: int,
+    event_run_dir: str,
+) -> None:
+    if timeline_schema_version < MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION:
+        raise RuntimeError(
+            "timeline event has unsupported schema version: "
+            f"issue={issue_number} event={event_name} version={timeline_schema_version} "
+            f"min_supported={MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION}"
+        )
+    if _timeline_event_requires_run_dir(event) and not event_run_dir:
+        raise RuntimeError(
+            f"timeline event missing required run_dir: issue={issue_number} event={event_name}"
+        )
+
+
+def _validated_run_scoped_artifact(
+    *,
+    action_type: str,
+    issue_number: int,
+    event_name: str,
+    event_run_dir: str,
+    run_scoped_validated: set[str],
+) -> str | None:
+    if action_type in run_scoped_validated:
+        return None
+    if not event_run_dir:
+        raise RuntimeError(
+            f"timeline run-scoped action requires run_dir: issue={issue_number} event={event_name} action={action_type}"
+        )
+    accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(event_run_dir)))
+    if action_type == "open_agent_log":
+        artifact = accessor.get_agent_log()
+        if not _agent_log_is_usable(artifact.path, event_name=event_name):
+            raise RuntimeError(
+                f"run-scoped agent log is empty/unusable: issue={issue_number} event={event_name} run_dir={event_run_dir}"
+            )
+    elif action_type == "view_claude_log":
+        artifact = accessor.get_claude_log()
+    else:
+        raise RuntimeError(
+            f"unsupported run-scoped action type: issue={issue_number} event={event_name} action={action_type}"
+        )
+    if not artifact.path.exists():
+        raise RuntimeError(
+            f"resolved artifact path missing: issue={issue_number} event={event_name} action={action_type} run_dir={event_run_dir}"
+        )
+    run_scoped_validated.add(action_type)
+    return None
+
+
+def _decorate_timeline_action_with_run_dir(action: dict[str, Any], event_run_dir: str) -> dict[str, Any]:
+    if not event_run_dir:
+        return action
+    if str(action.get("type") or "") in {
+        "open_agent_log",
+        "view_claude_log",
+        "open_orchestrator_log",
+        "open_session_diagnostics",
+    }:
+        return {**action, "run_dir": event_run_dir}
+    return action
+
+
 def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
@@ -2084,33 +2143,6 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
     }
     run_scoped_validated: set[str] = set()
 
-    def _require_run_scoped_action_artifact(action_type: str) -> None:
-        if action_type in run_scoped_validated:
-            return
-        if not event_run_dir:
-            raise RuntimeError(
-                f"timeline run-scoped action requires run_dir: issue={issue_number} event={event_name} action={action_type}"
-            )
-        identity = RunIdentity(issue_number=issue_number, run_dir=Path(event_run_dir))
-        accessor = ManifestAccessor(identity)
-        if action_type == "open_agent_log":
-            artifact = accessor.get_agent_log()
-            if not _agent_log_is_usable(artifact.path, event_name=event_name):
-                raise RuntimeError(
-                    f"run-scoped agent log is empty/unusable: issue={issue_number} event={event_name} run_dir={event_run_dir}"
-                )
-        elif action_type == "view_claude_log":
-            artifact = accessor.get_claude_log()
-        else:
-            raise RuntimeError(
-                f"unsupported run-scoped action type: issue={issue_number} event={event_name} action={action_type}"
-            )
-        if not artifact.path.exists():
-            raise RuntimeError(
-                f"resolved artifact path missing: issue={issue_number} event={event_name} action={action_type} run_dir={event_run_dir}"
-            )
-        run_scoped_validated.add(action_type)
-
     def _add_action(action: dict[str, Any], dedupe_value: str) -> None:
         action_type = str(action.get("type") or "")
         if action_type in run_scoped_action_types and not event_run_dir:
@@ -2119,40 +2151,32 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
             )
         if action_type in run_scoped_action_types:
             try:
-                _require_run_scoped_action_artifact(action_type)
+                _validated_run_scoped_artifact(
+                    action_type=action_type,
+                    issue_number=issue_number,
+                    event_name=event_name,
+                    event_run_dir=event_run_dir,
+                    run_scoped_validated=run_scoped_validated,
+                )
             except Exception as exc:
-                # Degrade per-action: keep other actions visible when one
-                # optional run-scoped artifact (e.g. Claude log mapping) is absent.
                 if action_type == "view_claude_log":
-                    action_warnings.append(
-                        f"{action_type} unavailable: {exc}"
-                    )
+                    action_warnings.append(f"{action_type} unavailable: {exc}")
                     return
                 raise
-        if event_run_dir and action_type in {
-            "open_agent_log",
-            "view_claude_log",
-            "open_orchestrator_log",
-            "open_session_diagnostics",
-        }:
-            action = {**action, "run_dir": event_run_dir}
+        action = _decorate_timeline_action_with_run_dir(action, event_run_dir)
         key = (action_type, dedupe_value)
         if key in seen:
             return
         seen.add(key)
         actions.append(action)
 
-    if timeline_schema_version < MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION:
-        raise RuntimeError(
-            "timeline event has unsupported schema version: "
-            f"issue={issue_number} event={event_name} version={timeline_schema_version} "
-            f"min_supported={MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION}"
-        )
-
-    if _timeline_event_requires_run_dir(event) and not event_run_dir:
-        raise RuntimeError(
-            f"timeline event missing required run_dir: issue={issue_number} event={event_name}"
-        )
+    _validate_timeline_event_requirements(
+        event=event,
+        issue_number=issue_number,
+        event_name=event_name,
+        timeline_schema_version=timeline_schema_version,
+        event_run_dir=event_run_dir,
+    )
 
     _timeline_event_recommended_actions(
         event=event,

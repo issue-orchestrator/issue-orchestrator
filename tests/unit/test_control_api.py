@@ -1383,6 +1383,40 @@ class TestSupervisorStart:
         assert response.json()["status"] == "started"
         mock_supervisor.stop_by_port.assert_called_once_with(19080, force=True)
 
+    def test_annotate_identity_mismatch_ignores_dirty_state_drift(
+        self,
+    ) -> None:
+        """Volatile dirty-state fields should not trigger identity mismatch."""
+        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.infra.repo_identity import RepoIdentity
+
+        expected = RepoIdentity(
+            repo_root="/repo",
+            commit_sha="abc",
+            branch="main",
+            working_tree_dirty=False,
+            dirty_fingerprint=None,
+            source_root="/src",
+        )
+        info = {
+            "repo_identity": {
+                "repo_root": "/repo",
+                "commit_sha": "abc",
+                "branch": "main",
+                "working_tree_dirty": True,
+                "dirty_fingerprint": "abcd1234",
+                "source_root": "/src",
+            }
+        }
+        details: dict[str, object] = {}
+
+        control_api._annotate_identity_mismatch(
+            details,
+            info,
+            expected,
+        )
+        assert "identity_mismatch" not in details
+
     def test_start_identity_mismatch_stop_failure_returns_409(
         self,
         supervisor_client: TestClient,

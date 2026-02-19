@@ -1321,6 +1321,8 @@ def _annotate_identity_mismatch(
         source_root=(str(observed_identity_payload["source_root"]) if observed_identity_payload.get("source_root") else None),
     )
     identity_mismatch = diff_repo_identity(expected_identity, observed_identity)
+    for volatile_field in ("working_tree_dirty", "dirty_fingerprint"):
+        identity_mismatch.pop(volatile_field, None)
     if identity_mismatch:
         details["identity_mismatch"] = identity_mismatch
         details["observed_identity"] = observed_identity.to_dict()

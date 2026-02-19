@@ -579,18 +579,25 @@ def _annotate_cycle_in_run(cycles: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 def _build_cycle_step(evt: dict[str, Any], today: str) -> dict[str, Any]:
     """Build one journey step entry from a timeline event."""
-    event_name = str(evt.get("event") or "")
-    narrative = _event_to_narrative(evt)
     ts = evt.get("timestamp") or ""
-    step_time = _format_time_label(ts, today)
+    actions = evt.get("actions")
     step_dict: dict[str, Any] = {
         "timestamp": ts,
-        "time_label": step_time,
+        "time_label": _format_time_label(ts, today),
         "day": str(ts)[:10] if ts else "",
-        "narrative": narrative,
+        "narrative": _event_to_narrative(evt),
         "status": str(evt.get("status") or ""),
-        "event": event_name,
+        "event": str(evt.get("event") or ""),
     }
+    detail = _step_detail_text(evt, actions)
+    if detail:
+        step_dict["detail"] = detail
+    if actions:
+        step_dict["actions"] = actions
+    return step_dict
+
+
+def _step_detail_text(evt: dict[str, Any], actions: Any) -> str | None:
     detail_parts: list[str] = []
     detail = evt.get("detail")
     if detail:
@@ -598,30 +605,30 @@ def _build_cycle_step(evt: dict[str, Any], today: str) -> dict[str, Any]:
     actions_error = evt.get("actions_error")
     if isinstance(actions_error, str) and actions_error.strip():
         detail_parts.append(f"Missing timeline artifacts/actions: {actions_error.strip()}")
-    actions = evt.get("actions")
-    if isinstance(actions, list):
-        missing_messages: list[str] = []
-        for action in actions:
-            if not isinstance(action, dict) or str(action.get("type") or "") != "show_actions_error":
-                continue
-            raw_messages = action.get("error_messages")
-            if isinstance(raw_messages, list):
-                for msg in raw_messages:
-                    if isinstance(msg, str) and msg.strip():
-                        missing_messages.append(msg.strip())
-            raw_message = action.get("error_message")
-            if isinstance(raw_message, str) and raw_message.strip():
-                missing_messages.append(raw_message.strip())
-        if missing_messages:
-            unique_messages = list(dict.fromkeys(missing_messages))
-            detail_parts.append(
-                "Missing timeline artifacts/actions: " + " | ".join(unique_messages)
-            )
-    if detail_parts:
-        step_dict["detail"] = " | ".join(detail_parts)
-    if actions:
-        step_dict["actions"] = actions
-    return step_dict
+    missing_messages = _missing_action_messages(actions)
+    if missing_messages:
+        detail_parts.append("Missing timeline artifacts/actions: " + " | ".join(missing_messages))
+    if not detail_parts:
+        return None
+    return " | ".join(detail_parts)
+
+
+def _missing_action_messages(actions: Any) -> list[str]:
+    if not isinstance(actions, list):
+        return []
+    messages: list[str] = []
+    for action in actions:
+        if not isinstance(action, dict) or str(action.get("type") or "") != "show_actions_error":
+            continue
+        raw_messages = action.get("error_messages")
+        if isinstance(raw_messages, list):
+            for msg in raw_messages:
+                if isinstance(msg, str) and msg.strip():
+                    messages.append(msg.strip())
+        raw_message = action.get("error_message")
+        if isinstance(raw_message, str) and raw_message.strip():
+            messages.append(raw_message.strip())
+    return list(dict.fromkeys(messages))
 
 
 def _build_phase_groups(

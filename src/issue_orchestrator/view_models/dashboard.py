@@ -1041,51 +1041,67 @@ def _count_untriaged_failures(db, run_obj) -> int:
     return count
 
 
+def _e2e_cached_status(cache_key: str, *, now_mono: float, proc_running: bool) -> dict[str, Any] | None:
+    with _E2E_STATUS_CACHE_LOCK:
+        cached_entry = _E2E_STATUS_CACHE.get(cache_key)
+    if cached_entry is None:
+        return None
+    cached_at, cached_payload = cached_entry
+    if (now_mono - cached_at) >= E2E_STATUS_CACHE_TTL_SECONDS:
+        return None
+    cached_running = bool(cached_payload.get("running"))
+    if cached_running != proc_running:
+        return None
+    return copy.deepcopy(cached_payload)
+
+
+def _load_e2e_database_state(config, orchestrator_id: str) -> tuple[Any, dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None, int, bool]:
+    from ..infra.e2e_db import E2EDB
+
+    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return None, None, [], None, 0, False
+
+    try:
+        db = E2EDB(db_path)
+        run_obj = db.latest_run(orchestrator_id)
+        last_run = run_obj.to_dict() if run_obj else None
+        failed_tests = [t.to_dict() for t in db.get_failed_tests(run_obj.id)] if run_obj else []
+        if last_run and last_run.get("started_at"):
+            last_run["relative_time"] = _relative_time(last_run["started_at"])
+        untriaged_count = (
+            _count_untriaged_failures(db, run_obj)
+            if run_obj and run_obj.status == "failed" and failed_tests
+            else 0
+        )
+        signal_score = db.compute_signal_score(orchestrator_id)
+        low_stability = bool(signal_score and signal_score.get("pass_rate") is not None and signal_score["pass_rate"] < 0.5)
+        return run_obj, last_run, failed_tests, signal_score, untriaged_count, low_stability
+    except Exception:
+        return None, None, [], None, 0, False
+
+
 def _get_e2e_status(config) -> dict[str, Any]:
     if not config or not config.e2e.enabled:
         return {"enabled": False, "running": False}
-
-    from ..infra.e2e_db import E2EDB
 
     orchestrator_id = config.orchestrator_id
     runner = get_e2e_runner_manager()
     proc_status = runner.status(orchestrator_id)
     cache_key = _e2e_status_cache_key(config)
     now_mono = time.monotonic()
-    with _E2E_STATUS_CACHE_LOCK:
-        cached_entry = _E2E_STATUS_CACHE.get(cache_key)
-    if cached_entry is not None:
-        cached_at, cached_payload = cached_entry
-        if (now_mono - cached_at) < E2E_STATUS_CACHE_TTL_SECONDS:
-            cached_running = bool(cached_payload.get("running"))
-            if cached_running == bool(proc_status.get("running")):
-                return copy.deepcopy(cached_payload)
+    cached_payload = _e2e_cached_status(
+        cache_key,
+        now_mono=now_mono,
+        proc_running=bool(proc_status.get("running")),
+    )
+    if cached_payload is not None:
+        return cached_payload
 
-    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
-    last_run = None
-    run_obj = None
-    failed_tests = []
-    signal_score = None
-    untriaged_count = 0
-    low_stability = False
-
-    if db_path.exists():
-        try:
-            db = E2EDB(db_path)
-            run_obj = db.latest_run(orchestrator_id)
-            if run_obj:
-                last_run = run_obj.to_dict()
-                failed_tests = [t.to_dict() for t in db.get_failed_tests(run_obj.id)]
-                if last_run.get("started_at"):
-                    last_run["relative_time"] = _relative_time(last_run["started_at"])
-                if run_obj.status == "failed" and failed_tests:
-                    untriaged_count = _count_untriaged_failures(db, run_obj)
-            signal_score = db.compute_signal_score(orchestrator_id)
-            if signal_score and signal_score.get("pass_rate") is not None:
-                low_stability = signal_score["pass_rate"] < 0.5
-        except Exception:
-            # UI should still render even if DB read fails
-            pass
+    run_obj, last_run, failed_tests, signal_score, untriaged_count, low_stability = _load_e2e_database_state(
+        config,
+        orchestrator_id,
+    )
 
     next_run = get_next_run_info(config, config.repo_root, run_obj)
 
