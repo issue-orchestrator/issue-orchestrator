@@ -61,6 +61,7 @@ from ..ports import (
     CommandRunner,
 )
 from ..ports.session_output import SessionOutput
+from ..ports.event_sink import make_session_started_event
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions, WorktreeInfo
 from ..ports.session_log import detect_ai_system_from_command
 from ..ports.provider_resilience import ProviderErrorType
@@ -822,7 +823,7 @@ class SessionLauncher:
 
         # Emit trace event
         full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(make_run_scoped_event(EventName.SESSION_STARTED, {
+        self.events.publish(make_session_started_event({
             "issue_number": issue.number,
             "session_id": session_name,
             "agent": issue.agent_type,

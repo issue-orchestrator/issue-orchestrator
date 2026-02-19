@@ -46,6 +46,13 @@ from ..ports.event_sink import (
     RunScopedEventName,
     RunScopedEventPayload,
     make_run_scoped_event,
+    SessionProcessingCompletedEventPayload,
+    SessionValidationFailedEventPayload,
+    SessionValidationRetryNeededEventPayload,
+    make_session_processing_completed_event,
+    make_session_validation_failed_event,
+    make_session_validation_passed_event,
+    make_session_validation_retry_needed_event,
 )
 from ..ports.session_output import SessionOutput, ValidationState
 from .validation import PublishGate
@@ -365,12 +372,17 @@ class SessionController:
         result: "ProcessingResult",
     ) -> None:
         """Emit session processing completed event."""
-        self._emit_run_scoped_event(EventName.SESSION_PROCESSING_COMPLETED, {
-            "issue_number": issue_number, "session_name": session_name,
+        payload: SessionProcessingCompletedEventPayload = {
+            "issue_number": issue_number,
+            "session_name": session_name,
             "run_dir": str(run_dir),
-            "success": result.success, "message": result.message,
-            "actions_taken": result.actions_taken, "errors": result.errors, "pr_url": result.pr_url,
-        })
+            "success": result.success,
+            "message": result.message,
+            "actions_taken": result.actions_taken or [],
+            "errors": result.errors or [],
+            "pr_url": result.pr_url,
+        }
+        self.events.publish(make_session_processing_completed_event(payload))
 
     def _map_outcome_to_status(self, record: "CompletionRecord") -> SessionStatus:
         """Map completion outcome to session status."""
@@ -413,14 +425,15 @@ class SessionController:
                     "validation_status": "passed",
                 },
             )
-            self._emit_run_scoped_event(
-                EventName.SESSION_VALIDATION_PASSED,
-                {
-                    "issue_number": issue_number,
-                    "session_name": session_name,
-                    "validation_cmd": self._validation_cmd,
-                    "run_dir": str(run_dir),
-                },
+            self.events.publish(
+                make_session_validation_passed_event(
+                    {
+                        "issue_number": issue_number,
+                        "session_name": session_name,
+                        "run_dir": str(run_dir),
+                        "validation_cmd": self._validation_cmd,
+                    }
+                )
             )
             return SessionStatus.COMPLETED, validation_passed, validation_error, validation_error_file
 
@@ -494,12 +507,17 @@ class SessionController:
         )
         self.session_output.write_retry_prompt(run_dir, retry_prompt_content)
 
-        self._emit_run_scoped_event(EventName.SESSION_VALIDATION_RETRY_NEEDED, {
-            "issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd,
+        payload: SessionValidationRetryNeededEventPayload = {
+            "issue_number": issue_number,
+            "session_name": session_name,
             "run_dir": str(run_dir),
-            "error_file": str(validation_error_file) if validation_error_file else None,
-            "retry_count": validation_retry_count, "max_retries": self._max_validation_retries,
-        })
+            "validation_cmd": self._validation_cmd,
+            "retry_count": validation_retry_count,
+            "max_retries": self._max_validation_retries,
+        }
+        if validation_error_file:
+            payload["error_file"] = str(validation_error_file)
+        self.events.publish(make_session_validation_retry_needed_event(payload))
         return SessionStatus.NEEDS_VALIDATION_RETRY
 
     def _handle_validation_exhausted(
@@ -517,12 +535,16 @@ class SessionController:
             self._max_validation_retries, validation_error[:200] if validation_error else "none", validation_error_file,
         )
         self.session_output.clear_retry_state(run_dir)
-        self._emit_run_scoped_event(EventName.SESSION_VALIDATION_FAILED, {
-            "issue_number": issue_number, "session_name": session_name, "validation_cmd": self._validation_cmd,
+        payload: SessionValidationFailedEventPayload = {
+            "issue_number": issue_number,
+            "session_name": session_name,
             "run_dir": str(run_dir),
-            "error_file": str(validation_error_file) if validation_error_file else None,
+            "validation_cmd": self._validation_cmd,
             "retry_count": validation_retry_count,
-        })
+        }
+        if validation_error_file:
+            payload["error_file"] = str(validation_error_file)
+        self.events.publish(make_session_validation_failed_event(payload))
         return SessionStatus.VALIDATION_FAILED
 
     def _enrich_manifest_from_completion(
