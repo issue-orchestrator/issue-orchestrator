@@ -67,6 +67,7 @@ class DashboardViewModelPayload(BaseModel):
     history_items: list[IssueItemPayload]
     issues: list[IssueItemPayload]
     paused: bool
+    provider_circuits: list[dict[str, Any]]
     queue_count: int
     queue_items: list[IssueItemPayload]
     queue_page: int
@@ -120,9 +121,12 @@ class IssueDetailPayload(BaseModel):
     events: list[dict[str, Any]]
     issue_number: int
     issue_url: str
+    journey_cycles: list[dict[str, Any]]
+    journey_steps: list[dict[str, Any]]
+    lifecycle_count: int
     phase_toc: list[dict[str, Any]]
-    previous_runs: list[dict[str, Any]]
-    previous_runs_count: int
+    previous_cycles: list[dict[str, Any]]
+    previous_cycles_count: int
     raw_events_count: int
     run_count: int
     runs: list[dict[str, Any]]

@@ -472,7 +472,7 @@ class TestDashboardRendering:
 
         assert response.status_code == 200
         # Check dashboard tabs are present
-        assert "switchTab('kanban')" in response.text or "Kanban" in response.text
+        assert "switchTab('dashboard')" in response.text or "Dashboard" in response.text
         assert "switchTab('e2e')" in response.text or "E2E" in response.text
 
     def test_dashboard_issue_detail_drawer_present(self) -> None:

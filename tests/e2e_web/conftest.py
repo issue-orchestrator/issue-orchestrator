@@ -38,6 +38,10 @@ class FlowWebMockOrchestrator(MockOrchestratorForWeb):
         )
         self.state.cached_queue_issues.append(issue)
 
+    def get_provider_circuit_states(self) -> list:
+        """Dashboard view-model contract method for provider status."""
+        return []
+
 
 class UvicornTestServer:
     """Manage a uvicorn server in a background thread."""

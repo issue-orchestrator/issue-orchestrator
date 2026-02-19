@@ -16,6 +16,16 @@ def run_dir(tmp_path: Path) -> Path:
 
 
 def _write_manifest(run_dir: Path, data: dict) -> Path:
+    data = dict(data)
+    data.setdefault("run_dir", str(run_dir))
+    log_path = data.setdefault("log_path", str(run_dir / "session.log"))
+    data.setdefault(
+        "artifacts",
+        {
+            "ui_log": {"kind": "session_log", "path": log_path, "content_type": "text/plain"},
+            "agent_log": {"kind": "session_log", "path": log_path, "content_type": "text/plain"},
+        },
+    )
     p = run_dir / MANIFEST_FILENAME
     p.write_text(json.dumps(data))
     return p

@@ -56,6 +56,7 @@ export interface DashboardViewModelPayload {
   history_items: IssueItemPayload[];
   issues: IssueItemPayload[];
   paused: boolean;
+  provider_circuits: Record<string, any>[];
   queue_count: number;
   queue_items: IssueItemPayload[];
   queue_page: number;
@@ -109,9 +110,12 @@ export interface IssueDetailPayload {
   events: Record<string, any>[];
   issue_number: number;
   issue_url: string;
+  journey_cycles: Record<string, any>[];
+  journey_steps: Record<string, any>[];
+  lifecycle_count: number;
   phase_toc: Record<string, any>[];
-  previous_runs: Record<string, any>[];
-  previous_runs_count: number;
+  previous_cycles: Record<string, any>[];
+  previous_cycles_count: number;
   raw_events_count: number;
   run_count: number;
   runs: Record<string, any>[];

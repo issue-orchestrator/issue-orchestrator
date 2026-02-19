@@ -568,6 +568,13 @@ def _run_agent_round(
     web_port: int | None,
 ) -> ReviewExchangeResponse:
     prompt_path = _write_prompt(exchange_dir, round_index, role, prompt_text)
+    _append_session_log(
+        run_dir,
+        round_index=round_index,
+        role=role,
+        section="prompt",
+        content=prompt_text,
+    )
     prompt_rel = prompt_path.relative_to(worktree_path)
     agent_config = AgentConfig(
         prompt_path=prompt_path,
@@ -614,6 +621,18 @@ def _run_agent_round(
         env_overrides=env_overrides,
     )
     result = runner.run(spec)
+    _append_session_log(
+        run_dir,
+        round_index=round_index,
+        role=role,
+        section="runner_result",
+        content=(
+            f"exit_code={result.exit_code} timed_out={result.timed_out} "
+            f"succeeded={result.succeeded}\n"
+            f"stdout:\n{result.stdout or '(empty)'}\n\n"
+            f"stderr:\n{result.stderr or '(empty)'}"
+        ),
+    )
     if not result.succeeded:
         stderr_snippet = result.stderr.strip().splitlines()
         stderr_preview = "\n".join(stderr_snippet[:6]) if stderr_snippet else "No stderr captured."
@@ -634,6 +653,26 @@ def _run_agent_round(
             raw_output=result.stdout,
         )
     return response
+
+
+def _append_session_log(
+    run_dir: Path,
+    *,
+    round_index: int,
+    role: str,
+    section: str,
+    content: str,
+) -> None:
+    """Append review-exchange transcript content to run-scoped session.log."""
+    log_path = run_dir / "session.log"
+    timestamp = datetime.now(timezone.utc).isoformat()
+    chunk = (
+        f"[{timestamp}] round={round_index} role={role} section={section}\n"
+        f"{content.rstrip()}\n\n"
+    )
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write(chunk)
 
 
 def _build_env_overrides(
