@@ -83,6 +83,15 @@ class MockGitHubAdapter:
             result = [i for i in result if any(l in i.labels for l in labels)]
         return result[:limit]
 
+    def list_issues_delta(
+        self,
+        *,
+        since: str,
+        limit: int = 100,
+    ) -> tuple[list[Issue], str | None]:
+        """Return issues updated since watermark (mock implementation)."""
+        return self.issues[:limit], None
+
     def get_issue(self, issue_number: int) -> Optional[Issue]:
         """Get a specific issue."""
         for issue in self.issues:

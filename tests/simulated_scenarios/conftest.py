@@ -168,8 +168,13 @@ class TempWorktreeManager:
                base_branch: str | None = None, reuse_options=None):
         worktree = (worktree_base or self.base) / f"sim-wt-{issue_number}"
         worktree.mkdir(parents=True, exist_ok=True)
-        (worktree / ".git").write_text("simulated")
-        return WorktreeInfo(path=worktree, branch_name=branch_name or f"{issue_number}-sim")
+        final_branch = branch_name or f"{issue_number}-sim"
+        # Use a real git repo so branch/introspection commands work in scenarios.
+        subprocess.run(["git", "init"], cwd=worktree, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=worktree, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=worktree, check=True, capture_output=True)
+        subprocess.run(["git", "checkout", "-b", final_branch], cwd=worktree, check=True, capture_output=True)
+        return WorktreeInfo(path=worktree, branch_name=final_branch)
 
     def remove(self, worktree_path: Path) -> None:
         return None

@@ -588,12 +588,13 @@ def run_preflight_push_check(worktree: Path, verbose: bool = False) -> tuple[boo
     import urllib.error
 
     # Get orchestrator port from environment
-    port = os.environ.get("ORCHESTRATOR_API_PORT")
+    # Support prefixed orchestrator env var first, with legacy fallback.
+    port = get_env("API_PORT") or os.environ.get("ORCHESTRATOR_API_PORT")
     if not port:
         # No port configured - skip preflight check
         # This happens when running agent-done outside orchestrator context
         if verbose:
-            print("Note: ORCHESTRATOR_API_PORT not set, skipping push preflight check")
+            print("Note: ISSUE_ORCHESTRATOR_API_PORT not set, skipping push preflight check")
         return True, None, None
 
     url = f"http://localhost:{port}/api/preflight-push"
