@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from ..events import EventName
 from ..ports.issue import Issue
 from ..domain.models import OrchestratorState
-from ..ports.event_sink import EventSink, TraceEvent
+from ..ports.event_sink import EventSink,  make_trace_event
 from .queue_cache import QueueCache
 
 if TYPE_CHECKING:
@@ -88,7 +88,7 @@ class QueueProjection:
                 change = QueueChange(added=added, removed=list(removed_numbers), total=len(queue_issues))
 
                 # Emit structured event
-                self._events.publish(TraceEvent(EventName.QUEUE_CHANGED, {
+                self._events.publish(make_trace_event(EventName.QUEUE_CHANGED, {
                     "added": [{"number": i.number, "title": i.title} for i in change.added],
                     "removed": [{"number": num} for num in change.removed],
                     "total": change.total,

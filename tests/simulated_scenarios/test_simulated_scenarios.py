@@ -677,15 +677,10 @@ def test_agent_sessions_emit_core_run_artifacts(scenario_repo: Path):
         .wait_for_event(EventName.REVIEW_APPROVED) \
         .run()
 
-    agent_run_events = {
-        EventName.SESSION_STARTED.value,
-        EventName.REVIEW_STARTED.value,
-        EventName.REWORK_STARTED.value,
-    }
     run_dirs = sorted({
         Path(str(event.run_dir))
         for event in ctx.timeline_since_baseline()
-        if event.run_dir and event.event in agent_run_events
+        if event.run_dir
     })
     assert run_dirs, "expected timeline events with run_dir for agent sessions"
     for run_dir in run_dirs:

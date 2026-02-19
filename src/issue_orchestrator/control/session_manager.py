@@ -24,7 +24,7 @@ from typing import Optional
 
 from ..infra.config import Config
 from ..events import EventName
-from ..ports import EventSink, SessionRunner, TraceEvent
+from ..ports import EventSink, SessionRunner,  make_trace_event
 
 logger = logging.getLogger(__name__)
 
@@ -182,8 +182,8 @@ class SessionManager:
 
         if success:
             self.events.publish(
-                TraceEvent(
-                    EventName.SESSION_STARTED,
+                make_trace_event(
+                    EventName.SESSION_LAUNCHED,
                     {
                         "session_type": ctx.ref.session_type.value,
                         "number": ctx.ref.number,
@@ -195,7 +195,7 @@ class SessionManager:
             logger.info(f"Started session: {ctx.ref.name}")
         else:
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.SESSION_START_FAILED,
                     {
                         "session_type": ctx.ref.session_type.value,
@@ -216,7 +216,7 @@ class SessionManager:
         """
         self.runner.kill_session(ref.number, session_name=ref.name)
         self.events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.SESSION_STOPPED,
                 {
                     "session_type": ref.session_type.value,
@@ -277,7 +277,7 @@ class SessionManager:
         count = self.runner.cleanup_idle_sessions()
         if count > 0:
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.SESSION_CLEANUP,
                     {"cleaned_count": count},
                 )

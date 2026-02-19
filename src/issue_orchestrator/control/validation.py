@@ -26,6 +26,16 @@ logger = logging.getLogger(__name__)
 VALIDATION_SCHEMA_VERSION = 1
 
 
+def _is_session_run_dir(path: Path, worktree: Path) -> bool:
+    """Return True when path is under .issue-orchestrator/sessions/ in this worktree."""
+    try:
+        rel = path.resolve().relative_to(worktree.resolve())
+    except ValueError:
+        return False
+    parts = rel.parts
+    return len(parts) >= 3 and parts[0] == ".issue-orchestrator" and parts[1] == "sessions"
+
+
 @dataclass
 class ValidationResult:
     """Result of running a validation command."""
@@ -240,7 +250,10 @@ class ValidationRunner:
 
         # Write record
         self.store.write(record)
-        self._write_run_dir_record_if_session_dir(session_output_dir, record)
+        # Persist run-scoped validation record only for real session run dirs.
+        if _is_session_run_dir(session_output_dir, self.store.worktree):
+            run_record_path = session_output_dir / "validation-record.json"
+            run_record_path.write_text(json.dumps(record.to_dict(), indent=2) + "\n")
 
         logger.info(
             "Validation suite '%s' %s (exit_code=%d)",
@@ -261,25 +274,6 @@ class ValidationRunner:
         })
 
         return record
-
-    def _write_run_dir_record_if_session_dir(
-        self,
-        session_output_dir: Path,
-        record: ValidationRecord,
-    ) -> None:
-        """Write run-scoped validation record for orchestrated session run dirs.
-
-        Session-scoped review/coder flows expect `validation-record.json` in the
-        run directory under `.issue-orchestrator/sessions/...`.
-        """
-        sessions_root = (self.store.worktree / ".issue-orchestrator" / "sessions").resolve()
-        try:
-            session_output_dir.resolve().relative_to(sessions_root)
-        except ValueError:
-            return
-
-        run_record_path = session_output_dir / "validation-record.json"
-        run_record_path.write_text(json.dumps(record.to_dict(), indent=2))
 
 
 class ValidationCache:

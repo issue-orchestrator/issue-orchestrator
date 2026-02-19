@@ -44,7 +44,7 @@ from ..domain.models import (
 from .actions import AddLabelAction, RemoveLabelAction
 from .action_applier import ActionApplier
 from ..events import EventName
-from ..ports import EventSink, SessionRunner, TraceEvent, RepositoryHost
+from ..ports import EventSink, SessionRunner, make_trace_event, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
 from ..infra import gh_audit
 from ..infra.validation_state import has_pending_retry, read_validation_state, get_retry_prompt_path
@@ -134,7 +134,7 @@ class StartupManager:
         state.startup_status = "running"
 
         # Emit merged configuration for debugging
-        self.events.publish(TraceEvent(EventName.CONFIG_MERGED, self.config.to_event_dict()))
+        self.events.publish(make_trace_event(EventName.CONFIG_MERGED, self.config.to_event_dict()))
 
         # Log git commit SHA for version tracking
         commit_sha = get_repo_head_sha(self.config.repo_root)
@@ -211,7 +211,7 @@ class StartupManager:
         elapsed = time.time() - startup_start
         logger.info("Startup complete in %.1fs", elapsed)
 
-        self.events.publish(TraceEvent(EventName.ORCHESTRATOR_READY, {
+        self.events.publish(make_trace_event(EventName.ORCHESTRATOR_READY, {
             "filtering": {
                 "label": self.config.filtering.label,
                 "milestone": self.config.filtering.milestone,

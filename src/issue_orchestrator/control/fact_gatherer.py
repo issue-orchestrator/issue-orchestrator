@@ -25,7 +25,7 @@ from typing import Any, Optional, TYPE_CHECKING
 from ..infra.config import Config
 from ..events import EventName
 from ..ports.repository_host import RepositoryHost
-from ..ports import EventSink, TraceEvent
+from ..ports import EventSink,  make_trace_event
 
 if TYPE_CHECKING:
     from ..ports.issue import Issue
@@ -105,7 +105,7 @@ class FactGatherer:
 
     def _emit_issues_fetched_events(self, issues: list["Issue"], agent_label: str, labels: list[str], milestone_name: str | None) -> None:
         """Emit events for fetched issues."""
-        self.events.publish(TraceEvent(EventName.ISSUES_FETCHED, {
+        self.events.publish(make_trace_event(EventName.ISSUES_FETCHED, {
             "agent": agent_label, "labels": labels, "milestone": milestone_name,
             "count": len(issues), "issue_numbers": [i.number for i in issues],
         }))

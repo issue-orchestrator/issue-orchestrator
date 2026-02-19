@@ -35,7 +35,12 @@ def validate_event_artifact_expectations(event_name: str, payload: dict[str, Any
         return
 
     if event_name == "session.completed":
-        _require_existing_path(event_name, payload, "completion_path_absolute")
+        completion_path = _required_path_value(event_name, payload, "completion_path_absolute")
+        if not completion_path.exists():
+            raise RuntimeError(
+                "timeline artifact invariant failed: event="
+                f"{event_name} missing_path={completion_path}"
+            )
         return
 
     if event_name == "review.comment_added":
@@ -53,14 +58,6 @@ def _require_run_dir_with_session_log(event_name: str, payload: dict[str, Any]) 
     if not session_log.exists():
         raise RuntimeError(
             f"timeline artifact invariant failed: event={event_name} session_log_missing={session_log}"
-        )
-
-
-def _require_existing_path(event_name: str, payload: dict[str, Any], field: str) -> None:
-    path = _required_path_value(event_name, payload, field)
-    if not path.exists():
-        raise RuntimeError(
-            f"timeline artifact invariant failed: event={event_name} field={field} missing_path={path}"
         )
 
 

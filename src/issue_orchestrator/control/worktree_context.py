@@ -33,7 +33,7 @@ from ..events import EventName
 from ..infra.config import Config
 from ..infra.logging_config import get_repo_log_path
 from ..infra.repo_identity import get_repo_head_sha
-from ..ports import EventSink, TraceEvent
+from ..ports import EventSink,  make_trace_event
 from ..ports.session_output import SessionOutput, SessionRun
 from ..ports.worktree_manager import WorktreeManager, WorktreeInfo, WorktreeReuseOptions
 from .worktree import Worktree, WorktreePreparationError
@@ -144,7 +144,7 @@ class WorktreeContext:
 
         # Emit event if work was discarded during worktree reset
         if worktree_info.uncommitted_discarded > 0 or worktree_info.commits_discarded > 0:
-            events.publish(TraceEvent(
+            events.publish(make_trace_event(
                 EventName.WORKTREE_RESET,
                 {
                     "issue_number": issue_number,

@@ -21,7 +21,7 @@ from typing import Sequence
 from ...infra.config import Config
 from ...events import EventName
 from ...domain.models import PendingReview
-from ...ports import EventSink, TraceEvent
+from ...ports import EventSink,  make_trace_event
 from .decision_base import WorkflowDecision
 
 logger = logging.getLogger(__name__)
@@ -97,7 +97,7 @@ class ReviewWorkflow:
         # Check if paused
         if paused:
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.REVIEW_SKIPPED,
                     {"reason": "orchestrator_paused"},
                 )
@@ -111,7 +111,7 @@ class ReviewWorkflow:
 
         if available <= 0:
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.REVIEW_SKIPPED,
                     {
                         "reason": "no_capacity",
@@ -133,7 +133,7 @@ class ReviewWorkflow:
         reviews_to_launch = list(pending_reviews)[:available]
 
         self.events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.REVIEW_LAUNCHING,
                 {
                     "count": len(reviews_to_launch),

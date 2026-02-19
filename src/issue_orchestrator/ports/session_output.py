@@ -516,6 +516,13 @@ class SessionOutput(Protocol):
         """
         ...
 
+    def get_log_path_for_run_dir(
+        self,
+        run_dir: Path,
+    ) -> Path | None:
+        """Get the best available UI log path for a specific run directory."""
+        ...
+
     def attach_claude_log(
         self,
         run_dir: Path,
