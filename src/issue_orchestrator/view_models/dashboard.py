@@ -510,7 +510,9 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             status_reason = _normalize_status_reason(dep_summary)
             detail_label = f"agent: {agent_label}"
 
-        if issue.number in pending_numbers["rework"]:
+        if is_blocked:
+            flow_stage = "blocked"
+        elif issue.number in pending_numbers["rework"]:
             flow_stage = "rework"
         elif issue.number in pending_numbers["triage"]:
             flow_stage = "triage"
@@ -580,7 +582,12 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
         if not status_reason:
             status_reason = status_labels.get(entry.status, entry.status)
 
-        flow_stage = "done" if entry.status == "completed" else "in_progress"
+        if entry.status == "completed":
+            flow_stage = "done"
+        elif entry.status in ("blocked", "needs_human", "failed", "timed_out"):
+            flow_stage = "blocked"
+        else:
+            flow_stage = "in_progress"
         flow_steps = flow_steps_for(flow_stage)
         flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
 
