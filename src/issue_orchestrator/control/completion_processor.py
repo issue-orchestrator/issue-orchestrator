@@ -108,6 +108,7 @@ class ProcessingResult:
     actions_taken: list[str] | None = None
     errors: list[str] | None = None
     diagnostic_path: str | None = None  # Path to detailed failure diagnostics
+    completion_record_path: str | None = None  # Run-scoped preserved completion artifact
     review_exchange_completed: bool = False
     review_exchange_halted: bool = False
 
@@ -1711,6 +1712,12 @@ class CompletionProcessor:
                 diagnostic_path=diagnostic_path,
             )
 
+        preserved_completion_path = self._preserve_completion_record(
+            worktree=worktree,
+            completion_path=completion_path,
+            session_name=session_name,
+        )
+
         # Clean up the completion record after processing to prevent re-processing
         self._cleanup_completion_record(worktree, completion_path, issue_number)
 
@@ -1725,10 +1732,39 @@ class CompletionProcessor:
             pr_url=pr_url,
             actions_taken=actions_taken if actions_taken else None,
             diagnostic_path=diagnostic_path,
+            completion_record_path=preserved_completion_path,
             errors=errors if errors else None,
             review_exchange_completed=review_exchange_completed,
             review_exchange_halted=review_exchange_halted,
         )
+
+    def _preserve_completion_record(
+        self,
+        *,
+        worktree: Path,
+        completion_path: str | None,
+        session_name: str | None,
+    ) -> str | None:
+        """Persist a run-scoped completion copy before cleanup for timeline/audit use."""
+        source_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
+        if not source_path.exists():
+            return None
+
+        resolved_session_name = session_name or self.session_output.session_name_from_path(completion_path)
+        if not resolved_session_name:
+            return None
+        run_dir = self.session_output.find_run_dir(worktree, resolved_session_name)
+        if not run_dir:
+            return None
+
+        target_path = run_dir / "completion-record.json"
+        try:
+            shutil.copy2(source_path, target_path)
+            self.session_output.update_manifest(run_dir, {"completion_record_path": str(target_path)})
+            return str(target_path)
+        except Exception:
+            logger.exception("Failed to preserve completion record for run_dir=%s", run_dir)
+            return None
 
     def _cleanup_completion_record(
         self,

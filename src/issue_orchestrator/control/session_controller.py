@@ -238,7 +238,7 @@ class SessionController:
         self._enrich_manifest_from_completion(worktree_path, session_name, record)
 
         # Build completion detail for trace event enrichment
-        completion_detail = self._build_completion_detail(record)
+        completion_detail = self._build_completion_detail(record, result)
 
         # Log completion summary
         self._log_session_completion(issue_number, session_name, status, record, result, recovered)
@@ -580,7 +580,10 @@ class SessionController:
             )
 
     @staticmethod
-    def _build_completion_detail(record: "CompletionRecord") -> dict[str, Any]:
+    def _build_completion_detail(
+        record: "CompletionRecord",
+        processing_result: "ProcessingResult",
+    ) -> dict[str, Any]:
         """Extract curated fields from CompletionRecord for trace events."""
         detail: dict[str, Any] = {}
         for key in (
@@ -591,6 +594,8 @@ class SessionController:
             value = getattr(record, key, None)
             if value is not None:
                 detail[key] = value
+        if processing_result.completion_record_path:
+            detail["completion_path_absolute"] = processing_result.completion_record_path
         return detail
 
     def _log_session_completion(
