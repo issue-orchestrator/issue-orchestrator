@@ -138,9 +138,9 @@ class ClaimGate:
         """Emit claim lost before write event."""
         try:
             from ..events.catalog import EventName
-            from ..ports.event_sink import TraceEvent
+            from ..ports.event_sink import make_trace_event
 
-            self._events.publish(TraceEvent(
+            self._events.publish(make_trace_event(
                 EventName.CLAIM_LOST_BEFORE_WRITE,
                 {
                     "issue_number": issue_number,

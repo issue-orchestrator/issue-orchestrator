@@ -82,7 +82,7 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
     )
     vm = build_dashboard_view_model(
         OrchestratorStub(state=state, config=config),
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_status_provider=e2e_disabled,
     )
 
@@ -90,8 +90,8 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
 
     active_tab = soup.select_one("#tab-dashboard.active")
     assert active_tab is not None
-    assert active_tab.get("data-tab") == "kanban"
-    columns = soup.select(".kanban-column")
+    assert active_tab.get("data-tab") == "dashboard"
+    columns = soup.select(".dashboard-column")
     assert len(columns) == 5
     column_ids = [col["data-column"] for col in columns]
     assert column_ids == ["queued", "running", "blocked", "awaiting-merge", "completed"]
@@ -116,14 +116,14 @@ def test_dashboard_js_switch_tab_shows_loading_state():
     assert "aria-busy" in source
 
 
-def test_kanban_blocked_column_is_expandable(jinja_env):
+def test_dashboard_blocked_column_is_expandable(jinja_env):
     config = make_config()
     config.agents = {"agent:web": make_agent_config()}
     blocked = Issue(number=210, title="Blocked merge", labels=["agent:web", "blocked-needs-human"])
     state = OrchestratorState(startup_status="complete", cached_queue_issues=[blocked])
     vm = build_dashboard_view_model(
         OrchestratorStub(state=state, config=config),
-        active_tab="kanban",
+        active_tab="dashboard",
         e2e_status_provider=e2e_disabled,
     )
 
@@ -142,14 +142,14 @@ def test_kanban_blocked_column_is_expandable(jinja_env):
     assert "agent:web" in badge_texts
 
 
-def test_kanban_running_column_is_expandable_and_has_cancel_control(jinja_env):
+def test_dashboard_running_column_is_expandable_and_has_cancel_control(jinja_env):
     config = make_config()
     config.agents = {"agent:web": make_agent_config()}
     running_issue = Issue(number=4057, title="Running issue", labels=["agent:web", "in-progress"])
     state = OrchestratorState(startup_status="complete", active_sessions=[make_session(running_issue)])
     vm = build_dashboard_view_model(
         OrchestratorStub(state=state, config=config),
-        active_tab="kanban",
+        active_tab="dashboard",
         e2e_status_provider=e2e_disabled,
     )
 
@@ -162,7 +162,7 @@ def test_kanban_running_column_is_expandable_and_has_cancel_control(jinja_env):
     assert running_col.select_one(".card-kill-btn") is not None
 
 
-def test_kanban_completed_column_session_scoped(jinja_env):
+def test_dashboard_completed_column_session_scoped(jinja_env):
     config = make_config()
     state = OrchestratorState(
         startup_status="complete",
@@ -179,7 +179,7 @@ def test_kanban_completed_column_session_scoped(jinja_env):
     )
     vm = build_dashboard_view_model(
         OrchestratorStub(state=state, config=config),
-        active_tab="kanban",
+        active_tab="dashboard",
         e2e_status_provider=e2e_disabled,
     )
 
@@ -196,7 +196,7 @@ def test_status_badge_shows_running(jinja_env):
     state = OrchestratorState(startup_status="complete")
     vm = build_dashboard_view_model(
         OrchestratorStub(state=state, config=config),
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_status_provider=e2e_disabled,
     )
 
@@ -212,7 +212,7 @@ def test_issue_detail_drawer_is_rendered(jinja_env):
     state = OrchestratorState(startup_status="complete")
     vm = build_dashboard_view_model(
         OrchestratorStub(state=state, config=config),
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_status_provider=e2e_disabled,
     )
     soup = render_dashboard(jinja_env, vm)
@@ -228,7 +228,7 @@ def test_flow_refresh_preferences_modal_is_rendered(jinja_env):
     state = OrchestratorState(startup_status="complete")
     vm = build_dashboard_view_model(
         OrchestratorStub(state=state, config=config),
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_status_provider=e2e_disabled,
     )
     soup = render_dashboard(jinja_env, vm)
@@ -246,7 +246,7 @@ def test_github_usage_pill_is_rendered(jinja_env):
     state = OrchestratorState(startup_status="complete")
     vm = build_dashboard_view_model(
         OrchestratorStub(state=state, config=config),
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_status_provider=e2e_disabled,
     )
     soup = render_dashboard(jinja_env, vm)
@@ -259,7 +259,7 @@ def test_embedded_header_elements_in_tab_bar(jinja_env):
     state = OrchestratorState(startup_status="complete")
     vm = build_dashboard_view_model(
         OrchestratorStub(state=state, config=config),
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_status_provider=e2e_disabled,
     )
     soup = render_dashboard(jinja_env, vm)

@@ -109,7 +109,7 @@
                 </svg>
             </button>
             <span class="embedded-sep" style="display:none;" aria-hidden="true"></span>
-            <button class="tab {% if active_tab != 'e2e' %}active{% endif %}" id="tab-dashboard" data-tab="kanban" onclick="switchTab('kanban')" role="tab" aria-controls="panel-dashboard" aria-selected="{% if active_tab != 'e2e' %}true{% else %}false{% endif %}">
+            <button class="tab {% if active_tab != 'e2e' %}active{% endif %}" id="tab-dashboard" data-tab="dashboard" onclick="switchTab('dashboard')" role="tab" aria-controls="panel-dashboard" aria-selected="{% if active_tab != 'e2e' %}true{% else %}false{% endif %}">
                 Dashboard
             </button>
             <button class="tab {% if active_tab == 'e2e' %}active{% endif %}" id="tab-e2e" data-tab="e2e" onclick="switchTab('e2e')" role="tab" aria-controls="panel-e2e" aria-selected="{% if active_tab == 'e2e' %}true{% else %}false{% endif %}">
@@ -138,9 +138,9 @@
 
         <main id="mainContent">
             {% if active_tab != 'e2e' %}
-            <section class="dashboard-columns" id="panel-dashboard" role="tabpanel" aria-labelledby="tab-dashboard" aria-label="Dashboard">
+            <section class="dashboard-columns dashboard-board" id="panel-dashboard" role="tabpanel" aria-labelledby="tab-dashboard" aria-label="Dashboard">
                 {% for column in flow_columns %}
-                <article class="kanban-column {% if column.expandable %}expandable{% endif %}"
+                <article class="dashboard-column {% if column.expandable %}expandable{% endif %}"
                          data-column="{{ column.id }}"
                          data-expanded="false">
                     <h2 ondblclick="toggleColumnExpand('{{ column.id }}')">

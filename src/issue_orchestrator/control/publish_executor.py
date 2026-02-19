@@ -50,7 +50,7 @@ from ..domain.models import (
     RequestedAction,
 )
 from ..events.catalog import EventName
-from ..ports import EventSink, TraceEvent
+from ..ports import EventSink,  make_trace_event
 
 if TYPE_CHECKING:
     from .completion_processor import CompletionProcessor, ProcessingResult
@@ -581,7 +581,7 @@ class PublishJobExecutor:
     def _emit_event(self, event_name: EventName, data: dict[str, Any]) -> None:
         """Emit a trace event (thread-safe)."""
         try:
-            self._events.publish(TraceEvent(event_name, data))
+            self._events.publish(make_trace_event(event_name, data))
         except Exception as e:
             # Don't let event emission failures crash the worker
             logger.warning(

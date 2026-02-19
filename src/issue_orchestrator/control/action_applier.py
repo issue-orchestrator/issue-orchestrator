@@ -32,7 +32,7 @@ from typing import TYPE_CHECKING, Callable, Literal, Optional, Sequence
 
 from ..events import EventName
 from ..infra.logging_config import issue_log
-from ..ports import EventSink, TraceEvent
+from ..ports import EventSink,  make_trace_event
 from ..ports.label_set import LabelSet
 from ..ports.fresh_issue_reader import FreshIssueReader
 from ..ports.repository_host import RepositoryHost
@@ -343,7 +343,7 @@ class ActionApplier:
             # Emit review comment event for PR-targeted comments.
             if action.is_pr:
                 excerpt = action.comment.strip().replace("\n", " ")
-                self.events.publish(TraceEvent(
+                self.events.publish(make_trace_event(
                     EventName.REVIEW_COMMENT_ADDED,
                     {
                         "issue_number": action.number,
@@ -520,7 +520,7 @@ class ActionApplier:
             logger.warning(issue_log(issue_number, "Reconciliation: %s"), msg)
             # This is a warning, not a hard failure - label may have been
             # removed externally which is fine
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.RECONCILIATION_WARNING,
                 {
                     "issue_number": issue_number,
@@ -531,7 +531,7 @@ class ActionApplier:
 
         # Check 2: Labels we expect to be there for this transition
         # For now, we just log what we found vs expected
-        self.events.publish(TraceEvent(
+        self.events.publish(make_trace_event(
             EventName.RECONCILIATION_CHECKED,
             {
                 "issue_number": issue_number,
@@ -793,7 +793,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
 
         # Emit trace event
         self.events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.REVIEW_ESCALATED,
                 {
                     "pr_number": action.pr_number,
@@ -806,7 +806,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         )
         if comment_url:
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.REVIEW_COMMENT_ADDED,
                     {
                         "issue_number": action.issue_number,
@@ -830,7 +830,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
     def _emit_action_start(self, action: Action) -> None:
         """Emit a trace event when starting an action."""
         self.events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.ACTION_START,
                 {
                     "action_type": action.action_type.value,
@@ -842,7 +842,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
     def _emit_action_end(self, action: Action, result: ActionResult) -> None:
         """Emit a trace event when completing an action."""
         self.events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.ACTION_END,
                 {
                     "action_type": action.action_type.value,
@@ -886,7 +886,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                 self._record_label_stat(action.issue_number or action.pr_number, "label_mutation_failed")
                 logger.warning(issue_log(action.issue_number, "Failed to add review label to PR #%d: %s"), action.pr_number, e)
 
-        self.events.publish(TraceEvent(EventName.REVIEW_QUEUED, {
+        self.events.publish(make_trace_event(EventName.REVIEW_QUEUED, {
             "pr_number": action.pr_number,
             "issue_number": action.issue_number,
             "pr_url": action.pr_url,
@@ -930,7 +930,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                     list(action.labels),
                     [],
                 )
-                self.events.publish(TraceEvent(EventName.TRIAGE_ISSUE_CREATED, {
+                self.events.publish(make_trace_event(EventName.TRIAGE_ISSUE_CREATED, {
                     "issue_number": issue_number,
                     "pr_count": action.pr_count,
                 }))
@@ -959,7 +959,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         self._cleanup_terminal_session(action, errors)
         self._cleanup_worktree(action, errors)
 
-        self.events.publish(TraceEvent(EventName.CLEANUP_COMPLETED, {"issue_number": action.issue_number, "pr_number": action.pr_number}))
+        self.events.publish(make_trace_event(EventName.CLEANUP_COMPLETED, {"issue_number": action.issue_number, "pr_number": action.pr_number}))
 
         if errors:
             return ActionResult.fail(action, "; ".join(errors))
@@ -1036,7 +1036,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
     ) -> None:
         if not added and not removed:
             return
-        self.events.publish(TraceEvent(
+        self.events.publish(make_trace_event(
             EventName.ISSUE_LABELS_CHANGED,
             {
                 "issue_number": issue_number,
@@ -1063,7 +1063,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         if issue_number is not None:
             payload["issue_number"] = issue_number
             payload["issue_key"] = str(issue_number)
-        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, payload))
+        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, payload))
 
     @staticmethod
     def _increment_label_stat(stats: _LabelMutationStats, field_name: LabelMutationStatField) -> None:
@@ -1110,7 +1110,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             if issue_stats.attempted > 0
         ]
 
-        self.events.publish(TraceEvent(EventName.LABEL_MUTATION_SUMMARY, payload))
+        self.events.publish(make_trace_event(EventName.LABEL_MUTATION_SUMMARY, payload))
         logger.info(
             "[LABELS] label_mutations attempted=%d applied=%d noop=%d failed=%d add_attempted=%d remove_attempted=%d",
             stats.attempted,

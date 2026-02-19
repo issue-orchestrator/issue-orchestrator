@@ -55,8 +55,8 @@ SCENARIOS: list[JourneyScenario] = [
             _evt("session.completed", timestamp="2026-02-09T11:35:00Z", rework_cycle=0, run_id="run-2"),
         ],
         expected_cycles=[
-            ExpectedCycle(lifecycle=1, iteration=1, retry_count=0, outcome_contains="Completed"),
-            ExpectedCycle(lifecycle=2, iteration=1, retry_count=1, outcome_contains="Completed"),
+            ExpectedCycle(lifecycle=1, iteration=1, retry_count=0, outcome_contains="Ready for review"),
+            ExpectedCycle(lifecycle=2, iteration=1, retry_count=1, outcome_contains="Ready for review"),
         ],
         expected_last_run_lifecycle=2,
         expected_last_run_count=1,
@@ -91,8 +91,8 @@ SCENARIOS: list[JourneyScenario] = [
             ),
         ],
         expected_cycles=[
-            ExpectedCycle(lifecycle=1, iteration=1, retry_count=0, outcome_contains="Completed"),
-            ExpectedCycle(lifecycle=2, iteration=1, retry_count=0, outcome_contains="Completed"),
+            ExpectedCycle(lifecycle=1, iteration=1, retry_count=0, outcome_contains="Ready for review"),
+            ExpectedCycle(lifecycle=2, iteration=1, retry_count=0, outcome_contains="Ready for review"),
         ],
         expected_last_run_lifecycle=2,
         expected_last_run_count=1,
@@ -131,8 +131,8 @@ SCENARIOS: list[JourneyScenario] = [
             ),
         ],
         expected_cycles=[
-            ExpectedCycle(lifecycle=1, iteration=1, retry_count=0, outcome_contains="Completed"),
-            ExpectedCycle(lifecycle=2, iteration=1, retry_count=0, outcome_contains="Completed"),
+            ExpectedCycle(lifecycle=1, iteration=1, retry_count=0, outcome_contains="Ready for review"),
+            ExpectedCycle(lifecycle=2, iteration=1, retry_count=0, outcome_contains="Ready for review"),
         ],
         expected_last_run_lifecycle=2,
         expected_last_run_count=1,
@@ -177,7 +177,7 @@ SCENARIOS: list[JourneyScenario] = [
         expected_cycles=[
             ExpectedCycle(lifecycle=None, iteration=0, retry_count=0, outcome_contains="Blocked"),
             ExpectedCycle(lifecycle=None, iteration=1, retry_count=0, outcome_contains="Changes Requested"),
-            ExpectedCycle(lifecycle=None, iteration=2, retry_count=0, outcome_contains="Completed"),
+            ExpectedCycle(lifecycle=None, iteration=2, retry_count=0, outcome_contains="Ready for review"),
             ExpectedCycle(lifecycle=None, iteration=1, retry_count=0, outcome_contains="Approved"),
         ],
         expected_last_run_lifecycle=None,

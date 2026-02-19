@@ -6,10 +6,9 @@ per-repository orchestrator instances.
 
 import hashlib
 import json
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Callable
 
 
 def normalize_repo_root(path: Path | str) -> Path:
@@ -131,17 +130,29 @@ class RepoIdentity:
         }
 
 
-def _run_git(repo_root: Path, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", str(repo_root), *args],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        stderr = result.stderr.strip()
-        raise RuntimeError(f"git {' '.join(args)} failed for {repo_root}: {stderr}")
-    return result.stdout.strip()
+def _read_head_ref(repo_root: Path | str) -> str | None:
+    """Read the HEAD ref name directly from git metadata when available."""
+    repo_path = normalize_repo_root(repo_root)
+    git_dir = _resolve_git_dir(repo_path)
+    if git_dir is None:
+        return None
+    head_path = git_dir / "HEAD"
+    if not head_path.exists():
+        return None
+    head = head_path.read_text().strip()
+    if not head.startswith("ref: "):
+        return None
+    return head.split("ref: ", 1)[1].strip() or None
+
+
+def get_repo_branch(repo_root: Path | str) -> str | None:
+    """Return branch name when HEAD points to refs/heads/*, else None."""
+    head_ref = _read_head_ref(repo_root)
+    if not head_ref:
+        return None
+    if not head_ref.startswith("refs/heads/"):
+        return None
+    return head_ref.removeprefix("refs/heads/") or None
 
 
 def get_package_source_root() -> str | None:
@@ -158,19 +169,35 @@ def get_package_source_root() -> str | None:
 def build_repo_identity(repo_root: Path | str) -> RepoIdentity:
     """Build deterministic repository identity for runtime handshake."""
     root = normalize_repo_root(repo_root)
-    commit_sha = get_repo_head_sha(root)
-    branch = None
-    try:
-        branch_output = _run_git(root, "rev-parse", "--abbrev-ref", "HEAD")
-        branch = None if branch_output == "HEAD" else branch_output
-    except Exception:
-        branch = None
+    return build_repo_identity_with_status(root)
 
-    try:
-        status_output = _run_git(root, "status", "--porcelain=v1", "--untracked-files=normal")
-        dirty_lines = [line.rstrip() for line in status_output.splitlines() if line.strip()]
-    except Exception:
-        dirty_lines = []
+
+def build_repo_identity_with_status(
+    repo_root: Path | str,
+    *,
+    status_resolver: Callable[[Path], tuple[str | None, list[str]]] | None = None,
+) -> RepoIdentity:
+    """Build deterministic repository identity, optionally with injected git status resolution.
+
+    Args:
+        repo_root: Repository root path.
+        status_resolver: Optional resolver returning (branch, dirty_lines). This keeps
+            subprocess/git-shell access out of infra while allowing callers in higher layers
+            to provide richer status data.
+    """
+    root = normalize_repo_root(repo_root)
+    commit_sha = get_repo_head_sha(root)
+    branch = get_repo_branch(root)
+    dirty_lines: list[str] = []
+    if status_resolver is not None:
+        try:
+            resolved_branch, resolved_dirty_lines = status_resolver(root)
+            if resolved_branch is not None:
+                branch = resolved_branch
+            dirty_lines = [line.rstrip() for line in resolved_dirty_lines if line.strip()]
+        except Exception:
+            # Fail-safe: identity still available from direct metadata reads.
+            dirty_lines = []
     dirty_fingerprint = None
     if dirty_lines:
         digest = hashlib.sha256("\n".join(dirty_lines).encode("utf-8")).hexdigest()

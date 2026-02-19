@@ -226,7 +226,7 @@ def test_compact_card_context_menu_action_mapping_is_column_consistent() -> None
 def test_compact_menu_infers_column_id_from_parent_column() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "openCompactCardActionsMenu")
-    assert "button?.closest('.kanban-column')?.dataset?.column" in body
+    assert "button?.closest('.dashboard-column')?.dataset?.column" in body
     assert "columnId: String(columnId || '')" in body
 
 
@@ -300,7 +300,7 @@ def test_session_diagnostics_actions_use_primary_plus_more_menu() -> None:
     assert "More ▾" in body
     assert "diag-more-menu" in body
     assert "Issue-Scoped Orchestrator Log" in js
-    assert "openSessionManifest(action.issue_number, action.run_dir || null)" in js
+    assert "openSessionManifest(action.issue_number, action.run_dir)" in js
 
 
 def test_diagnostics_action_errors_render_inline_in_modal() -> None:

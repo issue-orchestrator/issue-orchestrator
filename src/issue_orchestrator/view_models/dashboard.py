@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 import json
 import time
 from typing import Any, Callable
@@ -17,6 +18,32 @@ from ..infra import gh_audit
 
 QUEUE_PAGE_SIZE = 20
 E2E_PAGE_SIZE = 15
+
+
+class DashboardTab(StrEnum):
+    DASHBOARD = "dashboard"
+    BLOCKED = "blocked"
+    AWAITING_MERGE = "awaiting-merge"
+    COMPLETED = "completed"
+    E2E = "e2e"
+
+
+def parse_dashboard_tab(active_tab: str | DashboardTab) -> DashboardTab:
+    """Parse tab query values into canonical dashboard tab values."""
+    if isinstance(active_tab, DashboardTab):
+        return active_tab
+    normalized = active_tab.strip().lower()
+    if normalized in {"work", "active", "queue", "flow", "attention", "history", "merged", "kanban"}:
+        return DashboardTab.DASHBOARD
+    if normalized == DashboardTab.BLOCKED.value:
+        return DashboardTab.BLOCKED
+    if normalized == DashboardTab.AWAITING_MERGE.value:
+        return DashboardTab.AWAITING_MERGE
+    if normalized == DashboardTab.COMPLETED.value:
+        return DashboardTab.COMPLETED
+    if normalized == DashboardTab.E2E.value:
+        return DashboardTab.E2E
+    return DashboardTab.DASHBOARD
 
 
 @dataclass(frozen=True)
@@ -41,7 +68,7 @@ class DashboardViewModel:
     completed_count: int
     awaiting_merge_count: int
 
-    active_tab: str
+    active_tab: DashboardTab
     paused: bool
     shutdown_requested: bool
     active_session_count: int
@@ -85,7 +112,7 @@ class DashboardViewModel:
             "e2e_count": self.e2e_count,
             "completed_count": self.completed_count,
             "awaiting_merge_count": self.awaiting_merge_count,
-            "active_tab": self.active_tab,
+            "active_tab": self.active_tab.value,
             "paused": self.paused,
             "shutdown_requested": self.shutdown_requested,
             "active_session_count": self.active_session_count,
@@ -146,7 +173,7 @@ class DashboardViewModel:
             "e2e_count": self.e2e_count,
             "completed_count": self.completed_count,
             "awaiting_merge_count": self.awaiting_merge_count,
-            "active_tab": self.active_tab,
+            "active_tab": self.active_tab.value,
             "paused": self.paused,
             "shutdown_requested": self.shutdown_requested,
             "active_session_count": self.active_session_count,
@@ -559,6 +586,7 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": status_reason if entry.status != "completed" else None,
+            "merge_pending": bool(entry.pr_url) and entry.status == "completed",
             **_refresh_meta(state, config, entry.issue_number),
         }
         if entry.status in ("blocked", "needs_human", "failed", "timed_out"):
@@ -875,6 +903,13 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
     phase = item.get("flow_stage_label") or item.get("flow_stage") or ""
     phase_age = item.get("time") or ""
     blocked = item.get("blocked_summary") or ""
+    agent_type = str(item.get("agent_type") or "").strip()
+    agent_badge = ""
+    if agent_type:
+        agent_badge = agent_type if agent_type.startswith("agent:") else f"agent:{agent_type}"
+    orchestrator_labels = list(item.get("orchestrator_labels", []))
+    if agent_badge and agent_badge not in orchestrator_labels:
+        orchestrator_labels.insert(0, agent_badge)
     return {
         "issue_number": item.get("issue_number"),
         "title": item.get("title", ""),
@@ -884,7 +919,7 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
         "summary": f"Summary: {blocked}" if blocked else "",
         "blocked_summary": blocked,
         "badges": [],
-        "orchestrator_labels": item.get("orchestrator_labels", []),
+        "orchestrator_labels": orchestrator_labels,
         "focus_action": "focus",
         "issue_url": item.get("issue_url") or item.get("url") or "",
         "focus_hint": "Focus issue",
@@ -933,7 +968,7 @@ def _exclude_flow_overlaps(
     blocked_items: list[dict[str, Any]],
     completed_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Keep scope count accurate by removing items already in a kanban column.
+    """Keep scope count accurate by removing items already in a dashboard column.
 
     Backlog is used only for scope_summary.in_scope_total; anything already
     represented in queued/running/blocked/completed should not be double-counted.
@@ -994,7 +1029,7 @@ def _build_flow_columns(
             "title": "Running",
             "count": len(active_items),
             "items": [_compact_card(item, "running") for item in active_items[:12]],
-            "expandable": False,
+            "expandable": True,
         },
         {
             "id": "blocked",
@@ -1022,7 +1057,7 @@ def _build_flow_columns(
 
 
 def _select_issues_for_tab(
-    active_tab: str,
+    active_tab: DashboardTab,
     active_items: list[dict[str, Any]],
     queue_items: list[dict[str, Any]],
     blocked_items: list[dict[str, Any]],
@@ -1030,15 +1065,15 @@ def _select_issues_for_tab(
     awaiting_merge_items: list[dict[str, Any]],
     completed_items: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    if active_tab == "kanban":
+    if active_tab == DashboardTab.DASHBOARD:
         return active_items if active_items else queue_items
-    if active_tab == "blocked":
+    if active_tab == DashboardTab.BLOCKED:
         return blocked_items
-    if active_tab == "awaiting-merge":
+    if active_tab == DashboardTab.AWAITING_MERGE:
         return awaiting_merge_items
-    if active_tab == "completed":
+    if active_tab == DashboardTab.COMPLETED:
         return completed_items
-    if active_tab == "e2e":
+    if active_tab == DashboardTab.E2E:
         return e2e_items
     return active_items
 
@@ -1180,28 +1215,15 @@ def _build_e2e_view_model(
     }
 
 
-def _normalize_tab(active_tab: str) -> str:
-    # Map legacy tab names to new kanban-based tabs
-    if active_tab in {"work", "active", "queue", "flow"}:
-        return "kanban"
-    if active_tab == "attention":
-        return "kanban"
-    if active_tab in {"history", "merged"}:
-        return "kanban"
-    if active_tab in {"kanban", "blocked", "awaiting-merge", "completed", "e2e"}:
-        return active_tab
-    return "kanban"
-
-
 def build_dashboard_view_model(
     orchestrator,
     queue_page: int = 1,
-    active_tab: str = "kanban",
+    active_tab: DashboardTab | str = DashboardTab.DASHBOARD,
     e2e_page: int = 1,
     e2e_status_provider: Callable[[Any], dict[str, Any]] | None = None,
 ) -> DashboardViewModel:
     """Build dashboard view model for templates and APIs."""
-    active_tab = _normalize_tab(active_tab)
+    active_tab_enum = parse_dashboard_tab(active_tab)
     queue_page = max(queue_page, 1)
     e2e_page = max(e2e_page, 1)
 
@@ -1260,7 +1282,7 @@ def build_dashboard_view_model(
             completed_items=completed_items,
         )
 
-        # Backlog used only for scope_summary.in_scope_total (not a kanban column)
+        # Backlog used only for scope_summary.in_scope_total (not a dashboard column)
         backlog_items = _exclude_flow_overlaps(
             backlog_items,
             queue_items,
@@ -1289,7 +1311,7 @@ def build_dashboard_view_model(
         list((config.agents if config else {}).keys()),
     )
     issues = _select_issues_for_tab(
-        active_tab, active_items, queue_items, blocked_items,
+        active_tab_enum, active_items, queue_items, blocked_items,
         e2e_items_paginated, awaiting_merge_items, completed_items,
     )
 
@@ -1397,7 +1419,7 @@ def build_dashboard_view_model(
         e2e_count=e2e_total,
         completed_count=len(completed_items),
         awaiting_merge_count=len(awaiting_merge_items),
-        active_tab=active_tab,
+        active_tab=active_tab_enum,
         paused=state.paused if state else False,
         shutdown_requested=shutdown_requested,
         active_session_count=active_count,

@@ -267,7 +267,7 @@ def test_review_exchange_cache_skips_agent_run(scenario_repo: Path):
         .coder(script("coder_dual_mode.sh")) \
         .reviewer(script("reviewer_ok.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False) \
-        .expect_event(EventName.REVIEW_EXCHANGE_STARTED) \
+        .expect_no_event(EventName.REVIEW_EXCHANGE_STARTED) \
         .run()
     assert ctx2 is not None
 
@@ -288,7 +288,7 @@ def test_review_exchange_cache_requires_validation(scenario_repo: Path):
         .reviewer(script("reviewer_ok_with_validation.sh", prompt=True)) \
         .validation(cmd=script("validate_pass.sh")) \
         .review_exchange(mode="via-local-loop", require_validation=True) \
-        .expect_event(EventName.REVIEW_EXCHANGE_STARTED) \
+        .expect_no_event(EventName.REVIEW_EXCHANGE_STARTED) \
         .run()
     assert ctx2 is not None
 
@@ -776,7 +776,11 @@ def test_local_loop_run_artifacts_and_actions_are_run_scoped(scenario_repo: Path
             continue
         actions = _timeline_event_actions(event, 1)
         action_types = {action["type"] for action in actions}
-        assert "open_agent_log" in action_types
-        assert "open_session_diagnostics" in action_types
-        if event_name in {"session.started", "review.started", "rework.started"}:
-            assert "view_session_prompt" in action_types
+        if event.get("run_dir"):
+            assert "open_agent_log" in action_types
+            assert "open_session_diagnostics" in action_types
+            if event_name in {"session.started", "review.started", "rework.started"}:
+                assert "view_session_prompt" in action_types
+        else:
+            assert "open_agent_log" not in action_types
+            assert "open_session_diagnostics" not in action_types

@@ -54,7 +54,6 @@ from .triage_manifest_builder import TriageManifestBuilder
 from ..ports import (
     ManifestDownloader,
     EventSink,
-    TraceEvent,
     ReviewState,
     RepositoryHost,
     Issue as IssueProtocol,
@@ -65,6 +64,7 @@ from ..ports.session_output import SessionOutput
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions, WorktreeInfo
 from ..ports.session_log import detect_ai_system_from_command
 from ..ports.provider_resilience import ProviderErrorType
+from ..ports.event_sink import make_run_scoped_event, make_trace_event
 from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
@@ -357,7 +357,7 @@ class SessionLauncher:
                 "issue", issue.number, "AVAILABLE", "SKIP",
                 f"dependencies changed: {report.summary()}"
             )
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.ISSUE_DEPENDENCY_BLOCKED,
                 {
                     "issue_number": issue.number,
@@ -387,7 +387,7 @@ class SessionLauncher:
                 "issue", issue.number, "LAUNCHING", "CLAIM_FAILED",
                 f"claim attempt failed: {claim_result.error}"
             )
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.CLAIM_CONTESTED,
                 {
                     "issue_number": issue.number,
@@ -410,7 +410,7 @@ class SessionLauncher:
                 "convergence failed - another claimant won"
             )
             self._claim_manager.release_claim(issue.number, claim_result.lease_id or "")
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.CLAIM_LOST,
                 {
                     "issue_number": issue.number,
@@ -428,7 +428,7 @@ class SessionLauncher:
         lease_seconds = self.config.claim_lease_seconds if hasattr(self.config, 'claim_lease_seconds') else 900
         acquired_at = datetime.now()
         logger.info(issue_log(issue.number, "Claim acquired: lease_id=%s"), claim_result.lease_id)
-        self.events.publish(TraceEvent(
+        self.events.publish(make_trace_event(
             EventName.CLAIM_ACQUIRED,
             {
                 "issue_number": issue.number,
@@ -607,7 +607,7 @@ class SessionLauncher:
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_issue")
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.ISSUE_NEEDS_HUMAN,
                 {
                     "issue_number": issue.number,
@@ -692,7 +692,7 @@ class SessionLauncher:
         if not label_ok:
             log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
             logger.error(issue_log(issue.number, "FAILED: could not add in-progress label"))
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.SESSION_START_FAILED,
                 {
                     "issue_number": issue.number,
@@ -822,7 +822,7 @@ class SessionLauncher:
 
         # Emit trace event
         full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(TraceEvent(EventName.SESSION_STARTED, {
+        self.events.publish(make_run_scoped_event(EventName.SESSION_STARTED, {
             "issue_number": issue.number,
             "session_id": session_name,
             "agent": issue.agent_type,
@@ -935,7 +935,7 @@ class SessionLauncher:
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_review")
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.ISSUE_NEEDS_HUMAN,
                 {
                     "issue_number": review.issue_number,
@@ -1068,7 +1068,7 @@ class SessionLauncher:
 
         # Emit event
         full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(TraceEvent(EventName.REVIEW_STARTED, {
+        self.events.publish(make_run_scoped_event(EventName.REVIEW_STARTED, {
             "pr_number": review.pr_number,
             "issue_number": review.issue_number,
             "agent": agent_label,
@@ -1206,7 +1206,7 @@ class SessionLauncher:
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_rework")
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.ISSUE_NEEDS_HUMAN,
                 {
                     "issue_number": issue_number,
@@ -1372,7 +1372,7 @@ class SessionLauncher:
 
         # Emit event
         full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(TraceEvent(EventName.REWORK_STARTED, {
+        self.events.publish(make_run_scoped_event(EventName.REWORK_STARTED, {
             "issue_number": issue_number,
             "pr_number": pr_number,
             "session_name": session_name,
@@ -1395,7 +1395,7 @@ class SessionLauncher:
                 reason="rework started",
             ),
         ], context="rework_remove_needs_rework")
-        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, {
+        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, {
             "pr_number": pr_number,
             "issue_number": issue_number,
             "issue_key": str(issue_number),
@@ -1763,7 +1763,7 @@ class SessionLauncher:
             reason="rework cycle update",
         ))
         self._apply_actions(actions, context="rework_cycle_label")
-        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, {
+        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, {
             "pr_number": pr_number,
             "issue_number": issue_number,
             "issue_key": str(issue_number),
@@ -1924,7 +1924,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
                 session.lease_id,
             )
             if events:
-                events.publish(TraceEvent(
+                events.publish(make_trace_event(
                     EventName.CLAIM_RELEASED,
                     {
                         "issue_number": session.issue.number,
@@ -2213,7 +2213,7 @@ def _publish_observation_event(
 ) -> None:
     if not events:
         return
-    events.publish(TraceEvent(EventName.OBSERVATION_RESULT, {
+    events.publish(make_trace_event(EventName.OBSERVATION_RESULT, {
         "issue_number": session.issue.number,
         "session_name": session.terminal_id,
         "status": decision.status.value,
@@ -2250,7 +2250,7 @@ def _release_claim_if_needed(
             session.lease_id,
         )
         if events:
-            events.publish(TraceEvent(
+            events.publish(make_trace_event(
                 EventName.CLAIM_RELEASED,
                 {
                     "issue_number": session.issue.number,
@@ -2476,8 +2476,8 @@ def parse_session_ref(
         return SessionRef.from_name(session_name)
     except ValueError as e:
         from ..events import EventName
-        from ..ports import TraceEvent
-        events.publish(TraceEvent(EventName.SESSION_NAME_PARSE_ERROR, {"session_name": session_name, "error": str(e)}))
+        from ..ports import make_trace_event
+        events.publish(make_trace_event(EventName.SESSION_NAME_PARSE_ERROR, {"session_name": session_name, "error": str(e)}))
         raise
 
 

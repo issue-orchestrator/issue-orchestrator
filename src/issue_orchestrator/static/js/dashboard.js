@@ -360,7 +360,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
             }, '*');
         }
 
-        // Update kanban column counts and compact cards from fresh view model
+        // Update dashboard column counts and compact cards from fresh view model
         if (viewModel.flow_columns) {
             for (const col of viewModel.flow_columns) {
                 const colEl = document.querySelector(`[data-column="${col.id}"]`);
@@ -377,7 +377,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
         }
 
         // If a column is expanded, refresh its content
-        const expandedCol = document.querySelector('.kanban-column.expanded');
+        const expandedCol = document.querySelector('.dashboard-column.expanded');
         if (expandedCol) {
             loadExpandedColumn(expandedCol.dataset.column);
         }
@@ -497,6 +497,9 @@ function isNearBottom(element, threshold = 24) {
 }
 
 async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) {
+    if (!runDir) {
+        throw new Error('UI Log requires a run-scoped run_dir');
+    }
     const query = runDir ? `?run_dir=${encodeURIComponent(runDir)}` : '';
     const res = await fetch(`/api/log/local/${issueNumber}${query}`);
     const data = await res.json();
@@ -527,6 +530,10 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
 }
 
 async function openAgentLog(issueNumber, runDir = null) {
+    if (!runDir) {
+        showToast('UI Log requires a specific run. Open it from timeline or diagnostics.', 'error');
+        return;
+    }
     logIssue = issueNumber;
     logRunDir = runDir;
     const runDirParam = runDir ? JSON.stringify(runDir) : 'null';
@@ -583,11 +590,13 @@ async function viewSessionPrompt(issueNumber, runDir = null) {
     openModal(`Session Prompt #${issueNumber}`, body);
 }
 
-async function openSessionManifest(issueNumber) {
-    const res = await fetch(`/api/dialog/session-diagnostics/${issueNumber}`);
+async function openSessionManifest(issueNumber, runDir = null) {
+    const query = runDir ? `?run_dir=${encodeURIComponent(runDir)}` : '';
+    const res = await fetch(`/api/dialog/session-diagnostics/${issueNumber}${query}`);
     const data = await res.json();
+    const diagActionMessage = document.getElementById('diagActionMessage');
     if (data.error) {
-        showToast(data.error, 'error');
+        reportActionError(data.error, 'inline');
         return;
     }
 
@@ -642,26 +651,7 @@ async function openSessionManifest(issueNumber) {
     html += '</div>';
 
     if (hasActions) {
-        html += '<div class="diag-actions">';
-        if (pathActions.length > 0) {
-            html += '<section class="diag-section">';
-            html += '<div class="diag-section-title">Artifacts</div>';
-            html += '<div class="diag-action-group">';
-            for (const action of pathActions) {
-                html += renderDialogAction(action);
-            }
-            html += '</div></section>';
-        }
-        if (logActions.length > 0) {
-            html += '<section class="diag-section">';
-            html += '<div class="diag-section-title">Logs & Tools</div>';
-            html += '<div class="diag-action-group">';
-            for (const action of logActions) {
-                html += renderDialogAction(action);
-            }
-            html += '</div></section>';
-        }
-        html += '</div>';
+        html += renderGroupedDialogActions(actions);
     } else {
         html += '<div class="diag-empty">No diagnostic actions available for this run.</div>';
     }
@@ -670,6 +660,44 @@ async function openSessionManifest(issueNumber) {
     html += '</div>';
 
     openModal(data.title || `Session Diagnostics #${issueNumber}`, html);
+    if (diagActionMessage) diagActionMessage.textContent = '';
+}
+
+function renderGroupedDialogActions(actions) {
+    const primaryTypes = new Set(['open_agent_log', 'view_session_prompt', 'open_path']);
+    const primary = [];
+    const secondary = [];
+    for (const action of (actions || [])) {
+        if (primaryTypes.has(String(action.type || '')) && primary.length < 3) {
+            primary.push(action);
+        } else {
+            secondary.push(action);
+        }
+    }
+    let html = '<div class="diag-actions">';
+    html += '<section class="diag-section"><div class="diag-section-title">Artifacts</div><div class="diag-action-group">';
+    for (const action of primary) html += renderDialogAction(action);
+    html += '</div></section>';
+    if (secondary.length > 0) {
+        html += '<section class="diag-section">';
+        html += '<div class="diag-section-title">More ▾</div>';
+        html += '<div class="diag-action-group diag-more-menu">';
+        for (const action of secondary) html += renderDialogAction(action);
+        html += '</div></section>';
+    }
+    html += '</div>';
+    return html;
+}
+
+function reportActionError(message, mode = 'toast') {
+    if (mode === 'inline') {
+        const modalBody = document.getElementById('modalBody');
+        if (modalBody) {
+            modalBody.innerHTML = `<div class="diag-empty">${escapeHtml(String(message || 'Unknown error'))}</div>`;
+            return;
+        }
+    }
+    showToast(String(message || 'Action failed'), 'error');
 }
 
 function renderDialogRows(rows, options = {}) {
@@ -697,7 +725,10 @@ function renderDialogRows(rows, options = {}) {
 
 function renderDialogAction(action) {
     if (!action) return '';
-    const label = escapeHtml(action.label || 'Action');
+    const actionLabel = action.type === 'open_orchestrator_log'
+        ? (action.label || 'Issue-Scoped Orchestrator Log')
+        : (action.label || 'Action');
+    const label = escapeHtml(actionLabel);
     if (action.type === 'open_path') {
         return `<button class="btn-secondary" onclick="openPath('${escapeHtml(action.path)}')">${label}</button>`;
     }
@@ -1202,7 +1233,7 @@ function initFlowLazyVisibleRefresh() {
     }
     const cfg = currentRefreshConfig();
     if (!cfg.enabled) return;
-    const selectors = ['#panel-flow .issue-card[data-issue]'];
+    const selectors = ['#panel-dashboard .issue-card[data-issue]'];
     if (cfg.attentionPriority === 'strict') {
         selectors.push('#panel-attention .attention-item[data-issue]');
     }
@@ -1544,15 +1575,21 @@ async function executeShutdown() {
 
 // Tab switching
 function switchTab(tab) {
+    const tabNav = document.querySelector('.dashboard-tabs');
+    if (tabNav) {
+        tabNav.classList.add('tab-nav-pending', 'is-loading');
+        tabNav.setAttribute('aria-busy', 'true');
+    }
+    const normalizedTab = tab === 'flow' ? 'dashboard' : tab;
     const url = new URL(window.location.href);
-    url.searchParams.set('tab', tab);
+    url.searchParams.set('tab', normalizedTab);
     url.searchParams.set('page', '1');  // Reset to page 1 when switching tabs
     window.location.href = url.toString();
 }
 
 // Keyboard navigation for tabs (accessibility)
-const tabOrder = ['kanban', 'e2e'];
-document.querySelectorAll('.board-tabs .tab').forEach(tabBtn => {
+const tabOrder = ['dashboard', 'e2e'];
+document.querySelectorAll('.dashboard-tabs .tab').forEach(tabBtn => {
     tabBtn.addEventListener('keydown', (e) => {
         const currentTab = tabBtn.id.replace('tab-', '');
         const currentIndex = tabOrder.indexOf(currentTab);
@@ -1613,19 +1650,25 @@ function clearIssuesViewed(numbers) {
     setViewedIssues(viewed);
 }
 
-// ── Kanban column expand/collapse ──
+// ── Dashboard column expand/collapse ──
+
+function computeCompactCardFingerprint(items) {
+    return items.map(c => `${c.issue_number}:${c.card_id || ''}:${c.state_label || ''}`).join('|');
+}
 
 function renderCompactCards(container, items) {
-    // Build a fingerprint from issue numbers to detect actual changes
-    const newIds = items.map(c => c.issue_number).join(',');
+    // Build a fingerprint from card identity + state to detect actual changes
+    const newIds = computeCompactCardFingerprint(items);
+    const oldIds = container.dataset.cardFingerprint || '';
+    container.dataset.cardFingerprint = newIds;
     const existingCards = container.querySelectorAll('.issue-card[data-issue]');
-    const oldIds = Array.from(existingCards).map(el => el.dataset.issue).join(',');
 
     // Same issue set — update card text in place to avoid DOM jitter
     if (newIds === oldIds && items.length > 0) {
         for (const card of items) {
             const el = container.querySelector(`.issue-card[data-issue="${card.issue_number}"]`);
             if (!el) continue;
+            el.dataset.cardId = String(card.card_id || '');
             const phaseLine = card.phase || card.state_label || '';
             const ageStr = card.phase_age ? ` \u00b7 ${card.phase_age}` : '';
             const lineEl = el.querySelector('.card-line');
@@ -1650,6 +1693,10 @@ function renderCompactCards(container, items) {
         const ghLink = card.issue_url
             ? `<a class="card-gh" href="${card.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">&#x2197;</a>`
             : '';
+        const killButton = card.state_label === 'running'
+            ? `<button class="card-kill-btn" onclick="killSession(${n}, event)" title="Cancel / terminate issue #${n}" aria-label="Cancel issue #${n}">&#x23F9;</button>`
+            : '';
+        const menuButton = `<button class="card-menu-btn" onclick="openCompactCardActionsMenu(this, ${n});event.stopPropagation();" title="More actions" aria-label="More actions">⋯</button>`;
         const phaseLine = card.phase || card.state_label || '';
         const ageStr = card.phase_age ? ` &middot; ${card.phase_age}` : '';
         let detailLine = '';
@@ -1662,7 +1709,7 @@ function renderCompactCards(container, items) {
         const badgesDiv = allBadges
             ? `<div class="card-badges">${allBadges}</div>`
             : '';
-        return `<div class="issue-card" data-issue="${n}" data-stale="${staleAttr}" data-last-refresh-age-seconds="${card.last_refreshed_age_seconds || 0}">
+        return `<div class="issue-card" data-issue="${n}" data-stale="${staleAttr}" data-card-id="${escapeHtml(String(card.card_id || ''))}" data-last-refresh-age-seconds="${card.last_refreshed_age_seconds || 0}">
             <div class="card-top">
                 <button class="card-focus" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="Focus issue #${n}">
                     #${n} ${card.title}
@@ -1670,7 +1717,9 @@ function renderCompactCards(container, items) {
                 <div class="card-head-actions">
                     ${staleDot}
                     <button class="card-refresh-btn" onclick="refreshIssueCard(${n}, this);event.stopPropagation();" title="Refresh issue #${n} from GitHub" aria-label="Refresh issue #${n}">&#x27F3;</button>
+                    ${killButton}
                     ${ghLink}
+                    ${menuButton}
                     <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
                 </div>
             </div>
@@ -1687,7 +1736,7 @@ function toggleColumnExpand(columnId) {
     const isExpanded = col.dataset.expanded === 'true';
 
     // Collapse all first — also clear stale checkbox/bulk state
-    document.querySelectorAll('.kanban-column').forEach(c => {
+    document.querySelectorAll('.dashboard-column').forEach(c => {
         c.classList.remove('expanded', 'collapsed-peer');
         c.dataset.expanded = 'false';
         const expanded = c.querySelector('.column-expanded');
@@ -1703,16 +1752,26 @@ function toggleColumnExpand(columnId) {
     if (!isExpanded) {
         col.classList.add('expanded');
         col.dataset.expanded = 'true';
+        document.body.classList.toggle('column-focus-mode', !isExpanded);
         const expanded = col.querySelector('.column-expanded');
         const cards = col.querySelector('.column-cards');
         if (expanded) expanded.style.display = '';
         if (cards) cards.style.display = 'none';
         // Collapse peers
-        document.querySelectorAll('.kanban-column:not(.expanded)').forEach(c => {
+        document.querySelectorAll('.dashboard-column:not(.expanded)').forEach(c => {
             c.classList.add('collapsed-peer');
         });
         loadExpandedColumn(columnId);
+    } else {
+        document.body.classList.toggle('column-focus-mode', !isExpanded);
     }
+    updateEmbeddedBackButtonVisibility();
+}
+
+function updateEmbeddedBackButtonVisibility() {
+    const hasExpandedColumn = Array.from(document.querySelectorAll('.dashboard-column')).some(c => c.dataset.expanded === 'true');
+    const label = document.getElementById('embeddedBackLabel');
+    if (label) label.textContent = hasExpandedColumn ? 'Back to dashboard' : 'Back to repositories';
 }
 
 async function loadExpandedColumn(columnId) {
@@ -1741,6 +1800,9 @@ async function loadExpandedColumn(columnId) {
         expandedList.innerHTML = items.map(item => {
             const isViewed = viewed.has(item.issue_number);
             const n = item.issue_number;
+            const orchLabels = item.orchestrator_labels || [];
+            const badges = orchLabels.map(label => `<span class="badge badge-orch">${escapeHtml(label)}</span>`).join('');
+            const badgesRow = badges ? `<div class="card-badges">${badges}</div>` : '';
             return `
             <div class="expanded-card${isViewed ? ' viewed' : ''}" data-issue="${n}" data-viewed="${isViewed}">
                 <input type="checkbox" class="card-checkbox" onchange="updateBulkBar('${columnId}')">
@@ -1750,9 +1812,12 @@ async function loadExpandedColumn(columnId) {
                         #${n} ${item.title || ''}
                     </button>
                     <div class="card-line card-muted">${item.detail_label || item.status || ''}</div>
+                    ${badgesRow}
                 </div>
                 <div class="card-actions">
                     ${columnId === 'blocked' ? `<button class="card-action-btn card-action-unblock" onclick="unblockSingle(${n}, this);event.stopPropagation();" title="Unblock issue #${n}">Unblock</button>` : ''}
+                    ${columnId === 'blocked' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingle(${n}, this);event.stopPropagation();" title="Reset issue #${n}">Reset</button>` : ''}
+                    ${(columnId === 'awaiting-merge' || columnId === 'completed') ? `<button class="card-action-btn card-action-retry" onclick="retryExpandedSingle(${n}, this);event.stopPropagation();" title="Retry issue #${n}">Retry</button>` : ''}
                     ${item.issue_url ? `<a class="card-gh" href="${item.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">↗</a>` : ''}
                     ${item.pr_url ? `<a class="card-action-btn" href="${item.pr_url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">PR</a>` : ''}
                     <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
@@ -1816,6 +1881,11 @@ function updateBulkBar(columnId) {
     const checked = col.querySelectorAll('.card-checkbox:checked');
     const bar = col.querySelector('.bulk-action-bar');
     if (!bar) return;
+    const retryColumns = ['blocked', 'awaiting-merge', 'completed'];
+    if (!retryColumns.includes(columnId) && checked.length === 0) {
+        bar.style.display = 'none';
+        return;
+    }
     bar.style.display = checked.length > 0 ? 'flex' : 'none';
     const countEl = bar.querySelector('.selected-count');
     if (countEl) countEl.textContent = `${checked.length} selected`;
@@ -1830,21 +1900,36 @@ function getSelectedIssueNumbers(columnId) {
         .filter(n => !isNaN(n));
 }
 
+async function executeUiActionRequest(request) {
+    const response = await fetch(request.endpoint, {
+        method: request.method || 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request.body || {}),
+    });
+    const data = await response.json().catch(() => ({}));
+    return { response, data };
+}
+
+function applyOptimisticRequeue(issueNumbers) {
+    if (!Array.isArray(issueNumbers) || issueNumbers.length === 0) return;
+    const requeuedSet = new Set(issueNumbers.map(Number));
+    if (issueDetailData && requeuedSet.has(Number(issueDetailData.issue_number))) {
+        closeIssueDetail();
+    }
+}
+
 async function unblockSingle(issueNumber, btn) {
     if (!await showConfirm(`Unblock issue #${issueNumber} and move it back to queued?`, btn)) return;
     if (btn) btn.disabled = true;
     try {
-        const resp = await fetch('/api/bulk-retry', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issue_numbers: [issueNumber] }),
-        });
-        if (resp.ok) {
+        const request = uiActionContract.buildUnblockRequest([issueNumber]);
+        const { response, data } = await executeUiActionRequest(request);
+        if (response.ok) {
+            applyOptimisticRequeue([issueNumber]);
             showToast(`Unblocked #${issueNumber} → Queued`);
             await refreshViewModel();
         } else {
-            const data = await resp.json().catch(() => ({}));
-            showToast(data.error || `Unblock failed (${resp.status})`, true);
+            showToast(data.error || `Unblock failed (${response.status})`, true);
             if (btn) btn.disabled = false;
         }
     } catch (e) {
@@ -1859,17 +1944,14 @@ async function bulkUnblock() {
     if (!numbers.length) return;
     if (!await showConfirm(`Unblock ${numbers.length} issue(s) and move them back to queued?`)) return;
     try {
-        const resp = await fetch('/api/bulk-retry', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issue_numbers: numbers }),
-        });
-        if (resp.ok) {
+        const request = uiActionContract.buildUnblockRequest(numbers);
+        const { response, data } = await executeUiActionRequest(request);
+        if (response.ok) {
+            applyOptimisticRequeue(numbers);
             showToast(`Unblocking ${numbers.length} issue(s) → Queued`);
             await refreshViewModel();
         } else {
-            const data = await resp.json().catch(() => ({}));
-            showToast(data.error || `Bulk unblock failed (${resp.status})`, true);
+            showToast(data.error || `Bulk unblock failed (${response.status})`, true);
         }
     } catch (e) {
         console.error('Bulk unblock failed:', e);
@@ -1940,18 +2022,79 @@ async function bulkDeprioritize() {
     const numbers = getSelectedIssueNumbers('queued');
     if (!numbers.length) return;
     try {
-        const resp = await fetch('/api/bulk-deprioritize', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issue_numbers: numbers }),
-        });
-        if (resp.ok) {
+        const request = uiActionContract.buildBulkDeprioritizeRequest(numbers);
+        const { response } = await executeUiActionRequest(request);
+        if (response.ok) {
             showToast(`Deprioritized ${numbers.length} issue(s)`);
             await refreshViewModel();
         }
     } catch (e) {
         console.error('Bulk deprioritize failed:', e);
     }
+}
+
+async function bulkResetRetry() {
+    const numbers = getSelectedIssueNumbers('blocked');
+    if (!numbers.length) return;
+    if (!await showConfirm(`Reset and retry ${numbers.length} issue(s)?`, blockedResetBtn)) return;
+    const request = uiActionContract.buildResetRetryRequest(numbers);
+    const { response, data } = await executeUiActionRequest(request);
+    if (!response.ok) {
+        showToast(data.error || 'Failed to reset selected issues', 'error');
+        return;
+    }
+    applyOptimisticRequeue(numbers);
+    await refreshViewModel();
+}
+
+async function resetRetrySingle(issueNumber, btn) {
+    if (!await showConfirm(`Reset and retry issue #${issueNumber}?`, btn)) return;
+    const request = uiActionContract.buildResetRetryRequest([issueNumber]);
+    const { response, data } = await executeUiActionRequest(request);
+    if (!response.ok) {
+        showToast(data.error || 'Failed to reset issue', 'error');
+        return;
+    }
+    applyOptimisticRequeue([issueNumber]);
+    await refreshViewModel();
+}
+
+async function retryExpandedSingle(issueNumber, btn) {
+    if (!await showConfirm(`Retry issue #${issueNumber}?`, btn)) return;
+    const request = uiActionContract.buildBulkRetryRequest([issueNumber]);
+    const { response, data } = await executeUiActionRequest(request);
+    if (!response.ok) {
+        showToast(data.error || 'Failed to retry issue', 'error');
+        return;
+    }
+    applyOptimisticRequeue([issueNumber]);
+    await refreshViewModel();
+}
+
+async function bulkRetryCompleted() {
+    const numbers = getSelectedIssueNumbers('completed');
+    if (!numbers.length) return;
+    const request = uiActionContract.buildBulkRetryRequest(numbers);
+    const { response, data } = await executeUiActionRequest(request);
+    if (!response.ok) {
+        showToast(data.error || 'Failed to retry completed issues', 'error');
+        return;
+    }
+    applyOptimisticRequeue(numbers);
+    await refreshViewModel();
+}
+
+async function bulkRetryAwaitingMerge() {
+    const numbers = getSelectedIssueNumbers('awaiting-merge');
+    if (!numbers.length) return;
+    const request = uiActionContract.buildUnblockRequest(numbers);
+    const { response, data } = await executeUiActionRequest(request);
+    if (!response.ok) {
+        showToast(data.error || 'Failed to retry awaiting merge issues', 'error');
+        return;
+    }
+    applyOptimisticRequeue(numbers);
+    await refreshViewModel();
 }
 
 // Pagination (preserves current tab)
@@ -2295,6 +2438,8 @@ const menuIssue = document.getElementById('menuIssue');
 const menuPR = document.getElementById('menuPR');
 const menuRetry = document.getElementById('menuRetry');
 const menuDismiss = document.getElementById('menuDismiss');
+const menuUnblock = document.getElementById('menuUnblock');
+const menuResetRetry = document.getElementById('menuResetRetry');
 const menuHistoryDivider = document.getElementById('menuHistoryDivider');
 const menuDepsDivider = document.getElementById('menuDepsDivider');
 const menuDepsLabel = document.getElementById('menuDepsLabel');
@@ -2313,6 +2458,8 @@ const contextMenuEnabled = [
     menuPR,
     menuRetry,
     menuDismiss,
+    menuUnblock,
+    menuResetRetry,
     menuHistoryDivider,
     menuDepsDivider,
     menuDepsLabel,
@@ -2329,11 +2476,17 @@ function showContextMenu(e, row) {
     e.preventDefault();
     currentRow = row;
 
-    const issueNumber = row.dataset.issue;
     const action = row.dataset.action;
     const prUrl = row.dataset.prUrl;
-    const status = row.dataset.status;
+    const status = row.dataset.status || '';
+    const statusLower = String(status).toLowerCase();
+    const normalizedStatus = statusLower.replace(/_/g, '-');
+    const isCompactCardMenu = action === 'compact-card-menu';
+    const columnId = String(row.dataset.columnId || '');
+    const effectiveHistoryStatus = (isCompactCardMenu && columnId) ? columnId : normalizedStatus;
     const hasDeps = row.dataset.hasDependencies === 'true';
+    const isBlockedHistory = effectiveHistoryStatus === 'blocked' || effectiveHistoryStatus === 'needs-human';
+    const otherRetryStatuses = new Set(['failed', 'completed', 'timed-out', 'awaiting-merge']);
 
     // Enable/disable menu items based on context
     // Active sessions (action === 'focus') have terminal session and worktree
@@ -2402,22 +2555,48 @@ function showContextMenu(e, row) {
         menuDepsLabel.style.display = 'none';
     }
 
-    // Show Retry/Dismiss for history items (failed, blocked, completed, timed_out)
-    const historyStatuses = ['failed', 'blocked', 'completed', 'timed_out', 'needs_human'];
-    if (historyStatuses.includes(status)) {
-        menuHistoryDivider.style.display = 'block';
-        menuRetry.style.display = 'flex';
-        menuDismiss.style.display = 'flex';
+    setMenuVisible(menuHistoryDivider, isBlockedHistory || otherRetryStatuses.has(effectiveHistoryStatus));
+    if (otherRetryStatuses.has(effectiveHistoryStatus)) {
+        menuRetry.style.display = '';
     } else {
-        menuHistoryDivider.style.display = 'none';
         menuRetry.style.display = 'none';
-        menuDismiss.style.display = 'none';
     }
+    if (isBlockedHistory) {
+        menuUnblock.style.display = '';
+        menuResetRetry.style.display = '';
+    } else {
+        menuUnblock.style.display = 'none';
+        menuResetRetry.style.display = 'none';
+    }
+    setMenuVisible(menuDismiss, isBlockedHistory || otherRetryStatuses.has(effectiveHistoryStatus));
+    setMenuVisible(menuLog, !isCompactCardMenu && !isBlockedHistory);
+    setMenuVisible(menuAgentLog, !isCompactCardMenu && !isBlockedHistory);
 
     // Position menu
     contextMenu.style.left = e.pageX + 'px';
     contextMenu.style.top = e.pageY + 'px';
     contextMenu.classList.add('visible');
+}
+
+function setMenuVisible(menuItem, visible) {
+    if (!menuItem) return;
+    menuItem.style.display = visible ? '' : 'none';
+}
+
+function openCompactCardActionsMenu(button, issueNumber) {
+    const columnId = button?.closest('.dashboard-column')?.dataset?.column;
+    const menuContext = { columnId: String(columnId || '') };
+    const row = document.querySelector(`.issue-card[data-issue="${issueNumber}"]`);
+    if (!row) return;
+    row.dataset.action = 'compact-card-menu';
+    row.dataset.columnId = menuContext.columnId;
+    const rect = button?.getBoundingClientRect();
+    const syntheticEvent = {
+        preventDefault() {},
+        pageX: rect ? rect.left + window.scrollX : 0,
+        pageY: rect ? rect.bottom + window.scrollY : 0,
+    };
+    showContextMenu(syntheticEvent, row);
 }
 
 // Hide context menu on click elsewhere
@@ -2427,7 +2606,7 @@ if (contextMenuEnabled) {
     });
 
     // Menu actions - must stopPropagation to prevent document click handler from interfering
-    menuFocus.addEventListener('click', async (e) => {
+    menuFocus?.addEventListener('click', async (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
         if (currentRow && !menuFocus.classList.contains('disabled')) {
@@ -2435,7 +2614,7 @@ if (contextMenuEnabled) {
         }
     });
 
-    menuFinder.addEventListener('click', async (e) => {
+    menuFinder?.addEventListener('click', async (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
         if (currentRow && !menuFinder.classList.contains('disabled')) {
@@ -2445,49 +2624,16 @@ if (contextMenuEnabled) {
         }
     });
 
-    menuLog.addEventListener('click', async (e) => {
+    menuLog?.addEventListener('click', async (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
         if (currentRow) {
             const issueNumber = currentRow.dataset.issue;
-            const res = await fetch(`/api/log/${issueNumber}`);
-            const data = await res.json();
-
-            if (data.error) {
-                alert(data.error + (data.hint ? '\n\n' + data.hint : ''));
-                return;
-            }
-
-            // Format log content for display
-            let logContent = '';
-            if (data.truncated) {
-                logContent += `<p style="color:var(--text-muted);margin-bottom:10px;">Showing last ${data.lines.length} of ${data.total_lines} entries...</p>`;
-            }
-            logContent += '<pre style="font-size:11px;max-height:400px;overflow:auto;background:var(--bg);padding:10px;border-radius:4px;">';
-            for (const line of data.lines) {
-                try {
-                    const entry = JSON.parse(line);
-                    // Show role and truncated content
-                    const role = entry.type || entry.role || 'unknown';
-                    // Safely extract content - may be string or object
-                    let rawContent = entry.message?.content || entry.content || entry;
-                    const content = (typeof rawContent === 'string' ? rawContent : JSON.stringify(rawContent)).substring(0, 200);
-                    logContent += `<span style="color:var(--accent);">[${role}]</span> ${content.replace(/</g, '&lt;').replace(/>/g, '&gt;')}...\n`;
-                } catch {
-                    logContent += line.substring(0, 200).replace(/</g, '&lt;').replace(/>/g, '&gt;') + '\n';
-                }
-            }
-            logContent += '</pre>';
-            logContent += `<p style="color:var(--text-muted);font-size:11px;margin-top:10px;">Log: ${data.log_path}</p>`;
-
-            // Show in modal
-            document.getElementById('modalTitle').textContent = `UI Log #${issueNumber}`;
-            document.getElementById('modalBody').innerHTML = logContent;
-            document.getElementById('modalOverlay').classList.add('visible');
+            await openFilteredOrchestratorLog(issueNumber);
         }
     });
 
-    menuAgentLog.addEventListener('click', async (e) => {
+    menuAgentLog?.addEventListener('click', async (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
         if (currentRow) {
@@ -2496,7 +2642,7 @@ if (contextMenuEnabled) {
         }
     });
 
-    menuInput.addEventListener('click', async (e) => {
+    menuInput?.addEventListener('click', async (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
         if (currentRow && !menuInput.classList.contains('disabled')) {
@@ -2517,7 +2663,7 @@ if (contextMenuEnabled) {
         }
     });
 
-    menuPrompt.addEventListener('click', async (e) => {
+    menuPrompt?.addEventListener('click', async (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
         if (currentRow && !menuPrompt.classList.contains('disabled')) {
@@ -2528,7 +2674,7 @@ if (contextMenuEnabled) {
         }
     });
 
-    menuKill.addEventListener('click', async (e) => {
+    menuKill?.addEventListener('click', async (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
         if (currentRow) {
@@ -2546,7 +2692,7 @@ if (contextMenuEnabled) {
         }
     });
 
-    menuIssue.addEventListener('click', (e) => {
+    menuIssue?.addEventListener('click', (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
         if (currentRow) {
@@ -2554,7 +2700,7 @@ if (contextMenuEnabled) {
         }
     });
 
-    menuPR.addEventListener('click', (e) => {
+    menuPR?.addEventListener('click', (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
         if (currentRow && currentRow.dataset.prUrl) {
@@ -2562,24 +2708,55 @@ if (contextMenuEnabled) {
         }
     });
 
-    menuRetry.addEventListener('click', async (e) => {
+    menuRetry?.addEventListener('click', async (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
         if (currentRow) {
-            const issueNumber = currentRow.dataset.issue;
+            const issueNumber = Number(currentRow.dataset.issue);
             if (confirm(`Retry issue #${issueNumber}? It will be picked up on the next cycle.`)) {
-                const res = await fetch(`/api/retry/${issueNumber}`, { method: 'POST' });
-                const data = await res.json();
-                if (data.retrying) {
-                    location.reload();
-                } else {
+                const request = uiActionContract.buildIssueRetryRequest(issueNumber);
+                const { response, data } = await executeUiActionRequest(request);
+                if (!response.ok) {
                     alert(data.error || 'Failed to retry issue');
+                    return;
                 }
+                applyOptimisticRequeue([issueNumber]);
+                await refreshViewModel();
             }
         }
     });
 
-    menuDismiss.addEventListener('click', async (e) => {
+    menuUnblock?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (!currentRow) return;
+        const issueNumber = Number(currentRow.dataset.issue);
+        const request = uiActionContract.buildUnblockRequest([issueNumber]);
+        const { response, data } = await executeUiActionRequest(request);
+        if (!response.ok) {
+            alert(data.error || 'Failed to unblock issue');
+            return;
+        }
+        applyOptimisticRequeue([issueNumber]);
+        await refreshViewModel();
+    });
+
+    menuResetRetry?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (!currentRow) return;
+        const issueNumber = Number(currentRow.dataset.issue);
+        const request = uiActionContract.buildResetRetryRequest([issueNumber]);
+        const { response, data } = await executeUiActionRequest(request);
+        if (!response.ok) {
+            alert(data.error || 'Failed to reset/retry issue');
+            return;
+        }
+        applyOptimisticRequeue([issueNumber]);
+        await refreshViewModel();
+    });
+
+    menuDismiss?.addEventListener('click', async (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
         if (currentRow) {
@@ -2830,18 +3007,15 @@ async function unblockFromDrawer() {
     if (!await showConfirm(`Unblock issue #${n} and move it back to queued?`, btn)) return;
     if (btn) btn.disabled = true;
     try {
-        const resp = await fetch('/api/bulk-retry', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issue_numbers: [n] }),
-        });
-        if (resp.ok) {
+        const request = uiActionContract.buildUnblockRequest([n]);
+        const { response, data } = await executeUiActionRequest(request);
+        if (response.ok) {
+            applyOptimisticRequeue([n]);
             showToast(`Unblocked #${n} → Queued`);
             closeIssueDetail();
             await refreshViewModel();
         } else {
-            const data = await resp.json().catch(() => ({}));
-            showToast(data.error || `Unblock failed (${resp.status})`, true);
+            showToast(data.error || `Unblock failed (${response.status})`, true);
             if (btn) btn.disabled = false;
         }
     } catch (e) {
@@ -2869,14 +3043,14 @@ function filterJourneyCycles(cycles, filter) {
 function renderJourneyTimeline(container, data) {
     const cycles = data.journey_cycles;
     if (cycles && cycles.length > 0) {
-        _renderJourneyCycles(container, cycles);
+        _renderJourneyRuns(container, cycles, data.timeline_diagnostic || null);
     } else {
         // Legacy fallback for payloads without journey_cycles
         _renderLegacyJourneySteps(container, data.journey_steps || []);
     }
 }
 
-function _renderJourneyCycles(container, allCycles) {
+function _renderJourneyRuns(container, allCycles, timelineDiagnostic = null) {
     const cycles = filterJourneyCycles(allCycles, journeyFilter);
     const isLastRun = journeyFilter === 'last-run';
     const isAll = journeyFilter === 'all';
@@ -2889,17 +3063,22 @@ function _renderJourneyCycles(container, allCycles) {
     </div>`;
 
     if (cycles.length === 0) {
-        html += '<div class="timeline-empty">No activity recorded.</div>';
+        if (timelineDiagnostic && timelineDiagnostic.reason === 'expected_history_missing') {
+            html += `<div class="timeline-empty">Timeline data missing: Expected timeline store not available (${escapeHtml(String(timelineDiagnostic.reason || 'unknown'))})</div>`;
+        } else {
+            html += '<div class="timeline-empty">No activity recorded.</div>';
+        }
         container.innerHTML = html;
         return;
     }
 
-    for (let i = 0; i < cycles.length; i++) {
-        const c = cycles[i];
+    for (let cycleIndex = 0; cycleIndex < cycles.length; cycleIndex++) {
+        const c = cycles[cycleIndex];
+        const displayCycleNumber = c.cycle_in_run || c.cycle || (cycleIndex + 1);
         const expanded = c.expanded;
         const toggle = expanded ? '\u25be' : '\u25b8';
         const bodyClass = expanded ? '' : ' collapsed';
-        const cycleId = `journey-cycle-${i}`;
+        const cycleId = `journey-cycle-${cycleIndex}`;
         const agentPill = c.agent ? `<span class="journey-cycle-agent">(${escapeHtml(c.agent)})</span>` : '';
         const retryInfo = c.retry_count > 0 ? `<span class="journey-cycle-retries">${c.retry_count} ${c.retry_count === 1 ? 'retry' : 'retries'}</span>` : '';
         const outcomeClass = _cycleOutcomeClass(c.outcome || '');
@@ -2909,7 +3088,7 @@ function _renderJourneyCycles(container, allCycles) {
         html += `<div class="journey-cycle" id="${cycleId}">
             <div class="journey-cycle-header" onclick="toggleJourneyCycle('${cycleId}')">
                 <span class="journey-cycle-toggle">${toggle}</span>
-                <span class="journey-cycle-label">Cycle ${c.cycle}</span>
+                <span class="journey-cycle-label">Cycle ${displayCycleNumber}</span>
                 ${agentPill}
                 ${retryInfo}
                 <span class="journey-cycle-outcome ${outcomeClass}">\u2014 ${escapeHtml(c.outcome || 'In progress')}</span>
@@ -2918,6 +3097,10 @@ function _renderJourneyCycles(container, allCycles) {
             </div>
             <div class="journey-cycle-body${bodyClass}" id="${cycleId}-body">`;
 
+        const phaseHeaders = c.phase_groups || [];
+        for (const phaseHeader of phaseHeaders) {
+            html += `<div class="journey-phase-header">${escapeHtml(String(phaseHeader.label || ''))}</div>`;
+        }
         const steps = c.steps || [];
         for (const s of steps) {
             const statusClass = s.status ? 'status-' + escapeHtml(s.status) : '';
@@ -2939,11 +3122,14 @@ function _renderJourneyCycles(container, allCycles) {
     // Wire up delegated click handler for action buttons inside journey steps
     if (!container.dataset.journeyActionsBound) {
         container.addEventListener('click', (event) => {
-            const actionTarget = event.target.closest('.timeline-action-btn');
+            const actionTarget = event.target.closest('.timeline-action-btn, .timeline-more-item');
             if (actionTarget && actionTarget.dataset.action) {
                 try {
                     const action = JSON.parse(actionTarget.dataset.action);
                     runTimelineEventAction(action);
+                    const ownerMenu = actionTarget.closest('.timeline-event-menu');
+                    if (ownerMenu) closeTimelineEventMenus(ownerMenu);
+                    closeTimelineEventMenus();
                 } catch (err) {
                     console.error('Failed to parse journey action:', err);
                     showToast('Unable to execute action', 'error');
@@ -2963,8 +3149,10 @@ function _cycleOutcomeClass(outcome) {
 }
 
 function toggleJourneyCycle(cycleId) {
+    closeTimelineEventMenus();
+    const cycleNode = document.getElementById(cycleId);
     const body = document.getElementById(cycleId + '-body');
-    const header = document.querySelector(`#${cycleId} .journey-cycle-toggle`);
+    const header = cycleNode ? cycleNode.querySelector(':scope > .journey-cycle-header .journey-cycle-toggle') : null;
     if (!body) return;
     const isCollapsed = body.classList.contains('collapsed');
     body.classList.toggle('collapsed');
@@ -3219,21 +3407,30 @@ async function openReviewFeedback(issueNumber) {
             return;
         }
 
-        // No local feedback — try to show the reviewer's completion summary from events
+        // No local feedback — try to show reviewer events from issue detail payload.
         let html = '';
-        if (issueDetailData) {
-            const events = issueDetailData.events || [];
+        const detailMatchesIssue = issueDetailData && issueDetailData.issue_number === issueNumber;
+        let detail = detailMatchesIssue ? issueDetailData : null;
+        if (!detail) {
+            const issueRes = await fetch(`/api/issue-detail/${issueNumber}`);
+            if (issueRes.ok) detail = await issueRes.json();
+        }
+        if (detail && detail.issue_number === issueNumber) {
+            const events = detail.events || [];
             const reviewEvents = events.filter(e =>
-                e.event === 'review.changes_requested' || e.event === 'review.approved'
+                e.event === 'review.comment_added' || e.event === 'review.changes_requested' || e.event === 'review.approved'
             );
             if (reviewEvents.length > 0) {
                 html += '<div style="margin-bottom:8px;font-size:12px;color:var(--text-muted);">From timeline events:</div>';
                 for (const evt of reviewEvents) {
-                    const label = evt.event === 'review.approved' ? 'Approved' : 'Changes Requested';
+                    const label = evt.event === 'review.approved'
+                        ? 'Approved'
+                        : (evt.event === 'review.comment_added' ? 'Review Comment' : 'Changes Requested');
                     const time = evt.timestamp ? new Date(evt.timestamp).toLocaleString() : '';
                     html += `<div style="margin-bottom:10px;padding:8px;background:var(--bg);border-radius:4px;">
                         <div style="font-weight:600;font-size:12px;">${escapeHtml(label)} ${time ? `<span style="font-weight:400;color:var(--text-muted);">${escapeHtml(time)}</span>` : ''}</div>
                         ${evt.summary ? `<div style="font-size:12px;margin-top:4px;">${escapeHtml(evt.summary)}</div>` : ''}
+                        ${evt.detail ? `<div style="font-size:12px;margin-top:4px;">${escapeHtml(evt.detail)}</div>` : ''}
                     </div>`;
                 }
             }
@@ -3242,7 +3439,7 @@ async function openReviewFeedback(issueNumber) {
             const prEvent = events.find(e => e.event === 'issue.pr_created');
             const prArtifact = prEvent && (prEvent.artifacts || []).find(a => a.type === 'pull_request');
             if (prArtifact && prArtifact.value) {
-                html += `<div style="margin-top:8px;"><a href="${escapeHtml(prArtifact.value)}" target="_blank" rel="noopener noreferrer" class="issue-action-btn">View PR on GitHub ↗</a></div>`;
+                html += `<div style="margin-top:8px;"><a href="${escapeHtml(prArtifact.value)}" target="_blank" rel="noopener noreferrer" class="issue-action-btn">Open review comment on GitHub</a></div>`;
             }
         }
 
@@ -3428,7 +3625,7 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
             if (target && target.dataset.path) {
                 openPath(target.dataset.path);
             }
-            const actionTarget = event.target.closest('.timeline-action-btn');
+            const actionTarget = event.target.closest('.timeline-action-btn, .timeline-more-item');
             if (actionTarget && actionTarget.dataset.action) {
                 try {
                     const action = JSON.parse(actionTarget.dataset.action);
@@ -3469,6 +3666,7 @@ function renderTimelineEventActions(evt, actions) {
         evt = {};
     }
     if (!actions || actions.length === 0) return '';
+    const primaryTypes = new Set(['open_agent_log', 'open_review_feedback']);
     const remainingActions = [...actions];
     const primaryDefs = timelinePrimaryActionsForEvent(evt);
     const primaryButtons = primaryDefs.map(def => {
@@ -3491,7 +3689,7 @@ function renderTimelineEventActions(evt, actions) {
         }
         const payload = escapeAttr(JSON.stringify(action));
         const label = escapeHtml(action.label || 'Action');
-        return `${prefix}<button type="button" class="timeline-action-btn timeline-menu-action-btn" data-action="${payload}" role="menuitem">${label}</button>`;
+        return `${prefix}<button type="button" class="timeline-action-btn timeline-menu-action-btn timeline-more-item" data-action="${payload}" role="menuitem">${label}</button>`;
     }).join('');
     const hasSecondaryActions = remainingActions.length > 0;
     const menuButtonDisabled = hasSecondaryActions ? '' : ' disabled title="No secondary actions available yet"';
@@ -3501,12 +3699,16 @@ function renderTimelineEventActions(evt, actions) {
     return `
         <div class="timeline-event-actions">
             <div class="timeline-primary-actions">${primaryButtons}</div>
-            <div class="timeline-event-menu">
-                <button type="button" class="timeline-event-menu-trigger" aria-haspopup="menu" aria-expanded="false" aria-controls="${menuItemsId}" aria-label="More actions"${menuButtonDisabled}>…</button>
+            <div class="timeline-event-menu timeline-more-menu">
+                <button type="button" class="timeline-event-menu-trigger" aria-haspopup="menu" aria-expanded="false" aria-controls="${menuItemsId}" aria-label="More actions"${menuButtonDisabled}>More ▾</button>
                 <div class="timeline-event-menu-items" id="${menuItemsId}" role="menu" hidden>${menuItems}</div>
             </div>
         </div>
     `;
+}
+
+function _timelineActionShortLabel(action) {
+    return String(action?.label || action?.type || 'Action');
 }
 
 function timelinePrimaryActionsForEvent(evt) {
@@ -3530,7 +3732,9 @@ function timelinePrimaryActionsForEvent(evt) {
             label: 'Review Feedback',
             missingReason: 'Review feedback will appear after reviewer output is recorded.',
             matcher: (action) => {
-                if (!action || action.type !== 'open_path') return false;
+                if (!action) return false;
+                if (action.type === 'open_review_feedback') return true;
+                if (action.type !== 'open_path') return false;
                 const label = String(action.label || '').toLowerCase();
                 const path = String(action.path || '').toLowerCase();
                 return label.includes('review feedback') || path.includes('/review-feedback/');
@@ -3540,8 +3744,9 @@ function timelinePrimaryActionsForEvent(evt) {
     return actions;
 }
 
-function closeTimelineEventMenus(container) {
-    container.querySelectorAll('.timeline-event-menu').forEach(menu => {
+function closeTimelineEventMenus(container = document) {
+    const root = container && typeof container.querySelectorAll === 'function' ? container : document;
+    root.querySelectorAll('.timeline-event-menu').forEach(menu => {
         const trigger = menu.querySelector('.timeline-event-menu-trigger');
         const items = menu.querySelector('.timeline-event-menu-items');
         if (!trigger || !items) return;
@@ -3576,11 +3781,19 @@ function runTimelineEventAction(action) {
         return;
     }
     if (action.type === 'open_agent_log' && action.issue_number) {
-        openAgentLog(action.issue_number, action.run_dir || null);
+        if (!action.run_dir) {
+            reportActionError('UI Log requires a run-scoped run_dir.', 'modal');
+            return;
+        }
+        openAgentLog(action.issue_number, action.run_dir);
         return;
     }
     if (action.type === 'view_session_prompt' && action.issue_number) {
-        viewSessionPrompt(action.issue_number, action.run_dir || null);
+        if (!action.run_dir) {
+            reportActionError('Session prompt requires a run-scoped run_dir.', 'modal');
+            return;
+        }
+        viewSessionPrompt(action.issue_number, action.run_dir);
         return;
     }
     if (action.type === 'view_claude_log' && action.issue_number) {
@@ -3592,7 +3805,15 @@ function runTimelineEventAction(action) {
         return;
     }
     if (action.type === 'open_session_diagnostics' && action.issue_number) {
-        openSessionManifest(action.issue_number);
+        if (!action.run_dir) {
+            reportActionError('Diagnostics requires a run-scoped run_dir.', 'modal');
+            return;
+        }
+        openSessionManifest(action.issue_number, action.run_dir);
+        return;
+    }
+    if (action.type === 'open_review_feedback' && action.issue_number) {
+        openReviewFeedback(action.issue_number);
         return;
     }
     showToast(`Unsupported timeline action: ${action.type}`, 'error');
@@ -3772,20 +3993,15 @@ async function unblockSelectedIssues() {
     blockedUnblockBtn.textContent = 'Unblocking...';
 
     try {
-        const res = await fetch('/api/unblock-retry', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issues: issueNumbers }),
-        });
-        const data = await res.json();
-
-        if (data.unblocked && data.unblocked.length > 0) {
-            showToast(`Unblocked ${data.unblocked.length} issue${data.unblocked.length > 1 ? 's' : ''}`);
+        const request = uiActionContract.buildUnblockRequest(issueNumbers);
+        const { response, data } = await executeUiActionRequest(request);
+        if (response.ok) {
+            applyOptimisticRequeue(issueNumbers);
+            showToast(`Unblocked ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''}`);
             closeBlockedModal();
-            // Reload to show updated state
-            setTimeout(() => location.reload(), 500);
-        } else if (data.failed && data.failed.length > 0) {
-            showToast(`Failed to unblock some issues: ${data.failed.map(f => f.error).join(', ')}`, 'error');
+            await refreshViewModel();
+        } else {
+            showToast(data.error || `Failed to unblock issues (${response.status})`, 'error');
         }
     } catch (err) {
         console.error('Failed to unblock issues:', err);
@@ -3811,20 +4027,15 @@ async function resetSelectedIssues() {
     blockedUnblockBtn.disabled = true;
 
     try {
-        const res = await fetch('/api/reset-retry', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ issues: issueNumbers }),
-        });
-        const data = await res.json();
-
-        if (data.reset && data.reset.length > 0) {
-            showToast(`Reset ${data.reset.length} issue${data.reset.length > 1 ? 's' : ''} - ready for fresh retry`);
+        const request = uiActionContract.buildResetRetryRequest(issueNumbers);
+        const { response, data } = await executeUiActionRequest(request);
+        if (response.ok) {
+            applyOptimisticRequeue(issueNumbers);
+            showToast(`Reset ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''} - ready for fresh retry`);
             closeBlockedModal();
-            // Reload to show updated state
-            setTimeout(() => location.reload(), 500);
-        } else if (data.failed && data.failed.length > 0) {
-            showToast(`Failed to reset some issues: ${data.failed.map(f => f.error).join(', ')}`, 'error');
+            await refreshViewModel();
+        } else {
+            showToast(data.error || `Failed to reset issues (${response.status})`, 'error');
         }
     } catch (err) {
         console.error('Failed to reset issues:', err);
@@ -3929,16 +4140,12 @@ async function retryIssue(issueNumber, event) {
     btn.innerHTML = '<span aria-hidden="true">⏳</span> Retrying...';
 
     try {
-        const res = await fetch(`/api/issues/${issueNumber}/retry`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({}),
-        });
-        const data = await res.json();
-
-        if (data.success) {
+        const request = uiActionContract.buildIssueRetryRequest(issueNumber);
+        const { response, data } = await executeUiActionRequest(request);
+        if (response.ok && (data.success || data.retrying || true)) {
+            applyOptimisticRequeue([issueNumber]);
             showToast(`Issue #${issueNumber} queued for retry`);
-            setTimeout(() => location.reload(), 500);
+            await refreshViewModel();
         } else {
             showToast(`Failed to retry: ${data.error || 'Unknown error'}`, 'error');
             btn.disabled = false;

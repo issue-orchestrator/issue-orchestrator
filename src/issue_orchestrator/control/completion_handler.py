@@ -29,7 +29,7 @@ from ..events import EventName
 from ..infra.logging_config import log_context, get_repo_log_path
 from ..domain.models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
 from ..domain.session_key import TaskKind
-from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
+from ..ports import EventSink,  make_trace_event, RepositoryHost, Issue
 from ..ports.session_output import SessionOutput
 from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
 from .completion_processor import (
@@ -690,10 +690,10 @@ class CompletionHandler:
         for key in ("implementation", "problems", "review_summary", "review_issues", "risk_level"):
             if detail.get(key):
                 payload[key] = detail[key]
-        self.events.publish(TraceEvent(EventName.SESSION_COMPLETED, payload))
+        self.events.publish(make_trace_event(EventName.SESSION_COMPLETED, payload))
 
         if pr_url and pr_number is not None:
-            self.events.publish(TraceEvent(EventName.ISSUE_PR_CREATED, {
+            self.events.publish(make_trace_event(EventName.ISSUE_PR_CREATED, {
                 "issue_number": session.issue.number,
                 "pr_url": pr_url,
                 "pr_number": pr_number,
@@ -723,7 +723,7 @@ class CompletionHandler:
             "runtime_minutes": session.runtime_minutes,
             "timeout_minutes": session.agent_config.timeout_minutes if session.agent_config else None,
         }
-        self.events.publish(TraceEvent(EventName.SESSION_FAILED, payload))
+        self.events.publish(make_trace_event(EventName.SESSION_FAILED, payload))
 
     def _emit_blocked_event(
         self,
@@ -742,7 +742,7 @@ class CompletionHandler:
         for key in ("attempted", "blocked_by"):
             if detail.get(key):
                 payload[key] = detail[key]
-        self.events.publish(TraceEvent(EventName.ISSUE_BLOCKED, payload))
+        self.events.publish(make_trace_event(EventName.ISSUE_BLOCKED, payload))
 
     def _emit_needs_human_event(
         self,
@@ -760,7 +760,7 @@ class CompletionHandler:
         }
         if detail.get("question"):
             payload["question"] = detail["question"]
-        self.events.publish(TraceEvent(EventName.ISSUE_NEEDS_HUMAN, payload))
+        self.events.publish(make_trace_event(EventName.ISSUE_NEEDS_HUMAN, payload))
 
     def _update_state_machines(
         self,
@@ -877,7 +877,7 @@ class CompletionHandler:
                 self._publish_review_outcome(review_machine, session, pr_number_review)
         except Exception as e:
             logger.warning(f"Failed to check PR labels for review outcome: {e}")
-            self.events.publish(TraceEvent(EventName.APPLY_FAILED, {
+            self.events.publish(make_trace_event(EventName.APPLY_FAILED, {
                 "step_type": "review_outcome_check", "pr_number": pr_number_review,
                 "issue_number": session.issue.number, "error": str(e),
             }))
@@ -908,7 +908,7 @@ class CompletionHandler:
             "reviewer_agent": session.agent_label,
             "rework_cycle": session.rework_cycle,
         }
-        self.events.publish(TraceEvent(EventName(tr.event_name), payload))
+        self.events.publish(make_trace_event(EventName(tr.event_name), payload))
 
     def _process_review_outcome(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
         """Process review outcome based on PR labels."""
@@ -961,7 +961,7 @@ class CompletionHandler:
             payload["issue_key"] = issue_key
         if issue_number is not None:
             payload["issue_number"] = issue_number
-        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, payload))
+        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, payload))
 
     def _emit_pr_view_hint(
         self,
@@ -977,7 +977,7 @@ class CompletionHandler:
             "issue_key": issue_key,
             "issue_number": issue_number,
         }
-        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, payload))
+        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, payload))
 
     def _determine_cleanup_strategy(
         self,

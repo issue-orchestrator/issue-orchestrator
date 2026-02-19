@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from issue_orchestrator.infra.repo_identity import (
     RepoIdentity,
     build_repo_identity,
+    build_repo_identity_with_status,
     deserialize_repo_identity,
     diff_repo_identity,
     get_repo_head_sha,
@@ -86,3 +89,24 @@ def test_build_repo_identity_for_non_git_dir(tmp_path):
     assert identity.repo_root == str(tmp_path.resolve())
     assert identity.commit_sha is None
     assert identity.working_tree_dirty is False
+
+
+def test_build_repo_identity_with_status_resolver_sets_dirty_fingerprint(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git_dir = repo / ".git"
+    git_dir.mkdir()
+    (git_dir / "HEAD").write_text("ref: refs/heads/main\n")
+    refs = git_dir / "refs" / "heads"
+    refs.mkdir(parents=True)
+    (refs / "main").write_text("abc123\n")
+
+    def resolver(_: Path) -> tuple[str | None, list[str]]:
+        return "feature/test", [" M src/file.py", "?? new.txt"]
+
+    identity = build_repo_identity_with_status(repo, status_resolver=resolver)
+
+    assert identity.branch == "feature/test"
+    assert identity.working_tree_dirty is True
+    assert identity.dirty_fingerprint is not None
+    assert len(identity.dirty_fingerprint) == 16

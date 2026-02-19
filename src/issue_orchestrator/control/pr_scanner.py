@@ -19,7 +19,7 @@ from ..events import EventName
 from ..domain.models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
 from ..domain.branch_naming import extract_issue_number_from_branch
-from ..ports import EventSink, TraceEvent
+from ..ports import EventSink,  make_trace_event
 from ..ports.pull_request_tracker import PRInfo
 from ..infra import gh_audit
 from ..infra.timeline_trace import is_timeline_trace_enabled
@@ -46,6 +46,15 @@ class ScanResult:
     reviews_to_queue: list[PendingReview]
     reworks_to_queue: list[PendingRework]
     escalations: list[tuple[int, int, int]]  # (pr_number, issue_number, rework_cycle)
+
+
+@dataclass(frozen=True)
+class _ReworkScanDecision:
+    decision: str  # "skip" | "queue" | "escalate"
+    issue_number: int
+    rework_cycle: int
+    blocking_labels: list[str]
+    reason: str
 
 
 class PRScanner:
@@ -136,7 +145,7 @@ class PRScanner:
 
         if results:
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.SCANNER_REVIEWS_FOUND,
                     {"count": len(results)},
                 )
@@ -176,119 +185,53 @@ class PRScanner:
         results: list[PendingRework] = []
         escalations: list[tuple[int, int, int]] = []
 
-        queued_issue_ids = {
-            r.resolve_issue_number()
-            for r in already_queued
-            if r.resolve_issue_number() is not None
-        }
+        queued_issue_ids = self._collect_queued_issue_ids(already_queued)
         active_issue_numbers = set(active_sessions)
 
         for pr in prs:
-            # Extract issue number from branch name (reliable, orchestrator-controlled)
-            # Fall back to PR body parsing if branch doesn't match pattern
-            issue_number = self._extract_issue_number_from_pr(pr)
-            if is_timeline_trace_enabled():
-                logger.info(
-                    "[TIMELINE] scanner.rework_candidate pr=%s issue=%s labels=%s queued=%s active=%s",
-                    pr.number,
-                    issue_number,
-                    ",".join(pr.labels),
-                    issue_number in queued_issue_ids,
-                    issue_number in active_issue_numbers,
-                )
-
-            # Skip if already queued
-            if issue_number in queued_issue_ids:
-                if is_timeline_trace_enabled():
-                    logger.info(
-                        "[TIMELINE] scanner.rework_skip pr=%s issue=%s reason=already_queued",
-                        pr.number,
-                        issue_number,
-                    )
+            decision = self._decide_rework_candidate(pr, queued_issue_ids, active_issue_numbers)
+            self._log_rework_decision(pr, decision, queued_issue_ids, active_issue_numbers)
+            if decision.decision == "skip":
+                continue
+            if decision.decision == "escalate":
+                escalations.append((pr.number, decision.issue_number, decision.rework_cycle))
                 continue
 
-            # Skip if already being worked on
-            if issue_number in active_issue_numbers:
-                if is_timeline_trace_enabled():
-                    logger.info(
-                        "[TIMELINE] scanner.rework_skip pr=%s issue=%s reason=active_session",
-                        pr.number,
-                        issue_number,
-                    )
-                continue
-
-            rework_cycle = self._get_rework_cycle_from_labels(pr.labels)
-
-            # Skip if already blocked (has any blocking label like blocked-*, needs-human, etc.)
-            # This prevents escalation spam when GitHub label cache is stale
-            if self._lm.is_blocking_any(pr.labels):
-                blocking = self._lm.get_blocking(pr.labels)
-                logger.debug(
-                    "[SCANNER] PR #%d already blocked (%s), skipping",
-                    pr.number, ", ".join(blocking)
-                )
-                if is_timeline_trace_enabled():
-                    logger.info(
-                        "[TIMELINE] scanner.rework_skip pr=%s issue=%s reason=blocking_label blocking=%s",
-                        pr.number,
-                        issue_number,
-                        ",".join(blocking),
-                    )
-                continue
-
-            # Check if exceeded max rework cycles
-            if rework_cycle > self.config.max_rework_cycles:
-                escalations.append((pr.number, issue_number, rework_cycle))
-                if is_timeline_trace_enabled():
-                    logger.info(
-                        "[TIMELINE] scanner.rework_escalate pr=%s issue=%s cycle=%s max=%s",
-                        pr.number,
-                        issue_number,
-                        rework_cycle,
-                        self.config.max_rework_cycles,
-                    )
-                continue
-
-            # Look up issue to get agent type (issue is source of truth)
-            issue = self.repository.get_issue(issue_number)
+            issue = self.repository.get_issue(decision.issue_number)
             if not issue:
                 logger.warning(
                     "[SCANNER] PR #%d references issue #%d which doesn't exist, skipping",
-                    pr.number, issue_number
+                    pr.number, decision.issue_number
                 )
                 continue
-
             agent_type = issue.agent_type
             if not agent_type:
                 logger.warning(
                     "[SCANNER] Issue #%d has no agent label, skipping PR #%d",
-                    issue_number, pr.number
+                    decision.issue_number, pr.number
                 )
                 continue
-
-            # Create IssueKey via adapter
-            issue_key = self.repository.create_issue_key(issue_number)
-
-            rework = PendingRework(
-                issue_key=issue_key,
-                agent_type=agent_type,
-                rework_cycle=rework_cycle,
-                issue_number=issue_number,
+            results.append(
+                PendingRework(
+                    issue_key=self.repository.create_issue_key(decision.issue_number),
+                    agent_type=agent_type,
+                    rework_cycle=decision.rework_cycle,
+                    issue_number=decision.issue_number,
+                )
             )
-            results.append(rework)
-            logger.info("[SCANNER] Found PR #%d for rework (cycle %d)", pr.number, rework_cycle)
+            logger.info("[SCANNER] Found PR #%d for rework (cycle %d)", pr.number, decision.rework_cycle)
             if is_timeline_trace_enabled():
                 logger.info(
                     "[TIMELINE] scanner.rework_queue pr=%s issue=%s cycle=%s agent=%s",
                     pr.number,
-                    issue_number,
-                    rework_cycle,
+                    decision.issue_number,
+                    decision.rework_cycle,
                     agent_type,
                 )
 
         if results or escalations:
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.SCANNER_REWORKS_FOUND,
                     {
                         "reworks": len(results),
@@ -298,6 +241,109 @@ class PRScanner:
             )
 
         return results, escalations
+
+    @staticmethod
+    def _collect_queued_issue_ids(already_queued: Sequence[PendingRework]) -> set[int]:
+        queued_issue_ids: set[int] = set()
+        for rework in already_queued:
+            issue_number = rework.resolve_issue_number()
+            if issue_number is not None:
+                queued_issue_ids.add(issue_number)
+        return queued_issue_ids
+
+    def _decide_rework_candidate(
+        self,
+        pr: PRInfo,
+        queued_issue_ids: set[int],
+        active_issue_numbers: set[int],
+    ) -> _ReworkScanDecision:
+        issue_number = self._extract_issue_number_from_pr(pr)
+        if issue_number in queued_issue_ids:
+            return _ReworkScanDecision(
+                decision="skip",
+                issue_number=issue_number,
+                rework_cycle=0,
+                blocking_labels=[],
+                reason="already_queued",
+            )
+        if issue_number in active_issue_numbers:
+            return _ReworkScanDecision(
+                decision="skip",
+                issue_number=issue_number,
+                rework_cycle=0,
+                blocking_labels=[],
+                reason="active_session",
+            )
+        rework_cycle = self._get_rework_cycle_from_labels(pr.labels)
+        if self._lm.is_blocking_any(pr.labels):
+            return _ReworkScanDecision(
+                decision="skip",
+                issue_number=issue_number,
+                rework_cycle=rework_cycle,
+                blocking_labels=self._lm.get_blocking(pr.labels),
+                reason="blocking_label",
+            )
+        if rework_cycle > self.config.max_rework_cycles:
+            return _ReworkScanDecision(
+                decision="escalate",
+                issue_number=issue_number,
+                rework_cycle=rework_cycle,
+                blocking_labels=[],
+                reason="max_rework_exceeded",
+            )
+        return _ReworkScanDecision(
+            decision="queue",
+            issue_number=issue_number,
+            rework_cycle=rework_cycle,
+            blocking_labels=[],
+            reason="queue",
+        )
+
+    def _log_rework_decision(
+        self,
+        pr: PRInfo,
+        decision: _ReworkScanDecision,
+        queued_issue_ids: set[int],
+        active_issue_numbers: set[int],
+    ) -> None:
+        if decision.reason == "blocking_label" and decision.blocking_labels:
+            logger.debug(
+                "[SCANNER] PR #%d already blocked (%s), skipping",
+                pr.number,
+                ", ".join(decision.blocking_labels),
+            )
+        if not is_timeline_trace_enabled():
+            return
+        logger.info(
+            "[TIMELINE] scanner.rework_candidate pr=%s issue=%s labels=%s queued=%s active=%s",
+            pr.number,
+            decision.issue_number,
+            ",".join(pr.labels),
+            decision.issue_number in queued_issue_ids,
+            decision.issue_number in active_issue_numbers,
+        )
+        if decision.decision == "skip":
+            extra = (
+                f" blocking={','.join(decision.blocking_labels)}"
+                if decision.reason == "blocking_label" and decision.blocking_labels
+                else ""
+            )
+            logger.info(
+                "[TIMELINE] scanner.rework_skip pr=%s issue=%s reason=%s%s",
+                pr.number,
+                decision.issue_number,
+                decision.reason,
+                extra,
+            )
+            return
+        if decision.decision == "escalate":
+            logger.info(
+                "[TIMELINE] scanner.rework_escalate pr=%s issue=%s cycle=%s max=%s",
+                pr.number,
+                decision.issue_number,
+                decision.rework_cycle,
+                self.config.max_rework_cycles,
+            )
 
     def _extract_issue_number_from_pr(self, pr: PRInfo) -> int:
         """Extract issue number from PR, preferring branch name over body.

@@ -134,6 +134,8 @@ def make_handler(
     session_output: SessionOutput | None = None,
 ) -> CompletionHandler:
     """Create a CompletionHandler with sensible defaults."""
+    default_session_output = Mock(spec=SessionOutput)
+    default_session_output.find_run_dir.return_value = None
     # Use explicit None check - InMemoryEventSink with 0 events is falsy
     return CompletionHandler(
         config=config,
@@ -142,7 +144,7 @@ def make_handler(
         get_issue_machine_fn=lambda _issue: issue_machine,
         get_session_machine_fn=lambda _terminal_id: session_machine,
         get_review_machine_fn=lambda _pr_number: review_machine,
-        session_output=session_output if session_output is not None else Mock(spec=SessionOutput),
+        session_output=session_output if session_output is not None else default_session_output,
     )
 
 

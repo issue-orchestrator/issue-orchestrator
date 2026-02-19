@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Optional, Sequence
 from ...infra.config import Config
 from ...events import EventName
 from ...domain.models import PendingRework
-from ...ports import EventSink, TraceEvent
+from ...ports import EventSink,  make_trace_event
 from .decision_base import WorkflowDecision
 
 if TYPE_CHECKING:
@@ -124,7 +124,7 @@ class ReworkWorkflow:
         # Check if paused
         if paused:
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.REWORK_SKIPPED,
                     {"reason": "orchestrator_paused"},
                 )
@@ -137,7 +137,7 @@ class ReworkWorkflow:
 
         if available <= 0:
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.REWORK_SKIPPED,
                     {
                         "reason": "no_capacity",
@@ -154,7 +154,7 @@ class ReworkWorkflow:
         reworks_to_launch = list(pending_reworks)[:available]
 
         self.events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.REWORK_LAUNCHING,
                 {
                     "count": len(reworks_to_launch),
@@ -183,7 +183,7 @@ class ReworkWorkflow:
         if rework_cycle >= max_cycles:
             reason = f"Exceeded max rework cycles ({rework_cycle} >= {max_cycles})"
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.REWORK_ESCALATING,
                     {
                         "rework_cycle": rework_cycle,

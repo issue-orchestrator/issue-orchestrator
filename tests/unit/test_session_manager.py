@@ -212,8 +212,8 @@ class TestSessionManager:
         assert call["working_dir"] == "/path/to/worktree"
         assert call["title"] == "Issue #123"
 
-    def test_start_emits_session_started_event(self, manager, collecting_sink):
-        """Test that start emits session.started event."""
+    def test_start_emits_session_launched_event(self, manager, collecting_sink):
+        """Test that start emits session.launched event."""
         ctx = SessionContext(
             ref=SessionRef.for_issue(123),
             command="claude",
@@ -224,7 +224,7 @@ class TestSessionManager:
 
         assert len(collecting_sink.events) == 1
         event = collecting_sink.events[0]
-        assert event.name == "session.started"
+        assert event.name == "session.launched"
         assert event.data["session_type"] == "issue"
         assert event.data["number"] == 123
         assert event.data["session_name"] == "issue-123"

@@ -1496,6 +1496,8 @@ class TestApiTimelineEndpoint:
                     level="phase",
                     summary=None,
                     parent_key="session:issue-123",
+                    run_id="20260206-000000Z",
+                    run_dir="/tmp/worktree/.issue-orchestrator/sessions/20260206-000000Z__issue-123",
                     artifacts=[
                         TimelineArtifact("pull_request", "PR", "https://example/pr/1"),
                         TimelineArtifact("review_comment", "Review Comment", "https://example/pr/1#issuecomment-1"),
@@ -1780,7 +1782,7 @@ class TestApiTimelineEndpoint:
             payload = response.json()
             assert len(payload["events"]) == 1
             assert payload["events"][0]["event"] == "session.completed"
-            assert any(
+            assert not any(
                 action["type"] == "open_session_diagnostics"
                 for action in payload["events"][0]["actions"]
             )
@@ -2005,10 +2007,10 @@ class TestTimelineActionWiring:
 
         # Generate actions for representative events to collect all possible types
         representative_events = [
-            {"event": "session.started", "issue_number": 1},
-            {"event": "session.completed", "issue_number": 1},
-            {"event": "session.failed", "issue_number": 1},
-            {"event": "validation.failed", "issue_number": 1},
+            {"event": "session.started", "issue_number": 1, "run_dir": "/tmp/run-1"},
+            {"event": "session.completed", "issue_number": 1, "run_dir": "/tmp/run-1"},
+            {"event": "session.failed", "issue_number": 1, "run_dir": "/tmp/run-1"},
+            {"event": "validation.failed", "issue_number": 1, "run_dir": "/tmp/run-1"},
             {
                 "event": "session.completed",
                 "issue_number": 1,
@@ -2056,6 +2058,7 @@ class TestTimelineActionWiring:
                     timestamp="2026-02-06T00:00:00Z",
                     event="session.started",
                     issue_number=123,
+                    run_dir="/tmp/run-123",
                     phase="in_progress",
                     step="started",
                     status="started",
@@ -2151,6 +2154,16 @@ class TestRunScopedLogAndPromptEndpoints:
             payload = response.json()
             assert payload["issue_number"] == 123
             assert any("hello from run-scoped log" in line for line in payload["lines"])
+        finally:
+            set_orchestrator(None)
+
+    def test_agent_log_endpoint_rejects_missing_run_dir(self) -> None:
+        mock_orch = create_mock_orchestrator()
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/log/local/123")
+            assert response.status_code == 422
         finally:
             set_orchestrator(None)
 

@@ -58,12 +58,13 @@ from sse_starlette.sse import EventSourceResponse
 from ..control.worktree_manager import get_worktree_path
 from ..control.queue_cache import QueueCache
 from ..domain.models import get_completion_path
+from ..execution.git_working_copy import GitWorkingCopy
 from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
 from ..infra.supervisor import DefaultSupervisorOps, MultiInstanceStatus, SupervisorOps
 from ..infra.repo_identity import (
     RepoIdentity,
-    build_repo_identity,
+    build_repo_identity_with_status,
     deserialize_repo_identity,
     diff_repo_identity,
 )
@@ -91,6 +92,22 @@ _EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
 # Default E2E config (used when orchestrator not available)
 from ..infra.config import E2EConfig
 _DEFAULT_E2E_CONFIG = E2EConfig()
+
+
+def _build_repo_identity(repo_root: Path) -> RepoIdentity:
+    """Build repo identity with execution-layer git status resolution."""
+    git = GitWorkingCopy()
+
+    def _resolve_repo_status(root: Path) -> tuple[str | None, list[str]]:
+        branch: str | None = None
+        try:
+            branch = git.get_current_branch(root)
+        except Exception:
+            branch = None
+        dirty_lines = git.get_status_porcelain_lines(root)
+        return branch, dirty_lines
+
+    return build_repo_identity_with_status(repo_root, status_resolver=_resolve_repo_status)
 
 
 def _get_e2e_config(repo_root: Path | None = None) -> E2EConfig:
@@ -1262,7 +1279,6 @@ def _detect_orchestrator_by_port(
     and matches repo_root.
     """
     import httpx
-    import time
 
     port = _load_config_port(repo_root, config_name)
     if not port:
@@ -1280,38 +1296,55 @@ def _detect_orchestrator_by_port(
         return None
 
     details: dict[str, Any] = {"port": port, "info": info}
-    observed_identity_payload = info.get("repo_identity")
-    if expected_identity and isinstance(observed_identity_payload, dict):
-        observed_identity = RepoIdentity(
-            repo_root=str(observed_identity_payload.get("repo_root", "")),
-            commit_sha=(str(observed_identity_payload["commit_sha"]) if observed_identity_payload.get("commit_sha") else None),
-            branch=(str(observed_identity_payload["branch"]) if observed_identity_payload.get("branch") else None),
-            working_tree_dirty=bool(observed_identity_payload.get("working_tree_dirty", False)),
-            dirty_fingerprint=(str(observed_identity_payload["dirty_fingerprint"]) if observed_identity_payload.get("dirty_fingerprint") else None),
-            source_root=(str(observed_identity_payload["source_root"]) if observed_identity_payload.get("source_root") else None),
-        )
-        identity_mismatch = diff_repo_identity(expected_identity, observed_identity)
-        if identity_mismatch:
-            details["identity_mismatch"] = identity_mismatch
-            details["observed_identity"] = observed_identity.to_dict()
-            details["expected_identity"] = expected_identity.to_dict()
-    try:
-        status_resp = httpx.get(f"{base_url}/api/status", timeout=0.6)
-        if status_resp.status_code == 200:
-            status_data = status_resp.json()
-            details["status"] = status_data
-            last_tick = status_data.get("last_tick_time")
-            if isinstance(last_tick, (int, float)) and last_tick > 0:
-                tick_age = time.time() - last_tick
-                details["tick_age_seconds"] = tick_age
-                if tick_age > 120:
-                    details["health"] = "stale"
-                else:
-                    details["health"] = "ok"
-    except Exception:
-        details.setdefault("health", "unknown")
+    _annotate_identity_mismatch(details, info, expected_identity)
+    _annotate_orchestrator_health(details, base_url)
 
     return details
+
+
+def _annotate_identity_mismatch(
+    details: dict[str, Any],
+    info: dict[str, Any],
+    expected_identity: RepoIdentity | None,
+) -> None:
+    if expected_identity is None:
+        return
+    observed_identity_payload = info.get("repo_identity")
+    if not isinstance(observed_identity_payload, dict):
+        return
+    observed_identity = RepoIdentity(
+        repo_root=str(observed_identity_payload.get("repo_root", "")),
+        commit_sha=(str(observed_identity_payload["commit_sha"]) if observed_identity_payload.get("commit_sha") else None),
+        branch=(str(observed_identity_payload["branch"]) if observed_identity_payload.get("branch") else None),
+        working_tree_dirty=bool(observed_identity_payload.get("working_tree_dirty", False)),
+        dirty_fingerprint=(str(observed_identity_payload["dirty_fingerprint"]) if observed_identity_payload.get("dirty_fingerprint") else None),
+        source_root=(str(observed_identity_payload["source_root"]) if observed_identity_payload.get("source_root") else None),
+    )
+    identity_mismatch = diff_repo_identity(expected_identity, observed_identity)
+    if identity_mismatch:
+        details["identity_mismatch"] = identity_mismatch
+        details["observed_identity"] = observed_identity.to_dict()
+        details["expected_identity"] = expected_identity.to_dict()
+
+
+def _annotate_orchestrator_health(details: dict[str, Any], base_url: str) -> None:
+    import httpx
+    import time
+
+    try:
+        status_resp = httpx.get(f"{base_url}/api/status", timeout=0.6)
+        if status_resp.status_code != 200:
+            return
+        status_data = status_resp.json()
+        details["status"] = status_data
+        last_tick = status_data.get("last_tick_time")
+        if not isinstance(last_tick, (int, float)) or last_tick <= 0:
+            return
+        tick_age = time.time() - last_tick
+        details["tick_age_seconds"] = tick_age
+        details["health"] = "stale" if tick_age > 120 else "ok"
+    except Exception:
+        details.setdefault("health", "unknown")
 
 
 def _confirm_orchestrator_at_port(repo_root: Path, port: int) -> bool:
@@ -1387,7 +1420,7 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
     if not config_name.endswith(".yaml"):
         config_name += ".yaml"
     force_restart = bool(body.get("force_restart", False))
-    expected_identity = build_repo_identity(repo_root)
+    expected_identity = _build_repo_identity(repo_root)
 
     try:
         detected = _detect_orchestrator_by_port(
@@ -2345,7 +2378,7 @@ async def list_repos_endpoint() -> JSONResponse:
 async def control_info() -> JSONResponse:
     """Get control center build info."""
     repo_root = Path.cwd()
-    identity = build_repo_identity(repo_root)
+    identity = _build_repo_identity(repo_root)
     preferred_root = _preferred_repo_root()
     expected_identity_raw = os.environ.get(_EXPECTED_IDENTITY_ENV, "").strip()
     expected_identity = None

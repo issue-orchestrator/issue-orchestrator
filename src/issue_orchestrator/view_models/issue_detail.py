@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from ..domain.logical_run_projection import LogicalRunProjector
+
 
 # ---------------------------------------------------------------------------
 # Context dataclass — assembled by the web endpoint from orchestrator state
@@ -44,6 +46,8 @@ def build_issue_detail_view_model(
     journey = _build_journey_steps(events, today)
     prev_cycles = _build_previous_cycles(cycles, today)
     journey_cycles = _build_journey_cycles(events, today, context)
+    projector = LogicalRunProjector()
+    runs = projector.build_runs(projector.annotate_cycle_in_run(journey_cycles))
 
     # Lifecycle count: max lifecycle number across cycles
     lifecycle_count = max((c["lifecycle"] for c in journey_cycles), default=0)
@@ -60,6 +64,10 @@ def build_issue_detail_view_model(
             {"id": "focus", "label": "Focus"},
             {"id": "github", "label": "GitHub ↗", "url": issue_url},
         ],
+        # Backward-compatible timeline/run fields used by integration tests/UI.
+        "timeline_steps": journey,
+        "runs": runs,
+        "run_count": len(runs),
         # Story fields
         "status_explanation": _build_status_explanation(context, events),
         "journey_steps": journey,
@@ -371,8 +379,12 @@ def _normalize_detail(detail: Any) -> str | None:
 # Journey cycles — collapsible lifecycle groups
 # ---------------------------------------------------------------------------
 
-# Events that mark the boundary of a lifecycle (issue fully blocked or done)
-_LIFECYCLE_TERMINAL = frozenset({"issue.blocked", "issue.needs_human", "issue.completed"})
+# Events that mark the boundary of a lifecycle (attempt terminal or issue terminal)
+_LIFECYCLE_TERMINAL = frozenset({
+    "issue.blocked",
+    "issue.needs_human",
+    "issue.completed",
+})
 # Events that restart a lifecycle after a terminal state
 _LIFECYCLE_RESTART = frozenset({"issue.unblocked"})
 # Events that start a new iteration (code/review/rework) within a lifecycle
@@ -388,6 +400,11 @@ _OUTCOME_EVENTS = frozenset({
     "review.approved",
     "review.escalated",
     "review.merged",
+    "issue.blocked",
+    "issue.needs_human",
+    "issue.completed",
+})
+_SIGNAL_LIFECYCLE_TERMINAL = frozenset({
     "issue.blocked",
     "issue.needs_human",
     "issue.completed",
@@ -447,6 +464,12 @@ def _build_signal_journey_cycles(
     # Group journey-visible events by (lifecycle, coding_cycle) so
     # same rework_cycle values from prior runs/lifecycles don't merge.
     groups: dict[tuple[int, int], list[dict[str, Any]]] = {}
+    active_coding_cycle = (
+        max(1, (context.current_rework_cycle + 1))
+        if context is not None
+        else 1
+    )
+    seen_signal = False
     for idx, event in enumerate(events):
         event_name = str(event.get("event") or "")
         if event_name in _JOURNEY_SKIP_EVENTS:
@@ -455,12 +478,19 @@ def _build_signal_journey_cycles(
             continue
 
         lifecycle = lifecycle_per_event[idx]
-        if "rework_cycle" in event:
+        logical_cycle = event.get("logical_cycle")
+        if isinstance(logical_cycle, int) and logical_cycle > 0:
+            seen_signal = True
+            active_coding_cycle = logical_cycle
+            coding_cycle = logical_cycle
+        elif "rework_cycle" in event:
+            seen_signal = True
             rc = event.get("rework_cycle") or 0
-            coding_cycle = rc + 1
+            active_coding_cycle = rc + 1
+            coding_cycle = active_coding_cycle
         else:
-            # Legacy event: group into cycle 0 (will be renumbered later)
-            coding_cycle = 0
+            # Keep legacy-era events in iteration 0 until signal metadata appears.
+            coding_cycle = active_coding_cycle if seen_signal else 0
         groups.setdefault((lifecycle, coding_cycle), []).append(event)
 
     cycles: list[dict[str, Any]] = []
@@ -489,62 +519,115 @@ def _compute_lifecycle_per_event(
     key) and signal-era events (with ``rework_cycle`` key) so that "Last run"
     filtering can separate old and new activity.
     """
+    if any(isinstance(event.get("logical_run"), int) and int(event["logical_run"]) > 0 for event in events):
+        result: list[int] = []
+        current_logical_run = 1
+        for event in events:
+            logical_run = event.get("logical_run")
+            if isinstance(logical_run, int) and logical_run > 0:
+                current_logical_run = logical_run
+            result.append(current_logical_run)
+        return result
+
+    return _compute_lifecycle_per_event_fallback(events)
+
+
+def _compute_lifecycle_per_event_fallback(events: list[dict[str, Any]]) -> list[int]:
+    """Heuristic lifecycle assignment when canonical logical fields are absent."""
+
     result: list[int] = []
     lifecycle = 1
     needs_new_lifecycle = False
     seen_legacy = False
-    seen_signal_boundary = False
-    last_run_scope: str | None = None
+    seen_signal = False
+    active_run_identity: tuple[str, str] | None = None
 
     for event in events:
         event_name = str(event.get("event") or "")
-        run_scope = _run_scope_key(event)
 
-        # Treat run identity changes as lifecycle boundaries. This keeps
-        # "Last run" focused on one orchestrator run even without terminal events.
-        if (
-            run_scope
-            and last_run_scope
-            and run_scope != last_run_scope
-        ):
-            lifecycle += 1
-            needs_new_lifecycle = False
+        (
+            seen_legacy,
+            seen_signal,
+            crossed_legacy_to_signal,
+        ) = _update_signal_era_tracking(event, seen_legacy, seen_signal)
+        if crossed_legacy_to_signal:
+            needs_new_lifecycle = True
+
+        if _is_pr_pending_boundary(event):
+            needs_new_lifecycle = True
+
+        run_changed, active_run_identity = _detect_run_boundary(
+            event_name,
+            event,
+            active_run_identity,
+        )
+        if run_changed:
+            needs_new_lifecycle = True
 
         if needs_new_lifecycle and (
             event_name in _ITERATION_START or event_name in _LIFECYCLE_RESTART
         ):
             lifecycle += 1
             needs_new_lifecycle = False
+            if event_name in _LIFECYCLE_RESTART:
+                active_run_identity = None
 
-        if event_name in _LIFECYCLE_TERMINAL:
+        if event_name in _SIGNAL_LIFECYCLE_TERMINAL:
             needs_new_lifecycle = True
-
-        # Treat transition from legacy → signal era as a lifecycle boundary
-        has_signal = "rework_cycle" in event
-        if not has_signal:
-            seen_legacy = True
-        elif seen_legacy and not seen_signal_boundary:
-            seen_signal_boundary = True
-            lifecycle += 1
-            needs_new_lifecycle = False
+            active_run_identity = None
 
         result.append(lifecycle)
-        if run_scope:
-            last_run_scope = run_scope
 
     return result
 
 
-def _run_scope_key(event: dict[str, Any]) -> str | None:
-    """Return stable run identity for lifecycle boundary detection."""
-    # Prefer run_dir: it is session-run scoped and reflects retries/relaunches.
-    run_dir = event.get("run_dir")
-    if isinstance(run_dir, str) and run_dir:
-        return f"dir:{run_dir}"
-    run_id = event.get("run_id")
-    if isinstance(run_id, str) and run_id:
-        return f"run:{run_id}"
+def _update_signal_era_tracking(
+    event: dict[str, Any],
+    seen_legacy: bool,
+    seen_signal: bool,
+) -> tuple[bool, bool, bool]:
+    if "rework_cycle" in event:
+        crossed_legacy_to_signal = seen_legacy and not seen_signal
+        return seen_legacy, True, crossed_legacy_to_signal
+    return True, seen_signal, False
+
+
+def _detect_run_boundary(
+    event_name: str,
+    event: dict[str, Any],
+    active_run_identity: tuple[str, str] | None,
+) -> tuple[bool, tuple[str, str] | None]:
+    if event_name not in _ITERATION_START:
+        return False, active_run_identity
+    run_identity = _run_identity_for_event(event)
+    if run_identity is None:
+        return False, active_run_identity
+    if active_run_identity is None:
+        return False, run_identity
+    if run_identity == active_run_identity:
+        return False, active_run_identity
+    # A new run started; split lifecycle even without terminal markers.
+    return True, run_identity
+
+
+def _run_identity_for_event(event: dict[str, Any]) -> tuple[str, str] | None:
+    run_dir = str(event.get("run_dir") or "").strip()
+    if run_dir:
+        return ("run_dir", run_dir)
+    run_id = str(event.get("run_id") or "").strip()
+    if run_id:
+        return ("run_id", run_id)
     return None
+
+
+def _is_pr_pending_boundary(event: dict[str, Any]) -> bool:
+    if str(event.get("event") or "") != "issue.labels_changed":
+        return False
+    removed = event.get("removed")
+    if not isinstance(removed, list):
+        return False
+    removed_labels = {str(item) for item in removed}
+    return "pr-pending" in removed_labels
 
 
 def _finalize_cycle_from_events(
@@ -591,6 +674,8 @@ def _finalize_cycle_from_events(
 
     # Nested journey steps
     steps: list[dict[str, Any]] = []
+    session_run_ids = _collect_session_run_ids(raw_events)
+    phase_groups = _build_phase_groups(raw_events, iteration=iteration)
     for evt in raw_events:
         event_name = str(evt.get("event") or "")
         narrative = _event_to_narrative(evt)
@@ -624,6 +709,9 @@ def _finalize_cycle_from_events(
         "time_label": time_label,
         "expanded": False,
         "artifacts": artifacts,
+        "session_run_ids": session_run_ids,
+        "phase_groups": phase_groups,
+        "event_count": len(raw_events),
         "steps": steps,
     }
 
@@ -745,6 +833,8 @@ def _finalize_cycle(
 
     # Nested journey steps (same shape as flat journey_steps)
     steps: list[dict[str, Any]] = []
+    session_run_ids = _collect_session_run_ids(raw_events)
+    phase_groups = _build_phase_groups(raw_events, iteration=iteration)
     for evt in raw_events:
         event_name = str(evt.get("event") or "")
         narrative = _event_to_narrative(evt)
@@ -775,8 +865,59 @@ def _finalize_cycle(
         "time_label": time_label,
         "expanded": False,
         "artifacts": artifacts,
+        "session_run_ids": session_run_ids,
+        "phase_groups": phase_groups,
+        "event_count": len(raw_events),
         "steps": steps,
     }
+
+
+def _collect_session_run_ids(events: list[dict[str, Any]]) -> list[str]:
+    run_ids: list[str] = []
+    for evt in events:
+        run_id = evt.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            run_ids.append(run_id)
+    return list(dict.fromkeys(run_ids))
+
+
+def _build_phase_groups(events: list[dict[str, Any]], *, iteration: int) -> list[dict[str, Any]]:
+    groups: list[dict[str, Any]] = []
+    last_label: str | None = None
+    for evt in events:
+        label = _phase_group_label(evt, iteration=iteration)
+        if not label:
+            continue
+        if label == last_label:
+            continue
+        groups.append({"label": label})
+        last_label = label
+    return groups
+
+
+def _phase_group_label(event: dict[str, Any], *, iteration: int) -> str:
+    event_name = str(event.get("event") or "")
+    if event_name.startswith("issue.") or event_name.startswith("validation.") or event_name.startswith("session.validation"):
+        return "Orchestrator"
+    if event_name.startswith("review."):
+        return "Review"
+    if event_name.startswith("rework."):
+        return "Rework"
+
+    task = str(event.get("task") or "").strip().lower()
+    if task == "code":
+        if iteration > 1 and "rework_cycle" not in event:
+            return "Rework"
+        return "Coding"
+    if task == "review":
+        return "Review"
+    if task == "rework":
+        return "Rework"
+    if task:
+        return task.title()
+    if event_name.startswith("session."):
+        return "Coding"
+    return "Orchestrator"
 
 
 def _derive_cycle_outcome(
@@ -813,7 +954,7 @@ def _derive_cycle_outcome(
     return label
 
 
-def _outcome_label(  # noqa: C901 — event-type dispatch for outcome labeling
+def _outcome_label(  # noqa: C901, PLR0912 — event-type dispatch for outcome labeling
     event_name: str,
     summary: str,
     context: IssueStoryContext | None,
@@ -830,7 +971,9 @@ def _outcome_label(  # noqa: C901 — event-type dispatch for outcome labeling
         return f"Agent blocked: {reason}"
 
     if event_name == "session.completed":
-        return "Completed"
+        if context and context.flow_stage == "done":
+            return "Completed"
+        return "Ready for review"
 
     if event_name == "review.changes_requested":
         return "Changes Requested"

@@ -622,6 +622,9 @@
           "events",
           "summary",
           "actions",
+          "timeline_steps",
+          "runs",
+          "run_count",
           "status_explanation",
           "journey_cycles",
           "journey_steps",
@@ -672,6 +675,23 @@
               "type": "object",
               "additionalProperties": true
             }
+          },
+          "timeline_steps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "runs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": true
+            }
+          },
+          "run_count": {
+            "type": "integer"
           },
           "status_explanation": {
             "type": "string"

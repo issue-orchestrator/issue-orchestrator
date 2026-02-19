@@ -93,7 +93,7 @@ def test_view_model_active_session_and_dashboard_data():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
@@ -158,7 +158,7 @@ def test_view_model_queue_and_blocked_items():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
@@ -196,7 +196,7 @@ def test_view_model_includes_refresh_freshness_metadata():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
@@ -239,7 +239,7 @@ def test_pr_pending_issue_not_shown_in_queued_flow_column():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
@@ -267,7 +267,7 @@ def test_view_model_includes_refresh_staleness_meta():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
@@ -295,7 +295,7 @@ def test_view_model_includes_refresh_staleness_meta():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
@@ -420,7 +420,7 @@ def test_view_model_routes_unclassified_issue_to_blocked_state_drift():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="kanban",
+        active_tab="dashboard",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
@@ -454,7 +454,7 @@ def test_view_model_marks_multi_classified_issue_as_state_drift():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="kanban",
+        active_tab="dashboard",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
@@ -533,7 +533,7 @@ def test_view_model_matches_public_contract():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )
@@ -608,7 +608,7 @@ def test_view_model_includes_provider_circuits():
     view_model = build_dashboard_view_model(
         orchestrator,
         queue_page=1,
-        active_tab="flow",
+        active_tab="dashboard",
         e2e_page=1,
         e2e_status_provider=lambda _: {"enabled": False, "running": False},
     )

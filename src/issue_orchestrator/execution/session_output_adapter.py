@@ -1146,12 +1146,12 @@ Timestamp: {self._now_iso()}
         """
         for filename in (SESSION_LOG_NAME, PANE_LOG_NAME):
             candidate = run_dir / filename
-            if candidate.exists():
+            if candidate.exists() and candidate.stat().st_size > 0:
                 return candidate
 
         # Subprocess backend: agent output goes to provider-runner/stdout.log
         provider_stdout = run_dir / "provider-runner" / "stdout.log"
-        if provider_stdout.exists():
+        if provider_stdout.exists() and provider_stdout.stat().st_size > 0:
             return provider_stdout
 
         return None

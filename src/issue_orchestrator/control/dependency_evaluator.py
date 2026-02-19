@@ -22,7 +22,7 @@ from ..domain.dependencies import (
 )
 from ..domain.issue_key import GitHubIssueKey
 from ..events import EventName
-from ..ports import EventSink, TraceEvent, IssueResolver
+from ..ports import EventSink,  make_trace_event, IssueResolver
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +233,7 @@ class DependencyEvaluator:
     def _emit_event(self, report: DependencyReport) -> None:
         """Emit trace event for dependency evaluation."""
         self.events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.DEPENDENCIES_EVALUATED,
                 {
                     "issue_number": report.issue_number,

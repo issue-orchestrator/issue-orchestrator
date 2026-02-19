@@ -66,32 +66,10 @@ class ManifestAccessor:
     def get_agent_log(self) -> ArtifactStream:
         """Return the run-scoped agent session log stream."""
         run_dir = self.run_identity.run_dir
-        if not run_dir.exists():
-            raise ArtifactNotFoundError(f"run_dir does not exist: {run_dir}")
-        worktree_path = _worktree_path_from_run_dir(run_dir)
-        if not worktree_path:
-            raise ArtifactNotFoundError(f"failed to infer worktree from run_dir: {run_dir}")
-        session_name = FileSystemSessionOutput().session_name_from_path(str(run_dir))
-        if not session_name:
-            raise ArtifactNotFoundError(f"failed to infer session name from run_dir: {run_dir}")
-
-        session_output = FileSystemSessionOutput()
-        candidates: list[Path] = []
-        session_candidate = session_output.get_log_path(worktree_path, session_name)
-        if session_candidate:
-            candidates.append(session_candidate)
-        for candidate_name in ("session.log", "pane.log", "provider-runner/stdout.log"):
-            candidate_path = run_dir / candidate_name
-            if candidate_path not in candidates:
-                candidates.append(candidate_path)
+        self._require_run_dir_exists(run_dir)
+        candidates = self._agent_log_candidates(run_dir)
         existing = [candidate for candidate in candidates if candidate.exists()]
-        non_empty: list[Path] = []
-        for candidate in existing:
-            try:
-                if candidate.stat().st_size > 0:
-                    non_empty.append(candidate)
-            except OSError:
-                continue
+        non_empty = self._non_empty_paths(existing)
         if non_empty:
             return self._artifact_stream("agent_log", non_empty[0])
         if existing:
@@ -102,6 +80,38 @@ class ManifestAccessor:
         raise ArtifactNotFoundError(
             f"agent_log not found in run-scoped paths under: {run_dir}"
         )
+
+    def _require_run_dir_exists(self, run_dir: Path) -> None:
+        if not run_dir.exists():
+            raise ArtifactNotFoundError(f"run_dir does not exist: {run_dir}")
+
+    def _agent_log_candidates(self, run_dir: Path) -> list[Path]:
+        worktree_path = _worktree_path_from_run_dir(run_dir)
+        if not worktree_path:
+            raise ArtifactNotFoundError(f"failed to infer worktree from run_dir: {run_dir}")
+        session_output = FileSystemSessionOutput()
+        session_name = session_output.session_name_from_path(str(run_dir))
+        if not session_name:
+            raise ArtifactNotFoundError(f"failed to infer session name from run_dir: {run_dir}")
+        candidates: list[Path] = []
+        session_candidate = session_output.get_log_path(worktree_path, session_name)
+        if session_candidate:
+            candidates.append(session_candidate)
+        for candidate_name in ("session.log", "pane.log", "provider-runner/stdout.log"):
+            candidate_path = run_dir / candidate_name
+            if candidate_path not in candidates:
+                candidates.append(candidate_path)
+        return candidates
+
+    def _non_empty_paths(self, candidates: list[Path]) -> list[Path]:
+        non_empty: list[Path] = []
+        for candidate in candidates:
+            try:
+                if candidate.stat().st_size > 0:
+                    non_empty.append(candidate)
+            except OSError:
+                continue
+        return non_empty
 
     def get_claude_log(self) -> ArtifactStream:
         """Return the run-scoped Claude transcript stream."""

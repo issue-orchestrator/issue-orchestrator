@@ -25,10 +25,12 @@ from pydantic import BaseModel, ConfigDict
 from ..history import latest_history_entries_by_issue
 from ..infra.e2e_runner import get_e2e_role
 from ..view_models.dashboard import (
+    DashboardTab,
     build_dashboard_view_model,
     blocked_summary,
     flow_steps_for,
     issue_url_for,
+    parse_dashboard_tab,
 )
 from ..view_models.dialogs import (
     build_blocked_issues_dialog,
@@ -57,6 +59,7 @@ from ..control.queue_cache import QueueCache, QueueMutationStatus
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
+    from ..ports.session_output import SessionOutput
 
 logger = logging.getLogger(__name__)
 
@@ -419,7 +422,7 @@ async def dashboard(request: Request, orchestrator=Depends(get_orchestrator)) ->
     e2e_page = int(request.query_params.get("e2e_page", 1))
     if e2e_page < 1:
         e2e_page = 1
-    active_tab = request.query_params.get("tab", "flow")
+    active_tab = parse_dashboard_tab(request.query_params.get("tab", DashboardTab.DASHBOARD.value))
     logger.info("[dashboard] Request URL: %s, page=%s, tab=%s", request.url, queue_page, active_tab)
 
     templates = get_templates()
@@ -450,7 +453,7 @@ async def get_view_model(
     e2e_page = int(request.query_params.get("e2e_page", 1))
     if e2e_page < 1:
         e2e_page = 1
-    active_tab = request.query_params.get("tab", "flow")
+    active_tab = parse_dashboard_tab(request.query_params.get("tab", DashboardTab.DASHBOARD.value))
 
     view_model = build_dashboard_view_model(
         orchestrator,
@@ -463,7 +466,7 @@ async def get_view_model(
 
 @app.get("/api/view-model-snapshot", response_model=ViewModelSnapshotPayload)
 async def get_view_model_snapshot(
-    tab: str = Query("flow"),
+    tab: str = Query(DashboardTab.DASHBOARD.value),
     page: int = Query(1, ge=1),
     e2e_page: int = Query(1, ge=1),
     orchestrator=Depends(get_orchestrator),
@@ -476,7 +479,7 @@ async def get_view_model_snapshot(
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     queue_page = page
-    active_tab = tab
+    active_tab = parse_dashboard_tab(tab)
 
     view_model = build_dashboard_view_model(
         orchestrator,
@@ -520,7 +523,7 @@ async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator
     e2e_page = int(request.query_params.get("e2e_page", 1))
     if e2e_page < 1:
         e2e_page = 1
-    active_tab = request.query_params.get("tab", "flow")
+    active_tab = parse_dashboard_tab(request.query_params.get("tab", DashboardTab.DASHBOARD.value))
 
     view_model = build_dashboard_view_model(
         orchestrator,
@@ -593,9 +596,12 @@ async def get_doctor_dialog() -> DoctorDialogPayload | JSONResponse:
 
 
 @app.get("/api/dialog/session-diagnostics/{issue_number}", response_model=SessionDiagnosticsDialogPayload)
-async def get_session_diagnostics_dialog(issue_number: int) -> SessionDiagnosticsDialogPayload | JSONResponse:
+async def get_session_diagnostics_dialog(
+    issue_number: int,
+    run_dir: str | None = Query(default=None),
+) -> SessionDiagnosticsDialogPayload | JSONResponse:
     """Get view model for session diagnostics dialog."""
-    response = await get_session_manifest(issue_number)
+    response = await get_session_manifest(issue_number, requested_run_dir=run_dir)
     if response.status_code != 200:
         return response
     payload = _response_json(response)
@@ -1107,7 +1113,7 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
     issue_number: int,
     offset: int = 0,
     limit: int = 200,
-    run_dir: str | None = None,
+    run_dir: str = Query(..., description="Absolute run directory for a specific session run"),
 ) -> JSONResponse:
     """Get the local agent UI log for an issue.
 
@@ -1121,45 +1127,10 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    worktree_path = None
-    session = None
-    if not run_dir:
-        for s in _orchestrator.state.active_sessions:
-            if s.issue.number == issue_number:
-                worktree_path = s.worktree_path
-                session = s
-                break
-        if not worktree_path:
-            for entry in _orchestrator.state.session_history:
-                if entry.issue_number == issue_number:
-                    worktree_path = getattr(entry, "worktree_path", None)
-                    break
-
-        if not worktree_path:
-            from ..execution.session_output_adapter import find_run_dir_for_issue
-
-            repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
-            _, worktree_path = find_run_dir_for_issue(
-                _collect_worktree_bases(_orchestrator.config),
-                repo_name,
-                issue_number,
-            )
-            if not worktree_path:
-                return JSONResponse({
-                    "error": f"No worktree path found for issue #{issue_number}",
-                    "hint": "Session may have been cleaned up or never started"
-                }, status_code=404)
-
     from ..execution.session_output_adapter import FileSystemSessionOutput
     session_output = FileSystemSessionOutput()
 
-    log_path = None
-    if run_dir:
-        log_path = session_output.get_log_path_for_run_dir(Path(run_dir))
-    if not log_path and session and worktree_path:
-        log_path = session_output.get_log_path(worktree_path, session.terminal_id)
-    if not log_path and worktree_path:
-        log_path = session_output.find_latest_session_log_path(worktree_path)
+    log_path = session_output.get_log_path_for_run_dir(Path(run_dir))
 
     if not log_path:
         return JSONResponse({
@@ -1249,7 +1220,10 @@ def _manifest_response(
 
 
 @app.get("/api/session/manifest/{issue_number}")
-async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901, PLR0912 - manifest lookup with multiple path strategies
+async def get_session_manifest(  # noqa: C901, PLR0912 - manifest lookup with multiple path strategies
+    issue_number: int,
+    requested_run_dir: str | None = Query(default=None, alias="run_dir"),
+) -> JSONResponse:
     """Get the session manifest for an issue."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -1261,6 +1235,14 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
             session = s
             worktree_path = s.worktree_path
             break
+    if requested_run_dir:
+        resolved_run_dir = Path(requested_run_dir)
+        if resolved_run_dir.exists():
+            return _manifest_response(resolved_run_dir, session.terminal_id if session else None)
+        return JSONResponse({
+            "error": f"Run dir not found: {requested_run_dir}",
+        }, status_code=404)
+
     if not worktree_path:
         for entry in _orchestrator.state.session_history:
             if entry.issue_number == issue_number:
@@ -1274,15 +1256,15 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
         )
 
         repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
-        run_dir, worktree_path = find_run_dir_for_issue(
+        resolved_run_dir, worktree_path = find_run_dir_for_issue(
             _collect_worktree_bases(_orchestrator.config),
             repo_name,
             issue_number,
         )
-        if run_dir:
+        if resolved_run_dir:
             session_output_manager = FileSystemSessionOutput()
-            session_output_manager.attach_claude_log(run_dir)
-            return _manifest_response(run_dir, session.terminal_id if session else None)
+            session_output_manager.attach_claude_log(resolved_run_dir)
+            return _manifest_response(resolved_run_dir, session.terminal_id if session else None)
 
     if not worktree_path:
         return JSONResponse({
@@ -1292,18 +1274,19 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
 
     from ..execution.session_output_adapter import FileSystemSessionOutput
     session_output_helper = FileSystemSessionOutput()
-    run_dir = session_output_helper.find_run_dir(
+    worktree_path = Path(worktree_path)
+    resolved_run_dir = session_output_helper.find_run_dir(
         worktree_path,
         session_name=session.terminal_id if session else None,
     )
-    if not run_dir:
+    if not resolved_run_dir:
         return JSONResponse({
             "error": "No session run found",
             "hint": "Session may not have started or output was removed",
         }, status_code=404)
-    session_output_helper.attach_claude_log(run_dir)
+    session_output_helper.attach_claude_log(resolved_run_dir)
 
-    return _manifest_response(run_dir, session.terminal_id if session else None)
+    return _manifest_response(resolved_run_dir, session.terminal_id if session else None)
 
 
 @app.get("/api/session/worktree/{issue_number}")
@@ -1446,10 +1429,10 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
     reader = _orchestrator.deps.timeline_reader
     stream = reader.read(issue_number, limit=2000)
     timeline = stream.to_dict()
-    events = _filter_timeline_events(timeline.get("events", []))
-    events = _decorate_timeline_events(events, issue_number)
-    phase_toc = _build_phase_toc(events)
-    cycles = _build_timeline_cycles(events)
+    all_events = _decorate_timeline_events(timeline.get("events", []), issue_number)
+    visible_events = _filter_timeline_events(all_events)
+    phase_toc = _build_phase_toc(visible_events)
+    cycles = _build_timeline_cycles(visible_events)
     title = _issue_title_for(issue_number)
     issue_url = issue_url_for(_orchestrator.config, issue_number)
     context = _build_issue_story_context(issue_number)
@@ -1457,11 +1440,12 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
         issue_number=issue_number,
         title=title,
         issue_url=issue_url,
-        events=events,
+        events=all_events,
         phase_toc=phase_toc,
         cycles=cycles,
         context=context,
     )
+    payload["events"] = visible_events
     return IssueDetailPayload.model_validate(payload)
 
 
@@ -1664,7 +1648,7 @@ def _timeline_event_recommended_actions(
     """Add event-specific suggested actions."""
     run_dir = event.get("run_dir")
     run_dir_str = run_dir if isinstance(run_dir, str) and run_dir else None
-    if event_name in _TIMELINE_START_EVENTS:
+    if event_name in _TIMELINE_START_EVENTS and run_dir_str:
         add_action(
             {
                 "type": "open_agent_log",
@@ -1675,8 +1659,13 @@ def _timeline_event_recommended_actions(
             f"agent:{issue_number}:{run_dir_str or ''}",
         )
         add_action(
-            {"type": "view_claude_log", "label": "Claude Log", "issue_number": issue_number},
-            f"claude:{issue_number}",
+            {
+                "type": "view_claude_log",
+                "label": "Claude Log",
+                "issue_number": issue_number,
+                "run_dir": run_dir_str,
+            },
+            f"claude:{issue_number}:{run_dir_str or ''}",
         )
         add_action(
             {
@@ -1687,19 +1676,35 @@ def _timeline_event_recommended_actions(
             },
             f"prompt:{issue_number}:{run_dir_str or ''}",
         )
-    if event_name.startswith("validation."):
+    if event_name.startswith("validation.") and run_dir_str:
         add_action(
-            {"type": "open_orchestrator_log", "label": "Issue-Scoped Orchestrator Log", "issue_number": issue_number},
-            f"orchestrator:{issue_number}",
+            {
+                "type": "open_orchestrator_log",
+                "label": "Issue-Scoped Orchestrator Log",
+                "issue_number": issue_number,
+                "run_dir": run_dir_str,
+            },
+            f"orchestrator:{issue_number}:{run_dir_str or ''}",
         )
-    if event_name in _TIMELINE_FAILURE_EVENTS:
+    if event_name in _TIMELINE_FAILURE_EVENTS and run_dir_str:
         add_action(
             {
                 "type": "open_session_diagnostics",
                 "label": "Diagnostics",
                 "issue_number": issue_number,
+                "run_dir": run_dir_str,
             },
-            f"diagnostics:{issue_number}",
+            f"diagnostics:{issue_number}:{run_dir_str or ''}",
+        )
+    if event_name in {"review.comment_added", "review.changes_requested", "review.approved"} and run_dir_str:
+        add_action(
+            {
+                "type": "open_review_feedback",
+                "label": "Review Feedback",
+                "issue_number": issue_number,
+                "run_dir": run_dir_str,
+            },
+            f"review-feedback:{issue_number}:{run_dir_str or ''}",
         )
 
 
@@ -1745,6 +1750,9 @@ def _timeline_event_default_actions(
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
     """Add default diagnostics and log actions shown for every timeline event."""
+    if not run_dir:
+        return
+
     add_action(
         {
             "type": "open_agent_log",
@@ -1755,20 +1763,31 @@ def _timeline_event_default_actions(
         f"agent:{issue_number}:{run_dir or ''}",
     )
     add_action(
-        {"type": "view_claude_log", "label": "Claude Log", "issue_number": issue_number},
-        f"claude:{issue_number}",
+        {
+            "type": "view_claude_log",
+            "label": "Claude Log",
+            "issue_number": issue_number,
+            "run_dir": run_dir,
+        },
+        f"claude:{issue_number}:{run_dir or ''}",
     )
     add_action(
-        {"type": "open_orchestrator_log", "label": "Issue-Scoped Orchestrator Log", "issue_number": issue_number},
-        f"orchestrator:{issue_number}",
+        {
+            "type": "open_orchestrator_log",
+            "label": "Issue-Scoped Orchestrator Log",
+            "issue_number": issue_number,
+            "run_dir": run_dir,
+        },
+        f"orchestrator:{issue_number}:{run_dir or ''}",
     )
     add_action(
         {
             "type": "open_session_diagnostics",
             "label": "Diagnostics",
             "issue_number": issue_number,
+            "run_dir": run_dir,
         },
-        f"diagnostics:{issue_number}",
+        f"diagnostics:{issue_number}:{run_dir or ''}",
     )
 
 
@@ -2030,58 +2049,85 @@ def _latest_review_exchange_prompt(run_dir: Path) -> Path | None:
     return candidates[0] if candidates else None
 
 
+def _find_issue_worktree_path(issue_number: int) -> Path | None:
+    if _orchestrator is None:
+        return None
+    for session in _orchestrator.state.active_sessions:
+        if session.issue.number == issue_number:
+            return Path(session.worktree_path)
+    for entry in _orchestrator.state.session_history:
+        if entry.issue_number == issue_number:
+            history_path = getattr(entry, "worktree_path", None)
+            if history_path:
+                return Path(history_path)
+    return None
+
+
+def _resolve_session_run_dir(
+    issue_number: int,
+    run_dir: str | None,
+    session_output_mgr: SessionOutput,
+) -> Path | None:
+    from ..execution.session_output_adapter import find_run_dir_for_issue
+
+    if run_dir:
+        return Path(run_dir)
+    worktree_path = _find_issue_worktree_path(issue_number)
+    if worktree_path:
+        resolved = session_output_mgr.find_run_dir(worktree_path)
+        if resolved is not None:
+            return resolved
+    if _orchestrator is None:
+        return None
+    repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
+    resolved_run_dir, _ = find_run_dir_for_issue(
+        _collect_worktree_bases(_orchestrator.config),
+        repo_name,
+        issue_number,
+    )
+    return resolved_run_dir
+
+
+def _manifest_prompt_path(resolved_run_dir: Path) -> Path | None:
+    from ..domain.run_manifest import RunManifest
+
+    try:
+        manifest = RunManifest.load(resolved_run_dir)
+        session_prompt_path = manifest.to_dict().get("session_prompt_path")
+    except Exception:
+        return None
+    if not isinstance(session_prompt_path, str) or not session_prompt_path:
+        return None
+    return Path(session_prompt_path)
+
+
+def _resolve_prompt_path(resolved_run_dir: Path) -> Path | None:
+    from ..execution.session_output_adapter import SESSION_PROMPT_NAME
+
+    candidates = [
+        _manifest_prompt_path(resolved_run_dir),
+        resolved_run_dir / SESSION_PROMPT_NAME,
+        resolved_run_dir / "retry-prompt.md",
+        _latest_review_exchange_prompt(resolved_run_dir),
+    ]
+    return next((p for p in candidates if p and p.exists() and p.stat().st_size > 0), None)
+
+
 @app.get("/api/session/prompt/{issue_number}")
 async def get_session_prompt_content(issue_number: int, run_dir: str | None = None) -> JSONResponse:
     """Return run-scoped prompt content for a session."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..domain.run_manifest import RunManifest
-    from ..execution.session_output_adapter import FileSystemSessionOutput, SESSION_PROMPT_NAME, find_run_dir_for_issue
+    from ..execution.session_output_adapter import FileSystemSessionOutput
 
     session_output_mgr = FileSystemSessionOutput()
-    resolved_run_dir: Path | None = Path(run_dir) if run_dir else None
-
-    if resolved_run_dir is None:
-        worktree_path = None
-        for s in _orchestrator.state.active_sessions:
-            if s.issue.number == issue_number:
-                worktree_path = s.worktree_path
-                break
-        if not worktree_path:
-            for entry in _orchestrator.state.session_history:
-                if entry.issue_number == issue_number:
-                    worktree_path = getattr(entry, "worktree_path", None)
-                    break
-        if worktree_path:
-            resolved_run_dir = session_output_mgr.find_run_dir(Path(worktree_path))
-        if resolved_run_dir is None:
-            repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
-            resolved_run_dir, _ = find_run_dir_for_issue(
-                _collect_worktree_bases(_orchestrator.config),
-                repo_name,
-                issue_number,
-            )
+    resolved_run_dir = _resolve_session_run_dir(issue_number, run_dir, session_output_mgr)
 
     if resolved_run_dir is None or not resolved_run_dir.exists():
         return JSONResponse({"error": f"No session run found for issue #{issue_number}"}, status_code=404)
 
-    manifest_prompt_path: Path | None = None
-    try:
-        manifest = RunManifest.load(resolved_run_dir)
-        session_prompt_path = manifest.to_dict().get("session_prompt_path")
-        if isinstance(session_prompt_path, str) and session_prompt_path:
-            manifest_prompt_path = Path(session_prompt_path)
-    except Exception:
-        manifest_prompt_path = None
-
-    candidates = [
-        manifest_prompt_path,
-        resolved_run_dir / SESSION_PROMPT_NAME,
-        resolved_run_dir / "retry-prompt.md",
-        _latest_review_exchange_prompt(resolved_run_dir),
-    ]
-    prompt_path = next((p for p in candidates if p and p.exists() and p.stat().st_size > 0), None)
+    prompt_path = _resolve_prompt_path(resolved_run_dir)
     if not prompt_path:
         return JSONResponse({"error": "No run-scoped prompt artifact found for this session"}, status_code=404)
 

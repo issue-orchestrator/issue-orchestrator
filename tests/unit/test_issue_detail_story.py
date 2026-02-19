@@ -555,7 +555,7 @@ class TestJourneyCycles:
         assert c["lifecycle"] == 1
         assert c["iteration"] == 1
         assert c["agent"] == "backend"
-        assert "Completed" in c["outcome"]
+        assert "Ready for review" in c["outcome"]
         assert len(c["steps"]) == 2
 
     def test_multiple_iterations_create_separate_cycles(self):
@@ -736,7 +736,7 @@ class TestCycleOutcome:
 
     def test_completed_session(self):
         events = [_evt("session.completed")]
-        assert _derive_cycle_outcome(events, 1, None) == "Completed"
+        assert _derive_cycle_outcome(events, 1, None) == "Ready for review"
 
     def test_changes_requested(self):
         events = [
@@ -832,7 +832,7 @@ class TestSignalJourneyCycles:
         assert cycles[0]["cycle"] == 1
         assert cycles[0]["iteration"] == 1  # (rework_cycle or 0) + 1
         assert cycles[0]["agent"] == "backend"
-        assert "Completed" in cycles[0]["outcome"]
+        assert "Ready for review" in cycles[0]["outcome"]
 
     def test_rework_cycle_0_and_1_create_two_cycles(self):
         """rework_cycle=0 → cycle 1, rework_cycle=1 → cycle 2."""
@@ -940,7 +940,7 @@ class TestSignalJourneyCycles:
         cycles = _build_journey_cycles(events, "2026-02-09")
         assert len(cycles) == 2
         assert "Failed" in cycles[0]["outcome"]
-        assert "Completed" in cycles[1]["outcome"]
+        assert "Ready for review" in cycles[1]["outcome"]
 
     def test_noisy_events_filtered_in_signal_path(self):
         """Noise events are filtered from signal-based cycles."""

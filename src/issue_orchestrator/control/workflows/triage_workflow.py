@@ -21,7 +21,7 @@ from typing import Optional, Sequence
 from ...infra.config import Config
 from ...events import EventName
 from ...domain.models import PendingTriageReview
-from ...ports import EventSink, TraceEvent
+from ...ports import EventSink,  make_trace_event
 from .decision_base import WorkflowDecision
 
 logger = logging.getLogger(__name__)
@@ -136,7 +136,7 @@ class TriageWorkflow:
         # Check if paused
         if paused:
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.TRIAGE_SKIPPED,
                     {"reason": "orchestrator_paused"},
                 )
@@ -149,7 +149,7 @@ class TriageWorkflow:
 
         if available <= 0:
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.TRIAGE_SKIPPED,
                     {
                         "reason": "no_capacity",
@@ -166,7 +166,7 @@ class TriageWorkflow:
         triage_to_launch = list(pending_triage)[:available]
 
         self.events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.TRIAGE_LAUNCHING,
                 {
                     "count": len(triage_to_launch),
@@ -222,7 +222,7 @@ class TriageWorkflow:
                 )
 
         self.events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.TRIAGE_BATCH_TRIGGERED,
                 {
                     "failure_count": failure_count,

@@ -149,6 +149,15 @@ class GitWorkingCopy:
             logger.warning("Failed to check uncommitted changes in %s", worktree)
             return True  # Assume dirty on error (safer)
 
+    def get_status_porcelain_lines(self, worktree: Path) -> list[str]:
+        """Return non-empty `git status --porcelain` lines for the worktree."""
+        try:
+            result = self._run_git(worktree, ["status", "--porcelain"])
+            return [line.rstrip() for line in result.stdout.splitlines() if line.strip()]
+        except GitError:
+            logger.warning("Failed to read status lines in %s", worktree)
+            return []
+
     def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool:
         """Check for dirty tracked files (ignores untracked/ignored)."""
         try:
