@@ -9,12 +9,13 @@ This is the key abstraction that keeps pluggy out of the core.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Literal, NotRequired, Protocol, TYPE_CHECKING, TypedDict, cast
+from typing import Any, Literal, NotRequired, Protocol, TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from issue_orchestrator.events.catalog import EventName
     RunScopedEventName = Literal[
         EventName.SESSION_STARTED,
+        EventName.SESSION_ARTIFACT_LOOKUP,
         EventName.SESSION_PROCESSING_COMPLETED,
         EventName.SESSION_VALIDATION_PASSED,
         EventName.SESSION_VALIDATION_RETRY_NEEDED,
@@ -42,6 +43,15 @@ class RunScopedEventPayload(TypedDict):
     completion_path: NotRequired[str]
     completion_path_absolute: NotRequired[str]
     session_prompt_path: NotRequired[str | None]
+    lookup_kind: NotRequired[str]
+    resolved_run_dir: NotRequired[str]
+    run_dir_exists: NotRequired[bool]
+    selected_log_path: NotRequired[str | None]
+    log_path_exists: NotRequired[bool]
+    reason: NotRequired[str]
+    validation_source: NotRequired[str]
+    validation_error_summary: NotRequired[str]
+    validation_reason: NotRequired[str]
     validation_cmd: NotRequired[str | None]
     error_file: NotRequired[str | None]
     retry_count: NotRequired[int]
@@ -53,6 +63,30 @@ class RunScopedEventPayload(TypedDict):
     pr_url: NotRequired[str | None]
     rework_cycle: NotRequired[int]
     review_exchange_mode: NotRequired[str]
+
+
+class SessionStartedEventPayload(RunScopedEventPayload):
+    """Payload for ``session.started`` events."""
+
+
+class SessionArtifactLookupEventPayload(RunScopedEventPayload):
+    """Payload for ``session.artifact_lookup`` events."""
+
+
+class SessionProcessingCompletedEventPayload(RunScopedEventPayload):
+    """Payload for ``session.processing_completed`` events."""
+
+
+class SessionValidationPassedEventPayload(RunScopedEventPayload):
+    """Payload for ``session.validation_passed`` events."""
+
+
+class SessionValidationRetryNeededEventPayload(RunScopedEventPayload):
+    """Payload for ``session.validation_retry_needed`` events."""
+
+
+class SessionValidationFailedEventPayload(RunScopedEventPayload):
+    """Payload for ``session.validation_failed`` events."""
 
 
 def make_trace_event(
@@ -71,65 +105,46 @@ def make_run_scoped_event(
     return TraceEvent(event_type, dict(data))
 
 
-class SessionStartedEventPayload(TypedDict):
-    """Typed payload for EventName.SESSION_STARTED."""
+def make_session_started_event(data: SessionStartedEventPayload) -> "TraceEvent":
+    """Build a typed ``session.started`` event."""
+    from issue_orchestrator.events import EventName
 
-    issue_number: int
-    session_id: str
-    agent: str
-    task: str
-    worktree_path: str
-    branch_name: str
-    run_id: str
-    run_dir: str
-    completion_path: str
-    completion_path_absolute: str
-    session_prompt_path: NotRequired[str | None]
+    return make_run_scoped_event(EventName.SESSION_STARTED, data)
 
 
-class SessionProcessingCompletedEventPayload(TypedDict):
-    """Typed payload for EventName.SESSION_PROCESSING_COMPLETED."""
+def make_session_artifact_lookup_event(data: SessionArtifactLookupEventPayload) -> "TraceEvent":
+    """Build a typed ``session.artifact_lookup`` event."""
+    from issue_orchestrator.events import EventName
 
-    issue_number: int
-    session_name: str
-    run_dir: str
-    success: bool
-    message: str
-    actions_taken: list[str]
-    errors: list[str]
-    pr_url: str | None
+    return make_run_scoped_event(EventName.SESSION_ARTIFACT_LOOKUP, data)
 
 
-class SessionValidationPassedEventPayload(TypedDict):
-    """Typed payload for EventName.SESSION_VALIDATION_PASSED."""
+def make_session_processing_completed_event(data: SessionProcessingCompletedEventPayload) -> "TraceEvent":
+    """Build a typed ``session.processing_completed`` event."""
+    from issue_orchestrator.events import EventName
 
-    issue_number: int
-    session_name: str
-    run_dir: str
-    validation_cmd: str | None
+    return make_run_scoped_event(EventName.SESSION_PROCESSING_COMPLETED, data)
 
 
-class SessionValidationRetryNeededEventPayload(TypedDict):
-    """Typed payload for EventName.SESSION_VALIDATION_RETRY_NEEDED."""
+def make_session_validation_passed_event(data: SessionValidationPassedEventPayload) -> "TraceEvent":
+    """Build a typed ``session.validation_passed`` event."""
+    from issue_orchestrator.events import EventName
 
-    issue_number: int
-    session_name: str
-    run_dir: str
-    validation_cmd: str | None
-    retry_count: int
-    max_retries: int
-    error_file: NotRequired[str | None]
+    return make_run_scoped_event(EventName.SESSION_VALIDATION_PASSED, data)
 
 
-class SessionValidationFailedEventPayload(TypedDict):
-    """Typed payload for EventName.SESSION_VALIDATION_FAILED."""
+def make_session_validation_retry_needed_event(data: SessionValidationRetryNeededEventPayload) -> "TraceEvent":
+    """Build a typed ``session.validation_retry_needed`` event."""
+    from issue_orchestrator.events import EventName
 
-    issue_number: int
-    session_name: str
-    run_dir: str
-    validation_cmd: str | None
-    retry_count: int
-    error_file: NotRequired[str | None]
+    return make_run_scoped_event(EventName.SESSION_VALIDATION_RETRY_NEEDED, data)
+
+
+def make_session_validation_failed_event(data: SessionValidationFailedEventPayload) -> "TraceEvent":
+    """Build a typed ``session.validation_failed`` event."""
+    from issue_orchestrator.events import EventName
+
+    return make_run_scoped_event(EventName.SESSION_VALIDATION_FAILED, data)
 
 
 @dataclass(frozen=True)
@@ -156,6 +171,7 @@ class TraceEvent:
         default=frozenset(
             {
                 "session.started",
+                "session.artifact_lookup",
                 "session.processing_completed",
                 "session.validation_passed",
                 "session.validation_retry_needed",
@@ -196,41 +212,6 @@ class TraceEvent:
             timestamp=self.timestamp,
             event_id=event_id,
         )
-
-
-def make_session_started_event(payload: SessionStartedEventPayload) -> TraceEvent:
-    """Construct a typed session.started event."""
-    from ..events import EventName
-
-    return TraceEvent(EventName.SESSION_STARTED, cast(dict[str, Any], payload))
-
-
-def make_session_processing_completed_event(payload: SessionProcessingCompletedEventPayload) -> TraceEvent:
-    """Construct a typed session.processing_completed event."""
-    from ..events import EventName
-
-    return TraceEvent(EventName.SESSION_PROCESSING_COMPLETED, cast(dict[str, Any], payload))
-
-
-def make_session_validation_passed_event(payload: SessionValidationPassedEventPayload) -> TraceEvent:
-    """Construct a typed session.validation_passed event."""
-    from ..events import EventName
-
-    return TraceEvent(EventName.SESSION_VALIDATION_PASSED, cast(dict[str, Any], payload))
-
-
-def make_session_validation_retry_needed_event(payload: SessionValidationRetryNeededEventPayload) -> TraceEvent:
-    """Construct a typed session.validation_retry_needed event."""
-    from ..events import EventName
-
-    return TraceEvent(EventName.SESSION_VALIDATION_RETRY_NEEDED, cast(dict[str, Any], payload))
-
-
-def make_session_validation_failed_event(payload: SessionValidationFailedEventPayload) -> TraceEvent:
-    """Construct a typed session.validation_failed event."""
-    from ..events import EventName
-
-    return TraceEvent(EventName.SESSION_VALIDATION_FAILED, cast(dict[str, Any], payload))
 
 
 class EventSink(Protocol):

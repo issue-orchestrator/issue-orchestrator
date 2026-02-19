@@ -275,7 +275,7 @@ _NARRATIVE_MAP: dict[str, str] = {
     "triage.launching": "Triage review launching",
     "validation.started": "Validation started",
     "validation.completed": "Validation passed",
-    "session.validation_retry_needed": "Validation failed — retrying",
+    "session.validation_retry_needed": "Validation failed — retrying{_summary}",
     "review.comment_added": "Review comment posted{_summary}",
 }
 

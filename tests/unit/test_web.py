@@ -2699,12 +2699,14 @@ class TestTimelineActionWiring:
         "open_url": None,  # client-side window.open, no HTTP call
         "open_review_feedback": None,  # in-app modal from existing issue detail payload
         "open_agent_log": "/api/log/local/{issue_number}",
+        "view_session_prompt": "/api/session/prompt/{issue_number}",
         "view_claude_log": "/api/session/claude-log/{issue_number}",
         "open_orchestrator_log": "/api/session/orchestrator-log/{issue_number}",
         "open_session_diagnostics": "/api/dialog/session-diagnostics/{issue_number}",
     }
     _REQUIRED_FIELDS_BY_ACTION: dict[str, tuple[str, ...]] = {
         "open_agent_log": ("issue_number", "run_dir"),
+        "view_session_prompt": ("issue_number", "run_dir"),
         "view_claude_log": ("issue_number", "run_dir"),
         "open_orchestrator_log": ("issue_number", "run_dir"),
         "open_session_diagnostics": ("issue_number", "run_dir"),
@@ -3592,6 +3594,59 @@ class TestIssueLogEndpointsUseLatestHistory:
             payload = response.json()
             assert payload["run_dir"] == str(run_a.run_dir)
             assert payload["entries"][0]["content"] == "from-run-a"
+        finally:
+            set_orchestrator(None)
+
+    def test_session_prompt_requires_run_dir(self, tmp_path: Path):
+        """GET /api/session/prompt should fail fast when run_dir is missing."""
+        mock_orch = create_mock_orchestrator()
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/session/prompt/123")
+            assert response.status_code == 400
+            payload = response.json()
+            assert payload["error"] == "run_dir is required"
+        finally:
+            set_orchestrator(None)
+
+    def test_session_prompt_honors_run_dir_query(self, tmp_path: Path):
+        """GET /api/session/prompt should read the requested run prompt when run_dir is provided."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+
+        worktree = tmp_path / "wt-prompt-run-query"
+        worktree.mkdir(parents=True)
+        run_a = session_output.start_run(worktree, "coding-1", issue_number=123)
+        prompt_a = run_a.run_dir / "session-prompt.txt"
+        prompt_a.write_text("prompt from run a\n", encoding="utf-8")
+        session_output.update_manifest(run_a.run_dir, {"session_prompt_path": str(prompt_a)})
+
+        run_b = session_output.start_run(worktree, "coding-2", issue_number=123)
+        prompt_b = run_b.run_dir / "session-prompt.txt"
+        prompt_b.write_text("prompt from run b\n", encoding="utf-8")
+        session_output.update_manifest(run_b.run_dir, {"session_prompt_path": str(prompt_b)})
+
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=1,
+                worktree_path=worktree,
+            ),
+        ]
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/session/prompt/123?run_dir={run_a.run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["run_dir"] == str(run_a.run_dir)
+            assert payload["content"] == "prompt from run a\n"
         finally:
             set_orchestrator(None)
 

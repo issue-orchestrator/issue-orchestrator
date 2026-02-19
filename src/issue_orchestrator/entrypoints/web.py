@@ -1956,6 +1956,17 @@ def _timeline_event_recommended_actions(
             {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
             f"agent:{issue_number}",
         )
+        run_dir = str(event.get("run_dir") or "")
+        if run_dir:
+            add_action(
+                {
+                    "type": "view_session_prompt",
+                    "label": "View Session Prompt",
+                    "issue_number": issue_number,
+                    "run_dir": run_dir,
+                },
+                f"prompt:{issue_number}:{run_dir}",
+            )
         add_action(
             {"type": "view_claude_log", "label": "View Claude Session Log", "issue_number": issue_number},
             f"claude:{issue_number}",
@@ -2120,6 +2131,7 @@ def _decorate_timeline_action_with_run_dir(action: dict[str, Any], event_run_dir
         return action
     if str(action.get("type") or "") in {
         "open_agent_log",
+        "view_session_prompt",
         "view_claude_log",
         "open_orchestrator_log",
         "open_session_diagnostics",
@@ -2419,6 +2431,75 @@ async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval
         "entry_count": len(entries),
         "entries": entries,
     })
+
+
+def _latest_review_exchange_prompt(run_dir: Path) -> Path | None:
+    """Return newest review-exchange prompt artifact under run_dir if present."""
+    exchange_root = run_dir / "review-exchange"
+    if not exchange_root.exists():
+        return None
+    candidates = sorted(
+        list(exchange_root.glob("round-*/coder-prompt.txt"))
+        + list(exchange_root.glob("round-*/reviewer-prompt.txt")),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+@app.get("/api/session/prompt/{issue_number}")
+async def get_session_prompt_content(issue_number: int, run_dir: str | None = None) -> JSONResponse:
+    """Return run-scoped prompt content for a session."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+    if not run_dir:
+        return JSONResponse(
+            {
+                "error": "run_dir is required",
+                "hint": "Open prompt from a run-scoped timeline action.",
+            },
+            status_code=400,
+        )
+
+    run_path = Path(run_dir)
+    if not run_path.exists():
+        return JSONResponse({"error": f"run_dir does not exist: {run_dir}"}, status_code=404)
+
+    from ..domain.run_manifest import RunManifest
+    from ..execution.session_output_adapter import SESSION_PROMPT_NAME
+
+    manifest_prompt_path: Path | None = None
+    try:
+        manifest = RunManifest.load(run_path)
+        session_prompt_path = manifest.to_dict().get("session_prompt_path")
+        if isinstance(session_prompt_path, str) and session_prompt_path:
+            manifest_prompt_path = Path(session_prompt_path)
+    except Exception:
+        manifest_prompt_path = None
+
+    candidates = [
+        manifest_prompt_path,
+        run_path / SESSION_PROMPT_NAME,
+        run_path / "retry-prompt.md",
+        _latest_review_exchange_prompt(run_path),
+    ]
+    prompt_path = next((p for p in candidates if p and p.exists() and p.stat().st_size > 0), None)
+    if not prompt_path:
+        return JSONResponse({"error": "No run-scoped prompt artifact found for this session"}, status_code=404)
+
+    try:
+        content = prompt_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return JSONResponse({"error": f"Failed to read prompt: {exc}"}, status_code=500)
+
+    return JSONResponse(
+        {
+            "issue_number": issue_number,
+            "run_dir": str(run_path),
+            "prompt_path": str(prompt_path),
+            "content": content,
+        }
+    )
 
 
 @app.post("/api/prompt/{agent_type}")

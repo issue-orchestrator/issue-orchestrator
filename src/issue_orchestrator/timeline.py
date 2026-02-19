@@ -400,6 +400,12 @@ def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail
     elif event_name == "session.validation_failed":
         _add_if_new(parts, data.get("validation_reason"), summary_str)
 
+    elif event_name == "session.validation_retry_needed":
+        _add_if_new(parts, data.get("validation_reason"), summary_str)
+        source = data.get("validation_source")
+        if isinstance(source, str) and source:
+            parts.append(f"Source: {source}")
+
     elif event_name == "review.changes_requested":
         _add_if_new(parts, data.get("review_issues"), summary_str)
         risk = data.get("risk_level")

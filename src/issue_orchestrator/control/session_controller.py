@@ -19,6 +19,8 @@ Example flows:
 
 import logging
 import json
+import os
+import sys
 from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
@@ -178,13 +180,16 @@ class SessionController:
             return SessionDecision(status=SessionStatus.RUNNING, reason="Session still running")
 
         run_dir = self._resolve_run_dir(worktree_path, session_name, completion_path)
-        self._emit_event(EventName.SESSION_ARTIFACT_LOOKUP, {
+        artifact_lookup_payload: RunScopedEventPayload = {
             "issue_number": issue_number,
             "session_name": session_name,
-            "completion_path": completion_path,
+            "run_dir": str(run_dir),
             "resolved_run_dir": str(run_dir),
             "run_dir_exists": run_dir.exists(),
-        })
+        }
+        if completion_path:
+            artifact_lookup_payload["completion_path"] = completion_path
+        self._emit_run_scoped_event(EventName.SESSION_ARTIFACT_LOOKUP, artifact_lookup_payload)
 
         provider_status = self._read_provider_status(run_dir)
         if provider_status and provider_status.succeeded and self._provider_resilience:
@@ -286,7 +291,7 @@ class SessionController:
         session_name: str,
     ) -> SessionDecision:
         """Handle case where no completion record exists."""
-        session_log = self._get_session_log_tail(run_dir)
+        session_log = self._get_session_log_tail(issue_number=issue_number, run_dir=run_dir)
         provider_status = self._read_provider_status(run_dir)
 
         self._emit_event(EventName.SESSION_NO_COMPLETION_RECORD, {
@@ -323,12 +328,13 @@ class SessionController:
     def _read_provider_status(self, run_dir: Path) -> ProviderStatus | None:
         return read_provider_status(run_dir)
 
-    def _get_session_log_tail(self, run_dir: Path) -> str:
+    def _get_session_log_tail(self, *, issue_number: int, run_dir: Path) -> str:
         """Get last 50 lines of session log for diagnostics."""
         log_path = self.session_output.get_log_path_for_run_dir(run_dir)
-        self._emit_event(
+        self._emit_run_scoped_event(
             EventName.SESSION_ARTIFACT_LOOKUP,
             {
+                "issue_number": issue_number,
                 "lookup_kind": "session_log_tail",
                 "run_dir": str(run_dir),
                 "selected_log_path": str(log_path) if log_path else None,
@@ -506,17 +512,24 @@ class SessionController:
             max_retries=self._max_validation_retries, template_path=retry_prompt_template, repo_root=repo_root,
         )
         self.session_output.write_retry_prompt(run_dir, retry_prompt_content)
+        source, summary = self._validation_failure_signal(
+            validation_error=validation_error,
+            validation_error_file=validation_error_file,
+        )
 
         payload: SessionValidationRetryNeededEventPayload = {
             "issue_number": issue_number,
             "session_name": session_name,
             "run_dir": str(run_dir),
             "validation_cmd": self._validation_cmd,
+            "error_file": str(validation_error_file) if validation_error_file else None,
             "retry_count": validation_retry_count,
             "max_retries": self._max_validation_retries,
+            "validation_source": source,
+            "validation_error_summary": summary,
+            "validation_reason": summary,
+            "reason": f"{source}: {summary}",
         }
-        if validation_error_file:
-            payload["error_file"] = str(validation_error_file)
         self.events.publish(make_session_validation_retry_needed_event(payload))
         return SessionStatus.NEEDS_VALIDATION_RETRY
 
@@ -535,15 +548,22 @@ class SessionController:
             self._max_validation_retries, validation_error[:200] if validation_error else "none", validation_error_file,
         )
         self.session_output.clear_retry_state(run_dir)
+        source, summary = self._validation_failure_signal(
+            validation_error=validation_error,
+            validation_error_file=validation_error_file,
+        )
         payload: SessionValidationFailedEventPayload = {
             "issue_number": issue_number,
             "session_name": session_name,
             "run_dir": str(run_dir),
             "validation_cmd": self._validation_cmd,
             "retry_count": validation_retry_count,
+            "error_file": str(validation_error_file) if validation_error_file else None,
+            "validation_source": source,
+            "validation_error_summary": summary,
+            "validation_reason": summary,
+            "reason": f"{source}: {summary}",
         }
-        if validation_error_file:
-            payload["error_file"] = str(validation_error_file)
         self.events.publish(make_session_validation_failed_event(payload))
         return SessionStatus.VALIDATION_FAILED
 
@@ -709,6 +729,8 @@ class SessionController:
         if not self._command_runner or not self._validation_cmd:
             return True, None, None
 
+        self._ensure_validation_runtime(worktree_path, issue_number)
+
         # Use PublishGate for SHA-based caching
         gate = PublishGate(
             worktree=worktree_path,
@@ -749,6 +771,105 @@ class SessionController:
         error_file = self._resolve_error_file_path(worktree_path, result.record)
 
         return False, error_msg, error_file
+
+    def _ensure_validation_runtime(self, worktree_path: Path, issue_number: int) -> None:
+        """Best-effort prep for validation commands that rely on local ``.venv``."""
+        validation_cmd = (self._validation_cmd or "").strip()
+        if not validation_cmd:
+            return
+
+        local_venv_python = worktree_path / ".venv" / "bin" / "python"
+        if local_venv_python.exists():
+            return
+
+        requires_local_venv = ".venv/" in validation_cmd
+        makefile_path = worktree_path / "Makefile"
+        if not requires_local_venv and validation_cmd.startswith("make ") and makefile_path.exists():
+            try:
+                makefile_text = makefile_path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                makefile_text = ""
+            requires_local_venv = ".venv/bin/python" in makefile_text
+        if not requires_local_venv:
+            return
+
+        active_venv = os.environ.get("VIRTUAL_ENV")
+        if active_venv:
+            source_venv = Path(active_venv).resolve()
+        else:
+            source_python = Path(sys.executable).resolve()
+            source_venv = source_python.parent.parent
+        source_venv_python = source_venv / "bin" / "python"
+        if not source_venv_python.exists():
+            logger.warning(
+                issue_log(
+                    issue_number,
+                    "Validation runtime prep skipped: source venv python missing at %s",
+                ),
+                source_venv_python,
+            )
+            return
+
+        target_venv = worktree_path / ".venv"
+        if target_venv.exists():
+            logger.warning(
+                issue_log(
+                    issue_number,
+                    "Validation runtime prep could not repair existing .venv in %s (missing python at %s)",
+                ),
+                worktree_path,
+                local_venv_python,
+            )
+            return
+
+        try:
+            target_venv.symlink_to(source_venv, target_is_directory=True)
+            logger.info(
+                issue_log(
+                    issue_number,
+                    "Prepared validation runtime: linked %s -> %s",
+                ),
+                target_venv,
+                source_venv,
+            )
+        except OSError as exc:
+            logger.warning(
+                issue_log(
+                    issue_number,
+                    "Validation runtime prep failed linking %s -> %s: %s",
+                ),
+                target_venv,
+                source_venv,
+                exc,
+            )
+
+    def _validation_failure_signal(
+        self,
+        *,
+        validation_error: Optional[str],
+        validation_error_file: Optional[Path],
+    ) -> tuple[str, str]:
+        """Return (source, concise reason) for timeline diagnostics."""
+        source = "orchestrator_publish_gate"
+        candidates: list[str] = []
+        if validation_error_file and validation_error_file.exists():
+            try:
+                text = validation_error_file.read_text(encoding="utf-8", errors="replace")
+                for line in text.splitlines():
+                    stripped = line.strip()
+                    if stripped:
+                        candidates.append(stripped)
+            except OSError:
+                pass
+        if validation_error:
+            candidates.append(validation_error.strip())
+
+        concise = next((candidate for candidate in candidates if candidate), "validation failed (unknown cause)")
+        if ".venv/bin/python" in concise and "No such file or directory" in concise:
+            concise = "worktree .venv missing: .venv/bin/python not found"
+        if len(concise) > 240:
+            concise = concise[:239] + "…"
+        return source, concise
 
     def _resolve_error_file_path(
         self,

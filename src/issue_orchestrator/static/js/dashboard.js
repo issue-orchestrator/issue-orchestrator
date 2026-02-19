@@ -647,7 +647,8 @@ async function openAgentLog(issueNumber, logLabel = 'Most Recent Session Log', r
                 <input type="checkbox" id="logFollowToggle" checked>
                 Follow
             </label>
-            <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="refreshAgentLog(${issueNumber}, true)">Refresh</button>
+            <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="refreshAgentLog(${issueNumber}, true, ${JSON.stringify(runDir)})">Refresh</button>
+            <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="viewSessionPrompt(${issueNumber}, ${JSON.stringify(runDir)}, 'inline')">View Prompt</button>
             <span id="logStatus" style="font-size:11px;color:var(--text-muted);"></span>
         </div>
         <div id="logScroll" style="max-height:420px;overflow:auto;background:var(--bg);padding:10px;border-radius:4px;">
@@ -672,12 +673,35 @@ async function openAgentLog(issueNumber, logLabel = 'Most Recent Session Log', r
         clearInterval(logPoller);
     }
     logPoller = setInterval(() => {
-        refreshAgentLog(issueNumber, false, runDir);
+        refreshAgentLog(issueNumber, false, logRunDir);
     }, 2000);
 }
 
 function openAgentLogAction(issueNumber, runDir = null, logLabel = 'Most Recent Session Log', errorSurface = 'toast') {
     return openAgentLog(issueNumber, logLabel, runDir, errorSurface);
+}
+
+async function viewSessionPrompt(issueNumber, runDir = null, errorSurface = 'toast') {
+    if (!runDir) {
+        reportActionError('Session prompt requires run context. Open from a timeline entry.', errorSurface);
+        return;
+    }
+    const params = new URLSearchParams();
+    params.set('run_dir', runDir);
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const res = await fetch(`/api/session/prompt/${issueNumber}${suffix}`);
+    const data = await res.json();
+    if (data.error) {
+        reportActionError(data.error, errorSurface);
+        return;
+    }
+    const body = `
+        <div style="display:flex;flex-direction:column;gap:8px;">
+            <div style="color:var(--text-muted);font-size:11px;">Prompt: ${escapeHtml(data.prompt_path || '')}</div>
+            <pre style="font-size:11px;max-height:420px;overflow:auto;background:var(--bg);padding:10px;border-radius:4px;white-space:pre-wrap;">${escapeHtml(data.content || '')}</pre>
+        </div>
+    `;
+    openModal(`Session Prompt #${issueNumber}`, body);
 }
 
 async function openSessionManifest(issueNumber, runDir = null) {
@@ -832,6 +856,7 @@ function _dialogActionShortLabel(action) {
     const type = String(action.type || '');
     const label = String(action.label || '');
     if (type === 'open_agent_log') return 'Session Log';
+    if (type === 'view_session_prompt') return 'View Prompt';
     if (type === 'view_claude_log') return 'Claude Log';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
     if (type === 'open_review_feedback') return 'Review Feedback';
@@ -865,6 +890,11 @@ function _renderDialogActionButton(action, labelOverride, cssClass) {
         if (!action.run_dir) return '';
         const runDirFirstArg = `${JSON.stringify(String(action.run_dir))}, `;
         return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'Most Recent Session Log', 'inline')">${label}</button>`;
+    }
+    if (action.type === 'view_session_prompt') {
+        if (!action.run_dir) return '';
+        const runDirFirstArg = `${JSON.stringify(String(action.run_dir))}, `;
+        return `<button class="${cssClass}" onclick="viewSessionPrompt(${action.issue_number}, ${runDirFirstArg}'inline')">${label}</button>`;
     }
     if (action.type === 'view_claude_log') {
         if (!action.run_dir) return '';
@@ -4281,6 +4311,7 @@ function _timelineActionShortLabel(action) {
     const type = String(action.type || '');
     const label = String(action.label || '').trim();
     if (type === 'open_agent_log') return 'Session Log';
+    if (type === 'view_session_prompt') return 'View Prompt';
     if (type === 'view_claude_log') return 'Claude Log';
     if (type === 'open_review_feedback') return 'Review Feedback';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
@@ -4323,6 +4354,10 @@ function runTimelineEventAction(action) {
     if (action.type === 'open_agent_log' && action.issue_number) {
         const label = action.label ? String(action.label).replace(/^View\s+/, '') : 'Most Recent Session Log';
         openAgentLogAction(action.issue_number, action.run_dir || null, label);
+        return;
+    }
+    if (action.type === 'view_session_prompt' && action.issue_number) {
+        viewSessionPrompt(action.issue_number, action.run_dir || null);
         return;
     }
     if (action.type === 'view_claude_log' && action.issue_number) {

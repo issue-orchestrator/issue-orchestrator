@@ -15,7 +15,8 @@ from issue_orchestrator.control.session_controller import SessionController, Ses
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.domain.models import SessionStatus, CompletionRecord, CompletionOutcome, RequestedAction
-from issue_orchestrator.ports import NullEventSink
+from issue_orchestrator.events import EventName
+from issue_orchestrator.ports import InMemoryEventSink, NullEventSink
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
@@ -148,8 +149,39 @@ class TestSessionControllerTerminated:
         provider_dir.mkdir(parents=True, exist_ok=True)
         (provider_dir / "stdout.log").write_text("provider output line\n")
 
-        tail = controller._get_session_log_tail(run_dir)
+        tail = controller._get_session_log_tail(issue_number=123, run_dir=run_dir)
         assert "provider output line" in tail
+
+    def test_artifact_lookup_event_is_run_scoped(self, tmp_path: Path):
+        """Artifact lookup event must include run_dir for timeline actions."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = None
+        events = InMemoryEventSink()
+        controller = SessionController(
+            completion_processor=processor,
+            events=events,
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
+        worktree = tmp_path / "wt-artifact-lookup"
+        worktree.mkdir(parents=True, exist_ok=True)
+
+        decision = controller.decide_outcome(
+            observation=SessionObservationResult.terminated(runtime_minutes=1.0),
+            worktree_path=worktree,
+            issue_number=4057,
+            issue_title="Test Issue",
+            session_name="issue-4057",
+        )
+        assert decision.status == SessionStatus.FAILED
+
+        event = next(
+            e for e in events.events
+            if e.event_type == EventName.SESSION_ARTIFACT_LOOKUP
+            and e.data.get("issue_number") == 4057
+        )
+        assert isinstance(event.data.get("run_dir"), str)
+        assert event.data["run_dir"]
 
     def test_resolve_run_dir_prefers_completion_session_name_over_terminal_id(self, tmp_path: Path):
         """Run-dir resolution should follow completion path session name when terminal id differs."""
@@ -588,3 +620,54 @@ class TestSessionControllerValidationCaching:
 
         # Command runner should NOT have been called
         assert len(command_runner.run_calls) == 0
+
+    def test_validation_failure_event_includes_source_and_reason(self, tmp_path):
+        """Validation failure events should include source + concise reason."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+
+        command_runner = MockCommandRunner(
+            returncode=1,
+            stderr="/bin/sh: .venv/bin/python: No such file or directory",
+        )
+        working_copy = MockWorkingCopy(head_sha="deadbeef1234567890")
+        events = InMemoryEventSink()
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=events,
+            session_output=FileSystemSessionOutput(),
+            working_copy=working_copy,
+            command_runner=command_runner,
+            validation_cmd="make validate",
+            validation_timeout_seconds=60,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        # Trigger local venv prep path for make-based commands.
+        (worktree / "Makefile").write_text("validate:\n\t.venv/bin/python -V\n", encoding="utf-8")
+
+        decision = controller.decide_outcome(
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.VALIDATION_FAILED
+        assert (worktree / ".venv").exists()
+
+        failure_event = next(
+            event
+            for event in events.events
+            if event.event_type == EventName.SESSION_VALIDATION_FAILED
+        )
+        reason = str(failure_event.data.get("reason") or "")
+        assert "orchestrator_publish_gate" in reason
+        assert ".venv" in reason
