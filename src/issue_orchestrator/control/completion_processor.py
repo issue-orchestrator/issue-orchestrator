@@ -1354,52 +1354,95 @@ class CompletionProcessor:
             require_validation=require_validation,
         )
         if existing_outcome:
-            review_run_dir = self._resolve_review_exchange_run_dir(
-                exchange_outcome=existing_outcome,
-                worktree=worktree,
-                session_name=session_name,
-            )
-            if review_run_dir is None:
-                raise RuntimeError(
-                    f"review.started requires run_dir: issue={issue_number} session={session_name}"
-                )
-            self._emit_review_started(
-                issue_number=issue_number,
-                reviewer_label=reviewer_label,
+            return self._handle_cached_review_exchange_outcome(
                 exchange_mode=exchange_mode,
-                run_dir=review_run_dir,
+                existing_outcome=existing_outcome,
+                issue_number=issue_number,
+                session_name=session_name,
+                worktree=worktree,
+                reviewer_label=reviewer_label,
+                errors=errors,
+                actions_taken=actions_taken,
             )
-            if existing_outcome.status == "ok":
-                actions_taken.append("Review exchange passed (cached)")
-                reviewer_summary = (
-                    existing_outcome.reviewer_response.response_text
-                    if getattr(existing_outcome, "reviewer_response", None)
-                    else "Review approved via cached exchange summary"
-                )
-                self._emit_review_outcome(
-                    issue_number=issue_number,
-                    reviewer_label=reviewer_label,
-                    exchange_mode=exchange_mode,
-                    approved=True,
-                    rounds=getattr(existing_outcome, "rounds", None),
-                    summary=reviewer_summary,
-                    run_dir=review_run_dir,
-                )
-                return exchange_mode, existing_outcome, False
+        logger.info("Review exchange mode selected: %s", exchange_mode)
+        return self._run_fresh_review_exchange(
+            exchange_mode=exchange_mode,
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+            reviewer_label=reviewer_label,
+            errors=errors,
+            actions_taken=actions_taken,
+        )
+
+    def _handle_cached_review_exchange_outcome(
+        self,
+        *,
+        exchange_mode: str,
+        existing_outcome: Any,
+        issue_number: int,
+        session_name: str | None,
+        worktree: Path,
+        reviewer_label: str | None,
+        errors: list[str],
+        actions_taken: list[str],
+    ) -> tuple[str, Any, bool]:
+        review_run_dir = self._resolve_required_review_run_dir(
+            exchange_outcome=existing_outcome,
+            worktree=worktree,
+            session_name=session_name,
+            issue_number=issue_number,
+        )
+        self._emit_review_started(
+            issue_number=issue_number,
+            reviewer_label=reviewer_label,
+            exchange_mode=exchange_mode,
+            run_dir=review_run_dir,
+        )
+        if existing_outcome.status == "ok":
+            actions_taken.append("Review exchange passed (cached)")
+            reviewer_summary = (
+                existing_outcome.reviewer_response.response_text
+                if getattr(existing_outcome, "reviewer_response", None)
+                else "Review approved via cached exchange summary"
+            )
             self._emit_review_outcome(
                 issue_number=issue_number,
                 reviewer_label=reviewer_label,
                 exchange_mode=exchange_mode,
-                approved=False,
+                approved=True,
                 rounds=getattr(existing_outcome, "rounds", None),
-                summary=f"Review exchange halted: {existing_outcome.reason}",
+                summary=reviewer_summary,
                 run_dir=review_run_dir,
             )
-            errors.append(
-                f"review_exchange: {existing_outcome.status} ({existing_outcome.reason})"
-            )
-            return exchange_mode, existing_outcome, True
-        logger.info("Review exchange mode selected: %s", exchange_mode)
+            return exchange_mode, existing_outcome, False
+        self._emit_review_outcome(
+            issue_number=issue_number,
+            reviewer_label=reviewer_label,
+            exchange_mode=exchange_mode,
+            approved=False,
+            rounds=getattr(existing_outcome, "rounds", None),
+            summary=f"Review exchange halted: {existing_outcome.reason}",
+            run_dir=review_run_dir,
+        )
+        errors.append(f"review_exchange: {existing_outcome.status} ({existing_outcome.reason})")
+        return exchange_mode, existing_outcome, True
+
+    def _run_fresh_review_exchange(
+        self,
+        *,
+        exchange_mode: str,
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
+        session_name: str | None,
+        agent_label: str | None,
+        reviewer_label: str | None,
+        errors: list[str],
+        actions_taken: list[str],
+    ) -> tuple[str, Any, bool]:
         review_started_run_dir: Path | None = None
 
         def _on_review_exchange_started(started_run_dir: Path) -> None:
@@ -1420,15 +1463,12 @@ class CompletionProcessor:
             agent_label=agent_label,
             on_started=_on_review_exchange_started,
         )
-        review_run_dir = self._resolve_review_exchange_run_dir(
+        review_run_dir = self._resolve_required_review_run_dir(
             exchange_outcome=exchange_result,
             worktree=worktree,
             session_name=session_name,
+            issue_number=issue_number,
         )
-        if review_run_dir is None:
-            raise RuntimeError(
-                f"review.started requires run_dir: issue={issue_number} session={session_name}"
-            )
         if review_started_run_dir is None:
             self._emit_review_started(
                 issue_number=issue_number,
@@ -1446,10 +1486,9 @@ class CompletionProcessor:
                 summary=f"Review exchange halted: {exchange_result.reason}",
                 run_dir=review_run_dir,
             )
-            errors.append(
-                f"review_exchange: {exchange_result.status} ({exchange_result.reason})"
-            )
+            errors.append(f"review_exchange: {exchange_result.status} ({exchange_result.reason})")
             return exchange_mode, exchange_result, True
+
         actions_taken.append("Review exchange passed")
         reviewer_summary = (
             exchange_result.reviewer_response.response_text
@@ -1465,21 +1504,51 @@ class CompletionProcessor:
             summary=reviewer_summary,
             run_dir=review_run_dir,
         )
-        if session_name and exchange_result.summary:
-            validation_record_path: Path | None = None
-            if exchange_result.exchange_dir:
-                candidate = exchange_result.exchange_dir.parent / "validation-record.json"
-                # Store the expected validation record path even if it doesn't exist yet.
-                # The reviewer may write a validation record during review exchange, or the
-                # validation gate may write it afterwards. We check if it exists when loading.
-                validation_record_path = candidate
-            self.session_output.store_review_exchange_summary(
-                worktree,
-                session_name,
-                exchange_result.summary,
-                validation_record_path=validation_record_path,
-            )
+        self._store_review_exchange_summary(
+            worktree=worktree,
+            session_name=session_name,
+            exchange_result=exchange_result,
+        )
         return exchange_mode, exchange_result, False
+
+    def _resolve_required_review_run_dir(
+        self,
+        *,
+        exchange_outcome: Any | None,
+        worktree: Path,
+        session_name: str | None,
+        issue_number: int,
+    ) -> Path:
+        review_run_dir = self._resolve_review_exchange_run_dir(
+            exchange_outcome=exchange_outcome,
+            worktree=worktree,
+            session_name=session_name,
+        )
+        if review_run_dir is None:
+            raise RuntimeError(
+                f"review.started requires run_dir: issue={issue_number} session={session_name}"
+            )
+        return review_run_dir
+
+    def _store_review_exchange_summary(
+        self,
+        *,
+        worktree: Path,
+        session_name: str | None,
+        exchange_result: Any,
+    ) -> None:
+        if not session_name or not exchange_result.summary:
+            return
+        validation_record_path: Path | None = None
+        if exchange_result.exchange_dir:
+            # The record may be written by reviewer loop or by validation gate later.
+            validation_record_path = exchange_result.exchange_dir.parent / "validation-record.json"
+        self.session_output.store_review_exchange_summary(
+            worktree,
+            session_name,
+            exchange_result.summary,
+            validation_record_path=validation_record_path,
+        )
 
     def _resolve_review_exchange_run_dir(
         self,

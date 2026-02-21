@@ -16,7 +16,6 @@ import argparse
 import logging
 import os
 import signal
-import subprocess
 import sys
 import threading
 import time
@@ -27,6 +26,7 @@ from typing import Any
 import uvicorn
 
 from .control_api import control_app
+from ..execution.process_control import ManagedProcess, list_processes_matching, spawn_tray_helper
 from ..observation.instance_detector import write_dashboard_pid, clear_dashboard_pid
 
 logger = logging.getLogger(__name__)
@@ -38,41 +38,20 @@ _reaper_stop = threading.Event()
 class _TrayProcessHandle:
     """Handle for tray helper subprocess lifecycle."""
 
-    def __init__(self, process: subprocess.Popen[Any]) -> None:
+    def __init__(self, process: ManagedProcess) -> None:
         self._process = process
 
     def stop(self) -> None:
         """Stop tray helper process with terminate then kill fallback."""
         if self._process.poll() is not None:
             return
-        self._process.terminate()
-        try:
-            self._process.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            self._process.kill()
-            self._process.wait(timeout=2)
+        self._process.stop(graceful_timeout_seconds=2)
 
 
 def _cleanup_stale_tray_helpers(dashboard_url: str) -> None:
     """Terminate stale tray helpers targeting the same dashboard URL."""
-    try:
-        output = subprocess.check_output(
-            ["pgrep", "-af", "issue_orchestrator.entrypoints.tray"],
-            text=True,
-        )
-    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
-        return
-
     current_pid = os.getpid()
-    for line in output.splitlines():
-        parts = line.strip().split(maxsplit=1)
-        if not parts:
-            continue
-        try:
-            pid = int(parts[0])
-        except ValueError:
-            continue
-        cmd = parts[1] if len(parts) > 1 else ""
+    for pid, cmd in list_processes_matching("issue_orchestrator.entrypoints.tray"):
         if pid == current_pid:
             continue
         if f"--dashboard-url {dashboard_url}" not in cmd:
@@ -132,17 +111,7 @@ def _start_tray_icon(url: str) -> Any | None:
     try:
         if sys.platform == "darwin":
             _cleanup_stale_tray_helpers(url)
-            process = subprocess.Popen(
-                [
-                    sys.executable,
-                    "-m",
-                    "issue_orchestrator.entrypoints.tray",
-                    "--dashboard-url",
-                    url,
-                    "--owner-pid",
-                    str(os.getpid()),
-                ],
-            )
+            process = spawn_tray_helper(dashboard_url=url, owner_pid=os.getpid())
             time.sleep(0.15)
             if process.poll() is not None:
                 raise RuntimeError(f"tray helper exited immediately with code {process.returncode}")

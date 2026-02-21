@@ -251,66 +251,17 @@ def _extract_stream_json_text(lines: list[str]) -> list[str] | None:
     text_parts: list[str] = []
 
     for raw in lines:
-        candidate = raw.strip()
-        if not candidate or not candidate.startswith("{"):
+        record = _parse_stream_json_record(raw)
+        if record is None:
             continue
-        try:
-            record = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-
-        if not isinstance(record, dict):
-            continue
-        event_type = record.get("type")
-        if not isinstance(event_type, str):
-            continue
-
-        if event_type == "stream_event":
+        if _append_stream_event_text(record, text_parts):
             saw_stream_json = True
-            event = record.get("event")
-            if not isinstance(event, dict):
-                continue
-            if event.get("type") != "content_block_delta":
-                continue
-            delta = event.get("delta")
-            if not isinstance(delta, dict):
-                continue
-            if delta.get("type") != "text_delta":
-                continue
-            chunk = delta.get("text")
-            if isinstance(chunk, str) and chunk:
-                text_parts.append(chunk)
             continue
-
-        if event_type == "assistant":
+        if _append_assistant_text(record, text_parts):
             saw_stream_json = True
-            # Fallback only when deltas are unavailable.
-            if text_parts:
-                continue
-            message = record.get("message")
-            if not isinstance(message, dict):
-                continue
-            content = message.get("content")
-            if not isinstance(content, list):
-                continue
-            for block in content:
-                if not isinstance(block, dict):
-                    continue
-                if block.get("type") != "text":
-                    continue
-                text = block.get("text")
-                if isinstance(text, str) and text:
-                    text_parts.append(text)
             continue
-
-        if event_type == "result":
+        if _append_result_text(record, text_parts):
             saw_stream_json = True
-            # Fallback only when no assistant/content deltas were seen.
-            if text_parts:
-                continue
-            result_text = record.get("result")
-            if isinstance(result_text, str) and result_text:
-                text_parts.append(result_text)
 
     if not saw_stream_json:
         return None
@@ -319,6 +270,70 @@ def _extract_stream_json_text(lines: list[str]) -> list[str] | None:
     if not transcript:
         return []
     return transcript.splitlines()
+
+
+def _parse_stream_json_record(raw: str) -> dict[str, Any] | None:
+    candidate = raw.strip()
+    if not candidate or not candidate.startswith("{"):
+        return None
+    try:
+        record = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    event_type = record.get("type")
+    if not isinstance(event_type, str):
+        return None
+    return record
+
+
+def _append_stream_event_text(record: dict[str, Any], text_parts: list[str]) -> bool:
+    if record.get("type") != "stream_event":
+        return False
+    event = record.get("event")
+    if not isinstance(event, dict) or event.get("type") != "content_block_delta":
+        return True
+    delta = event.get("delta")
+    if not isinstance(delta, dict) or delta.get("type") != "text_delta":
+        return True
+    chunk = delta.get("text")
+    if isinstance(chunk, str) and chunk:
+        text_parts.append(chunk)
+    return True
+
+
+def _append_assistant_text(record: dict[str, Any], text_parts: list[str]) -> bool:
+    if record.get("type") != "assistant":
+        return False
+    # Fallback only when deltas are unavailable.
+    if text_parts:
+        return True
+    message = record.get("message")
+    if not isinstance(message, dict):
+        return True
+    content = message.get("content")
+    if not isinstance(content, list):
+        return True
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text:
+            text_parts.append(text)
+    return True
+
+
+def _append_result_text(record: dict[str, Any], text_parts: list[str]) -> bool:
+    if record.get("type") != "result":
+        return False
+    # Fallback only when no assistant/content deltas were seen.
+    if text_parts:
+        return True
+    result_text = record.get("result")
+    if isinstance(result_text, str) and result_text:
+        text_parts.append(result_text)
+    return True
 
 
 # Create FastAPI app
@@ -3249,8 +3264,7 @@ async def reset_and_retry(request: Request) -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..control.actions import AddLabelAction
-    from ..control.maintenance import reset_issue, ResetResult
+    from ..control.maintenance import reset_issue
 
     try:
         body = await request.json()
@@ -3275,138 +3289,25 @@ async def reset_and_retry(request: Request) -> JSONResponse:
     scratch_pending_label = lm.reset_retry_scratch_pending
 
     for issue_number in issue_numbers:
-        try:
-            # Get current labels for full orchestrator label cleanup
-            current_labels = repository_host.get_issue_labels(issue_number)
-
-            result: ResetResult = reset_issue(
-                issue_number=issue_number,
-                config=config,
-                worktree_manager=deps.worktree_manager,
-                working_copy=deps.working_copy,
-                action_applier=deps.action_applier,
-                label_manager=lm,
-                current_labels=current_labels,
-                session_history=state.session_history,
-                completed_today=state.completed_today,
-                label_store=deps.label_store,
-            )
-
-            if result.success:
-                pending_labels_to_add = [pending_label]
-                if from_scratch:
-                    pending_labels_to_add.append(scratch_pending_label)
-
-                pending_label_failed: str | None = None
-                for label in pending_labels_to_add:
-                    pending_result = deps.action_applier.apply(
-                        AddLabelAction(
-                            issue_number=issue_number,
-                            label=label,
-                            reason="reset+retry requested via web",
-                        )
-                    )
-                    if not pending_result.success:
-                        pending_label_failed = pending_result.error or f"Failed to set {label}"
-                        break
-
-                if pending_label_failed is not None:
-                    failed.append({
-                        "issue": issue_number,
-                        "error": pending_label_failed,
-                        "partial": {
-                            "deleted_worktree": result.deleted_worktree,
-                            "deleted_branch": result.deleted_branch,
-                            "labels_removed": result.labels_removed,
-                            "from_scratch": from_scratch,
-                        },
-                    })
-                    continue
-
-                refreshed_issue = repository_host.get_issue(issue_number)
-                if refreshed_issue is None:
-                    failed.append({
-                        "issue": issue_number,
-                        "error": f"Issue #{issue_number} not found after reset",
-                        "partial": {
-                            "deleted_worktree": result.deleted_worktree,
-                            "deleted_branch": result.deleted_branch,
-                            "labels_removed": result.labels_removed,
-                        },
-                    })
-                    continue
-                outcome = queue_cache.upsert_refreshed_issue(refreshed_issue)
-                refreshed_at = time.time()
-                if outcome.status == QueueMutationStatus.ACCEPTED:
-                    state.issue_refresh_timestamps[issue_number] = refreshed_at
-                    state.issue_last_refreshed_at[issue_number] = refreshed_at
-                else:
-                    state.issue_refresh_timestamps.pop(issue_number, None)
-                    state.issue_last_refreshed_at.pop(issue_number, None)
-                    failed.append({
-                        "issue": issue_number,
-                        "error": f"Issue #{issue_number} is not queue-eligible after reset ({outcome.status.value})",
-                        "partial": {
-                            "deleted_worktree": result.deleted_worktree,
-                            "deleted_branch": result.deleted_branch,
-                            "labels_removed": result.labels_removed,
-                            "pending_labels": pending_labels_to_add,
-                            "from_scratch": from_scratch,
-                        },
-                    })
-                    continue
-                queue_cache.prune_refresh_timestamps()
-
-                if issue_number not in state.priority_queue:
-                    state.priority_queue.insert(0, issue_number)
-
-                deps.events.publish(
-                    make_trace_event(
-                        EventName.ISSUE_UNBLOCKED,
-                        {
-                            "issue_number": issue_number,
-                            "reason": "reset_retry_requested",
-                            "source": "web.reset-retry",
-                            "pending_label": pending_label,
-                            "pending_labels": pending_labels_to_add,
-                            "from_scratch": from_scratch,
-                        },
-                    )
-                )
-
-                reset_results.append({
-                    "issue": result.issue_number,
-                    "deleted_worktree": result.deleted_worktree,
-                    "deleted_branch": result.deleted_branch,
-                    "labels_removed": result.labels_removed,
-                    "pending_label": pending_label,
-                    "pending_labels": pending_labels_to_add,
-                    "from_scratch": from_scratch,
-                    "queued_now": True,
-                })
-                logger.info(
-                    "[reset-retry] Reset issue #%d: worktree=%s branch=%s labels=%s pending=%s from_scratch=%s queued_now=true",
-                    issue_number,
-                    result.deleted_worktree or "(none)",
-                    result.deleted_branch or "(none)",
-                    result.labels_removed or "(none)",
-                    pending_label,
-                    from_scratch,
-                )
-            else:
-                failed.append({
-                    "issue": issue_number,
-                    "error": result.error or "Unknown error",
-                    "partial": {
-                        "deleted_worktree": result.deleted_worktree,
-                        "deleted_branch": result.deleted_branch,
-                        "labels_removed": result.labels_removed,
-                    },
-                })
-
-        except Exception as e:
-            logger.error("[reset-retry] Failed to reset issue #%d: %s", issue_number, e)
-            failed.append({"issue": issue_number, "error": str(e)})
+        success_payload, failure_payload = _reset_and_retry_issue(
+            issue_number=issue_number,
+            from_scratch=from_scratch,
+            pending_label=pending_label,
+            scratch_pending_label=scratch_pending_label,
+            repository_host=repository_host,
+            queue_cache=queue_cache,
+            state=state,
+            deps=deps,
+            config=config,
+            reset_issue_fn=reset_issue,
+        )
+        if success_payload is not None:
+            reset_results.append(success_payload)
+            continue
+        if failure_payload is not None:
+            failed.append(failure_payload)
+            continue
+        failed.append({"issue": issue_number, "error": "Unknown reset+retry failure"})
 
     return JSONResponse({
         "reset": reset_results,
@@ -3414,6 +3315,221 @@ async def reset_and_retry(request: Request) -> JSONResponse:
         "from_scratch": from_scratch,
         "refresh_triggered": False,
     })
+
+
+def _reset_and_retry_issue(  # noqa: PLR0913
+    *,
+    issue_number: int,
+    from_scratch: bool,
+    pending_label: str,
+    scratch_pending_label: str,
+    repository_host: Any,
+    queue_cache: QueueCache,
+    state: Any,
+    deps: Any,
+    config: Any,
+    reset_issue_fn: Callable[..., Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    from ..control.actions import AddLabelAction
+
+    try:
+        current_labels = repository_host.get_issue_labels(issue_number)
+        result = reset_issue_fn(
+            issue_number=issue_number,
+            config=config,
+            worktree_manager=deps.worktree_manager,
+            working_copy=deps.working_copy,
+            action_applier=deps.action_applier,
+            label_manager=deps.label_manager,
+            current_labels=current_labels,
+            session_history=state.session_history,
+            completed_today=state.completed_today,
+            label_store=deps.label_store,
+        )
+        if not result.success:
+            return None, _make_reset_failure(issue_number, result, result.error or "Unknown error")
+
+        pending_labels_to_add = _pending_labels_for_retry(
+            from_scratch=from_scratch,
+            pending_label=pending_label,
+            scratch_pending_label=scratch_pending_label,
+        )
+        pending_label_error = _apply_reset_retry_pending_labels(
+            issue_number=issue_number,
+            labels=pending_labels_to_add,
+            action_applier=deps.action_applier,
+            add_label_action_cls=AddLabelAction,
+        )
+        if pending_label_error is not None:
+            failure = _make_reset_failure(issue_number, result, pending_label_error, from_scratch=from_scratch)
+            return None, failure
+
+        enqueue_error = _enqueue_reset_retry_issue(
+            issue_number=issue_number,
+            repository_host=repository_host,
+            queue_cache=queue_cache,
+            state=state,
+            pending_labels_to_add=pending_labels_to_add,
+            from_scratch=from_scratch,
+            result=result,
+        )
+        if enqueue_error is not None:
+            return None, enqueue_error
+
+        _emit_reset_retry_unblocked(
+            issue_number=issue_number,
+            from_scratch=from_scratch,
+            pending_label=pending_label,
+            pending_labels_to_add=pending_labels_to_add,
+            events=deps.events,
+        )
+        success = _make_reset_success(issue_number, result, from_scratch, pending_label, pending_labels_to_add)
+        logger.info(
+            "[reset-retry] Reset issue #%d: worktree=%s branch=%s labels=%s pending=%s from_scratch=%s queued_now=true",
+            issue_number,
+            result.deleted_worktree or "(none)",
+            result.deleted_branch or "(none)",
+            result.labels_removed or "(none)",
+            pending_label,
+            from_scratch,
+        )
+        return success, None
+    except Exception as exc:
+        logger.error("[reset-retry] Failed to reset issue #%d: %s", issue_number, exc)
+        return None, {"issue": issue_number, "error": str(exc)}
+
+
+def _pending_labels_for_retry(
+    *,
+    from_scratch: bool,
+    pending_label: str,
+    scratch_pending_label: str,
+) -> list[str]:
+    labels = [pending_label]
+    if from_scratch:
+        labels.append(scratch_pending_label)
+    return labels
+
+
+def _apply_reset_retry_pending_labels(
+    *,
+    issue_number: int,
+    labels: list[str],
+    action_applier: Any,
+    add_label_action_cls: Any,
+) -> str | None:
+    for label in labels:
+        result = action_applier.apply(
+            add_label_action_cls(
+                issue_number=issue_number,
+                label=label,
+                reason="reset+retry requested via web",
+            )
+        )
+        if not result.success:
+            return result.error or f"Failed to set {label}"
+    return None
+
+
+def _enqueue_reset_retry_issue(
+    *,
+    issue_number: int,
+    repository_host: Any,
+    queue_cache: QueueCache,
+    state: Any,
+    pending_labels_to_add: list[str],
+    from_scratch: bool,
+    result: Any,
+) -> dict[str, Any] | None:
+    refreshed_issue = repository_host.get_issue(issue_number)
+    if refreshed_issue is None:
+        return _make_reset_failure(issue_number, result, f"Issue #{issue_number} not found after reset")
+
+    outcome = queue_cache.upsert_refreshed_issue(refreshed_issue)
+    refreshed_at = time.time()
+    if outcome.status == QueueMutationStatus.ACCEPTED:
+        state.issue_refresh_timestamps[issue_number] = refreshed_at
+        state.issue_last_refreshed_at[issue_number] = refreshed_at
+        queue_cache.prune_refresh_timestamps()
+        if issue_number not in state.priority_queue:
+            state.priority_queue.insert(0, issue_number)
+        return None
+
+    state.issue_refresh_timestamps.pop(issue_number, None)
+    state.issue_last_refreshed_at.pop(issue_number, None)
+    return _make_reset_failure(
+        issue_number,
+        result,
+        f"Issue #{issue_number} is not queue-eligible after reset ({outcome.status.value})",
+        pending_labels=pending_labels_to_add,
+        from_scratch=from_scratch,
+    )
+
+
+def _emit_reset_retry_unblocked(
+    *,
+    issue_number: int,
+    from_scratch: bool,
+    pending_label: str,
+    pending_labels_to_add: list[str],
+    events: Any,
+) -> None:
+    events.publish(
+        make_trace_event(
+            EventName.ISSUE_UNBLOCKED,
+            {
+                "issue_number": issue_number,
+                "reason": "reset_retry_requested",
+                "source": "web.reset-retry",
+                "pending_label": pending_label,
+                "pending_labels": pending_labels_to_add,
+                "from_scratch": from_scratch,
+            },
+        )
+    )
+
+
+def _make_reset_success(
+    issue_number: int,
+    result: Any,
+    from_scratch: bool,
+    pending_label: str,
+    pending_labels_to_add: list[str],
+) -> dict[str, Any]:
+    return {
+        "issue": issue_number,
+        "deleted_worktree": result.deleted_worktree,
+        "deleted_branch": result.deleted_branch,
+        "labels_removed": result.labels_removed,
+        "pending_label": pending_label,
+        "pending_labels": pending_labels_to_add,
+        "from_scratch": from_scratch,
+        "queued_now": True,
+    }
+
+
+def _make_reset_failure(
+    issue_number: int,
+    result: Any,
+    error: str,
+    *,
+    pending_labels: list[str] | None = None,
+    from_scratch: bool | None = None,
+) -> dict[str, Any]:
+    partial: dict[str, Any] = {
+        "deleted_worktree": result.deleted_worktree,
+        "deleted_branch": result.deleted_branch,
+        "labels_removed": result.labels_removed,
+    }
+    if pending_labels:
+        partial["pending_labels"] = pending_labels
+    if from_scratch is not None:
+        partial["from_scratch"] = from_scratch
+    return {
+        "issue": issue_number,
+        "error": error,
+        "partial": partial,
+    }
 
 
 @app.get("/api/debug")
