@@ -66,6 +66,8 @@ class DashboardViewModel:
     agents: dict[str, Any]
     agent_names: list[str]
 
+    provider_outages: list[dict[str, Any]]
+
     def template_context(self) -> dict[str, Any]:
         return {
             "issues": self.issues,
@@ -103,6 +105,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_outages": self.provider_outages,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -124,6 +127,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerOutages": self.provider_outages,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -163,6 +167,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_outages": self.provider_outages,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -975,6 +980,36 @@ def _get_e2e_status(config) -> dict[str, Any]:
     }
 
 
+def _build_provider_outages(orchestrator) -> list[dict[str, Any]]:
+    """Build provider outage data from circuit breaker state."""
+    if not orchestrator or not hasattr(orchestrator, "deps"):
+        return []
+
+    try:
+        provider_resilience = orchestrator.deps.provider_resilience
+        now = datetime.now(timezone.utc)
+        outages = []
+
+        for state in provider_resilience.store.list_all():
+            is_open = state.open_until is not None and state.open_until > now
+            if is_open:
+                cooldown_seconds = int((state.open_until - now).total_seconds())
+                outages.append({
+                    "provider": state.provider,
+                    "open": True,
+                    "open_until": state.open_until.isoformat(),
+                    "cooldown_seconds": cooldown_seconds,
+                    "cooldown_label": _format_age_seconds(cooldown_seconds),
+                    "consecutive_outages": state.consecutive_outages,
+                    "last_error_summary": state.last_error_summary or "Unknown error",
+                    "updated_at": state.updated_at.isoformat(),
+                })
+
+        return outages
+    except Exception:
+        return []
+
+
 def _build_e2e_view_model(
     e2e_status: dict[str, Any],
     e2e_items: list[dict[str, Any]],
@@ -1147,6 +1182,8 @@ def build_dashboard_view_model(
     github_owner = repo.split("/")[0] if repo and "/" in repo else ""
     github_repo = repo.split("/")[1] if repo and "/" in repo else ""
 
+    provider_outages = _build_provider_outages(orchestrator)
+
     queue_refresh_seconds = config.queue_refresh_seconds if config else 600
     queue_last_refresh_age = (
         max(0.0, datetime.now(timezone.utc).timestamp() - state.queue_last_refresh_at)
@@ -1243,4 +1280,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_outages=provider_outages,
     )

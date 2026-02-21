@@ -454,3 +454,96 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_includes_provider_outages():
+    """Test that provider circuit breaker status is surfaced in dashboard."""
+    from datetime import timedelta, timezone
+    from issue_orchestrator.ports.provider_resilience import ProviderCircuitState, InMemoryProviderCircuitStore
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+    from issue_orchestrator.infra.config import ProviderResilienceConfig
+    from issue_orchestrator.ports import NullEventSink
+    from dataclasses import dataclass
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    # Set up provider circuit breaker with an active outage
+    circuit_store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    open_until = now + timedelta(seconds=300)
+
+    circuit_state = ProviderCircuitState(
+        provider="anthropic",
+        open_until=open_until,
+        consecutive_outages=2,
+        last_error_summary="API rate limit exceeded",
+        updated_at=now,
+    )
+    circuit_store.save(circuit_state)
+
+    # Create provider resilience manager
+    resilience_config = ProviderResilienceConfig()
+    provider_resilience = ProviderResilienceManager(
+        config=resilience_config,
+        store=circuit_store,
+        events=NullEventSink(),
+    )
+
+    # Create minimal orchestrator with deps
+    @dataclass
+    class MinimalDeps:
+        provider_resilience: ProviderResilienceManager
+
+    @dataclass
+    class MinimalOrchestrator:
+        config: object
+        state: object
+        deps: MinimalDeps
+        shutdown_requested: bool = False
+
+    deps = MinimalDeps(provider_resilience=provider_resilience)
+    orchestrator = MinimalOrchestrator(config=config, state=state, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Verify provider outage is surfaced
+    assert view_model.provider_outages is not None
+    assert len(view_model.provider_outages) == 1
+
+    outage = view_model.provider_outages[0]
+    assert outage["provider"] == "anthropic"
+    assert outage["open"] is True
+    assert outage["consecutive_outages"] == 2
+    assert outage["last_error_summary"] == "API rate limit exceeded"
+    assert outage["cooldown_seconds"] > 0
+    assert "cooldown_label" in outage
+
+    # Verify it's in dashboard_data
+    dashboard_data = view_model.dashboard_data()
+    assert "providerOutages" in dashboard_data
+    assert len(dashboard_data["providerOutages"]) == 1
+
+
+def test_view_model_empty_provider_outages_when_no_orchestrator():
+    """Test that provider_outages is empty when orchestrator has no deps."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Should be empty list when orchestrator has no deps with provider_resilience
+    assert view_model.provider_outages == []
