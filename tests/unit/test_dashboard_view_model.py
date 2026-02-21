@@ -454,3 +454,78 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_includes_provider_circuit_status():
+    from datetime import timezone
+    from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+    from issue_orchestrator.infra.config import ProviderResilienceConfig
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    # Create provider circuit store with test data
+    circuit_store = InMemoryProviderCircuitStore()
+    circuit_store.save(ProviderCircuitState(
+        provider="anthropic",
+        open_until=datetime.now(timezone.utc) + timedelta(minutes=5),
+        consecutive_outages=2,
+        last_error_summary="API timeout after 3 attempts",
+        updated_at=datetime.now(timezone.utc),
+    ))
+    circuit_store.save(ProviderCircuitState(
+        provider="openai",
+        open_until=None,
+        consecutive_outages=0,
+        last_error_summary=None,
+        updated_at=datetime.now(timezone.utc),
+    ))
+
+    # Create a mock deps object with provider_resilience
+    @dataclass
+    class _MockDeps:
+        provider_resilience: ProviderResilienceManager
+
+    # Create stub orchestrator with deps
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    # Create a mock events sink (EventSink protocol)
+    @dataclass
+    class _MockEvents:
+        def publish(self, event):
+            pass
+
+    resilience_config = ProviderResilienceConfig()
+    provider_resilience = ProviderResilienceManager(
+        config=resilience_config,
+        store=circuit_store,
+        events=_MockEvents(),
+    )
+    orchestrator.deps = _MockDeps(provider_resilience=provider_resilience)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuits" in dashboard_data
+
+    circuits = dashboard_data["providerCircuits"]
+    assert len(circuits) == 2
+
+    anthropic_circuit = next((c for c in circuits if c["provider"] == "anthropic"), None)
+    assert anthropic_circuit is not None
+    assert anthropic_circuit["isOpen"] is True
+    assert anthropic_circuit["consecutiveOutages"] == 2
+    assert anthropic_circuit["lastErrorSummary"] == "API timeout after 3 attempts"
+    assert "openUntil" in anthropic_circuit
+
+    openai_circuit = next((c for c in circuits if c["provider"] == "openai"), None)
+    assert openai_circuit is not None
+    assert openai_circuit["isOpen"] is False
+    assert openai_circuit["consecutiveOutages"] == 0

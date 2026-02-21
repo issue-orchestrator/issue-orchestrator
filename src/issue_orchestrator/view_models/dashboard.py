@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import json
 import time
@@ -66,6 +66,8 @@ class DashboardViewModel:
     agents: dict[str, Any]
     agent_names: list[str]
 
+    _provider_circuits: list[dict[str, Any]] = field(default_factory=list)
+
     def template_context(self) -> dict[str, Any]:
         return {
             "issues": self.issues,
@@ -108,7 +110,7 @@ class DashboardViewModel:
 
     def dashboard_data(self) -> dict[str, Any]:
         github_usage = gh_audit.get_live_usage_snapshot()
-        return {
+        data = {
             "startupComplete": self.startup_status == "complete",
             "paused": self.paused,
             "e2eRunning": bool(self.e2e_status.get("running")),
@@ -125,6 +127,10 @@ class DashboardViewModel:
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
         }
+        # Add provider circuit breaker status if available
+        if hasattr(self, "_provider_circuits"):
+            data["providerCircuits"] = self._provider_circuits
+        return data
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1043,6 +1049,33 @@ def _normalize_tab(active_tab: str) -> str:
     return "kanban"
 
 
+def _get_provider_circuit_status(orchestrator) -> list[dict[str, Any]]:
+    """Get provider circuit breaker status from orchestrator."""
+    if not orchestrator or not hasattr(orchestrator, "deps"):
+        return []
+
+    try:
+        provider_resilience = orchestrator.deps.provider_resilience
+        circuit_states = provider_resilience.store.list_all()
+
+        circuits = []
+        now = datetime.now(timezone.utc)
+        for state in circuit_states:
+            is_open = state.open_until is not None and state.open_until > now
+            circuits.append({
+                "provider": state.provider,
+                "isOpen": is_open,
+                "openUntil": state.open_until.isoformat() if state.open_until else None,
+                "consecutiveOutages": state.consecutive_outages,
+                "lastErrorSummary": state.last_error_summary,
+                "updatedAt": state.updated_at.isoformat(),
+            })
+        return circuits
+    except (AttributeError, Exception):
+        # If provider_resilience is not available or any error occurs, return empty list
+        return []
+
+
 def build_dashboard_view_model(
     orchestrator,
     queue_page: int = 1,
@@ -1206,6 +1239,8 @@ def build_dashboard_view_model(
             "refresh": refresh_status,
         }
 
+    provider_circuits = _get_provider_circuit_status(orchestrator)
+
     return DashboardViewModel(
         issues=issues,
         active_items=active_items,
@@ -1243,4 +1278,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        _provider_circuits=provider_circuits,
     )
