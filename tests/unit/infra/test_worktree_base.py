@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 from issue_orchestrator.infra.worktree_base import resolve_base_branch
@@ -48,13 +49,19 @@ def test_resolve_base_branch_falls_back_to_auto_detect():
         called["count"] += 1
         return "main"
 
-    result = resolve_base_branch(
-        Path("/repo"),
-        config_override=None,
-        default_branch_resolver=resolver,
-        env_override=None,
-    )
+    # Temporarily remove the env var if set
+    old_env = os.environ.pop("ORCHESTRATOR_WORKTREE_BASE_BRANCH", None)
+    try:
+        result = resolve_base_branch(
+            Path("/repo"),
+            config_override=None,
+            default_branch_resolver=resolver,
+            env_override=None,
+        )
 
-    assert result.branch == "main"
-    assert result.source == "auto_detect"
-    assert called["count"] == 1
+        assert result.branch == "main"
+        assert result.source == "auto_detect"
+        assert called["count"] == 1
+    finally:
+        if old_env is not None:
+            os.environ["ORCHESTRATOR_WORKTREE_BASE_BRANCH"] = old_env
