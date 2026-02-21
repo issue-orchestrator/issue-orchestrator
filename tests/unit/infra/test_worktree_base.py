@@ -41,7 +41,10 @@ def test_resolve_base_branch_uses_env_override():
     assert called["count"] == 0
 
 
-def test_resolve_base_branch_falls_back_to_auto_detect():
+def test_resolve_base_branch_falls_back_to_auto_detect(monkeypatch):
+    # Ensure no environment variable is set that would interfere
+    monkeypatch.delenv("ORCHESTRATOR_WORKTREE_BASE_BRANCH", raising=False)
+
     called = {"count": 0}
 
     def resolver(_: Path) -> str:
