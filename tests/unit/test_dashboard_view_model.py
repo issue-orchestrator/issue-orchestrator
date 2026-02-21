@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from typing import Any
+
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
     AgentConfig,
@@ -31,6 +33,7 @@ class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+    deps: Any = None
 
 
 def _make_config() -> Config:
@@ -454,3 +457,78 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_includes_provider_circuit_breaker_status():
+    from datetime import timezone
+    from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+    from issue_orchestrator.infra.config import ProviderResilienceConfig
+    from issue_orchestrator.ports.event_sink import NullEventSink
+    from issue_orchestrator.control.infra_services import InfraServices
+    from issue_orchestrator.control.orchestrator_deps import OrchestratorDeps
+    from unittest.mock import Mock
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    # Create circuit store with an open circuit
+    circuit_store = InMemoryProviderCircuitStore()
+    open_until = datetime.now(timezone.utc) + timedelta(minutes=5)
+    circuit_store.save(ProviderCircuitState(
+        provider="anthropic",
+        open_until=open_until,
+        consecutive_outages=2,
+        last_error_summary="API rate limit exceeded",
+        updated_at=datetime.now(timezone.utc),
+    ))
+
+    # Create provider resilience manager
+    resilience_config = ProviderResilienceConfig()
+    events = NullEventSink()
+    provider_resilience = ProviderResilienceManager(
+        config=resilience_config,
+        store=circuit_store,
+        events=events,
+    )
+
+    # Create minimal InfraServices with provider_resilience
+    infra_services = Mock(spec=InfraServices)
+    infra_services.provider_resilience = provider_resilience
+
+    # Create minimal OrchestratorDeps
+    deps = Mock(spec=OrchestratorDeps)
+    deps.provider_resilience = provider_resilience
+
+    # Create orchestrator with deps
+    orchestrator = _OrchestratorStub(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Verify circuit breaker status is included
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuitBreaker" in dashboard_data
+
+    cb_status = dashboard_data["providerCircuitBreaker"]
+    assert "circuits" in cb_status
+    assert "hasOpenCircuits" in cb_status
+    assert cb_status["hasOpenCircuits"] is True
+    assert len(cb_status["circuits"]) == 1
+
+    circuit = cb_status["circuits"][0]
+    assert circuit["provider"] == "anthropic"
+    assert circuit["isOpen"] is True
+    assert circuit["consecutiveOutages"] == 2
+    assert circuit["lastErrorSummary"] == "API rate limit exceeded"
+    assert circuit["openUntil"] is not None
+
+    # Verify it's also in scope_summary
+    scope = view_model.scope_summary
+    assert "provider_circuit_breaker" in scope
+    assert scope["provider_circuit_breaker"] == cb_status
