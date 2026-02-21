@@ -360,9 +360,14 @@ class TestStartup:
         orchestrator = create_test_orchestrator(sample_config, mock_repository_host, runner=runner)
         await orchestrator.startup()
 
-        # Should remove the interrupted retry guard label when relaunching
-        assert len(mock_repository_host.remove_label_calls) == 1
-        assert mock_repository_host.remove_label_calls[0] == (1, "io:auto-retried-interrupted-coding")
+        # Should clear retry-related guard labels when relaunching
+        removed_labels = {
+            (issue_number, label)
+            for issue_number, label in mock_repository_host.remove_label_calls
+        }
+        assert (1, "io:auto-retried-interrupted-coding") in removed_labels
+        assert (1, "reset-retry-pending") in removed_labels
+        assert (1, "reset-retry-scratch-pending") in removed_labels
         # Session should have been launched (check active_sessions)
         assert len(orchestrator.state.active_sessions) == 1
         assert orchestrator.state.active_sessions[0].issue.number == 1

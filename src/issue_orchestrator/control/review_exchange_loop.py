@@ -110,6 +110,15 @@ def run_review_exchange_loop(
     exchange_dir = run_dir / "review-exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
     session_output.update_manifest(run_dir, {"review_exchange_dir": str(exchange_dir)})
+    def _finalize_manifest(outcome: str) -> None:
+        session_output.update_manifest(
+            run_dir,
+            {
+                "ended_at": datetime.now(timezone.utc).isoformat(),
+                "outcome": outcome,
+            },
+        )
+
     if on_started is not None:
         on_started(run_dir)
 
@@ -147,8 +156,10 @@ def run_review_exchange_loop(
             emit=_emit,
         )
         if early_outcome is not None:
+            _finalize_manifest(early_outcome.status)
             return early_outcome
     except Exception as exc:
+        _finalize_manifest("failed")
         _emit(EventName.REVIEW_EXCHANGE_FAILED, {
             "issue_number": issue_number,
             "session_name": session_name,
@@ -166,6 +177,7 @@ def run_review_exchange_loop(
         "status": "stopped",
         "reason": "max_rounds_exceeded",
     })
+    _finalize_manifest("stopped")
     return ReviewExchangeOutcome(
         status="stopped",
         rounds=max_rounds,

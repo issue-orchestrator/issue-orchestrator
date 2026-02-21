@@ -229,11 +229,7 @@ else
 endif
 
 test-simulated: sync-deps
-ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/simulated_scenarios -x -q --tb=short $(PYTEST_TIMINGS)
-else
-	$(PYTEST) tests/simulated_scenarios -x -q --tb=short -n $(PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
-endif
 
 test-unit-cov:
 	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=term-missing -x -q --tb=short $(PYTEST_TIMINGS)
@@ -243,11 +239,7 @@ test-unit-cov-html:
 	@echo "Coverage report: open htmlcov/index.html"
 
 test-integration: sync-deps
-ifeq ($(PARALLEL),0)
 	$(PYTEST) tests/integration -x -q --tb=short $(PYTEST_TIMINGS)
-else
-	$(PYTEST) tests/integration -x -q --tb=short -n $(PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
-endif
 
 # Integration tests excluding those that require external infrastructure (GitHub token, etc.)
 # Used in pre-push validation where full infra may not be available

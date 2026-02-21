@@ -13,11 +13,11 @@ def test_cleanup_stale_tray_helpers_kills_matching_url() -> None:
     """Cleanup should terminate tray helpers for the same dashboard URL."""
     with (
         patch(
-            "issue_orchestrator.entrypoints.control_center.subprocess.check_output",
-            return_value=(
-                "1234 python -m issue_orchestrator.entrypoints.tray --dashboard-url http://127.0.0.1:19080/\n"
-                "5678 python -m issue_orchestrator.entrypoints.tray --dashboard-url http://127.0.0.1:29080/\n"
-            ),
+            "issue_orchestrator.entrypoints.control_center.list_processes_matching",
+            return_value=[
+                (1234, "python -m issue_orchestrator.entrypoints.tray --dashboard-url http://127.0.0.1:19080/"),
+                (5678, "python -m issue_orchestrator.entrypoints.tray --dashboard-url http://127.0.0.1:29080/"),
+            ],
         ),
         patch("issue_orchestrator.entrypoints.control_center.os.getpid", return_value=9999),
         patch("issue_orchestrator.entrypoints.control_center.os.kill") as kill_mock,
@@ -37,18 +37,17 @@ def test_start_tray_icon_starts_helper_process_on_macos() -> None:
         patch("issue_orchestrator.entrypoints.control_center.sys.platform", "darwin"),
         patch("issue_orchestrator.entrypoints.control_center._cleanup_stale_tray_helpers"),
         patch(
-            "issue_orchestrator.entrypoints.control_center.subprocess.Popen",
+            "issue_orchestrator.entrypoints.control_center.spawn_tray_helper",
             return_value=process,
-        ) as popen_mock,
+        ) as spawn_mock,
     ):
         result = control_center._start_tray_icon("http://localhost:19080/")  # noqa: SLF001
 
-    popen_mock.assert_called_once()
-    args = popen_mock.call_args.args[0]
-    assert "--owner-pid" in args
+    spawn_mock.assert_called_once()
+    assert spawn_mock.call_args.kwargs["dashboard_url"] == "http://localhost:19080/"
     assert result is not None
     result.stop()
-    process.terminate.assert_called_once_with()
+    process.stop.assert_called_once_with(graceful_timeout_seconds=2)
 
 
 def test_start_tray_icon_returns_none_when_helper_exits_immediately() -> None:
@@ -59,7 +58,7 @@ def test_start_tray_icon_returns_none_when_helper_exits_immediately() -> None:
     with (
         patch("issue_orchestrator.entrypoints.control_center.sys.platform", "darwin"),
         patch(
-            "issue_orchestrator.entrypoints.control_center.subprocess.Popen",
+            "issue_orchestrator.entrypoints.control_center.spawn_tray_helper",
             return_value=process,
         ),
     ):

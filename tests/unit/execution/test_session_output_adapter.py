@@ -308,7 +308,7 @@ class TestReviewExchangeSummary:
             session_output.load_review_exchange_summary(worktree, session_name) is None
         )
 
-    def test_load_review_exchange_summary_does_not_fallback_to_older_run(
+    def test_load_review_exchange_summary_falls_back_to_newest_run_with_summary(
         self, session_output, tmp_path
     ):
         import time
@@ -333,7 +333,10 @@ class TestReviewExchangeSummary:
         # Newest run has no summary yet.
         assert newer_run.run_dir.exists()
 
-        assert session_output.load_review_exchange_summary(worktree, session_name) is None
+        loaded = session_output.load_review_exchange_summary(worktree, session_name)
+        assert loaded is not None
+        assert loaded.summary["response_text"] == "stale"
+        assert loaded.exchange_dir == older_exchange
 
 
 class TestRunRetentionMetadata:

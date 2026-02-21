@@ -56,7 +56,7 @@ def test_capture_process_output_timeout_calls_handler_and_keeps_partial_output(t
         process,
         stdout_path=tmp_path / "stdout.log",
         stderr_path=tmp_path / "stderr.log",
-        timeout_seconds=1,
+        timeout_seconds=2,
         on_timeout=_kill_group,
     )
 

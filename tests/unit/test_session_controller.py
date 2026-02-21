@@ -133,8 +133,8 @@ class TestSessionControllerTerminated:
         assert not decision.completion_processed
         assert "without completion record" in decision.reason
 
-    def test_log_tail_falls_back_to_provider_runner_stdout_when_session_log_empty(self, tmp_path: Path):
-        """Diagnostics should read provider-runner stdout when ui-session.log has no content."""
+    def test_log_tail_uses_run_scoped_ui_session_log_only(self, tmp_path: Path):
+        """Diagnostics should rely on ui-session.log and not fallback to provider-runner logs."""
         processor = MockCompletionProcessor()
         controller = SessionController(
             completion_processor=processor,
@@ -150,7 +150,7 @@ class TestSessionControllerTerminated:
         (provider_dir / "stdout.log").write_text("provider output line\n")
 
         tail = controller._get_session_log_tail(issue_number=123, run_dir=run_dir)
-        assert "provider output line" in tail
+        assert tail == ""
 
     def test_artifact_lookup_event_is_run_scoped(self, tmp_path: Path):
         """Artifact lookup event must include run_dir for timeline actions."""

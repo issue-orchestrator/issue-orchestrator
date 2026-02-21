@@ -328,6 +328,11 @@ class SubprocessPlugin:
                 # ptyprocess can race with waitpid() under parallel load
                 # and raise when the child has already been reaped.
                 return False
+            except Exception as exc:
+                # pexpect may wrap waitpid races in ExceptionPexpect.
+                if exc.__class__.__name__ == "ExceptionPexpect":
+                    return False
+                raise
         # Fall back to kill(0) check for processes we don't track directly
         try:
             os.kill(pid, 0)

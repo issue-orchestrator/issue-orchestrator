@@ -60,7 +60,7 @@ def _start_run_with_artifacts(
     worktree = repo_root / f"wt-{issue_number}-{session_name}"
     worktree.mkdir(parents=True, exist_ok=True)
     run = session_output.start_run(worktree, session_name, issue_number=issue_number)
-    (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+    (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
     claude_log = run.run_dir / "claude.jsonl"
     claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
     completion_record = run.run_dir / "completion-agent_backend.json"
@@ -665,7 +665,7 @@ def test_run_scoped_artifact_usability_enforces_non_empty_log_and_run_dir(
         web.set_orchestrator(None)
 
 
-def test_run_scoped_log_action_offered_for_start_event_with_alternate_non_empty_log(
+def test_run_scoped_log_action_offered_for_start_event_with_non_empty_ui_session_log(
     sample_config,
     mock_repository_host,
 ):
@@ -675,10 +675,7 @@ def test_run_scoped_log_action_offered_for_start_event_with_alternate_non_empty_
     run_dir = _start_run_with_artifacts(
         sample_config.repo_root, issue_number=issue_number, session_name="issue-4062-code"
     )
-    Path(run_dir, "session.log").write_text("", encoding="utf-8")
-    provider_log = Path(run_dir) / "provider-runner" / "stdout.log"
-    provider_log.parent.mkdir(parents=True, exist_ok=True)
-    provider_log.write_text("provider output\n", encoding="utf-8")
+    Path(run_dir, "ui-session.log").write_text("provider output\n", encoding="utf-8")
     orch.state.cached_queue_issues = [
         Issue(number=issue_number, title="Empty log action guardrail", labels=["agent:backend"]),
     ]

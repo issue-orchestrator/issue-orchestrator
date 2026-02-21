@@ -452,7 +452,20 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
     Returns:
         Tuple of (command, timeout_seconds) or (None, 0) if not configured
     """
-    from ...infra.config import load_validation_config
+    from ...infra.config import load_validation_config, load_validation_config_from_file
+
+    # Prefer explicit config file path exported by launcher. This avoids
+    # failures when per-worktree .issue-orchestrator/config is unavailable.
+    config_path_env = get_env("CONFIG_PATH") or os.environ.get("ORCHESTRATOR_CONFIG_PATH")
+    if config_path_env:
+        try:
+            validation_config = load_validation_config_from_file(Path(config_path_env))
+        except FileNotFoundError as exc:
+            die(str(exc))
+        cmd = validation_config.get("cmd")
+        if cmd:
+            return cmd, validation_config.get("timeout_seconds", 300)
+        return None, 0
 
     # Read validation config from the worktree's selected config file.
     config_name = get_env("CONFIG_NAME") or os.environ.get("ORCHESTRATOR_CONFIG_NAME")

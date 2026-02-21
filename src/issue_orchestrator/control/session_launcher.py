@@ -336,20 +336,33 @@ class SessionLauncher:
         reachable — even when the target repo is a foreign (non-orchestrator)
         repository with no ``.venv``.
 
+        Also exports orchestrator ``src`` on ``PYTHONPATH`` so subprocess
+        commands launched from arbitrary worktree directories can import
+        ``issue_orchestrator`` without depending on editable installs.
+
         NOTE: The selected orchestrator config name is exported so ``agent-done``
         resolves validation from the same config file used by the launcher.
         """
         orch_bin = Path(sys.executable).parent
-        config_name = self.config.config_path.name if self.config.config_path else "default.yaml"
+        orch_src = Path(__file__).resolve().parents[2]
+        config_exports = ""
+        if self.config.config_path is not None:
+            config_name = self.config.config_path.name
+            config_path = str(self.config.config_path.resolve())
+            config_exports = (
+                f" {ENV_PREFIX}CONFIG_NAME='{config_name}'"
+                f" {ENV_PREFIX}CONFIG_PATH='{config_path}'"
+            )
         return (
             f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
             f" {ENV_PREFIX}SESSION_ID='{session_id}'"
             f" {ENV_PREFIX}AGENT_LABEL='{agent_label}'"
             f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
-            f" {ENV_PREFIX}CONFIG_NAME='{config_name}'"
+            f"{config_exports}"
             f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
             f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_dir}'"
             f" {ENV_PREFIX}RUN_DIR='{run_dir}'"
+            f' PYTHONPATH="{orch_src}:${{PYTHONPATH:-}}"'
             f' PATH="{orch_bin}:$PATH"'
         )
 

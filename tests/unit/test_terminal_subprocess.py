@@ -80,3 +80,24 @@ def test_process_alive_handles_waitpid_race(tmp_path, monkeypatch):
     plugin._children["issue-1"] = _FlakyChild()
 
     assert plugin._process_alive(4242, "issue-1") is False
+
+
+def test_process_alive_handles_pexpect_waitpid_race(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    worktree = repo_root / "wt"
+    worktree.mkdir(parents=True)
+    monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
+
+    class ExceptionPexpect(Exception):
+        pass
+
+    class _FlakyPexpectChild:
+        pid = 4343
+
+        def isalive(self) -> bool:
+            raise ExceptionPexpect("waitpid race wrapped by pexpect")
+
+    plugin = SubprocessPlugin()
+    plugin._children["issue-2"] = _FlakyPexpectChild()
+
+    assert plugin._process_alive(4343, "issue-2") is False

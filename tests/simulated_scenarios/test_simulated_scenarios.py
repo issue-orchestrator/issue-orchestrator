@@ -54,6 +54,7 @@ def _assert_run_dir_has_core_artifacts(run_dir: Path) -> None:
 
     # Agent output must be available via at least one canonical log path.
     log_candidates = (
+        run_dir / "ui-session.log",
         run_dir / "session.log",
         run_dir / "provider-runner" / "stdout.log",
         run_dir / "claude-session.jsonl",
@@ -339,6 +340,7 @@ def test_validation_failure_updates_run_manifest(scenario_repo: Path):
                 "validation_passed": False,
                 "validation_status": "failed",
             },
+            session_name_prefix="coding-",
         ) \
         .run()
 

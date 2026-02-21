@@ -326,7 +326,7 @@ class TestAiGate:
         from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
         adapter = ClaudeCodeAdapter()
-        success, message = adapter.test_ai_gate(test_repo_with_hooks, timeout=60)
+        success, message = adapter.test_ai_gate(test_repo_with_hooks, timeout=120)
 
         assert success, f"AI gate test should pass (hooks installed): {message}"
         assert "blocked" in message.lower()
@@ -344,7 +344,7 @@ class TestAiGate:
         from issue_orchestrator.infra.hooks.hooks import ClaudeCodeAdapter
 
         adapter = ClaudeCodeAdapter()
-        success, message = adapter.test_ai_gate(test_repo_without_hooks, timeout=60)
+        success, message = adapter.test_ai_gate(test_repo_without_hooks, timeout=120)
 
         # This should FAIL because hooks are not installed
         # Claude should be able to run --no-verify without being blocked

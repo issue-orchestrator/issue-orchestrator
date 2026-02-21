@@ -566,10 +566,17 @@ Timestamp: {self._now_iso()}
         updates = {
             "review_exchange_dir": str(exchange_dir),
             "review_exchange_summary_path": str(summary_path),
+            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "outcome": str(summary.get("status") or "completed"),
         }
         if stored_validation:
             updates["validation_record_path"] = str(stored_validation)
         self.update_manifest(run_dir, updates)
+        self._append_run_log_line(
+            run_dir,
+            f"review-exchange status={summary.get('status', 'unknown')} "
+            f"reason={summary.get('reason', '')}".strip(),
+        )
 
         return ReviewExchangeSummary(
             summary=summary,
@@ -583,9 +590,7 @@ Timestamp: {self._now_iso()}
         worktree_path: Path,
         session_name: str,
     ) -> ReviewExchangeSummary | None:
-        # Resolve only against the latest run for this session name.
-        # Falling back to older runs can reuse stale summaries from previous attempts,
-        # which misreports current review state after retries/restarts.
+        # Resolve against the newest run that has a review-exchange summary.
         base_dir = self.sessions_base_dir(worktree_path)
         if not base_dir.exists():
             return None
@@ -601,23 +606,24 @@ Timestamp: {self._now_iso()}
         )
         if not candidates:
             return None
-        run_dir = candidates[0]
-        manifest = self.read_manifest(run_dir) or {}
-        manifest_dir = manifest.get("review_exchange_dir")
-        exchange_dir = Path(manifest_dir) if manifest_dir else run_dir / REVIEW_EXCHANGE_DIR_NAME
-        summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
-        if not summary_path.exists():
-            return None
-        summary = self._read_json(summary_path)
-        if not isinstance(summary, dict):
-            return None
-        validation_path = run_dir / VALIDATION_RECORD_NAME
-        return ReviewExchangeSummary(
-            summary=summary,
-            exchange_dir=exchange_dir,
-            summary_path=summary_path,
-            validation_record_path=validation_path if validation_path.exists() else None,
-        )
+        for run_dir in candidates:
+            manifest = self.read_manifest(run_dir) or {}
+            manifest_dir = manifest.get("review_exchange_dir")
+            exchange_dir = Path(manifest_dir) if manifest_dir else run_dir / REVIEW_EXCHANGE_DIR_NAME
+            summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
+            if not summary_path.exists():
+                continue
+            summary = self._read_json(summary_path)
+            if not isinstance(summary, dict):
+                continue
+            validation_path = run_dir / VALIDATION_RECORD_NAME
+            return ReviewExchangeSummary(
+                summary=summary,
+                exchange_dir=exchange_dir,
+                summary_path=summary_path,
+                validation_record_path=validation_path if validation_path.exists() else None,
+            )
+        return None
 
     # -------------------------------------------------------------------------
     # Review Feedback (per-cycle storage for diagnostics)
@@ -898,6 +904,13 @@ Timestamp: {self._now_iso()}
     def _write_text(path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
+
+    @staticmethod
+    def _append_run_log_line(run_dir: Path, line: str) -> None:
+        log_path = run_dir / SESSION_LOG_NAME
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{line}\n")
 
     @staticmethod
     def _delete_tree(path: Path) -> None:
