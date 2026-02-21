@@ -4,7 +4,7 @@ import asyncio, logging, os, signal, threading, time
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
-from typing import TYPE_CHECKING, Optional, cast
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 if TYPE_CHECKING:
     from ..control.planner import Plan
@@ -220,6 +220,38 @@ class Orchestrator:
     def _build_labels(self, *labels: str) -> list[str]: return self._github_workflow.build_labels(*labels)
 
     def _get_milestone_filter(self) -> str | None: return self.config.filtering.milestone
+
+    def get_provider_circuit_states(self) -> list[dict[str, Any]]:
+        """Get current provider circuit breaker states for UI rendering.
+
+        Returns a list of dicts with provider circuit state information:
+        - provider: provider name
+        - is_open: whether circuit is currently open
+        - open_until: ISO timestamp when circuit will close (or None)
+        - consecutive_outages: number of consecutive outages
+        - last_error_summary: description of last error (or None)
+        - updated_at: ISO timestamp when state was last updated
+        """
+        from datetime import datetime, timezone
+
+        result: list[dict[str, Any]] = []
+        now = datetime.now(timezone.utc)
+
+        # Get all circuit states from the provider resilience manager
+        for circuit_state in self.deps.provider_resilience.store.list_all():
+            # Use the manager's is_open method (single source of truth)
+            is_open = self.deps.provider_resilience.is_open(circuit_state.provider, now)
+
+            result.append({
+                "provider": circuit_state.provider,
+                "is_open": is_open,
+                "open_until": circuit_state.open_until.isoformat() if circuit_state.open_until else None,
+                "consecutive_outages": circuit_state.consecutive_outages,
+                "last_error_summary": circuit_state.last_error_summary,
+                "updated_at": circuit_state.updated_at.isoformat(),
+            })
+
+        return result
 
     @cached_property
     def _startup_manager(self) -> StartupManager:

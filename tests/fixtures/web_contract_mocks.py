@@ -87,3 +87,7 @@ class MockOrchestratorForWeb:
             "warnings": [],
             "suggestions": [],
         }
+
+    def get_provider_circuit_states(self) -> list[dict]:
+        """Return empty list of provider circuits for testing."""
+        return []
