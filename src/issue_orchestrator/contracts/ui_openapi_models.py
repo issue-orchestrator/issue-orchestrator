@@ -79,6 +79,7 @@ class DashboardViewModelPayload(BaseModel):
     shutdown_requested: bool
     startup_message: str
     startup_status: str
+    provider_circuits: list[dict[str, Any]]
 
 class DebugDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
