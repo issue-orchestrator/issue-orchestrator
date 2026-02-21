@@ -259,34 +259,6 @@ def test_view_model_includes_refresh_staleness_meta():
     assert queue_item["is_stale"] is True
 
 
-def test_view_model_includes_refresh_staleness_meta():
-    config = _make_config()
-    agent_config = _make_agent_config()
-    config.agents = {"agent:web": agent_config}
-    config.queue_refresh_seconds = 300
-    queued_issue = Issue(number=22, title="Queued", labels=["agent:web"])
-
-    state = OrchestratorState(
-        startup_status="complete",
-        cached_queue_issues=[queued_issue],
-        issue_refresh_timestamps={22: datetime.now().timestamp() - 1200},
-    )
-    orchestrator = _OrchestratorStub(state=state, config=config)
-
-    view_model = build_dashboard_view_model(
-        orchestrator,
-        queue_page=1,
-        active_tab="flow",
-        e2e_page=1,
-        e2e_status_provider=lambda _: {"enabled": False, "running": False},
-    )
-
-    queue_item = view_model.queue_items[0]
-    assert queue_item["refresh_age_label"]
-    assert queue_item["refresh_age_seconds"] is not None
-    assert queue_item["is_stale"] is True
-
-
 def test_view_model_history_routing():
     config = _make_config()
     state = OrchestratorState(
@@ -454,3 +426,92 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_provider_circuit_breaker_status_in_dashboard():
+    from datetime import timezone
+    from unittest.mock import Mock
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    # Create provider circuit breaker with a circuit in open state
+    circuit_store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    open_until = now + timedelta(minutes=5)
+    circuit_state = ProviderCircuitState(
+        provider="anthropic",
+        open_until=open_until,
+        consecutive_outages=2,
+        last_error_summary="API rate limit exceeded",
+        updated_at=now,
+    )
+    circuit_store.save(circuit_state)
+
+    # Create minimal deps with provider_resilience
+    provider_resilience = ProviderResilienceManager(
+        config=config.provider_resilience,
+        store=circuit_store,
+        events=Mock(),
+    )
+
+    # Create orchestrator stub with minimal deps structure
+    class _OrchestratorWithDeps:
+        def __init__(self, state, config, provider_resilience):
+            self.state = state
+            self.config = config
+            self.shutdown_requested = False
+            # Create minimal deps with just provider_resilience
+            self.deps = Mock()
+            self.deps.provider_resilience = provider_resilience
+
+    orchestrator = _OrchestratorWithDeps(state=state, config=config, provider_resilience=provider_resilience)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Verify provider circuit breaker status is included
+    provider_status = view_model.scope_summary.get("provider_circuit_breaker", {})
+    assert "circuits" in provider_status
+    circuits = provider_status["circuits"]
+    assert len(circuits) == 1
+    assert circuits[0]["provider"] == "anthropic"
+    assert circuits[0]["openUntil"] == open_until.isoformat()
+    assert circuits[0]["consecutiveOutages"] == 2
+    assert circuits[0]["lastErrorSummary"] == "API rate limit exceeded"
+
+    # Verify it's also in dashboard_data
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuitBreaker" in dashboard_data
+    assert dashboard_data["providerCircuitBreaker"] == provider_status
+
+
+def test_provider_circuit_breaker_empty_when_no_circuits():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Should have empty provider circuit breaker status when orchestrator has no deps
+    provider_status = view_model.scope_summary.get("provider_circuit_breaker", {})
+    assert provider_status == {}
+
+    dashboard_data = view_model.dashboard_data()
+    assert dashboard_data["providerCircuitBreaker"] == {}
