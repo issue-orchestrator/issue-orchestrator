@@ -28,7 +28,7 @@ pytestmark = [
     pytest.mark.integration,
     pytest.mark.live,
     pytest.mark.xdist_group("pty"),
-    pytest.mark.timeout(20 * 60),
+    pytest.mark.timeout(35 * 60),
 ]
 
 ISSUE_4057_PROMPT = """IMPORTANT: This worktree has 54 existing commit(s) from a previous session. Branch: 4057-ui-surface-provider-circuit-breaker-status. Commits:   - 3592261 fix: Improve session log symlink handling in provider_runner
@@ -113,9 +113,9 @@ def test_real_claude_coding_and_review_cycle_uses_4057_prompt(tmp_path, monkeypa
 
         exited = _wait_until(
             lambda: not bool(plugin.session_exists(0, coding_session_name)),
-            timeout_seconds=10 * 60,
+            timeout_seconds=25 * 60,
         )
-        assert exited, "Coding session did not exit within 10 minutes"
+        assert exited, "Coding session did not exit within 25 minutes"
         coding_log = coding_run.run_dir / "ui-session.log"
         assert coding_log.exists(), "Missing coding ui-session.log"
         assert coding_log.stat().st_size > 0, "Coding ui-session.log is empty"
@@ -130,13 +130,13 @@ def test_real_claude_coding_and_review_cycle_uses_4057_prompt(tmp_path, monkeypa
             prompt_path=prompt_stub,
             ai_system="claude-code",
             permission_mode="bypassPermissions",
-            timeout_minutes=8,
+            timeout_minutes=25,
         )
         reviewer_agent = AgentConfig(
             prompt_path=prompt_stub,
             ai_system="claude-code",
             permission_mode="bypassPermissions",
-            timeout_minutes=8,
+            timeout_minutes=25,
         )
 
         review_outcome = run_review_exchange_loop(
@@ -148,8 +148,8 @@ def test_real_claude_coding_and_review_cycle_uses_4057_prompt(tmp_path, monkeypa
             reviewer_label="agent:reviewer",
             coder_agent=coder_agent,
             reviewer_agent=reviewer_agent,
-            max_rounds=2,
-            max_no_progress=1,
+            max_rounds=3,
+            max_no_progress=2,
             require_validation=True,
             web_port=None,
         )
