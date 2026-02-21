@@ -189,7 +189,7 @@ def test_sqlite_writer_covers_all_event_names(tmp_path: Path) -> None:
     for idx, event_name in enumerate(EventName, start=1):
         run_dir = tmp_path / "runs" / f"run-{idx}"
         run_dir.mkdir(parents=True, exist_ok=True)
-        (run_dir / "session.log").write_text("log\n", encoding="utf-8")
+        (run_dir / "ui-session.log").write_text("log\n", encoding="utf-8")
         completion_path = run_dir / "completion-agent_backend.json"
         completion_path.write_text('{"status":"completed"}\n', encoding="utf-8")
         payload = {
@@ -249,7 +249,7 @@ def test_timeline_writer_preserves_sequenced_event_id_and_schema(tmp_path: Path)
     writer = DefaultTimelineWriter(store)
     run_dir = tmp_path / "sessions" / "r77__issue-4057"
     run_dir.mkdir(parents=True)
-    (run_dir / "session.log").write_text("", encoding="utf-8")
+    (run_dir / "ui-session.log").write_text("", encoding="utf-8")
     event = TraceEvent(
         EventName.SESSION_STARTED,
         {"issue_number": 4057, "task": "code", "run_dir": str(run_dir)},
@@ -273,7 +273,7 @@ def test_timeline_writer_overwrites_stale_schema_versions(tmp_path: Path) -> Non
     writer = DefaultTimelineWriter(store)
     run_dir = tmp_path / "sessions" / "r88__issue-4057"
     run_dir.mkdir(parents=True)
-    (run_dir / "session.log").write_text("", encoding="utf-8")
+    (run_dir / "ui-session.log").write_text("", encoding="utf-8")
     event = TraceEvent(
         EventName.SESSION_STARTED,
         {
@@ -305,7 +305,7 @@ def test_timeline_writer_requires_session_log_for_session_started(tmp_path: Path
     with pytest.raises(RuntimeError, match="session_log_missing"):
         writer.record(event)
 
-    (run_dir / "session.log").write_text("", encoding="utf-8")
+    (run_dir / "ui-session.log").write_text("", encoding="utf-8")
     writer.record(event)
     assert len(store.records) == 1
 

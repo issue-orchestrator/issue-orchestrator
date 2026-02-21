@@ -452,9 +452,7 @@ class CompletionHandler:
             SessionStatus.NEEDS_HUMAN,
         ) or processing_errors:
             log_path = get_repo_log_path(self.config.repo_root)
-            run_dir = self._session_output.find_run_dir(
-                session.worktree_path, session.terminal_id
-            )
+            run_dir = self._resolve_session_run_dir(session)
             if run_dir:
                 self._session_output.write_orchestrator_tail(
                     run_dir=run_dir,
@@ -684,7 +682,7 @@ class CompletionHandler:
             payload["completion_path_absolute"] = completion_path_absolute
         else:
             payload["completion_path_absolute"] = str((session.worktree_path / session.completion_path).resolve())
-        run_dir = self._session_output.find_run_dir(session.worktree_path, session.terminal_id)
+        run_dir = self._resolve_session_run_dir(session)
         if run_dir:
             payload["run_dir"] = str(run_dir)
         for key in ("implementation", "problems", "review_summary", "review_issues", "risk_level"):
@@ -723,6 +721,9 @@ class CompletionHandler:
             "runtime_minutes": session.runtime_minutes,
             "timeout_minutes": session.agent_config.timeout_minutes if session.agent_config else None,
         }
+        run_dir = self._resolve_session_run_dir(session)
+        if run_dir:
+            payload["run_dir"] = str(run_dir)
         self.events.publish(make_trace_event(EventName.SESSION_FAILED, payload))
 
     def _emit_blocked_event(
@@ -1284,9 +1285,7 @@ class CompletionHandler:
         if not session.worktree_path:
             return
 
-        run_dir = self._session_output.find_run_dir(
-            session.worktree_path, session.terminal_id
-        )
+        run_dir = self._resolve_session_run_dir(session)
         if not run_dir:
             return
 
@@ -1318,6 +1317,24 @@ class CompletionHandler:
             manifest.save()
         except Exception as exc:
             logger.warning("[MANIFEST] Failed to save runtime enrichment: %s", exc)
+
+    def _resolve_session_run_dir(self, session: Session) -> Path | None:
+        """Resolve run_dir for events/diagnostics, including issue-scoped fallback.
+
+        Some provider-backed runs use a phase session name in run artifacts while
+        session.terminal_id carries a legacy issue-* token. Prefer exact lookup,
+        then fall back to latest run in this worktree when it belongs to the same issue.
+        """
+        run_dir = self._session_output.find_run_dir(session.worktree_path, session.terminal_id)
+        if run_dir:
+            return run_dir
+        fallback = self._session_output.find_run_dir(session.worktree_path)
+        if not fallback:
+            return None
+        manifest = self._session_output.read_manifest(fallback) or {}
+        if manifest.get("issue_number") == session.issue.number:
+            return fallback
+        return None
 
     def generate_completion_actions(
         self,

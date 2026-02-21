@@ -1169,7 +1169,10 @@ def _init_worktree_context(
     worktree_base.mkdir(parents=True, exist_ok=True)
     branch_name = branch_name or generate_branch_name(issue_number, issue_title)
     worktree_path = worktree_base / f"{repo_root.name}-{issue_number}"
-    disable_reuse = os.environ.get("ORCHESTRATOR_DISABLE_WORKTREE_REUSE") == "1"
+    disable_reuse = (
+        os.environ.get("ORCHESTRATOR_DISABLE_WORKTREE_REUSE") == "1"
+        or reuse_options.disable_reuse
+    )
     base_branch = _resolve_base_branch(repo_root, base_branch)
 
     logger.info(

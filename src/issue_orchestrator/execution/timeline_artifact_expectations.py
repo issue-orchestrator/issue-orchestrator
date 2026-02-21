@@ -54,7 +54,7 @@ def _require_run_dir_with_session_log(event_name: str, payload: dict[str, Any]) 
         raise RuntimeError(
             f"timeline artifact invariant failed: event={event_name} run_dir_missing={run_dir}"
         )
-    session_log = run_dir / "session.log"
+    session_log = run_dir / "ui-session.log"
     if not session_log.exists():
         raise RuntimeError(
             f"timeline artifact invariant failed: event={event_name} session_log_missing={session_log}"

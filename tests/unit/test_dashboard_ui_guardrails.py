@@ -48,6 +48,7 @@ def test_blocked_bulk_buttons_default_disabled_in_template() -> None:
     html = _read(DASHBOARD_TEMPLATE)
     assert re.search(r'onclick="bulkUnblock\(\)"\s+disabled', html)
     assert re.search(r'onclick="bulkResetRetry\(\)"\s+disabled', html)
+    assert re.search(r'onclick="bulkResetRetryFromScratch\(\)"\s+disabled', html)
     assert re.search(r'onclick="bulkMarkViewed\(\)"\s+disabled', html)
     assert re.search(r'onclick="bulkClearViewed\(\)"\s+disabled', html)
 
@@ -126,11 +127,22 @@ def test_bulk_reset_handler_uses_ui_action_contract() -> None:
     assert "/api/reset-retry" not in body
 
 
+def test_bulk_reset_from_scratch_handler_uses_ui_action_contract() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "bulkResetRetryFromScratch")
+    assert "uiActionContract.buildResetRetryRequest" in body
+    assert "fromScratch: true" in body
+    assert "/api/reset-retry" not in body
+
+
 def test_single_reset_handler_uses_ui_action_contract() -> None:
     js = _read(DASHBOARD_JS)
-    body = _function_body(js, "resetRetrySingle")
-    assert "uiActionContract.buildResetRetryRequest" in body
-    assert "/api/reset-retry" not in body
+    marker = "async function performResetRetry("
+    start = js.find(marker)
+    assert start != -1
+    snippet = js[start : start + 1400]
+    assert "uiActionContract.buildResetRetryRequest" in snippet
+    assert "/api/reset-retry" not in snippet
 
 
 def test_deprioritize_handler_uses_ui_action_contract() -> None:
@@ -167,7 +179,7 @@ def test_requeue_paths_use_optimistic_requeue_helper() -> None:
         "unblockSingle",
         "bulkUnblock",
         "bulkResetRetry",
-        "resetRetrySingle",
+        "bulkResetRetryFromScratch",
         "retryExpandedSingle",
         "bulkRetryAwaitingMerge",
         "bulkRetryCompleted",
@@ -179,6 +191,12 @@ def test_requeue_paths_use_optimistic_requeue_helper() -> None:
         body = _function_body(js, fn)
         assert "applyOptimisticRequeue(" in body
         assert "location.reload()" not in body
+    marker = "async function performResetRetry("
+    start = js.find(marker)
+    assert start != -1
+    snippet = js[start : start + 1400]
+    assert "applyOptimisticRequeue(" in snippet
+    assert "location.reload()" not in snippet
 
 
 def test_menu_retry_handler_uses_contract_and_refresh_not_reload() -> None:
@@ -218,9 +236,17 @@ def test_compact_card_context_menu_action_mapping_is_column_consistent() -> None
     assert "const otherRetryStatuses = new Set(['failed', 'completed', 'timed-out', 'awaiting-merge']);" in body
     assert "menuUnblock.style.display = '';" in body
     assert "menuResetRetry.style.display = '';" in body
+    assert "menuResetRetryScratch.style.display = '';" in body
     assert "menuRetry.style.display = '';" in body
     assert "setMenuVisible(menuLog, !isCompactCardMenu && !isBlockedHistory);" in body
     assert "setMenuVisible(menuAgentLog, !isCompactCardMenu && !isBlockedHistory);" in body
+    assert "setMenuVisible(menuPR, Boolean(prUrl || row.dataset.issueUrl));" in body
+    assert "menuPR.textContent = prUrl ? 'Open PR ↗' : 'Open Issue ↗';" in body
+
+
+def test_context_menu_includes_reset_retry_from_scratch_label() -> None:
+    html = _read(DASHBOARD_TEMPLATE)
+    assert "Reset and Retry From Scratch" in html
 
 
 def test_compact_menu_infers_column_id_from_parent_column() -> None:
@@ -228,6 +254,22 @@ def test_compact_menu_infers_column_id_from_parent_column() -> None:
     body = _function_body(js, "openCompactCardActionsMenu")
     assert "button?.closest('.kanban-column')?.dataset?.column" in body
     assert "columnId: String(columnId || '')" in body
+
+
+def test_overlay_positioning_uses_shared_clamp_helpers() -> None:
+    js = _read(DASHBOARD_JS)
+    assert "function clampPagePoint(" in js
+    assert "function clampClientPoint(" in js
+    context_body = _function_body(js, "showContextMenu")
+    assert "const clamped = clampPagePoint(" in context_body
+    confirm_body = _function_body(js, "showConfirm")
+    assert "const clamped = clampClientPoint(" in confirm_body
+
+
+def test_context_menu_open_action_prefers_pr_then_issue_url() -> None:
+    js = _read(DASHBOARD_JS)
+    assert "const targetUrl = currentRow.dataset.prUrl || currentRow.dataset.issueUrl;" in js
+    assert "window.open(targetUrl, '_blank');" in js
 
 
 def test_embedded_back_hidden_when_column_expanded() -> None:

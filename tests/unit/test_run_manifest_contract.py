@@ -25,8 +25,8 @@ def test_run_manifest_strict_requires_core_log_artifacts() -> None:
         "run_id": "20260219-000000Z",
         "run_dir": "/tmp/repo/.issue-orchestrator/sessions/20260219-000000Z__coding-1",
         "artifacts": {
-            "ui_log": {"kind": "session_log", "path": "/tmp/run/session.log"},
-            "agent_log": {"kind": "session_log", "path": "/tmp/run/session.log"},
+            "ui_log": {"kind": "session_log", "path": "/tmp/run/ui-session.log"},
+            "agent_log": {"kind": "session_log", "path": "/tmp/run/ui-session.log"},
         },
     }
     assert is_valid_run_manifest_payload(payload, strict_required_artifacts=True)

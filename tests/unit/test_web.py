@@ -50,6 +50,7 @@ from issue_orchestrator.timeline import (
     TimelineEvent,
     TimelineStream,
 )
+from issue_orchestrator.events import EventName
 
 _TEST_RUN_DIR_BY_ISSUE: dict[int, str] = {}
 
@@ -68,7 +69,7 @@ def _ensure_test_run_dir(issue_number: int) -> str:
 
     session_output = FileSystemSessionOutput()
     run = session_output.start_run(worktree, f"issue-{issue_number}", issue_number=issue_number)
-    (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+    (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
     claude_log = run.run_dir / "claude.jsonl"
     claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
     session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
@@ -975,6 +976,180 @@ class TestHistoryEndpoints:
         assert 4057 not in mock_orch.state.completed_today
         mock_orch.request_refresh.assert_called_once()
 
+    def test_reset_retry_sets_pending_label_and_queues_immediately(self):
+        """Reset+retry should persist pending state and enqueue without waiting for refresh."""
+        from issue_orchestrator.control.maintenance import ResetResult
+
+        mock_orch = create_mock_orchestrator()
+        lm = LabelManager(mock_orch.config)
+        mock_orch.deps.label_manager = lm
+        mock_orch.deps.action_applier = MagicMock()
+        mock_orch.deps.action_applier.apply.return_value = Mock(success=True, error=None)
+        mock_orch.deps.events = MagicMock()
+        mock_orch.repository_host.get_issue_labels.return_value = [
+            "agent:web",
+            lm.blocked_failed,
+            lm.pr_pending,
+        ]
+        mock_orch.repository_host.get_issue.return_value = create_issue(
+            4057,
+            labels=["agent:web", lm.reset_retry_pending],
+        )
+
+        set_orchestrator(mock_orch)
+
+        with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue_mock:
+            reset_issue_mock.return_value = ResetResult(
+                success=True,
+                issue_number=4057,
+                deleted_worktree="/tmp/worktree-4057",
+                deleted_branch="4057-fix",
+                labels_removed=[lm.blocked_failed, lm.pr_pending],
+            )
+            client = TestClient(app)
+            response = client.post("/api/reset-retry", json={"issues": [4057]})
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["failed"] == []
+        assert payload["refresh_triggered"] is False
+        assert payload["reset"][0]["issue"] == 4057
+        assert payload["reset"][0]["queued_now"] is True
+        assert payload["reset"][0]["pending_label"] == lm.reset_retry_pending
+        assert mock_orch.state.priority_queue[0] == 4057
+        mock_orch.request_refresh.assert_not_called()
+
+        added_labels = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]
+        assert lm.reset_retry_pending in added_labels
+        event_arg = mock_orch.deps.events.publish.call_args.args[0]
+        assert event_arg.event_type == EventName.ISSUE_UNBLOCKED
+        assert event_arg.data["issue_number"] == 4057
+        assert event_arg.data["reason"] == "reset_retry_requested"
+        assert event_arg.data["from_scratch"] is False
+
+    def test_reset_retry_from_scratch_sets_scratch_pending_label(self):
+        """Reset+retry from scratch should persist scratch pending label and queue immediately."""
+        from issue_orchestrator.control.maintenance import ResetResult
+
+        mock_orch = create_mock_orchestrator()
+        lm = LabelManager(mock_orch.config)
+        mock_orch.deps.label_manager = lm
+        mock_orch.deps.action_applier = MagicMock()
+        mock_orch.deps.action_applier.apply.return_value = Mock(success=True, error=None)
+        mock_orch.deps.events = MagicMock()
+        mock_orch.repository_host.get_issue_labels.return_value = [
+            "agent:web",
+            lm.blocked_failed,
+            lm.pr_pending,
+        ]
+        mock_orch.repository_host.get_issue.return_value = create_issue(
+            4057,
+            labels=["agent:web", lm.reset_retry_pending, lm.reset_retry_scratch_pending],
+        )
+
+        set_orchestrator(mock_orch)
+
+        with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue_mock:
+            reset_issue_mock.return_value = ResetResult(
+                success=True,
+                issue_number=4057,
+                deleted_worktree="/tmp/worktree-4057",
+                deleted_branch="4057-fix",
+                labels_removed=[lm.blocked_failed, lm.pr_pending],
+            )
+            client = TestClient(app)
+            response = client.post("/api/reset-retry", json={"issues": [4057], "from_scratch": True})
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["failed"] == []
+        assert payload["from_scratch"] is True
+        assert payload["reset"][0]["issue"] == 4057
+        assert payload["reset"][0]["from_scratch"] is True
+        assert lm.reset_retry_pending in payload["reset"][0]["pending_labels"]
+        assert lm.reset_retry_scratch_pending in payload["reset"][0]["pending_labels"]
+
+        added_labels = [call.args[0].label for call in mock_orch.deps.action_applier.apply.call_args_list]
+        assert lm.reset_retry_pending in added_labels
+        assert lm.reset_retry_scratch_pending in added_labels
+        event_arg = mock_orch.deps.events.publish.call_args.args[0]
+        assert event_arg.data["from_scratch"] is True
+
+    def test_reset_retry_reports_error_when_pending_label_cannot_be_set(self):
+        """Reset+retry should fail the issue when pending label persistence fails."""
+        from issue_orchestrator.control.maintenance import ResetResult
+
+        mock_orch = create_mock_orchestrator()
+        lm = LabelManager(mock_orch.config)
+        mock_orch.deps.label_manager = lm
+        mock_orch.deps.action_applier = MagicMock()
+        mock_orch.deps.action_applier.apply.return_value = Mock(success=False, error="label add failed")
+        mock_orch.deps.events = MagicMock()
+        mock_orch.repository_host.get_issue_labels.return_value = ["agent:web", lm.blocked_failed]
+
+        set_orchestrator(mock_orch)
+
+        with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue_mock:
+            reset_issue_mock.return_value = ResetResult(
+                success=True,
+                issue_number=4057,
+                deleted_worktree="/tmp/worktree-4057",
+                deleted_branch="4057-fix",
+                labels_removed=[lm.blocked_failed],
+            )
+            client = TestClient(app)
+            response = client.post("/api/reset-retry", json={"issues": [4057]})
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["reset"] == []
+        assert payload["failed"][0]["issue"] == 4057
+        assert "label add failed" in payload["failed"][0]["error"]
+        assert mock_orch.state.priority_queue == []
+        mock_orch.request_refresh.assert_not_called()
+
+    def test_reset_retry_reports_error_when_issue_not_queue_eligible(self):
+        """Reset+retry should report when refreshed issue cannot enter queue."""
+        from issue_orchestrator.control.maintenance import ResetResult
+
+        mock_orch = create_mock_orchestrator()
+        lm = LabelManager(mock_orch.config)
+        mock_orch.deps.label_manager = lm
+        mock_orch.deps.action_applier = MagicMock()
+        mock_orch.deps.action_applier.apply.return_value = Mock(success=True, error=None)
+        mock_orch.deps.events = MagicMock()
+        mock_orch.repository_host.get_issue_labels.return_value = ["agent:web", lm.blocked_failed]
+        mock_orch.repository_host.get_issue.return_value = create_issue(4057, labels=["agent:web"])
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=4057,
+                title="Issue 4057",
+                agent_type="agent:web",
+                status="blocked",
+                runtime_minutes=1,
+            ),
+        ]
+
+        set_orchestrator(mock_orch)
+
+        with patch("issue_orchestrator.control.maintenance.reset_issue") as reset_issue_mock:
+            reset_issue_mock.return_value = ResetResult(
+                success=True,
+                issue_number=4057,
+                deleted_worktree="/tmp/worktree-4057",
+                deleted_branch="4057-fix",
+                labels_removed=[lm.blocked_failed],
+            )
+            client = TestClient(app)
+            response = client.post("/api/reset-retry", json={"issues": [4057]})
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["reset"] == []
+        assert payload["failed"][0]["issue"] == 4057
+        assert "not queue-eligible" in payload["failed"][0]["error"]
+        assert mock_orch.state.priority_queue == []
+
     def test_get_history_dedupes_to_latest_per_issue(self):
         """History endpoint returns only the latest entry for each issue."""
         mock_orch = create_mock_orchestrator()
@@ -1642,7 +1817,7 @@ class TestApiTimelineEndpoint:
         worktree = tmp_path / "wt-timeline-returns-events"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-123", issue_number=123)
-        (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+        (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
         session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
@@ -2371,7 +2546,7 @@ class TestApiTimelineEndpoint:
         worktree = tmp_path / "wt-timeline-filter-churn"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-123", issue_number=123)
-        (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+        (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
         session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
@@ -2438,7 +2613,7 @@ class TestApiTimelineEndpoint:
         worktree = tmp_path / "wt-timeline-pr-pending"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-123", issue_number=123)
-        (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+        (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
         session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
@@ -2699,14 +2874,12 @@ class TestTimelineActionWiring:
         "open_url": None,  # client-side window.open, no HTTP call
         "open_review_feedback": None,  # in-app modal from existing issue detail payload
         "open_agent_log": "/api/log/local/{issue_number}",
-        "view_session_prompt": "/api/session/prompt/{issue_number}",
         "view_claude_log": "/api/session/claude-log/{issue_number}",
         "open_orchestrator_log": "/api/session/orchestrator-log/{issue_number}",
         "open_session_diagnostics": "/api/dialog/session-diagnostics/{issue_number}",
     }
     _REQUIRED_FIELDS_BY_ACTION: dict[str, tuple[str, ...]] = {
         "open_agent_log": ("issue_number", "run_dir"),
-        "view_session_prompt": ("issue_number", "run_dir"),
         "view_claude_log": ("issue_number", "run_dir"),
         "open_orchestrator_log": ("issue_number", "run_dir"),
         "open_session_diagnostics": ("issue_number", "run_dir"),
@@ -2730,7 +2903,7 @@ class TestTimelineActionWiring:
         worktree = tmp_path / "wt-action-registry"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-1", issue_number=1)
-        (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+        (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
         session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
@@ -2801,7 +2974,7 @@ class TestTimelineActionWiring:
         worktree = tmp_path / "wt-issue-detail-actions"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-123", issue_number=123)
-        (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+        (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
         session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
@@ -2923,7 +3096,7 @@ class TestTimelineActionWiring:
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-4057", issue_number=4057)
         run_dir = str(run.run_dir)
-        (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+        (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
         session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
@@ -2984,7 +3157,7 @@ class TestTimelineActionWiring:
         worktree = tmp_path / "wt-agent-log-labels"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-1", issue_number=1)
-        (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+        (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
         session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
@@ -2998,9 +3171,9 @@ class TestTimelineActionWiring:
         def _label(actions: list[dict[str, Any]]) -> str:
             return next(action["label"] for action in actions if action.get("type") == "open_agent_log")
 
-        assert _label(review_actions) == "View Reviewer Session Log"
-        assert _label(coding_actions) == "View Coding Session Log"
-        assert _label(rework_actions) == "View Rework Session Log"
+        assert _label(review_actions) == "View Reviewer UI Session"
+        assert _label(coding_actions) == "View Coding UI Session"
+        assert _label(rework_actions) == "View Rework UI Session"
         assert all(action.get("type") != "open_agent_log" for action in fallback_actions)
 
     def test_run_scoped_timeline_actions_require_run_dir(self, tmp_path: Path) -> None:
@@ -3017,7 +3190,7 @@ class TestTimelineActionWiring:
         worktree = tmp_path / "wt-run-dir-required"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-1", issue_number=1)
-        (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+        (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
         session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
@@ -3063,7 +3236,7 @@ class TestTimelineActionWiring:
         assert "view_claude_log" not in sparse_types
 
         # Add usable agent log + claude log manifest binding.
-        (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+        (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
         session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
@@ -3081,6 +3254,72 @@ class TestTimelineActionWiring:
         assert "open_agent_log" in present_types
         assert "view_claude_log" in present_types
 
+    def test_run_scoped_start_events_keep_session_log_action_when_log_files_empty(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-empty-agent-log"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-1", issue_number=1)
+        run_dir = str(run.run_dir)
+
+        # Keep run-scoped agent log candidates present but empty.
+        (run.run_dir / "ui-session.log").write_text("", encoding="utf-8")
+        provider_stdout = run.run_dir / "provider-runner" / "stdout.log"
+        provider_stdout.parent.mkdir(parents=True, exist_ok=True)
+        provider_stdout.write_text("", encoding="utf-8")
+
+        # Populate claude log so only agent-log behavior is under test.
+        claude_log = run.run_dir / "claude.jsonl"
+        claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
+        session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
+
+        actions = _timeline_event_actions(
+            {
+                "event": "session.started",
+                "issue_number": 1,
+                "run_dir": run_dir,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            1,
+        )
+        action_types = {action.get("type") for action in actions}
+        assert "open_agent_log" in action_types
+        assert "show_actions_error" not in action_types
+
+    def test_run_scoped_non_start_events_keep_session_log_action_when_log_empty(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-empty-agent-log-nonstart"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-1", issue_number=1)
+        run_dir = str(run.run_dir)
+
+        (run.run_dir / "ui-session.log").write_text("", encoding="utf-8")
+        claude_log = run.run_dir / "claude.jsonl"
+        claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
+        session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
+
+        actions = _timeline_event_actions(
+            {
+                "event": "review.comment_added",
+                "issue_number": 1,
+                "run_dir": run_dir,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+                "event_intent": "review",
+                "review_oriented": True,
+                "logical_run": 1,
+                "logical_cycle": 1,
+                "logical_phase": "review",
+            },
+            1,
+        )
+        action_types = {action.get("type") for action in actions}
+        assert "open_agent_log" in action_types
+
     def test_run_scoped_actions_keep_agent_log_when_claude_log_missing(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -3089,7 +3328,7 @@ class TestTimelineActionWiring:
         worktree = tmp_path / "wt-claude-missing"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-1", issue_number=1)
-        (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+        (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         # Intentionally do not attach claude_log_path in manifest.
 
         actions = _timeline_event_actions(
@@ -3105,7 +3344,7 @@ class TestTimelineActionWiring:
         assert "open_agent_log" in action_types
         assert "open_session_diagnostics" in action_types
         assert "view_claude_log" not in action_types
-        assert "show_actions_error" in action_types
+        assert "show_actions_error" not in action_types
 
     def test_run_scoped_event_without_run_dir_fails_fast(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
@@ -3130,7 +3369,7 @@ class TestTimelineActionWiring:
         worktree = tmp_path / "wt-run-warning"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-1", issue_number=1)
-        (run.run_dir / "session.log").write_text("agent output\n", encoding="utf-8")
+        (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
         session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
@@ -3505,6 +3744,62 @@ class TestIssueLogEndpointsUseLatestHistory:
             assert response.status_code == 400
             payload = response.json()
             assert payload["error"] == "run_dir is required"
+        finally:
+            set_orchestrator(None)
+
+    def test_agent_ui_log_falls_back_when_filtering_removes_all_lines(self, tmp_path: Path):
+        """GET /api/log/local should still return content when filters strip all lines."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-filter-fallback"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        run.log_path.write_text("*\nthinking)\n", encoding="utf-8")
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/log/local/123?run_dir={run.run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["total_lines"] >= 2
+            assert payload["lines"], "Expected fallback lines when filtered output is empty"
+            assert "stream_observation" in payload
+            stream_obs = payload["stream_observation"]
+            assert stream_obs["ui_log"]["path"].endswith("/ui-session.log")
+            assert stream_obs["provider_stdout"]["path"].endswith("/provider-runner/stdout.log")
+            assert stream_obs["provider_stderr"]["path"].endswith("/provider-runner/stderr.log")
+        finally:
+            set_orchestrator(None)
+
+    def test_agent_ui_log_decodes_claude_stream_json_to_plain_text(self, tmp_path: Path):
+        """GET /api/log/local should render stream-json deltas as plain transcript lines."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-stream-json"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        run.log_path.write_text(
+            "\n".join([
+                '{"type":"system","subtype":"init"}',
+                '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}}',
+                '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" world\\nSecond output"}}}',
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/log/local/123?run_dir={run.run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["lines"] == ["Hello world", "Second output"]
+            assert payload["total_lines"] == 2
         finally:
             set_orchestrator(None)
 

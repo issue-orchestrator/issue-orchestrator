@@ -9,6 +9,65 @@ from unittest.mock import MagicMock, patch
 from issue_orchestrator.entrypoints import control_center
 
 
+def test_cleanup_stale_tray_helpers_kills_matching_url() -> None:
+    """Cleanup should terminate tray helpers for the same dashboard URL."""
+    with (
+        patch(
+            "issue_orchestrator.entrypoints.control_center.subprocess.check_output",
+            return_value=(
+                "1234 python -m issue_orchestrator.entrypoints.tray --dashboard-url http://127.0.0.1:19080/\n"
+                "5678 python -m issue_orchestrator.entrypoints.tray --dashboard-url http://127.0.0.1:29080/\n"
+            ),
+        ),
+        patch("issue_orchestrator.entrypoints.control_center.os.getpid", return_value=9999),
+        patch("issue_orchestrator.entrypoints.control_center.os.kill") as kill_mock,
+    ):
+        control_center._cleanup_stale_tray_helpers("http://127.0.0.1:19080/")  # noqa: SLF001
+
+    kill_mock.assert_called_once()
+    assert kill_mock.call_args.args[0] == 1234
+
+
+def test_start_tray_icon_starts_helper_process_on_macos() -> None:
+    """macOS uses tray helper subprocess to keep Cocoa loop isolated."""
+    process = MagicMock(pid=1234)
+    process.poll.return_value = None
+
+    with (
+        patch("issue_orchestrator.entrypoints.control_center.sys.platform", "darwin"),
+        patch("issue_orchestrator.entrypoints.control_center._cleanup_stale_tray_helpers"),
+        patch(
+            "issue_orchestrator.entrypoints.control_center.subprocess.Popen",
+            return_value=process,
+        ) as popen_mock,
+    ):
+        result = control_center._start_tray_icon("http://localhost:19080/")  # noqa: SLF001
+
+    popen_mock.assert_called_once()
+    args = popen_mock.call_args.args[0]
+    assert "--owner-pid" in args
+    assert result is not None
+    result.stop()
+    process.terminate.assert_called_once_with()
+
+
+def test_start_tray_icon_returns_none_when_helper_exits_immediately() -> None:
+    """macOS helper startup failure should degrade to no tray handle."""
+    process = MagicMock(pid=1234, returncode=1)
+    process.poll.return_value = 1
+
+    with (
+        patch("issue_orchestrator.entrypoints.control_center.sys.platform", "darwin"),
+        patch(
+            "issue_orchestrator.entrypoints.control_center.subprocess.Popen",
+            return_value=process,
+        ),
+    ):
+        result = control_center._start_tray_icon("http://localhost:19080/")  # noqa: SLF001
+
+    assert result is None
+
+
 def test_start_tray_icon_returns_icon_when_available() -> None:
     """_start_tray_icon returns the tray icon when startup succeeds."""
     mock_icon = MagicMock()
@@ -20,6 +79,7 @@ def test_start_tray_icon_returns_icon_when_available() -> None:
         return mock_icon
 
     with (
+        patch("issue_orchestrator.entrypoints.control_center.sys.platform", "linux"),
         patch(
             "issue_orchestrator.entrypoints.control_api._build_repos_status",
             return_value=[{"name": "repo-a", "status": {"state": "running"}}],
@@ -39,6 +99,7 @@ def test_start_tray_icon_returns_icon_when_available() -> None:
 def test_start_tray_icon_returns_none_when_startup_fails() -> None:
     """_start_tray_icon degrades gracefully when tray startup fails."""
     with (
+        patch("issue_orchestrator.entrypoints.control_center.sys.platform", "linux"),
         patch(
             "issue_orchestrator.entrypoints.tray.start_tray",
             side_effect=RuntimeError("no tray backend"),
@@ -115,3 +176,16 @@ def test_start_buttons_are_disabled_while_start_is_pending() -> None:
     assert "pendingRepoStarts.add(path);" in template
     assert "pendingRepoStarts.delete(path);" in template
     assert "Starting..." in template
+    assert 'id="repoStopModal"' in template
+    assert 'id="confirmRepoStop"' in template
+    assert 'id="repoStopModeGraceful"' in template
+    assert 'id="repoStopModeForce"' in template
+    assert 'id="shutdownModeGraceful"' in template
+    assert 'id="shutdownModeForce"' in template
+    assert "Mode: immediate force" in template
+    assert "Mode: graceful (~${formatGracefulTimeout(op.graceful_timeout_seconds || 120)}), then force if needed" in template
+    assert "State: control center unavailable" in template
+    assert "Control Center is closing..." in template
+    assert "showControlCenterClosedFallback" in template
+    assert "attemptControlCenterTabClose" in template
+    assert 'data-action="stop-force"' not in template

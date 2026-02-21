@@ -63,7 +63,7 @@ class ManifestAccessor:
 
     run_identity: RunIdentity
 
-    def get_agent_log(self) -> ArtifactStream:
+    def get_agent_log(self, *, allow_empty: bool = False) -> ArtifactStream:
         """Return the run-scoped agent session log stream."""
         run_dir = self.run_identity.run_dir
         self._require_run_dir_exists(run_dir)
@@ -72,6 +72,8 @@ class ManifestAccessor:
         non_empty = self._non_empty_paths(existing)
         if non_empty:
             return self._artifact_stream("agent_log", non_empty[0])
+        if allow_empty and existing:
+            return self._artifact_stream("agent_log", existing[0])
         if existing:
             candidates_str = ", ".join(str(path) for path in existing)
             raise ArtifactNotFoundError(
@@ -97,7 +99,7 @@ class ManifestAccessor:
         session_candidate = session_output.get_log_path(worktree_path, session_name)
         if session_candidate:
             candidates.append(session_candidate)
-        for candidate_name in ("session.log", "pane.log", "provider-runner/stdout.log"):
+        for candidate_name in ("ui-session.log",):
             candidate_path = run_dir / candidate_name
             if candidate_path not in candidates:
                 candidates.append(candidate_path)

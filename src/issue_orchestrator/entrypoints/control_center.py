@@ -15,6 +15,8 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
+import subprocess
 import sys
 import threading
 import time
@@ -31,6 +33,57 @@ logger = logging.getLogger(__name__)
 
 # Flag to signal reaper thread to stop
 _reaper_stop = threading.Event()
+
+
+class _TrayProcessHandle:
+    """Handle for tray helper subprocess lifecycle."""
+
+    def __init__(self, process: subprocess.Popen[Any]) -> None:
+        self._process = process
+
+    def stop(self) -> None:
+        """Stop tray helper process with terminate then kill fallback."""
+        if self._process.poll() is not None:
+            return
+        self._process.terminate()
+        try:
+            self._process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            self._process.kill()
+            self._process.wait(timeout=2)
+
+
+def _cleanup_stale_tray_helpers(dashboard_url: str) -> None:
+    """Terminate stale tray helpers targeting the same dashboard URL."""
+    try:
+        output = subprocess.check_output(
+            ["pgrep", "-af", "issue_orchestrator.entrypoints.tray"],
+            text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
+        return
+
+    current_pid = os.getpid()
+    for line in output.splitlines():
+        parts = line.strip().split(maxsplit=1)
+        if not parts:
+            continue
+        try:
+            pid = int(parts[0])
+        except ValueError:
+            continue
+        cmd = parts[1] if len(parts) > 1 else ""
+        if pid == current_pid:
+            continue
+        if f"--dashboard-url {dashboard_url}" not in cmd:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logger.info("Terminated stale tray helper pid=%d", pid)
+        except ProcessLookupError:
+            continue
+        except Exception:
+            logger.debug("Failed to terminate stale tray helper pid=%d", pid, exc_info=True)
 
 
 def _zombie_reaper(interval: float = 1.0) -> None:
@@ -77,6 +130,25 @@ def _open_browser(url: str, delay: float = 1.0) -> None:
 def _start_tray_icon(url: str) -> Any | None:
     """Start the system tray icon, returning the icon or None on failure."""
     try:
+        if sys.platform == "darwin":
+            _cleanup_stale_tray_helpers(url)
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "issue_orchestrator.entrypoints.tray",
+                    "--dashboard-url",
+                    url,
+                    "--owner-pid",
+                    str(os.getpid()),
+                ],
+            )
+            time.sleep(0.15)
+            if process.poll() is not None:
+                raise RuntimeError(f"tray helper exited immediately with code {process.returncode}")
+            logger.debug("Started tray helper process pid=%d", process.pid)
+            return _TrayProcessHandle(process)
+
         from .tray import start_tray
         from .control_api import _build_repos_status
 
@@ -92,8 +164,12 @@ def _start_tray_icon(url: str) -> Any | None:
         icon = start_tray(dashboard_url=url, engine_status_fn=_get_engine_status)
         logger.debug("System tray icon started")
         return icon
-    except Exception:
-        logger.debug("System tray icon unavailable (headless or missing deps)")
+    except Exception as exc:
+        logger.warning(
+            "System tray icon unavailable: %s",
+            exc,
+            exc_info=True,
+        )
         return None
 
 

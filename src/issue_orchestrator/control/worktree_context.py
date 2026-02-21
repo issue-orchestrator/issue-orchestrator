@@ -128,17 +128,53 @@ class WorktreeContext:
             )
 
         # Create worktree
-        worktree_info = worktree_manager.create(
-            repo_root=repo_root,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            worktree_base=worktree_base,
-            base_branch=config.worktree_base_branch_override,
-            enforce_hooks=enforce_hooks,
-            reuse_options=reuse_options or WorktreeReuseOptions(),
-            branch_name=branch_name,
-            pre_push_hook=pre_push_hook,
-        )
+        try:
+            worktree_info = worktree_manager.create(
+                repo_root=repo_root,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                worktree_base=worktree_base,
+                base_branch=config.worktree_base_branch_override,
+                enforce_hooks=enforce_hooks,
+                reuse_options=reuse_options or WorktreeReuseOptions(),
+                branch_name=branch_name,
+                pre_push_hook=pre_push_hook,
+            )
+        except Exception as e:
+            resolved_base = Path(worktree_base).resolve() if worktree_base else repo_root.parent
+            worktree_path = resolved_base / f"{repo_root.name}-{issue_number}"
+            preparation_error = WorktreePreparationError(
+                path=worktree_path,
+                issue_number=issue_number,
+                message=f"Cannot create worktree {worktree_path.name}: {e}",
+            )
+            logger.error(
+                "[issue-%d] Worktree create failed: path=%s error=%s",
+                issue_number,
+                worktree_path,
+                e,
+            )
+            return cls(
+                worktree_path=worktree_path,
+                branch_name=branch_name or "",
+                session_name=session_name,
+                phase_name=phase_name,
+                issue_number=issue_number,
+                worktree_info=WorktreeInfo(
+                    path=worktree_path,
+                    branch_name=branch_name or "",
+                    reuse_status="error",
+                    reuse_reason="worktree_create_failed",
+                    uncommitted_discarded=0,
+                    commits_discarded=0,
+                    rebase_failed=False,
+                ),
+                run=None,  # type: ignore[arg-type]
+                claude_project_dir=Path(),
+                error=preparation_error,
+                _config=config,
+                _session_output=session_output,
+            )
         worktree_path = worktree_info.path
         actual_branch = worktree_info.branch_name
 

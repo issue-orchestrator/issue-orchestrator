@@ -24,23 +24,41 @@ def _build_accessor(tmp_path: Path, *, issue_number: int = 123) -> tuple[Manifes
 
 def test_get_agent_log_returns_run_scoped_log(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
-    (run_dir / "session.log").write_text("hello\n", encoding="utf-8")
+    (run_dir / "ui-session.log").write_text("hello\n", encoding="utf-8")
 
     artifact = accessor.get_agent_log()
     assert artifact.descriptor.artifact_type == "agent_log"
-    assert artifact.path == run_dir / "session.log"
+    assert artifact.path == run_dir / "ui-session.log"
     assert artifact.descriptor.length_bytes is not None
 
 
-def test_get_agent_log_prefers_non_empty_alternate_when_session_log_empty(tmp_path: Path) -> None:
+def test_get_agent_log_requires_canonical_ui_session_log_when_empty(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
-    (run_dir / "session.log").write_text("", encoding="utf-8")
+    (run_dir / "ui-session.log").write_text("", encoding="utf-8")
     provider_stdout = run_dir / "provider-runner" / "stdout.log"
     provider_stdout.parent.mkdir(parents=True, exist_ok=True)
     provider_stdout.write_text("provider output\n", encoding="utf-8")
 
-    artifact = accessor.get_agent_log()
-    assert artifact.path == provider_stdout
+    with pytest.raises(ArtifactNotFoundError, match="candidates are empty"):
+        accessor.get_agent_log()
+
+
+def test_get_agent_log_allow_empty_returns_existing_candidate(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    session_log = run_dir / "ui-session.log"
+    session_log.write_text("", encoding="utf-8")
+
+    artifact = accessor.get_agent_log(allow_empty=True)
+    assert artifact.path == session_log
+
+
+def test_get_agent_log_raises_when_candidates_only_empty_by_default(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    session_log = run_dir / "ui-session.log"
+    session_log.write_text("", encoding="utf-8")
+
+    with pytest.raises(ArtifactNotFoundError, match="candidates are empty"):
+        accessor.get_agent_log()
 
 
 def test_get_claude_log_reads_manifest_path(tmp_path: Path) -> None:

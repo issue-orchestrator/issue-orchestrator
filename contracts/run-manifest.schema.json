@@ -4,18 +4,6 @@
       "additionalProperties": false,
       "description": "Typed descriptor for one run-scoped artifact.",
       "properties": {
-        "content_type": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Content Type"
-        },
         "kind": {
           "enum": [
             "session_log",
@@ -35,8 +23,21 @@
           "type": "string"
         },
         "path": {
+          "minLength": 1,
           "title": "Path",
           "type": "string"
+        },
+        "content_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content Type"
         }
       },
       "required": [
@@ -50,24 +51,24 @@
   "additionalProperties": true,
   "description": "Contract for run-scoped ``manifest.json`` files.",
   "properties": {
-    "artifacts": {
-      "additionalProperties": {
-        "$ref": "#/$defs/RunManifestArtifact"
-      },
-      "title": "Artifacts",
-      "type": "object"
-    },
-    "run_dir": {
-      "title": "Run Dir",
+    "session_name": {
+      "title": "Session Name",
       "type": "string"
     },
     "run_id": {
       "title": "Run Id",
       "type": "string"
     },
-    "session_name": {
-      "title": "Session Name",
+    "run_dir": {
+      "title": "Run Dir",
       "type": "string"
+    },
+    "artifacts": {
+      "additionalProperties": {
+        "$ref": "#/$defs/RunManifestArtifact"
+      },
+      "title": "Artifacts",
+      "type": "object"
     }
   },
   "required": [

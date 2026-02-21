@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Directory and file names
 SESSION_OUTPUT_DIR = "sessions"
-SESSION_LOG_NAME = "session.log"
+SESSION_LOG_NAME = "ui-session.log"
 PANE_LOG_NAME = "pane.log"
 MANIFEST_NAME = "manifest.json"
 LATEST_NAME = "latest.json"
@@ -583,9 +583,9 @@ Timestamp: {self._now_iso()}
         worktree_path: Path,
         session_name: str,
     ) -> ReviewExchangeSummary | None:
-        # Check all run directories for this session, starting with the most recent.
-        # This is needed because the review exchange summary may be in an earlier run
-        # if the current run hasn't had the review exchange yet.
+        # Resolve only against the latest run for this session name.
+        # Falling back to older runs can reuse stale summaries from previous attempts,
+        # which misreports current review state after retries/restarts.
         base_dir = self.sessions_base_dir(worktree_path)
         if not base_dir.exists():
             return None
@@ -599,23 +599,25 @@ Timestamp: {self._now_iso()}
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-
-        for run_dir in candidates:
-            manifest = self.read_manifest(run_dir) or {}
-            manifest_dir = manifest.get("review_exchange_dir")
-            exchange_dir = Path(manifest_dir) if manifest_dir else run_dir / REVIEW_EXCHANGE_DIR_NAME
-            summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
-            if summary_path.exists():
-                summary = self._read_json(summary_path)
-                if isinstance(summary, dict):
-                    validation_path = run_dir / VALIDATION_RECORD_NAME
-                    return ReviewExchangeSummary(
-                        summary=summary,
-                        exchange_dir=exchange_dir,
-                        summary_path=summary_path,
-                        validation_record_path=validation_path if validation_path.exists() else None,
-                    )
-        return None
+        if not candidates:
+            return None
+        run_dir = candidates[0]
+        manifest = self.read_manifest(run_dir) or {}
+        manifest_dir = manifest.get("review_exchange_dir")
+        exchange_dir = Path(manifest_dir) if manifest_dir else run_dir / REVIEW_EXCHANGE_DIR_NAME
+        summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
+        if not summary_path.exists():
+            return None
+        summary = self._read_json(summary_path)
+        if not isinstance(summary, dict):
+            return None
+        validation_path = run_dir / VALIDATION_RECORD_NAME
+        return ReviewExchangeSummary(
+            summary=summary,
+            exchange_dir=exchange_dir,
+            summary_path=summary_path,
+            validation_record_path=validation_path if validation_path.exists() else None,
+        )
 
     # -------------------------------------------------------------------------
     # Review Feedback (per-cycle storage for diagnostics)
@@ -1168,19 +1170,12 @@ Timestamp: {self._now_iso()}
     def _find_log_in_run_dir(self, run_dir: Path) -> Path | None:
         """Find the best log file in a run directory.
 
-        Checks session.log and pane.log first (terminal backends), then falls
-        back to provider-runner/stdout.log (subprocess backend where
-        AgentRunner redirects stdout to file instead of the PTY).
+        Checks canonical ui-session.log and pane.log only.
         """
         for filename in (SESSION_LOG_NAME, PANE_LOG_NAME):
             candidate = run_dir / filename
             if candidate.exists() and candidate.stat().st_size > 0:
                 return candidate
-
-        # Subprocess backend: agent output goes to provider-runner/stdout.log
-        provider_stdout = run_dir / "provider-runner" / "stdout.log"
-        if provider_stdout.exists() and provider_stdout.stat().st_size > 0:
-            return provider_stdout
 
         return None
 

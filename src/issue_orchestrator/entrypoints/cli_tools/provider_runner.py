@@ -12,6 +12,7 @@ from issue_orchestrator.infra.env import ENV_PREFIX
 from issue_orchestrator.infra.provider_resilience import ProviderStatus, now_iso, write_provider_status
 from issue_orchestrator.ports.provider_resilience import ProviderErrorType
 from issue_orchestrator.ports.session_log import detect_ai_system_from_command
+from issue_orchestrator.execution.session_output_adapter import SESSION_LOG_NAME
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -52,14 +53,33 @@ def _summarize_error(stdout: str, stderr: str) -> str | None:
 
 
 def _ensure_run_scoped_session_log(run_dir: Path) -> None:
-    """Guarantee run_dir/session.log resolves to provider-runner stdout."""
+    """Guarantee run_dir/ui-session.log resolves to provider-runner stdout."""
     provider_stdout = run_dir / "provider-runner" / "stdout.log"
-    session_log = run_dir / "session.log"
+    session_log = run_dir / SESSION_LOG_NAME
     session_log.parent.mkdir(parents=True, exist_ok=True)
     provider_stdout.parent.mkdir(parents=True, exist_ok=True)
 
-    if session_log.exists() or session_log.is_symlink():
+    if session_log.is_symlink():
+        try:
+            if session_log.resolve() == provider_stdout.resolve():
+                return
+        except OSError as exc:
+            raise RuntimeError(
+                f"failed to validate ui-session.log symlink under run_dir={run_dir}: {exc}"
+            ) from exc
+        session_log.unlink()
+        session_log.symlink_to(provider_stdout)
         return
+    if session_log.exists():
+        # start_run pre-creates an empty placeholder so timeline artifacts are valid.
+        # Replace that placeholder with the real live stream target.
+        if session_log.stat().st_size == 0:
+            session_log.unlink()
+            session_log.symlink_to(provider_stdout)
+            return
+        raise RuntimeError(
+            f"ui-session.log already exists with content and is not symlinked under run_dir={run_dir}"
+        )
     session_log.symlink_to(provider_stdout)
 
 

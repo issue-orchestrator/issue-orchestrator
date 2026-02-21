@@ -624,16 +624,23 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
     const lines = data.lines || [];
     logPre.textContent = lines.join('\n');
     document.getElementById('logPath').textContent = data.log_path || '';
-    document.getElementById('logStatus').textContent = data.truncated
-        ? `Showing last ${lines.length} of ${data.total_lines} lines`
-        : `Lines: ${data.total_lines}`;
+    const streamObsEl = document.getElementById('logStreamObs');
+    const statusText = data.total_lines === 0
+        ? 'Waiting for first output...'
+        : (data.truncated
+            ? `Showing last ${lines.length} of ${data.total_lines} lines`
+            : `Lines: ${data.total_lines}`);
+    document.getElementById('logStatus').textContent = statusText;
+    if (streamObsEl) {
+        streamObsEl.textContent = formatLogStreamObservation(data.stream_observation || null);
+    }
 
     if (forceScroll || (logFollow && wasNearBottom)) {
         logScroll.scrollTop = logScroll.scrollHeight;
     }
 }
 
-async function openAgentLog(issueNumber, logLabel = 'Most Recent Session Log', runDir = null, errorSurface = 'toast') {
+async function openAgentLog(issueNumber, logLabel = 'UI Session', runDir = null, errorSurface = 'toast') {
     if (!runDir) {
         reportActionError('Session log requires run context. Open from a timeline entry.', errorSurface);
         return;
@@ -648,12 +655,17 @@ async function openAgentLog(issueNumber, logLabel = 'Most Recent Session Log', r
                 Follow
             </label>
             <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="refreshAgentLog(${issueNumber}, true, ${JSON.stringify(runDir)})">Refresh</button>
-            <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="viewSessionPrompt(${issueNumber}, ${JSON.stringify(runDir)}, 'inline')">View Prompt</button>
             <span id="logStatus" style="font-size:11px;color:var(--text-muted);"></span>
         </div>
         <div id="logScroll" style="max-height:420px;overflow:auto;background:var(--bg);padding:10px;border-radius:4px;">
             <pre id="logPre" style="font-size:11px;white-space:pre-wrap;margin:0;"></pre>
         </div>
+        <div id="logStreamObs" style="color:var(--text-muted);font-size:11px;margin-top:6px;"></div>
+        <details style="margin-top:10px;">
+            <summary style="cursor:pointer;font-size:12px;color:var(--text-muted);">Prompt</summary>
+            <div id="logPromptMeta" style="color:var(--text-muted);font-size:11px;margin-top:8px;"></div>
+            <pre id="logPromptPre" style="font-size:11px;max-height:220px;overflow:auto;background:var(--bg);padding:10px;border-radius:4px;white-space:pre-wrap;margin-top:8px;"></pre>
+        </details>
         <div style="color:var(--text-muted);font-size:11px;margin-top:10px;">Log: <span id="logPath"></span></div>
     `;
 
@@ -669,6 +681,7 @@ async function openAgentLog(issueNumber, logLabel = 'Most Recent Session Log', r
     }
 
     await refreshAgentLog(issueNumber, true, runDir);
+    await refreshInlineSessionPrompt(issueNumber, runDir);
     if (logPoller) {
         clearInterval(logPoller);
     }
@@ -677,31 +690,50 @@ async function openAgentLog(issueNumber, logLabel = 'Most Recent Session Log', r
     }, 2000);
 }
 
-function openAgentLogAction(issueNumber, runDir = null, logLabel = 'Most Recent Session Log', errorSurface = 'toast') {
+function openAgentLogAction(issueNumber, runDir = null, logLabel = 'UI Session', errorSurface = 'toast') {
     return openAgentLog(issueNumber, logLabel, runDir, errorSurface);
 }
 
-async function viewSessionPrompt(issueNumber, runDir = null, errorSurface = 'toast') {
+function formatLogStreamObservation(obs) {
+    if (!obs || typeof obs !== 'object') return '';
+    const fmt = (fileObs) => {
+        if (!fileObs || typeof fileObs !== 'object') return 'n/a';
+        const exists = fileObs.exists ? 'yes' : 'no';
+        const bytes = Number.isFinite(fileObs.bytes) ? `${fileObs.bytes}B` : '?';
+        const mtime = Number.isFinite(fileObs.mtime_epoch)
+            ? new Date(fileObs.mtime_epoch * 1000).toLocaleTimeString()
+            : '—';
+        return `${exists}, ${bytes}, ${mtime}`;
+    };
+    return `Stream observation - ui: ${fmt(obs.ui_log)} | stdout: ${fmt(obs.provider_stdout)} | stderr: ${fmt(obs.provider_stderr)}`;
+}
+
+async function refreshInlineSessionPrompt(issueNumber, runDir = null) {
+    const promptMeta = document.getElementById('logPromptMeta');
+    const promptPre = document.getElementById('logPromptPre');
+    if (!promptMeta || !promptPre) return;
     if (!runDir) {
-        reportActionError('Session prompt requires run context. Open from a timeline entry.', errorSurface);
+        promptMeta.textContent = 'Prompt unavailable (missing run context).';
+        promptPre.textContent = '';
         return;
     }
-    const params = new URLSearchParams();
-    params.set('run_dir', runDir);
-    const suffix = params.toString() ? `?${params.toString()}` : '';
-    const res = await fetch(`/api/session/prompt/${issueNumber}${suffix}`);
-    const data = await res.json();
-    if (data.error) {
-        reportActionError(data.error, errorSurface);
-        return;
+    try {
+        const params = new URLSearchParams();
+        params.set('run_dir', runDir);
+        const suffix = params.toString() ? `?${params.toString()}` : '';
+        const res = await fetch(`/api/session/prompt/${issueNumber}${suffix}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+            promptMeta.textContent = data.error || `Prompt unavailable (HTTP ${res.status})`;
+            promptPre.textContent = '';
+            return;
+        }
+        promptMeta.textContent = data.prompt_path ? `Prompt: ${data.prompt_path}` : 'Prompt';
+        promptPre.textContent = data.content || '';
+    } catch (err) {
+        promptMeta.textContent = `Prompt unavailable: ${err instanceof Error ? err.message : String(err)}`;
+        promptPre.textContent = '';
     }
-    const body = `
-        <div style="display:flex;flex-direction:column;gap:8px;">
-            <div style="color:var(--text-muted);font-size:11px;">Prompt: ${escapeHtml(data.prompt_path || '')}</div>
-            <pre style="font-size:11px;max-height:420px;overflow:auto;background:var(--bg);padding:10px;border-radius:4px;white-space:pre-wrap;">${escapeHtml(data.content || '')}</pre>
-        </div>
-    `;
-    openModal(`Session Prompt #${issueNumber}`, body);
 }
 
 async function openSessionManifest(issueNumber, runDir = null) {
@@ -815,11 +847,8 @@ function renderGroupedDialogActions(actions) {
     if (items.length === 0) return '';
 
     const primaryTypes = [
-        'open_review_feedback',
         'open_agent_log',
-        'view_claude_log',
-        'open_session_diagnostics',
-        'open_orchestrator_log',
+        'open_review_feedback',
     ];
     const primary = [];
     const used = new Set();
@@ -855,8 +884,7 @@ function _dialogActionShortLabel(action) {
     if (!action) return 'Action';
     const type = String(action.type || '');
     const label = String(action.label || '');
-    if (type === 'open_agent_log') return 'Session Log';
-    if (type === 'view_session_prompt') return 'View Prompt';
+    if (type === 'open_agent_log') return 'UI Session';
     if (type === 'view_claude_log') return 'Claude Log';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
     if (type === 'open_review_feedback') return 'Review Feedback';
@@ -889,12 +917,7 @@ function _renderDialogActionButton(action, labelOverride, cssClass) {
     if (action.type === 'open_agent_log') {
         if (!action.run_dir) return '';
         const runDirFirstArg = `${JSON.stringify(String(action.run_dir))}, `;
-        return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'Most Recent Session Log', 'inline')">${label}</button>`;
-    }
-    if (action.type === 'view_session_prompt') {
-        if (!action.run_dir) return '';
-        const runDirFirstArg = `${JSON.stringify(String(action.run_dir))}, `;
-        return `<button class="${cssClass}" onclick="viewSessionPrompt(${action.issue_number}, ${runDirFirstArg}'inline')">${label}</button>`;
+        return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'UI Session', 'inline')">${label}</button>`;
     }
     if (action.type === 'view_claude_log') {
         if (!action.run_dir) return '';
@@ -1941,9 +1964,6 @@ function renderCompactCardHtml(card) {
     const ghLink = card.issue_url
         ? `<a class="card-gh" href="${card.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">&#x2197;</a>`
         : '';
-    const killButton = card.state_label === 'running'
-        ? `<button class="card-kill-btn" onclick="killSession(${n}, event)" title="Cancel / terminate issue #${n}" aria-label="Cancel issue #${n}">&#x23F9;</button>`
-        : '';
     const hasTerminal = card.state_label === 'running' ? 'true' : 'false';
     const action = card.state_label === 'running' ? 'focus' : 'open';
     const menuButton = `<button class="card-menu-btn"
@@ -1960,8 +1980,11 @@ function renderCompactCardHtml(card) {
         aria-label="More actions for issue #${n}">&#x22EE;</button>`;
     const phaseLine = card.phase || card.state_label || '';
     const ageStr = card.phase_age ? ` &middot; ${card.phase_age}` : '';
+    const queueWaitLine = card.queue_wait_reason
+        ? `<div class="card-line card-wait">${escapeHtml(String(card.queue_wait_reason))}</div>`
+        : '';
     let detailLine = '';
-    if (card.summary) {
+    if (card.summary && !card.queue_wait_reason) {
         detailLine = `<div class="card-line card-muted">${card.summary}</div>`;
     }
     const orchLabels = card.orchestrator_labels || [];
@@ -1978,13 +2001,13 @@ function renderCompactCardHtml(card) {
             <div class="card-head-actions">
                 ${staleDot}
                 <button class="card-refresh-btn" onclick="refreshIssueCard(${n}, this);event.stopPropagation();" title="Refresh issue #${n} from GitHub" aria-label="Refresh issue #${n}">&#x27F3;</button>
-                ${killButton}
                 ${ghLink}
                 ${menuButton}
                 <button class="card-detail-chevron" onclick="openIssueDetail(${n}, this);event.stopPropagation();" title="View details" aria-label="View issue #${n} details">&#x25B8;</button>
             </div>
         </div>
         <div class="card-line">${phaseLine}${ageStr}</div>
+        ${queueWaitLine}
         ${detailLine}
         ${badgesDiv}
     </div>`;
@@ -2141,9 +2164,11 @@ async function loadExpandedColumn(columnId, options = {}) {
                 const badgesDiv = orchPills
                     ? `<div class="card-badges">${orchPills}</div>`
                     : '';
-                const detailText = item.detail_label || item.status || '';
+                const queueWaitReason = item.queue_wait_reason || '';
+                const detailText = queueWaitReason || item.detail_label || item.status || '';
+                const detailClass = queueWaitReason ? 'card-line card-wait' : 'card-line card-muted';
                 const detailDiv = detailText
-                    ? `<div class="card-line card-muted">${detailText}</div>`
+                    ? `<div class="${detailClass}">${escapeHtml(String(detailText))}</div>`
                     : '';
                 return `
                 <div class="expanded-card${isViewed ? ' viewed' : ''}" data-issue="${n}" data-viewed="${isViewed}">
@@ -2159,6 +2184,7 @@ async function loadExpandedColumn(columnId, options = {}) {
                     <div class="card-actions">
                         ${columnId === 'blocked' ? `<button class="card-action-btn card-action-unblock" onclick="unblockSingle(${n}, this);event.stopPropagation();" title="Unblock issue #${n}">Unblock</button>` : ''}
                         ${columnId === 'blocked' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingle(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n}">Reset & Retry</button>` : ''}
+                        ${columnId === 'blocked' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingleFromScratch(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n} from a fresh branch based on main">Reset & Retry From Scratch</button>` : ''}
                         ${columnId === 'running' ? `<button class="card-action-btn card-action-reset" onclick="killExpandedSingle(${n}, this);event.stopPropagation();" title="Terminate issue #${n} and place on hold">Cancel</button>` : ''}
                         ${columnId === 'awaiting-merge' ? `<button class="card-action-btn card-action-unblock" onclick="retryExpandedSingle(${n}, 'awaiting-merge', this);event.stopPropagation();" title="Remove pr-pending and requeue issue #${n}">Retry</button>` : ''}
                         ${columnId === 'completed' ? `<button class="card-action-btn card-action-unblock" onclick="retryExpandedSingle(${n}, 'completed', this);event.stopPropagation();" title="Requeue issue #${n} for another run">Retry</button>` : ''}
@@ -2419,7 +2445,7 @@ async function bulkResetRetry() {
     const confirmMsg = `Full reset and requeue ${numbers.length} issue(s)?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Orchestrator labels\n\nAfter reset, the issues will be requeued for a fresh retry.`;
     if (!await showConfirm(confirmMsg)) return;
     try {
-        const req = uiActionContract.buildResetRetryRequest(numbers);
+        const req = uiActionContract.buildResetRetryRequest(numbers, { fromScratch: false });
         const res = await fetch(req.endpoint, {
             method: req.method,
             headers: { 'Content-Type': 'application/json' },
@@ -2441,12 +2467,13 @@ async function bulkResetRetry() {
     }
 }
 
-async function resetRetrySingle(issueNumber, btn) {
-    const confirmMsg = `Full reset and requeue issue #${issueNumber}?\n\nThis will DELETE:\n• Local worktree\n• Remote branch\n• Orchestrator labels\n\nAfter reset, the issue will be requeued for a fresh retry.`;
-    if (!await showConfirm(confirmMsg, btn || lastContextMenuPoint)) return;
-    if (btn) btn.disabled = true;
+async function bulkResetRetryFromScratch() {
+    const numbers = getSelectedIssueNumbers('blocked');
+    if (!numbers.length) return;
+    const confirmMsg = `Full reset and requeue ${numbers.length} issue(s) from scratch?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Orchestrator labels\n\nNext launch will force NEW branches from base (main), not prior issue branch history.`;
+    if (!await showConfirm(confirmMsg)) return;
     try {
-        const req = uiActionContract.buildResetRetryRequest([issueNumber]);
+        const req = uiActionContract.buildResetRetryRequest(numbers, { fromScratch: true });
         const res = await fetch(req.endpoint, {
             method: req.method,
             headers: { 'Content-Type': 'application/json' },
@@ -2455,7 +2482,45 @@ async function resetRetrySingle(issueNumber, btn) {
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.reset && data.reset.length > 0) {
             applyOptimisticRequeue(data.reset, ['blocked']);
-            showToast(`Reset #${issueNumber} → Queued`);
+            showToast(`Reset ${data.reset.length} issue(s) from scratch → Queued`);
+            await refreshViewModel();
+        } else if (res.ok && data.failed && data.failed.length > 0) {
+            showToast(`Failed to reset some issues: ${data.failed.map((f) => f.error).join(', ')}`, true);
+        } else {
+            showToast(data.error || `Reset failed (${res.status})`, true);
+        }
+    } catch (e) {
+        console.error('Bulk reset from scratch failed:', e);
+        showToast('Bulk reset from scratch failed: network error', true);
+    }
+}
+
+async function resetRetrySingle(issueNumber, btn) {
+    const confirmMsg = `Full reset and requeue issue #${issueNumber}?\n\nThis will DELETE:\n• Local worktree\n• Remote branch\n• Orchestrator labels\n\nAfter reset, the issue will be requeued for a fresh retry.`;
+    if (!await showConfirm(confirmMsg, btn || lastContextMenuPoint)) return;
+    await performResetRetry(issueNumber, btn, { fromScratch: false });
+}
+
+async function resetRetrySingleFromScratch(issueNumber, btn) {
+    const confirmMsg = `Full reset and requeue issue #${issueNumber} from scratch?\n\nThis will DELETE:\n• Local worktree\n• Remote branch\n• Orchestrator labels\n\nNext launch will force a NEW branch from base (main), not prior issue branch history.`;
+    if (!await showConfirm(confirmMsg, btn || lastContextMenuPoint)) return;
+    await performResetRetry(issueNumber, btn, { fromScratch: true });
+}
+
+async function performResetRetry(issueNumber, btn, options = {}) {
+    if (btn) btn.disabled = true;
+    try {
+        const fromScratch = Boolean(options.fromScratch);
+        const req = uiActionContract.buildResetRetryRequest([issueNumber], { fromScratch });
+        const res = await fetch(req.endpoint, {
+            method: req.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.reset && data.reset.length > 0) {
+            applyOptimisticRequeue(data.reset, ['blocked']);
+            showToast(fromScratch ? `Reset #${issueNumber} from scratch → Queued` : `Reset #${issueNumber} → Queued`);
             await refreshViewModel();
         } else if (res.ok && data.failed && data.failed.length > 0) {
             showToast(`Reset failed: ${data.failed.map((f) => f.error).join(', ')}`, true);
@@ -3049,6 +3114,48 @@ function addKeyboardSupport(element) {
     });
 }
 
+function clampPagePoint(left, top, width, height, margin = 8) {
+    const minLeft = window.scrollX + margin;
+    const minTop = window.scrollY + margin;
+    const maxLeft = Math.max(minLeft, window.scrollX + window.innerWidth - width - margin);
+    const maxTop = Math.max(minTop, window.scrollY + window.innerHeight - height - margin);
+    return {
+        left: Math.max(minLeft, Math.min(left, maxLeft)),
+        top: Math.max(minTop, Math.min(top, maxTop)),
+    };
+}
+
+function clampClientPoint(left, top, width, height, margin = 8) {
+    const minLeft = margin;
+    const minTop = margin;
+    const maxLeft = Math.max(minLeft, window.innerWidth - width - margin);
+    const maxTop = Math.max(minTop, window.innerHeight - height - margin);
+    return {
+        left: Math.max(minLeft, Math.min(left, maxLeft)),
+        top: Math.max(minTop, Math.min(top, maxTop)),
+    };
+}
+
+function normalizeToClientPoint(point) {
+    if (!point) return null;
+    if (Number.isFinite(point.clientX) && Number.isFinite(point.clientY)) {
+        return { x: Number(point.clientX), y: Number(point.clientY) };
+    }
+    if (Number.isFinite(point.pageX) && Number.isFinite(point.pageY)) {
+        return {
+            x: Number(point.pageX) - window.scrollX,
+            y: Number(point.pageY) - window.scrollY,
+        };
+    }
+    if (Number.isFinite(point.x) && Number.isFinite(point.y)) {
+        return {
+            x: Number(point.x) - window.scrollX,
+            y: Number(point.y) - window.scrollY,
+        };
+    }
+    return null;
+}
+
 // Context menu
 const contextMenu = document.getElementById('contextMenu');
 const menuFocus = document.getElementById('menuFocus');
@@ -3060,6 +3167,7 @@ const menuKill = document.getElementById('menuKill');
 const menuPR = document.getElementById('menuPR');
 const menuUnblock = document.getElementById('menuUnblock');
 const menuResetRetry = document.getElementById('menuResetRetry');
+const menuResetRetryScratch = document.getElementById('menuResetRetryScratch');
 const menuRetry = document.getElementById('menuRetry');
 const menuHistoryDivider = document.getElementById('menuHistoryDivider');
 const menuDepsDivider = document.getElementById('menuDepsDivider');
@@ -3071,7 +3179,7 @@ const contextMenuEnabled = Boolean(contextMenu);
 
 // Add keyboard support to all context menu items
 if (contextMenuEnabled) {
-    [menuFocus, menuFinder, menuLog, menuAgentLog, menuPrompt, menuKill, menuPR, menuUnblock, menuResetRetry, menuRetry]
+    [menuFocus, menuFinder, menuLog, menuAgentLog, menuPrompt, menuKill, menuPR, menuUnblock, menuResetRetry, menuResetRetryScratch, menuRetry]
         .filter(Boolean)
         .forEach(addKeyboardSupport);
 }
@@ -3092,7 +3200,12 @@ function showContextMenu(e, row) {
     const normalizedStatus = statusLower.replace(/_/g, '-');
     const effectiveHistoryStatus = (isCompactCardMenu && columnId) ? columnId : normalizedStatus;
     const isBlockedHistory = effectiveHistoryStatus === 'blocked' || effectiveHistoryStatus === 'needs-human';
-    lastContextMenuPoint = { x: e.pageX, y: e.pageY };
+    lastContextMenuPoint = {
+        pageX: e.pageX,
+        pageY: e.pageY,
+        clientX: e.clientX,
+        clientY: e.clientY,
+    };
 
     const setMenuVisible = (el, visible) => {
         if (!el) return;
@@ -3105,7 +3218,10 @@ function showContextMenu(e, row) {
     setMenuVisible(menuFocus, canFocusWorktree);
     setMenuVisible(menuFinder, canFocusWorktree);
 
-    setMenuVisible(menuPR, Boolean(prUrl));
+    setMenuVisible(menuPR, Boolean(prUrl || row.dataset.issueUrl));
+    if (menuPR) {
+        menuPR.textContent = prUrl ? 'Open PR ↗' : 'Open Issue ↗';
+    }
 
     const agentType = row.dataset.agent;
     setMenuVisible(menuPrompt, Boolean(agentType));
@@ -3159,23 +3275,26 @@ function showContextMenu(e, row) {
         menuKill,
     ].some((el) => el && el.style.display !== 'none');
 
-    // History actions by status: blocked => Unblock + Reset & Retry; others => Retry
+    // History actions by status: blocked => Unblock + Reset & Retry (+ Scratch); others => Retry
     const otherRetryStatuses = new Set(['failed', 'completed', 'timed-out', 'awaiting-merge']);
-    if (menuHistoryDivider && menuRetry && menuUnblock && menuResetRetry) {
+    if (menuHistoryDivider && menuRetry && menuUnblock && menuResetRetry && menuResetRetryScratch) {
         if (isBlockedHistory) {
             menuHistoryDivider.style.display = hasPrimaryActionsAboveHistory ? 'block' : 'none';
             menuUnblock.style.display = '';
             menuResetRetry.style.display = '';
+            menuResetRetryScratch.style.display = '';
             menuRetry.style.display = 'none';
         } else if (otherRetryStatuses.has(effectiveHistoryStatus)) {
             menuHistoryDivider.style.display = hasPrimaryActionsAboveHistory ? 'block' : 'none';
             menuUnblock.style.display = 'none';
             menuResetRetry.style.display = 'none';
+            menuResetRetryScratch.style.display = 'none';
             menuRetry.style.display = '';
         } else {
             menuHistoryDivider.style.display = 'none';
             menuUnblock.style.display = 'none';
             menuResetRetry.style.display = 'none';
+            menuResetRetryScratch.style.display = 'none';
             menuRetry.style.display = 'none';
         }
     }
@@ -3183,15 +3302,9 @@ function showContextMenu(e, row) {
     // Position menu (clamped to viewport so right-edge triggers still show)
     contextMenu.classList.add('visible');
     const menuRect = contextMenu.getBoundingClientRect();
-    const margin = 8;
-    const minLeft = window.scrollX + margin;
-    const minTop = window.scrollY + margin;
-    const maxLeft = window.scrollX + window.innerWidth - menuRect.width - margin;
-    const maxTop = window.scrollY + window.innerHeight - menuRect.height - margin;
-    const left = Math.max(minLeft, Math.min(e.pageX, maxLeft));
-    const top = Math.max(minTop, Math.min(e.pageY, maxTop));
-    contextMenu.style.left = `${left}px`;
-    contextMenu.style.top = `${top}px`;
+    const clamped = clampPagePoint(e.pageX, e.pageY, menuRect.width, menuRect.height, 8);
+    contextMenu.style.left = `${clamped.left}px`;
+    contextMenu.style.top = `${clamped.top}px`;
 }
 
 function openRowActionsMenu(event, button) {
@@ -3340,8 +3453,11 @@ if (contextMenuEnabled) {
     menuPR?.addEventListener('click', (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
-        if (currentRow && currentRow.dataset.prUrl) {
-            window.open(currentRow.dataset.prUrl, '_blank');
+        if (currentRow) {
+            const targetUrl = currentRow.dataset.prUrl || currentRow.dataset.issueUrl;
+            if (targetUrl) {
+                window.open(targetUrl, '_blank');
+            }
         }
     });
 
@@ -3388,6 +3504,17 @@ if (contextMenuEnabled) {
             const issueNumber = Number(currentRow.dataset.issue);
             if (!Number.isNaN(issueNumber)) {
                 await resetRetrySingle(issueNumber, lastContextMenuPoint);
+            }
+        }
+    });
+
+    menuResetRetryScratch?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        contextMenu.classList.remove('visible');
+        if (currentRow) {
+            const issueNumber = Number(currentRow.dataset.issue);
+            if (!Number.isNaN(issueNumber)) {
+                await resetRetrySingleFromScratch(issueNumber, lastContextMenuPoint);
             }
         }
     });
@@ -3839,7 +3966,7 @@ function toggleArtifactPopover(runIndex, cycleIndex, issueNumber) {
         items += `<a href="${escapeHtml(artifacts.log_url)}" target="_blank" rel="noopener noreferrer">View log transcript</a>`;
     } else if (issueNumber) {
         const runDirArg = cycleRunDir ? `${JSON.stringify(String(cycleRunDir))}, ` : 'null, ';
-        items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openAgentLogAction(${issueNumber}, ${runDirArg}'Cycle Session Log')">View log transcript</a>`;
+        items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openAgentLogAction(${issueNumber}, ${runDirArg}'Cycle UI Session')">View log transcript</a>`;
     }
 
     if (artifacts.pr_url) {
@@ -4273,11 +4400,8 @@ function renderTimelineEventActions(actions) {
         label: _timelineActionShortLabel(action),
     }));
     const primaryTypes = [
-        'open_review_feedback',
         'open_agent_log',
-        'view_claude_log',
-        'open_session_diagnostics',
-        'open_orchestrator_log',
+        'open_review_feedback',
     ];
     const primary = [];
     const used = new Set();
@@ -4310,8 +4434,7 @@ function _timelineActionShortLabel(action) {
     if (!action) return 'Action';
     const type = String(action.type || '');
     const label = String(action.label || '').trim();
-    if (type === 'open_agent_log') return 'Session Log';
-    if (type === 'view_session_prompt') return 'View Prompt';
+    if (type === 'open_agent_log') return 'UI Session';
     if (type === 'view_claude_log') return 'Claude Log';
     if (type === 'open_review_feedback') return 'Review Feedback';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
@@ -4352,12 +4475,8 @@ function runTimelineEventAction(action) {
         return;
     }
     if (action.type === 'open_agent_log' && action.issue_number) {
-        const label = action.label ? String(action.label).replace(/^View\s+/, '') : 'Most Recent Session Log';
+        const label = action.label ? String(action.label).replace(/^View\s+/, '') : 'UI Session';
         openAgentLogAction(action.issue_number, action.run_dir || null, label);
-        return;
-    }
-    if (action.type === 'view_session_prompt' && action.issue_number) {
-        viewSessionPrompt(action.issue_number, action.run_dir || null);
         return;
     }
     if (action.type === 'view_claude_log' && action.issue_number) {
@@ -4605,7 +4724,7 @@ async function resetSelectedIssues() {
     blockedUnblockBtn.disabled = true;
 
     try {
-        const req = uiActionContract.buildResetRetryRequest(issueNumbers);
+        const req = uiActionContract.buildResetRetryRequest(issueNumbers, { fromScratch: false });
         const res = await fetch(req.endpoint, {
             method: req.method,
             headers: { 'Content-Type': 'application/json' },
@@ -4624,6 +4743,44 @@ async function resetSelectedIssues() {
     } catch (err) {
         console.error('Failed to reset issues:', err);
         showToast('Failed to reset issues', 'error');
+    }
+
+    updateBlockedButton();
+}
+
+async function resetSelectedIssuesFromScratch() {
+    const checkedBoxes = blockedList.querySelectorAll('input[type="checkbox"]:checked');
+    const issueNumbers = Array.from(checkedBoxes).map(cb => parseInt(cb.dataset.issue));
+
+    if (issueNumbers.length === 0) return;
+
+    const confirmMsg = `Full reset and requeue ${issueNumbers.length} issue${issueNumbers.length > 1 ? 's' : ''} from scratch?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Orchestrator labels\n\nNext launch will force NEW branches from base (main), not prior issue branch history.`;
+    if (!await showConfirm(confirmMsg, blockedResetBtn)) return;
+
+    blockedResetBtn.disabled = true;
+    blockedResetBtn.textContent = 'Resetting...';
+    blockedUnblockBtn.disabled = true;
+
+    try {
+        const req = uiActionContract.buildResetRetryRequest(issueNumbers, { fromScratch: true });
+        const res = await fetch(req.endpoint, {
+            method: req.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+        });
+        const data = await res.json();
+
+        if (data.reset && data.reset.length > 0) {
+            applyOptimisticRequeue(data.reset, ['blocked']);
+            showToast(`Reset ${data.reset.length} issue${data.reset.length > 1 ? 's' : ''} from scratch`);
+            closeBlockedModal();
+            await refreshViewModel();
+        } else if (data.failed && data.failed.length > 0) {
+            showToast(`Failed to reset some issues: ${data.failed.map(f => f.error).join(', ')}`, 'error');
+        }
+    } catch (err) {
+        console.error('Failed to reset issues from scratch:', err);
+        showToast('Failed to reset issues from scratch', 'error');
     }
 
     updateBlockedButton();
@@ -5179,38 +5336,35 @@ function showConfirm(message, anchorEl) {
 
         overlay.appendChild(box);
         document.body.appendChild(overlay);
+        box.style.position = 'fixed';
+        box.style.transform = 'none';
+        box.style.maxWidth = `min(320px, ${Math.max(220, window.innerWidth - 16)}px)`;
 
         // Position near anchor element or pointer location.
         if (anchorEl) {
-            const boxW = box.offsetWidth || 280;
-            const boxH = box.offsetHeight || 120;
-            const margin = 8;
-            let top;
-            let left;
+            const rect = box.getBoundingClientRect();
+            const boxW = rect.width || 280;
+            const boxH = rect.height || 120;
+            let top = 8;
+            let left = 8;
 
             if (typeof anchorEl.getBoundingClientRect === 'function') {
-                const rect = anchorEl.getBoundingClientRect();
-                top = rect.bottom + 6;
-                left = rect.left + rect.width / 2 - boxW / 2;
-                if (top + boxH > window.innerHeight - margin) top = rect.top - boxH - 6;
-            } else if (Number.isFinite(anchorEl.x) && Number.isFinite(anchorEl.y)) {
-                top = anchorEl.y + 6;
-                left = anchorEl.x - (boxW / 2);
-                if (top + boxH > window.innerHeight - margin) top = anchorEl.y - boxH - 6;
+                const anchorRect = anchorEl.getBoundingClientRect();
+                top = anchorRect.bottom + 6;
+                left = anchorRect.left + anchorRect.width / 2 - boxW / 2;
+                if (top + boxH > window.innerHeight - 8) top = anchorRect.top - boxH - 6;
+            } else {
+                const point = normalizeToClientPoint(anchorEl);
+                if (point) {
+                    top = point.y + 6;
+                    left = point.x - (boxW / 2);
+                    if (top + boxH > window.innerHeight - 8) top = point.y - boxH - 6;
+                }
             }
 
-            if (!Number.isFinite(top) || !Number.isFinite(left)) {
-                top = margin;
-                left = margin;
-            }
-            if (top < margin) top = margin;
-            if (left < margin) left = margin;
-            if (left + boxW > window.innerWidth - margin) left = window.innerWidth - boxW - margin;
-            box.style.position = 'fixed';
-            box.style.transform = 'none';
-            box.style.top = top + 'px';
-            box.style.left = left + 'px';
-            box.style.maxWidth = `min(320px, ${window.innerWidth - margin * 2}px)`;
+            const clamped = clampClientPoint(left, top, boxW, boxH, 8);
+            box.style.top = `${clamped.top}px`;
+            box.style.left = `${clamped.left}px`;
         }
 
         function cleanup(result) {

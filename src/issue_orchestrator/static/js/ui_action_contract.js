@@ -30,12 +30,13 @@
         };
     }
 
-    function buildResetRetryRequest(issueNumbers) {
+    function buildResetRetryRequest(issueNumbers, options = {}) {
         const issues = normalizeIssueNumbers(issueNumbers);
+        const fromScratch = Boolean(options.fromScratch);
         return {
             endpoint: ENDPOINTS.RESET_RETRY,
             method: 'POST',
-            body: { issues },
+            body: { issues, from_scratch: fromScratch },
         };
     }
 

@@ -25,7 +25,7 @@ import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
+from typing import Any, Callable, Protocol, TYPE_CHECKING, runtime_checkable
 
 from ..domain.models import (
     CompletionRecord,
@@ -1400,12 +1400,25 @@ class CompletionProcessor:
             )
             return exchange_mode, existing_outcome, True
         logger.info("Review exchange mode selected: %s", exchange_mode)
+        review_started_run_dir: Path | None = None
+
+        def _on_review_exchange_started(started_run_dir: Path) -> None:
+            nonlocal review_started_run_dir
+            review_started_run_dir = started_run_dir
+            self._emit_review_started(
+                issue_number=issue_number,
+                reviewer_label=reviewer_label,
+                exchange_mode=exchange_mode,
+                run_dir=started_run_dir,
+            )
+
         exchange_result = self._run_review_exchange_loop(
             worktree=worktree,
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
             agent_label=agent_label,
+            on_started=_on_review_exchange_started,
         )
         review_run_dir = self._resolve_review_exchange_run_dir(
             exchange_outcome=exchange_result,
@@ -1416,12 +1429,13 @@ class CompletionProcessor:
             raise RuntimeError(
                 f"review.started requires run_dir: issue={issue_number} session={session_name}"
             )
-        self._emit_review_started(
-            issue_number=issue_number,
-            reviewer_label=reviewer_label,
-            exchange_mode=exchange_mode,
-            run_dir=review_run_dir,
-        )
+        if review_started_run_dir is None:
+            self._emit_review_started(
+                issue_number=issue_number,
+                reviewer_label=reviewer_label,
+                exchange_mode=exchange_mode,
+                run_dir=review_run_dir,
+            )
         if exchange_result.status != "ok":
             self._emit_review_outcome(
                 issue_number=issue_number,
@@ -1602,6 +1616,7 @@ class CompletionProcessor:
         issue_title: str,
         session_name: str | None,
         agent_label: str | None,
+        on_started: Callable[[Path], None] | None = None,
     ):
         if not self._config:
             raise ValueError("Review exchange requires config")
@@ -1633,6 +1648,7 @@ class CompletionProcessor:
             web_port=web_port,
             events=self._trace_events,
             event_context=self._event_context,
+            on_started=on_started,
         )
 
     def _create_pr_with_collision_handling(

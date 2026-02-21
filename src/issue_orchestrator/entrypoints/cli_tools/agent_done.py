@@ -454,8 +454,12 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
     """
     from ...infra.config import load_validation_config
 
-    # Read validation config from the worktree's config file
-    validation_config = load_validation_config(worktree)
+    # Read validation config from the worktree's selected config file.
+    config_name = get_env("CONFIG_NAME") or os.environ.get("ORCHESTRATOR_CONFIG_NAME")
+    try:
+        validation_config = load_validation_config(worktree, config_name=config_name)
+    except FileNotFoundError as exc:
+        die(str(exc))
 
     cmd = validation_config.get("cmd")
     if cmd:

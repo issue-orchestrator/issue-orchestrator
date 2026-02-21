@@ -134,7 +134,7 @@ class TestSessionControllerTerminated:
         assert "without completion record" in decision.reason
 
     def test_log_tail_falls_back_to_provider_runner_stdout_when_session_log_empty(self, tmp_path: Path):
-        """Diagnostics should read provider-runner stdout when session.log has no content."""
+        """Diagnostics should read provider-runner stdout when ui-session.log has no content."""
         processor = MockCompletionProcessor()
         controller = SessionController(
             completion_processor=processor,
@@ -144,7 +144,7 @@ class TestSessionControllerTerminated:
         )
 
         run_dir = controller.session_output.ensure_run_dir(tmp_path, "issue-123")
-        (run_dir / "session.log").write_text("")
+        (run_dir / "ui-session.log").write_text("")
         provider_dir = run_dir / "provider-runner"
         provider_dir.mkdir(parents=True, exist_ok=True)
         (provider_dir / "stdout.log").write_text("provider output line\n")

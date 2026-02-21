@@ -55,6 +55,7 @@ from ..contracts.ui_openapi_models import (
     IssueRowPayload,
 )
 from ..control.queue_cache import QueueCache, QueueMutationStatus
+from ..events import EventName
 from ..execution.manifest_accessor import (
     ArtifactNotFoundError,
     ManifestAccessor,
@@ -69,6 +70,7 @@ from ..domain.event_taxonomy import (
     is_review_event_name,
     is_session_event_name,
 )
+from ..ports.event_sink import make_trace_event
 from ..timeline import MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION, TIMELINE_SCHEMA_VERSION
 from ..control.label_manager import LabelManager
 
@@ -238,6 +240,85 @@ def dedupe_consecutive_lines(lines: list[str]) -> list[str]:
         result.append(line)
 
     return result
+
+
+def _extract_stream_json_text(lines: list[str]) -> list[str] | None:
+    """Decode Claude stream-json log lines into plain transcript lines.
+
+    Returns None when input does not appear to be stream-json output.
+    """
+    saw_stream_json = False
+    text_parts: list[str] = []
+
+    for raw in lines:
+        candidate = raw.strip()
+        if not candidate or not candidate.startswith("{"):
+            continue
+        try:
+            record = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+
+        if not isinstance(record, dict):
+            continue
+        event_type = record.get("type")
+        if not isinstance(event_type, str):
+            continue
+
+        if event_type == "stream_event":
+            saw_stream_json = True
+            event = record.get("event")
+            if not isinstance(event, dict):
+                continue
+            if event.get("type") != "content_block_delta":
+                continue
+            delta = event.get("delta")
+            if not isinstance(delta, dict):
+                continue
+            if delta.get("type") != "text_delta":
+                continue
+            chunk = delta.get("text")
+            if isinstance(chunk, str) and chunk:
+                text_parts.append(chunk)
+            continue
+
+        if event_type == "assistant":
+            saw_stream_json = True
+            # Fallback only when deltas are unavailable.
+            if text_parts:
+                continue
+            message = record.get("message")
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") != "text":
+                    continue
+                text = block.get("text")
+                if isinstance(text, str) and text:
+                    text_parts.append(text)
+            continue
+
+        if event_type == "result":
+            saw_stream_json = True
+            # Fallback only when no assistant/content deltas were seen.
+            if text_parts:
+                continue
+            result_text = record.get("result")
+            if isinstance(result_text, str) and result_text:
+                text_parts.append(result_text)
+
+    if not saw_stream_json:
+        return None
+
+    transcript = "".join(text_parts)
+    if not transcript:
+        return []
+    return transcript.splitlines()
 
 
 # Create FastAPI app
@@ -1216,7 +1297,7 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
 ) -> JSONResponse:
     """Get the local agent UI log for an issue.
 
-    This reads .issue-orchestrator/sessions/<session>/session.log from the worktree.
+    This reads .issue-orchestrator/sessions/<session>/ui-session.log from the worktree.
 
     Args:
         issue_number: Issue number to get log for
@@ -1234,8 +1315,9 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
 
     run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
     accessor = ManifestAccessor(run_identity)
+    stream_observation = _build_ui_log_stream_observation(run_identity.run_dir, resolved_log_path=None)
     try:
-        artifact = accessor.get_agent_log()
+        artifact = accessor.get_agent_log(allow_empty=True)
     except ArtifactNotFoundError as e:
         return JSONResponse({
             "error": "No agent UI log found",
@@ -1244,11 +1326,15 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
                 "run_dir": str(run_identity.run_dir),
                 "detail": str(e),
             },
+            "stream_observation": stream_observation,
         }, status_code=404)
     log_path = artifact.path
+    stream_observation = _build_ui_log_stream_observation(run_identity.run_dir, resolved_log_path=log_path)
 
     try:
-        all_lines = log_path.read_text(errors="ignore").splitlines()
+        raw_lines = log_path.read_text(errors="ignore").splitlines()
+        stream_json_lines = _extract_stream_json_text(raw_lines)
+        all_lines = stream_json_lines if stream_json_lines is not None else raw_lines
         total_lines = len(all_lines)
 
         # If offset specified, return lines from that point
@@ -1280,6 +1366,14 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
         # Remove consecutive duplicate lines (repeated separators, prompts, etc.)
         cleaned_lines = dedupe_consecutive_lines(cleaned_lines)
 
+        # Fail-open for readability: if filtering removed everything but the raw
+        # run-scoped log has content, show minimally cleaned raw lines instead of
+        # presenting an empty UI session.
+        if not cleaned_lines and lines:
+            fallback_lines = [clean_terminal_line(line).strip() for line in lines]
+            fallback_lines = [line for line in fallback_lines if line]
+            cleaned_lines = dedupe_consecutive_lines(fallback_lines)
+
         return JSONResponse({
             "issue_number": issue_number,
             "log_path": str(log_path),
@@ -1287,9 +1381,50 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
             "offset": offset,
             "truncated": truncated,
             "lines": cleaned_lines,
+            "stream_observation": stream_observation,
         })
     except Exception as e:
         return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
+
+
+def _build_ui_log_stream_observation(run_dir: Path, *, resolved_log_path: Path | None) -> dict[str, Any]:
+    """Build lightweight file-stat telemetry for run-scoped UI log streaming."""
+    ui_log = run_dir / "ui-session.log"
+    provider_stdout = run_dir / "provider-runner" / "stdout.log"
+    provider_stderr = run_dir / "provider-runner" / "stderr.log"
+    return {
+        "run_dir": str(run_dir),
+        "resolved_log_path": str(resolved_log_path) if resolved_log_path else None,
+        "ui_log": _stream_file_observation(ui_log),
+        "provider_stdout": _stream_file_observation(provider_stdout),
+        "provider_stderr": _stream_file_observation(provider_stderr),
+    }
+
+
+def _stream_file_observation(path: Path) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "path": str(path),
+        "exists": False,
+        "is_symlink": False,
+        "symlink_target": None,
+        "bytes": None,
+        "mtime_epoch": None,
+    }
+    try:
+        data["is_symlink"] = path.is_symlink()
+        if data["is_symlink"]:
+            try:
+                data["symlink_target"] = str(path.resolve())
+            except OSError:
+                data["symlink_target"] = None
+        if path.exists():
+            stat = path.stat()
+            data["exists"] = True
+            data["bytes"] = int(stat.st_size)
+            data["mtime_epoch"] = float(stat.st_mtime)
+    except OSError:
+        return data
+    return data
 
 
 def _manifest_response(
@@ -1942,7 +2077,7 @@ def _timeline_event_recommended_actions(
     event: dict[str, Any],
     event_name: str,
     issue_number: int,
-    agent_log_label: str = "View Most Recent Session Log",
+    agent_log_label: str = "View UI Session",
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
     """Add event-specific suggested actions."""
@@ -1956,17 +2091,6 @@ def _timeline_event_recommended_actions(
             {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
             f"agent:{issue_number}",
         )
-        run_dir = str(event.get("run_dir") or "")
-        if run_dir:
-            add_action(
-                {
-                    "type": "view_session_prompt",
-                    "label": "View Session Prompt",
-                    "issue_number": issue_number,
-                    "run_dir": run_dir,
-                },
-                f"prompt:{issue_number}:{run_dir}",
-            )
         add_action(
             {"type": "view_claude_log", "label": "View Claude Session Log", "issue_number": issue_number},
             f"claude:{issue_number}",
@@ -2025,7 +2149,7 @@ def _timeline_event_artifact_actions(
 def _timeline_event_default_actions(
     *,
     issue_number: int,
-    agent_log_label: str = "View Most Recent Session Log",
+    agent_log_label: str = "View UI Session",
     include_run_scoped: bool = True,
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
@@ -2058,17 +2182,11 @@ def _agent_log_is_usable(log_path: Path, *, event_name: str) -> bool:
     try:
         if not log_path.exists():
             return False
-        # Start events should always expose the session log, even when output is sparse.
-        if event_name in _TIMELINE_START_EVENTS:
-            return True
-        content = log_path.read_text(encoding="utf-8", errors="replace")
+        # Expose UI session whenever the run-scoped log artifact exists.
+        # UI handles empty files with a waiting message until first output arrives.
+        return True
     except OSError:
         return False
-    lines = [line.strip() for line in content.splitlines() if line.strip()]
-    if not lines:
-        return False
-    # Treat extremely short fragments as unusable so UI avoids dead-end actions.
-    return any(len(line) >= 8 for line in lines)
 
 
 def _validate_timeline_event_requirements(
@@ -2107,7 +2225,7 @@ def _validated_run_scoped_artifact(
         )
     accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(event_run_dir)))
     if action_type == "open_agent_log":
-        artifact = accessor.get_agent_log()
+        artifact = accessor.get_agent_log(allow_empty=True)
         if not _agent_log_is_usable(artifact.path, event_name=event_name):
             raise RuntimeError(
                 f"run-scoped agent log is empty/unusable: issue={issue_number} event={event_name} run_dir={event_run_dir}"
@@ -2131,7 +2249,6 @@ def _decorate_timeline_action_with_run_dir(action: dict[str, Any], event_run_dir
         return action
     if str(action.get("type") or "") in {
         "open_agent_log",
-        "view_session_prompt",
         "view_claude_log",
         "open_orchestrator_log",
         "open_session_diagnostics",
@@ -2172,6 +2289,8 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
                 )
             except Exception as exc:
                 if action_type == "view_claude_log":
+                    if isinstance(exc, ArtifactNotFoundError) and str(exc).strip() == "manifest missing claude_log_path":
+                        return
                     action_warnings.append(f"{action_type} unavailable: {exc}")
                     return
                 raise
@@ -2241,12 +2360,12 @@ def _agent_log_label_for_event(event: dict[str, Any]) -> str:
     task = str(event.get("task") or "").strip().lower()
     intent = str(event.get("event_intent") or "")
     if intent == EventIntent.REVIEW.value or bool(event.get("review_oriented")) or is_review_oriented_event(event_name=event_name, task=task):
-        return "View Reviewer Session Log"
+        return "View Reviewer UI Session"
     if intent == EventIntent.REWORK.value or is_rework_event_name(event_name) or task == "rework":
-        return "View Rework Session Log"
+        return "View Rework UI Session"
     if intent == EventIntent.CODING.value or is_session_event_name(event_name) or task in {"code", "coding"}:
-        return "View Coding Session Log"
-    return "View Most Recent Session Log"
+        return "View Coding UI Session"
+    return "View UI Session"
 
 
 def _worktree_path_from_run_dir(run_dir: Path) -> Path | None:
@@ -3117,6 +3236,7 @@ async def reset_and_retry(request: Request) -> JSONResponse:
 
     JSON body:
         issues: list[int] - Issue numbers to reset
+        from_scratch: bool - Force next launch onto a fresh branch from base
 
     This "nuclear option" cleans up all local and remote state:
     - Deletes local worktrees
@@ -3129,6 +3249,7 @@ async def reset_and_retry(request: Request) -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
+    from ..control.actions import AddLabelAction
     from ..control.maintenance import reset_issue, ResetResult
 
     try:
@@ -3137,6 +3258,7 @@ async def reset_and_retry(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     issue_numbers = body.get("issues", [])
+    from_scratch = bool(body.get("from_scratch", False))
     if not issue_numbers or not isinstance(issue_numbers, list):
         return JSONResponse({"error": "issues must be a non-empty list"}, status_code=400)
 
@@ -3145,9 +3267,12 @@ async def reset_and_retry(request: Request) -> JSONResponse:
     repository_host = _orchestrator.repository_host
     deps = _orchestrator.deps
     lm = deps.label_manager
+    queue_cache = QueueCache(config, state)
 
     reset_results: list[dict] = []
     failed: list[dict] = []
+    pending_label = lm.reset_retry_pending
+    scratch_pending_label = lm.reset_retry_scratch_pending
 
     for issue_number in issue_numbers:
         try:
@@ -3168,18 +3293,105 @@ async def reset_and_retry(request: Request) -> JSONResponse:
             )
 
             if result.success:
+                pending_labels_to_add = [pending_label]
+                if from_scratch:
+                    pending_labels_to_add.append(scratch_pending_label)
+
+                pending_label_failed: str | None = None
+                for label in pending_labels_to_add:
+                    pending_result = deps.action_applier.apply(
+                        AddLabelAction(
+                            issue_number=issue_number,
+                            label=label,
+                            reason="reset+retry requested via web",
+                        )
+                    )
+                    if not pending_result.success:
+                        pending_label_failed = pending_result.error or f"Failed to set {label}"
+                        break
+
+                if pending_label_failed is not None:
+                    failed.append({
+                        "issue": issue_number,
+                        "error": pending_label_failed,
+                        "partial": {
+                            "deleted_worktree": result.deleted_worktree,
+                            "deleted_branch": result.deleted_branch,
+                            "labels_removed": result.labels_removed,
+                            "from_scratch": from_scratch,
+                        },
+                    })
+                    continue
+
+                refreshed_issue = repository_host.get_issue(issue_number)
+                if refreshed_issue is None:
+                    failed.append({
+                        "issue": issue_number,
+                        "error": f"Issue #{issue_number} not found after reset",
+                        "partial": {
+                            "deleted_worktree": result.deleted_worktree,
+                            "deleted_branch": result.deleted_branch,
+                            "labels_removed": result.labels_removed,
+                        },
+                    })
+                    continue
+                outcome = queue_cache.upsert_refreshed_issue(refreshed_issue)
+                refreshed_at = time.time()
+                if outcome.status == QueueMutationStatus.ACCEPTED:
+                    state.issue_refresh_timestamps[issue_number] = refreshed_at
+                    state.issue_last_refreshed_at[issue_number] = refreshed_at
+                else:
+                    state.issue_refresh_timestamps.pop(issue_number, None)
+                    state.issue_last_refreshed_at.pop(issue_number, None)
+                    failed.append({
+                        "issue": issue_number,
+                        "error": f"Issue #{issue_number} is not queue-eligible after reset ({outcome.status.value})",
+                        "partial": {
+                            "deleted_worktree": result.deleted_worktree,
+                            "deleted_branch": result.deleted_branch,
+                            "labels_removed": result.labels_removed,
+                            "pending_labels": pending_labels_to_add,
+                            "from_scratch": from_scratch,
+                        },
+                    })
+                    continue
+                queue_cache.prune_refresh_timestamps()
+
+                if issue_number not in state.priority_queue:
+                    state.priority_queue.insert(0, issue_number)
+
+                deps.events.publish(
+                    make_trace_event(
+                        EventName.ISSUE_UNBLOCKED,
+                        {
+                            "issue_number": issue_number,
+                            "reason": "reset_retry_requested",
+                            "source": "web.reset-retry",
+                            "pending_label": pending_label,
+                            "pending_labels": pending_labels_to_add,
+                            "from_scratch": from_scratch,
+                        },
+                    )
+                )
+
                 reset_results.append({
                     "issue": result.issue_number,
                     "deleted_worktree": result.deleted_worktree,
                     "deleted_branch": result.deleted_branch,
                     "labels_removed": result.labels_removed,
+                    "pending_label": pending_label,
+                    "pending_labels": pending_labels_to_add,
+                    "from_scratch": from_scratch,
+                    "queued_now": True,
                 })
                 logger.info(
-                    "[reset-retry] Reset issue #%d: worktree=%s branch=%s labels=%s",
+                    "[reset-retry] Reset issue #%d: worktree=%s branch=%s labels=%s pending=%s from_scratch=%s queued_now=true",
                     issue_number,
                     result.deleted_worktree or "(none)",
                     result.deleted_branch or "(none)",
                     result.labels_removed or "(none)",
+                    pending_label,
+                    from_scratch,
                 )
             else:
                 failed.append({
@@ -3196,15 +3408,11 @@ async def reset_and_retry(request: Request) -> JSONResponse:
             logger.error("[reset-retry] Failed to reset issue #%d: %s", issue_number, e)
             failed.append({"issue": issue_number, "error": str(e)})
 
-    # Trigger a refresh so the orchestrator picks up the reset issues
-    if reset_results:
-        _orchestrator.request_refresh()
-        logger.info("[reset-retry] Reset %d issues, refresh triggered", len(reset_results))
-
     return JSONResponse({
         "reset": reset_results,
         "failed": failed,
-        "refresh_triggered": len(reset_results) > 0,
+        "from_scratch": from_scratch,
+        "refresh_triggered": False,
     })
 
 

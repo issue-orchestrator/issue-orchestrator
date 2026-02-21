@@ -72,6 +72,9 @@ class TestNamedProperties:
     def test_pr_pending(self, lm: LabelManager) -> None:
         assert lm.pr_pending == "pr-pending"
 
+    def test_reset_retry_scratch_pending(self, lm: LabelManager) -> None:
+        assert lm.reset_retry_scratch_pending == "reset-retry-scratch-pending"
+
     def test_blocked(self, lm: LabelManager) -> None:
         assert lm.blocked == "blocked"
 
@@ -119,6 +122,9 @@ class TestNamedPropertiesPrefixed:
 
     def test_blocked_failed(self, plm: LabelManager) -> None:
         assert plm.blocked_failed == "bot:blocked-failed"
+
+    def test_reset_retry_scratch_pending(self, plm: LabelManager) -> None:
+        assert plm.reset_retry_scratch_pending == "bot:reset-retry-scratch-pending"
 
     def test_io_claimed(self, plm: LabelManager) -> None:
         assert plm.io_claimed == "bot:io:claimed"

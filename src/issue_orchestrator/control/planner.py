@@ -22,6 +22,7 @@ Usage:
 
 import logging
 import re
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Sequence
 
@@ -309,6 +310,9 @@ class Planner:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
+        self._last_queue_decisions: dict[int, str] = {}
+        self._last_queue_summary_logged_at: float = 0.0
+        self._queue_summary_interval_seconds = 60.0
 
     def plan(self, snapshot: OrchestratorSnapshot) -> Plan:
         """Create a plan for the current state.
@@ -975,14 +979,23 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 return actions, skipped, 0
             capacity = min(capacity, remaining)
 
-        # Get available issues (not blocked, not in-progress with running session)
-        snapshot_issue_count = len(snapshot.issues)
-        available, dependency_blocked = self.scheduler.get_available_issues(
+        # Get scheduler decisions with explicit availability reasons.
+        scheduler_decisions = self.scheduler.evaluate_issues(
             list(snapshot.issues),
             check_dependencies=self.dependency_evaluator is not None,
             active_sessions=list(snapshot.active_sessions),
         )
-        scheduler_filtered = snapshot_issue_count - len(available) - len(dependency_blocked)
+        available = [d.issue for d in scheduler_decisions if d.available]
+        dependency_blocked = [
+            (d.issue, d.detail or "dependency blocked")
+            for d in scheduler_decisions
+            if d.reason == "dependency_blocked"
+        ]
+        decision_reason_by_issue = {d.issue.number: d.reason for d in scheduler_decisions}
+        scheduler_filtered = sum(
+            1 for decision in scheduler_decisions
+            if not decision.available and decision.reason != "dependency_blocked"
+        )
 
         # Record dependency-blocked items and add cross-milestone labels
         for issue, reason in dependency_blocked:
@@ -1038,23 +1051,29 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             if issue.number not in excluded_issues
         ]
 
-        # Log per-issue exclusion reasons for diagnostics
+        # Log per-issue exclusion reasons for diagnostics.
+        skip_reason_by_issue: dict[int, str] = {}
         for issue in available:
             if issue.number in snapshot.active_issue_numbers:
                 skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="active session running"))
                 logger.info(issue_log(issue.number, "Skipped: reason=active_session"))
+                skip_reason_by_issue[issue.number] = "active_session"
             elif issue.number in issues_with_reviews:
                 skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="pending review"))
                 logger.info(issue_log(issue.number, "Skipped: reason=pending_review"))
+                skip_reason_by_issue[issue.number] = "pending_review"
             elif issue.number in issues_with_reworks:
                 skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="pending rework"))
                 logger.info(issue_log(issue.number, "Skipped: reason=pending_rework"))
+                skip_reason_by_issue[issue.number] = "pending_rework"
             elif issue.number in snapshot.failed_this_cycle:
                 skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="failed this cycle - waiting for cache refresh"))
                 logger.info(issue_log(issue.number, "Skipped: reason=failed_this_cycle"))
+                skip_reason_by_issue[issue.number] = "failed_this_cycle"
             elif issue.number in snapshot.session_history_issue_numbers:
                 skipped.append(SkippedItem(item_type="issue", number=issue.number, reason="session completed this run"))
                 logger.info(issue_log(issue.number, "Skipped: reason=session_history"))
+                skip_reason_by_issue[issue.number] = "session_history"
 
         # Pick next batch based on priority
         to_launch = self.scheduler.pick_next_batch(
@@ -1089,8 +1108,87 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
             snapshot_numbers, available_numbers, scheduler_filtered,
             len(dependency_blocked), eligible_numbers, launching_numbers, capacity,
         )
+        launching_set = set(launching_numbers)
+        dep_blocked_map = {issue.number: reason for issue, reason in dependency_blocked}
+        decision_by_issue: dict[int, str] = {}
+        detail_by_issue: dict[int, str] = {}
+        for issue in snapshot.issues:
+            if issue.number in launching_set:
+                decision_by_issue[issue.number] = "launch:scheduled"
+                continue
+            if issue.number in skip_reason_by_issue:
+                decision_by_issue[issue.number] = f"skip:{skip_reason_by_issue[issue.number]}"
+                continue
+            if issue.number in dep_blocked_map:
+                decision_by_issue[issue.number] = "skip:dependency_blocked"
+                detail_by_issue[issue.number] = dep_blocked_map[issue.number]
+                continue
+            scheduler_reason = decision_reason_by_issue.get(issue.number, "unknown")
+            decision_by_issue[issue.number] = f"skip:{scheduler_reason}"
+        self._log_queue_decision_changes(decision_by_issue, detail_by_issue)
 
         return actions, skipped, len(actions)
+
+    def _log_queue_decision_changes(
+        self,
+        decision_by_issue: dict[int, str],
+        detail_by_issue: dict[int, str],
+    ) -> None:
+        """Emit queue decision traces only when they change, plus periodic summary."""
+        for issue_number, decision in decision_by_issue.items():
+            previous = self._last_queue_decisions.get(issue_number)
+            if previous == decision:
+                continue
+            self._last_queue_decisions[issue_number] = decision
+            if decision.startswith("launch:"):
+                reason = decision.split(":", 1)[1]
+                logger.info(
+                    "trace-queue-decision issue=%d decision=launch reason=%s",
+                    issue_number,
+                    reason,
+                )
+                continue
+            reason = decision.split(":", 1)[1]
+            if reason == "dependency_blocked":
+                logger.info(
+                    "trace-queue-decision issue=%d decision=skip reason=dependency_blocked detail=%s",
+                    issue_number,
+                    detail_by_issue.get(issue_number, "dependency blocked"),
+                )
+            else:
+                logger.info(
+                    "trace-queue-decision issue=%d decision=skip reason=%s",
+                    issue_number,
+                    reason,
+                )
+
+        # Prune stale issues no longer in this snapshot.
+        current_numbers = set(decision_by_issue.keys())
+        for issue_number in list(self._last_queue_decisions.keys()):
+            if issue_number not in current_numbers:
+                del self._last_queue_decisions[issue_number]
+
+        now = time.monotonic()
+        if (now - self._last_queue_summary_logged_at) < self._queue_summary_interval_seconds:
+            return
+        self._last_queue_summary_logged_at = now
+
+        launch_count = 0
+        reason_counts: dict[str, int] = {}
+        for decision in decision_by_issue.values():
+            kind, reason = decision.split(":", 1)
+            if kind == "launch":
+                launch_count += 1
+                continue
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+        reason_summary = ", ".join(f"{reason}:{count}" for reason, count in sorted(reason_counts.items()))
+        logger.info(
+            "trace-queue-summary total=%d launch=%d skip=%d reasons=%s",
+            len(decision_by_issue),
+            launch_count,
+            len(decision_by_issue) - launch_count,
+            reason_summary or "none",
+        )
 
     def _plan_reviews(
         self,

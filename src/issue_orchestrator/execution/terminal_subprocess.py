@@ -245,7 +245,7 @@ class SubprocessPlugin:
     def _session_log_path(self, working_dir: Path, session_name: str) -> Path:
         session_output = FileSystemSessionOutput()
         run_dir = session_output.ensure_run_dir(working_dir, session_name)
-        return run_dir / "session.log"
+        return run_dir / "ui-session.log"
 
     def _build_process_command(self, command: str, working_dir: Path) -> str:
         """Build the full command with path and isolation prefix."""

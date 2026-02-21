@@ -33,6 +33,7 @@ class WorktreeReuseOptions:
     worktree_branch_on_recreate: str = "delete"
     allow_no_verify_dry_run_preflight: bool = True
     allow_remote_branch_delete: bool = True
+    disable_reuse: bool = False
 
 
 class WorktreeManager(Protocol):

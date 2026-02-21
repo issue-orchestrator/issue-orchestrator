@@ -164,12 +164,21 @@
                                         <span class="stale-dot" title="{{ card.stale_reason or 'Issue may be stale' }}" aria-label="Issue data may be stale"></span>
                                         {% endif %}
                                         <button class="card-refresh-btn" onclick="refreshIssueCard({{ card.issue_number }}, this);event.stopPropagation();" title="Refresh issue #{{ card.issue_number }} from GitHub" aria-label="Refresh issue #{{ card.issue_number }}">&#x27F3;</button>
-                                        {% if card.state_label == 'running' %}
-                                        <button class="card-kill-btn" onclick="killSession({{ card.issue_number }}, event)" title="Cancel / terminate issue #{{ card.issue_number }}" aria-label="Cancel issue #{{ card.issue_number }}">&#x23F9;</button>
-                                        {% endif %}
                                         {% if card.issue_url %}
                                         <a class="card-gh" href="{{ card.issue_url }}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">&#x2197;</a>
                                         {% endif %}
+                                        <button class="card-menu-btn"
+                                                data-issue="{{ card.issue_number }}"
+                                                data-title="{{ card.title | e }}"
+                                                data-issue-url="{{ card.issue_url | default('', true) | e }}"
+                                                data-pr-url="{{ card.pr_url | default('', true) | e }}"
+                                                data-status="{{ card.state_label | default('', true) | e }}"
+                                                data-row-action="{{ 'focus' if card.state_label == 'running' else 'open' }}"
+                                                data-agent="{{ card.agent_type | default('', true) | e }}"
+                                                data-has-terminal="{{ 'true' if card.state_label == 'running' else 'false' }}"
+                                                onclick="openCompactCardActionsMenu(event, this)"
+                                                title="More actions for issue #{{ card.issue_number }}"
+                                                aria-label="More actions for issue #{{ card.issue_number }}">&#x22EE;</button>
                                         <button class="card-detail-chevron" onclick="openIssueDetail({{ card.issue_number }}, this);event.stopPropagation();" title="View details" aria-label="View issue #{{ card.issue_number }} details">&#x25B8;</button>
                                     </div>
                                 </div>
@@ -177,8 +186,15 @@
                                     {% if card.phase %}{{ card.phase }}{% else %}{{ card.state_label }}{% endif %}
                                     {% if card.phase_age %} &middot; {{ card.phase_age }}{% endif %}
                                 </div>
+                                {% if card.queue_wait_reason %}
+                                <div class="card-line card-wait">{{ card.queue_wait_reason }}</div>
+                                {% elif card.summary %}
+                                <div class="card-line card-wait">{{ card.summary }}</div>
+                                {% endif %}
                                 {% if card.summary %}
+                                {% if not card.queue_wait_reason %}
                                 <div class="card-line card-muted">{{ card.summary }}</div>
+                                {% endif %}
                                 {% endif %}
                                 {% set orch_labels = card.orchestrator_labels or [] %}
                                 {% if orch_labels or card.is_stale %}
@@ -217,6 +233,7 @@
                             {% if column.id == 'blocked' %}
                             <button class="issue-action-btn" onclick="bulkUnblock()" disabled title="Requeue selected issues while keeping current worktree/branch context">Unblock</button>
                             <button class="issue-action-btn" onclick="bulkResetRetry()" disabled title="Delete local worktree and remote branch, clear orchestrator labels, then requeue selected issues">Reset &amp; Retry</button>
+                            <button class="issue-action-btn" onclick="bulkResetRetryFromScratch()" disabled title="Delete local worktree and remote branch, clear orchestrator labels, then requeue selected issues from a fresh branch based on main">Reset &amp; Retry From Scratch</button>
                             <button class="issue-action-btn" onclick="bulkMarkViewed()" disabled title="Mark selected blocked issues as viewed in this browser">Mark Viewed</button>
                             <button class="issue-action-btn" onclick="bulkClearViewed()" disabled title="Clear viewed state for selected blocked issues in this browser">Clear Viewed</button>
                             {% elif column.id == 'awaiting-merge' %}
@@ -522,6 +539,7 @@
         <div id="menuHistoryDivider" class="context-menu-divider" style="display:none;"></div>
         <button id="menuUnblock" class="context-menu-item" role="menuitem" style="display:none;">Unblock</button>
         <button id="menuResetRetry" class="context-menu-item" role="menuitem" style="display:none;">Reset &amp; Retry</button>
+        <button id="menuResetRetryScratch" class="context-menu-item" role="menuitem" style="display:none;">Reset and Retry From Scratch</button>
         <button id="menuRetry" class="context-menu-item" role="menuitem" style="display:none;">Retry</button>
     </div>
     <div id="toast" role="status" aria-live="polite"></div>

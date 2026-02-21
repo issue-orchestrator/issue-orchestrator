@@ -338,6 +338,61 @@ def test_completed_history_without_pr_url_does_not_enter_completed_lane():
     assert any(item["issue_number"] == 4057 for item in view_model.queue_items)
 
 
+def test_queue_item_shows_textual_wait_reason():
+    config = _make_config()
+    issue = Issue(number=4057, title="Queued", labels=["agent:web"])
+    state = OrchestratorState(startup_status="complete", cached_queue_issues=[issue])
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queue_item = view_model.queue_items[0]
+    assert queue_item["flow_stage"] == "queued"
+    assert queue_item["queue_wait_reason"].startswith("Waiting:")
+
+    queued_col = next(col for col in view_model.flow_columns if col["id"] == "queued")
+    card = queued_col["items"][0]
+    assert card["summary"].startswith("Waiting:")
+    assert card["queue_wait_reason"].startswith("Waiting:")
+
+
+def test_review_stage_queue_item_does_not_get_queue_wait_reason():
+    config = _make_config()
+    issue = Issue(number=4057, title="Queued", labels=["agent:web"])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+        pending_reviews=[
+            PendingReview(
+                issue_key=FakeIssueKey("4057"),
+                pr_number=4124,
+                pr_url="https://github.com/test/repo/pull/4124",
+                branch_name="feature/4057",
+                _issue_number=4057,
+            )
+        ],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queue_item = view_model.queue_items[0]
+    assert queue_item["flow_stage"] == "review"
+    assert queue_item.get("queue_wait_reason") is None
+
+
 def test_view_model_includes_refresh_staleness_meta():
     config = _make_config()
     agent_config = _make_agent_config()

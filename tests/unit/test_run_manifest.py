@@ -18,7 +18,7 @@ def run_dir(tmp_path: Path) -> Path:
 def _write_manifest(run_dir: Path, data: dict) -> Path:
     data = dict(data)
     data.setdefault("run_dir", str(run_dir))
-    log_path = data.setdefault("log_path", str(run_dir / "session.log"))
+    log_path = data.setdefault("log_path", str(run_dir / "ui-session.log"))
     data.setdefault(
         "artifacts",
         {

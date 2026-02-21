@@ -238,6 +238,36 @@ def blocked_summary(labels: list[str], lm: LabelManager, dependency_summary: str
     return " • ".join(reasons) if reasons else None
 
 
+def _queue_wait_reason(
+    *,
+    state,
+    config,
+    issue_number: int,
+    dep_problem: Any | None,
+    queue_position: int,
+) -> str:
+    if state.paused:
+        return "Waiting: orchestrator paused"
+
+    active_count = len(state.active_sessions)
+    max_sessions = max(1, int(getattr(config, "max_concurrent_sessions", 1)))
+    if active_count >= max_sessions:
+        return f"Waiting: at capacity ({active_count}/{max_sessions} running)"
+
+    if dep_problem is not None and dep_problem.summary:
+        return f"Waiting: {dep_problem.summary}"
+
+    if issue_number in state.failed_this_cycle:
+        return "Waiting: previous launch/action failed (manual retry may be needed)"
+
+    if any(entry.issue_number == issue_number for entry in state.session_history):
+        return "Waiting: previous run state"
+
+    if queue_position <= 1:
+        return "Waiting: next scheduler tick"
+    return f"Waiting: {queue_position - 1} queued ahead"
+
+
 def _display_labels(labels: list[str], lm: LabelManager) -> list[str]:
     """Labels shown as pills in UI cards.
 
@@ -473,6 +503,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
 
     start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
     end_idx = start_idx + QUEUE_PAGE_SIZE
+    queued_position = 0
     for issue in queue_issues[start_idx:end_idx]:
         if issue.number in seen_issues:
             continue
@@ -522,8 +553,22 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             flow_stage = "in_progress"
         else:
             flow_stage = "queued"
+            queued_position += 1
         flow_steps = flow_steps_for(flow_stage)
         flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
+        queue_reason = (
+            _queue_wait_reason(
+                state=state,
+                config=config,
+                issue_number=issue.number,
+                dep_problem=dep_problem,
+                queue_position=queued_position,
+            )
+            if flow_stage == "queued"
+            else None
+        )
+        if queue_reason:
+            detail_label = queue_reason
 
         item = {
             "issue_number": issue.number,
@@ -549,6 +594,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            "queue_wait_reason": queue_reason,
             "merge_pending": lm.is_pr_pending(issue.labels),
             "dependency_blocked": is_dependency_blocked,
             "orchestrator_labels": _display_labels(list(issue.labels), lm),
@@ -790,14 +836,17 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
     phase = item.get("flow_stage_label") or item.get("flow_stage") or ""
     phase_age = item.get("time") or ""
     blocked = item.get("blocked_summary") or ""
+    summary_text = item.get("queue_wait_reason") or (f"Summary: {blocked}" if blocked else "")
     return {
         "card_id": item.get("card_id") or f"issue-{item.get('issue_number')}",
         "issue_number": item.get("issue_number"),
         "title": item.get("title", ""),
+        "agent_type": item.get("agent_type", ""),
         "state_label": state_label or item.get("status", ""),
         "phase": phase,
         "phase_age": phase_age,
-        "summary": f"Summary: {blocked}" if blocked else "",
+        "summary": summary_text,
+        "queue_wait_reason": item.get("queue_wait_reason"),
         "blocked_summary": blocked,
         "badges": [],
         "orchestrator_labels": item.get("orchestrator_labels", []),

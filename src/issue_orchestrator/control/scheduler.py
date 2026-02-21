@@ -178,6 +178,16 @@ class SchedulerResult:
     dependency_blocked: list[tuple[Issue, str]] = field(default_factory=list)  # issues blocked by unsatisfied dependencies
 
 
+@dataclass(frozen=True)
+class IssueAvailabilityDecision:
+    """Availability result for a single issue."""
+
+    issue: Issue
+    available: bool
+    reason: str
+    detail: str | None = None
+
+
 class Scheduler:
     """Handles issue scheduling, prioritization, and dependency analysis."""
 
@@ -231,51 +241,80 @@ class Scheduler:
             - available_issues: List of runnable issues
             - dependency_blocked: List of (issue, reason) for dependency-blocked issues
         """
-        available = []
+        available: list[Issue] = []
         dependency_blocked: list[tuple[Issue, str]] = []
-
-        # Build set of issue numbers with active sessions
-        active_issue_numbers = set()
-        if active_sessions:
-            active_issue_numbers = {s.issue.number for s in active_sessions}
-
-        for issue in all_issues:
-            if issue.state == "closed":
+        decisions = self.evaluate_issues(
+            all_issues,
+            check_dependencies=check_dependencies,
+            active_sessions=active_sessions,
+        )
+        for decision in decisions:
+            if decision.available:
+                available.append(decision.issue)
                 continue
-
-            # Runtime-aware in-progress gating:
-            # Only block if label exists AND session is actually running
-            if self._lm.is_in_progress(issue.labels):
-                if issue.number in active_issue_numbers:
-                    # Session actually running - don't schedule
-                    continue
-                # Label exists but no session - stale, will be cleaned up by planner
-                # Don't block scheduling; planner will handle label cleanup
-
-            if self._lm.is_pr_pending(issue.labels):
-                continue
-            if self._lm.is_blocking_any(issue.labels):
-                continue
-
-            # Check dependencies if evaluator is available
-            if check_dependencies and self.dependency_evaluator and issue.body:
-                report = self.dependency_evaluator.evaluate(
-                    issue_number=issue.number,
-                    issue_body=issue.body,
-                    source_milestone=issue.milestone,
+            if decision.reason == "dependency_blocked":
+                dependency_blocked.append((decision.issue, decision.detail or "dependency blocked"))
+                logger.debug(
+                    "Issue #%d blocked by dependencies: %s",
+                    decision.issue.number,
+                    decision.detail or "dependency blocked",
                 )
-                if not report.runnable:
-                    dependency_blocked.append((issue, report.summary()))
-                    logger.debug(
-                        "Issue #%d blocked by dependencies: %s",
-                        issue.number,
-                        report.summary(),
-                    )
-                    continue
-
-            available.append(issue)
 
         return available, dependency_blocked
+
+    def evaluate_issues(
+        self,
+        all_issues: Sequence[Issue],
+        check_dependencies: bool = True,
+        active_sessions: Optional[Sequence[Session]] = None,
+    ) -> list[IssueAvailabilityDecision]:
+        """Evaluate scheduler availability for each issue with explicit reason codes."""
+        active_issue_numbers = {s.issue.number for s in active_sessions} if active_sessions else set()
+        return [
+            self._evaluate_issue(
+                issue,
+                active_issue_numbers=active_issue_numbers,
+                check_dependencies=check_dependencies,
+            )
+            for issue in all_issues
+        ]
+
+    def _evaluate_issue(
+        self,
+        issue: Issue,
+        *,
+        active_issue_numbers: set[int],
+        check_dependencies: bool,
+    ) -> IssueAvailabilityDecision:
+        if issue.state == "closed":
+            return IssueAvailabilityDecision(issue=issue, available=False, reason="closed")
+
+        # Runtime-aware in-progress gating:
+        # Only block if label exists AND session is actually running.
+        if self._lm.is_in_progress(issue.labels) and issue.number in active_issue_numbers:
+            return IssueAvailabilityDecision(issue=issue, available=False, reason="in_progress_active_session")
+
+        # Label exists but no session - stale; planner handles cleanup, so still eligible.
+        if self._lm.is_pr_pending(issue.labels):
+            return IssueAvailabilityDecision(issue=issue, available=False, reason="pr_pending")
+        if self._lm.is_blocking_any(issue.labels):
+            return IssueAvailabilityDecision(issue=issue, available=False, reason="blocked_label")
+
+        if check_dependencies and self.dependency_evaluator and issue.body:
+            report = self.dependency_evaluator.evaluate(
+                issue_number=issue.number,
+                issue_body=issue.body,
+                source_milestone=issue.milestone,
+            )
+            if not report.runnable:
+                return IssueAvailabilityDecision(
+                    issue=issue,
+                    available=False,
+                    reason="dependency_blocked",
+                    detail=report.summary(),
+                )
+
+        return IssueAvailabilityDecision(issue=issue, available=True, reason="available")
 
     def sort_by_priority(self, issues: Sequence[Issue]) -> list[Issue]:
         """Sort issues by milestone, priority tier, sequence, then issue number.

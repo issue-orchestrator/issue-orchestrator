@@ -8,7 +8,7 @@ import shlex
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..agent_runner import AgentRunner, RunSpec
 from ..domain.models import AgentConfig
@@ -20,6 +20,21 @@ from ..events import EventName, EventContext
 
 logger = logging.getLogger(__name__)
 _CODER_PROTOCOL_RETRY_LIMIT = 2
+
+
+def _resolve_provider(agent: AgentConfig) -> str | None:
+    """Prefer explicit provider, otherwise reuse ai_system when it matches a provider."""
+    if agent.provider:
+        return agent.provider
+    if not agent.ai_system:
+        return None
+    from ..agent_runner import get_provider
+
+    try:
+        get_provider(agent.ai_system)
+    except Exception:
+        return None
+    return agent.ai_system
 
 
 def _escape_claude_project_path(path: Path) -> str:
@@ -62,6 +77,7 @@ def run_review_exchange_loop(
     web_port: int | None,
     events: EventSink | None = None,
     event_context: EventContext | None = None,
+    on_started: Callable[[Path], None] | None = None,
 ) -> ReviewExchangeOutcome:
     """Run the coder↔reviewer exchange loop and capture round-trip logs."""
     run_dir: Path | None = None
@@ -94,6 +110,8 @@ def run_review_exchange_loop(
     exchange_dir = run_dir / "review-exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
     session_output.update_manifest(run_dir, {"review_exchange_dir": str(exchange_dir)})
+    if on_started is not None:
+        on_started(run_dir)
 
     _emit(EventName.REVIEW_EXCHANGE_STARTED, {
         "issue_number": issue_number,
@@ -579,7 +597,7 @@ def _run_agent_round(
     agent_config = AgentConfig(
         prompt_path=prompt_path,
         prompt_relative=str(prompt_rel),
-        provider=agent.provider,
+        provider=_resolve_provider(agent),
         model=agent.model,
         timeout_minutes=agent.timeout_minutes,
         provider_args=dict(agent.provider_args),
@@ -663,8 +681,8 @@ def _append_session_log(
     section: str,
     content: str,
 ) -> None:
-    """Append review-exchange transcript content to run-scoped session.log."""
-    log_path = run_dir / "session.log"
+    """Append review-exchange transcript content to run-scoped ui-session.log."""
+    log_path = run_dir / "ui-session.log"
     timestamp = datetime.now(timezone.utc).isoformat()
     chunk = (
         f"[{timestamp}] round={round_index} role={role} section={section}\n"
@@ -751,8 +769,12 @@ def _build_coder_prompt(
         f"Round {round_index}.\n"
         "Review the feedback below and update the worktree accordingly.\n"
         "If you disagree, set response_type=disagree and explain why.\n"
-        "Otherwise apply fixes, run `agent-done completed --implementation ... --problems ...`, "
-        "and explain what changed.\n"
+        "Otherwise apply fixes and run validation. Then run "
+        "`agent-done completed --implementation ... --problems ...`.\n"
+        "Before responding, ensure these files exist under Session output dir:\n"
+        "- completion-coder.json\n"
+        "- validation-record.json\n"
+        "If either file is missing, do not respond yet; fix it first.\n"
         f"Session output dir: {run_dir}\n"
         f"Reviewer feedback:\n{reviewer_feedback}\n"
         "Respond with exactly one line of JSON:\n"

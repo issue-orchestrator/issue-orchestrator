@@ -230,13 +230,22 @@ class SessionLauncher:
             label_manager = LabelManager(config)
         self._lm = label_manager
 
-    def _worktree_reuse_options(self, *, allow_remote_branch_delete: bool = True) -> WorktreeReuseOptions:
-        return WorktreeReuseOptions(
+    def _worktree_reuse_options(
+        self,
+        *,
+        allow_remote_branch_delete: bool = True,
+        force_fresh: bool = False,
+    ) -> WorktreeReuseOptions:
+        options = WorktreeReuseOptions(
             reuse_push_preflight=self.config.reuse_push_preflight,
             worktree_branch_on_recreate=self.config.worktree_branch_on_recreate,
             allow_no_verify_dry_run_preflight=self.config.allow_no_verify_dry_run_preflight,
             allow_remote_branch_delete=allow_remote_branch_delete,
         )
+        if force_fresh:
+            options.disable_reuse = True
+            options.worktree_branch_on_recreate = "create_new_branch"
+        return options
 
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
         """Apply mutations through the ActionApplier."""
@@ -270,6 +279,48 @@ class SessionLauncher:
             ),
         ], context=context)
 
+    def _clear_reset_retry_pending_label(self, *, issue_number: int, context: str) -> None:
+        """Best-effort cleanup of reset+retry pending guard at launch boundary."""
+        pending_label = getattr(self._lm, "reset_retry_pending", None)
+        if not isinstance(pending_label, str) or not pending_label:
+            resolver = getattr(self._lm, "resolve", None)
+            if callable(resolver):
+                resolved = resolver("reset-retry-pending")
+                pending_label = resolved if isinstance(resolved, str) and resolved else "reset-retry-pending"
+            else:
+                pending_label = "reset-retry-pending"
+        actions: list[Action] = [
+            RemoveLabelAction(
+                issue_number=issue_number,
+                label=pending_label,
+                reason="session launched - clearing reset+retry pending guard",
+            ),
+        ]
+        self._apply_actions(actions, context=context)
+
+    def _clear_reset_retry_scratch_pending_label(self, *, issue_number: int, context: str) -> None:
+        """Best-effort cleanup of reset+retry-from-scratch pending guard."""
+        pending_label = getattr(self._lm, "reset_retry_scratch_pending", None)
+        if not isinstance(pending_label, str) or not pending_label:
+            resolver = getattr(self._lm, "resolve", None)
+            if callable(resolver):
+                resolved = resolver("reset-retry-scratch-pending")
+                pending_label = (
+                    resolved
+                    if isinstance(resolved, str) and resolved
+                    else "reset-retry-scratch-pending"
+                )
+            else:
+                pending_label = "reset-retry-scratch-pending"
+        actions: list[Action] = [
+            RemoveLabelAction(
+                issue_number=issue_number,
+                label=pending_label,
+                reason="session launched - clearing reset+retry-from-scratch pending guard",
+            ),
+        ]
+        self._apply_actions(actions, context=context)
+
     def _build_session_env(
         self,
         *,
@@ -285,16 +336,17 @@ class SessionLauncher:
         reachable — even when the target repo is a foreign (non-orchestrator)
         repository with no ``.venv``.
 
-        NOTE: Validation config is NOT passed via env var.  ``agent-done``
-        reads validation config from the worktree's config file so tests are
-        deterministic (no env var leakage).
+        NOTE: The selected orchestrator config name is exported so ``agent-done``
+        resolves validation from the same config file used by the launcher.
         """
         orch_bin = Path(sys.executable).parent
+        config_name = self.config.config_path.name if self.config.config_path else "default.yaml"
         return (
             f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
             f" {ENV_PREFIX}SESSION_ID='{session_id}'"
             f" {ENV_PREFIX}AGENT_LABEL='{agent_label}'"
             f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
+            f" {ENV_PREFIX}CONFIG_NAME='{config_name}'"
             f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
             f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_dir}'"
             f" {ENV_PREFIX}RUN_DIR='{run_dir}'"
@@ -575,6 +627,17 @@ class SessionLauncher:
         # Phase 4: Prepare worktree
         step_start = time.time()
         logger.info(issue_log(issue.number, "Creating worktree..."))
+        from_scratch_pending = self._lm.reset_retry_scratch_pending in issue.labels
+        scratch_branch_name: str | None = None
+        if from_scratch_pending:
+            scratch_branch_name = f"{issue.number}-scratch-{int(time.time())}"
+            logger.info(
+                issue_log(
+                    issue.number,
+                    "Reset+retry from scratch requested; forcing fresh branch from base: %s",
+                ),
+                scratch_branch_name,
+            )
         phase_name = "coding-1"  # Initial coding session is always attempt 1
         ctx = WorktreeContext.create(
             worktree_manager=self._worktree_manager,
@@ -585,9 +648,10 @@ class SessionLauncher:
             issue_title=issue.title,
             session_name=session_name,
             agent_label=issue.agent_type,
+            branch_name=scratch_branch_name,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
-            reuse_options=self._worktree_reuse_options(),
+            reuse_options=self._worktree_reuse_options(force_fresh=from_scratch_pending),
             phase_name=phase_name,
         )
 
@@ -678,6 +742,14 @@ class SessionLauncher:
             issue_number=issue.number,
             mode="coding",
             context="launch_clear_interrupted_guard_coding",
+        )
+        self._clear_reset_retry_pending_label(
+            issue_number=issue.number,
+            context="launch_clear_reset_retry_pending_coding",
+        )
+        self._clear_reset_retry_scratch_pending_label(
+            issue_number=issue.number,
+            context="launch_clear_reset_retry_scratch_pending_coding",
         )
 
         # Add in-progress label
@@ -967,6 +1039,14 @@ class SessionLauncher:
             mode="review",
             context="launch_clear_interrupted_guard_review",
         )
+        self._clear_reset_retry_pending_label(
+            issue_number=review.issue_number,
+            context="launch_clear_reset_retry_pending_review",
+        )
+        self._clear_reset_retry_scratch_pending_label(
+            issue_number=review.issue_number,
+            context="launch_clear_reset_retry_scratch_pending_review",
+        )
 
         logger.info(
             "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
@@ -1238,6 +1318,14 @@ class SessionLauncher:
             issue_number=issue_number,
             mode="coding",
             context="launch_clear_interrupted_guard_rework",
+        )
+        self._clear_reset_retry_pending_label(
+            issue_number=issue_number,
+            context="launch_clear_reset_retry_pending_rework",
+        )
+        self._clear_reset_retry_scratch_pending_label(
+            issue_number=issue_number,
+            context="launch_clear_reset_retry_scratch_pending_rework",
         )
 
         logger.info(

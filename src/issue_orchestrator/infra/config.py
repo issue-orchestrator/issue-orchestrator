@@ -2336,6 +2336,7 @@ def _apply_yaml_overrides(data: dict, overrides: list[str]) -> None:
 
 def load_validation_config(
     start_path: Optional[Path] = None,
+    config_name: Optional[str] = None,
 ) -> dict:
     """Load validation configuration from the config file.
 
@@ -2361,8 +2362,18 @@ def load_validation_config(
             },
         }
     """
-    config_path = find_config_file(start_path)
+    selected_config_name = config_name or DEFAULT_CONFIG_NAME
+    if selected_config_name and not selected_config_name.endswith(".yaml"):
+        selected_config_name = f"{selected_config_name}.yaml"
+
+    config_path = find_config_file(start_path, selected_config_name)
     if not config_path:
+        if config_name:
+            start_from = start_path or Path.cwd()
+            raise FileNotFoundError(
+                f"Configured file '{selected_config_name}' not found under "
+                f"{start_from}/.issue-orchestrator/config"
+            )
         return {
             "cmd": None,
             "timeout_seconds": 300,

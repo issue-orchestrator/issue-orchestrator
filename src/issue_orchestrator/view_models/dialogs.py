@@ -47,6 +47,7 @@ class SessionDiagnosticsContext:
     orchestrator_log: str
     diagnostic_path: str
     validation_path: str
+    validation_output_path: str
 
     @classmethod
     def from_payload(
@@ -59,6 +60,10 @@ class SessionDiagnosticsContext:
         session_name = str(manifest.get("session_name") or manifest_payload.get("session_name") or "")
         diagnostic_path = _join_worktree_path(worktree, manifest.get("diagnostic_path"))
         validation_path = _join_worktree_path(worktree, manifest.get("validation_record_path"))
+        validation_output_path = _join_worktree_path(
+            worktree,
+            manifest.get("validation_output_path") or manifest.get("validation_stdout"),
+        )
         return cls(
             issue_number=issue_number,
             session_name=session_name,
@@ -77,6 +82,7 @@ class SessionDiagnosticsContext:
             orchestrator_log=str(manifest.get("orchestrator_log") or ""),
             diagnostic_path=diagnostic_path,
             validation_path=validation_path,
+            validation_output_path=validation_output_path,
         )
 
 
@@ -171,8 +177,14 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     if ctx.validation_path:
         actions.append({
             "type": "open_path",
-            "label": "Open Validation",
+            "label": "Open Validation Record",
             "path": ctx.validation_path,
+        })
+    if ctx.validation_output_path:
+        actions.append({
+            "type": "open_path",
+            "label": "Open Validation Output",
+            "path": ctx.validation_output_path,
         })
     return actions
 

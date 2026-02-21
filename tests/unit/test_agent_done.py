@@ -1102,6 +1102,123 @@ validation:
         finally:
             os.chdir(original_cwd)
 
+    def test_validation_uses_selected_config_name_env(self, tmp_path, capsys):
+        """agent-done should honor ISSUE_ORCHESTRATOR_CONFIG_NAME (e.g., main.yaml)."""
+        # Create fake git repo
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (tmp_path / "README.md").write_text("test")
+
+        import subprocess
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
+
+        # Create ONLY main.yaml (no default.yaml). Validation must still run.
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "main.yaml").write_text(
+            """
+validation:
+  cmd: "exit 1"
+  timeout_seconds: 10
+"""
+        )
+
+        # Create session output directory (required for validation)
+        session_output_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
+        session_output_dir.mkdir(parents=True)
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+
+            with patch.dict(os.environ, {f"{ENV_PREFIX}CONFIG_NAME": "main.yaml"}, clear=False):
+                with patch(
+                    "sys.argv",
+                    [
+                        "agent-done",
+                        "completed",
+                        "--implementation",
+                        "Added feature",
+                        "--problems",
+                        "None",
+                    ],
+                ):
+                    with patch(
+                        "issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id",
+                        return_value="test-123",
+                    ):
+                        with pytest.raises(SystemExit) as exc_info:
+                            main()
+                        # Validation should run and fail
+                        assert exc_info.value.code == 1
+
+            captured = capsys.readouterr()
+            assert "VALIDATION FAILED" in captured.out
+            manifest_path = (
+                tmp_path / ".issue-orchestrator" / "sessions" / "test-123" / "manifest.json"
+            )
+            assert manifest_path.exists()
+            manifest = json.loads(manifest_path.read_text())
+            validation_record_path = manifest.get("validation_record_path")
+            assert validation_record_path
+            assert str(validation_record_path).endswith("validation-record.json")
+            assert manifest.get("validation_status") == "failed"
+        finally:
+            os.chdir(original_cwd)
+
+    def test_missing_selected_config_name_fails_fast(self, tmp_path, capsys):
+        """agent-done should fail loudly when selected config file is missing."""
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (tmp_path / "README.md").write_text("test")
+
+        import subprocess
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
+
+        # Only default exists; selected config points to missing main.yaml.
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(
+            """
+validation:
+  cmd: "echo ok"
+  timeout_seconds: 10
+"""
+        )
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+
+            with patch.dict(os.environ, {f"{ENV_PREFIX}CONFIG_NAME": "main.yaml"}, clear=False):
+                with patch(
+                    "sys.argv",
+                    [
+                        "agent-done",
+                        "completed",
+                        "--implementation",
+                        "Added feature",
+                        "--problems",
+                        "None",
+                    ],
+                ):
+                    with pytest.raises(SystemExit) as exc_info:
+                        main()
+                    assert exc_info.value.code == 1
+
+            captured = capsys.readouterr()
+            assert "Configured file 'main.yaml' not found under" in captured.err
+        finally:
+            os.chdir(original_cwd)
+
     def test_blocked_status_skips_validation(self, tmp_path, capsys):
         """Test that blocked status skips validation entirely.
 

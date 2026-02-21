@@ -343,6 +343,24 @@ class TestEventEmission:
         assert event.data["issue_number"] == issue.number
         assert "error" in event.data
 
+    def test_failed_session_emits_session_failed_event_with_run_dir_when_available(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """SESSION_FAILED should include run_dir when session output resolves one."""
+        events = InMemoryEventSink()
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        session_output = Mock(spec=SessionOutput)
+        run_dir = tmp_worktree / ".issue-orchestrator" / "sessions" / "20260220-000000Z__issue-1"
+        session_output.find_run_dir.return_value = run_dir
+        handler = make_handler(config, events=events, session_output=session_output)
+
+        handler.process_completion(session, SessionStatus.FAILED)
+
+        event = events.last_event(str(EventName.SESSION_FAILED))
+        assert event is not None
+        assert event.data["run_dir"] == str(run_dir)
+
     def test_timed_out_session_emits_session_failed_event(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:

@@ -308,6 +308,33 @@ class TestReviewExchangeSummary:
             session_output.load_review_exchange_summary(worktree, session_name) is None
         )
 
+    def test_load_review_exchange_summary_does_not_fallback_to_older_run(
+        self, session_output, tmp_path
+    ):
+        import time
+
+        worktree = tmp_path
+        session_name = "issue-3"
+
+        older_run = session_output.start_run(worktree, session_name, issue_number=3)
+        older_exchange = older_run.run_dir / REVIEW_EXCHANGE_DIR_NAME
+        older_exchange.mkdir(parents=True, exist_ok=True)
+        (older_exchange / REVIEW_EXCHANGE_SUMMARY_NAME).write_text(
+            json.dumps({"status": "error", "completed_rounds": 2, "response_text": "stale"})
+        )
+        session_output.update_manifest(
+            older_run.run_dir,
+            {"review_exchange_dir": str(older_exchange)},
+        )
+
+        # Ensure a distinct run_id directory for the latest run.
+        time.sleep(1.1)
+        newer_run = session_output.start_run(worktree, session_name, issue_number=3)
+        # Newest run has no summary yet.
+        assert newer_run.run_dir.exists()
+
+        assert session_output.load_review_exchange_summary(worktree, session_name) is None
+
 
 class TestRunRetentionMetadata:
     """Tests for retention metadata persisted in run manifests."""

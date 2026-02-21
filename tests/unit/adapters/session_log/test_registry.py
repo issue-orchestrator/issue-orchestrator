@@ -766,7 +766,7 @@ class TestPatternResolution:
 
     def test_resolve_pattern_with_date_path_variable(self, mock_systems_config):
         """Resolves {date_path} variable in log pattern."""
-        pattern = "/logs/{date_path}/session.log"
+        pattern = "/logs/{date_path}/ui-session.log"
         resolved = mock_systems_config.resolve_log_pattern(pattern, Path("/tmp"))
         # Should have YYYY/MM/DD
         assert "/" in resolved

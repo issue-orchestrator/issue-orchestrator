@@ -10,13 +10,27 @@ It handles:
 
 import logging
 import random
+import shlex
 import subprocess
 import time
+
 from .env_filter import build_filtered_env
 from .errors import ProviderErrorType, classify_provider_error
 from .ports import RunResult, RunSpec
+from .stream_capture import capture_process_output
 
 logger = logging.getLogger(__name__)
+
+
+def _format_command_for_log(command: list[str], max_arg_length: int = 160) -> str:
+    """Render argv for logs while keeping long prompt args bounded."""
+    rendered: list[str] = []
+    for arg in command:
+        text = str(arg)
+        if len(text) > max_arg_length:
+            text = text[:max_arg_length] + "..."
+        rendered.append(shlex.quote(text))
+    return " ".join(rendered)
 
 
 class AgentRunner:
@@ -143,35 +157,41 @@ class AgentRunner:
             attempts,
             max_attempts,
         )
+        logger.info("Agent argv: %s", _format_command_for_log(spec.command))
 
         start_time = time.monotonic()
         timed_out = False
         exit_code: int | None = None
+        stdout = ""
+        stderr = ""
 
         try:
-            with (
-                open(stdout_path, "w") as stdout_file,
-                open(stderr_path, "w") as stderr_file,
-            ):
-                process = subprocess.Popen(
-                    spec.command,
-                    cwd=spec.working_dir,
-                    env=env,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    # Start in new session to allow clean termination
-                    start_new_session=True,
-                )
+            process = subprocess.Popen(
+                spec.command,
+                cwd=spec.working_dir,
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                # Start in new session to allow clean termination
+                start_new_session=True,
+            )
 
-                try:
-                    exit_code = process.wait(timeout=spec.timeout_seconds)
-                except subprocess.TimeoutExpired:
-                    logger.warning(
-                        "Agent timed out after %ds, terminating",
-                        spec.timeout_seconds,
-                    )
-                    timed_out = True
-                    self._terminate_process(process)
+            capture = capture_process_output(
+                process,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                timeout_seconds=spec.timeout_seconds,
+                on_timeout=lambda: self._terminate_process(process),
+            )
+            exit_code = capture.exit_code
+            timed_out = capture.timed_out
+            stdout = capture.stdout
+            stderr = capture.stderr
+            if timed_out:
+                logger.warning(
+                    "Agent timed out after %ds, terminating",
+                    spec.timeout_seconds,
+                )
 
         except FileNotFoundError:
             logger.error("Command not found: %s", spec.command[0])
@@ -190,10 +210,6 @@ class AgentRunner:
             exit_code = 1
 
         duration = time.monotonic() - start_time
-
-        # Read output files
-        stdout = stdout_path.read_text() if stdout_path.exists() else ""
-        stderr = stderr_path.read_text() if stderr_path.exists() else ""
 
         logger.info(
             "Agent finished: exit_code=%s, timed_out=%s, duration=%.1fs",

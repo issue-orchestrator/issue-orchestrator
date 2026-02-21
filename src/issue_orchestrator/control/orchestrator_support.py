@@ -244,7 +244,13 @@ class OrchestratorSupport:
         logger.warning("[PLAN] Action %s failed: %s", action.action_type.value, result.error)
 
         # Mark issue as failed if applicable
-        failed_actions_mark_issue = {ActionType.ADD_LABEL, ActionType.REMOVE_LABEL, ActionType.SYNC_LABELS, ActionType.ADD_COMMENT}
+        failed_actions_mark_issue = {
+            ActionType.ADD_LABEL,
+            ActionType.REMOVE_LABEL,
+            ActionType.SYNC_LABELS,
+            ActionType.ADD_COMMENT,
+            ActionType.LAUNCH_SESSION,
+        }
         if action.action_type in failed_actions_mark_issue:
             issue_number = self._resolve_action_issue_number(action)
             if issue_number is not None:

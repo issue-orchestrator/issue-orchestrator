@@ -36,7 +36,7 @@ def test_subprocess_session_writes_log(tmp_path, monkeypatch):
         assert time.monotonic() < deadline, "subprocess did not exit within 5s"
         time.sleep(0.05)  # yield GIL so watcher thread can drain PTY output
 
-    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "session.log"
+    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "ui-session.log"
     assert log_path.exists(), f"Log file not created at {log_path}"
     content = log_path.read_text()
     assert "hello from subprocess" in content, f"Expected output not in log. Content: {content!r}"
@@ -50,7 +50,7 @@ def test_subprocess_registry_migrates_legacy_index(tmp_path):
         worktree_path=str(repo_root / "wt"),
         pid=1234,
         started_at="2026-01-01T00:00:00",
-        log_path=str(repo_root / "wt" / ".issue-orchestrator" / "sessions" / "issue-9" / "session.log"),
+        log_path=str(repo_root / "wt" / ".issue-orchestrator" / "sessions" / "issue-9" / "ui-session.log"),
         tab_name="Issue 9",
         is_review=False,
     )

@@ -392,6 +392,9 @@ def stop(
     repo_root: Path | str,
     force: bool = False,
     instance_id: str | None = None,
+    *,
+    graceful_timeout_seconds: float = 2.0,
+    force_if_graceful_fails: bool = True,
 ) -> bool:
     """Stop the orchestrator for the given repository."""
     repo_root = normalize_repo_root(repo_root)
@@ -412,7 +415,7 @@ def stop(
         return True
 
     # Try graceful shutdown
-    if not force and port and _try_graceful_shutdown(port, pid):
+    if not force and port and _try_graceful_shutdown(port, pid, timeout=graceful_timeout_seconds):
         release_lock(repo_root, pid, instance_id)
         return True
 
@@ -433,9 +436,15 @@ def stop(
             logger.info("Orchestrator stopped via port kill (pid %d)", pid)
             return True
 
-    if not force:
+    if not force and force_if_graceful_fails:
         logger.warning("Orchestrator did not stop gracefully, forcing with SIGKILL")
-        return stop(repo_root, force=True, instance_id=instance_id)
+        return stop(
+            repo_root,
+            force=True,
+            instance_id=instance_id,
+            graceful_timeout_seconds=graceful_timeout_seconds,
+            force_if_graceful_fails=force_if_graceful_fails,
+        )
 
     # Last resort - force kill by port
     import time
@@ -553,7 +562,13 @@ def start_instances(
     return results
 
 
-def stop_all_instances(repo_root: Path | str, force: bool = False) -> int:
+def stop_all_instances(
+    repo_root: Path | str,
+    force: bool = False,
+    *,
+    graceful_timeout_seconds: float = 2.0,
+    force_if_graceful_fails: bool = True,
+) -> int:
     """Stop all orchestrator instances for a repository.
 
     Args:
@@ -567,13 +582,25 @@ def stop_all_instances(repo_root: Path | str, force: bool = False) -> int:
 
     # First, try to stop the single-instance orchestrator (legacy lock)
     stopped_count = 0
-    if stop(repo_root, force=force, instance_id=None):
+    if stop(
+        repo_root,
+        force=force,
+        instance_id=None,
+        graceful_timeout_seconds=graceful_timeout_seconds,
+        force_if_graceful_fails=force_if_graceful_fails,
+    ):
         stopped_count += 1
 
     # Then, stop all multi-instance orchestrators
     active_locks = list_instance_locks(repo_root)
     for lock_info in active_locks:
-        if stop(repo_root, force=force, instance_id=lock_info.instance_id):
+        if stop(
+            repo_root,
+            force=force,
+            instance_id=lock_info.instance_id,
+            graceful_timeout_seconds=graceful_timeout_seconds,
+            force_if_graceful_fails=force_if_graceful_fails,
+        ):
             stopped_count += 1
 
     return stopped_count
@@ -647,6 +674,9 @@ class SupervisorOps(Protocol):
         repo_root: Path | str,
         force: bool = False,
         instance_id: str | None = None,
+        *,
+        graceful_timeout_seconds: float = 2.0,
+        force_if_graceful_fails: bool = True,
     ) -> bool: ...
 
     def stop_by_port(self, port: int, force: bool = False) -> bool: ...
@@ -664,7 +694,12 @@ class SupervisorOps(Protocol):
     ) -> list[LockInfo]: ...
 
     def stop_all_instances(
-        self, repo_root: Path | str, force: bool = False
+        self,
+        repo_root: Path | str,
+        force: bool = False,
+        *,
+        graceful_timeout_seconds: float = 2.0,
+        force_if_graceful_fails: bool = True,
     ) -> int: ...
 
     def status_all_instances(
@@ -692,8 +727,17 @@ class DefaultSupervisorOps:
         repo_root: Path | str,
         force: bool = False,
         instance_id: str | None = None,
+        *,
+        graceful_timeout_seconds: float = 2.0,
+        force_if_graceful_fails: bool = True,
     ) -> bool:
-        return stop(repo_root, force, instance_id)
+        return stop(
+            repo_root,
+            force,
+            instance_id,
+            graceful_timeout_seconds=graceful_timeout_seconds,
+            force_if_graceful_fails=force_if_graceful_fails,
+        )
 
     def stop_by_port(self, port: int, force: bool = False) -> bool:
         return stop_by_port(port, force)
@@ -713,9 +757,19 @@ class DefaultSupervisorOps:
         return start_instances(repo_root, config_name, count, expected_identity)
 
     def stop_all_instances(
-        self, repo_root: Path | str, force: bool = False
+        self,
+        repo_root: Path | str,
+        force: bool = False,
+        *,
+        graceful_timeout_seconds: float = 2.0,
+        force_if_graceful_fails: bool = True,
     ) -> int:
-        return stop_all_instances(repo_root, force)
+        return stop_all_instances(
+            repo_root,
+            force,
+            graceful_timeout_seconds=graceful_timeout_seconds,
+            force_if_graceful_fails=force_if_graceful_fails,
+        )
 
     def status_all_instances(
         self,

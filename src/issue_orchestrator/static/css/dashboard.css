@@ -366,18 +366,32 @@ body.tab-nav-pending .dashboard-tabs .tab {
     align-items: center;
     justify-content: center;
     gap: 6px;
-    height: 30px;
-    border: none;
-    border-radius: 6px;
-    background: transparent;
+    height: 32px;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--bg-panel) 78%, var(--bg) 22%);
     color: var(--text);
     cursor: pointer;
     flex-shrink: 0;
-    padding: 0 8px;
-    font-size: 14px;
+    padding: 0 12px;
+    margin-right: 10px;
+    font-size: 13px;
     font-weight: 600;
+    box-shadow: 0 0 0 1px rgba(78, 161, 255, 0.18) inset;
 }
-.embedded-back:hover { background: var(--bg-panel); color: var(--text); }
+.embedded-back:hover {
+    background: color-mix(in srgb, var(--bg-panel) 60%, var(--accent) 40%);
+    border-color: var(--accent);
+    color: #fff;
+}
+.embedded-back:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--accent) 70%, white 30%);
+    outline-offset: 1px;
+}
+.embedded-back + .embedded-repo {
+    padding-left: 10px;
+    border-left: 1px solid var(--border);
+}
 .embedded-repo {
     font-size: 14px;
     font-weight: 600;
@@ -469,6 +483,14 @@ body.tab-nav-pending .dashboard-tabs .tab {
     overflow-x: auto;
     padding-bottom: 10px;
 }
+#mainContent {
+    display: flex;
+    flex-direction: column;
+}
+.dashboard-columns {
+    flex: 1;
+    min-height: calc(100dvh - 210px);
+}
 .skeleton-card {
     height: 48px;
     border-radius: 8px;
@@ -536,7 +558,11 @@ body.tab-nav-pending .dashboard-tabs .tab {
     padding: 8px;
     display: grid;
     gap: 8px;
-    max-height: 66vh;
+    align-content: start;
+    grid-auto-rows: max-content;
+    flex: 1;
+    min-height: 0;
+    max-height: none;
     overflow: auto;
 }
 
@@ -587,6 +613,18 @@ body.column-focus-mode .column-expanded {
     justify-content: flex-end;
     gap: 6px;
     align-items: center;
+}
+.kanban-column[data-column="blocked"] .expanded-card {
+    grid-template-columns: auto minmax(0, 1fr);
+}
+.kanban-column[data-column="blocked"] .expanded-card .card-content {
+    grid-column: 2;
+    grid-row: 1;
+}
+.kanban-column[data-column="blocked"] .expanded-card .card-actions {
+    grid-column: 2;
+    grid-row: 2;
+    justify-content: flex-start;
 }
 
 /* Column filter bar (blocked triage) */
@@ -730,20 +768,6 @@ body.column-focus-mode .column-expanded {
     cursor: wait;
     animation: startup-spin 0.8s linear infinite;
 }
-.card-kill-btn {
-    border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
-    background: transparent;
-    color: var(--danger);
-    border-radius: 6px;
-    font-size: 11px;
-    padding: 2px 6px;
-    line-height: 1.2;
-    cursor: pointer;
-}
-.card-kill-btn:hover {
-    border-color: var(--danger);
-    background: color-mix(in srgb, var(--danger) 16%, transparent);
-}
 .card-menu-btn {
     border: 1px solid transparent;
     background: transparent;
@@ -815,6 +839,10 @@ body.column-focus-mode .column-expanded {
     color: var(--text);
 }
 .card-muted { color: var(--text-muted); }
+.card-wait {
+    color: var(--accent);
+    font-weight: 500;
+}
 .refresh-fresh { color: var(--text-muted); }
 .refresh-stale { color: var(--warn); }
 .refresh-pill {

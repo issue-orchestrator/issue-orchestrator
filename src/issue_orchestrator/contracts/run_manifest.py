@@ -26,7 +26,7 @@ class RunManifestArtifact(BaseModel):
         "review_exchange_summary",
         "review_exchange_transcript",
     ]
-    path: str
+    path: str = Field(min_length=1)
     content_type: str | None = None
 
 
@@ -47,6 +47,9 @@ class RunManifestContract(BaseModel):
             for required_name in ("ui_log", "agent_log"):
                 if required_name not in self.artifacts:
                     raise ValueError(f"manifest missing required artifact: {required_name}")
+                artifact = self.artifacts[required_name]
+                if not artifact.path.strip():
+                    raise ValueError(f"manifest required artifact has empty path: {required_name}")
         return self
 
 

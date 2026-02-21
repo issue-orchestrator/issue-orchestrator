@@ -98,12 +98,12 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
     assert "milestones=M7" in soup.select_one(".scope-summary").text
 
 
-def test_dashboard_js_compact_renderer_keeps_running_cancel_button():
+def test_dashboard_js_compact_renderer_routes_running_cancel_to_menu():
     js_path = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "static" / "js" / "dashboard.js"
     source = js_path.read_text(encoding="utf-8")
-    assert "const killButton = card.state_label === 'running'" in source
-    assert "${killButton}" in source
-    assert "class=\"card-kill-btn\"" in source
+    assert "const hasTerminal = card.state_label === 'running' ? 'true' : 'false';" in source
+    assert "data-has-terminal" in source
+    assert "class=\"card-kill-btn\"" not in source
     assert "class=\"card-menu-btn\"" in source
     assert "openCompactCardActionsMenu(" in source
 
@@ -142,7 +142,7 @@ def test_kanban_blocked_column_is_expandable(jinja_env):
     assert "agent:web" in badge_texts
 
 
-def test_kanban_running_column_is_expandable_and_has_cancel_control(jinja_env):
+def test_kanban_running_column_is_expandable_and_routes_cancel_to_menu(jinja_env):
     config = make_config()
     config.agents = {"agent:web": make_agent_config()}
     running_issue = Issue(number=4057, title="Running issue", labels=["agent:web", "in-progress"])
@@ -159,7 +159,10 @@ def test_kanban_running_column_is_expandable_and_has_cancel_control(jinja_env):
     assert running_col is not None
     assert "expandable" in running_col.get("class", [])
     assert running_col.select_one(".column-expand-btn") is not None
-    assert running_col.select_one(".card-kill-btn") is not None
+    assert running_col.select_one(".card-kill-btn") is None
+    menu_btn = running_col.select_one(".card-menu-btn")
+    assert menu_btn is not None
+    assert menu_btn.get("data-has-terminal") == "true"
 
 
 def test_kanban_completed_column_session_scoped(jinja_env):

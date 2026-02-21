@@ -704,7 +704,7 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
 def cmd_output(args: argparse.Namespace) -> int:
     """Show recent output from an issue's session."""
     console.print("[yellow]The 'output' command is no longer available.[/yellow]")
-    console.print("View session logs in .issue-orchestrator/sessions/<session>/session.log")
+    console.print("View session logs in .issue-orchestrator/sessions/<session>/ui-session.log")
     return 1
 
 
@@ -1140,7 +1140,7 @@ def cmd_verify(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - multi-
     console.print("\n[bold]6. Terminal Backend[/bold]")
     backend = config.terminal_adapter or "subprocess"
     console.print(f"  [green]✓[/green] Using terminal backend: {backend}")
-    console.print(f"  [cyan]ℹ[/cyan] Sessions run as subprocesses with output logged to session.log")
+    console.print(f"  [cyan]ℹ[/cyan] Sessions run as subprocesses with output logged to ui-session.log")
 
     # 7. Verify AI agent hooks
     console.print("\n[bold]7. AI Agent Hooks[/bold]")

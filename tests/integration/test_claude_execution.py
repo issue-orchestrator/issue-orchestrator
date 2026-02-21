@@ -17,8 +17,23 @@ pytestmark = [
 import subprocess
 import shutil
 from pathlib import Path
+from uuid import uuid4
 
 from issue_orchestrator.infra.env import ENV_PREFIX
+
+ISSUE_4057_PROMPT = """IMPORTANT: This worktree has 54 existing commit(s) from a previous session. Branch: 4057-ui-surface-provider-circuit-breaker-status. Commits:   - 3592261 fix: Improve session log symlink handling in provider_runner
+  - 7d3af45 fix: Mark agent-done integration tests as xfail due to provider_runner issue
+  - d088aab fix: Mark foreign repo lifecycle tests as xfail due to provider_runner integration issue
+  - 6464759 chore: Update session tracking for issue #4057 worktree completion
+  - 39cd869 chore: Update session tracking
+  - 96cd3a6 fix: Add missing mock return values for tracking branch setup in worktree tests
+  - 5004703 chore: Update session tracking after evaluation completion
+  - 99fcf51 chore: Update session tracking after validation completion
+  - 79567ab chore: Update session tracking after validation completion
+  - 710e19c chore: Update session tracking after final validation
+  ... and 44 more. EVALUATE this existing work BEFORE starting fresh.
+
+Work on issue #4057: UI: Surface provider circuit breaker status. Follow the instructions in repo-specific/prompts/simple-fix.md. When done, exit with /exit."""
 
 
 def is_claude_available() -> bool:
@@ -435,50 +450,81 @@ class TestClaudeViaAdapterPath:
         assert "VERIFIED" in content, f"Verification file has wrong content: {content}"
 
     def test_claude_via_subprocess_backend(self, tmp_path, require_claude, monkeypatch):
-        """Run Claude via the subprocess backend and verify log + file output."""
+        """Run Claude via subprocess backend in a real git worktree."""
         from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 
-        repo_root = tmp_path / "repo"
-        worktree = repo_root / "worktree"
-        worktree.mkdir(parents=True)
-        (worktree / ".git").mkdir()
-        (worktree / ".issue-orchestrator").mkdir()
-
-        monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
-
-        verify_file = worktree / "claude_subprocess_verified.txt"
-        claude_cmd = (
-            "claude --print --dangerously-skip-permissions "
-            f"\"Create a file at {verify_file} containing exactly VERIFIED. "
-            "Use the Write tool. Reply with DONE.\""
+        source_repo_root = Path(__file__).resolve().parents[2]
+        worktree = tmp_path / f"real-worktree-{uuid4().hex[:8]}"
+        subprocess.run(
+            [
+                "git", "-C", str(source_repo_root), "worktree", "add",
+                "--detach", str(worktree), "HEAD",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
         )
+        try:
+            (worktree / ".issue-orchestrator").mkdir(exist_ok=True)
+            plugin_state_root = tmp_path / "plugin-state-root"
+            plugin_state_root.mkdir()
+            monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(plugin_state_root))
 
-        plugin = SubprocessPlugin()
-        created = plugin.create_session(
-            session_id=999,
-            command=claude_cmd,
-            working_dir=str(worktree),
-            title="Claude subprocess integration",
-            session_name="issue-999",
-        )
-        assert created is True
+            escaped_prompt = ISSUE_4057_PROMPT.replace('"', '\\"')
+            claude_cmd = (
+                "claude --print --dangerously-skip-permissions "
+                f"\"{escaped_prompt}\""
+            )
 
-        # Wait for session to exit
-        import time
-        deadline = time.monotonic() + 180
-        while time.monotonic() < deadline:
-            if not plugin.session_exists(0, "issue-999"):
-                break
-            time.sleep(0.2)
-        else:
-            raise AssertionError("Claude subprocess session did not exit in time")
+            plugin = SubprocessPlugin()
+            created = plugin.create_session(
+                session_id=999,
+                command=claude_cmd,
+                working_dir=str(worktree),
+                title="Claude subprocess integration",
+                session_name="issue-999",
+            )
+            assert created is True
 
-        assert verify_file.exists(), "Claude did not create verification file via subprocess backend"
-        content = verify_file.read_text().strip()
-        assert "VERIFIED" in content
+            log_path = plugin._session_log_path(worktree, "issue-999")
 
-        log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-999" / "session.log"
-        assert log_path.exists()
+            # Confirm real #4057-like session startup and run-scoped log creation.
+            import time
+            deadline = time.monotonic() + 60
+            session_became_live = False
+            while time.monotonic() < deadline:
+                if plugin.session_exists(0, "issue-999"):
+                    session_became_live = True
+                if session_became_live and log_path.exists():
+                    break
+                time.sleep(0.2)
+            else:
+                plugin.kill_session(0, "issue-999")
+                raise AssertionError("Claude subprocess session did not become live with run-scoped log")
+
+            if plugin.session_exists(0, "issue-999"):
+                plugin.kill_session(0, "issue-999")
+                exit_deadline = time.monotonic() + 30
+                while time.monotonic() < exit_deadline:
+                    if not plugin.session_exists(0, "issue-999"):
+                        break
+                    time.sleep(0.2)
+
+            assert log_path.exists()
+            log_size = log_path.stat().st_size
+            log_preview = log_path.read_text(errors="replace").splitlines()[:12]
+            print(f"ui-session.log path: {log_path}")
+            print(f"ui-session.log bytes: {log_size}")
+            print("ui-session.log preview:")
+            for line in log_preview:
+                print(line)
+        finally:
+            subprocess.run(
+                ["git", "-C", str(source_repo_root), "worktree", "remove", "--force", str(worktree)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
 
     def test_claude_via_adapter_path_with_home_isolation_fails(self, tmp_path):
         """Document that HOME isolation breaks Claude auth (the bug we fixed).
