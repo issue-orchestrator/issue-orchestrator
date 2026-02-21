@@ -454,3 +454,109 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_includes_provider_circuit_status():
+    """Provider circuit breaker status should be surfaced in dashboard_data."""
+    from datetime import datetime, timedelta, timezone
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+    from issue_orchestrator.infra.config import ProviderResilienceConfig
+    from issue_orchestrator.control.infra_services import InfraServices
+    from issue_orchestrator.control.orchestrator_deps import OrchestratorDeps
+    from unittest.mock import Mock
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    # Create a circuit store with test data
+    circuit_store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+
+    # Add an open circuit
+    circuit_store.save(ProviderCircuitState(
+        provider="claude",
+        open_until=now + timedelta(minutes=5),
+        consecutive_outages=2,
+        last_error_summary="Rate limit exceeded",
+        updated_at=now,
+    ))
+
+    # Add a closed circuit
+    circuit_store.save(ProviderCircuitState(
+        provider="openai",
+        open_until=None,
+        consecutive_outages=0,
+        last_error_summary=None,
+        updated_at=now - timedelta(hours=1),
+    ))
+
+    # Create provider resilience manager
+    resilience_config = ProviderResilienceConfig()
+    provider_resilience = ProviderResilienceManager(
+        config=resilience_config,
+        store=circuit_store,
+        events=Mock(),
+    )
+
+    # Create minimal deps with provider_resilience
+    mock_services = Mock(spec=InfraServices)
+    mock_services.provider_resilience = provider_resilience
+    mock_deps = Mock(spec=OrchestratorDeps)
+    mock_deps.provider_resilience = provider_resilience
+    mock_deps.services = mock_services
+
+    # Create orchestrator stub with deps
+    orchestrator = _OrchestratorStub(state=state, config=config)
+    orchestrator.deps = mock_deps
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Verify provider circuits are in dashboard_data
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuits" in dashboard_data
+    circuits = dashboard_data["providerCircuits"]
+    assert len(circuits) == 2
+
+    # Verify open circuit
+    claude_circuit = next((c for c in circuits if c["provider"] == "claude"), None)
+    assert claude_circuit is not None
+    assert claude_circuit["is_open"] is True
+    assert claude_circuit["consecutive_outages"] == 2
+    assert claude_circuit["last_error_summary"] == "Rate limit exceeded"
+
+    # Verify closed circuit
+    openai_circuit = next((c for c in circuits if c["provider"] == "openai"), None)
+    assert openai_circuit is not None
+    assert openai_circuit["is_open"] is False
+    assert openai_circuit["consecutive_outages"] == 0
+
+
+def test_view_model_handles_missing_provider_resilience():
+    """Dashboard should gracefully handle missing provider resilience."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    # Orchestrator without deps (should handle gracefully)
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuits" in dashboard_data
+    assert dashboard_data["providerCircuits"] == []

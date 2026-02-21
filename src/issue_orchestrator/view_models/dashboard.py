@@ -108,6 +108,7 @@ class DashboardViewModel:
 
     def dashboard_data(self) -> dict[str, Any]:
         github_usage = gh_audit.get_live_usage_snapshot()
+        provider_circuits = self.scope_summary.get("provider_circuits", [])
         return {
             "startupComplete": self.startup_status == "complete",
             "paused": self.paused,
@@ -124,6 +125,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuits": provider_circuits,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -923,6 +925,32 @@ def _count_untriaged_failures(db, run_obj) -> int:
     return count
 
 
+def _get_provider_circuits(orchestrator) -> list[dict[str, Any]]:
+    """Get provider circuit breaker status for UI display."""
+    if not orchestrator or not hasattr(orchestrator, "deps"):
+        return []
+
+    try:
+        provider_resilience = orchestrator.deps.provider_resilience
+        states = provider_resilience.store.list_all()
+        now = datetime.now(timezone.utc)
+
+        circuits = []
+        for state in states:
+            is_open = state.open_until is not None and state.open_until > now
+            circuits.append({
+                "provider": state.provider,
+                "is_open": is_open,
+                "open_until": state.open_until.isoformat() if state.open_until else None,
+                "consecutive_outages": state.consecutive_outages,
+                "last_error_summary": state.last_error_summary,
+                "updated_at": state.updated_at.isoformat() if state.updated_at else None,
+            })
+        return circuits
+    except (AttributeError, Exception):
+        return []
+
+
 def _get_e2e_status(config) -> dict[str, Any]:
     if not config or not config.e2e.enabled:
         return {"enabled": False, "running": False}
@@ -1184,6 +1212,8 @@ def build_dashboard_view_model(
         "visibilityAwareEnabled": config.fetch_layer_visibility_aware_enabled if config else False,
         "selectiveSyncPlannerEnabled": config.fetch_layer_selective_sync_planner_enabled if config else False,
     }
+    provider_circuits = _get_provider_circuits(orchestrator)
+
     if config:
         milestones = config.get_filter_milestones()
         scope_summary = {
@@ -1194,6 +1224,7 @@ def build_dashboard_view_model(
             "exclude_labels": list(config.filtering.exclude_labels),
             "refresh_mode": state.queue_last_refresh_mode if state else "none",
             "refresh": refresh_status,
+            "provider_circuits": provider_circuits,
         }
     else:
         scope_summary = {
@@ -1204,6 +1235,7 @@ def build_dashboard_view_model(
             "exclude_labels": [],
             "refresh_mode": "none",
             "refresh": refresh_status,
+            "provider_circuits": provider_circuits,
         }
 
     return DashboardViewModel(
