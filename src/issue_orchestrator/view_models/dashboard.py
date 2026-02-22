@@ -108,6 +108,7 @@ class DashboardViewModel:
 
     def dashboard_data(self) -> dict[str, Any]:
         github_usage = gh_audit.get_live_usage_snapshot()
+        provider_circuits = self.scope_summary.get("provider_circuits", [])
         return {
             "startupComplete": self.startup_status == "complete",
             "paused": self.paused,
@@ -124,6 +125,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuits": provider_circuits,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -1030,6 +1032,34 @@ def _build_e2e_view_model(
     }
 
 
+def _get_provider_circuit_status(orchestrator) -> list[dict[str, Any]]:
+    """Get provider circuit breaker status from the orchestrator."""
+    if not orchestrator or not hasattr(orchestrator, "deps"):
+        return []
+
+    try:
+        provider_resilience = orchestrator.deps.provider_resilience
+        circuit_store = provider_resilience.store
+        all_states = circuit_store.list_all()
+
+        circuits = []
+        now = datetime.now(timezone.utc)
+        for state in all_states:
+            is_open = state.open_until is not None and state.open_until > now
+            circuits.append({
+                "provider": state.provider,
+                "isOpen": is_open,
+                "openUntil": state.open_until.isoformat() if state.open_until else None,
+                "consecutiveOutages": state.consecutive_outages,
+                "lastErrorSummary": state.last_error_summary,
+                "updatedAt": state.updated_at.isoformat(),
+            })
+        return circuits
+    except Exception:
+        # Don't fail the entire dashboard if circuit status retrieval fails
+        return []
+
+
 def _normalize_tab(active_tab: str) -> str:
     # Map legacy tab names to new kanban-based tabs
     if active_tab in {"work", "active", "queue", "flow"}:
@@ -1184,6 +1214,9 @@ def build_dashboard_view_model(
         "visibilityAwareEnabled": config.fetch_layer_visibility_aware_enabled if config else False,
         "selectiveSyncPlannerEnabled": config.fetch_layer_selective_sync_planner_enabled if config else False,
     }
+    # Collect provider circuit breaker status
+    provider_circuits = _get_provider_circuit_status(orchestrator)
+
     if config:
         milestones = config.get_filter_milestones()
         scope_summary = {
@@ -1194,6 +1227,7 @@ def build_dashboard_view_model(
             "exclude_labels": list(config.filtering.exclude_labels),
             "refresh_mode": state.queue_last_refresh_mode if state else "none",
             "refresh": refresh_status,
+            "provider_circuits": provider_circuits,
         }
     else:
         scope_summary = {
@@ -1204,6 +1238,7 @@ def build_dashboard_view_model(
             "exclude_labels": [],
             "refresh_mode": "none",
             "refresh": refresh_status,
+            "provider_circuits": provider_circuits,
         }
 
     return DashboardViewModel(

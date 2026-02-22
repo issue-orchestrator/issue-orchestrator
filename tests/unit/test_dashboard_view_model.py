@@ -454,3 +454,73 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_provider_circuit_status_in_dashboard_data():
+    from datetime import datetime, timezone, timedelta
+    from issue_orchestrator.ports.provider_resilience import (
+        ProviderCircuitState,
+        InMemoryProviderCircuitStore,
+    )
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+    from issue_orchestrator.infra.config import ProviderResilienceConfig
+    from issue_orchestrator.ports import NullEventSink
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    # Set up provider circuit breaker with an open circuit
+    circuit_store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    open_circuit = ProviderCircuitState(
+        provider="anthropic",
+        open_until=now + timedelta(seconds=300),
+        consecutive_outages=2,
+        last_error_summary="Rate limit exceeded",
+        updated_at=now,
+    )
+    circuit_store.save(open_circuit)
+
+    # Create provider resilience manager
+    resilience_config = ProviderResilienceConfig()
+    provider_resilience = ProviderResilienceManager(
+        config=resilience_config,
+        store=circuit_store,
+        events=NullEventSink(),
+    )
+
+    # Create a mock orchestrator with provider resilience
+    class _MockDeps:
+        def __init__(self, provider_resilience):
+            self.provider_resilience = provider_resilience
+
+    class _OrchestratorWithCircuits:
+        def __init__(self, state, config, provider_resilience):
+            self.state = state
+            self.config = config
+            self.deps = _MockDeps(provider_resilience)
+            self.shutdown_requested = False
+
+    orchestrator = _OrchestratorWithCircuits(state, config, provider_resilience)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Verify provider circuit status is in scope_summary
+    assert "provider_circuits" in view_model.scope_summary
+    circuits = view_model.scope_summary["provider_circuits"]
+    assert len(circuits) == 1
+    assert circuits[0]["provider"] == "anthropic"
+    assert circuits[0]["isOpen"] is True
+    assert circuits[0]["consecutiveOutages"] == 2
+    assert circuits[0]["lastErrorSummary"] == "Rate limit exceeded"
+
+    # Verify it's also in dashboard_data
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuits" in dashboard_data
+    assert dashboard_data["providerCircuits"] == circuits
