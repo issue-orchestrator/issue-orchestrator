@@ -485,3 +485,35 @@ validation:
             assert result == 1
         finally:
             os.chdir(orig_cwd)
+
+    def test_allows_runtime_ai_gate_state_dirty_file(self, temp_worktree):
+        """Runtime ai-gate state metadata should not block push."""
+
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "echo 'ok'"
+  pre_push_dirty_check: "tracked"
+""")
+
+        runtime_file = temp_worktree / ".issue-orchestrator" / "ai-gate-state.json"
+        runtime_file.parent.mkdir(parents=True, exist_ok=True)
+        runtime_file.write_text("{}\n")
+        subprocess.run(["git", "add", str(runtime_file)], cwd=temp_worktree, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Track ai gate state"],
+            cwd=temp_worktree,
+            check=True,
+            capture_output=True,
+        )
+        runtime_file.write_text('{"updated": true}\n')
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=False, dirty_only=True)
+            assert result == 0
+        finally:
+            os.chdir(orig_cwd)

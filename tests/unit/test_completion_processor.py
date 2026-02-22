@@ -221,6 +221,14 @@ class TestReviewExchangeModeResolution:
 
         assert processor._resolve_review_exchange_mode("agent:coder") == "via-mcp"
 
+    def test_explicit_local_loop_mode_does_not_depend_on_review_enabled(self, tmp_path):
+        config = self._make_config(tmp_path)
+        config.review_enabled = False
+        config.review_exchange_mode = "via-local-loop"
+        processor = self._make_processor(config)
+
+        assert processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"
+
 
 class TestReviewExchangeExecution:
     """Tests for review exchange execution paths."""
@@ -348,6 +356,8 @@ class TestReviewExchangeExecution:
         )
 
         assert result.success is True
+        assert result.actions_taken is not None
+        assert result.actions_taken[0] == "Review exchange passed"
         mock_label_adapter.add_label.assert_any_call(42, "code-reviewed")
         mock_label_adapter.remove_label.assert_any_call(42, "needs-code-review")
 
@@ -610,6 +620,7 @@ class TestReviewExchangeExecution:
         assert result.success is False
         assert result.review_exchange_halted is True
         assert result.pr_url is None
+        mock_git_adapter.push.assert_not_called()
         mock_pr_adapter.create_pr.assert_not_called()
         event_names = sink.event_names()
         assert str(EventName.REVIEW_STARTED) in event_names

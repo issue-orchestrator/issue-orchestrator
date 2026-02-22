@@ -38,10 +38,15 @@ from ..events import EventContext, EventName
 from ..ports import EventSink
 from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
 from ..infra.issue_diagnostics import write_issue_diagnostic
+from ..infra.runtime_artifacts import (
+    filter_runtime_managed_dirty_paths,
+    is_runtime_managed_dirty_path,
+)
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..infra.worktree_base import resolve_base_branch
 from ..ports.session_output import SessionOutput, ValidationRecord
 from .validation import PublishGate, ValidationRecordStore
+from .review_publish_pipeline import resolve_review_publish_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -50,16 +55,6 @@ logger = logging.getLogger(__name__)
 ERROR_PREFIX_PUSH = "push_branch"
 ERROR_PREFIX_CREATE_PR = "create_pr"
 ERROR_PREFIX_PUBLISH_BLOCKED = "publish_blocked"
-_DIRTY_CHECK_IGNORED_EXACT = {
-    ".issue-orchestrator/session-latest.json",
-    ".issue-orchestrator/ai-gate-state.json",
-    ".issue-orchestrator/timeline.sqlite",
-    ".issue-orchestrator/timeline.sqlite-shm",
-    ".issue-orchestrator/timeline.sqlite-wal",
-}
-_DIRTY_CHECK_IGNORED_PREFIXES = (
-    ".issue-orchestrator/backups/",
-)
 _DIRTY_FILES_REASON_LIMIT = 8
 
 if TYPE_CHECKING:
@@ -344,7 +339,7 @@ class CompletionProcessor:
 
         if dirty:
             dirty_files = self.git_adapter.list_dirty_files(worktree, list_mode)
-            blocking_files = [path for path in dirty_files if not self._is_ignored_dirty_path(path)]
+            blocking_files = filter_runtime_managed_dirty_paths(dirty_files)
             if dirty_files and not blocking_files:
                 logger.info(
                     "Dirty-check ignored runtime-only files for %s: %s",
@@ -367,10 +362,7 @@ class CompletionProcessor:
 
     @staticmethod
     def _is_ignored_dirty_path(path: str) -> bool:
-        normalized = path.replace("\\", "/")
-        if normalized in _DIRTY_CHECK_IGNORED_EXACT:
-            return True
-        return any(normalized.startswith(prefix) for prefix in _DIRTY_CHECK_IGNORED_PREFIXES)
+        return is_runtime_managed_dirty_path(path)
 
     def _emit_review_comment_added(
         self,
@@ -860,8 +852,40 @@ class CompletionProcessor:
         pr_url: str | None = None
         halt_actions = False
         review_exchange_completed = False
+        exchange_mode: str | None = None
+        exchange_result: Any | None = None
+        requested_actions = tuple(record.requested_actions)
 
-        for action in record.requested_actions:
+        if RequestedAction.CREATE_PR in requested_actions:
+            try:
+                exchange_mode = self._resolve_review_exchange_mode(agent_label)
+            except ValueError as exc:
+                errors.append(f"review_exchange: {exc}")
+                return branch, pr_url, review_exchange_completed
+        pipeline = resolve_review_publish_pipeline(exchange_mode)
+        plan = pipeline.plan(requested_actions)
+
+        if plan.run_review_exchange_before_publish:
+            exchange_mode, exchange_result, exchange_halt = self._run_review_exchange_if_needed(
+                worktree=worktree,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                session_name=session_name,
+                agent_label=agent_label,
+                initial_validation_record_path=(
+                    Path(record.validation_record_path)
+                    if record.validation_record_path
+                    else None
+                ),
+                errors=errors,
+                actions_taken=actions_taken,
+            )
+            if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
+                review_exchange_completed = True
+            if exchange_halt:
+                return branch, pr_url, review_exchange_completed
+
+        for action in plan.ordered_actions:
             result = self._execute_action_with_observability(
                 action=action,
                 worktree=worktree,
@@ -875,6 +899,8 @@ class CompletionProcessor:
                 actions_taken=actions_taken,
                 errors=errors,
                 error_details=error_details,
+                exchange_mode=exchange_mode,
+                exchange_result=exchange_result,
             )
             if result is None:
                 continue
@@ -912,6 +938,8 @@ class CompletionProcessor:
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
+        exchange_mode: str | None,
+        exchange_result: Any | None,
     ) -> "_ActionResult | None":
         action_start = time.monotonic()
         logger.info("Executing action: %s for issue #%d", action.value, issue_number)
@@ -937,6 +965,8 @@ class CompletionProcessor:
                 actions_taken=actions_taken,
                 errors=errors,
                 error_details=error_details,
+                exchange_mode=exchange_mode,
+                exchange_result=exchange_result,
             )
         except Exception as e:
             logger.exception(
@@ -996,6 +1026,8 @@ class CompletionProcessor:
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
+        exchange_mode: str | None,
+        exchange_result: Any | None,
     ) -> "_ActionResult":
         """Execute a single action and return the result."""
         if action == RequestedAction.PUSH_BRANCH:
@@ -1013,6 +1045,8 @@ class CompletionProcessor:
                 agent_label=agent_label,
                 actions_taken=actions_taken,
                 errors=errors,
+                exchange_mode=exchange_mode,
+                exchange_result=exchange_result,
             )
         elif action == RequestedAction.POST_COMMENT:
             return self._execute_post_comment_action(
@@ -1191,6 +1225,8 @@ class CompletionProcessor:
         agent_label: str | None,
         actions_taken: list[str],
         errors: list[str],
+        exchange_mode: str | None,
+        exchange_result: Any | None,
     ) -> "_ActionResult":
         """Execute create PR action."""
         if not branch:
@@ -1201,23 +1237,20 @@ class CompletionProcessor:
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
         pr_title = f"#{issue_number}: {issue_title}"
         pr_body = self._build_pr_body(record, issue_number)
-
-        exchange_mode, exchange_result, exchange_halt = self._run_review_exchange_if_needed(
-            worktree=worktree,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            session_name=session_name,
-            agent_label=agent_label,
-            errors=errors,
-            actions_taken=actions_taken,
-        )
+        if exchange_mode is None:
+            try:
+                exchange_mode = self._resolve_review_exchange_mode(agent_label)
+            except ValueError as exc:
+                errors.append(f"review_exchange: {exc}")
+                return self._ActionResult(halt=True)
+        if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result is None:
+            errors.append("review_exchange: missing exchange outcome before PR creation")
+            return self._ActionResult(halt=True)
         review_run_dir = self._resolve_review_exchange_run_dir(
             exchange_outcome=exchange_result,
             worktree=worktree,
             session_name=session_name,
         )
-        if exchange_halt:
-            return self._ActionResult(halt=True)
 
         # Check for existing PR to reuse after review exchange succeeds.
         if self._pr_collision_strategy in {"reuse_open", "new_branch"}:
@@ -1334,6 +1367,7 @@ class CompletionProcessor:
         issue_title: str,
         session_name: str | None,
         agent_label: str | None,
+        initial_validation_record_path: Path | None,
         errors: list[str],
         actions_taken: list[str],
     ) -> tuple[str | None, Any | None, bool]:
@@ -1373,6 +1407,7 @@ class CompletionProcessor:
             session_name=session_name,
             agent_label=agent_label,
             reviewer_label=reviewer_label,
+            initial_validation_record_path=initial_validation_record_path,
             errors=errors,
             actions_taken=actions_taken,
         )
@@ -1440,6 +1475,7 @@ class CompletionProcessor:
         session_name: str | None,
         agent_label: str | None,
         reviewer_label: str | None,
+        initial_validation_record_path: Path | None,
         errors: list[str],
         actions_taken: list[str],
     ) -> tuple[str, Any, bool]:
@@ -1461,6 +1497,7 @@ class CompletionProcessor:
             issue_title=issue_title,
             session_name=session_name,
             agent_label=agent_label,
+            initial_validation_record_path=initial_validation_record_path,
             on_started=_on_review_exchange_started,
         )
         review_run_dir = self._resolve_required_review_run_dir(
@@ -1618,9 +1655,15 @@ class CompletionProcessor:
     def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         if not self._config:
             return None
-        if not self._config.review_enabled:
-            return None
         mode = self._config.review_exchange_mode
+        if agent_label:
+            configured_reviewer = self._config.get_reviewer_for_agent(agent_label)
+            if not configured_reviewer:
+                logger.info(
+                    "Review exchange disabled for %s: no reviewer configured",
+                    agent_label,
+                )
+                return None
         if mode in {"via-mcp", "via-local-loop"}:
             agent_label = self._require_review_exchange_agent_label(agent_label, mode)
             if mode == "via-mcp":
@@ -1685,6 +1728,7 @@ class CompletionProcessor:
         issue_title: str,
         session_name: str | None,
         agent_label: str | None,
+        initial_validation_record_path: Path | None = None,
         on_started: Callable[[Path], None] | None = None,
     ):
         if not self._config:
@@ -1714,6 +1758,7 @@ class CompletionProcessor:
             max_rounds=max_rounds,
             max_no_progress=max_no_progress,
             require_validation=require_validation,
+            initial_validation_record_path=initial_validation_record_path,
             web_port=web_port,
             events=self._trace_events,
             event_context=self._event_context,
