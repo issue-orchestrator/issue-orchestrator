@@ -454,3 +454,79 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_surfaces_provider_circuit_breaker_status():
+    from datetime import timezone
+
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    open_until = now + timedelta(minutes=5)
+    store.save(ProviderCircuitState(
+        provider="claude",
+        open_until=open_until,
+        consecutive_outages=2,
+        last_error_summary="Rate limit exceeded",
+        updated_at=now,
+    ))
+
+    class _FakeProviderResilience:
+        def __init__(self, s):
+            self.store = s
+
+    class _FakeDeps:
+        def __init__(self, s):
+            self.provider_resilience = _FakeProviderResilience(s)
+
+    @dataclass
+    class _OrchestratorWithDeps:
+        state: OrchestratorState
+        config: Config
+        deps: object
+        shutdown_requested: bool = False
+
+    orchestrator = _OrchestratorWithDeps(
+        state=state,
+        config=config,
+        deps=_FakeDeps(store),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    cb = view_model.dashboard_data()["providerCircuitBreakers"]
+    assert len(cb) == 1
+    assert cb[0]["provider"] == "claude"
+    assert cb[0]["is_open"] is True
+    assert cb[0]["consecutive_outages"] == 2
+    assert cb[0]["last_error_summary"] == "Rate limit exceeded"
+    assert cb[0]["open_until"] is not None
+
+
+def test_view_model_circuit_breaker_empty_when_no_deps():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)  # no .deps
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.dashboard_data()["providerCircuitBreakers"] == []
