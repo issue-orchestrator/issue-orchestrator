@@ -1215,7 +1215,7 @@ def build_dashboard_view_model(
     if orchestrator and hasattr(orchestrator, 'deps') and hasattr(orchestrator.deps, 'provider_resilience'):
         try:
             now = datetime.now(timezone.utc)
-            for state_obj in orchestrator.deps.provider_resilience.store.list_all():
+            for state_obj in orchestrator.deps.provider_resilience.list_all_states():
                 is_open = state_obj.open_until is not None and state_obj.open_until > now
                 provider_circuit_states.append({
                     "provider": state_obj.provider,
