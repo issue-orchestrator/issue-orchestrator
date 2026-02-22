@@ -339,6 +339,34 @@ def set_orchestrator(orchestrator) -> None:
     _orchestrator = orchestrator
 
 
+def get_provider_circuit_breakers_from_orchestrator() -> list[dict[str, Any]]:
+    """Extract provider circuit breaker status from the orchestrator's resilience manager."""
+    if not _orchestrator:
+        return []
+
+    try:
+        # Check if orchestrator has deps attribute (real orchestrator vs test stub)
+        if not hasattr(_orchestrator, "deps"):
+            return []
+
+        provider_resilience = _orchestrator.deps.provider_resilience
+        all_states = provider_resilience.store.list_all()
+        return [
+            {
+                "provider": state.provider,
+                "is_open": provider_resilience.is_open(state.provider),
+                "open_until": state.open_until.isoformat() if state.open_until else None,
+                "consecutive_outages": state.consecutive_outages,
+                "last_error_summary": state.last_error_summary,
+                "updated_at": state.updated_at.isoformat() if state.updated_at else None,
+            }
+            for state in all_states
+        ]
+    except Exception:
+        # If anything fails, return empty list - UI should still render
+        return []
+
+
 def _collect_worktree_bases(config) -> list[Path]:
     bases: list[Path] = []
     if config.worktree_base:
@@ -429,6 +457,7 @@ async def dashboard(request: Request, orchestrator=Depends(get_orchestrator)) ->
         queue_page=queue_page,
         active_tab=active_tab,
         e2e_page=e2e_page,
+        provider_circuit_breaker_provider=get_provider_circuit_breakers_from_orchestrator,
     )
     html = template.render(**view_model.template_context())
     total_elapsed = time.time() - request_start
@@ -457,6 +486,7 @@ async def get_view_model(
         queue_page=queue_page,
         active_tab=active_tab,
         e2e_page=e2e_page,
+        provider_circuit_breaker_provider=get_provider_circuit_breakers_from_orchestrator,
     )
     return DashboardViewModelPayload.model_validate(view_model.to_dict())
 
@@ -483,6 +513,7 @@ async def get_view_model_snapshot(
         queue_page=queue_page,
         active_tab=active_tab,
         e2e_page=e2e_page,
+        provider_circuit_breaker_provider=get_provider_circuit_breakers_from_orchestrator,
     )
 
     templates = get_templates()
@@ -527,6 +558,7 @@ async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator
         queue_page=queue_page,
         active_tab=active_tab,
         e2e_page=e2e_page,
+        provider_circuit_breaker_provider=get_provider_circuit_breakers_from_orchestrator,
     )
 
     templates = get_templates()
