@@ -1039,8 +1039,7 @@ def _get_provider_circuit_status(orchestrator) -> list[dict[str, Any]]:
 
     try:
         provider_resilience = orchestrator.deps.provider_resilience
-        circuit_store = provider_resilience.store
-        all_states = circuit_store.list_all()
+        all_states = provider_resilience.list_all_states()
 
         circuits = []
         now = datetime.now(timezone.utc)
@@ -1055,8 +1054,11 @@ def _get_provider_circuit_status(orchestrator) -> list[dict[str, Any]]:
                 "updatedAt": state.updated_at.isoformat(),
             })
         return circuits
-    except Exception:
-        # Don't fail the entire dashboard if circuit status retrieval fails
+    except (AttributeError, KeyError, ValueError) as e:
+        # Log specific errors but don't fail the dashboard
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.warning("Failed to retrieve provider circuit status: %s", e, exc_info=True)
         return []
 
 
