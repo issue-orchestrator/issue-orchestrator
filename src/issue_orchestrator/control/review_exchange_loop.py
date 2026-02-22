@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import shlex
+import shutil
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,6 +75,7 @@ def run_review_exchange_loop(
     max_rounds: int,
     max_no_progress: int,
     require_validation: bool,
+    initial_validation_record_path: Path | None = None,
     web_port: int | None,
     events: EventSink | None = None,
     event_context: EventContext | None = None,
@@ -107,6 +109,11 @@ def run_review_exchange_loop(
     )
     run_dir = run.run_dir
     run_id = run.run_id
+    _seed_validation_record(
+        run_dir=run_dir,
+        source_record_path=initial_validation_record_path,
+        session_output=session_output,
+    )
     exchange_dir = run_dir / "review-exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
     session_output.update_manifest(run_dir, {"review_exchange_dir": str(exchange_dir)})
@@ -737,6 +744,16 @@ def _run_agent_round(
         env_overrides=env_overrides,
     )
     result = runner.run(spec)
+    _append_provider_runner_logs(
+        run_dir,
+        round_index=round_index,
+        role=role,
+        stdout=result.stdout or "",
+        stderr=result.stderr or "",
+        exit_code=result.exit_code,
+        timed_out=result.timed_out,
+        succeeded=result.succeeded,
+    )
     _append_session_log(
         run_dir,
         round_index=round_index,
@@ -771,6 +788,35 @@ def _run_agent_round(
     return response
 
 
+def _append_provider_runner_logs(
+    run_dir: Path,
+    *,
+    round_index: int,
+    role: str,
+    stdout: str,
+    stderr: str,
+    exit_code: int | None,
+    timed_out: bool,
+    succeeded: bool,
+) -> None:
+    """Mirror round output into run-scoped provider-runner logs for UI/E2E parity."""
+    output_dir = run_dir / "provider-runner"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).isoformat()
+    header = (
+        f"[{timestamp}] round={round_index} role={role} "
+        f"exit_code={exit_code} timed_out={timed_out} succeeded={succeeded}\n"
+    )
+    _append_text(output_dir / "stdout.log", header + (stdout.rstrip() or "(empty)") + "\n\n")
+    _append_text(output_dir / "stderr.log", header + (stderr.rstrip() or "(empty)") + "\n\n")
+
+
+def _append_text(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(content)
+
+
 def _append_session_log(
     run_dir: Path,
     *,
@@ -786,9 +832,7 @@ def _append_session_log(
         f"[{timestamp}] round={round_index} role={role} section={section}\n"
         f"{content.rstrip()}\n\n"
     )
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    with log_path.open("a", encoding="utf-8") as handle:
-        handle.write(chunk)
+    _append_text(log_path, chunk)
 
 
 def _build_env_overrides(
@@ -883,26 +927,113 @@ def _build_coder_prompt(
 def _parse_exchange_response(stdout: str) -> ReviewExchangeResponse | None:
     if not stdout:
         return None
+    direct = _parse_protocol_json_from_text(stdout)
+    if direct is not None:
+        return ReviewExchangeResponse(
+            response_type=direct["response_type"],
+            response_text=direct["response_text"],
+            getting_closer=direct["getting_closer"],
+            raw_json=direct["raw_json"],
+            raw_output=stdout,
+        )
+
     for line in reversed(stdout.strip().splitlines()):
         line = line.strip()
-        if not line.startswith("{") or not line.endswith("}"):
+        if not line or not line.startswith("{") or not line.endswith("}"):
             continue
         try:
-            data = json.loads(line)
+            envelope = json.loads(line)
         except json.JSONDecodeError:
             continue
-        response_type = str(data.get("response_type", "")).strip()
-        response_text = str(data.get("response_text", "")).strip()
-        getting_closer = data.get("getting_closer")
-        if response_type and response_text:
-            return ReviewExchangeResponse(
-                response_type=response_type,
-                response_text=response_text,
-                getting_closer=bool(getting_closer) if getting_closer is not None else None,
-                raw_json=data,
-                raw_output=stdout,
-            )
+
+        if isinstance(envelope, dict):
+            if isinstance(envelope.get("result"), str):
+                embedded = _parse_protocol_json_from_text(envelope["result"])
+                if embedded is not None:
+                    return ReviewExchangeResponse(
+                        response_type=embedded["response_type"],
+                        response_text=embedded["response_text"],
+                        getting_closer=embedded["getting_closer"],
+                        raw_json=embedded["raw_json"],
+                        raw_output=stdout,
+                    )
+
+            message = envelope.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, list):
+                    for block in reversed(content):
+                        if not isinstance(block, dict):
+                            continue
+                        if block.get("type") != "text":
+                            continue
+                        text = block.get("text")
+                        if not isinstance(text, str):
+                            continue
+                        embedded = _parse_protocol_json_from_text(text)
+                        if embedded is not None:
+                            return ReviewExchangeResponse(
+                                response_type=embedded["response_type"],
+                                response_text=embedded["response_text"],
+                                getting_closer=embedded["getting_closer"],
+                                raw_json=embedded["raw_json"],
+                                raw_output=stdout,
+                            )
     return None
+
+
+def _parse_protocol_json_from_text(text: str) -> dict[str, Any] | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+    decoder = json.JSONDecoder()
+    matches: list[dict[str, Any]] = []
+
+    # Fast path: line-delimited JSON with the protocol payload as a single line.
+    for line in reversed(stripped.splitlines()):
+        candidate = line.strip()
+        if not candidate.startswith("{") or not candidate.endswith("}"):
+            continue
+        try:
+            data = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        normalized = _normalize_protocol_response(data)
+        if normalized is not None:
+            return normalized
+
+    # Fallback: extract embedded JSON objects from prose and pick the last protocol object.
+    for idx, ch in enumerate(stripped):
+        if ch != "{":
+            continue
+        try:
+            obj, end = decoder.raw_decode(stripped[idx:])
+        except json.JSONDecodeError:
+            continue
+        if end <= 0:
+            continue
+        normalized = _normalize_protocol_response(obj)
+        if normalized is not None:
+            matches.append(normalized)
+    if matches:
+        return matches[-1]
+    return None
+
+
+def _normalize_protocol_response(obj: object) -> dict[str, Any] | None:
+    if not isinstance(obj, dict):
+        return None
+    response_type = str(obj.get("response_type", "")).strip()
+    response_text = str(obj.get("response_text", "")).strip()
+    if not response_type or not response_text:
+        return None
+    getting_closer = obj.get("getting_closer")
+    return {
+        "response_type": response_type,
+        "response_text": response_text,
+        "getting_closer": bool(getting_closer) if getting_closer is not None else None,
+        "raw_json": obj,
+    }
 
 
 def _validation_passed(run_dir: Path) -> bool:
@@ -914,6 +1045,30 @@ def _validation_passed(run_dir: Path) -> bool:
     except json.JSONDecodeError:
         return False
     return bool(data.get("passed"))
+
+
+def _seed_validation_record(
+    *,
+    run_dir: Path,
+    source_record_path: Path | None,
+    session_output: SessionOutput,
+) -> None:
+    """Seed review-exchange run with a prior validation record when available."""
+    if source_record_path is None or not source_record_path.exists():
+        return
+    target = run_dir / "validation-record.json"
+    if target.exists():
+        return
+    try:
+        shutil.copy2(source_record_path, target)
+    except OSError:
+        logger.debug(
+            "Failed to seed validation record into review-exchange run_dir: %s -> %s",
+            source_record_path,
+            target,
+        )
+        return
+    session_output.update_manifest(run_dir, {"validation_record_path": str(target)})
 
 
 def _validate_coder_protocol(run_dir: Path, *, require_validation: bool) -> str | None:
