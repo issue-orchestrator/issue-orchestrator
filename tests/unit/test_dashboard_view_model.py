@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -454,3 +454,115 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_provider_circuit_states_empty():
+    """Test that provider circuit states is empty when orchestrator has no deps."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_states == []
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuitStates" in dashboard_data
+    assert dashboard_data["providerCircuitStates"] == []
+
+
+def test_view_model_provider_circuit_states_with_data():
+    """Test that provider circuit states are surfaced when available."""
+    from issue_orchestrator.ports.provider_resilience import (
+        InMemoryProviderCircuitStore,
+        ProviderCircuitState,
+    )
+    from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+    from issue_orchestrator.infra.config import ProviderResilienceConfig
+    from issue_orchestrator.ports import NullEventSink
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    # Create provider resilience manager with test data
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    open_state = ProviderCircuitState(
+        provider="anthropic",
+        open_until=now + timedelta(minutes=5),
+        consecutive_outages=2,
+        last_error_summary="Rate limited",
+        updated_at=now,
+    )
+    closed_state = ProviderCircuitState(
+        provider="openai",
+        open_until=None,
+        consecutive_outages=1,
+        last_error_summary="Previous error",
+        updated_at=now - timedelta(minutes=10),
+    )
+    store.save(open_state)
+    store.save(closed_state)
+
+    # Create a mock deps object
+    @dataclass
+    class MockDeps:
+        provider_resilience: ProviderResilienceManager
+
+    resilience_config = ProviderResilienceConfig()
+    event_sink = NullEventSink()
+    provider_resilience = ProviderResilienceManager(
+        config=resilience_config,
+        store=store,
+        events=event_sink,
+    )
+
+    # Create orchestrator stub with deps
+    @dataclass
+    class _OrchestratorWithDeps:
+        state: OrchestratorState
+        config: Config
+        deps: MockDeps
+        shutdown_requested: bool = False
+
+    orchestrator = _OrchestratorWithDeps(
+        state=state,
+        config=config,
+        deps=MockDeps(provider_resilience=provider_resilience),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_states) == 2
+
+    # Find the states
+    anthropic_state = next((s for s in view_model.provider_circuit_states if s["provider"] == "anthropic"), None)
+    openai_state = next((s for s in view_model.provider_circuit_states if s["provider"] == "openai"), None)
+
+    assert anthropic_state is not None
+    assert anthropic_state["isOpen"] is True
+    assert anthropic_state["consecutiveOutages"] == 2
+    assert anthropic_state["lastErrorSummary"] == "Rate limited"
+    assert anthropic_state["openUntil"] is not None
+
+    assert openai_state is not None
+    assert openai_state["isOpen"] is False
+    assert openai_state["consecutiveOutages"] == 1
+    assert openai_state["lastErrorSummary"] == "Previous error"
+    assert openai_state["openUntil"] is None
+
+    # Check dashboard_data includes this
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuitStates" in dashboard_data
+    assert len(dashboard_data["providerCircuitStates"]) == 2

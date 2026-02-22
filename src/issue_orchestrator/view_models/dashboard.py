@@ -65,6 +65,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuit_states: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -103,6 +104,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_states": self.provider_circuit_states,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -124,6 +126,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuitStates": self.provider_circuit_states,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -163,6 +166,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_states": self.provider_circuit_states,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -1206,6 +1210,25 @@ def build_dashboard_view_model(
             "refresh": refresh_status,
         }
 
+    # Extract provider circuit breaker states
+    provider_circuit_states: list[dict[str, Any]] = []
+    if orchestrator and hasattr(orchestrator, 'deps') and hasattr(orchestrator.deps, 'provider_resilience'):
+        try:
+            now = datetime.now(timezone.utc)
+            for state_obj in orchestrator.deps.provider_resilience.store.list_all():
+                is_open = state_obj.open_until is not None and state_obj.open_until > now
+                provider_circuit_states.append({
+                    "provider": state_obj.provider,
+                    "isOpen": is_open,
+                    "openUntil": state_obj.open_until.isoformat() if state_obj.open_until else None,
+                    "consecutiveOutages": state_obj.consecutive_outages,
+                    "lastErrorSummary": state_obj.last_error_summary,
+                    "updatedAt": state_obj.updated_at.isoformat(),
+                })
+        except Exception:
+            # If provider resilience is not available, return empty list
+            pass
+
     return DashboardViewModel(
         issues=issues,
         active_items=active_items,
@@ -1243,4 +1266,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuit_states=provider_circuit_states,
     )
