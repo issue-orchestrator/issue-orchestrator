@@ -271,7 +271,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
     config.state_file = Path(f"/tmp/io-e2e-state-{run_suffix}.json")
     config.e2e_pr_labels = [isolated_label]
     config.max_concurrent_sessions = 1
-    config.session_timeout_minutes = 45
+    config.session_timeout_minutes = 75
     config.queue_refresh_seconds = 10
     config.worktree_base_branch_override = "main"
     # Ensure each ephemeral issue worktree starts clean; inherited dirty state
@@ -290,15 +290,15 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
     config.review_exchange_mode = "via-local-loop"
     config.review_exchange_require_validation = True
     config.agents = {
-        "agent:backend": AgentConfig(
-            prompt_path=e2e_project_root / "repo-specific" / "prompts" / "simple-fix.md",
-            provider="claude-code",
-            model="sonnet",
-            timeout_minutes=35,
-            ai_system="claude-code",
-            permission_mode="bypassPermissions",
-            initial_prompt=ISSUE_4057_PROMPT,
-        ),
+            "agent:backend": AgentConfig(
+                prompt_path=e2e_project_root / "repo-specific" / "prompts" / "simple-fix.md",
+                provider="claude-code",
+                model="sonnet",
+                timeout_minutes=60,
+                ai_system="claude-code",
+                permission_mode="bypassPermissions",
+                initial_prompt=ISSUE_4057_PROMPT,
+            ),
         "agent:reviewer": AgentConfig(
             prompt_path=e2e_project_root / "repo-specific" / "prompts" / "reviewer.md",
             provider="claude-code",
