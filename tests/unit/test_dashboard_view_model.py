@@ -482,6 +482,9 @@ def test_view_model_surfaces_provider_circuit_breaker_status():
         def __init__(self, s):
             self.store = s
 
+        def list_all(self):
+            return self.store.list_all()
+
     class _FakeDeps:
         def __init__(self, s):
             self.provider_resilience = _FakeProviderResilience(s)

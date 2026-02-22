@@ -53,6 +53,14 @@
           "title": "Paused",
           "type": "boolean"
         },
+        "providerCircuitBreakers": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Providercircuitbreakers",
+          "type": "array"
+        },
         "queueRefreshSeconds": {
           "title": "Queuerefreshseconds",
           "type": "integer"

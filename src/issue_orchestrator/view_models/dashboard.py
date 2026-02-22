@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
+import logging
 import time
 from typing import Any, Callable
 
@@ -17,6 +18,8 @@ from ..infra import gh_audit
 
 QUEUE_PAGE_SIZE = 20
 E2E_PAGE_SIZE = 15
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -1054,12 +1057,9 @@ def _get_circuit_breaker_states(orchestrator) -> list[dict[str, Any]]:
         resilience = getattr(deps, "provider_resilience", None)
         if not resilience:
             return []
-        store = getattr(resilience, "store", None)
-        if not store:
-            return []
         now = datetime.now(timezone.utc)
         result = []
-        for cs in store.list_all():
+        for cs in resilience.list_all():
             is_open = cs.open_until is not None and cs.open_until > now
             result.append({
                 "provider": cs.provider,
@@ -1071,6 +1071,7 @@ def _get_circuit_breaker_states(orchestrator) -> list[dict[str, Any]]:
             })
         return result
     except Exception:
+        logger.warning("Failed to collect circuit breaker states", exc_info=True)
         return []
 
 
