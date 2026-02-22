@@ -101,3 +101,18 @@ def test_process_alive_handles_pexpect_waitpid_race(tmp_path, monkeypatch):
     plugin._children["issue-2"] = _FlakyPexpectChild()
 
     assert plugin._process_alive(4343, "issue-2") is False
+
+
+def test_session_log_path_uses_issue_orchestrator_run_dir_when_present(tmp_path, monkeypatch):
+    repo_root = tmp_path / "repo"
+    worktree = repo_root / "wt"
+    worktree.mkdir(parents=True)
+    monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
+
+    plugin = SubprocessPlugin()
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "20260221-000000Z__coding-1"
+    command = f"export ISSUE_ORCHESTRATOR_RUN_DIR='{run_dir}' && echo test"
+
+    log_path = plugin._session_log_path(worktree, "issue-123", command)  # noqa: SLF001
+
+    assert log_path == run_dir / "ui-session.log"

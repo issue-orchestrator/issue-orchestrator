@@ -53,7 +53,7 @@ def _summarize_error(stdout: str, stderr: str) -> str | None:
 
 
 def _ensure_run_scoped_session_log(run_dir: Path) -> None:
-    """Guarantee run_dir/ui-session.log resolves to provider-runner stdout."""
+    """Prepare provider-runner log paths without clobbering live session logs."""
     provider_stdout = run_dir / "provider-runner" / "stdout.log"
     session_log = run_dir / SESSION_LOG_NAME
     session_log.parent.mkdir(parents=True, exist_ok=True)
@@ -71,15 +71,14 @@ def _ensure_run_scoped_session_log(run_dir: Path) -> None:
         session_log.symlink_to(provider_stdout)
         return
     if session_log.exists():
-        # start_run pre-creates an empty placeholder so timeline artifacts are valid.
-        # Replace that placeholder with the real live stream target.
+        # start_run pre-creates an empty placeholder. Replace only that case
+        # so run-scoped UI log points at the provider stream path.
         if session_log.stat().st_size == 0:
             session_log.unlink()
             session_log.symlink_to(provider_stdout)
             return
-        raise RuntimeError(
-            f"ui-session.log already exists with content and is not symlinked under run_dir={run_dir}"
-        )
+        # Preserve non-empty logs to avoid clobbering already-streaming sessions.
+        return
     session_log.symlink_to(provider_stdout)
 
 
