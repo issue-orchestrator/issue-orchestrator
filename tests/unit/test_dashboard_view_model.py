@@ -259,34 +259,6 @@ def test_view_model_includes_refresh_staleness_meta():
     assert queue_item["is_stale"] is True
 
 
-def test_view_model_includes_refresh_staleness_meta():
-    config = _make_config()
-    agent_config = _make_agent_config()
-    config.agents = {"agent:web": agent_config}
-    config.queue_refresh_seconds = 300
-    queued_issue = Issue(number=22, title="Queued", labels=["agent:web"])
-
-    state = OrchestratorState(
-        startup_status="complete",
-        cached_queue_issues=[queued_issue],
-        issue_refresh_timestamps={22: datetime.now().timestamp() - 1200},
-    )
-    orchestrator = _OrchestratorStub(state=state, config=config)
-
-    view_model = build_dashboard_view_model(
-        orchestrator,
-        queue_page=1,
-        active_tab="flow",
-        e2e_page=1,
-        e2e_status_provider=lambda _: {"enabled": False, "running": False},
-    )
-
-    queue_item = view_model.queue_items[0]
-    assert queue_item["refresh_age_label"]
-    assert queue_item["refresh_age_seconds"] is not None
-    assert queue_item["is_stale"] is True
-
-
 def test_view_model_history_routing():
     config = _make_config()
     state = OrchestratorState(
@@ -454,3 +426,56 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_includes_provider_circuit_breakers():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    def provider_circuit_breaker_provider():
+        return [
+            {
+                "provider": "anthropic",
+                "open_until": "2025-02-22T10:00:00Z",
+                "consecutive_outages": 2,
+                "last_error_summary": "Rate limit exceeded",
+                "updated_at": "2025-02-22T09:50:00Z",
+            }
+        ]
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        provider_circuit_breaker_provider=provider_circuit_breaker_provider,
+    )
+
+    assert len(view_model.provider_circuit_breakers) == 1
+    assert view_model.provider_circuit_breakers[0]["provider"] == "anthropic"
+    assert view_model.provider_circuit_breakers[0]["consecutive_outages"] == 2
+
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuitBreakers" in dashboard_data
+    assert len(dashboard_data["providerCircuitBreakers"]) == 1
+    assert dashboard_data["providerCircuitBreakers"][0]["provider"] == "anthropic"
+
+
+def test_view_model_provider_circuit_breakers_defaults_to_empty():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_breakers == []
+    dashboard_data = view_model.dashboard_data()
+    assert dashboard_data["providerCircuitBreakers"] == []
