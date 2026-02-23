@@ -15,8 +15,7 @@ from issue_orchestrator.control.session_controller import SessionController, Ses
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.domain.models import SessionStatus, CompletionRecord, CompletionOutcome, RequestedAction
-from issue_orchestrator.events import EventName
-from issue_orchestrator.ports import InMemoryEventSink, NullEventSink
+from issue_orchestrator.ports import NullEventSink
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
@@ -108,7 +107,7 @@ class TestSessionControllerRunning:
 class TestSessionControllerTerminated:
     """Tests for TERMINATED observation (session exited)."""
 
-    def test_terminated_without_completion_record_is_failed(self):
+    def test_terminated_without_completion_record_is_failed(self, tmp_path: Path):
         """Session that exits without completion.json = FAILED."""
         processor = MockCompletionProcessor()
         processor.completion_record = None  # No completion record
@@ -123,7 +122,7 @@ class TestSessionControllerTerminated:
 
         decision = controller.decide_outcome(
             observation=observation,
-            worktree_path=Path("/tmp/test"),
+            worktree_path=tmp_path,
             issue_number=123,
             issue_title="Test Issue",
             session_name="issue-123",
@@ -132,77 +131,6 @@ class TestSessionControllerTerminated:
         assert decision.status == SessionStatus.FAILED
         assert not decision.completion_processed
         assert "without completion record" in decision.reason
-
-    def test_log_tail_uses_run_scoped_ui_session_log_only(self, tmp_path: Path):
-        """Diagnostics should rely on ui-session.log and not fallback to provider-runner logs."""
-        processor = MockCompletionProcessor()
-        controller = SessionController(
-            completion_processor=processor,
-            events=NullEventSink(),
-            session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
-        )
-
-        run_dir = controller.session_output.ensure_run_dir(tmp_path, "issue-123")
-        (run_dir / "ui-session.log").write_text("")
-        provider_dir = run_dir / "provider-runner"
-        provider_dir.mkdir(parents=True, exist_ok=True)
-        (provider_dir / "stdout.log").write_text("provider output line\n")
-
-        tail = controller._get_session_log_tail(issue_number=123, run_dir=run_dir)
-        assert tail == ""
-
-    def test_artifact_lookup_event_is_run_scoped(self, tmp_path: Path):
-        """Artifact lookup event must include run_dir for timeline actions."""
-        processor = MockCompletionProcessor()
-        processor.completion_record = None
-        events = InMemoryEventSink()
-        controller = SessionController(
-            completion_processor=processor,
-            events=events,
-            session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
-        )
-        worktree = tmp_path / "wt-artifact-lookup"
-        worktree.mkdir(parents=True, exist_ok=True)
-
-        decision = controller.decide_outcome(
-            observation=SessionObservationResult.terminated(runtime_minutes=1.0),
-            worktree_path=worktree,
-            issue_number=4057,
-            issue_title="Test Issue",
-            session_name="issue-4057",
-        )
-        assert decision.status == SessionStatus.FAILED
-
-        event = next(
-            e for e in events.events
-            if e.event_type == EventName.SESSION_ARTIFACT_LOOKUP
-            and e.data.get("issue_number") == 4057
-        )
-        assert isinstance(event.data.get("run_dir"), str)
-        assert event.data["run_dir"]
-
-    def test_resolve_run_dir_prefers_completion_session_name_over_terminal_id(self, tmp_path: Path):
-        """Run-dir resolution should follow completion path session name when terminal id differs."""
-        processor = MockCompletionProcessor()
-        controller = SessionController(
-            completion_processor=processor,
-            events=NullEventSink(),
-            session_output=FileSystemSessionOutput(),
-            working_copy=StubWorkingCopy(),
-        )
-        worktree = tmp_path / "worktree"
-        worktree.mkdir(parents=True, exist_ok=True)
-
-        coding_run_dir = controller.session_output.ensure_run_dir(worktree, "coding-1")
-        completion_path = ".issue-orchestrator/sessions/coding-1/completion-agent_backend.json"
-        completion_file = worktree / completion_path
-        completion_file.parent.mkdir(parents=True, exist_ok=True)
-        completion_file.write_text("{}")
-
-        resolved = controller._resolve_run_dir(worktree, "issue-123", completion_path)
-        assert resolved == coding_run_dir
 
     def test_terminated_with_completed_record_is_completed(self):
         """Session that exits with completed outcome = COMPLETED."""
@@ -294,7 +222,7 @@ class TestSessionControllerTerminated:
 class TestSessionControllerTimeout:
     """Tests for TIMED_OUT observation - the key recovery case."""
 
-    def test_timeout_without_completion_record_is_timed_out(self):
+    def test_timeout_without_completion_record_is_timed_out(self, tmp_path: Path):
         """Session that times out without completion.json = TIMED_OUT."""
         processor = MockCompletionProcessor()
         processor.completion_record = None  # No completion record
@@ -313,7 +241,7 @@ class TestSessionControllerTimeout:
 
         decision = controller.decide_outcome(
             observation=observation,
-            worktree_path=Path("/tmp/test"),
+            worktree_path=tmp_path,
             issue_number=123,
             issue_title="Test Issue",
             session_name="issue-123",
@@ -322,6 +250,44 @@ class TestSessionControllerTimeout:
         assert decision.status == SessionStatus.TIMED_OUT
         assert not decision.completion_processed
         assert not decision.recovered_from_timeout
+
+    def test_timeout_without_completion_writes_diagnostic(self, tmp_path: Path):
+        """Missing completion writes a no-completion diagnostic artifact."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = None
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
+
+        observation = SessionObservationResult.timed_out(
+            runtime_minutes=60.0,
+            timeout_minutes=45,
+            session_exists=True,
+        )
+        completion_rel_path = ".issue-orchestrator/sessions/coding-1/completion-agent_backend.json"
+
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=tmp_path,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+            completion_path=completion_rel_path,
+        )
+
+        run_dir = controller.session_output.find_run_dir(tmp_path, "issue-123")
+        assert run_dir is not None
+        diagnostic_files = list(run_dir.glob("no-completion-*.json"))
+        assert len(diagnostic_files) == 1
+        diagnostic = FileSystemSessionOutput()._read_json(diagnostic_files[0])
+        assert diagnostic["kind"] == "no-completion-record"
+        assert diagnostic["requested_completion_path"] == completion_rel_path
+        assert diagnostic["requested_completion_exists"] is False
+        assert diagnostic["observation"] == "timed_out"
+        assert decision.status == SessionStatus.TIMED_OUT
 
     def test_timeout_with_completed_record_is_recovered(self):
         """Session that times out WITH completion.json = COMPLETED (recovered)."""
@@ -620,54 +586,3 @@ class TestSessionControllerValidationCaching:
 
         # Command runner should NOT have been called
         assert len(command_runner.run_calls) == 0
-
-    def test_validation_failure_event_includes_source_and_reason(self, tmp_path):
-        """Validation failure events should include source + concise reason."""
-        processor = MockCompletionProcessor()
-        processor.completion_record = make_record(
-            CompletionOutcome.COMPLETED,
-            summary="Done",
-            requested_actions=[RequestedAction.CREATE_PR],
-        )
-
-        command_runner = MockCommandRunner(
-            returncode=1,
-            stderr="/bin/sh: .venv/bin/python: No such file or directory",
-        )
-        working_copy = MockWorkingCopy(head_sha="deadbeef1234567890")
-        events = InMemoryEventSink()
-
-        controller = SessionController(
-            completion_processor=processor,
-            events=events,
-            session_output=FileSystemSessionOutput(),
-            working_copy=working_copy,
-            command_runner=command_runner,
-            validation_cmd="make validate",
-            validation_timeout_seconds=60,
-        )
-
-        worktree = tmp_path / "worktree"
-        worktree.mkdir()
-        # Trigger local venv prep path for make-based commands.
-        (worktree / "Makefile").write_text("validate:\n\t.venv/bin/python -V\n", encoding="utf-8")
-
-        decision = controller.decide_outcome(
-            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
-            worktree_path=worktree,
-            issue_number=123,
-            issue_title="Test Issue",
-            session_name="issue-123",
-        )
-
-        assert decision.status == SessionStatus.VALIDATION_FAILED
-        assert (worktree / ".venv").exists()
-
-        failure_event = next(
-            event
-            for event in events.events
-            if event.event_type == EventName.SESSION_VALIDATION_FAILED
-        )
-        reason = str(failure_event.data.get("reason") or "")
-        assert "orchestrator_publish_gate" in reason
-        assert ".venv" in reason

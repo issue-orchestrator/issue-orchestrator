@@ -32,13 +32,28 @@ def test_get_agent_log_returns_run_scoped_log(tmp_path: Path) -> None:
     assert artifact.descriptor.length_bytes is not None
 
 
-def test_get_agent_log_requires_canonical_ui_session_log_when_empty(tmp_path: Path) -> None:
+def test_get_agent_log_falls_back_to_claude_stream_when_ui_session_log_empty(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
     (run_dir / "ui-session.log").write_text("", encoding="utf-8")
-    provider_stdout = run_dir / "provider-runner" / "stdout.log"
-    provider_stdout.parent.mkdir(parents=True, exist_ok=True)
-    provider_stdout.write_text("provider output\n", encoding="utf-8")
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    claude_log = claude_dir / "run.jsonl"
+    claude_log.write_text('{"message":"ok"}\n', encoding="utf-8")
 
+    FileSystemSessionOutput().update_manifest(
+        run_dir,
+        {
+            "claude_log_dir": str(claude_dir),
+        },
+    )
+
+    artifact = accessor.get_agent_log()
+    assert artifact.path == claude_log
+
+
+def test_get_agent_log_raises_when_no_claude_log_available(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    (run_dir / "ui-session.log").write_text("", encoding="utf-8")
     with pytest.raises(ArtifactNotFoundError, match="candidates are empty"):
         accessor.get_agent_log()
 

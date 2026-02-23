@@ -6,9 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+from typing import Any
 
 from ..domain.run_manifest import RunManifest
-from .session_output_adapter import FileSystemSessionOutput
+from .session_output_adapter import CLAUDE_SESSION_LOG_NAME, FileSystemSessionOutput
 
 
 @dataclass(frozen=True)
@@ -95,6 +96,7 @@ class ManifestAccessor:
         session_name = session_output.session_name_from_path(str(run_dir))
         if not session_name:
             raise ArtifactNotFoundError(f"failed to infer session name from run_dir: {run_dir}")
+        manifest = session_output.read_manifest(run_dir) or {}
         candidates: list[Path] = []
         session_candidate = session_output.get_log_path(worktree_path, session_name)
         if session_candidate:
@@ -103,6 +105,38 @@ class ManifestAccessor:
             candidate_path = run_dir / candidate_name
             if candidate_path not in candidates:
                 candidates.append(candidate_path)
+        for candidate in self._claude_log_candidates(run_dir, manifest):
+            if candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
+
+    def _claude_log_candidates(self, run_dir: Path, manifest: dict[str, Any]) -> list[Path]:
+        """Return potential Claude log files for the run."""
+        candidates: list[Path] = []
+        log_path = manifest.get("claude_log_path")
+        if log_path:
+            candidate = Path(log_path)
+            if not candidate.is_absolute():
+                candidate = run_dir / log_path
+            candidates.append(candidate)
+
+        log_dir = manifest.get("claude_log_dir")
+        if log_dir:
+            candidate_dir = Path(log_dir)
+            if not candidate_dir.is_absolute():
+                candidate_dir = run_dir / log_dir
+            if candidate_dir.exists():
+                jsonl_files = sorted(
+                    candidate_dir.glob("*.jsonl"),
+                    key=lambda path: path.stat().st_mtime,
+                    reverse=True,
+                )
+                candidates.extend(jsonl_files)
+
+        claude_symlink = run_dir / CLAUDE_SESSION_LOG_NAME
+        if claude_symlink.exists():
+            candidates.append(claude_symlink)
+
         return candidates
 
     def _non_empty_paths(self, candidates: list[Path]) -> list[Path]:

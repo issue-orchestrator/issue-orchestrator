@@ -1,5 +1,6 @@
 """Unit tests for GitWorkingCopy adapter."""
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -1184,6 +1185,26 @@ class TestPushPreflight:
             assert result.would_succeed is False
             assert "branch" in result.error.lower()
             assert result.fix_hint is not None
+
+    def test_push_preflight_uses_metadata_branch(self, git_wc, worktree_path):
+        """Branch metadata should satisfy push_preflight when HEAD is detached."""
+        meta_dir = worktree_path / ".issue-orchestrator"
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        (meta_dir / "worktree.json").write_text(json.dumps({"branch_name": "feature-meta"}))
+
+        with patch.object(git_wc, "get_current_branch") as mock_branch:
+            mock_branch.return_value = None
+
+            with patch.object(git_wc, "_run_git") as mock_run:
+                mock_run.side_effect = [
+                    MagicMock(returncode=0, stdout="", stderr=""),  # fetch
+                    MagicMock(returncode=0, stdout="", stderr=""),  # push dry-run
+                ]
+
+                result = git_wc.push_preflight(worktree_path)
+
+                assert result.would_succeed is True
+                assert mock_run.call_count == 2
 
     def test_push_preflight_stale_info_error(self, git_wc, worktree_path):
         """Test handling stale info error."""

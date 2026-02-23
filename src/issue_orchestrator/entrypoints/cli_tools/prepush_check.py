@@ -20,7 +20,6 @@ from typing import Optional
 
 from ...control.validation import PublishGate
 from ...execution import GitWorkingCopy, LocalCommandRunner
-from ...infra.runtime_artifacts import filter_runtime_managed_dirty_paths
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +35,11 @@ def find_worktree_root() -> Path:
 
 DIRTY_CHECK_MODES = {"tracked", "unstaged", "all", "off"}
 DIRTY_FILE_LIST_LIMIT = 20
+RUNTIME_DIRTY_GUARD_EXCLUDES = frozenset(
+    {
+        ".issue-orchestrator/session-latest.json",
+    }
+)
 
 
 def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
@@ -64,9 +68,8 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
     return None, 0, dirty_check
 
 
-def _print_dirty_files(working_copy: GitWorkingCopy, worktree: Path, mode: str) -> None:
+def _print_dirty_files(files: list[str]) -> None:
     """Print dirty file list, clipped for readability."""
-    files = filter_runtime_managed_dirty_paths(working_copy.list_dirty_files(worktree, mode))
     if not files:
         return
     print(f"Dirty files (showing up to {DIRTY_FILE_LIST_LIMIT}):")
@@ -74,6 +77,11 @@ def _print_dirty_files(working_copy: GitWorkingCopy, worktree: Path, mode: str) 
         print(f"  - {path}")
     if len(files) > DIRTY_FILE_LIST_LIMIT:
         print(f"  ... and {len(files) - DIRTY_FILE_LIST_LIMIT} more")
+
+
+def _filter_guard_excluded_files(files: list[str]) -> list[str]:
+    """Filter out orchestrator runtime metadata from dirty-tree guard checks."""
+    return [path for path in files if path not in RUNTIME_DIRTY_GUARD_EXCLUDES]
 
 
 def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
@@ -88,28 +96,22 @@ def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
     if mode == "off":
         return None
     working_copy = GitWorkingCopy()
-    if mode == "all":
-        files = filter_runtime_managed_dirty_paths(working_copy.list_dirty_files(worktree, mode))
-        if files:
-            if verbose:
+    dirty_files = _filter_guard_excluded_files(working_copy.list_dirty_files(worktree, mode))
+    if dirty_files:
+        if verbose:
+            if mode == "all":
                 print(
                     "Working tree is dirty (tracked or untracked files); "
                     "commit, add, or stash before pushing. "
                     "Override with validation.pre_push_dirty_check."
                 )
-                _print_dirty_files(working_copy, worktree, mode)
-            return 1
-        return None
-
-    files = filter_runtime_managed_dirty_paths(working_copy.list_dirty_files(worktree, mode))
-    if files:
-        if verbose:
-            print(
-                "Tracked files are dirty; commit or stash before pushing. "
-                "Ignored files are allowed. "
-                "Override with validation.pre_push_dirty_check."
-            )
-            _print_dirty_files(working_copy, worktree, mode)
+            else:
+                print(
+                    "Tracked files are dirty; commit or stash before pushing. "
+                    "Ignored files are allowed. "
+                    "Override with validation.pre_push_dirty_check."
+                )
+            _print_dirty_files(dirty_files)
         return 1
     return None
 

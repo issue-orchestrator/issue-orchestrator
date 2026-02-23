@@ -6,6 +6,7 @@ It handles local worktree operations: push, rebase, commit info, etc.
 Part of the execution layer - performs actions, does not make decisions.
 """
 
+import json
 import logging
 import os
 import re
@@ -89,6 +90,18 @@ class GitWorkingCopy:
             logger.warning("Failed to get current branch in %s", worktree)
             return None
 
+    def _branch_from_metadata(self, worktree: Path) -> str | None:
+        metadata_path = worktree / ".issue-orchestrator" / "worktree.json"
+        if not metadata_path.exists():
+            return None
+        try:
+            metadata = json.loads(metadata_path.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.debug("Could not read worktree metadata %s: %s", metadata_path, exc)
+            return None
+        branch = metadata.get("branch_name")
+        return branch if branch else None
+
     def get_head_sha(self, worktree: Path) -> str | None:
         """Get the HEAD commit SHA in the worktree."""
         try:
@@ -101,6 +114,8 @@ class GitWorkingCopy:
     def get_branch_status(self, worktree: Path) -> BranchStatus | None:
         """Get the status of the current branch."""
         branch = self.get_current_branch(worktree)
+        if not branch:
+            branch = self._branch_from_metadata(worktree)
         if not branch:
             return None
 
@@ -140,6 +155,15 @@ class GitWorkingCopy:
             logger.warning("Failed to get branch status: %s", e)
             return None
 
+    def get_status_porcelain_lines(self, worktree: Path) -> list[str]:
+        """Return the lines from `git status --porcelain` output."""
+        try:
+            result = self._run_git(worktree, ["status", "--porcelain"])
+            return result.stdout.splitlines()
+        except GitError:
+            logger.warning("Failed to get git status for %s", worktree)
+            return []
+
     def has_uncommitted_changes(self, worktree: Path) -> bool:
         """Check if there are uncommitted changes in the worktree."""
         try:
@@ -148,15 +172,6 @@ class GitWorkingCopy:
         except GitError:
             logger.warning("Failed to check uncommitted changes in %s", worktree)
             return True  # Assume dirty on error (safer)
-
-    def get_status_porcelain_lines(self, worktree: Path) -> list[str]:
-        """Return non-empty `git status --porcelain` lines for the worktree."""
-        try:
-            result = self._run_git(worktree, ["status", "--porcelain"])
-            return [line.rstrip() for line in result.stdout.splitlines() if line.strip()]
-        except GitError:
-            logger.warning("Failed to read status lines in %s", worktree)
-            return []
 
     def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool:
         """Check for dirty tracked files (ignores untracked/ignored)."""
@@ -625,6 +640,8 @@ class GitWorkingCopy:
         while the agent is still active and can fix them.
         """
         branch = self.get_current_branch(worktree)
+        if not branch:
+            branch = self._branch_from_metadata(worktree)
         if not branch:
             return PreflightResult(
                 would_succeed=False,

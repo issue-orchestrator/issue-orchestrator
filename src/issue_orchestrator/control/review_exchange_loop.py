@@ -929,56 +929,12 @@ def _parse_exchange_response(stdout: str) -> ReviewExchangeResponse | None:
         return None
     direct = _parse_protocol_json_from_text(stdout)
     if direct is not None:
-        return ReviewExchangeResponse(
-            response_type=direct["response_type"],
-            response_text=direct["response_text"],
-            getting_closer=direct["getting_closer"],
-            raw_json=direct["raw_json"],
-            raw_output=stdout,
-        )
+        return _review_exchange_response_from_dict(direct, stdout)
 
-    for line in reversed(stdout.strip().splitlines()):
-        line = line.strip()
-        if not line or not line.startswith("{") or not line.endswith("}"):
-            continue
-        try:
-            envelope = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-
-        if isinstance(envelope, dict):
-            if isinstance(envelope.get("result"), str):
-                embedded = _parse_protocol_json_from_text(envelope["result"])
-                if embedded is not None:
-                    return ReviewExchangeResponse(
-                        response_type=embedded["response_type"],
-                        response_text=embedded["response_text"],
-                        getting_closer=embedded["getting_closer"],
-                        raw_json=embedded["raw_json"],
-                        raw_output=stdout,
-                    )
-
-            message = envelope.get("message")
-            if isinstance(message, dict):
-                content = message.get("content")
-                if isinstance(content, list):
-                    for block in reversed(content):
-                        if not isinstance(block, dict):
-                            continue
-                        if block.get("type") != "text":
-                            continue
-                        text = block.get("text")
-                        if not isinstance(text, str):
-                            continue
-                        embedded = _parse_protocol_json_from_text(text)
-                        if embedded is not None:
-                            return ReviewExchangeResponse(
-                                response_type=embedded["response_type"],
-                                response_text=embedded["response_text"],
-                                getting_closer=embedded["getting_closer"],
-                                raw_json=embedded["raw_json"],
-                                raw_output=stdout,
-                            )
+    for envelope in _iter_json_line_envelopes(stdout):
+        embedded = _parse_embedded_protocol_from_envelope(envelope)
+        if embedded is not None:
+            return _review_exchange_response_from_dict(embedded, stdout)
     return None
 
 
@@ -986,10 +942,72 @@ def _parse_protocol_json_from_text(text: str) -> dict[str, Any] | None:
     stripped = text.strip()
     if not stripped:
         return None
-    decoder = json.JSONDecoder()
-    matches: list[dict[str, Any]] = []
+    line_match = _parse_protocol_json_from_lines(stripped)
+    if line_match is not None:
+        return line_match
+    return _parse_protocol_json_from_embedded_objects(stripped)
 
-    # Fast path: line-delimited JSON with the protocol payload as a single line.
+
+def _review_exchange_response_from_dict(
+    parsed: dict[str, Any],
+    raw_output: str,
+) -> ReviewExchangeResponse:
+    return ReviewExchangeResponse(
+        response_type=parsed["response_type"],
+        response_text=parsed["response_text"],
+        getting_closer=parsed["getting_closer"],
+        raw_json=parsed["raw_json"],
+        raw_output=raw_output,
+    )
+
+
+def _iter_json_line_envelopes(stdout: str) -> list[dict[str, Any]]:
+    envelopes: list[dict[str, Any]] = []
+    for line in reversed(stdout.strip().splitlines()):
+        candidate = line.strip()
+        if not candidate.startswith("{") or not candidate.endswith("}"):
+            continue
+        try:
+            envelope = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(envelope, dict):
+            envelopes.append(envelope)
+    return envelopes
+
+
+def _parse_embedded_protocol_from_envelope(
+    envelope: dict[str, Any],
+) -> dict[str, Any] | None:
+    result_payload = envelope.get("result")
+    if isinstance(result_payload, str):
+        embedded = _parse_protocol_json_from_text(result_payload)
+        if embedded is not None:
+            return embedded
+    return _parse_embedded_protocol_from_message(envelope.get("message"))
+
+
+def _parse_embedded_protocol_from_message(
+    message: object,
+) -> dict[str, Any] | None:
+    if not isinstance(message, dict):
+        return None
+    content = message.get("content")
+    if not isinstance(content, list):
+        return None
+    for block in reversed(content):
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if not isinstance(text, str):
+            continue
+        embedded = _parse_protocol_json_from_text(text)
+        if embedded is not None:
+            return embedded
+    return None
+
+
+def _parse_protocol_json_from_lines(stripped: str) -> dict[str, Any] | None:
     for line in reversed(stripped.splitlines()):
         candidate = line.strip()
         if not candidate.startswith("{") or not candidate.endswith("}"):
@@ -1001,8 +1019,12 @@ def _parse_protocol_json_from_text(text: str) -> dict[str, Any] | None:
         normalized = _normalize_protocol_response(data)
         if normalized is not None:
             return normalized
+    return None
 
-    # Fallback: extract embedded JSON objects from prose and pick the last protocol object.
+
+def _parse_protocol_json_from_embedded_objects(stripped: str) -> dict[str, Any] | None:
+    decoder = json.JSONDecoder()
+    matches: list[dict[str, Any]] = []
     for idx, ch in enumerate(stripped):
         if ch != "{":
             continue
@@ -1015,9 +1037,7 @@ def _parse_protocol_json_from_text(text: str) -> dict[str, Any] | None:
         normalized = _normalize_protocol_response(obj)
         if normalized is not None:
             matches.append(normalized)
-    if matches:
-        return matches[-1]
-    return None
+    return matches[-1] if matches else None
 
 
 def _normalize_protocol_response(obj: object) -> dict[str, Any] | None:

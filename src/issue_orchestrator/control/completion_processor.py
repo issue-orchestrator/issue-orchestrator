@@ -850,40 +850,111 @@ class CompletionProcessor:
             Tuple of (final_branch, pr_url, review_exchange_completed).
         """
         pr_url: str | None = None
-        halt_actions = False
-        review_exchange_completed = False
+        requested_actions = tuple(record.requested_actions)
+        (
+            plan,
+            exchange_mode,
+            exchange_result,
+            review_exchange_completed,
+            should_halt,
+        ) = self._prepare_review_exchange(
+            requested_actions=requested_actions,
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+            record=record,
+            errors=errors,
+            actions_taken=actions_taken,
+        )
+        if should_halt:
+            return branch, pr_url, review_exchange_completed
+
+        return self._execute_planned_actions(
+            plan=plan,
+            worktree=worktree,
+            record=record,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            label_target=label_target,
+            branch=branch,
+            session_name=session_name,
+            agent_label=agent_label,
+            actions_taken=actions_taken,
+            errors=errors,
+            error_details=error_details,
+            exchange_mode=exchange_mode,
+            exchange_result=exchange_result,
+            review_exchange_completed=review_exchange_completed,
+        )
+
+    def _prepare_review_exchange(
+        self,
+        *,
+        requested_actions: tuple[RequestedAction, ...],
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
+        session_name: str | None,
+        agent_label: str | None,
+        record: CompletionRecord,
+        errors: list[str],
+        actions_taken: list[str],
+    ) -> tuple[Any, str | None, Any | None, bool, bool]:
         exchange_mode: str | None = None
         exchange_result: Any | None = None
-        requested_actions = tuple(record.requested_actions)
+        review_exchange_completed = False
 
         if RequestedAction.CREATE_PR in requested_actions:
             try:
                 exchange_mode = self._resolve_review_exchange_mode(agent_label)
             except ValueError as exc:
                 errors.append(f"review_exchange: {exc}")
-                return branch, pr_url, review_exchange_completed
+                pipeline = resolve_review_publish_pipeline(None)
+                return pipeline.plan(requested_actions), None, None, False, True
+
         pipeline = resolve_review_publish_pipeline(exchange_mode)
         plan = pipeline.plan(requested_actions)
+        if not plan.run_review_exchange_before_publish:
+            return plan, exchange_mode, exchange_result, review_exchange_completed, False
 
-        if plan.run_review_exchange_before_publish:
-            exchange_mode, exchange_result, exchange_halt = self._run_review_exchange_if_needed(
-                worktree=worktree,
-                issue_number=issue_number,
-                issue_title=issue_title,
-                session_name=session_name,
-                agent_label=agent_label,
-                initial_validation_record_path=(
-                    Path(record.validation_record_path)
-                    if record.validation_record_path
-                    else None
-                ),
-                errors=errors,
-                actions_taken=actions_taken,
-            )
-            if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
-                review_exchange_completed = True
-            if exchange_halt:
-                return branch, pr_url, review_exchange_completed
+        exchange_mode, exchange_result, exchange_halt = self._run_review_exchange_if_needed(
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+            initial_validation_record_path=(
+                Path(record.validation_record_path) if record.validation_record_path else None
+            ),
+            errors=errors,
+            actions_taken=actions_taken,
+        )
+        if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
+            review_exchange_completed = True
+        return plan, exchange_mode, exchange_result, review_exchange_completed, exchange_halt
+
+    def _execute_planned_actions(
+        self,
+        *,
+        plan: Any,
+        worktree: Path,
+        record: CompletionRecord,
+        issue_number: int,
+        issue_title: str,
+        label_target: int,
+        branch: str | None,
+        session_name: str | None,
+        agent_label: str | None,
+        actions_taken: list[str],
+        errors: list[str],
+        error_details: list[dict[str, Any]],
+        exchange_mode: str | None,
+        exchange_result: Any | None,
+        review_exchange_completed: bool,
+    ) -> tuple[str | None, str | None, bool]:
+        pr_url: str | None = None
 
         for action in plan.ordered_actions:
             result = self._execute_action_with_observability(
@@ -904,8 +975,6 @@ class CompletionProcessor:
             )
             if result is None:
                 continue
-            if result.halt:
-                halt_actions = True
             if result.branch:
                 branch = result.branch
             if result.pr_url:
@@ -914,7 +983,7 @@ class CompletionProcessor:
                 review_exchange_completed = True
             if result.skip_remaining:
                 continue
-            if halt_actions:
+            if result.halt:
                 logger.warning(
                     "Halting remaining actions for issue #%d due to push failure",
                     issue_number,
@@ -1237,13 +1306,14 @@ class CompletionProcessor:
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
         pr_title = f"#{issue_number}: {issue_title}"
         pr_body = self._build_pr_body(record, issue_number)
-        if exchange_mode is None:
-            try:
-                exchange_mode = self._resolve_review_exchange_mode(agent_label)
-            except ValueError as exc:
-                errors.append(f"review_exchange: {exc}")
-                return self._ActionResult(halt=True)
-        if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result is None:
+        exchange_mode, exchange_resolution_failed = self._resolve_create_pr_exchange_mode(
+            exchange_mode=exchange_mode,
+            agent_label=agent_label,
+            errors=errors,
+        )
+        if exchange_resolution_failed:
+            return self._ActionResult(halt=True)
+        if self._missing_review_exchange_outcome(exchange_mode, exchange_result):
             errors.append("review_exchange: missing exchange outcome before PR creation")
             return self._ActionResult(halt=True)
         review_run_dir = self._resolve_review_exchange_run_dir(
@@ -1253,32 +1323,15 @@ class CompletionProcessor:
         )
 
         # Check for existing PR to reuse after review exchange succeeds.
-        if self._pr_collision_strategy in {"reuse_open", "new_branch"}:
-            existing_pr = self._get_open_pr_for_issue(issue_number)
-            if existing_pr:
-                actions_taken.append(f"Reused PR #{existing_pr.number}")
-                logger.info(
-                    "Reused existing PR #%d for issue #%d: %s",
-                    existing_pr.number,
-                    issue_number,
-                    existing_pr.url,
-                )
-                review_exchange_completed = False
-                if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
-                    review_exchange_completed = True
-                    self._finalize_review_exchange_pr(
-                        issue_number=issue_number,
-                        pr_number=existing_pr.number,
-                        exchange_mode=exchange_mode,
-                        exchange_result=exchange_result,
-                        actions_taken=actions_taken,
-                        run_dir=review_run_dir,
-                    )
-                return self._ActionResult(
-                    pr_url=existing_pr.url,
-                    skip_remaining=True,
-                    review_exchange_completed=review_exchange_completed,
-                )
+        reused = self._reuse_existing_pr_if_available(
+            issue_number=issue_number,
+            exchange_mode=exchange_mode,
+            exchange_result=exchange_result,
+            actions_taken=actions_taken,
+            run_dir=review_run_dir,
+        )
+        if reused is not None:
+            return reused
 
         # Maybe switch branch for PR collision
         if self._pr_collision_strategy == "new_branch":
@@ -1324,6 +1377,66 @@ class CompletionProcessor:
             )
 
         return self._ActionResult(branch=branch)
+
+    def _resolve_create_pr_exchange_mode(
+        self,
+        *,
+        exchange_mode: str | None,
+        agent_label: str | None,
+        errors: list[str],
+    ) -> tuple[str | None, bool]:
+        if exchange_mode is not None:
+            return exchange_mode, False
+        try:
+            return self._resolve_review_exchange_mode(agent_label), False
+        except ValueError as exc:
+            errors.append(f"review_exchange: {exc}")
+            return None, True
+
+    def _missing_review_exchange_outcome(
+        self,
+        exchange_mode: str | None,
+        exchange_result: Any | None,
+    ) -> bool:
+        return exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result is None
+
+    def _reuse_existing_pr_if_available(
+        self,
+        *,
+        issue_number: int,
+        exchange_mode: str | None,
+        exchange_result: Any | None,
+        actions_taken: list[str],
+        run_dir: Path | None,
+    ) -> "_ActionResult | None":
+        if self._pr_collision_strategy not in {"reuse_open", "new_branch"}:
+            return None
+        existing_pr = self._get_open_pr_for_issue(issue_number)
+        if not existing_pr:
+            return None
+        actions_taken.append(f"Reused PR #{existing_pr.number}")
+        logger.info(
+            "Reused existing PR #%d for issue #%d: %s",
+            existing_pr.number,
+            issue_number,
+            existing_pr.url,
+        )
+        review_exchange_completed = False
+        if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
+            review_exchange_completed = True
+            self._finalize_review_exchange_pr(
+                issue_number=issue_number,
+                pr_number=existing_pr.number,
+                exchange_mode=exchange_mode,
+                exchange_result=exchange_result,
+                actions_taken=actions_taken,
+                run_dir=run_dir,
+            )
+        return self._ActionResult(
+            pr_url=existing_pr.url,
+            skip_remaining=True,
+            review_exchange_completed=review_exchange_completed,
+        )
 
     def _finalize_review_exchange_pr(
         self,

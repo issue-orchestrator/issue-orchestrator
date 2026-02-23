@@ -86,8 +86,6 @@ class OrchestratorProcess:
             },
             "worktrees": {
                 "base": str(self.config.worktree_base),
-                "base_branch_override": self.config.worktree_base_branch_override,
-                "setup": list(self.config.setup_worktree),
                 "reuse_push_preflight": self.config.reuse_push_preflight,
                 "remediation": {
                     "pr_collision": self.config.worktree_remediation_pr_collision,
@@ -120,14 +118,9 @@ class OrchestratorProcess:
                     "timeout_minutes": cfg.timeout_minutes,
                     "permission_mode": cfg.permission_mode,
                     "command": cfg.command,
-                    "initial_prompt": cfg.initial_prompt,
-                    "provider": cfg.provider,
-                    "provider_args": cfg.provider_args,
-                    "ai_system": cfg.ai_system,
-                    "reviewer": cfg.reviewer,
-                    "skip_review": cfg.skip_review,
-                    "retry_prompt_template": cfg.retry_prompt_template,
                     "meta_agent": cfg.meta_agent,
+                    "ai_system": cfg.ai_system,
+                    "ai_system": cfg.ai_system,
                 }
                 for label, cfg in self.config.agents.items()
             },
@@ -161,9 +154,6 @@ class OrchestratorProcess:
                 "dangerous": {
                     "allow_unsupported_agents": self.config.dangerous.allow_unsupported_agents,
                 },
-            },
-            "state": {
-                "file": str(self.config.state_file),
             },
         }
         # Add claims config if enabled
@@ -272,13 +262,14 @@ class OrchestratorProcess:
         ui_mode = "web"
 
         config_path = self._write_e2e_config()
+        label_arg = self.config.filtering.label or "test-data"
         cmd = [
             str(venv_bin), "--config", str(config_path), "start",
+            "--label", label_arg,
             "--max-issues", str(max_issues),
             "--ui-mode", ui_mode,
         ]
-        if self.config.filtering.label:
-            cmd.extend(["--label", self.config.filtering.label])
+        print(f"  [E2E] Filtering by label: {label_arg}", flush=True)
 
         # Add web port
         web_port = self.config.web_port
@@ -301,6 +292,7 @@ class OrchestratorProcess:
         env["ORCHESTRATOR_LOG_LEVEL"] = "DEBUG"
         env["ORCHESTRATOR_LOG_FILE"] = str(orchestrator_log_file)
         env["PYTHONUNBUFFERED"] = "1"
+        env["ORCHESTRATOR_LOG_TO_STDERR"] = "1"
         env["PYTHONPATH"] = f"{self.project_root / 'src'}:{env.get('PYTHONPATH', '')}"
         env["ORCHESTRATOR_NO_BROWSER"] = "1"
         if os.environ.get("E2E_CLAUDE_ARGS"):
@@ -308,12 +300,11 @@ class OrchestratorProcess:
         if os.environ.get("E2E_CLAUDE_PROMPT_MODE"):
             env["ORCHESTRATOR_CLAUDE_PROMPT_MODE"] = os.environ["E2E_CLAUDE_PROMPT_MODE"]
         env["ORCHESTRATOR_WORKTREE_PER_SESSION"] = os.environ.get("E2E_WORKTREE_PER_SESSION", "1")
-        # Keep these opt-in only; defaulting them leaks into agent validation and
-        # causes unrelated unit-test failures inside coding/review worktrees.
-        if os.environ.get("E2E_DISABLE_WORKTREE_REUSE"):
-            env["ORCHESTRATOR_DISABLE_WORKTREE_REUSE"] = os.environ["E2E_DISABLE_WORKTREE_REUSE"]
-        if os.environ.get("E2E_SKIP_PUSH_HOOKS"):
-            env["E2E_SKIP_PUSH_HOOKS"] = os.environ["E2E_SKIP_PUSH_HOOKS"]
+        env["ORCHESTRATOR_DISABLE_WORKTREE_REUSE"] = os.environ.get("E2E_DISABLE_WORKTREE_REUSE", "1")
+        # Ensure worktrees are created from main (which has all our test fixes)
+        env["ORCHESTRATOR_WORKTREE_BASE_BRANCH"] = "main"
+        # Skip pre-push hooks in e2e tests - test scripts create trivial changes that don't need validation
+        env["E2E_SKIP_PUSH_HOOKS"] = "1"
         # Explicitly pass dry-run mode for e2e tests when requested
         if os.environ.get("E2E_DRY_RUN_PUSH"):
             env["E2E_DRY_RUN_PUSH"] = os.environ["E2E_DRY_RUN_PUSH"]
