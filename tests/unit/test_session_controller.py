@@ -278,7 +278,10 @@ class TestSessionControllerTimeout:
             completion_path=completion_rel_path,
         )
 
-        run_dir = controller.session_output.find_run_dir(tmp_path, "issue-123")
+        # Diagnostic should be written to the run dir resolved from the
+        # completion_path session name ("coding-1"), not the session_name
+        # ("issue-123").  _resolve_run_dir prefers completion_session_name.
+        run_dir = controller.session_output.find_run_dir(tmp_path, "coding-1")
         assert run_dir is not None
         diagnostic_files = list(run_dir.glob("no-completion-*.json"))
         assert len(diagnostic_files) == 1

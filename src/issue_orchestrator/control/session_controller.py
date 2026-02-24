@@ -267,6 +267,7 @@ class SessionController:
             worktree_path=worktree_path,
             issue_number=issue_number,
             session_name=session_name,
+            run_dir=run_dir,
             completion_path=completion_path,
         )
         session_log = self._get_session_log_tail(run_dir, session_name)
@@ -312,13 +313,15 @@ class SessionController:
         worktree_path: Path,
         issue_number: int,
         session_name: str,
+        run_dir: Path | None,
         completion_path: str | None,
     ) -> None:
         """Persist a durable diagnostic snapshot when completion is missing."""
         try:
             requested_rel_path = completion_path or ".issue-orchestrator/completion.json"
             requested_path = (worktree_path / requested_rel_path).resolve()
-            run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
+            if not run_dir:
+                run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
 
             run_dir_completion_path: str | None = None
             run_dir_completion_exists: bool | None = None
