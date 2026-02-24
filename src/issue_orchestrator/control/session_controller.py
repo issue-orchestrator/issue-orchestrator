@@ -158,7 +158,10 @@ class SessionController:
             logger.debug(issue_log(issue_number, "Session still running: session=%s"), session_name)
             return SessionDecision(status=SessionStatus.RUNNING, reason="Session still running")
 
-        provider_status = self._read_provider_status(worktree_path, session_name)
+        completion_session_name = self.session_output.session_name_from_path(completion_path)
+        validation_session_name = completion_session_name or session_name
+        run_dir = self._resolve_run_dir(worktree_path, session_name, completion_session_name)
+        provider_status = self._read_provider_status(run_dir)
         if provider_status and provider_status.succeeded and self._provider_resilience:
             self._provider_resilience.record_success(provider_status.provider)
 
@@ -172,6 +175,7 @@ class SessionController:
                 worktree_path,
                 issue_number,
                 session_name,
+                run_dir,
                 completion_path,
             )
 
@@ -188,7 +192,7 @@ class SessionController:
             pr_number=pr_number,
             completion_path=completion_path,
         )
-        self._emit_processing_completed_event(worktree_path, issue_number, session_name, result)
+        self._emit_processing_completed_event(worktree_path, issue_number, session_name, run_dir, result)
 
         # Map outcome to status
         status = self._map_outcome_to_status(record)
@@ -198,15 +202,17 @@ class SessionController:
         validation_passed, validation_error, validation_error_file = None, None, None
         if status == SessionStatus.COMPLETED and self._validation_cmd and self._command_runner:
             status, validation_passed, validation_error, validation_error_file = self._run_validation_gate(
-                worktree_path, session_name, issue_number, issue_title, record.outcome, validation_retry_count,
-                original_prompt, retry_prompt_template, repo_root,
+                worktree_path, validation_session_name, run_dir, issue_number, issue_title, record.outcome,
+                validation_retry_count, original_prompt, retry_prompt_template, repo_root,
             )
 
         # Enrich manifest with CompletionRecord detail
-        self._enrich_manifest_from_completion(worktree_path, session_name, record)
+        self._enrich_manifest_from_completion(run_dir, record)
 
         # Build completion detail for trace event enrichment
         completion_detail = self._build_completion_detail(record)
+        if result.completion_record_path:
+            completion_detail["completion_path_absolute"] = result.completion_record_path
 
         # Log completion summary
         self._log_session_completion(issue_number, session_name, status, record, result, recovered)
@@ -252,6 +258,7 @@ class SessionController:
         worktree_path: Path,
         issue_number: int,
         session_name: str,
+        run_dir: Path | None,
         completion_path: str | None,
     ) -> SessionDecision:
         """Handle case where no completion record exists."""
@@ -262,14 +269,17 @@ class SessionController:
             session_name=session_name,
             completion_path=completion_path,
         )
-        session_log = self._get_session_log_tail(worktree_path, session_name)
-        provider_status = self._read_provider_status(worktree_path, session_name)
+        session_log = self._get_session_log_tail(run_dir, session_name)
+        provider_status = self._read_provider_status(run_dir)
 
-        self._emit_event(EventName.SESSION_NO_COMPLETION_RECORD, {
+        payload = {
             "issue_number": issue_number, "session_name": session_name,
             "observation": observation.observation.value,
             "last_output": session_log[-500:] if session_log else "",
-        })
+        }
+        if run_dir:
+            payload["run_dir"] = str(run_dir)
+        self._emit_event(EventName.SESSION_NO_COMPLETION_RECORD, payload)
 
         if provider_status and provider_status.error_type == ProviderErrorType.TRANSIENT and not provider_status.succeeded:
             if self._provider_resilience:
@@ -365,15 +375,16 @@ class SessionController:
                 exc,
             )
 
-    def _read_provider_status(self, worktree_path: Path, session_name: str) -> ProviderStatus | None:
-        run_dir = self.session_output.find_run_dir(worktree_path, session_name)
+    def _read_provider_status(self, run_dir: Path | None) -> ProviderStatus | None:
         if not run_dir:
             return None
         return read_provider_status(run_dir)
 
-    def _get_session_log_tail(self, worktree_path: Path, session_name: str) -> str:
+    def _get_session_log_tail(self, run_dir: Path | None, session_name: str) -> str:
         """Get last 50 lines of session log for diagnostics."""
-        log_path = self.session_output.get_log_path(worktree_path, session_name)
+        if not run_dir:
+            return ""
+        log_path = self.session_output.get_log_path_for_run_dir(run_dir)
         if not (log_path and log_path.exists()):
             return ""
         try:
@@ -408,6 +419,7 @@ class SessionController:
         worktree_path: Path,
         issue_number: int,
         session_name: str,
+        run_dir: Path | None,
         result: "ProcessingResult",
     ) -> None:
         """Emit session processing completed event."""
@@ -420,9 +432,6 @@ class SessionController:
             "errors": result.errors,
             "pr_url": result.pr_url,
         }
-        run_dir = self.session_output.find_run_dir(worktree_path, session_name)
-        if not run_dir:
-            run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
         if run_dir:
             payload["run_dir"] = str(run_dir)
         self._emit_event(EventName.SESSION_PROCESSING_COMPLETED, payload)
@@ -443,6 +452,7 @@ class SessionController:
         self,
         worktree_path: Path,
         session_name: str,
+        run_dir: Path,
         issue_number: int,
         issue_title: str,
         outcome: CompletionOutcome,
@@ -453,8 +463,7 @@ class SessionController:
     ) -> tuple[SessionStatus, Optional[bool], Optional[str], Optional[Path]]:
         """Run validation gate and return updated status."""
         logger.info(issue_log(issue_number, "Running validation gate: cmd=%s timeout=%ds"), self._validation_cmd, self._validation_timeout)
-        validation_passed, validation_error, validation_error_file = self._run_validation(worktree_path, session_name, issue_number)
-        run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
+        validation_passed, validation_error, validation_error_file = self._run_validation(worktree_path, session_name, issue_number, run_dir)
 
         if validation_passed:
             logger.info(issue_log(issue_number, "Validation gate PASSED"))
@@ -582,25 +591,42 @@ class SessionController:
         })
         return SessionStatus.VALIDATION_FAILED
 
-    def _enrich_manifest_from_completion(
+    def _resolve_run_dir(
         self,
         worktree_path: Path,
         session_name: str,
-        record: "CompletionRecord",
-    ) -> None:
-        """Write CompletionRecord detail into the run manifest.
-
-        This is the completion-time enrichment that makes the manifest
-        the session's complete story.  Best-effort — failures are logged
-        but never block completion processing.
-        """
-        from ..domain.run_manifest import RunManifest
+        completion_session_name: str | None,
+    ) -> Path:
+        """Pick the most relevant run directory for the session being processed."""
+        if completion_session_name:
+            run_dir = self.session_output.find_run_dir(worktree_path, completion_session_name)
+            if run_dir:
+                return run_dir
 
         run_dir = self.session_output.find_run_dir(worktree_path, session_name)
+        if run_dir:
+            return run_dir
+
+        fallback_name = completion_session_name or session_name
+        run_dir = self.session_output.ensure_run_dir(worktree_path, fallback_name)
+        logger.warning(
+            "Run dir missing for session=%s; created fallback run dir at %s",
+            fallback_name,
+            run_dir,
+        )
+        return run_dir
+
+    def _enrich_manifest_from_completion(
+        self,
+        run_dir: Path | None,
+        record: "CompletionRecord",
+    ) -> None:
+        """Write CompletionRecord detail into the run manifest."""
+        from ..domain.run_manifest import RunManifest
+
         if not run_dir:
             logger.debug(
-                "[MANIFEST] No run dir for %s — skipping enrichment",
-                session_name,
+                "[MANIFEST] No run dir — skipping enrichment",
             )
             return
 
@@ -611,7 +637,7 @@ class SessionController:
         except Exception as exc:
             logger.warning(
                 "[MANIFEST] Failed to enrich manifest for %s: %s",
-                session_name,
+                run_dir.name.split("__", 1)[-1] if "__" in run_dir.name else run_dir.name,
                 exc,
             )
 
@@ -656,6 +682,7 @@ class SessionController:
         worktree_path: Path,
         session_name: str,
         issue_number: int,
+        run_dir: Path | None = None,
     ) -> tuple[bool, Optional[str], Optional[Path]]:
         """Run validation command (with SHA-based caching) and return result.
 
@@ -676,7 +703,7 @@ class SessionController:
             return True, None, None
 
         # Get session output directory for validation artifacts
-        run_dir = self.session_output.ensure_run_dir(worktree_path, session_name)
+        target_run_dir = run_dir or self.session_output.ensure_run_dir(worktree_path, session_name)
 
         # Use PublishGate for SHA-based caching
         gate = PublishGate(
@@ -698,7 +725,7 @@ class SessionController:
             sha_display,
         )
 
-        result = gate.check(session_output_dir=run_dir)
+        result = gate.check(session_output_dir=target_run_dir)
 
         if result.allowed:
             if result.cache_hit:
