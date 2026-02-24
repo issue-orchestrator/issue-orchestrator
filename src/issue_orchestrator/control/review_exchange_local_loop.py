@@ -137,9 +137,15 @@ class _PtySession:
     completion_path: Path  # absolute path to completion file
 
     def send_follow_up(self, prompt_file: Path) -> None:
-        """Send a follow-up prompt by referencing a file."""
+        """Send a follow-up prompt by referencing a file.
+
+        We use ``send(msg + '\\r')`` instead of ``sendline(msg)`` because
+        Claude Code runs in raw terminal mode.  In raw mode ``\\n`` (what
+        ``sendline`` appends) inserts a newline *inside* the text area
+        whereas ``\\r`` (carriage return = Enter key) submits the message.
+        """
         msg = f"Read and follow your next instructions in {prompt_file}"
-        self.child.sendline(msg)
+        self.child.send(msg + "\r")
 
     @property
     def alive(self) -> bool:
@@ -151,7 +157,7 @@ class _PtySession:
             self._close_log()
             return
         try:
-            self.child.sendline("/exit")
+            self.child.send("/exit\r")
             self.child.expect(pexpect.EOF, timeout=timeout)
         except (pexpect.TIMEOUT, pexpect.ExceptionPexpect):
             try:
