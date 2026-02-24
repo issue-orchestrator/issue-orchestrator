@@ -161,9 +161,16 @@ class TestGetSessionId:
 
     def test_get_session_id_from_env(self):
         """Test getting session ID from environment variable."""
-        with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "test-session-123"}):
-            session_id = get_session_id()
-            assert session_id == "test-session-123"
+        # Must also clear the prefixed var so the legacy fallback is tested correctly
+        prefixed = f"{ENV_PREFIX}SESSION_ID"
+        saved_prefixed = os.environ.pop(prefixed, None)
+        try:
+            with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "test-session-123"}):
+                session_id = get_session_id()
+                assert session_id == "test-session-123"
+        finally:
+            if saved_prefixed is not None:
+                os.environ[prefixed] = saved_prefixed
 
     def test_get_session_id_standalone_fallback(self):
         """Test standalone session ID when env var not set."""
@@ -764,6 +771,9 @@ class TestMain:
 
         original_cwd = Path.cwd()
         original_completion_path = os.environ.pop(f"{ENV_PREFIX}COMPLETION_PATH", None)
+        # Clear CONFIG_PATH and CONFIG_NAME so validation doesn't pick up the real orchestrator config
+        original_config_path = os.environ.pop(f"{ENV_PREFIX}CONFIG_PATH", None)
+        original_config_name = os.environ.pop(f"{ENV_PREFIX}CONFIG_NAME", None)
         try:
             os.chdir(tmp_path)
 
@@ -788,6 +798,10 @@ class TestMain:
             os.chdir(original_cwd)
             if original_completion_path is not None:
                 os.environ[f"{ENV_PREFIX}COMPLETION_PATH"] = original_completion_path
+            if original_config_path is not None:
+                os.environ[f"{ENV_PREFIX}CONFIG_PATH"] = original_config_path
+            if original_config_name is not None:
+                os.environ[f"{ENV_PREFIX}CONFIG_NAME"] = original_config_name
 
     def test_main_writes_marker_file(self, tmp_path):
         """Test that main writes marker file."""
@@ -960,6 +974,9 @@ validation:
         session_output_dir.mkdir(parents=True)
 
         original_cwd = Path.cwd()
+        # Clear CONFIG_PATH and CONFIG_NAME so validation uses the test config, not the real orchestrator config
+        original_config_path = os.environ.pop(f"{ENV_PREFIX}CONFIG_PATH", None)
+        original_config_name = os.environ.pop(f"{ENV_PREFIX}CONFIG_NAME", None)
         try:
             os.chdir(tmp_path)
 
@@ -976,6 +993,10 @@ validation:
             assert "Validation passed" in captured.out
         finally:
             os.chdir(original_cwd)
+            if original_config_path is not None:
+                os.environ[f"{ENV_PREFIX}CONFIG_PATH"] = original_config_path
+            if original_config_name is not None:
+                os.environ[f"{ENV_PREFIX}CONFIG_NAME"] = original_config_name
 
     def test_validation_failure_exits_with_error(self, tmp_path, capsys):
         """Test that validation failure exits with error and writes diagnostics."""
@@ -1076,6 +1097,9 @@ validation:
         session_output_dir.mkdir(parents=True)
 
         original_cwd = Path.cwd()
+        # Clear CONFIG_PATH and CONFIG_NAME so validation uses the test config, not the real orchestrator config
+        original_config_path = os.environ.pop(f"{ENV_PREFIX}CONFIG_PATH", None)
+        original_config_name = os.environ.pop(f"{ENV_PREFIX}CONFIG_NAME", None)
         try:
             os.chdir(tmp_path)
 
@@ -1101,6 +1125,10 @@ validation:
             assert 'agent-done blocked --reason "Validation failing:' in captured.out
         finally:
             os.chdir(original_cwd)
+            if original_config_path is not None:
+                os.environ[f"{ENV_PREFIX}CONFIG_PATH"] = original_config_path
+            if original_config_name is not None:
+                os.environ[f"{ENV_PREFIX}CONFIG_NAME"] = original_config_name
 
     def test_validation_uses_selected_config_name_env(self, tmp_path, capsys):
         """agent-done should honor ISSUE_ORCHESTRATOR_CONFIG_NAME (e.g., main.yaml)."""
@@ -1195,6 +1223,9 @@ validation:
         )
 
         original_cwd = Path.cwd()
+        # Clear CONFIG_PATH so CONFIG_NAME env var is used to select config, not the real path
+        original_config_path = os.environ.pop(f"{ENV_PREFIX}CONFIG_PATH", None)
+        # patch.dict below sets CONFIG_NAME to "main.yaml", overriding any real value
         try:
             os.chdir(tmp_path)
 
@@ -1218,6 +1249,8 @@ validation:
             assert "Configured file 'main.yaml' not found under" in captured.err
         finally:
             os.chdir(original_cwd)
+            if original_config_path is not None:
+                os.environ[f"{ENV_PREFIX}CONFIG_PATH"] = original_config_path
 
     def test_blocked_status_skips_validation(self, tmp_path, capsys):
         """Test that blocked status skips validation entirely.

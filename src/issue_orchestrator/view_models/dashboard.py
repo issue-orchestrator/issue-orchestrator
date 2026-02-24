@@ -24,6 +24,46 @@ _E2E_STATUS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _E2E_STATUS_CACHE_LOCK = threading.Lock()
 
 
+def _get_provider_circuit_breaker_status(config: Any) -> dict[str, Any]:
+    """Read provider circuit breaker status from the SQLite store.
+
+    Returns a dict with keys:
+      - enabled: True if the circuit breaker store is accessible
+      - any_open: True if any provider circuit is currently tripped
+      - providers: list of per-provider status dicts
+    """
+    if not config or not getattr(config, "repo_root", None):
+        return {"enabled": False, "any_open": False, "providers": []}
+    try:
+        from ..execution.provider_circuit_store import SQLiteProviderCircuitStore
+        from ..infra.repo_identity import state_dir
+
+        db_path = state_dir(config.repo_root) / "provider_circuit.sqlite"
+        if not db_path.exists():
+            return {"enabled": True, "any_open": False, "providers": []}
+
+        store = SQLiteProviderCircuitStore(db_path)
+        now = datetime.now(timezone.utc)
+        states = store.list_all()
+        providers = []
+        any_open = False
+        for state in states:
+            is_open = state.open_until is not None and state.open_until > now
+            if is_open:
+                any_open = True
+            providers.append({
+                "provider": state.provider,
+                "is_open": is_open,
+                "open_until": state.open_until.isoformat() if state.open_until else None,
+                "consecutive_outages": state.consecutive_outages,
+                "last_error_summary": state.last_error_summary,
+                "updated_at": state.updated_at.isoformat() if state.updated_at else None,
+            })
+        return {"enabled": True, "any_open": any_open, "providers": providers}
+    except Exception:
+        return {"enabled": False, "any_open": False, "providers": []}
+
+
 def _e2e_status_cache_key(config: Any) -> str:
     return f"{str(config.repo_root)}::{config.orchestrator_id}"
 
@@ -80,6 +120,8 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+
+    provider_circuit_breaker: dict[str, Any]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -139,6 +181,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuitBreaker": self.provider_circuit_breaker,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -178,6 +221,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_breaker": self.provider_circuit_breaker,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -1252,6 +1296,7 @@ def build_dashboard_view_model(
     active_tab: str = "kanban",
     e2e_page: int = 1,
     e2e_status_provider: Callable[[Any], dict[str, Any]] | None = None,
+    provider_circuit_breaker_provider: Callable[[Any], dict[str, Any]] | None = None,
 ) -> DashboardViewModel:
     """Build dashboard view model for templates and APIs."""
     active_tab = _normalize_tab(active_tab)
@@ -1429,6 +1474,9 @@ def build_dashboard_view_model(
             "refresh": refresh_status,
         }
 
+    provider_circuit_breaker_fn = provider_circuit_breaker_provider or _get_provider_circuit_breaker_status
+    provider_circuit_breaker = provider_circuit_breaker_fn(config)
+
     return DashboardViewModel(
         issues=issues,
         active_items=active_items,
@@ -1466,4 +1514,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuit_breaker=provider_circuit_breaker,
     )

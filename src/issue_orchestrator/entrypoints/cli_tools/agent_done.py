@@ -862,28 +862,10 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
     if validation_result and validation_result.record_path:
         record.validation_record_path = validation_result.record_path
 
-    # Run preflight push check for statuses that will push
-    # This catches issues like branch divergence while the agent can still fix them
-    statuses_that_push = {AgentStatus.COMPLETED, AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}
-    if status in statuses_that_push:
-        would_succeed, error, fix_hint = run_preflight_push_check(worktree_root, verbose=args.verbose)
-        if not would_succeed:
-            print(f"\n{'='*60}")
-            print("❌ PUSH WOULD FAIL - agent-done cannot complete")
-            print(f"{'='*60}")
-            print(f"\nError: {error}")
-            if fix_hint:
-                print(f"\nTo fix: {fix_hint}")
-            print(f"\n{'='*60}")
-            print("Fix the issue above, then run agent-done again.")
-            print(f"{'='*60}")
-
-            if issue_number:
-                logger.info(issue_log(issue_number, "agent-done outcome: status=%s push_preflight=FAILED"), status)
-            else:
-                logger.info("[agent-done] Outcome (standalone): status=%s push_preflight=FAILED", status)
-
-            sys.exit(1)
+    # No preflight push check - the orchestrator handles pushing (with
+    # --no-verify via E2E_SKIP_PUSH_HOOKS) and has its own error handling.
+    # A dry-run push here would trigger the pre-push hook, which runs
+    # validation, causing duplicate/conflicting validation runs.
 
     # Write marker file first (indicates agent-done was called)
     write_marker_file(status)

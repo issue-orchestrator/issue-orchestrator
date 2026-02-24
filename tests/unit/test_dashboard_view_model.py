@@ -681,3 +681,84 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_provider_circuit_breaker_status_surfaced_in_dashboard_data():
+    """Provider circuit breaker status is included in dashboard_data."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    circuit_status = {
+        "enabled": True,
+        "any_open": True,
+        "providers": [
+            {
+                "provider": "claude",
+                "is_open": True,
+                "open_until": "2026-02-24T21:00:00+00:00",
+                "consecutive_outages": 3,
+                "last_error_summary": "Rate limit exceeded",
+                "updated_at": "2026-02-24T20:00:00+00:00",
+            }
+        ],
+    }
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        provider_circuit_breaker_provider=lambda _: circuit_status,
+    )
+
+    assert view_model.provider_circuit_breaker == circuit_status
+    dashboard_data = view_model.dashboard_data()
+    assert dashboard_data["providerCircuitBreaker"]["any_open"] is True
+    assert dashboard_data["providerCircuitBreaker"]["enabled"] is True
+    assert len(dashboard_data["providerCircuitBreaker"]["providers"]) == 1
+    assert dashboard_data["providerCircuitBreaker"]["providers"][0]["provider"] == "claude"
+
+
+def test_provider_circuit_breaker_defaults_when_no_provider():
+    """Provider circuit breaker defaults to disabled when no provider given."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        provider_circuit_breaker_provider=lambda _: {"enabled": False, "any_open": False, "providers": []},
+    )
+
+    cb = view_model.provider_circuit_breaker
+    assert cb["enabled"] is False
+    assert cb["any_open"] is False
+    assert cb["providers"] == []
+    # Also surfaced in dashboard_data
+    assert "providerCircuitBreaker" in view_model.dashboard_data()
+
+
+def test_provider_circuit_breaker_included_in_to_dict():
+    """provider_circuit_breaker is included in to_dict() for API serialization."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        provider_circuit_breaker_provider=lambda _: {"enabled": True, "any_open": False, "providers": []},
+    )
+
+    data = view_model.to_dict()
+    assert "provider_circuit_breaker" in data
+    assert data["provider_circuit_breaker"]["enabled"] is True
