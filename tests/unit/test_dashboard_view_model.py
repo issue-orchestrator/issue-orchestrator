@@ -681,3 +681,23 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_provider_circuit_status_surfaced_in_dashboard_data():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Stub has no deps, so circuit status should be an empty list
+    assert view_model.provider_circuit_status == []
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuitStatus" in dashboard_data
+    assert dashboard_data["providerCircuitStatus"] == []

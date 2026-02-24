@@ -160,8 +160,10 @@ class TestGetSessionId:
     """Test the get_session_id function."""
 
     def test_get_session_id_from_env(self):
-        """Test getting session ID from environment variable."""
-        with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "test-session-123"}):
+        """Test getting session ID from legacy ORCHESTRATOR_SESSION_ID."""
+        prefixed = f"{ENV_PREFIX}SESSION_ID"
+        with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "test-session-123"}, clear=True):
+            os.environ.pop(prefixed, None)
             session_id = get_session_id()
             assert session_id == "test-session-123"
 
@@ -773,7 +775,8 @@ class TestMain:
                 '--problems', 'None',
             ]):
                 with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                    main()
+                    with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.load_validation_cmd', return_value=(None, 0)):
+                        main()
 
             # Check file was written
             record_path = tmp_path / COMPLETION_RECORD_PATH
@@ -930,6 +933,23 @@ class TestCompletionRecordSerialization:
 
 class TestAgentGateIntegration:
     """Test agent gate validation integration in the main function."""
+
+    @pytest.fixture(autouse=True)
+    def isolate_config_env(self):
+        """Clear orchestrator config env vars so tests use their own local configs."""
+        saved = {}
+        keys_to_clear = [
+            f"{ENV_PREFIX}CONFIG_PATH",
+            f"{ENV_PREFIX}CONFIG_NAME",
+            "ORCHESTRATOR_CONFIG_PATH",
+            "ORCHESTRATOR_CONFIG_NAME",
+        ]
+        for key in keys_to_clear:
+            saved[key] = os.environ.pop(key, None)
+        yield
+        for key, val in saved.items():
+            if val is not None:
+                os.environ[key] = val
 
     def test_agent_gate_runs_when_configured(self, tmp_path, capsys):
         """Test that agent gate validation runs when configured."""
