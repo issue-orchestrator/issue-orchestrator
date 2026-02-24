@@ -162,6 +162,8 @@ class TestGetSessionId:
     def test_get_session_id_from_env(self):
         """Test getting session ID from environment variable."""
         with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "test-session-123"}):
+            # Clear the prefixed version to ensure the legacy var is tested
+            os.environ.pop(f"{ENV_PREFIX}SESSION_ID", None)
             session_id = get_session_id()
             assert session_id == "test-session-123"
 
@@ -773,6 +775,9 @@ class TestMain:
                 '--problems', 'None',
             ]):
                 with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                    # Clear orchestrator config env vars to avoid loading real validation config
+                    os.environ.pop(f"{ENV_PREFIX}CONFIG_PATH", None)
+                    os.environ.pop(f"{ENV_PREFIX}CONFIG_NAME", None)
                     main()
 
             # Check file was written
@@ -970,6 +975,9 @@ validation:
                 '--verbose'
             ]):
                 with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                    # Clear orchestrator config env vars to use local config
+                    os.environ.pop(f"{ENV_PREFIX}CONFIG_PATH", None)
+                    os.environ.pop(f"{ENV_PREFIX}CONFIG_NAME", None)
                     main()
 
             captured = capsys.readouterr()
@@ -1085,6 +1093,9 @@ validation:
                 '--problems', 'None',
             ]):
                 with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                    # Clear orchestrator config env vars to use local config
+                    os.environ.pop(f"{ENV_PREFIX}CONFIG_PATH", None)
+                    os.environ.pop(f"{ENV_PREFIX}CONFIG_NAME", None)
                     with pytest.raises(SystemExit) as exc_info:
                         main()
                     assert exc_info.value.code == 1
@@ -1199,6 +1210,8 @@ validation:
             os.chdir(tmp_path)
 
             with patch.dict(os.environ, {f"{ENV_PREFIX}CONFIG_NAME": "main.yaml"}, clear=False):
+                # Clear CONFIG_PATH so it doesn't override local config lookup
+                os.environ.pop(f"{ENV_PREFIX}CONFIG_PATH", None)
                 with patch(
                     "sys.argv",
                     [

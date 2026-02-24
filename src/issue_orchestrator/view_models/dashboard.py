@@ -81,6 +81,8 @@ class DashboardViewModel:
     agents: dict[str, Any]
     agent_names: list[str]
 
+    provider_circuit_status: dict[str, Any]
+
     def template_context(self) -> dict[str, Any]:
         return {
             "issues": self.issues,
@@ -118,6 +120,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_status": self.provider_circuit_status,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -139,6 +142,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuitStatus": self.provider_circuit_status,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -178,6 +182,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_status": self.provider_circuit_status,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -1233,6 +1238,45 @@ def _build_e2e_view_model(
     }
 
 
+def _build_circuit_breaker_status(states: list) -> dict[str, Any]:
+    """Build circuit breaker status dict from a list of ProviderCircuitState objects."""
+    now = datetime.now(timezone.utc)
+    providers = []
+    for state in states:
+        open_until = getattr(state, "open_until", None)
+        is_open = open_until is not None and open_until > now
+        cooldown_remaining: int | None = None
+        if is_open and open_until:
+            cooldown_remaining = max(0, int((open_until - now).total_seconds()))
+        providers.append({
+            "provider": state.provider,
+            "is_open": is_open,
+            "open_until": open_until.isoformat() if open_until else None,
+            "consecutive_outages": state.consecutive_outages,
+            "last_error_summary": state.last_error_summary,
+            "cooldown_remaining_seconds": cooldown_remaining,
+        })
+    open_count = sum(1 for p in providers if p["is_open"])
+    return {
+        "open_count": open_count,
+        "providers": providers,
+    }
+
+
+def _get_circuit_breaker_states(orchestrator: Any) -> list:
+    """Read circuit breaker states from the orchestrator's provider_resilience store."""
+    try:
+        deps = getattr(orchestrator, "deps", None)
+        if deps is None:
+            return []
+        pr = getattr(deps, "provider_resilience", None)
+        if pr is None:
+            return []
+        return pr.store.list_all()
+    except Exception:
+        return []
+
+
 def _normalize_tab(active_tab: str) -> str:
     # Map legacy tab names to new kanban-based tabs
     if active_tab in {"work", "active", "queue", "flow"}:
@@ -1252,6 +1296,7 @@ def build_dashboard_view_model(
     active_tab: str = "kanban",
     e2e_page: int = 1,
     e2e_status_provider: Callable[[Any], dict[str, Any]] | None = None,
+    circuit_breaker_states_provider: Callable[[Any], list] | None = None,
 ) -> DashboardViewModel:
     """Build dashboard view model for templates and APIs."""
     active_tab = _normalize_tab(active_tab)
@@ -1337,6 +1382,9 @@ def build_dashboard_view_model(
 
     e2e_status_provider = e2e_status_provider or _get_e2e_status
     e2e_status = e2e_status_provider(config)
+
+    circuit_states_provider = circuit_breaker_states_provider or _get_circuit_breaker_states
+    provider_circuit_status = _build_circuit_breaker_status(circuit_states_provider(orchestrator))
 
     e2e_items = _build_e2e_items(config, e2e_status)
     e2e_total = len(e2e_items)
@@ -1466,4 +1514,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuit_status=provider_circuit_status,
     )

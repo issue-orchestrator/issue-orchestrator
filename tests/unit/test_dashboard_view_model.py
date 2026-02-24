@@ -681,3 +681,76 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_circuit_breaker_status_empty_when_no_circuits():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        circuit_breaker_states_provider=lambda _: [],
+    )
+
+    circuit_status = view_model.provider_circuit_status
+    assert circuit_status["open_count"] == 0
+    assert circuit_status["providers"] == []
+
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuitStatus" in dashboard_data
+    assert dashboard_data["providerCircuitStatus"]["open_count"] == 0
+
+
+def test_view_model_circuit_breaker_status_surfaces_open_circuit():
+    from dataclasses import dataclass as _dataclass
+    from datetime import timezone
+
+    @_dataclass(frozen=True)
+    class _FakeCircuitState:
+        provider: str
+        open_until: datetime | None
+        consecutive_outages: int
+        last_error_summary: str | None
+        updated_at: datetime
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    future = datetime.now(timezone.utc) + timedelta(minutes=30)
+    open_state = _FakeCircuitState(
+        provider="claude-opus",
+        open_until=future,
+        consecutive_outages=3,
+        last_error_summary="rate limit exceeded",
+        updated_at=datetime.now(timezone.utc),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        circuit_breaker_states_provider=lambda _: [open_state],
+    )
+
+    circuit_status = view_model.provider_circuit_status
+    assert circuit_status["open_count"] == 1
+    assert len(circuit_status["providers"]) == 1
+
+    provider = circuit_status["providers"][0]
+    assert provider["provider"] == "claude-opus"
+    assert provider["is_open"] is True
+    assert provider["consecutive_outages"] == 3
+    assert provider["last_error_summary"] == "rate limit exceeded"
+    assert provider["cooldown_remaining_seconds"] is not None
+    assert provider["cooldown_remaining_seconds"] > 0
+
+    dashboard_data = view_model.dashboard_data()
+    assert dashboard_data["providerCircuitStatus"]["open_count"] == 1
