@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shlex
+import subprocess
 import time
 from pathlib import Path
 
@@ -60,12 +61,24 @@ def _ensure_worktree_venv(worktree: Path) -> None:
         target.symlink_to(venv_path)
 
 
+def _init_git_repo_with_origin(worktree: Path, remote_repo: Path) -> None:
+    """Initialize a real git repo with a local bare origin remote."""
+    subprocess.run(["git", "init", "--bare", str(remote_repo)], capture_output=True, check=True)
+    subprocess.run(["git", "init"], cwd=worktree, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=worktree, capture_output=True, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=worktree, capture_output=True, check=True)
+    (worktree / "README.md").write_text("# Test\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=worktree, capture_output=True, check=True)
+    subprocess.run(["git", "commit", "-m", "init"], cwd=worktree, capture_output=True, check=True)
+    subprocess.run(["git", "remote", "add", "origin", str(remote_repo)], cwd=worktree, capture_output=True, check=True)
+
+
 def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
     repo_root = tmp_path / "repo"
     worktree = repo_root / "wt"
     worktree.mkdir(parents=True)
-    (worktree / ".git").mkdir()
     (worktree / ".issue-orchestrator").mkdir()
+    _init_git_repo_with_origin(worktree, tmp_path / "origin.git")
     _ensure_worktree_venv(worktree)
 
     monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
@@ -88,7 +101,7 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
 
     _wait_for_exit(plugin, "issue-42")
 
-    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-42" / "session.log"
+    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-42" / "ui-session.log"
     assert log_path.exists()
     assert "hello-from-subprocess" in log_path.read_text(errors="ignore")
 
@@ -131,5 +144,5 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
     # Wait for the expected output instead of polling session_exists.
     # This avoids a race condition in pexpect where the watcher thread and
     # isalive() can both call waitpid() on the same process.
-    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-7" / "session.log"
+    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-7" / "ui-session.log"
     _wait_for_content(log_path, "INPUT:ping")

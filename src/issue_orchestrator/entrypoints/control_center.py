@@ -15,21 +15,54 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
 import sys
 import threading
 import time
 import webbrowser
+from pathlib import Path
 from typing import Any
 
 import uvicorn
 
 from .control_api import control_app
+from ..execution.process_control import ManagedProcess, list_processes_matching, spawn_tray_helper
 from ..observation.instance_detector import write_dashboard_pid, clear_dashboard_pid
 
 logger = logging.getLogger(__name__)
 
 # Flag to signal reaper thread to stop
 _reaper_stop = threading.Event()
+
+
+class _TrayProcessHandle:
+    """Handle for tray helper subprocess lifecycle."""
+
+    def __init__(self, process: ManagedProcess) -> None:
+        self._process = process
+
+    def stop(self) -> None:
+        """Stop tray helper process with terminate then kill fallback."""
+        if self._process.poll() is not None:
+            return
+        self._process.stop(graceful_timeout_seconds=2)
+
+
+def _cleanup_stale_tray_helpers(dashboard_url: str) -> None:
+    """Terminate stale tray helpers targeting the same dashboard URL."""
+    current_pid = os.getpid()
+    for pid, cmd in list_processes_matching("issue_orchestrator.entrypoints.tray"):
+        if pid == current_pid:
+            continue
+        if f"--dashboard-url {dashboard_url}" not in cmd:
+            continue
+        try:
+            os.kill(pid, signal.SIGTERM)
+            logger.info("Terminated stale tray helper pid=%d", pid)
+        except ProcessLookupError:
+            continue
+        except Exception:
+            logger.debug("Failed to terminate stale tray helper pid=%d", pid, exc_info=True)
 
 
 def _zombie_reaper(interval: float = 1.0) -> None:
@@ -76,6 +109,15 @@ def _open_browser(url: str, delay: float = 1.0) -> None:
 def _start_tray_icon(url: str) -> Any | None:
     """Start the system tray icon, returning the icon or None on failure."""
     try:
+        if sys.platform == "darwin":
+            _cleanup_stale_tray_helpers(url)
+            process = spawn_tray_helper(dashboard_url=url, owner_pid=os.getpid())
+            time.sleep(0.15)
+            if process.poll() is not None:
+                raise RuntimeError(f"tray helper exited immediately with code {process.returncode}")
+            logger.debug("Started tray helper process pid=%d", process.pid)
+            return _TrayProcessHandle(process)
+
         from .tray import start_tray
         from .control_api import _build_repos_status
 
@@ -91,8 +133,12 @@ def _start_tray_icon(url: str) -> Any | None:
         icon = start_tray(dashboard_url=url, engine_status_fn=_get_engine_status)
         logger.debug("System tray icon started")
         return icon
-    except Exception:
-        logger.debug("System tray icon unavailable (headless or missing deps)")
+    except Exception as exc:
+        logger.warning(
+            "System tray icon unavailable: %s",
+            exc,
+            exc_info=True,
+        )
         return None
 
 
@@ -125,6 +171,11 @@ def main() -> int:
         help="Enable debug logging",
     )
     parser.add_argument(
+        "--debug-http",
+        action="store_true",
+        help="Enable HTTP access logs",
+    )
+    parser.add_argument(
         "--no-browser",
         action="store_true",
         help="Don't open browser automatically",
@@ -136,6 +187,9 @@ def main() -> int:
     )
 
     args = parser.parse_args()
+
+    # Default engine target repo to where Control Center was launched from.
+    os.environ.setdefault("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", str(Path.cwd().resolve()))
 
     # Configure logging
     log_level = logging.DEBUG if args.debug else logging.INFO
@@ -180,6 +234,7 @@ def main() -> int:
             host=args.host,
             port=args.port,
             log_level="info" if not args.debug else "debug",
+            access_log=args.debug_http,
         )
         return 0
     except KeyboardInterrupt:

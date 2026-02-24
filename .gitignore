@@ -61,7 +61,11 @@ Thumbs.db
 .issue-orchestrator/sessions/
 .issue-orchestrator/diagnostics/
 .issue-orchestrator/safety-state.json
+.issue-orchestrator/ai-gate-state.json
+.issue-orchestrator/backups/
+.issue-orchestrator/timeline.sqlite
 .agent-done-marker
+/TODO.md
 
 # Keep .issue-orchestrator/config/ tracked - it's project configuration
 .validate/

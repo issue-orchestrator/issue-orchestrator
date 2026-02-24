@@ -220,9 +220,9 @@ class LeaseRenewer:
         """Emit lease renewed event."""
         try:
             from ..events.catalog import EventName
-            from ..ports.event_sink import TraceEvent
+            from ..ports.event_sink import make_trace_event
 
-            self._events.publish(TraceEvent(
+            self._events.publish(make_trace_event(
                 EventName.CLAIM_RENEWED,
                 {
                     "issue_number": session.issue.number,
@@ -237,9 +237,9 @@ class LeaseRenewer:
         """Emit claim lost event."""
         try:
             from ..events.catalog import EventName
-            from ..ports.event_sink import TraceEvent
+            from ..ports.event_sink import make_trace_event
 
-            self._events.publish(TraceEvent(
+            self._events.publish(make_trace_event(
                 EventName.CLAIM_LOST,
                 {
                     "issue_number": session.issue.number,

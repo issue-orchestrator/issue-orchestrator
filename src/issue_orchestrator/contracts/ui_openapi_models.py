@@ -120,15 +120,15 @@ class IssueDetailPayload(BaseModel):
     events: list[dict[str, Any]]
     issue_number: int
     issue_url: str
-    journey_cycles: list[dict[str, Any]]
-    journey_steps: list[dict[str, Any]]
-    lifecycle_count: int
     phase_toc: list[dict[str, Any]]
-    previous_cycles: list[dict[str, Any]]
-    previous_cycles_count: int
+    previous_runs: list[dict[str, Any]]
+    previous_runs_count: int
     raw_events_count: int
+    run_count: int
+    runs: list[dict[str, Any]]
     status_explanation: str
     summary: dict[str, Any]
+    timeline_steps: list[dict[str, Any]]
     title: str
 
 class IssueItemPayload(BaseModel):

@@ -14,7 +14,7 @@ import json
 import pytest
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import Mock, MagicMock, patch
+from unittest.mock import Mock, MagicMock, call, patch
 
 from issue_orchestrator.domain.models import (
     CompletionRecord,
@@ -33,6 +33,8 @@ from issue_orchestrator.control.completion_processor import (
 )
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+from issue_orchestrator.events import EventContext, EventName
+from issue_orchestrator.ports.event_sink import InMemoryEventSink
 from issue_orchestrator.ports.pull_request_tracker import PRInfo
 from issue_orchestrator.ports.working_copy import PushResult
 from issue_orchestrator.domain.events import EventBus, SessionEvent
@@ -86,6 +88,7 @@ def mock_git_adapter():
     adapter.get_current_branch = Mock(return_value="issue-123")
     adapter.has_uncommitted_changes = Mock(return_value=False)
     adapter.has_tracked_changes = Mock(return_value=False)
+    adapter.list_dirty_files = Mock(return_value=[])
     return adapter
 
 
@@ -218,6 +221,14 @@ class TestReviewExchangeModeResolution:
 
         assert processor._resolve_review_exchange_mode("agent:coder") == "via-mcp"
 
+    def test_explicit_local_loop_mode_does_not_depend_on_review_enabled(self, tmp_path):
+        config = self._make_config(tmp_path)
+        config.review_enabled = False
+        config.review_exchange_mode = "via-local-loop"
+        processor = self._make_processor(config)
+
+        assert processor._resolve_review_exchange_mode("agent:coder") == "via-local-loop"
+
 
 class TestReviewExchangeExecution:
     """Tests for review exchange execution paths."""
@@ -311,6 +322,7 @@ class TestReviewExchangeExecution:
     ) -> None:
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "via-local-loop"
+        config.worktree_remediation_pr_collision = "reuse_open"
         processor = CompletionProcessor(
             label_adapter=mock_label_adapter,
             pr_adapter=mock_pr_adapter,
@@ -344,8 +356,288 @@ class TestReviewExchangeExecution:
         )
 
         assert result.success is True
+        assert result.actions_taken is not None
+        assert result.actions_taken[0] == "Review exchange passed"
         mock_label_adapter.add_label.assert_any_call(42, "code-reviewed")
         mock_label_adapter.remove_label.assert_any_call(42, "needs-code-review")
+
+    def test_existing_pr_reuse_does_not_bypass_local_loop_review(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ) -> None:
+        """Existing PR reuse must run local-loop review before returning success."""
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-local-loop"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+        )
+        mock_pr_adapter.get_prs_for_issue.return_value = [
+            PRInfo(
+                number=99,
+                title="#123 Existing PR",
+                url="https://github.com/owner/repo/pull/99",
+                branch="123-existing-pr",
+                body="Body",
+                state="open",
+                labels=[],
+            )
+        ]
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+        )
+        worktree = worktree_with_completion(record)
+
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(status="error", rounds=1, reason="boom")
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+        )
+
+        assert result.success is False
+        assert result.pr_url is None
+        processor._run_review_exchange_loop.assert_called_once()  # noqa: SLF001
+        mock_pr_adapter.create_pr.assert_not_called()
+
+    def test_existing_pr_reuse_after_local_loop_success_marks_review_complete(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ) -> None:
+        """Reused PR should still get local-loop completion labels/comment."""
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-local-loop"
+        config.worktree_remediation_pr_collision = "reuse_open"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+        )
+        mock_pr_adapter.get_prs_for_issue.return_value = [
+            PRInfo(
+                number=99,
+                title="#123 Existing PR",
+                url="https://github.com/owner/repo/pull/99",
+                branch="123-existing-pr",
+                body="Body",
+                state="open",
+                labels=[],
+            )
+        ]
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+        )
+        worktree = worktree_with_completion(record)
+
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(status="ok", rounds=2, reason="reviewer_ok")
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+        )
+
+        assert result.success is True
+        assert result.pr_url == "https://github.com/owner/repo/pull/99"
+        assert result.review_exchange_completed is True
+        processor._run_review_exchange_loop.assert_called_once()  # noqa: SLF001
+        mock_pr_adapter.create_pr.assert_not_called()
+        mock_label_adapter.add_label.assert_any_call(99, "code-reviewed")
+        mock_label_adapter.remove_label.assert_any_call(99, "needs-code-review")
+
+    def test_local_loop_emits_review_started_and_approved_trace_events(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ) -> None:
+        """Local-loop success should publish explicit review lifecycle trace events."""
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-local-loop"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+        )
+        sink = InMemoryEventSink()
+        processor.set_event_emitter(sink, EventContext())
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        worktree = worktree_with_completion(record)
+        review_exchange_run = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260218-030043Z__review-exchange-123"
+        )
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(
+                status="ok",
+                rounds=1,
+                reason="reviewer_ok",
+                exchange_dir=review_exchange_run / "review-exchange",
+            )
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+        )
+
+        assert result.success is True
+        event_names = sink.event_names()
+        assert str(EventName.REVIEW_STARTED) in event_names
+        assert str(EventName.REVIEW_APPROVED) in event_names
+        assert event_names.index(str(EventName.REVIEW_STARTED)) < event_names.index(str(EventName.REVIEW_APPROVED))
+        review_started = sink.last_event(str(EventName.REVIEW_STARTED))
+        review_approved = sink.last_event(str(EventName.REVIEW_APPROVED))
+        assert review_started is not None
+        assert review_approved is not None
+        assert str(review_started.data.get("run_dir", "")).endswith(
+            "/.issue-orchestrator/sessions/20260218-030043Z__review-exchange-123"
+        )
+        assert str(review_approved.data.get("run_dir", "")).endswith(
+            "/.issue-orchestrator/sessions/20260218-030043Z__review-exchange-123"
+        )
+        review_events = [
+            event
+            for event in sink.events
+            if str(event.name).startswith("review.")
+        ]
+        assert review_events, "Expected review lifecycle events to be emitted"
+        for event in review_events:
+            assert str(event.data.get("run_dir", "")).endswith(
+                "/.issue-orchestrator/sessions/20260218-030043Z__review-exchange-123"
+            ), f"missing run_dir on {event.name}"
+
+    def test_local_loop_failure_emits_review_changes_requested_trace_event(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+    ) -> None:
+        """Local-loop halt should publish review.started then review.changes_requested."""
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-local-loop"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+        )
+        sink = InMemoryEventSink()
+        processor.set_event_emitter(sink, EventContext())
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+        )
+        worktree = worktree_with_completion(record)
+        review_exchange_run = (
+            worktree
+            / ".issue-orchestrator"
+            / "sessions"
+            / "20260218-030044Z__review-exchange-123"
+        )
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(
+                status="error",
+                rounds=1,
+                reason="boom",
+                exchange_dir=review_exchange_run / "review-exchange",
+            )
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            agent_label="agent:coder",
+        )
+
+        assert result.success is False
+        assert result.review_exchange_halted is True
+        assert result.pr_url is None
+        mock_git_adapter.push.assert_not_called()
+        mock_pr_adapter.create_pr.assert_not_called()
+        event_names = sink.event_names()
+        assert str(EventName.REVIEW_STARTED) in event_names
+        assert str(EventName.REVIEW_CHANGES_REQUESTED) in event_names
+        assert event_names.index(str(EventName.REVIEW_STARTED)) < event_names.index(
+            str(EventName.REVIEW_CHANGES_REQUESTED)
+        )
+        review_started = sink.last_event(str(EventName.REVIEW_STARTED))
+        review_changes = sink.last_event(str(EventName.REVIEW_CHANGES_REQUESTED))
+        assert review_started is not None
+        assert review_changes is not None
+        assert str(review_started.data.get("run_dir", "")).endswith(
+            "/.issue-orchestrator/sessions/20260218-030044Z__review-exchange-123"
+        )
+        assert str(review_changes.data.get("run_dir", "")).endswith(
+            "/.issue-orchestrator/sessions/20260218-030044Z__review-exchange-123"
+        )
 
     def test_exchange_uses_cached_summary_after_restart(
         self,
@@ -688,6 +980,7 @@ class TestReviewExchangeExecution:
             outcome=CompletionOutcome.REVIEW_APPROVED,
             requested_actions=[
                 RequestedAction.ADD_CODE_REVIEWED_LABEL,
+                RequestedAction.REMOVE_NEEDS_REWORK_LABEL,
                 RequestedAction.REMOVE_CODE_REVIEW_LABEL,
                 RequestedAction.POST_COMMENT,
             ],
@@ -700,7 +993,9 @@ class TestReviewExchangeExecution:
 
         assert result.success
         mock_label_adapter.add_label.assert_called_once_with(42, "code-reviewed")
-        mock_label_adapter.remove_label.assert_called_once_with(42, "needs-code-review")
+        mock_label_adapter.remove_label.assert_has_calls(
+            [call(42, "needs-rework"), call(42, "needs-code-review")]
+        )
 
     def test_review_changes_requested_adds_needs_rework_removes_review_label(
         self, processor, mock_label_adapter, worktree_with_completion
@@ -1087,6 +1382,7 @@ class TestCompletionProcessorDirtyPolicy:
             config=config,
         )
         mock_git_adapter.has_tracked_changes.return_value = True
+        mock_git_adapter.list_dirty_files.return_value = ["src/feature.py", "README.md"]
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH],
@@ -1098,6 +1394,7 @@ class TestCompletionProcessorDirtyPolicy:
 
         assert not result.success
         assert "working tree is dirty" in result.message.lower()
+        assert "dirty files: src/feature.py, readme.md." in result.message.lower()
         mock_git_adapter.push.assert_not_called()
         mock_pr_adapter.add_comment.assert_called_once()
 
@@ -1116,6 +1413,7 @@ class TestCompletionProcessorDirtyPolicy:
             config=config,
         )
         mock_git_adapter.has_uncommitted_changes.return_value = True
+        mock_git_adapter.list_dirty_files.return_value = ["tmp.out"]
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH],
@@ -1128,6 +1426,34 @@ class TestCompletionProcessorDirtyPolicy:
         assert not result.success
         assert "working tree is dirty" in result.message.lower()
         mock_git_adapter.push.assert_not_called()
+
+    def test_push_allows_runtime_only_dirty_files(
+        self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
+    ):
+        config = Config()
+        config.validation.pre_push_dirty_check = "tracked"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            event_bus=event_bus,
+            session_output=FileSystemSessionOutput(),
+            label_config={},
+            config=config,
+        )
+        mock_git_adapter.has_tracked_changes.return_value = True
+        mock_git_adapter.list_dirty_files.return_value = [".issue-orchestrator/session-latest.json"]
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+            summary="Done",
+        )
+        worktree = worktree_with_completion(record)
+
+        result = processor.process(worktree, issue_number=123, issue_title="Test")
+
+        assert result.success
+        mock_git_adapter.push.assert_called_once()
 
     def test_push_allowed_when_dirty_check_off(
         self, mock_label_adapter, mock_pr_adapter, mock_git_adapter, event_bus, worktree_with_completion
@@ -1439,8 +1765,9 @@ class TestCompletionProcessorPublishGate:
         assert run_dir is not None
         assert (run_dir / "validation-stdout.log").read_text() == "validation stdout"
         assert (run_dir / "validation-stderr.log").read_text() == "validation stderr"
+        assert (run_dir / "validation-record.json").exists()
         manifest = json.loads((run_dir / "manifest.json").read_text())
-        assert "validation_record_path" in manifest
+        assert manifest.get("validation_record_path") == str(run_dir / "validation-record.json")
         # Verify manifest is updated with validation_passed=False for UI status derivation
         assert manifest.get("validation_passed") is False
         assert manifest.get("validation_failure_reason") == "Validation failed"

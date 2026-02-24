@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import copy
 import json
+import threading
 import time
 from typing import Any, Callable
 
@@ -17,6 +19,19 @@ from ..infra import gh_audit
 
 QUEUE_PAGE_SIZE = 20
 E2E_PAGE_SIZE = 15
+E2E_STATUS_CACHE_TTL_SECONDS = 1.5
+_E2E_STATUS_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
+_E2E_STATUS_CACHE_LOCK = threading.Lock()
+
+
+def _e2e_status_cache_key(config: Any) -> str:
+    return f"{str(config.repo_root)}::{config.orchestrator_id}"
+
+
+def invalidate_e2e_status_cache(config: Any) -> None:
+    key = _e2e_status_cache_key(config)
+    with _E2E_STATUS_CACHE_LOCK:
+        _E2E_STATUS_CACHE.pop(key, None)
 
 
 @dataclass(frozen=True)
@@ -223,6 +238,46 @@ def blocked_summary(labels: list[str], lm: LabelManager, dependency_summary: str
     return " • ".join(reasons) if reasons else None
 
 
+def _queue_wait_reason(
+    *,
+    state,
+    config,
+    issue_number: int,
+    dep_problem: Any | None,
+    queue_position: int,
+) -> str:
+    if state.paused:
+        return "Waiting: orchestrator paused"
+
+    active_count = len(state.active_sessions)
+    max_sessions = max(1, int(getattr(config, "max_concurrent_sessions", 1)))
+    if active_count >= max_sessions:
+        return f"Waiting: at capacity ({active_count}/{max_sessions} running)"
+
+    if dep_problem is not None and dep_problem.summary:
+        return f"Waiting: {dep_problem.summary}"
+
+    if issue_number in state.failed_this_cycle:
+        return "Waiting: previous launch/action failed (manual retry may be needed)"
+
+    if any(entry.issue_number == issue_number for entry in state.session_history):
+        return "Waiting: previous run state"
+
+    if queue_position <= 1:
+        return "Waiting: next scheduler tick"
+    return f"Waiting: {queue_position - 1} queued ahead"
+
+
+def _display_labels(labels: list[str], lm: LabelManager) -> list[str]:
+    """Labels shown as pills in UI cards.
+
+    Include orchestrator-owned labels and agent routing labels.
+    """
+    visible = set(lm.get_ours(labels))
+    visible.update(label for label in labels if label.startswith("agent:"))
+    return sorted(visible)
+
+
 def _relative_time(dt_str: str) -> str:
     """Convert ISO timestamp to relative time like '2h ago'."""
     try:
@@ -330,6 +385,28 @@ def _pending_issue_numbers(state) -> dict[str, set[int]]:
     }
 
 
+def _is_synthetic_session_title(title: str) -> bool:
+    normalized = title.strip()
+    return (
+        normalized.startswith("Review PR #")
+        or normalized.startswith("Rework #")
+        or normalized.startswith("Rework PR #")
+    )
+
+
+def _canonical_issue_title(state, issue_number: int, fallback_title: str) -> str:
+    for issue in state.cached_queue_issues:
+        if issue.number == issue_number and issue.title:
+            return issue.title
+    for entry in reversed(state.session_history):
+        if entry.issue_number != issue_number:
+            continue
+        title = (entry.title or "").strip()
+        if title and not _is_synthetic_session_title(title):
+            return title
+    return fallback_title
+
+
 def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *, lm: LabelManager) -> tuple[list[dict[str, Any]], set[int]]:
     if queue_page != 1:
         return [], seen_issues
@@ -375,8 +452,9 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             terminal_hint = "Click to view agent UI log"
 
         items.append({
+            "card_id": session.terminal_id,
             "issue_number": session.issue.number,
-            "title": session.issue.title,
+            "title": _canonical_issue_title(state, session.issue.number, session.issue.title),
             "agent_type": agent_label,
             "status": status,
             "status_reason": status_reason,
@@ -396,7 +474,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
-            "orchestrator_labels": sorted(lm.get_ours(list(session.issue.labels))),
+            "orchestrator_labels": _display_labels(list(session.issue.labels), lm),
             **_refresh_meta(state, config, session.issue.number),
         })
 
@@ -425,6 +503,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
 
     start_idx = (queue_page - 1) * QUEUE_PAGE_SIZE
     end_idx = start_idx + QUEUE_PAGE_SIZE
+    queued_position = 0
     for issue in queue_issues[start_idx:end_idx]:
         if issue.number in seen_issues:
             continue
@@ -462,7 +541,9 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             status_reason = _normalize_status_reason(dep_summary)
             detail_label = f"agent: {agent_label}"
 
-        if issue.number in pending_numbers["rework"]:
+        if is_blocked:
+            flow_stage = "blocked"
+        elif issue.number in pending_numbers["rework"]:
             flow_stage = "rework"
         elif issue.number in pending_numbers["triage"]:
             flow_stage = "triage"
@@ -472,8 +553,22 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             flow_stage = "in_progress"
         else:
             flow_stage = "queued"
+            queued_position += 1
         flow_steps = flow_steps_for(flow_stage)
         flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
+        queue_reason = (
+            _queue_wait_reason(
+                state=state,
+                config=config,
+                issue_number=issue.number,
+                dep_problem=dep_problem,
+                queue_position=queued_position,
+            )
+            if flow_stage == "queued"
+            else None
+        )
+        if queue_reason:
+            detail_label = queue_reason
 
         item = {
             "issue_number": issue.number,
@@ -499,9 +594,10 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            "queue_wait_reason": queue_reason,
             "merge_pending": lm.is_pr_pending(issue.labels),
             "dependency_blocked": is_dependency_blocked,
-            "orchestrator_labels": sorted(lm.get_ours(list(issue.labels))),
+            "orchestrator_labels": _display_labels(list(issue.labels), lm),
             **_refresh_meta(state, config, issue.number),
         }
         if is_blocked:
@@ -523,13 +619,21 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
     history_items: list[dict[str, Any]] = []
     blocked_items: list[dict[str, Any]] = []
     for entry in latest_history_entries_by_issue(state.session_history, limit=50):
+        # Completed-without-PR is not a terminal lane; let queue data drive placement.
+        if entry.status == "completed" and not entry.pr_url:
+            continue
         url = entry.pr_url if entry.pr_url else issue_url_for(config, entry.issue_number)
         action_hint = "Click to open PR" if entry.pr_url else "Click to open issue on GitHub"
         status_reason = _normalize_status_reason(getattr(entry, "status_reason", None))
         if not status_reason:
             status_reason = status_labels.get(entry.status, entry.status)
 
-        flow_stage = "done" if entry.status == "completed" else "in_progress"
+        if entry.status == "completed":
+            flow_stage = "done"
+        elif entry.status in ("blocked", "needs_human", "failed", "timed_out"):
+            flow_stage = "blocked"
+        else:
+            flow_stage = "in_progress"
         flow_steps = flow_steps_for(flow_stage)
         flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
 
@@ -556,6 +660,8 @@ def _build_history_items(state, config) -> tuple[list[dict[str, Any]], list[dict
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": status_reason if entry.status != "completed" else None,
+            # History records with an open PR belong in Awaiting Merge, not Completed.
+            "merge_pending": entry.status == "completed" and bool(entry.pr_url),
             **_refresh_meta(state, config, entry.issue_number),
         }
         if entry.status in ("blocked", "needs_human", "failed", "timed_out"):
@@ -576,6 +682,11 @@ def _normalize_status_reason(reason: str | None) -> str | None:
     if trimmed.lower().startswith("synced "):
         return None
     return trimmed
+
+
+def _sort_by_issue_number(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Deterministic default ordering for dashboard issue lists."""
+    return sorted(items, key=lambda item: int(item.get("issue_number", 0)))
 
 
 def _build_e2e_running_items(e2e_status: dict[str, Any]) -> list[dict[str, Any]]:
@@ -725,13 +836,17 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
     phase = item.get("flow_stage_label") or item.get("flow_stage") or ""
     phase_age = item.get("time") or ""
     blocked = item.get("blocked_summary") or ""
+    summary_text = item.get("queue_wait_reason") or (f"Summary: {blocked}" if blocked else "")
     return {
+        "card_id": item.get("card_id") or f"issue-{item.get('issue_number')}",
         "issue_number": item.get("issue_number"),
         "title": item.get("title", ""),
+        "agent_type": item.get("agent_type", ""),
         "state_label": state_label or item.get("status", ""),
         "phase": phase,
         "phase_age": phase_age,
-        "summary": f"Summary: {blocked}" if blocked else "",
+        "summary": summary_text,
+        "queue_wait_reason": item.get("queue_wait_reason"),
         "blocked_summary": blocked,
         "badges": [],
         "orchestrator_labels": item.get("orchestrator_labels", []),
@@ -770,7 +885,7 @@ def _build_backlog_items(state, config, *, lm: LabelManager) -> list[dict[str, A
             "time": "",
             "issue_url": issue_url_for(config, issue.number),
             "url": issue_url_for(config, issue.number),
-            "orchestrator_labels": sorted(lm.get_ours(list(issue.labels))),
+            "orchestrator_labels": _display_labels(list(issue.labels), lm),
             **_refresh_meta(state, config, issue.number),
         })
     return cards
@@ -809,6 +924,65 @@ def _exclude_flow_overlaps(
     ]
 
 
+def _issue_numbers(items: list[dict[str, Any]]) -> set[int]:
+    """Extract numeric issue numbers from card items."""
+    numbers: set[int] = set()
+    for item in items:
+        raw = item.get("issue_number")
+        if isinstance(raw, int):
+            numbers.add(raw)
+        elif isinstance(raw, str) and raw.isdigit():
+            numbers.add(int(raw))
+    return numbers
+
+
+def _exclude_issue_numbers(
+    items: list[dict[str, Any]],
+    excluded_numbers: set[int],
+) -> list[dict[str, Any]]:
+    """Return items whose issue number is not in excluded_numbers."""
+    filtered: list[dict[str, Any]] = []
+    for item in items:
+        raw = item.get("issue_number")
+        issue_number: int | None = None
+        if isinstance(raw, int):
+            issue_number = raw
+        elif isinstance(raw, str) and raw.isdigit():
+            issue_number = int(raw)
+        if issue_number is None or issue_number not in excluded_numbers:
+            filtered.append(item)
+    return filtered
+
+
+def _apply_lane_precedence(
+    queue_items: list[dict[str, Any]],
+    active_items: list[dict[str, Any]],
+    blocked_items: list[dict[str, Any]],
+    awaiting_merge_items: list[dict[str, Any]],
+    completed_items: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Enforce single-lane ownership across non-running lanes.
+
+    Precedence:
+    running > blocked > awaiting-merge > queued > completed
+    """
+    active_numbers = _issue_numbers(active_items)
+    blocked_filtered = _exclude_issue_numbers(blocked_items, active_numbers)
+    blocked_numbers = _issue_numbers(blocked_filtered)
+
+    awaiting_filtered = _exclude_issue_numbers(awaiting_merge_items, active_numbers | blocked_numbers)
+    awaiting_numbers = _issue_numbers(awaiting_filtered)
+
+    queue_filtered = _exclude_issue_numbers(queue_items, active_numbers | blocked_numbers | awaiting_numbers)
+    queue_numbers = _issue_numbers(queue_filtered)
+
+    completed_filtered = _exclude_issue_numbers(
+        completed_items,
+        active_numbers | blocked_numbers | awaiting_numbers | queue_numbers,
+    )
+    return queue_filtered, blocked_filtered, awaiting_filtered, completed_filtered
+
+
 def _build_awaiting_merge_items(
     queue_items: list[dict[str, Any]],
     blocked_items: list[dict[str, Any]],
@@ -844,7 +1018,7 @@ def _build_flow_columns(
             "title": "Running",
             "count": len(active_items),
             "items": [_compact_card(item, "running") for item in active_items[:12]],
-            "expandable": False,
+            "expandable": True,
         },
         {
             "id": "blocked",
@@ -923,45 +1097,71 @@ def _count_untriaged_failures(db, run_obj) -> int:
     return count
 
 
+def _e2e_cached_status(cache_key: str, *, now_mono: float, proc_running: bool) -> dict[str, Any] | None:
+    with _E2E_STATUS_CACHE_LOCK:
+        cached_entry = _E2E_STATUS_CACHE.get(cache_key)
+    if cached_entry is None:
+        return None
+    cached_at, cached_payload = cached_entry
+    if (now_mono - cached_at) >= E2E_STATUS_CACHE_TTL_SECONDS:
+        return None
+    cached_running = bool(cached_payload.get("running"))
+    if cached_running != proc_running:
+        return None
+    return copy.deepcopy(cached_payload)
+
+
+def _load_e2e_database_state(config, orchestrator_id: str) -> tuple[Any, dict[str, Any] | None, list[dict[str, Any]], dict[str, Any] | None, int, bool]:
+    from ..infra.e2e_db import E2EDB
+
+    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return None, None, [], None, 0, False
+
+    try:
+        db = E2EDB(db_path)
+        run_obj = db.latest_run(orchestrator_id)
+        last_run = run_obj.to_dict() if run_obj else None
+        failed_tests = [t.to_dict() for t in db.get_failed_tests(run_obj.id)] if run_obj else []
+        if last_run and last_run.get("started_at"):
+            last_run["relative_time"] = _relative_time(last_run["started_at"])
+        untriaged_count = (
+            _count_untriaged_failures(db, run_obj)
+            if run_obj and run_obj.status == "failed" and failed_tests
+            else 0
+        )
+        signal_score = db.compute_signal_score(orchestrator_id)
+        low_stability = bool(signal_score and signal_score.get("pass_rate") is not None and signal_score["pass_rate"] < 0.5)
+        return run_obj, last_run, failed_tests, signal_score, untriaged_count, low_stability
+    except Exception:
+        return None, None, [], None, 0, False
+
+
 def _get_e2e_status(config) -> dict[str, Any]:
     if not config or not config.e2e.enabled:
         return {"enabled": False, "running": False}
 
-    from ..infra.e2e_db import E2EDB
-
     orchestrator_id = config.orchestrator_id
     runner = get_e2e_runner_manager()
     proc_status = runner.status(orchestrator_id)
+    cache_key = _e2e_status_cache_key(config)
+    now_mono = time.monotonic()
+    cached_payload = _e2e_cached_status(
+        cache_key,
+        now_mono=now_mono,
+        proc_running=bool(proc_status.get("running")),
+    )
+    if cached_payload is not None:
+        return cached_payload
 
-    db_path = config.repo_root / ".issue-orchestrator" / "e2e.db"
-    last_run = None
-    run_obj = None
-    failed_tests = []
-    signal_score = None
-    untriaged_count = 0
-    low_stability = False
-
-    if db_path.exists():
-        try:
-            db = E2EDB(db_path)
-            run_obj = db.latest_run(orchestrator_id)
-            if run_obj:
-                last_run = run_obj.to_dict()
-                failed_tests = [t.to_dict() for t in db.get_failed_tests(run_obj.id)]
-                if last_run.get("started_at"):
-                    last_run["relative_time"] = _relative_time(last_run["started_at"])
-                if run_obj.status == "failed" and failed_tests:
-                    untriaged_count = _count_untriaged_failures(db, run_obj)
-            signal_score = db.compute_signal_score(orchestrator_id)
-            if signal_score and signal_score.get("pass_rate") is not None:
-                low_stability = signal_score["pass_rate"] < 0.5
-        except Exception:
-            # UI should still render even if DB read fails
-            pass
+    run_obj, last_run, failed_tests, signal_score, untriaged_count, low_stability = _load_e2e_database_state(
+        config,
+        orchestrator_id,
+    )
 
     next_run = get_next_run_info(config, config.repo_root, run_obj)
 
-    return {
+    payload = {
         "enabled": True,
         "running": proc_status["running"],
         "pid": proc_status.get("pid"),
@@ -973,6 +1173,9 @@ def _get_e2e_status(config) -> dict[str, Any]:
         "untriaged_count": untriaged_count,
         "low_stability": low_stability,
     }
+    with _E2E_STATUS_CACHE_LOCK:
+        _E2E_STATUS_CACHE[cache_key] = (now_mono, payload)
+    return copy.deepcopy(payload)
 
 
 def _build_e2e_view_model(
@@ -1087,6 +1290,11 @@ def build_dashboard_view_model(
         history_items, history_blocked = _build_history_items(state, config)
         blocked_items.extend(history_blocked)
 
+        active_items = _sort_by_issue_number(active_items)
+        queue_items = _sort_by_issue_number(queue_items)
+        blocked_items = _sort_by_issue_number(blocked_items)
+        history_items = _sort_by_issue_number(history_items)
+
         now_ts = datetime.now(timezone.utc).timestamp()
         _attach_refresh_meta(active_items, state, config, now_ts)
         _attach_refresh_meta(queue_items, state, config, now_ts)
@@ -1096,9 +1304,24 @@ def build_dashboard_view_model(
 
         # Completed = items the agent finished this session
         completed_items = [item for item in history_items if item.get("status") == "completed"]
+        completed_items = _sort_by_issue_number(completed_items)
 
         # Awaiting merge = items with PRs ready for human merge
         awaiting_merge_items = _build_awaiting_merge_items(queue_items, blocked_items, history_items)
+        awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
+
+        queue_items, blocked_items, awaiting_merge_items, completed_items = _apply_lane_precedence(
+            queue_items=queue_items,
+            active_items=active_items,
+            blocked_items=blocked_items,
+            awaiting_merge_items=awaiting_merge_items,
+            completed_items=completed_items,
+        )
+
+        queue_items = _sort_by_issue_number(queue_items)
+        blocked_items = _sort_by_issue_number(blocked_items)
+        awaiting_merge_items = _sort_by_issue_number(awaiting_merge_items)
+        completed_items = _sort_by_issue_number(completed_items)
 
         # Backlog used only for scope_summary.in_scope_total (not a kanban column)
         backlog_items = _exclude_flow_overlaps(

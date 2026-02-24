@@ -11,6 +11,7 @@ from issue_orchestrator.control.actions import (
     ActionResultType,
     AddLabelAction,
     RemoveLabelAction,
+    AddCommentAction,
     SyncLabelsAction,
     LaunchSessionAction,
     StopSessionAction,
@@ -350,6 +351,29 @@ class TestQueueReviewAction:
 
         assert result.success
         mock_events.publish.assert_called()
+
+
+class TestAddCommentAction:
+    """Tests for ADD_COMMENT action."""
+
+    def test_pr_comment_event_keeps_full_excerpt(self, applier, mock_repository_host, mock_events):
+        """Review comment event should not hard-truncate excerpt content."""
+        mock_repository_host.add_comment.return_value = "https://github.com/owner/repo/pull/1#issuecomment-1"
+        long_comment = "A" * 300
+        action = AddCommentAction(number=1, comment=long_comment, is_pr=True)
+
+        result = applier.apply(action)
+
+        assert result.success
+        assert mock_events.publish.call_count >= 1
+        review_events = [
+            call.args[0]
+            for call in mock_events.publish.call_args_list
+            if getattr(call.args[0], "name", None) == str(EventName.REVIEW_COMMENT_ADDED)
+        ]
+        assert review_events
+        payload = review_events[-1].data
+        assert payload.get("comment_excerpt") == long_comment
 
 
 class TestEscalateToHumanAction:

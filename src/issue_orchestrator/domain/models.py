@@ -101,6 +101,7 @@ class RequestedAction(Enum):
     ADD_NEEDS_HUMAN_LABEL = "add_needs_human_label"
     ADD_CODE_REVIEWED_LABEL = "add_code_reviewed_label"
     ADD_NEEDS_REWORK_LABEL = "add_needs_rework_label"
+    REMOVE_NEEDS_REWORK_LABEL = "remove_needs_rework_label"
     REMOVE_CODE_REVIEW_LABEL = "remove_code_review_label"
     POST_COMMENT = "post_comment"
     PUSH_BRANCH = "push_branch"
@@ -415,6 +416,33 @@ class AgentConfig:
     #                     {retry_count}, {max_retries}
     retry_prompt_template: Optional[str] = None
 
+    def render_initial_prompt(
+        self,
+        issue_number: int,
+        issue_title: str,
+        worktree: Path,
+        pr_number: Optional[int] = None,
+        existing_work: Optional[str] = None,
+    ) -> str:
+        """Render the session prompt text before command wrapping."""
+        prompt_for_command = self.prompt_relative if self.prompt_relative else str(self.prompt_path)
+        format_kwargs = {
+            "issue_number": issue_number,
+            "issue_title": issue_title,
+            "prompt": prompt_for_command,
+            "worktree": worktree,
+            "model": self.model,
+            "permission_mode": self.permission_mode,
+            "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", "").strip(),
+        }
+        if pr_number is not None:
+            format_kwargs["pr_number"] = pr_number
+
+        rendered_prompt = self.initial_prompt.format(**format_kwargs)
+        if existing_work:
+            rendered_prompt = f"IMPORTANT: {existing_work}\n\n{rendered_prompt}"
+        return rendered_prompt
+
     def get_command(
         self,
         issue_number: int,
@@ -437,27 +465,14 @@ class AgentConfig:
             existing_work: Optional context about existing commits in the worktree.
                           If provided, prepended to prompt so agent knows to complete vs restart.
         """
-        # Build format kwargs - pr_number only included if provided (fail-fast if used but missing)
-        # Use relative prompt path so agents read from worktree (not main repo)
         prompt_for_command = self.prompt_relative if self.prompt_relative else str(self.prompt_path)
-        format_kwargs = {
-            "issue_number": issue_number,
-            "issue_title": issue_title,
-            "prompt": prompt_for_command,
-            "worktree": worktree,
-            "model": self.model,
-            "permission_mode": self.permission_mode,
-            "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", "").strip(),
-        }
-        if pr_number is not None:
-            format_kwargs["pr_number"] = pr_number
-
-        # First render the initial prompt
-        rendered_prompt = self.initial_prompt.format(**format_kwargs)
-
-        # Prepend existing work context if provided
-        if existing_work:
-            rendered_prompt = f"IMPORTANT: {existing_work}\n\n{rendered_prompt}"
+        rendered_prompt = self.render_initial_prompt(
+            issue_number=issue_number,
+            issue_title=issue_title,
+            worktree=worktree,
+            pr_number=pr_number,
+            existing_work=existing_work,
+        )
 
         # If provider is set, use provider-based command building
         if self.provider:
@@ -480,8 +495,19 @@ class AgentConfig:
         escaped_system_prompt = system_prompt.replace("'", "'\\''")
 
         # Then render the full command with the prompt included
-        format_kwargs["initial_prompt"] = escaped_prompt
-        format_kwargs["system_prompt"] = escaped_system_prompt
+        format_kwargs = {
+            "issue_number": issue_number,
+            "issue_title": issue_title,
+            "prompt": prompt_for_command,
+            "worktree": worktree,
+            "model": self.model,
+            "permission_mode": self.permission_mode,
+            "claude_args": os.environ.get("ORCHESTRATOR_CLAUDE_ARGS", "").strip(),
+            "initial_prompt": escaped_prompt,
+            "system_prompt": escaped_system_prompt,
+        }
+        if pr_number is not None:
+            format_kwargs["pr_number"] = pr_number
 
         prompt_mode = os.environ.get("ORCHESTRATOR_CLAUDE_PROMPT_MODE", "arg").strip().lower()
         if prompt_mode == "stdin":

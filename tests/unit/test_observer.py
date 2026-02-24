@@ -623,7 +623,7 @@ class TestObserveSession:
         # Create an active session log (recently modified)
         log_dir = session_output_dir(tmp_path, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
-        log_file = log_dir / "session.log"
+        log_file = log_dir / "ui-session.log"
         log_file.write_text("Claude is working...")
         # Touch the file to ensure it's "just modified"
 
@@ -1060,7 +1060,7 @@ class TestEmitNoOutputIfStale:
         # Create session log
         log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
-        log_file = log_dir / "session.log"
+        log_file = log_dir / "ui-session.log"
         log_file.write_text("Some log content\n")
 
         # First call - initialize tracking
@@ -1105,7 +1105,7 @@ class TestEmitNoOutputIfStale:
 
         log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
-        log_file = log_dir / "session.log"
+        log_file = log_dir / "ui-session.log"
         log_file.write_text("Initial content\n")
 
         # First call - initialize
@@ -1173,7 +1173,7 @@ class TestEmitNoOutputIfStale:
 
         log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
-        log_file = log_dir / "session.log"
+        log_file = log_dir / "ui-session.log"
         log_file.write_text("Some content\n")
 
         # Initialize
@@ -1253,7 +1253,7 @@ class TestEmitNoOutputEdgeCases:
 
         log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
-        log_file = log_dir / "session.log"
+        log_file = log_dir / "ui-session.log"
         log_file.write_text("content")
 
         # Initialize tracking
@@ -1291,7 +1291,7 @@ class TestEmitNoOutputEdgeCases:
 
         log_dir = session_output_dir(worktree, sample_session.terminal_id)
         log_dir.mkdir(parents=True)
-        log_file = log_dir / "session.log"
+        log_file = log_dir / "ui-session.log"
         log_file.write_text("content")
 
         # Initialize - this sets the mtime/size tracking

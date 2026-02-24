@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -9,9 +10,16 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from ..domain.logical_event_semantics import enrich_logical_semantics
+from ..events.catalog import EVENT_SCHEMA_VERSION
+from ..infra.timeline_trace import is_timeline_trace_enabled
+from ..timeline import TIMELINE_SCHEMA_VERSION
+from .timeline_artifact_expectations import validate_event_artifact_expectations
 from ..ports.event_sink import TraceEvent
 from ..ports.timeline_store import TimelineRecord, TimelineStore
 from ..ports.timeline_writer import TimelineWriter
+
+logger = logging.getLogger(__name__)
 
 
 class DefaultTimelineWriter(TimelineWriter):
@@ -29,12 +37,51 @@ class DefaultTimelineWriter(TimelineWriter):
             timestamp = timestamp.replace(tzinfo=timezone.utc)
         timestamp = timestamp.astimezone(timezone.utc)
         safe_data = _normalize_json(event.data)
+        if not isinstance(safe_data, dict):
+            safe_data = {"raw_event_data": safe_data}
+        previous_records = self._store.read(issue_number, limit=1)
+        previous_record = previous_records[-1] if previous_records else None
+        previous_name = previous_record.event if previous_record else None
+        previous_data = previous_record.data if previous_record else None
+        semantics = enrich_logical_semantics(
+            event_name=event.name,
+            event_data=safe_data,
+            previous_event_name=previous_name,
+            previous_data=previous_data if isinstance(previous_data, dict) else None,
+        )
+        safe_data["schema"] = EVENT_SCHEMA_VERSION
+        safe_data["timeline_schema_version"] = TIMELINE_SCHEMA_VERSION
+        safe_data["event_intent"] = semantics.event_intent
+        safe_data["review_oriented"] = semantics.review_oriented
+        safe_data["logical_run"] = semantics.logical_run
+        safe_data["logical_cycle"] = semantics.logical_cycle
+        safe_data["logical_phase"] = semantics.logical_phase
+        safe_data["_logical_restart_pending"] = semantics.restart_pending
+        validate_event_artifact_expectations(event.name, safe_data)
+        record_event_id = str(event.event_id) if event.event_id is not None else str(uuid4())
         record = TimelineRecord(
-            event_id=str(uuid4()),
+            event_id=record_event_id,
             timestamp=timestamp.isoformat(),
             event=event.name,
             data=safe_data,
         )
+        if is_timeline_trace_enabled():
+            logger.info(
+                "[TIMELINE] writer.record issue=%s event=%s run_id=%s run_dir=%s schema=%s timeline_schema=%s "
+                "intent=%s review=%s phase=%s cycle=%s run=%s previous_event=%s",
+                issue_number,
+                event.name,
+                safe_data.get("run_id"),
+                safe_data.get("run_dir"),
+                safe_data.get("schema"),
+                safe_data.get("timeline_schema_version"),
+                safe_data.get("event_intent"),
+                safe_data.get("review_oriented"),
+                safe_data.get("logical_phase"),
+                safe_data.get("logical_cycle"),
+                safe_data.get("logical_run"),
+                previous_name,
+            )
         self._store.append(issue_number, record)
 
 

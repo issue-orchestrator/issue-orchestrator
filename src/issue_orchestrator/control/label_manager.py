@@ -80,6 +80,13 @@ class LabelManager:
         entries = [
             LabelEntry("in_progress", config.label_in_progress, LabelCategory.LIFECYCLE, "In progress"),
             LabelEntry("pr_pending", "pr-pending", LabelCategory.LIFECYCLE, "PR pending merge"),
+            LabelEntry("reset_retry_pending", "reset-retry-pending", LabelCategory.LIFECYCLE, "Reset + retry pending launch"),
+            LabelEntry(
+                "reset_retry_scratch_pending",
+                "reset-retry-scratch-pending",
+                LabelCategory.LIFECYCLE,
+                "Reset + retry from scratch pending launch",
+            ),
             LabelEntry("blocked", config.label_blocked, LabelCategory.BLOCKING, "Blocked"),
             LabelEntry("blocked_failed", "blocked-failed", LabelCategory.BLOCKING, "Failed run"),
             LabelEntry("blocked_needs_human", config.label_needs_human, LabelCategory.BLOCKING, "Needs human"),
@@ -129,6 +136,14 @@ class LabelManager:
     @property
     def blocked(self) -> str:
         return self._resolved["blocked"]
+
+    @property
+    def reset_retry_pending(self) -> str:
+        return self._resolved["reset_retry_pending"]
+
+    @property
+    def reset_retry_scratch_pending(self) -> str:
+        return self._resolved["reset_retry_scratch_pending"]
 
     @property
     def blocked_failed(self) -> str:

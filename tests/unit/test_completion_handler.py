@@ -134,6 +134,8 @@ def make_handler(
     session_output: SessionOutput | None = None,
 ) -> CompletionHandler:
     """Create a CompletionHandler with sensible defaults."""
+    default_session_output = Mock(spec=SessionOutput)
+    default_session_output.find_run_dir.return_value = None
     # Use explicit None check - InMemoryEventSink with 0 events is falsy
     return CompletionHandler(
         config=config,
@@ -142,7 +144,7 @@ def make_handler(
         get_issue_machine_fn=lambda _issue: issue_machine,
         get_session_machine_fn=lambda _terminal_id: session_machine,
         get_review_machine_fn=lambda _pr_number: review_machine,
-        session_output=session_output if session_output is not None else Mock(spec=SessionOutput),
+        session_output=session_output if session_output is not None else default_session_output,
     )
 
 
@@ -251,6 +253,29 @@ class TestHistoryEntryCreation:
         assert result.history_entry.status == "failed"
         assert "push" in result.history_entry.status_reason.lower() or "pr" in result.history_entry.status_reason.lower()
 
+    def test_completed_with_publish_blocked_error_records_failed_status(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Publish-blocked finalize failures (dirty-tree gate) should be FAILED in history."""
+        from issue_orchestrator.control.completion_processor import ERROR_PREFIX_PUBLISH_BLOCKED
+
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        processing_errors = [
+            f"{ERROR_PREFIX_PUBLISH_BLOCKED}: Working tree is dirty; commit/add/stash before pushing."
+        ]
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=processing_errors,
+        )
+
+        assert result.history_entry.status == "failed"
+        assert "push" in result.history_entry.status_reason.lower() or "pr" in result.history_entry.status_reason.lower()
+
     def test_completed_without_errors_records_completed_status(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
@@ -317,6 +342,24 @@ class TestEventEmission:
         assert event is not None
         assert event.data["issue_number"] == issue.number
         assert "error" in event.data
+
+    def test_failed_session_emits_session_failed_event_with_run_dir_when_available(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """SESSION_FAILED should include run_dir when session output resolves one."""
+        events = InMemoryEventSink()
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        session_output = Mock(spec=SessionOutput)
+        run_dir = tmp_worktree / ".issue-orchestrator" / "sessions" / "20260220-000000Z__issue-1"
+        session_output.find_run_dir.return_value = run_dir
+        handler = make_handler(config, events=events, session_output=session_output)
+
+        handler.process_completion(session, SessionStatus.FAILED)
+
+        event = events.last_event(str(EventName.SESSION_FAILED))
+        assert event is not None
+        assert event.data["run_dir"] == str(run_dir)
 
     def test_timed_out_session_emits_session_failed_event(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
@@ -968,6 +1011,77 @@ class TestReviewQueueDecision:
 
         assert result.should_queue_review is False
 
+    def test_review_exchange_halt_skips_review_queue(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Halted review exchange must not enqueue another review."""
+        config.code_review_agent = "agent:reviewer"
+        issue = make_issue(number=123)
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-123")
+
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=["review_exchange: stopped (reviewer_reports_no_progress)"],
+        )
+
+        assert result.should_queue_review is False
+
+    def test_review_exchange_halt_marks_issue_blocked_failed(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Halted review exchange must place issue on hold (blocked-failed) and release claim."""
+        config.code_review_agent = "agent:reviewer"
+        issue = make_issue(number=123, labels=["agent:test", "in-progress"])
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-123")
+
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=["review_exchange: stopped (reviewer_reports_no_progress)"],
+        )
+
+        add_labels = [a for a in result.actions if isinstance(a, AddLabelAction)]
+        remove_labels = [a for a in result.actions if isinstance(a, RemoveLabelAction)]
+
+        assert any(action.label == "blocked-failed" for action in add_labels)
+        assert any(action.label == "in-progress" for action in remove_labels)
+        assert not any(action.label == "pr-pending" for action in add_labels)
+
+    def test_review_exchange_halt_emits_failed_not_completed_events(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Halted review exchange should not emit completed/pr-created timeline events."""
+        issue = make_issue(number=123)
+        session = create_test_session(issue, agent_config, tmp_worktree, terminal_id="issue-123")
+
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url="http://pr", number=42, labels=[])]
+        )
+        events = InMemoryEventSink()
+        handler = make_handler(config, events=events, repository_host=repository_host)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=["review_exchange: stopped (reviewer_reports_no_progress)"],
+        )
+
+        assert result.history_entry.status == SessionStatus.FAILED.value
+        assert events.has_event(str(EventName.SESSION_FAILED))
+        assert not events.has_event(str(EventName.SESSION_COMPLETED))
+        assert not events.has_event(str(EventName.ISSUE_PR_CREATED))
+
 
 # =============================================================================
 # Test: Label Action Generation
@@ -1028,6 +1142,32 @@ class TestLabelActionGeneration:
 
         assert remove_label is not None
         assert remove_label.label == config.get_label_in_progress()
+
+    def test_publish_blocked_error_generates_blocked_failed_actions(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Completed+publish-blocked should yield blocked-failed + comment + release claim."""
+        from issue_orchestrator.control.completion_processor import ERROR_PREFIX_PUBLISH_BLOCKED
+
+        issue = make_issue(number=321)
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[
+                f"{ERROR_PREFIX_PUBLISH_BLOCKED}: Working tree is dirty; commit/add/stash before pushing."
+            ],
+        )
+
+        actions = result.actions
+        assert any(isinstance(a, AddLabelAction) and a.label == "blocked-failed" for a in actions)
+        assert any(isinstance(a, RemoveLabelAction) and a.label == config.get_label_in_progress() for a in actions)
+        assert any(
+            isinstance(a, AddCommentAction) and "Processing Failed" in a.comment
+            for a in actions
+        )
 
     def test_failure_generates_blocked_needs_human_label_and_comment(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path

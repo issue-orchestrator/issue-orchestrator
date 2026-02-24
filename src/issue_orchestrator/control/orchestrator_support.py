@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from ..ports.issue import Issue
 
 from ..events import EventName, EventContext
-from ..ports import EventSink, TraceEvent, RepositoryHost
+from ..ports import EventSink, make_trace_event, RepositoryHost
 from .actions import AddLabelAction
 from .queue_cache import QueueCache
 from .reconciliation import ReconciliationRequired, get_pause_label
@@ -155,7 +155,7 @@ class OrchestratorSupport:
 
     def emit_heartbeat_if_needed(self) -> None:
         if time.time() - self._last_ui_update >= self._ui_update_interval and self.state.active_sessions:
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.ORCHESTRATOR_HEARTBEAT,
                 self.event_context.enrich({
                     "active_count": len(self.state.active_sessions),
@@ -179,7 +179,7 @@ class OrchestratorSupport:
         if plan.action_count == 0:
             return
 
-        self.events.publish(TraceEvent(EventName.APPLY_STARTED, self.event_context.enrich({"steps": plan.action_count})))
+        self.events.publish(make_trace_event(EventName.APPLY_STARTED, self.event_context.enrich({"steps": plan.action_count})))
 
         applied_count = 0
         failed_count = 0
@@ -197,7 +197,7 @@ class OrchestratorSupport:
             if result_info.halt:
                 break
 
-        self.events.publish(TraceEvent(EventName.APPLY_COMPLETED, self.event_context.enrich({"applied_steps": applied_count, "failed_steps": failed_count})))
+        self.events.publish(make_trace_event(EventName.APPLY_COMPLETED, self.event_context.enrich({"applied_steps": applied_count, "failed_steps": failed_count})))
 
     @dataclass
     class _ActionApplyResult:
@@ -225,13 +225,13 @@ class OrchestratorSupport:
             return self._handle_reconciliation_error(rr, pause_issue_callback)
         except Exception as e:
             logger.exception("Failed to apply action %s: %s", action, e)
-            self.events.publish(TraceEvent(EventName.APPLY_FAILED, self.event_context.enrich({"step_type": action.action_type.value, "error": str(e)})))
+            self.events.publish(make_trace_event(EventName.APPLY_FAILED, self.event_context.enrich({"step_type": action.action_type.value, "error": str(e)})))
             return self._ActionApplyResult(success=False)
 
     def _handle_action_success(self, action: "Action", result: "ActionResult") -> "_ActionApplyResult":
         """Handle successful action application."""
         self._update_state_after_action(action, result)
-        self.events.publish(TraceEvent(
+        self.events.publish(make_trace_event(
             EventName.APPLY_STEP_APPLIED,
             self.event_context.enrich({"step_type": action.action_type.value, "issue_number": self._get_action_issue_number(action), "result": "success"}),
         ))
@@ -244,7 +244,13 @@ class OrchestratorSupport:
         logger.warning("[PLAN] Action %s failed: %s", action.action_type.value, result.error)
 
         # Mark issue as failed if applicable
-        failed_actions_mark_issue = {ActionType.ADD_LABEL, ActionType.REMOVE_LABEL, ActionType.SYNC_LABELS, ActionType.ADD_COMMENT}
+        failed_actions_mark_issue = {
+            ActionType.ADD_LABEL,
+            ActionType.REMOVE_LABEL,
+            ActionType.SYNC_LABELS,
+            ActionType.ADD_COMMENT,
+            ActionType.LAUNCH_SESSION,
+        }
         if action.action_type in failed_actions_mark_issue:
             issue_number = self._resolve_action_issue_number(action)
             if issue_number is not None:
@@ -265,7 +271,7 @@ class OrchestratorSupport:
         """Handle reconciliation required error."""
         issue_number = rr.entity_id
         logger.warning("[RECONCILIATION] Drift detected for %s #%d: %s", rr.entity_type, issue_number, rr.reason)
-        self.events.publish(TraceEvent(
+        self.events.publish(make_trace_event(
             EventName.RECONCILIATION_REQUIRED,
             self.event_context.enrich({
                 "issue_number": issue_number, "entity_type": rr.entity_type, "reason": rr.reason,
@@ -277,7 +283,7 @@ class OrchestratorSupport:
 
     def _emit_apply_failed(self, action: "Action", error: str) -> None:
         """Emit APPLY_FAILED event."""
-        self.events.publish(TraceEvent(
+        self.events.publish(make_trace_event(
             EventName.APPLY_FAILED,
             self.event_context.enrich({"step_type": action.action_type.value, "issue_number": self._get_action_issue_number(action), "error": error}),
         ))
@@ -398,7 +404,7 @@ def pause_issue_for_reconciliation(
             "[RECONCILIATION] Paused issue #%d with label '%s': %s",
             issue_number, pause_label, reason
         )
-        events.publish(TraceEvent(
+        events.publish(make_trace_event(
             EventName.ISSUE_PAUSED_RECONCILE,
             event_context.enrich({
                 "issue_number": issue_number,
@@ -436,7 +442,7 @@ def emit_heartbeat_if_needed(
     """
     now = time.time()
     if now - last_ui_update >= ui_update_interval:
-        events.publish(TraceEvent(
+        events.publish(make_trace_event(
             EventName.ORCHESTRATOR_IDLE,
             event_context.enrich({
                 "active_sessions": len(state.active_sessions),
@@ -532,7 +538,7 @@ def _detect_stale_claims(
                     "[STALE-CLAIM] Issue #%d has io:claimed label but no valid claim",
                     issue.number,
                 )
-                events.publish(TraceEvent(
+                events.publish(make_trace_event(
                     EventName.CLAIM_STALE_DETECTED,
                     event_context.enrich({
                         "issue_number": issue.number,
@@ -921,7 +927,7 @@ def _emit_queue_changes(events: EventSink, state: "OrchestratorState", new_queue
     if added_numbers or removed_numbers:
         added = [{"number": i.number, "title": i.title} for i in new_queue if i.number in added_numbers]
         removed = [{"number": n} for n in removed_numbers]
-        events.publish(TraceEvent(EventName.QUEUE_CHANGED, {"added": added, "removed": removed, "total": len(new_queue)}))
+        events.publish(make_trace_event(EventName.QUEUE_CHANGED, {"added": added, "removed": removed, "total": len(new_queue)}))
         logger.info("Queue changed: %d added, %d removed, %d total", len(added), len(removed), len(new_queue))
 
 
@@ -941,13 +947,13 @@ def _detect_stale_in_progress(observer: object | None, state: "OrchestratorState
         return []
     stale_issues = observer.detect_stale_in_progress(state.cached_queue_issues, state.active_sessions)
     for issue in stale_issues:
-        events.publish(TraceEvent(EventName.STALE_IN_PROGRESS_DETECTED, event_context.enrich({"issue_number": issue.number, "labels": list(issue.labels)})))
+        events.publish(make_trace_event(EventName.STALE_IN_PROGRESS_DETECTED, event_context.enrich({"issue_number": issue.number, "labels": list(issue.labels)})))
     return stale_issues
 
 
 def _emit_facts_gathered(events: EventSink, event_context: EventContext, state: "OrchestratorState", stale_issues: list["Issue"]) -> None:
     """Emit facts gathered event."""
-    events.publish(TraceEvent(
+    events.publish(make_trace_event(
         EventName.FACTS_GATHERED,
         event_context.enrich({
             "issues_count": len(state.cached_queue_issues), "active_sessions": len(state.active_sessions),
@@ -959,7 +965,7 @@ def _emit_facts_gathered(events: EventSink, event_context: EventContext, state: 
 
 def _emit_plan_computed(events: EventSink, event_context: EventContext, plan: "Plan") -> None:
     """Emit plan computed event."""
-    events.publish(TraceEvent(EventName.PLAN_COMPUTED, event_context.enrich({"steps": plan.action_count, "actions": [a.action_type.value for a in plan.actions]})))
+    events.publish(make_trace_event(EventName.PLAN_COMPUTED, event_context.enrich({"steps": plan.action_count, "actions": [a.action_type.value for a in plan.actions]})))
 
 
 def track_stale_ticks(
@@ -995,7 +1001,7 @@ def _track_stale_ticks(
     for issue_num in list(state.stale_issue_ticks.keys()):
         if issue_num not in current_stale:
             del state.stale_issue_ticks[issue_num]
-            events.publish(TraceEvent(
+            events.publish(make_trace_event(
                 EventName.STALE_IN_PROGRESS_CLEARED,
                 event_context.enrich({"issue_number": issue_num}),
             ))
@@ -1006,7 +1012,7 @@ def _track_stale_ticks(
     if threshold > 0:
         for issue_num, ticks in state.stale_issue_ticks.items():
             if ticks >= threshold:
-                events.publish(TraceEvent(
+                events.publish(make_trace_event(
                     EventName.PERSISTENT_STALE_DETECTED,
                     event_context.enrich({
                         "issue_number": issue_num,
@@ -1065,13 +1071,13 @@ def run_tick(
     )
 
     # Emit tick.started
-    events.publish(TraceEvent(
+    events.publish(make_trace_event(
         EventName.TICK_STARTED,
         event_context.enrich({}),
     ))
 
     if shutdown_requested:
-        events.publish(TraceEvent(
+        events.publish(make_trace_event(
             EventName.TICK_COMPLETED,
             event_context.enrich({"idle": True, "reason": "shutdown_requested"}),
         ))
@@ -1097,7 +1103,7 @@ def run_tick(
             logger.warning("[LOOP] Planning cycle took %.1fs", plan_elapsed)
     else:
         # Emit plan.noop when we skip planning
-        events.publish(TraceEvent(
+        events.publish(make_trace_event(
             EventName.PLAN_NOOP,
             event_context.enrich({"reason": health_decision.reason}),
         ))
@@ -1105,7 +1111,7 @@ def run_tick(
     emit_heartbeat_fn()
 
     # Emit tick.completed
-    events.publish(TraceEvent(
+    events.publish(make_trace_event(
         EventName.TICK_COMPLETED,
         event_context.enrich({
             "idle": len(state.active_sessions) == 0,

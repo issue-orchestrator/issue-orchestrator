@@ -72,6 +72,17 @@ async def start_orchestrator_runtime(
 ) -> OrchestratorRuntime:
     orchestrator.start(max_issues=max_issues, extra_args=extra_args)
     assert orchestrator.is_running(), "Orchestrator should start"
+    # Startup can take longer in production-parity runs (doctor/worktree checks).
+    # Wait for control API readiness before wiring the watcher.
+    deadline = time.monotonic() + 60.0
+    while time.monotonic() < deadline:
+        if not orchestrator.is_running():
+            raise AssertionError("Orchestrator exited before control API became ready")
+        if orchestrator._check_api_running():  # noqa: SLF001 - E2E helper needs process readiness probe
+            break
+        await asyncio.sleep(0.25)
+    if not orchestrator._check_api_running():  # noqa: SLF001 - E2E helper needs process readiness probe
+        raise AssertionError("Timed out waiting for control API readiness before watcher startup")
     watcher, stream = await create_watcher_for_port(control_api_port)
     return OrchestratorRuntime(orchestrator=orchestrator, watcher=watcher, stream=stream)
 

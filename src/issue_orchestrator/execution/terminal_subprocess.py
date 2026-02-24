@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import signal
 import sqlite3
 import threading
@@ -33,6 +34,7 @@ from ..infra.sqlite_connection import open_sqlite
 from .session_output_adapter import FileSystemSessionOutput
 
 logger = logging.getLogger(__name__)
+_RUN_DIR_ENV_RE = re.compile(r"ISSUE_ORCHESTRATOR_RUN_DIR=(['\"]?)([^'\"\s]+)\1")
 
 
 @dataclass
@@ -242,10 +244,18 @@ class SubprocessPlugin:
         allow_stdin_val = get_env("SUBPROCESS_ALLOW_STDIN") or ""
         self._allow_stdin = allow_stdin_val.lower() in {"1", "true", "yes"}
 
-    def _session_log_path(self, working_dir: Path, session_name: str) -> Path:
+    def _session_log_path(self, working_dir: Path, session_name: str, command: str | None = None) -> Path:
+        if command:
+            match = _RUN_DIR_ENV_RE.search(command)
+            if match:
+                run_dir = Path(match.group(2))
+                if not run_dir.is_absolute():
+                    run_dir = (working_dir / run_dir).resolve()
+                run_dir.mkdir(parents=True, exist_ok=True)
+                return run_dir / "ui-session.log"
         session_output = FileSystemSessionOutput()
         run_dir = session_output.ensure_run_dir(working_dir, session_name)
-        return run_dir / "session.log"
+        return run_dir / "ui-session.log"
 
     def _build_process_command(self, command: str, working_dir: Path) -> str:
         """Build the full command with path and isolation prefix."""
@@ -298,7 +308,7 @@ class SubprocessPlugin:
         import pexpect
 
         full_cmd = self._build_process_command(command, working_dir)
-        log_path = self._session_log_path(working_dir, session_name)
+        log_path = self._session_log_path(working_dir, session_name, command)
 
         # Open log file for binary writing (pexpect writes bytes)
         log_file = open(log_path, "wb", buffering=0)
@@ -328,6 +338,11 @@ class SubprocessPlugin:
                 # ptyprocess can race with waitpid() under parallel load
                 # and raise when the child has already been reaped.
                 return False
+            except Exception as exc:
+                # pexpect may wrap waitpid races in ExceptionPexpect.
+                if exc.__class__.__name__ == "ExceptionPexpect":
+                    return False
+                raise
         # Fall back to kill(0) check for processes we don't track directly
         try:
             os.kill(pid, 0)
@@ -390,7 +405,7 @@ class SubprocessPlugin:
             worktree_path=str(worktree.resolve()),
             pid=child.pid,
             started_at=datetime.now().isoformat(),
-            log_path=str(self._session_log_path(worktree, session_name)),
+            log_path=str(self._session_log_path(worktree, session_name, command)),
             tab_name=tab_name,
             is_review=is_review,
         )

@@ -174,7 +174,11 @@ class TestGetBestEntryPoint:
             ],
             current_directory="/home/user/repo",
         )
-        entry = get_best_entry_point(state)
+        with patch(
+            "issue_orchestrator.observation.instance_detector._find_available_dashboard_port",
+            return_value=19080,
+        ):
+            entry = get_best_entry_point(state)
         # Always goes through unified dashboard, with deep-link to active repo
         assert entry["action"] == "start_dashboard"
         assert entry["port"] == 19080
@@ -207,9 +211,27 @@ class TestGetBestEntryPoint:
             repos=[],
             current_directory="/tmp",
         )
-        entry = get_best_entry_point(state)
+        with patch(
+            "issue_orchestrator.observation.instance_detector._find_available_dashboard_port",
+            return_value=19080,
+        ):
+            entry = get_best_entry_point(state)
         assert entry["action"] == "start_dashboard"
         assert entry["port"] == 19080
+
+    def test_returns_start_dashboard_with_fallback_port_when_default_unavailable(self):
+        state = SystemState(
+            dashboard=DashboardStatus(running=False),
+            repos=[],
+            current_directory="/tmp",
+        )
+        with patch(
+            "issue_orchestrator.observation.instance_detector._find_available_dashboard_port",
+            return_value=19081,
+        ):
+            entry = get_best_entry_point(state)
+        assert entry["action"] == "start_dashboard"
+        assert entry["port"] == 19081
 
 
 class TestDashboardPidFile:

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from ..events import EventName
-from ..ports import EventSink, TraceEvent
+from ..ports import EventSink,  make_trace_event
 from ..ports.provider_resilience import ProviderCircuitState, ProviderCircuitStore
 from ..infra.config import ProviderResilienceConfig
 
@@ -65,7 +65,7 @@ class ProviderResilienceManager:
         )
         self.store.save(new_state)
 
-        self.events.publish(TraceEvent(
+        self.events.publish(make_trace_event(
             EventName.PROVIDER_TRANSIENT_ERROR,
             {
                 "provider": provider,
@@ -75,7 +75,7 @@ class ProviderResilienceManager:
         ))
 
         if not was_open:
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.PROVIDER_OUTAGE_ENTERED,
                 {
                     "provider": provider,
@@ -85,7 +85,7 @@ class ProviderResilienceManager:
                 },
             ))
 
-        self.events.publish(TraceEvent(
+        self.events.publish(make_trace_event(
             EventName.PROVIDER_RETRY_SCHEDULED,
             {
                 "provider": provider,
@@ -105,7 +105,7 @@ class ProviderResilienceManager:
         if state is None:
             return
         self.store.delete(provider)
-        self.events.publish(TraceEvent(
+        self.events.publish(make_trace_event(
             EventName.PROVIDER_OUTAGE_EXITED,
             {
                 "provider": provider,
@@ -128,14 +128,14 @@ class ProviderResilienceManager:
             )
             self.store.save(updated)
             closed.append(updated)
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.PROVIDER_OUTAGE_EXITED,
                 {
                     "provider": state.provider,
                     "at": now.isoformat(),
                 },
             ))
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.PROVIDER_RETRY_ATTEMPTED,
                 {
                     "provider": state.provider,

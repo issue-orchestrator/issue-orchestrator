@@ -9,10 +9,142 @@ This is the key abstraction that keeps pluggy out of the core.
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Protocol, TYPE_CHECKING
+from typing import Any, Literal, NotRequired, Protocol, TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
     from issue_orchestrator.events.catalog import EventName
+    RunScopedEventName = Literal[
+        EventName.SESSION_STARTED,
+        EventName.SESSION_ARTIFACT_LOOKUP,
+        EventName.SESSION_PROCESSING_COMPLETED,
+        EventName.SESSION_VALIDATION_PASSED,
+        EventName.SESSION_VALIDATION_RETRY_NEEDED,
+        EventName.SESSION_VALIDATION_FAILED,
+        EventName.REVIEW_STARTED,
+        EventName.REWORK_STARTED,
+    ]
+else:
+    RunScopedEventName = Any
+
+
+class RunScopedEventPayload(TypedDict):
+    issue_number: int
+    run_dir: str
+    session_name: NotRequired[str]
+    session_id: NotRequired[str]
+    pr_number: NotRequired[int]
+    agent: NotRequired[str]
+    task: NotRequired[str]
+    worktree_path: NotRequired[str]
+    branch_name: NotRequired[str]
+    run_id: NotRequired[str]
+    tick_id: NotRequired[int]
+    schema: NotRequired[int]
+    completion_path: NotRequired[str]
+    completion_path_absolute: NotRequired[str]
+    session_prompt_path: NotRequired[str | None]
+    lookup_kind: NotRequired[str]
+    resolved_run_dir: NotRequired[str]
+    run_dir_exists: NotRequired[bool]
+    selected_log_path: NotRequired[str | None]
+    log_path_exists: NotRequired[bool]
+    reason: NotRequired[str]
+    validation_source: NotRequired[str]
+    validation_error_summary: NotRequired[str]
+    validation_reason: NotRequired[str]
+    validation_cmd: NotRequired[str | None]
+    error_file: NotRequired[str | None]
+    retry_count: NotRequired[int]
+    max_retries: NotRequired[int]
+    success: NotRequired[bool]
+    message: NotRequired[str]
+    actions_taken: NotRequired[list[str] | None]
+    errors: NotRequired[list[str] | None]
+    pr_url: NotRequired[str | None]
+    rework_cycle: NotRequired[int]
+    review_exchange_mode: NotRequired[str]
+
+
+class SessionStartedEventPayload(RunScopedEventPayload):
+    """Payload for ``session.started`` events."""
+
+
+class SessionArtifactLookupEventPayload(RunScopedEventPayload):
+    """Payload for ``session.artifact_lookup`` events."""
+
+
+class SessionProcessingCompletedEventPayload(RunScopedEventPayload):
+    """Payload for ``session.processing_completed`` events."""
+
+
+class SessionValidationPassedEventPayload(RunScopedEventPayload):
+    """Payload for ``session.validation_passed`` events."""
+
+
+class SessionValidationRetryNeededEventPayload(RunScopedEventPayload):
+    """Payload for ``session.validation_retry_needed`` events."""
+
+
+class SessionValidationFailedEventPayload(RunScopedEventPayload):
+    """Payload for ``session.validation_failed`` events."""
+
+
+def make_trace_event(
+    event_type: "EventName",
+    data: dict[str, Any],
+) -> "TraceEvent":
+    """Build a trace event through a central constructor."""
+    return TraceEvent(event_type, dict(data))
+
+
+def make_run_scoped_event(
+    event_type: RunScopedEventName,
+    data: RunScopedEventPayload,
+) -> "TraceEvent":
+    """Build a run-scoped event with typed payload requiring run_dir."""
+    return TraceEvent(event_type, dict(data))
+
+
+def make_session_started_event(data: SessionStartedEventPayload) -> "TraceEvent":
+    """Build a typed ``session.started`` event."""
+    from issue_orchestrator.events import EventName
+
+    return make_run_scoped_event(EventName.SESSION_STARTED, data)
+
+
+def make_session_artifact_lookup_event(data: SessionArtifactLookupEventPayload) -> "TraceEvent":
+    """Build a typed ``session.artifact_lookup`` event."""
+    from issue_orchestrator.events import EventName
+
+    return make_run_scoped_event(EventName.SESSION_ARTIFACT_LOOKUP, data)
+
+
+def make_session_processing_completed_event(data: SessionProcessingCompletedEventPayload) -> "TraceEvent":
+    """Build a typed ``session.processing_completed`` event."""
+    from issue_orchestrator.events import EventName
+
+    return make_run_scoped_event(EventName.SESSION_PROCESSING_COMPLETED, data)
+
+
+def make_session_validation_passed_event(data: SessionValidationPassedEventPayload) -> "TraceEvent":
+    """Build a typed ``session.validation_passed`` event."""
+    from issue_orchestrator.events import EventName
+
+    return make_run_scoped_event(EventName.SESSION_VALIDATION_PASSED, data)
+
+
+def make_session_validation_retry_needed_event(data: SessionValidationRetryNeededEventPayload) -> "TraceEvent":
+    """Build a typed ``session.validation_retry_needed`` event."""
+    from issue_orchestrator.events import EventName
+
+    return make_run_scoped_event(EventName.SESSION_VALIDATION_RETRY_NEEDED, data)
+
+
+def make_session_validation_failed_event(data: SessionValidationFailedEventPayload) -> "TraceEvent":
+    """Build a typed ``session.validation_failed`` event."""
+    from issue_orchestrator.events import EventName
+
+    return make_run_scoped_event(EventName.SESSION_VALIDATION_FAILED, data)
 
 
 @dataclass(frozen=True)
@@ -34,6 +166,38 @@ class TraceEvent:
     data: dict[str, Any] = field(default_factory=dict)
     timestamp: datetime = field(default_factory=datetime.now)
     event_id: int | None = None
+
+    _RUN_DIR_REQUIRED_EVENTS: frozenset[str] = field(
+        default=frozenset(
+            {
+                "session.started",
+                "session.artifact_lookup",
+                "session.processing_completed",
+                "session.validation_passed",
+                "session.validation_retry_needed",
+                "session.validation_failed",
+                "review.started",
+                "rework.started",
+            }
+        ),
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    def __post_init__(self) -> None:
+        """Validate strict event invariants at construction time."""
+        if self.name not in self._RUN_DIR_REQUIRED_EVENTS:
+            return
+        # Some non-issue-scoped helpers emit generic session events without issue_number.
+        # Enforce run_dir only for issue-scoped timeline events.
+        if not isinstance(self.data.get("issue_number"), int):
+            return
+        run_dir = self.data.get("run_dir")
+        if not isinstance(run_dir, str) or not run_dir:
+            raise ValueError(
+                f"{self.name} requires non-empty run_dir in event data"
+            )
 
     @property
     def name(self) -> str:

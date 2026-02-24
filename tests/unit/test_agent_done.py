@@ -21,6 +21,7 @@ from issue_orchestrator.entrypoints.cli_tools.agent_done import (
     STATUS_TO_OUTCOME,
     STATUS_TO_ACTIONS,
     die,
+    get_issue_number,
     get_session_id,
     validate_fields,
     format_comment_body,
@@ -125,6 +126,7 @@ class TestStatusToActions:
         """Test approved status requests label changes and comment."""
         actions = STATUS_TO_ACTIONS[AgentStatus.APPROVED]
         assert RequestedAction.ADD_CODE_REVIEWED_LABEL in actions
+        assert RequestedAction.REMOVE_NEEDS_REWORK_LABEL in actions
         assert RequestedAction.REMOVE_CODE_REVIEW_LABEL in actions
         assert RequestedAction.POST_COMMENT in actions
 
@@ -172,6 +174,29 @@ class TestGetSessionId:
             assert session_id.startswith("standalone-")
             # Should contain date-time pattern
             assert "-" in session_id
+
+    def test_prefers_prefixed_session_id_env(self):
+        """ISSUE_ORCHESTRATOR_SESSION_ID should take precedence."""
+        prefixed = f"{ENV_PREFIX}SESSION_ID"
+        with patch.dict(
+            os.environ,
+            {prefixed: "prefixed-session", "ORCHESTRATOR_SESSION_ID": "legacy-session"},
+            clear=True,
+        ):
+            assert get_session_id() == "prefixed-session"
+
+
+class TestGetIssueNumber:
+    """Test issue number resolution from environment."""
+
+    def test_prefers_prefixed_issue_number_env(self):
+        prefixed = f"{ENV_PREFIX}ISSUE_NUMBER"
+        with patch.dict(
+            os.environ,
+            {prefixed: "4057", "ORCHESTRATOR_ISSUE_NUMBER": "1"},
+            clear=True,
+        ):
+            assert get_issue_number() == 4057
 
 
 class TestValidateFields:
@@ -522,6 +547,7 @@ class TestBuildCompletionRecord:
         assert record.risk_level == "low"
         assert record.checks_passed == ["tests_added"]
         assert RequestedAction.ADD_CODE_REVIEWED_LABEL in record.requested_actions
+        assert RequestedAction.REMOVE_NEEDS_REWORK_LABEL in record.requested_actions
 
     def test_build_changes_requested_record(self):
         """Test building completion record for changes_requested status."""
@@ -1010,7 +1036,9 @@ validation:
             )
             assert manifest_path.exists()
             manifest = json.loads(manifest_path.read_text())
-            assert manifest.get("validation_record_path")
+            validation_record_path = manifest.get("validation_record_path")
+            assert validation_record_path
+            assert str(validation_record_path).endswith("validation-record.json")
             assert manifest.get("validation_status") == "failed"
         finally:
             os.chdir(original_cwd)
@@ -1071,6 +1099,123 @@ validation:
             assert "--- END STDERR ---" in captured.out
             assert "TO FIX:" in captured.out
             assert 'agent-done blocked --reason "Validation failing:' in captured.out
+        finally:
+            os.chdir(original_cwd)
+
+    def test_validation_uses_selected_config_name_env(self, tmp_path, capsys):
+        """agent-done should honor ISSUE_ORCHESTRATOR_CONFIG_NAME (e.g., main.yaml)."""
+        # Create fake git repo
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (tmp_path / "README.md").write_text("test")
+
+        import subprocess
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
+
+        # Create ONLY main.yaml (no default.yaml). Validation must still run.
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "main.yaml").write_text(
+            """
+validation:
+  cmd: "exit 1"
+  timeout_seconds: 10
+"""
+        )
+
+        # Create session output directory (required for validation)
+        session_output_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
+        session_output_dir.mkdir(parents=True)
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+
+            with patch.dict(os.environ, {f"{ENV_PREFIX}CONFIG_NAME": "main.yaml"}, clear=False):
+                with patch(
+                    "sys.argv",
+                    [
+                        "agent-done",
+                        "completed",
+                        "--implementation",
+                        "Added feature",
+                        "--problems",
+                        "None",
+                    ],
+                ):
+                    with patch(
+                        "issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id",
+                        return_value="test-123",
+                    ):
+                        with pytest.raises(SystemExit) as exc_info:
+                            main()
+                        # Validation should run and fail
+                        assert exc_info.value.code == 1
+
+            captured = capsys.readouterr()
+            assert "VALIDATION FAILED" in captured.out
+            manifest_path = (
+                tmp_path / ".issue-orchestrator" / "sessions" / "test-123" / "manifest.json"
+            )
+            assert manifest_path.exists()
+            manifest = json.loads(manifest_path.read_text())
+            validation_record_path = manifest.get("validation_record_path")
+            assert validation_record_path
+            assert str(validation_record_path).endswith("validation-record.json")
+            assert manifest.get("validation_status") == "failed"
+        finally:
+            os.chdir(original_cwd)
+
+    def test_missing_selected_config_name_fails_fast(self, tmp_path, capsys):
+        """agent-done should fail loudly when selected config file is missing."""
+        git_dir = tmp_path / ".git"
+        git_dir.mkdir()
+        (tmp_path / "README.md").write_text("test")
+
+        import subprocess
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
+
+        # Only default exists; selected config points to missing main.yaml.
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(
+            """
+validation:
+  cmd: "echo ok"
+  timeout_seconds: 10
+"""
+        )
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+
+            with patch.dict(os.environ, {f"{ENV_PREFIX}CONFIG_NAME": "main.yaml"}, clear=False):
+                with patch(
+                    "sys.argv",
+                    [
+                        "agent-done",
+                        "completed",
+                        "--implementation",
+                        "Added feature",
+                        "--problems",
+                        "None",
+                    ],
+                ):
+                    with pytest.raises(SystemExit) as exc_info:
+                        main()
+                    assert exc_info.value.code == 1
+
+            captured = capsys.readouterr()
+            assert "Configured file 'main.yaml' not found under" in captured.err
         finally:
             os.chdir(original_cwd)
 

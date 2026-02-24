@@ -79,7 +79,15 @@ def create_mock_orchestrator():
     lm.blocked = "blocked"
     lm.needs_human = "blocked-needs-human"
     lm.blocked_failed = "blocked-failed"
+    lm.pr_pending = "pr-pending"
     lm.in_progress = "in-progress"
+    lm.get_blocking = MagicMock(
+        side_effect=lambda labels: [
+            label for label in labels
+            if label in {"blocked", "blocked-needs-human", "blocked-failed"}
+        ],
+    )
+    lm.is_pr_pending = MagicMock(side_effect=lambda labels: "pr-pending" in labels)
 
     # Mock event context for snapshot (use public property)
     mock.event_context = MagicMock()
@@ -299,6 +307,10 @@ class TestControlCenterTemplate:
         body = response.text
         assert "Repository Engines" in body
         assert "Close Control Center" in body
+        assert 'id="sidebarCloseCC"' in body
+        assert 'id="sidebarAppMenuBtn"' in body
+        assert 'id="shutdownBtn"' not in body
+        assert 'id="menuCloseCC"' not in body
         assert "Start engine" in body
         assert "Not running" in body
         assert "Closing this window does not stop repository engines" in body
@@ -306,6 +318,77 @@ class TestControlCenterTemplate:
         assert 'id="sidebarRepoList"' not in body
         assert "nav-repo-list" not in body
         assert "nav-repo-item" not in body
+
+
+class TestControlCenterRepoContext:
+    """Control Center should prefer the repo root it was launched from."""
+
+    def test_control_repos_prioritizes_preferred_repo(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_supervisor: MagicMock,
+    ) -> None:
+        from issue_orchestrator.infra import repo_registry
+
+        preferred = tmp_path / "preferred"
+        other = tmp_path / "other"
+        preferred.mkdir()
+        other.mkdir()
+
+        repos = [
+            SimpleNamespace(
+                path=str(other),
+                name="other",
+                added_at="2026-01-01T00:00:00+00:00",
+                selected_config="default.yaml",
+                health=None,
+            )
+        ]
+
+        def fake_list_repos():
+            return list(repos)
+
+        def fake_add_repo(path: str):
+            repos.append(
+                SimpleNamespace(
+                    path=str(Path(path)),
+                    name=Path(path).name,
+                    added_at="2026-01-01T00:00:00+00:00",
+                    selected_config="default.yaml",
+                    health=None,
+                )
+            )
+            return repos[-1]
+
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", str(preferred))
+        monkeypatch.setattr(repo_registry, "list_repos", fake_list_repos)
+        monkeypatch.setattr(repo_registry, "add_repo", fake_add_repo)
+        mock_supervisor.status.return_value = SupervisorStatus(state="stopped")
+
+        response = supervisor_client.get("/control/repos")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["repos"][0]["path"] == str(preferred)
+        assert data["repos"][1]["path"] == str(other)
+
+    def test_control_info_exposes_preferred_repo_root(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        preferred = tmp_path / "preferred"
+        preferred.mkdir()
+        monkeypatch.setenv("ISSUE_ORCHESTRATOR_CC_REPO_ROOT", str(preferred))
+
+        response = supervisor_client.get("/control/info")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["preferred_repo_root"] == str(preferred)
 
 
 # --- Test: Refresh Endpoint ---
@@ -815,7 +898,7 @@ class TestSupervisorStatus:
         """Return running state when untracked orchestrator is detected."""
         from issue_orchestrator.entrypoints import control_api
 
-        def fake_detect(repo_root: Path, config_name: str) -> dict:
+        def fake_detect(repo_root: Path, config_name: str, **_: object) -> dict:
             return {
                 "port": 19080,
                 "health": "ok",
@@ -915,7 +998,7 @@ class TestSupervisorStop:
         from issue_orchestrator.entrypoints import control_api
 
         mock_supervisor.status.return_value = SupervisorStatus(state="stopped")
-        monkeypatch.setattr(control_api, "_confirm_orchestrator_at_port", lambda *_: False)
+        monkeypatch.setattr(control_api, "_confirm_orchestrator_at_port", lambda *_, **__: False)
 
         response = supervisor_client.post(
             "/control/orchestrator/stop",
@@ -924,6 +1007,25 @@ class TestSupervisorStop:
 
         assert response.status_code == 409
         assert response.json()["error"] == "port_mismatch"
+
+    def test_stop_blocked_when_global_shutdown_in_progress(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from issue_orchestrator.entrypoints import control_api
+
+        monkeypatch.setattr(control_api, "_global_shutdown_in_progress", lambda: True)
+
+        response = supervisor_client.post(
+            "/control/orchestrator/stop",
+            json={"repo_root": str(tmp_path)},
+        )
+
+        assert response.status_code == 409
+        payload = response.json()
+        assert payload["error"] == "global_shutdown_in_progress"
 
 
 class TestSupervisorReconcile:
@@ -964,7 +1066,7 @@ class TestSupervisorReconcile:
             "issue_orchestrator.infra.repo_registry.list_repos",
             lambda: [SimpleNamespace(path=str(tmp_path), selected_config="default.yaml")],
         )
-        monkeypatch.setattr(control_api, "_detect_orchestrator_by_port", lambda *_: {"port": 19080, "status": {}})
+        monkeypatch.setattr(control_api, "_detect_orchestrator_by_port", lambda *_, **__: {"port": 19080, "status": {}})
 
         response = supervisor_client.post("/control/orchestrator/reconcile", json={"stop_orphaned": True})
 
@@ -1160,7 +1262,7 @@ class TestSupervisorReconcileMultiInstance:
         monkeypatch.setattr(
             control_api,
             "_detect_orchestrator_by_port",
-            lambda *_: pytest.fail("orphan detector should not run for multi-instance reconcile"),
+            lambda *_, **__: pytest.fail("orphan detector should not run for multi-instance reconcile"),
         )
 
         def fake_enrich(repo_path: Path, payload: dict[str, object] | None, *, orphaned: bool = False, instance_id: str | None = None):
@@ -1246,7 +1348,7 @@ class TestSupervisorStart:
         monkeypatch.setattr(
             control_api,
             "_detect_orchestrator_by_port",
-            lambda *_: {"port": 19080, "health": "ok"},
+            lambda *_, **__: {"port": 19080, "health": "ok"},
         )
 
         response = supervisor_client.post(
@@ -1256,6 +1358,121 @@ class TestSupervisorStart:
 
         assert response.status_code == 409
         assert response.json()["error"] == "orphaned_running"
+
+    def test_start_auto_restarts_identity_mismatch(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_supervisor: MagicMock,
+    ) -> None:
+        """Identity mismatch should be stopped and relaunched without user intervention."""
+        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.infra import launcher
+        from issue_orchestrator.infra.doctor.types import DoctorResult
+        from issue_orchestrator.infra.launcher import LaunchResult
+
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
+        monkeypatch.setattr(
+            control_api,
+            "_detect_orchestrator_by_port",
+            lambda *_, **__: {
+                "port": 19080,
+                "identity_mismatch": {"commit_sha": {"expected": "abc", "observed": "def"}},
+                "expected_identity": {"commit_sha": "abc"},
+                "observed_identity": {"commit_sha": "def"},
+            },
+        )
+        monkeypatch.setattr(
+            launcher,
+            "launch_subprocess",
+            lambda **kwargs: LaunchResult(
+                doctor=DoctorResult(checks=[]),
+                launched=True,
+                status="ok",
+                supervisor={"pid": 123, "port": 19080},
+            ),
+        )
+
+        response = supervisor_client.post(
+            "/control/orchestrator/start",
+            json={"repo_root": str(tmp_path), "config_name": "default.yaml"},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["status"] == "started"
+        mock_supervisor.stop_by_port.assert_called_once_with(19080, force=True)
+
+    def test_annotate_identity_mismatch_ignores_dirty_state_drift(
+        self,
+    ) -> None:
+        """Volatile dirty-state fields should not trigger identity mismatch."""
+        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.infra.repo_identity import RepoIdentity
+
+        expected = RepoIdentity(
+            repo_root="/repo",
+            commit_sha="abc",
+            branch="main",
+            working_tree_dirty=False,
+            dirty_fingerprint=None,
+            source_root="/src",
+        )
+        info = {
+            "repo_identity": {
+                "repo_root": "/repo",
+                "commit_sha": "abc",
+                "branch": "main",
+                "working_tree_dirty": True,
+                "dirty_fingerprint": "abcd1234",
+                "source_root": "/src",
+            }
+        }
+        details: dict[str, object] = {}
+
+        control_api._annotate_identity_mismatch(
+            details,
+            info,
+            expected,
+        )
+        assert "identity_mismatch" not in details
+
+    def test_start_identity_mismatch_stop_failure_returns_409(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_supervisor: MagicMock,
+    ) -> None:
+        """Identity mismatch with failed stop should fail closed."""
+        from issue_orchestrator.entrypoints import control_api
+
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("agents: {}\n")
+
+        mock_supervisor.stop_by_port.return_value = False
+        monkeypatch.setattr(
+            control_api,
+            "_detect_orchestrator_by_port",
+            lambda *_, **__: {
+                "port": 19080,
+                "identity_mismatch": {"commit_sha": {"expected": "abc", "observed": "def"}},
+                "expected_identity": {"commit_sha": "abc"},
+                "observed_identity": {"commit_sha": "def"},
+            },
+        )
+
+        response = supervisor_client.post(
+            "/control/orchestrator/start",
+            json={"repo_root": str(tmp_path), "config_name": "default.yaml"},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["error"] == "engine_identity_mismatch"
 
     def test_start_force_restart_stops_orphaned(
         self, supervisor_client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
@@ -1282,7 +1499,7 @@ class TestSupervisorStart:
         monkeypatch.setattr(
             control_api,
             "_detect_orchestrator_by_port",
-            lambda *_: {"port": 19080, "health": "ok"},
+            lambda *_, **__: {"port": 19080, "health": "ok"},
         )
         mock_supervisor.stop_by_port.return_value = True
         mock_supervisor.start.return_value = LockInfo(
@@ -3294,6 +3511,9 @@ class TestRetryIssueEndpoint:
             removed_labels.append((issue_number, label))
 
         mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.get_issue_labels = MagicMock(
+            return_value=["agent:web", "blocked", "pr-pending"]
+        )
         mock_orch.repository_host.remove_label = MagicMock(
             side_effect=track_remove_label
         )
@@ -3308,8 +3528,10 @@ class TestRetryIssueEndpoint:
         # Verify correct labels were targeted for removal
         removed_issue_numbers = [num for num, _ in removed_labels]
         assert all(num == 123 for num in removed_issue_numbers)
-        # Should attempt to remove blocked, blocked-needs-human, blocked-failed
-        assert len(removed_labels) == 3
+        # Should attempt to remove blocked + pr-pending (retry-gating labels)
+        assert len(removed_labels) == 2
+        assert (123, "blocked") in removed_labels
+        assert (123, "pr-pending") in removed_labels
 
     def test_retry_handles_label_removal_failure_gracefully(
         self, client_with_orchestrator
@@ -3319,6 +3541,9 @@ class TestRetryIssueEndpoint:
 
         # Mock the repository_host to raise exception on label removal
         mock_orch.repository_host = MagicMock()
+        mock_orch.repository_host.get_issue_labels = MagicMock(
+            return_value=["blocked", "pr-pending"]
+        )
         mock_orch.repository_host.remove_label = MagicMock(
             side_effect=Exception("Label not found")
         )
@@ -3421,3 +3646,206 @@ class TestDismissIssueEndpoint:
         assert response.status_code == 200
         data = response.json()
         assert data["success"] is True
+
+
+class TestControlCenterShutdownEndpoint:
+    """Test /control/shutdown force-stop options."""
+
+    def test_shutdown_does_not_stop_engines_when_not_requested(self):
+        mock_supervisor = MagicMock()
+        set_supervisor(mock_supervisor)
+        try:
+            with patch("threading.Thread") as mock_thread:
+                client = TestClient(control_app)
+                response = client.post("/control/shutdown", json={"stop_orchestrators": False})
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "shutting_down"
+            mock_supervisor.stop.assert_not_called()
+            mock_thread.assert_called_once()
+        finally:
+            set_supervisor(None)
+
+    def test_shutdown_force_stops_running_engines_when_requested(self):
+        from issue_orchestrator.entrypoints import control_api
+
+        mock_supervisor = MagicMock()
+        mock_supervisor.status.return_value = SimpleNamespace(state="running")
+        mock_supervisor.stop_all_instances.return_value = 1
+        set_supervisor(mock_supervisor)
+        repos = [SimpleNamespace(path="/tmp/repo-a")]
+        try:
+            with patch.object(control_api, "_schedule_control_center_exit", return_value=None):
+                with patch("issue_orchestrator.infra.repo_registry.list_repos", return_value=repos):
+                    with patch("pathlib.Path.exists", return_value=True):
+                        with patch("threading.Thread") as mock_thread:
+                            client = TestClient(control_app)
+                            response = client.post(
+                                "/control/shutdown",
+                                json={"stop_orchestrators": True, "force_orchestrators": True},
+                            )
+                            # Worker runs in background thread; execute target inline for deterministic assertions.
+                            target = mock_thread.call_args.kwargs.get("target")
+                            assert callable(target)
+                            target()
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "shutting_down"
+            assert data["stopped_orchestrators"] == []
+            mock_supervisor.stop_all_instances.assert_called_once()
+            stop_args, stop_kwargs = mock_supervisor.stop_all_instances.call_args
+            assert str(stop_args[0]) == "/tmp/repo-a"
+            assert stop_kwargs["force"] is True
+            assert stop_kwargs["force_if_graceful_fails"] is True
+            mock_thread.assert_called_once()
+        finally:
+            set_supervisor(None)
+
+    def test_shutdown_marks_failed_when_running_engine_cannot_be_stopped(self):
+        from issue_orchestrator.entrypoints import control_api
+
+        mock_supervisor = MagicMock()
+        mock_supervisor.status.return_value = SimpleNamespace(state="running")
+        mock_supervisor.stop_all_instances.return_value = 0
+        set_supervisor(mock_supervisor)
+        repos = [SimpleNamespace(path="/tmp/repo-a")]
+        try:
+            with patch.object(control_api, "_schedule_control_center_exit", return_value=None) as schedule_exit:
+                with patch("issue_orchestrator.infra.repo_registry.list_repos", return_value=repos):
+                    with patch("pathlib.Path.exists", return_value=True):
+                        with patch("threading.Thread") as mock_thread:
+                            client = TestClient(control_app)
+                            response = client.post(
+                                "/control/shutdown",
+                                json={"stop_orchestrators": True, "force_orchestrators": True},
+                            )
+                            target = mock_thread.call_args.kwargs.get("target")
+                            assert callable(target)
+                            target()
+
+            assert response.status_code == 200
+            with control_api._shutdown_ops_lock:
+                op = control_api._global_shutdown_operation
+                assert op is not None
+                assert op["state"] == "failed"
+                assert op["failed_orchestrators"] == ["/tmp/repo-a"]
+            schedule_exit.assert_not_called()
+        finally:
+            with control_api._shutdown_ops_lock:
+                control_api._global_shutdown_operation = None
+            set_supervisor(None)
+
+    def test_shutdown_abort_is_honored_after_current_repo_attempt(self):
+        from issue_orchestrator.entrypoints import control_api
+
+        mock_supervisor = MagicMock()
+        mock_supervisor.status.return_value = SimpleNamespace(state="running")
+        mock_supervisor.stop_all_instances.return_value = 0
+        set_supervisor(mock_supervisor)
+        repos = [SimpleNamespace(path="/tmp/repo-a")]
+        try:
+            with patch.object(control_api, "_schedule_control_center_exit", return_value=None):
+                with patch("issue_orchestrator.infra.repo_registry.list_repos", return_value=repos):
+                    with patch("pathlib.Path.exists", return_value=True):
+                        with patch("threading.Thread") as mock_thread:
+                            client = TestClient(control_app)
+                            response = client.post(
+                                "/control/shutdown",
+                                json={"stop_orchestrators": True, "force_orchestrators": False},
+                            )
+                            assert response.status_code == 200
+                            abort = client.post("/control/shutdown/abort")
+                            assert abort.status_code == 200
+                            target = mock_thread.call_args.kwargs.get("target")
+                            assert callable(target)
+                            target()
+
+            with control_api._shutdown_ops_lock:
+                op = control_api._global_shutdown_operation
+                assert op is not None
+                assert op["state"] == "aborted"
+        finally:
+            with control_api._shutdown_ops_lock:
+                control_api._global_shutdown_operation = None
+            set_supervisor(None)
+
+    def test_shutdown_reports_superseded_engine_shutdowns(self):
+        from issue_orchestrator.entrypoints import control_api
+
+        mock_supervisor = MagicMock()
+        set_supervisor(mock_supervisor)
+        try:
+            with patch("issue_orchestrator.infra.repo_registry.list_repos", return_value=[]):
+                with patch("threading.Thread") as mock_thread:
+                    with control_api._shutdown_ops_lock:
+                        control_api._engine_shutdown_operations.clear()
+                        control_api._engine_shutdown_operations["/tmp/repo-a"] = {
+                            "repo_root": "/tmp/repo-a",
+                            "state": "in_progress",
+                        }
+                    client = TestClient(control_app)
+                    response = client.post(
+                        "/control/shutdown",
+                        json={"stop_orchestrators": True, "force_orchestrators": False},
+                    )
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "shutting_down"
+            assert data["superseded_engine_shutdowns"] == ["/tmp/repo-a"]
+            mock_thread.assert_called_once()
+        finally:
+            with control_api._shutdown_ops_lock:
+                control_api._engine_shutdown_operations.clear()
+            set_supervisor(None)
+
+    def test_shutdown_state_endpoint_returns_global_operation(self):
+        from issue_orchestrator.entrypoints import control_api
+
+        try:
+            with control_api._shutdown_ops_lock:
+                control_api._global_shutdown_operation = {
+                    "operation_id": "shutdown-test",
+                    "state": "in_progress",
+                }
+            client = TestClient(control_app)
+            response = client.get("/control/shutdown/state")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["global_shutdown"]["operation_id"] == "shutdown-test"
+        finally:
+            with control_api._shutdown_ops_lock:
+                control_api._global_shutdown_operation = None
+
+    def test_shutdown_control_endpoints_update_state(self):
+        from issue_orchestrator.entrypoints import control_api
+
+        try:
+            with control_api._shutdown_ops_lock:
+                control_api._global_shutdown_operation = {
+                    "operation_id": "shutdown-test",
+                    "state": "in_progress",
+                    "force_orchestrators": False,
+                    "graceful_timeout_seconds": 2,
+                    "abort_requested": False,
+                    "force_now_requested": False,
+                }
+
+            client = TestClient(control_app)
+            update = client.post("/control/shutdown/update", json={"graceful_timeout_seconds": 30})
+            force = client.post("/control/shutdown/force")
+            abort = client.post("/control/shutdown/abort")
+
+            assert update.status_code == 200
+            assert force.status_code == 200
+            assert abort.status_code == 200
+            with control_api._shutdown_ops_lock:
+                assert control_api._global_shutdown_operation["graceful_timeout_seconds"] == 30
+                assert control_api._global_shutdown_operation["force_orchestrators"] is True
+                assert control_api._global_shutdown_operation["force_now_requested"] is True
+                assert control_api._global_shutdown_operation["abort_requested"] is True
+        finally:
+            with control_api._shutdown_ops_lock:
+                control_api._global_shutdown_operation = None

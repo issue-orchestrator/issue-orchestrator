@@ -19,12 +19,13 @@ import json
 import re
 import logging
 import os
+import shutil
 import time
 import traceback
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
+from typing import Any, Callable, Protocol, TYPE_CHECKING, runtime_checkable
 
 from ..domain.models import (
     CompletionRecord,
@@ -34,11 +35,18 @@ from ..domain.models import (
 )
 from ..domain.events import EventBus, SessionEvent
 from ..events import EventContext, EventName
-from ..ports import EventSink, TraceEvent
+from ..ports import EventSink
+from ..ports.event_sink import RunScopedEventPayload, make_run_scoped_event, make_trace_event
 from ..infra.issue_diagnostics import write_issue_diagnostic
+from ..infra.runtime_artifacts import (
+    filter_runtime_managed_dirty_paths,
+    is_runtime_managed_dirty_path,
+)
+from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..infra.worktree_base import resolve_base_branch
 from ..ports.session_output import SessionOutput, ValidationRecord
 from .validation import PublishGate, ValidationRecordStore
+from .review_publish_pipeline import resolve_review_publish_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +54,8 @@ logger = logging.getLogger(__name__)
 # Keep in sync with completion_handler.py's critical error detection
 ERROR_PREFIX_PUSH = "push_branch"
 ERROR_PREFIX_CREATE_PR = "create_pr"
+ERROR_PREFIX_PUBLISH_BLOCKED = "publish_blocked"
+_DIRTY_FILES_REASON_LIMIT = 8
 
 if TYPE_CHECKING:
     from ..infra.config import Config
@@ -93,6 +103,7 @@ class GitAdapter(Protocol):
     def get_current_branch(self, worktree: Path) -> str | None: ...
     def has_uncommitted_changes(self, worktree: Path) -> bool: ...
     def has_tracked_changes(self, worktree: Path, include_staged: bool = True) -> bool: ...
+    def list_dirty_files(self, worktree: Path, mode: str) -> list[str]: ...
     def default_branch(self, repo_root: Path, remote: str = "origin") -> str: ...
 
 
@@ -106,7 +117,9 @@ class ProcessingResult:
     actions_taken: list[str] | None = None
     errors: list[str] | None = None
     diagnostic_path: str | None = None  # Path to detailed failure diagnostics
+    completion_record_path: str | None = None  # Run-scoped preserved completion artifact
     review_exchange_completed: bool = False
+    review_exchange_halted: bool = False
 
 
 class CompletionProcessor:
@@ -311,6 +324,7 @@ class CompletionProcessor:
 
         if mode == "off":
             return True, ""
+        list_mode = mode
         if mode == "tracked":
             dirty = self.git_adapter.has_tracked_changes(worktree, include_staged=True)
         elif mode == "unstaged":
@@ -324,12 +338,31 @@ class CompletionProcessor:
             )
 
         if dirty:
-            return False, (
+            dirty_files = self.git_adapter.list_dirty_files(worktree, list_mode)
+            blocking_files = filter_runtime_managed_dirty_paths(dirty_files)
+            if dirty_files and not blocking_files:
+                logger.info(
+                    "Dirty-check ignored runtime-only files for %s: %s",
+                    worktree,
+                    ", ".join(dirty_files),
+                )
+                return True, ""
+            reason = (
                 "Working tree is dirty; commit/add/stash before pushing. "
                 "Override with validation.pre_push_dirty_check."
             )
+            if blocking_files:
+                preview = ", ".join(blocking_files[:_DIRTY_FILES_REASON_LIMIT])
+                remaining = len(blocking_files) - _DIRTY_FILES_REASON_LIMIT
+                suffix = f" (+{remaining} more)" if remaining > 0 else ""
+                reason = f"{reason} Dirty files: {preview}{suffix}."
+            return False, reason
 
         return True, ""
+
+    @staticmethod
+    def _is_ignored_dirty_path(path: str) -> bool:
+        return is_runtime_managed_dirty_path(path)
 
     def _emit_review_comment_added(
         self,
@@ -338,9 +371,10 @@ class CompletionProcessor:
         pr_number: int,
         comment_url: str | None,
         comment_body: str,
+        run_dir: Path | None = None,
     ) -> None:
         """Emit trace event for a posted review comment (if trace events are configured)."""
-        if not self._trace_events or not self._event_context:
+        if self._trace_events is None or self._event_context is None:
             return
         excerpt = comment_body.strip().replace("\n", " ")
         payload = {
@@ -350,9 +384,64 @@ class CompletionProcessor:
             "comment_excerpt": excerpt[:180] if excerpt else "",
             "summary": "Posted review comment",
         }
+        if run_dir is not None:
+            payload["run_dir"] = str(run_dir)
         self._trace_events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.REVIEW_COMMENT_ADDED,
+                self._event_context.enrich(payload),
+            )
+        )
+
+    def _emit_review_started(
+        self,
+        *,
+        issue_number: int,
+        reviewer_label: str | None,
+        exchange_mode: str,
+        run_dir: Path,
+    ) -> None:
+        """Emit trace event when local review exchange starts."""
+        if self._trace_events is None or self._event_context is None:
+            return
+        payload: RunScopedEventPayload = {
+            "issue_number": issue_number,
+            "task": "review",
+            "agent": reviewer_label or "",
+            "review_exchange_mode": exchange_mode,
+            "run_id": str(self._event_context.run_id),
+            "run_dir": str(run_dir),
+        }
+        self._trace_events.publish(make_run_scoped_event(EventName.REVIEW_STARTED, payload))
+
+    def _emit_review_outcome(
+        self,
+        *,
+        issue_number: int,
+        reviewer_label: str | None,
+        exchange_mode: str,
+        approved: bool,
+        rounds: int | None,
+        summary: str,
+        run_dir: Path | None = None,
+    ) -> None:
+        """Emit review terminal event from local exchange outcome."""
+        if self._trace_events is None or self._event_context is None:
+            return
+        payload = {
+            "issue_number": issue_number,
+            "task": "review",
+            "agent": reviewer_label or "",
+            "review_exchange_mode": exchange_mode,
+            "rounds": rounds,
+            "summary": summary,
+        }
+        if run_dir is not None:
+            payload["run_dir"] = str(run_dir)
+        event_name = EventName.REVIEW_APPROVED if approved else EventName.REVIEW_CHANGES_REQUESTED
+        self._trace_events.publish(
+            make_trace_event(
+                event_name,
                 self._event_context.enrich(payload),
             )
         )
@@ -424,13 +513,24 @@ class CompletionProcessor:
         run_dir = self.session_output.ensure_run_dir(worktree, session_name)
         if record_path is None and record is not None:
             record_path = ValidationRecordStore(worktree).get_record_path(record.head_sha)
-        if record_path is not None:
+        run_dir_record_path = run_dir / "validation-record.json"
+        if not run_dir_record_path.exists() and record_path is not None and record_path.exists():
+            try:
+                shutil.copy2(record_path, run_dir_record_path)
+            except OSError:
+                logger.debug(
+                    "Failed to copy validation record from %s to %s",
+                    record_path,
+                    run_dir_record_path,
+                )
+        effective_record_path = run_dir_record_path if run_dir_record_path.exists() else record_path
+        if effective_record_path is not None:
             self.session_output.update_manifest(
                 run_dir,
-                {"validation_record_path": str(record_path)},
+                {"validation_record_path": str(effective_record_path)},
             )
             try:
-                (run_dir / "validation-record.path").write_text(str(record_path))
+                (run_dir / "validation-record.path").write_text(str(effective_record_path))
             except OSError:
                 logger.debug("Failed to write validation pointer for %s", run_dir)
 
@@ -488,16 +588,17 @@ class CompletionProcessor:
         # Validate worktree state
         valid, reason = self.validate_worktree_state(worktree, record)
         if not valid:
+            tagged_reason = f"{ERROR_PREFIX_PUBLISH_BLOCKED}: {reason}"
             self._report_processing_failure_comment(
                 issue_number=issue_number,
-                errors=[reason],
+                errors=[tagged_reason],
                 actions_taken=[],
                 diagnostic_path=None,
             )
             return ProcessingResult(
                 success=False,
                 message=f"Validation failed: {reason}",
-                errors=[reason],
+                errors=[tagged_reason],
             )
 
         # Check publish gate if actions require it
@@ -749,61 +850,140 @@ class CompletionProcessor:
             Tuple of (final_branch, pr_url, review_exchange_completed).
         """
         pr_url: str | None = None
-        halt_actions = False
+        requested_actions = tuple(record.requested_actions)
+        (
+            plan,
+            exchange_mode,
+            exchange_result,
+            review_exchange_completed,
+            should_halt,
+        ) = self._prepare_review_exchange(
+            requested_actions=requested_actions,
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+            record=record,
+            errors=errors,
+            actions_taken=actions_taken,
+        )
+        if should_halt:
+            return branch, pr_url, review_exchange_completed
+
+        return self._execute_planned_actions(
+            plan=plan,
+            worktree=worktree,
+            record=record,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            label_target=label_target,
+            branch=branch,
+            session_name=session_name,
+            agent_label=agent_label,
+            actions_taken=actions_taken,
+            errors=errors,
+            error_details=error_details,
+            exchange_mode=exchange_mode,
+            exchange_result=exchange_result,
+            review_exchange_completed=review_exchange_completed,
+        )
+
+    def _prepare_review_exchange(
+        self,
+        *,
+        requested_actions: tuple[RequestedAction, ...],
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
+        session_name: str | None,
+        agent_label: str | None,
+        record: CompletionRecord,
+        errors: list[str],
+        actions_taken: list[str],
+    ) -> tuple[Any, str | None, Any | None, bool, bool]:
+        exchange_mode: str | None = None
+        exchange_result: Any | None = None
         review_exchange_completed = False
 
-        for action in record.requested_actions:
-            action_start = time.monotonic()
-            logger.info("Executing action: %s for issue #%d", action.value, issue_number)
+        if RequestedAction.CREATE_PR in requested_actions:
             try:
-                result = self._execute_single_action(
-                    action=action,
-                    worktree=worktree,
-                    record=record,
-                    issue_number=issue_number,
-                    issue_title=issue_title,
-                    label_target=label_target,
-                    branch=branch,
-                    session_name=session_name,
-                    agent_label=agent_label,
-                    actions_taken=actions_taken,
-                    errors=errors,
-                    error_details=error_details,
-                )
-                if result.halt:
-                    halt_actions = True
-                if result.branch:
-                    branch = result.branch
-                if result.pr_url:
-                    pr_url = result.pr_url
-                if result.review_exchange_completed:
-                    review_exchange_completed = True
-                if result.skip_remaining:
-                    continue
+                exchange_mode = self._resolve_review_exchange_mode(agent_label)
+            except ValueError as exc:
+                errors.append(f"review_exchange: {exc}")
+                pipeline = resolve_review_publish_pipeline(None)
+                return pipeline.plan(requested_actions), None, None, False, True
 
-            except Exception as e:
-                logger.exception(
-                    "Exception executing action %s for #%d: %s",
-                    action.value,
-                    issue_number,
-                    e,
-                )
-                errors.append(f"{action.value}: {e}")
-                error_details.append({
-                    "action": action.value,
-                    "error": str(e),
-                    "exception_type": type(e).__name__,
-                    "traceback": traceback.format_exc(),
-                })
-            finally:
-                action_duration = time.monotonic() - action_start
-                logger.info(
-                    "Action finished: %s for issue #%d in %.2fs",
-                    action.value,
-                    issue_number,
-                    action_duration,
-                )
-            if halt_actions:
+        pipeline = resolve_review_publish_pipeline(exchange_mode)
+        plan = pipeline.plan(requested_actions)
+        if not plan.run_review_exchange_before_publish:
+            return plan, exchange_mode, exchange_result, review_exchange_completed, False
+
+        exchange_mode, exchange_result, exchange_halt = self._run_review_exchange_if_needed(
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+            initial_validation_record_path=(
+                Path(record.validation_record_path) if record.validation_record_path else None
+            ),
+            errors=errors,
+            actions_taken=actions_taken,
+        )
+        if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
+            review_exchange_completed = True
+        return plan, exchange_mode, exchange_result, review_exchange_completed, exchange_halt
+
+    def _execute_planned_actions(
+        self,
+        *,
+        plan: Any,
+        worktree: Path,
+        record: CompletionRecord,
+        issue_number: int,
+        issue_title: str,
+        label_target: int,
+        branch: str | None,
+        session_name: str | None,
+        agent_label: str | None,
+        actions_taken: list[str],
+        errors: list[str],
+        error_details: list[dict[str, Any]],
+        exchange_mode: str | None,
+        exchange_result: Any | None,
+        review_exchange_completed: bool,
+    ) -> tuple[str | None, str | None, bool]:
+        pr_url: str | None = None
+
+        for action in plan.ordered_actions:
+            result = self._execute_action_with_observability(
+                action=action,
+                worktree=worktree,
+                record=record,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                label_target=label_target,
+                branch=branch,
+                session_name=session_name,
+                agent_label=agent_label,
+                actions_taken=actions_taken,
+                errors=errors,
+                error_details=error_details,
+                exchange_mode=exchange_mode,
+                exchange_result=exchange_result,
+            )
+            if result is None:
+                continue
+            if result.branch:
+                branch = result.branch
+            if result.pr_url:
+                pr_url = result.pr_url
+            if result.review_exchange_completed:
+                review_exchange_completed = True
+            if result.skip_remaining:
+                continue
+            if result.halt:
                 logger.warning(
                     "Halting remaining actions for issue #%d due to push failure",
                     issue_number,
@@ -811,6 +991,84 @@ class CompletionProcessor:
                 break
 
         return branch, pr_url, review_exchange_completed
+
+    def _execute_action_with_observability(
+        self,
+        *,
+        action: RequestedAction,
+        worktree: Path,
+        record: CompletionRecord,
+        issue_number: int,
+        issue_title: str,
+        label_target: int,
+        branch: str | None,
+        session_name: str | None,
+        agent_label: str | None,
+        actions_taken: list[str],
+        errors: list[str],
+        error_details: list[dict[str, Any]],
+        exchange_mode: str | None,
+        exchange_result: Any | None,
+    ) -> "_ActionResult | None":
+        action_start = time.monotonic()
+        logger.info("Executing action: %s for issue #%d", action.value, issue_number)
+        if is_timeline_trace_enabled():
+            logger.info(
+                "[TIMELINE] completion.action_start issue=%s action=%s requested_actions=%s label_target=%s",
+                issue_number,
+                action.value,
+                ",".join(a.value for a in record.requested_actions),
+                label_target,
+            )
+        try:
+            return self._execute_single_action(
+                action=action,
+                worktree=worktree,
+                record=record,
+                issue_number=issue_number,
+                issue_title=issue_title,
+                label_target=label_target,
+                branch=branch,
+                session_name=session_name,
+                agent_label=agent_label,
+                actions_taken=actions_taken,
+                errors=errors,
+                error_details=error_details,
+                exchange_mode=exchange_mode,
+                exchange_result=exchange_result,
+            )
+        except Exception as e:
+            logger.exception(
+                "Exception executing action %s for #%d: %s",
+                action.value,
+                issue_number,
+                e,
+            )
+            errors.append(f"{action.value}: {e}")
+            error_details.append({
+                "action": action.value,
+                "error": str(e),
+                "exception_type": type(e).__name__,
+                "traceback": traceback.format_exc(),
+            })
+            return None
+        finally:
+            action_duration = time.monotonic() - action_start
+            logger.info(
+                "Action finished: %s for issue #%d in %.2fs",
+                action.value,
+                issue_number,
+                action_duration,
+            )
+            if is_timeline_trace_enabled():
+                logger.info(
+                    "[TIMELINE] completion.action_end issue=%s action=%s elapsed=%.3f actions_taken=%s errors=%s",
+                    issue_number,
+                    action.value,
+                    action_duration,
+                    len(actions_taken),
+                    len(errors),
+                )
 
     @dataclass
     class _ActionResult:
@@ -837,6 +1095,8 @@ class CompletionProcessor:
         actions_taken: list[str],
         errors: list[str],
         error_details: list[dict[str, Any]],
+        exchange_mode: str | None,
+        exchange_result: Any | None,
     ) -> "_ActionResult":
         """Execute a single action and return the result."""
         if action == RequestedAction.PUSH_BRANCH:
@@ -854,6 +1114,8 @@ class CompletionProcessor:
                 agent_label=agent_label,
                 actions_taken=actions_taken,
                 errors=errors,
+                exchange_mode=exchange_mode,
+                exchange_result=exchange_result,
             )
         elif action == RequestedAction.POST_COMMENT:
             return self._execute_post_comment_action(
@@ -912,6 +1174,7 @@ class CompletionProcessor:
             RequestedAction.ADD_NEEDS_HUMAN_LABEL: ("needs_human", issue_number, "add"),
             RequestedAction.ADD_CODE_REVIEWED_LABEL: ("code_reviewed", label_target, "add"),
             RequestedAction.ADD_NEEDS_REWORK_LABEL: ("needs_rework", label_target, "add"),
+            RequestedAction.REMOVE_NEEDS_REWORK_LABEL: ("needs_rework", label_target, "remove"),
             RequestedAction.REMOVE_CODE_REVIEW_LABEL: ("code_review", label_target, "remove"),
         }
         config = label_actions.get(action)
@@ -920,6 +1183,16 @@ class CompletionProcessor:
 
         label_key, target_number, operation = config
         label = self._get_label(label_key)
+        if is_timeline_trace_enabled():
+            logger.info(
+                "[TIMELINE] completion.label_mutation issue=%s action=%s operation=%s label_key=%s label=%s target=%s",
+                issue_number,
+                action.value,
+                operation,
+                label_key,
+                label,
+                target_number,
+            )
         if operation == "add":
             self.label_adapter.add_label(target_number, label)
             if target_number == issue_number:
@@ -1021,6 +1294,8 @@ class CompletionProcessor:
         agent_label: str | None,
         actions_taken: list[str],
         errors: list[str],
+        exchange_mode: str | None,
+        exchange_result: Any | None,
     ) -> "_ActionResult":
         """Execute create PR action."""
         if not branch:
@@ -1031,19 +1306,32 @@ class CompletionProcessor:
         skip_hooks = os.environ.get("E2E_SKIP_PUSH_HOOKS") == "1"
         pr_title = f"#{issue_number}: {issue_title}"
         pr_body = self._build_pr_body(record, issue_number)
+        exchange_mode, exchange_resolution_failed = self._resolve_create_pr_exchange_mode(
+            exchange_mode=exchange_mode,
+            agent_label=agent_label,
+            errors=errors,
+        )
+        if exchange_resolution_failed:
+            return self._ActionResult(halt=True)
+        if self._missing_review_exchange_outcome(exchange_mode, exchange_result):
+            errors.append("review_exchange: missing exchange outcome before PR creation")
+            return self._ActionResult(halt=True)
+        review_run_dir = self._resolve_review_exchange_run_dir(
+            exchange_outcome=exchange_result,
+            worktree=worktree,
+            session_name=session_name,
+        )
 
-        # Check for existing PR to reuse
-        if self._pr_collision_strategy in {"reuse_open", "new_branch"}:
-            existing_pr = self._get_open_pr_for_issue(issue_number)
-            if existing_pr:
-                actions_taken.append(f"Reused PR #{existing_pr.number}")
-                logger.info(
-                    "Reused existing PR #%d for issue #%d: %s",
-                    existing_pr.number,
-                    issue_number,
-                    existing_pr.url,
-                )
-                return self._ActionResult(pr_url=existing_pr.url, skip_remaining=True)
+        # Check for existing PR to reuse after review exchange succeeds.
+        reused = self._reuse_existing_pr_if_available(
+            issue_number=issue_number,
+            exchange_mode=exchange_mode,
+            exchange_result=exchange_result,
+            actions_taken=actions_taken,
+            run_dir=review_run_dir,
+        )
+        if reused is not None:
+            return reused
 
         # Maybe switch branch for PR collision
         if self._pr_collision_strategy == "new_branch":
@@ -1054,18 +1342,6 @@ class CompletionProcessor:
                 actions_taken=actions_taken,
                 skip_hooks=skip_hooks,
             )
-
-        exchange_mode, exchange_result, exchange_halt = self._run_review_exchange_if_needed(
-            worktree=worktree,
-            issue_number=issue_number,
-            issue_title=issue_title,
-            session_name=session_name,
-            agent_label=agent_label,
-            errors=errors,
-            actions_taken=actions_taken,
-        )
-        if exchange_halt:
-            return self._ActionResult(halt=True)
 
         # Create the PR
         logger.info("Creating PR for #%d: branch=%s", issue_number, branch)
@@ -1086,26 +1362,13 @@ class CompletionProcessor:
             review_exchange_completed = False
             if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
                 review_exchange_completed = True
-                label = self._get_label("code_reviewed")
-                self.label_adapter.add_label(pr.number, label)
-                actions_taken.append(f"Added '{label}' label to PR #{pr.number}")
-                review_label = self._get_label("code_review")
-                self.label_adapter.remove_label(pr.number, review_label)
-                actions_taken.append(f"Removed '{review_label}' label from PR #{pr.number}")
-                comment = (
-                    f"✅ Review completed via {exchange_mode} loop.\n\n"
-                    f"- Rounds: {exchange_result.rounds}\n"
-                    f"- Outcome: {exchange_result.reason}\n"
-                )
-                if self._config and self._config.review_exchange_require_validation:
-                    comment += "- Validation: required and passed\n"
-                comment_url = self.pr_adapter.add_comment(pr.number, comment)
-                actions_taken.append(f"Posted review completion comment to PR #{pr.number}")
-                self._emit_review_comment_added(
+                self._finalize_review_exchange_pr(
                     issue_number=issue_number,
                     pr_number=pr.number,
-                    comment_url=comment_url,
-                    comment_body=comment,
+                    exchange_mode=exchange_mode,
+                    exchange_result=exchange_result,
+                    actions_taken=actions_taken,
+                    run_dir=review_run_dir,
                 )
             return self._ActionResult(
                 branch=branch,
@@ -1115,6 +1378,100 @@ class CompletionProcessor:
 
         return self._ActionResult(branch=branch)
 
+    def _resolve_create_pr_exchange_mode(
+        self,
+        *,
+        exchange_mode: str | None,
+        agent_label: str | None,
+        errors: list[str],
+    ) -> tuple[str | None, bool]:
+        if exchange_mode is not None:
+            return exchange_mode, False
+        try:
+            return self._resolve_review_exchange_mode(agent_label), False
+        except ValueError as exc:
+            errors.append(f"review_exchange: {exc}")
+            return None, True
+
+    def _missing_review_exchange_outcome(
+        self,
+        exchange_mode: str | None,
+        exchange_result: Any | None,
+    ) -> bool:
+        return exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result is None
+
+    def _reuse_existing_pr_if_available(
+        self,
+        *,
+        issue_number: int,
+        exchange_mode: str | None,
+        exchange_result: Any | None,
+        actions_taken: list[str],
+        run_dir: Path | None,
+    ) -> "_ActionResult | None":
+        if self._pr_collision_strategy not in {"reuse_open", "new_branch"}:
+            return None
+        existing_pr = self._get_open_pr_for_issue(issue_number)
+        if not existing_pr:
+            return None
+        actions_taken.append(f"Reused PR #{existing_pr.number}")
+        logger.info(
+            "Reused existing PR #%d for issue #%d: %s",
+            existing_pr.number,
+            issue_number,
+            existing_pr.url,
+        )
+        review_exchange_completed = False
+        if exchange_mode in {"via-mcp", "via-local-loop"} and exchange_result:
+            review_exchange_completed = True
+            self._finalize_review_exchange_pr(
+                issue_number=issue_number,
+                pr_number=existing_pr.number,
+                exchange_mode=exchange_mode,
+                exchange_result=exchange_result,
+                actions_taken=actions_taken,
+                run_dir=run_dir,
+            )
+        return self._ActionResult(
+            pr_url=existing_pr.url,
+            skip_remaining=True,
+            review_exchange_completed=review_exchange_completed,
+        )
+
+    def _finalize_review_exchange_pr(
+        self,
+        *,
+        issue_number: int,
+        pr_number: int,
+        exchange_mode: str,
+        exchange_result: Any,
+        actions_taken: list[str],
+        run_dir: Path | None = None,
+    ) -> None:
+        """Apply review-exchange completion labels/comment to a PR."""
+        label = self._get_label("code_reviewed")
+        self.label_adapter.add_label(pr_number, label)
+        actions_taken.append(f"Added '{label}' label to PR #{pr_number}")
+        review_label = self._get_label("code_review")
+        self.label_adapter.remove_label(pr_number, review_label)
+        actions_taken.append(f"Removed '{review_label}' label from PR #{pr_number}")
+        comment = (
+            f"✅ Review completed via {exchange_mode} loop.\n\n"
+            f"- Rounds: {exchange_result.rounds}\n"
+            f"- Outcome: {exchange_result.reason}\n"
+        )
+        if self._config and self._config.review_exchange_require_validation:
+            comment += "- Validation: required and passed\n"
+        comment_url = self.pr_adapter.add_comment(pr_number, comment)
+        actions_taken.append(f"Posted review completion comment to PR #{pr_number}")
+        self._emit_review_comment_added(
+            issue_number=issue_number,
+            pr_number=pr_number,
+            comment_url=comment_url,
+            comment_body=comment,
+            run_dir=run_dir,
+        )
+
     def _run_review_exchange_if_needed(
         self,
         *,
@@ -1123,6 +1480,7 @@ class CompletionProcessor:
         issue_title: str,
         session_name: str | None,
         agent_label: str | None,
+        initial_validation_record_path: Path | None,
         errors: list[str],
         actions_taken: list[str],
     ) -> tuple[str | None, Any | None, bool]:
@@ -1133,6 +1491,7 @@ class CompletionProcessor:
             return None, None, True
         if exchange_mode not in {"via-mcp", "via-local-loop"}:
             return exchange_mode, None, False
+        reviewer_label = self._resolve_reviewer_label(agent_label) if agent_label else None
         require_validation = bool(
             self._config and self._config.review_exchange_require_validation
         )
@@ -1142,40 +1501,225 @@ class CompletionProcessor:
             require_validation=require_validation,
         )
         if existing_outcome:
-            if existing_outcome.status == "ok":
-                actions_taken.append("Review exchange passed (cached)")
-                return exchange_mode, existing_outcome, False
-            errors.append(
-                f"review_exchange: {existing_outcome.status} ({existing_outcome.reason})"
+            return self._handle_cached_review_exchange_outcome(
+                exchange_mode=exchange_mode,
+                existing_outcome=existing_outcome,
+                issue_number=issue_number,
+                session_name=session_name,
+                worktree=worktree,
+                reviewer_label=reviewer_label,
+                errors=errors,
+                actions_taken=actions_taken,
             )
-            return exchange_mode, existing_outcome, True
         logger.info("Review exchange mode selected: %s", exchange_mode)
+        return self._run_fresh_review_exchange(
+            exchange_mode=exchange_mode,
+            worktree=worktree,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=agent_label,
+            reviewer_label=reviewer_label,
+            initial_validation_record_path=initial_validation_record_path,
+            errors=errors,
+            actions_taken=actions_taken,
+        )
+
+    def _handle_cached_review_exchange_outcome(
+        self,
+        *,
+        exchange_mode: str,
+        existing_outcome: Any,
+        issue_number: int,
+        session_name: str | None,
+        worktree: Path,
+        reviewer_label: str | None,
+        errors: list[str],
+        actions_taken: list[str],
+    ) -> tuple[str, Any, bool]:
+        review_run_dir = self._resolve_required_review_run_dir(
+            exchange_outcome=existing_outcome,
+            worktree=worktree,
+            session_name=session_name,
+            issue_number=issue_number,
+        )
+        self._emit_review_started(
+            issue_number=issue_number,
+            reviewer_label=reviewer_label,
+            exchange_mode=exchange_mode,
+            run_dir=review_run_dir,
+        )
+        if existing_outcome.status == "ok":
+            actions_taken.append("Review exchange passed (cached)")
+            reviewer_summary = (
+                existing_outcome.reviewer_response.response_text
+                if getattr(existing_outcome, "reviewer_response", None)
+                else "Review approved via cached exchange summary"
+            )
+            self._emit_review_outcome(
+                issue_number=issue_number,
+                reviewer_label=reviewer_label,
+                exchange_mode=exchange_mode,
+                approved=True,
+                rounds=getattr(existing_outcome, "rounds", None),
+                summary=reviewer_summary,
+                run_dir=review_run_dir,
+            )
+            return exchange_mode, existing_outcome, False
+        self._emit_review_outcome(
+            issue_number=issue_number,
+            reviewer_label=reviewer_label,
+            exchange_mode=exchange_mode,
+            approved=False,
+            rounds=getattr(existing_outcome, "rounds", None),
+            summary=f"Review exchange halted: {existing_outcome.reason}",
+            run_dir=review_run_dir,
+        )
+        errors.append(f"review_exchange: {existing_outcome.status} ({existing_outcome.reason})")
+        return exchange_mode, existing_outcome, True
+
+    def _run_fresh_review_exchange(
+        self,
+        *,
+        exchange_mode: str,
+        worktree: Path,
+        issue_number: int,
+        issue_title: str,
+        session_name: str | None,
+        agent_label: str | None,
+        reviewer_label: str | None,
+        initial_validation_record_path: Path | None,
+        errors: list[str],
+        actions_taken: list[str],
+    ) -> tuple[str, Any, bool]:
+        review_started_run_dir: Path | None = None
+
+        def _on_review_exchange_started(started_run_dir: Path) -> None:
+            nonlocal review_started_run_dir
+            review_started_run_dir = started_run_dir
+            self._emit_review_started(
+                issue_number=issue_number,
+                reviewer_label=reviewer_label,
+                exchange_mode=exchange_mode,
+                run_dir=started_run_dir,
+            )
+
         exchange_result = self._run_review_exchange_loop(
             worktree=worktree,
             issue_number=issue_number,
             issue_title=issue_title,
             session_name=session_name,
             agent_label=agent_label,
+            initial_validation_record_path=initial_validation_record_path,
+            on_started=_on_review_exchange_started,
         )
+        review_run_dir = self._resolve_required_review_run_dir(
+            exchange_outcome=exchange_result,
+            worktree=worktree,
+            session_name=session_name,
+            issue_number=issue_number,
+        )
+        if review_started_run_dir is None:
+            self._emit_review_started(
+                issue_number=issue_number,
+                reviewer_label=reviewer_label,
+                exchange_mode=exchange_mode,
+                run_dir=review_run_dir,
+            )
         if exchange_result.status != "ok":
-            errors.append(
-                f"review_exchange: {exchange_result.status} ({exchange_result.reason})"
+            self._emit_review_outcome(
+                issue_number=issue_number,
+                reviewer_label=reviewer_label,
+                exchange_mode=exchange_mode,
+                approved=False,
+                rounds=getattr(exchange_result, "rounds", None),
+                summary=f"Review exchange halted: {exchange_result.reason}",
+                run_dir=review_run_dir,
             )
+            errors.append(f"review_exchange: {exchange_result.status} ({exchange_result.reason})")
             return exchange_mode, exchange_result, True
+
         actions_taken.append("Review exchange passed")
-        if session_name and exchange_result.summary:
-            validation_record_path: Path | None = None
-            if exchange_result.exchange_dir:
-                candidate = exchange_result.exchange_dir.parent / "validation-record.json"
-                if candidate.exists():
-                    validation_record_path = candidate
-            self.session_output.store_review_exchange_summary(
-                worktree,
-                session_name,
-                exchange_result.summary,
-                validation_record_path=validation_record_path,
-            )
+        reviewer_summary = (
+            exchange_result.reviewer_response.response_text
+            if exchange_result.reviewer_response
+            else "Review approved"
+        )
+        self._emit_review_outcome(
+            issue_number=issue_number,
+            reviewer_label=reviewer_label,
+            exchange_mode=exchange_mode,
+            approved=True,
+            rounds=exchange_result.rounds,
+            summary=reviewer_summary,
+            run_dir=review_run_dir,
+        )
+        self._store_review_exchange_summary(
+            worktree=worktree,
+            session_name=session_name,
+            exchange_result=exchange_result,
+        )
         return exchange_mode, exchange_result, False
+
+    def _resolve_required_review_run_dir(
+        self,
+        *,
+        exchange_outcome: Any | None,
+        worktree: Path,
+        session_name: str | None,
+        issue_number: int,
+    ) -> Path:
+        review_run_dir = self._resolve_review_exchange_run_dir(
+            exchange_outcome=exchange_outcome,
+            worktree=worktree,
+            session_name=session_name,
+        )
+        if review_run_dir is None:
+            raise RuntimeError(
+                f"review.started requires run_dir: issue={issue_number} session={session_name}"
+            )
+        return review_run_dir
+
+    def _store_review_exchange_summary(
+        self,
+        *,
+        worktree: Path,
+        session_name: str | None,
+        exchange_result: Any,
+    ) -> None:
+        if not session_name or not exchange_result.summary:
+            return
+        validation_record_path: Path | None = None
+        if exchange_result.exchange_dir:
+            # The record may be written by reviewer loop or by validation gate later.
+            validation_record_path = exchange_result.exchange_dir.parent / "validation-record.json"
+        self.session_output.store_review_exchange_summary(
+            worktree,
+            session_name,
+            exchange_result.summary,
+            validation_record_path=validation_record_path,
+        )
+
+    def _resolve_review_exchange_run_dir(
+        self,
+        *,
+        exchange_outcome: Any | None,
+        worktree: Path,
+        session_name: str | None,
+    ) -> Path | None:
+        """Resolve run_dir for review-exchange lifecycle events.
+
+        Prefer the dedicated review-exchange run dir; fall back to session run dir.
+        """
+        exchange_dir = getattr(exchange_outcome, "exchange_dir", None) if exchange_outcome else None
+        if exchange_dir:
+            try:
+                return Path(exchange_dir).parent
+            except TypeError:
+                logger.debug("Invalid exchange_dir on review exchange outcome: %r", exchange_dir)
+        if session_name:
+            return self.session_output.find_run_dir(worktree, session_name)
+        return None
 
     def _load_existing_review_exchange_outcome(
         self,
@@ -1224,9 +1768,15 @@ class CompletionProcessor:
     def _resolve_review_exchange_mode(self, agent_label: str | None) -> str | None:
         if not self._config:
             return None
-        if not self._config.review_enabled:
-            return None
         mode = self._config.review_exchange_mode
+        if agent_label:
+            configured_reviewer = self._config.get_reviewer_for_agent(agent_label)
+            if not configured_reviewer:
+                logger.info(
+                    "Review exchange disabled for %s: no reviewer configured",
+                    agent_label,
+                )
+                return None
         if mode in {"via-mcp", "via-local-loop"}:
             agent_label = self._require_review_exchange_agent_label(agent_label, mode)
             if mode == "via-mcp":
@@ -1291,6 +1841,8 @@ class CompletionProcessor:
         issue_title: str,
         session_name: str | None,
         agent_label: str | None,
+        initial_validation_record_path: Path | None = None,
+        on_started: Callable[[Path], None] | None = None,
     ):
         if not self._config:
             raise ValueError("Review exchange requires config")
@@ -1319,9 +1871,11 @@ class CompletionProcessor:
             max_rounds=max_rounds,
             max_no_progress=max_no_progress,
             require_validation=require_validation,
+            initial_validation_record_path=initial_validation_record_path,
             web_port=web_port,
             events=self._trace_events,
             event_context=self._event_context,
+            on_started=on_started,
         )
 
     def _create_pr_with_collision_handling(
@@ -1477,8 +2031,19 @@ class CompletionProcessor:
                 diagnostic_path=diagnostic_path,
             )
 
+        preserved_completion_path = self._preserve_completion_record(
+            worktree=worktree,
+            completion_path=completion_path,
+            session_name=session_name,
+        )
+
         # Clean up the completion record after processing to prevent re-processing
         self._cleanup_completion_record(worktree, completion_path, issue_number)
+
+        review_exchange_halted = any(
+            error.startswith("review_exchange:")
+            for error in errors
+        )
 
         return ProcessingResult(
             success=success,
@@ -1486,9 +2051,39 @@ class CompletionProcessor:
             pr_url=pr_url,
             actions_taken=actions_taken if actions_taken else None,
             diagnostic_path=diagnostic_path,
+            completion_record_path=preserved_completion_path,
             errors=errors if errors else None,
             review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
         )
+
+    def _preserve_completion_record(
+        self,
+        *,
+        worktree: Path,
+        completion_path: str | None,
+        session_name: str | None,
+    ) -> str | None:
+        """Persist a run-scoped completion copy before cleanup for timeline/audit use."""
+        source_path = worktree / (completion_path or COMPLETION_RECORD_PATH)
+        if not source_path.exists():
+            return None
+
+        resolved_session_name = session_name or self.session_output.session_name_from_path(completion_path)
+        if not resolved_session_name:
+            return None
+        run_dir = self.session_output.find_run_dir(worktree, resolved_session_name)
+        if not run_dir:
+            return None
+
+        target_path = run_dir / "completion-record.json"
+        try:
+            shutil.copy2(source_path, target_path)
+            self.session_output.update_manifest(run_dir, {"completion_record_path": str(target_path)})
+            return str(target_path)
+        except Exception:
+            logger.exception("Failed to preserve completion record for run_dir=%s", run_dir)
+            return None
 
     def _cleanup_completion_record(
         self,

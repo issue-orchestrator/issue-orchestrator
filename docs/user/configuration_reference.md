@@ -4,7 +4,6 @@ This is the full configuration reference auto-generated from the settings schema
 For a short onboarding guide, see `docs/user/configuration.md`.
 
 <!-- BEGIN AUTO-GENERATED CONFIG REFERENCE — regenerate via: pytest tests/unit/test_settings_schema.py::TestDriftDetection::test_config_reference_not_stale -->
-
 # Settings Reference
 
 _Auto-generated from settings schema._
@@ -66,7 +65,7 @@ _Auto-generated from settings schema._
 | `review.default` | string (optional) | `None` | Agent label for code reviews (e.g., agent:reviewer) | `agent:reviewer` | Must match a label defined under agents. |
 | `review.max_rework_cycles` | integer | `10` | Max times to re-queue work agent before escalating | `0`, `2`, `10` | Set to 0 to disable rework cycles (immediate escalation). |
 | `review.keep_current_approach_label` | string | `reviewer-keep-current-approach` | Label that tells reviewer to avoid alternative approaches | `reviewer-keep-current-approach` | Applied to issues where stability is preferred over refactors. |
-| `review.exchange.mode` | string | `via-draft-pr` | Review exchange mode (via-mcp loop, local loop, or via-draft-pr review) | `via-draft-pr`, `via-mcp`, `auto` | Draft PR mode is the default and requires no extra setup. |
+| `review.exchange.mode` | string | `via-local-loop` | Review exchange mode (via-mcp loop, local loop, or via-draft-pr review) | `via-local-loop`, `via-draft-pr`, `via-mcp`, `auto` | Local loop is the default; use via-draft-pr for GitHub-mediated review cycles. |
 | `review.exchange.probe.schedule` | string | `daily` | When to run MCP round-trip validation | `daily`, `startup`, `interval`, `manual` | Use manual to disable automatic probes and run on demand. |
 | `review.exchange.probe.interval_days` | integer | `1` | Interval for MCP round-trip validation when schedule=interval | `1`, `7`, `14` | Used only when schedule=interval. |
 | `review.exchange.loop.max_rounds` | integer | `10` | Max coder/reviewer rounds before stopping the MCP loop | `5`, `10`, `20` | Higher values allow longer back-and-forth reviews. |
@@ -121,5 +120,6 @@ _Auto-generated from settings schema._
 | `worktrees.base_branch_override` | string (optional) | `None` | Override the base branch for worktree creation (auto-detect if unset) | `main`, `master` | Use when your default branch is not auto-detected correctly. |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch | `delete`, `create_new_branch` | Use create_new_branch to keep the old branch intact. |
 | `worktrees.setup` | string | `` | Commands to run in each new worktree after creation (one per line) | `npm install`, `pip install -e '.[dev]'`, `make setup` | Each command runs in the worktree directory. Leave empty if no setup needed. The orchestrator's own setup (hooks, agent-done, Claude settings) is automatic. |
+
 
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->

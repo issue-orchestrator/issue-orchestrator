@@ -144,6 +144,30 @@ class TestWorktreeContextCreate:
             assert ctx.error is prep_error
             assert ctx.issue_number == 123
 
+    def test_returns_error_on_worktree_creation_failure(
+        self, mock_worktree_manager, mock_config, mock_events, mock_session_output, tmp_path
+    ):
+        """Verify WorktreeContext.create captures worktree create failures."""
+        mock_worktree_manager.create.side_effect = RuntimeError("branch already used by worktree")
+        mock_config.worktree_base = tmp_path
+
+        ctx = WorktreeContext.create(
+            worktree_manager=mock_worktree_manager,
+            config=mock_config,
+            events=mock_events,
+            session_output=mock_session_output,
+            issue_number=123,
+            issue_title="Fix bug",
+            session_name="issue-123",
+            agent_label="agent:developer",
+        )
+
+        assert isinstance(ctx.error, WorktreePreparationError)
+        assert ctx.error is not None
+        assert "Cannot create worktree" in str(ctx.error)
+        assert ctx.run is None
+        assert ctx.worktree_info.reuse_reason == "worktree_create_failed"
+
     def test_emits_worktree_reset_event_when_work_discarded(
         self, mock_worktree_manager, mock_config, mock_events, mock_session_output, tmp_path
     ):

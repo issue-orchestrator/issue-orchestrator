@@ -87,11 +87,19 @@ class OrchestratorHttpApi(OrchestratorApi):
     def session_manifest(self, issue_number: int) -> dict[str, Any]:
         return self._request("GET", f"/api/session/manifest/{issue_number}")
 
+    def _session_run_dir(self, issue_number: int) -> str:
+        manifest = self.session_manifest(issue_number)
+        run_dir = manifest.get("run_dir")
+        if not isinstance(run_dir, str) or not run_dir:
+            raise RuntimeError(f"session manifest missing run_dir for issue #{issue_number}")
+        return run_dir
+
     def session_phases(self, issue_number: int) -> dict[str, Any]:
         return self._request("GET", f"/api/session/phases/{issue_number}")
 
     def session_claude_log(self, issue_number: int, limit: int) -> dict[str, Any]:
-        return self._request("GET", f"/api/session/claude-log/{issue_number}?limit={limit}")
+        run_dir = self._session_run_dir(issue_number)
+        return self._request("GET", f"/api/session/claude-log/{issue_number}?limit={limit}&run_dir={run_dir}")
 
     def session_orchestrator_log(self, issue_number: int) -> dict[str, Any]:
         return self._request("GET", f"/api/session/orchestrator-log/{issue_number}")
@@ -188,11 +196,19 @@ class OrchestratorAsyncHttpApi:
     async def session_manifest(self, issue_number: int) -> dict[str, Any]:
         return await self._request("GET", f"/api/session/manifest/{issue_number}")
 
+    async def _session_run_dir(self, issue_number: int) -> str:
+        manifest = await self.session_manifest(issue_number)
+        run_dir = manifest.get("run_dir")
+        if not isinstance(run_dir, str) or not run_dir:
+            raise RuntimeError(f"session manifest missing run_dir for issue #{issue_number}")
+        return run_dir
+
     async def session_phases(self, issue_number: int) -> dict[str, Any]:
         return await self._request("GET", f"/api/session/phases/{issue_number}")
 
     async def session_claude_log(self, issue_number: int, limit: int) -> dict[str, Any]:
-        return await self._request("GET", f"/api/session/claude-log/{issue_number}?limit={limit}")
+        run_dir = await self._session_run_dir(issue_number)
+        return await self._request("GET", f"/api/session/claude-log/{issue_number}?limit={limit}&run_dir={run_dir}")
 
     async def session_orchestrator_log(self, issue_number: int) -> dict[str, Any]:
         return await self._request("GET", f"/api/session/orchestrator-log/{issue_number}")

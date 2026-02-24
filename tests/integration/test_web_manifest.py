@@ -1,4 +1,4 @@
-"""Tests for web manifest endpoint fallback worktree resolution."""
+"""Tests for web manifest endpoint session-context resolution."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from issue_orchestrator.entrypoints import web
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
-def test_session_manifest_uses_fallback_worktree_path(tmp_path, monkeypatch) -> None:
+def test_session_manifest_uses_history_worktree_path(tmp_path, monkeypatch) -> None:
     issue_number = 2641
     worktree_path = tmp_path / f"repo-{issue_number}"
     worktree_path.mkdir(parents=True, exist_ok=True)
@@ -22,7 +22,11 @@ def test_session_manifest_uses_fallback_worktree_path(tmp_path, monkeypatch) -> 
         issue_number=issue_number,
     )
 
-    state = SimpleNamespace(active_sessions=[], session_history=[])
+    history_entry = SimpleNamespace(
+        issue_number=issue_number,
+        worktree_path=str(worktree_path),
+    )
+    state = SimpleNamespace(active_sessions=[], session_history=[history_entry])
     config = SimpleNamespace(
         worktree_base=tmp_path,
         repo="owner/repo",

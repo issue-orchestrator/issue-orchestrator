@@ -5,7 +5,7 @@ All artifacts for a session live in a single run directory:
 
     .issue-orchestrator/sessions/<run_id>__<session_name>/
         manifest.json           # Session metadata
-        session.log             # Session output log
+        ui-session.log             # Session output log
         validation-record.json  # Validation result
         validation-stdout.log   # Validation stdout
         validation-stderr.log   # Validation stderr
@@ -514,6 +514,13 @@ class SessionOutput(Protocol):
         Returns:
             Path to session log, or None if not found
         """
+        ...
+
+    def get_log_path_for_run_dir(
+        self,
+        run_dir: Path,
+    ) -> Path | None:
+        """Get the best available UI log path for a specific run directory."""
         ...
 
     def attach_claude_log(

@@ -190,6 +190,9 @@ class TestAgentConfig:
         assert "CRITICAL" in cmd
         assert "agent-done" in cmd
         assert "prompt.md" in cmd
+        assert "--output-format stream-json" in cmd
+        assert "--include-partial-messages" in cmd
+        assert "--verbose" in cmd
 
     def test_get_command_provider_appends_user_system_prompt(self, tmp_path):
         """Test user-provided system_prompt is appended, not replaced."""

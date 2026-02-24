@@ -309,6 +309,65 @@ class TestCreateWorktree:
         with pytest.raises(WorktreeError, match="Failed to create worktree"):
             create_worktree(repo_root, 123, "Test")
 
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
+    def test_create_worktree_recovers_from_stale_branch_registration(self, mock_run, tmp_path):
+        """Prune stale worktree metadata and retry when branch is bound to missing path."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_base = tmp_path / "worktrees"
+        stale_path = tmp_path / "missing-worktree-123"
+
+        worktree_list_output = (
+            f"worktree {stale_path}\n"
+            "HEAD abc123\n"
+            "branch refs/heads/123-test\n\n"
+        )
+
+        state = {"worktree_add_calls": 0}
+
+        def run_side_effect(cmd, *args, **kwargs):
+            argv = cmd[3:]
+            if argv[:2] == ["worktree", "prune"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["worktree", "list"]:
+                return MagicMock(returncode=0, stdout=worktree_list_output, stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["fetch", "origin", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:2] == ["symbolic-ref", "refs/remotes/origin/HEAD"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "main"]:
+                return MagicMock(returncode=0, stdout="main\n", stderr="")
+            if argv[:3] == ["fetch", "origin", "main"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "origin/main"]:
+                return MagicMock(returncode=0, stdout="abc123\n", stderr="")
+            if argv[:2] == ["worktree", "add"]:
+                state["worktree_add_calls"] += 1
+                if state["worktree_add_calls"] == 1:
+                    return MagicMock(
+                        returncode=1,
+                        stdout="",
+                        stderr=(
+                            "Preparing worktree (checking out '123-test')\n"
+                            f"fatal: '123-test' is already used by worktree at '{stale_path}'\n"
+                        ),
+                    )
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
+
+        worktree_path, branch_name, *_ = create_worktree(
+            repo_root, 123, "Test", worktree_base=worktree_base
+        )
+
+        assert worktree_path == worktree_base / "repo-123"
+        assert branch_name == "123-test"
+        assert state["worktree_add_calls"] == 2
+
     @patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings")
     @patch("issue_orchestrator.adapters.worktree._worktree.install_hooks")
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")

@@ -29,10 +29,14 @@ from ..events import EventName
 from ..infra.logging_config import log_context, get_repo_log_path
 from ..domain.models import Session, SessionStatus, SessionHistoryEntry, PendingCleanup
 from ..domain.session_key import TaskKind
-from ..ports import EventSink, TraceEvent, RepositoryHost, Issue
+from ..ports import EventSink,  make_trace_event, RepositoryHost, Issue
 from ..ports.session_output import SessionOutput
 from .actions import Action, AddLabelAction, RemoveLabelAction, AddCommentAction
-from .completion_processor import ERROR_PREFIX_PUSH, ERROR_PREFIX_CREATE_PR
+from .completion_processor import (
+    ERROR_PREFIX_PUSH,
+    ERROR_PREFIX_CREATE_PR,
+    ERROR_PREFIX_PUBLISH_BLOCKED,
+)
 from .reconciliation import build_expected_for_mutation, ExpectedState
 from ..domain.triage_manifest import TriageManifest
 from pathlib import Path
@@ -91,13 +95,22 @@ def _read_triage_manifest(session: Session) -> TriageManifest | None:
 
 
 def _has_critical_errors(processing_errors: Optional[list[str]]) -> bool:
-    """Check if processing_errors contains critical push/PR failures."""
+    """Check if processing_errors contains critical publish/finalize failures."""
     if not processing_errors:
         return False
     return any(
-        error.startswith(ERROR_PREFIX_PUSH) or error.startswith(ERROR_PREFIX_CREATE_PR)
+        error.startswith(ERROR_PREFIX_PUSH)
+        or error.startswith(ERROR_PREFIX_CREATE_PR)
+        or error.startswith(ERROR_PREFIX_PUBLISH_BLOCKED)
         for error in processing_errors
     )
+
+
+def _has_review_exchange_errors(processing_errors: Optional[list[str]]) -> bool:
+    """Check if processing_errors contains review exchange halt/failure markers."""
+    if not processing_errors:
+        return False
+    return any(error.startswith("review_exchange:") for error in processing_errors)
 
 
 @dataclass
@@ -319,6 +332,7 @@ class CompletionHandler:
         processing_errors: Optional[list[str]] = None,
         diagnostic_path: Optional[str] = None,
         review_exchange_completed: bool = False,
+        review_exchange_halted: bool = False,
         blocked_label: Optional[str] = None,
         blocked_reason: Optional[str] = None,
         completion_detail: Optional[dict[str, Any]] = None,
@@ -347,6 +361,8 @@ class CompletionHandler:
             extra=log_context(issue_key=issue_key, session_id=session.terminal_id),
         )
 
+        review_exchange_halted = review_exchange_halted or _has_review_exchange_errors(processing_errors)
+
         # Fetch PR info if completed (or use hint from completion processor)
         pr_url, pr_number, pr_infos = self._fetch_pr_info(session, status, pr_url_hint=pr_url_hint)
         if pr_infos:
@@ -374,6 +390,13 @@ class CompletionHandler:
             )
             history_status = SessionStatus.FAILED
             history_status_reason = "Push or PR creation failed"
+        elif status == SessionStatus.COMPLETED and review_exchange_halted:
+            logger.info(
+                "[COMPLETION] Review exchange halted - using FAILED for history/trace: issue=%d",
+                session.issue.number,
+            )
+            history_status = SessionStatus.FAILED
+            history_status_reason = "Review exchange halted"
 
         # Create history entry
         history_entry = self._create_history_entry(
@@ -382,13 +405,13 @@ class CompletionHandler:
 
         # Emit trace events
         self._emit_trace_events(
-            session, status, pr_url, pr_number,
+            session, history_status, pr_url, pr_number,
             blocked_reason=blocked_reason,
             completion_detail=completion_detail,
         )
 
         # Update state machines
-        self._update_state_machines(session, status, pr_url)
+        self._update_state_machines(session, history_status, pr_url)
 
         # Determine cleanup strategy
         should_defer, pending_cleanup = self._determine_cleanup_strategy(
@@ -402,12 +425,14 @@ class CompletionHandler:
             pr_url,
             pr_number,
             review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
         )
 
         # Generate actions for label/comment changes (policy logic)
         completion_actions = list(self.generate_completion_actions(
             session, status, processing_errors=processing_errors,
             diagnostic_path=diagnostic_path,
+            review_exchange_halted=review_exchange_halted,
             blocked_label=blocked_label,
             blocked_reason=blocked_reason,
         ))
@@ -427,9 +452,7 @@ class CompletionHandler:
             SessionStatus.NEEDS_HUMAN,
         ) or processing_errors:
             log_path = get_repo_log_path(self.config.repo_root)
-            run_dir = self._session_output.find_run_dir(
-                session.worktree_path, session.terminal_id
-            )
+            run_dir = self._resolve_session_run_dir(session)
             if run_dir:
                 self._session_output.write_orchestrator_tail(
                     run_dir=run_dir,
@@ -580,12 +603,14 @@ class CompletionHandler:
         """
         # Generate human-readable status reason
         status_reasons = {
-            SessionStatus.COMPLETED: "PR created successfully",
+            SessionStatus.COMPLETED: "Completed without PR",
             SessionStatus.BLOCKED: "Agent marked issue as blocked",
             SessionStatus.NEEDS_HUMAN: "Agent requested human input",
             SessionStatus.TIMED_OUT: f"Exceeded {session.agent_config.timeout_minutes} min timeout",
             SessionStatus.FAILED: "Session ended without PR or status update",
         }
+        if status == SessionStatus.COMPLETED and pr_url:
+            status_reasons[SessionStatus.COMPLETED] = "PR created successfully"
         status_reason = status_reason_override or status_reasons.get(status, "Unknown")
 
         return SessionHistoryEntry(
@@ -652,13 +677,21 @@ class CompletionHandler:
             "pr_url": pr_url,
             "runtime_minutes": session.runtime_minutes,
         }
+        completion_path_absolute = detail.get("completion_path_absolute")
+        if isinstance(completion_path_absolute, str) and completion_path_absolute.strip():
+            payload["completion_path_absolute"] = completion_path_absolute
+        else:
+            payload["completion_path_absolute"] = str((session.worktree_path / session.completion_path).resolve())
+        run_dir = self._resolve_session_run_dir(session)
+        if run_dir:
+            payload["run_dir"] = str(run_dir)
         for key in ("implementation", "problems", "review_summary", "review_issues", "risk_level"):
             if detail.get(key):
                 payload[key] = detail[key]
-        self.events.publish(TraceEvent(EventName.SESSION_COMPLETED, payload))
+        self.events.publish(make_trace_event(EventName.SESSION_COMPLETED, payload))
 
         if pr_url and pr_number is not None:
-            self.events.publish(TraceEvent(EventName.ISSUE_PR_CREATED, {
+            self.events.publish(make_trace_event(EventName.ISSUE_PR_CREATED, {
                 "issue_number": session.issue.number,
                 "pr_url": pr_url,
                 "pr_number": pr_number,
@@ -688,7 +721,10 @@ class CompletionHandler:
             "runtime_minutes": session.runtime_minutes,
             "timeout_minutes": session.agent_config.timeout_minutes if session.agent_config else None,
         }
-        self.events.publish(TraceEvent(EventName.SESSION_FAILED, payload))
+        run_dir = self._resolve_session_run_dir(session)
+        if run_dir:
+            payload["run_dir"] = str(run_dir)
+        self.events.publish(make_trace_event(EventName.SESSION_FAILED, payload))
 
     def _emit_blocked_event(
         self,
@@ -707,7 +743,7 @@ class CompletionHandler:
         for key in ("attempted", "blocked_by"):
             if detail.get(key):
                 payload[key] = detail[key]
-        self.events.publish(TraceEvent(EventName.ISSUE_BLOCKED, payload))
+        self.events.publish(make_trace_event(EventName.ISSUE_BLOCKED, payload))
 
     def _emit_needs_human_event(
         self,
@@ -725,7 +761,7 @@ class CompletionHandler:
         }
         if detail.get("question"):
             payload["question"] = detail["question"]
-        self.events.publish(TraceEvent(EventName.ISSUE_NEEDS_HUMAN, payload))
+        self.events.publish(make_trace_event(EventName.ISSUE_NEEDS_HUMAN, payload))
 
     def _update_state_machines(
         self,
@@ -842,7 +878,7 @@ class CompletionHandler:
                 self._publish_review_outcome(review_machine, session, pr_number_review)
         except Exception as e:
             logger.warning(f"Failed to check PR labels for review outcome: {e}")
-            self.events.publish(TraceEvent(EventName.APPLY_FAILED, {
+            self.events.publish(make_trace_event(EventName.APPLY_FAILED, {
                 "step_type": "review_outcome_check", "pr_number": pr_number_review,
                 "issue_number": session.issue.number, "error": str(e),
             }))
@@ -873,7 +909,7 @@ class CompletionHandler:
             "reviewer_agent": session.agent_label,
             "rework_cycle": session.rework_cycle,
         }
-        self.events.publish(TraceEvent(EventName(tr.event_name), payload))
+        self.events.publish(make_trace_event(EventName(tr.event_name), payload))
 
     def _process_review_outcome(self, pr_info: Any, pr_number: int, review_machine: Any) -> None:
         """Process review outcome based on PR labels."""
@@ -926,7 +962,7 @@ class CompletionHandler:
             payload["issue_key"] = issue_key
         if issue_number is not None:
             payload["issue_number"] = issue_number
-        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, payload))
+        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, payload))
 
     def _emit_pr_view_hint(
         self,
@@ -942,7 +978,7 @@ class CompletionHandler:
             "issue_key": issue_key,
             "issue_number": issue_number,
         }
-        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, payload))
+        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, payload))
 
     def _determine_cleanup_strategy(
         self,
@@ -994,6 +1030,7 @@ class CompletionHandler:
         pr_url: Optional[str],
         pr_number: Optional[int] = None,
         review_exchange_completed: bool = False,
+        review_exchange_halted: bool = False,
     ) -> bool:
         """Determine if session should be added to discovered_reviews.
 
@@ -1004,6 +1041,11 @@ class CompletionHandler:
         if review_exchange_completed:
             logger.info(
                 "[REVIEW] Review exchange completed - skipping PR review queue",
+            )
+            return False
+        if review_exchange_halted:
+            logger.info(
+                "[REVIEW] Review exchange halted - skipping PR review queue",
             )
             return False
 
@@ -1243,9 +1285,7 @@ class CompletionHandler:
         if not session.worktree_path:
             return
 
-        run_dir = self._session_output.find_run_dir(
-            session.worktree_path, session.terminal_id
-        )
+        run_dir = self._resolve_session_run_dir(session)
         if not run_dir:
             return
 
@@ -1278,12 +1318,31 @@ class CompletionHandler:
         except Exception as exc:
             logger.warning("[MANIFEST] Failed to save runtime enrichment: %s", exc)
 
+    def _resolve_session_run_dir(self, session: Session) -> Path | None:
+        """Resolve run_dir for events/diagnostics, including issue-scoped fallback.
+
+        Some provider-backed runs use a phase session name in run artifacts while
+        session.terminal_id carries a legacy issue-* token. Prefer exact lookup,
+        then fall back to latest run in this worktree when it belongs to the same issue.
+        """
+        run_dir = self._session_output.find_run_dir(session.worktree_path, session.terminal_id)
+        if run_dir:
+            return run_dir
+        fallback = self._session_output.find_run_dir(session.worktree_path)
+        if not fallback:
+            return None
+        manifest = self._session_output.read_manifest(fallback) or {}
+        if manifest.get("issue_number") == session.issue.number:
+            return fallback
+        return None
+
     def generate_completion_actions(
         self,
         session: Session,
         status: SessionStatus,
         processing_errors: Optional[list[str]] = None,
         diagnostic_path: Optional[str] = None,
+        review_exchange_halted: bool = False,
         blocked_label: Optional[str] = None,
         blocked_reason: Optional[str] = None,
     ) -> tuple[Action, ...]:
@@ -1306,7 +1365,11 @@ class CompletionHandler:
         # Check for critical processing errors (push/PR creation failures)
         critical_errors = [
             error for error in (processing_errors or [])
-            if error.startswith(ERROR_PREFIX_PUSH) or error.startswith(ERROR_PREFIX_CREATE_PR)
+            if (
+                error.startswith(ERROR_PREFIX_PUSH)
+                or error.startswith(ERROR_PREFIX_CREATE_PR)
+                or error.startswith(ERROR_PREFIX_PUBLISH_BLOCKED)
+            )
         ]
 
         # If agent said "completed" but critical processing failed, treat as blocked-failed
@@ -1318,6 +1381,13 @@ class CompletionHandler:
             return tuple(self._generate_processing_failure_actions(
                 session, critical_errors, diagnostic_path, expected
             ))
+
+        if status == SessionStatus.COMPLETED and review_exchange_halted:
+            logger.info(
+                "[COMPLETION] Review exchange halted - generating blocked-failed actions: issue=%d",
+                session.issue.number,
+            )
+            return tuple(self._generate_review_exchange_halted_actions(session, expected))
 
         # Dispatch to status-specific action generators
         if status == SessionStatus.TIMED_OUT:
@@ -1349,6 +1419,41 @@ class CompletionHandler:
         # Note: NEEDS_HUMAN keeps in-progress label to maintain ownership claim
         # This is intentional policy - the issue is still being worked on
         return ()
+
+    def _generate_review_exchange_halted_actions(
+        self,
+        session: Session,
+        expected: ExpectedState,
+    ) -> list[Action]:
+        """Generate hold actions when a review exchange halts without progress."""
+        issue_number = session.issue.number
+        return [
+            AddLabelAction(
+                issue_number=issue_number,
+                label=self._lm.blocked_failed,
+                reason="Review exchange halted with no progress",
+                expected=expected,
+            ),
+            AddCommentAction(
+                number=issue_number,
+                comment=(
+                    "⚠️ **Review Exchange Halted**\n\n"
+                    "The automated review exchange stopped because it could not make further progress.\n\n"
+                    f"- Session: `{session.terminal_id}`\n"
+                    f"- Runtime: {session.runtime_minutes:.1f} minutes\n\n"
+                    f"This issue has been marked as `{self._lm.blocked_failed}` and will not be retried automatically.\n"
+                    "Use Retry/Unblock when you want to run it again."
+                ),
+                reason="Notify that review exchange halted and issue is on hold",
+                expected=expected,
+            ),
+            RemoveLabelAction(
+                issue_number=issue_number,
+                label=self._lm.in_progress,
+                reason="Review exchange halted - releasing claim",
+                expected=expected,
+            ),
+        ]
 
 
 def launch_review_by_number(

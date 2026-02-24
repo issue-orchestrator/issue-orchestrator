@@ -18,11 +18,13 @@ import argparse
 import asyncio
 import atexit
 import logging
+import os
 import signal
 import sys
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+_EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
 
 
 def parse_args() -> argparse.Namespace:
@@ -67,6 +69,70 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _build_repo_status_resolver():
+    from ..execution.git_working_copy import GitWorkingCopy
+
+    git = GitWorkingCopy()
+
+    def _resolve_repo_status(root: Path) -> tuple[str | None, list[str]]:
+        branch: str | None = None
+        try:
+            branch = git.get_current_branch(root)
+        except Exception:
+            branch = None
+        dirty_lines = git.get_status_porcelain_lines(root)
+        return branch, dirty_lines
+
+    return _resolve_repo_status
+
+
+def _assert_expected_identity(repo_root: Path) -> None:
+    from ..infra.repo_identity import (
+        build_repo_identity_with_status,
+        deserialize_repo_identity,
+        diff_repo_identity,
+    )
+
+    expected_identity_raw = os.environ.get(_EXPECTED_IDENTITY_ENV, "").strip()
+    if not expected_identity_raw:
+        return
+    expected_identity = deserialize_repo_identity(expected_identity_raw)
+    observed_identity = build_repo_identity_with_status(
+        repo_root,
+        status_resolver=_build_repo_status_resolver(),
+    )
+    mismatches = diff_repo_identity(expected_identity, observed_identity)
+    if mismatches:
+        raise RuntimeError(
+            "Engine identity mismatch at startup: "
+            f"{mismatches}. expected={expected_identity.to_dict()} observed={observed_identity.to_dict()}"
+        )
+
+
+def _load_config_for_instance(repo_root: Path, config_path: Path | None, instance_id: str | None):
+    from ..infra.config import Config
+
+    if config_path:
+        config = Config.load(config_path)
+    else:
+        config = Config.find_and_load(repo_root)
+    config.repo_root = repo_root
+    if not instance_id:
+        return config
+    original_base = config.worktree_base
+    config.worktree_base = original_base / instance_id
+    logger.info("Worktree base set to instance-specific path: %s", config.worktree_base)
+    if config.claims.enabled and not config.claims.claimant_id:
+        config.claims = config.claims.__class__(
+            enabled=config.claims.enabled,
+            claimant_id=instance_id,
+            lease_seconds=config.claims.lease_seconds,
+            renew_before_expiry_seconds=config.claims.renew_before_expiry_seconds,
+        )
+        logger.info("Claimant ID set to instance ID: %s", instance_id)
+    return config
+
+
 async def run(
     repo_root: Path,
     port: int,
@@ -85,8 +151,9 @@ async def run(
     """
     from ..entrypoints.bootstrap import build_orchestrator
     from ..entrypoints.web import run_with_web_dashboard
-    from ..infra.config import Config
     from ..infra.repo_lock import acquire_lock, release_lock, touch_lock
+
+    _assert_expected_identity(repo_root)
 
     # Acquire the repository lock (instance-specific if multi-instance)
     instance_str = f" instance={instance_id}" if instance_id else ""
@@ -106,31 +173,7 @@ async def run(
             touch_lock(repo_root, instance_id=instance_id)
             await asyncio.sleep(5.0)
 
-    # Load config
-    if config_path:
-        config = Config.load(config_path)
-    else:
-        config = Config.find_and_load(repo_root)
-
-    # Override repo_root in config
-    config.repo_root = repo_root
-
-    # For multi-instance deployments, isolate worktree directories per instance
-    if instance_id:
-        original_base = config.worktree_base
-        config.worktree_base = original_base / instance_id
-        logger.info("Worktree base set to instance-specific path: %s", config.worktree_base)
-
-        # Also set the claimant_id if not already set via env var
-        # (The ${INSTANCE_ID} syntax in config would have already been expanded)
-        if config.claims.enabled and not config.claims.claimant_id:
-            config.claims = config.claims.__class__(
-                enabled=config.claims.enabled,
-                claimant_id=instance_id,
-                lease_seconds=config.claims.lease_seconds,
-                renew_before_expiry_seconds=config.claims.renew_before_expiry_seconds,
-            )
-            logger.info("Claimant ID set to instance ID: %s", instance_id)
+    config = _load_config_for_instance(repo_root, config_path, instance_id)
 
     # Build orchestrator
     logger.info("Building orchestrator...")
@@ -174,8 +217,6 @@ def main() -> int:
     )
 
     # Change to repo root
-    import os
-
     os.chdir(args.repo_root)
 
     try:

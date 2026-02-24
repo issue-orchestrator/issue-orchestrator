@@ -120,6 +120,7 @@ def launch_subprocess(
     runner: Optional[CommandRunner] = None,
     instance_id: Optional[str] = None,
     port: Optional[int] = None,
+    expected_identity: Optional[dict[str, Any]] = None,
     supervisor_ops: Optional[SupervisorOps] = None,
     doctor_fn: Optional[DoctorFn] = None,
 ) -> LaunchResult:
@@ -154,7 +155,13 @@ def launch_subprocess(
     sv = supervisor_ops or supervisor
     try:
         if config.instances > 1 and instance_id is None:
-            infos = sv.start_instances(repo_root, config_name=config_name)
+            start_instances_kwargs: dict[str, Any] = {
+                "repo_root": repo_root,
+                "config_name": config_name,
+            }
+            if expected_identity is not None:
+                start_instances_kwargs["expected_identity"] = expected_identity
+            infos = sv.start_instances(**start_instances_kwargs)
             supervisor_data = {
                 "instances": [
                     {"pid": info.pid, "port": info.http_port, "instance_id": info.instance_id}
@@ -162,12 +169,15 @@ def launch_subprocess(
                 ],
             }
         else:
-            info = sv.start(
-                repo_root,
-                config_name=config_name,
-                instance_id=instance_id,
-                port=port,
-            )
+            start_kwargs: dict[str, Any] = {
+                "repo_root": repo_root,
+                "config_name": config_name,
+                "instance_id": instance_id,
+                "port": port,
+            }
+            if expected_identity is not None:
+                start_kwargs["expected_identity"] = expected_identity
+            info = sv.start(**start_kwargs)
             supervisor_data = {
                 "pid": info.pid,
                 "port": info.http_port,

@@ -88,12 +88,32 @@ def test_flow_dashboard_renders_columns_and_scope(jinja_env):
 
     soup = render_dashboard(jinja_env, vm)
 
-    assert soup.select_one("#tab-kanban.active") is not None
+    active_tab = soup.select_one("#tab-dashboard.active")
+    assert active_tab is not None
+    assert active_tab.get("data-tab") == "kanban"
     columns = soup.select(".kanban-column")
     assert len(columns) == 5
     column_ids = [col["data-column"] for col in columns]
     assert column_ids == ["queued", "running", "blocked", "awaiting-merge", "completed"]
     assert "milestones=M7" in soup.select_one(".scope-summary").text
+
+
+def test_dashboard_js_compact_renderer_routes_running_cancel_to_menu():
+    js_path = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "static" / "js" / "dashboard.js"
+    source = js_path.read_text(encoding="utf-8")
+    assert "const hasTerminal = card.state_label === 'running' ? 'true' : 'false';" in source
+    assert "data-has-terminal" in source
+    assert "class=\"card-kill-btn\"" not in source
+    assert "class=\"card-menu-btn\"" in source
+    assert "openCompactCardActionsMenu(" in source
+
+
+def test_dashboard_js_switch_tab_shows_loading_state():
+    js_path = Path(__file__).parent.parent.parent / "src" / "issue_orchestrator" / "static" / "js" / "dashboard.js"
+    source = js_path.read_text(encoding="utf-8")
+    assert "tab-nav-pending" in source
+    assert "is-loading" in source
+    assert "aria-busy" in source
 
 
 def test_kanban_blocked_column_is_expandable(jinja_env):
@@ -118,6 +138,31 @@ def test_kanban_blocked_column_is_expandable(jinja_env):
     filter_btns = blocked_col.select(".filter-btn")
     assert len(filter_btns) == 3
     assert [btn.text.strip() for btn in filter_btns] == ["All", "New", "Viewed"]
+    badge_texts = [badge.text.strip() for badge in blocked_col.select(".card-badges .badge")]
+    assert "agent:web" in badge_texts
+
+
+def test_kanban_running_column_is_expandable_and_routes_cancel_to_menu(jinja_env):
+    config = make_config()
+    config.agents = {"agent:web": make_agent_config()}
+    running_issue = Issue(number=4057, title="Running issue", labels=["agent:web", "in-progress"])
+    state = OrchestratorState(startup_status="complete", active_sessions=[make_session(running_issue)])
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="kanban",
+        e2e_status_provider=e2e_disabled,
+    )
+
+    soup = render_dashboard(jinja_env, vm)
+
+    running_col = soup.select_one('[data-column="running"]')
+    assert running_col is not None
+    assert "expandable" in running_col.get("class", [])
+    assert running_col.select_one(".column-expand-btn") is not None
+    assert running_col.select_one(".card-kill-btn") is None
+    menu_btn = running_col.select_one(".card-menu-btn")
+    assert menu_btn is not None
+    assert menu_btn.get("data-has-terminal") == "true"
 
 
 def test_kanban_completed_column_session_scoped(jinja_env):
@@ -125,7 +170,14 @@ def test_kanban_completed_column_session_scoped(jinja_env):
     state = OrchestratorState(
         startup_status="complete",
         session_history=[
-            SessionHistoryEntry(issue_number=7, title="Done issue", agent_type="agent:web", status="completed", runtime_minutes=9)
+            SessionHistoryEntry(
+                issue_number=7,
+                title="Done issue",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=9,
+                pr_url="https://example.test/pr/7",
+            )
         ],
     )
     vm = build_dashboard_view_model(
@@ -136,10 +188,10 @@ def test_kanban_completed_column_session_scoped(jinja_env):
 
     soup = render_dashboard(jinja_env, vm)
 
-    completed_col = soup.select_one('[data-column="completed"]')
-    assert completed_col is not None
-    assert "expandable" in completed_col.get("class", [])
-    assert completed_col.select_one(".count").text.strip() == "1"
+    awaiting_merge_col = soup.select_one('[data-column="awaiting-merge"]')
+    assert awaiting_merge_col is not None
+    assert "expandable" in awaiting_merge_col.get("class", [])
+    assert awaiting_merge_col.select_one(".count").text.strip() == "1"
 
 
 def test_status_badge_shows_running(jinja_env):
@@ -215,8 +267,9 @@ def test_embedded_header_elements_in_tab_bar(jinja_env):
     )
     soup = render_dashboard(jinja_env, vm)
     # Embedded header elements exist in the tab bar (hidden by default, shown by JS when embedded)
-    tab_bar = soup.select_one(".board-tabs")
+    tab_bar = soup.select_one(".dashboard-tabs")
     assert tab_bar.select_one("#embeddedBack") is not None
+    assert tab_bar.select_one("#embeddedBackLabel") is not None
     assert tab_bar.select_one("#embeddedRepoName") is not None
     assert tab_bar.select_one("#embeddedBadge") is not None
     assert tab_bar.select_one("#embeddedScopeBtn") is not None

@@ -13,7 +13,7 @@ def test_dashboard_loads_without_page_errors(page: Page, web_server: dict[str, o
     page.goto(str(web_server["url"]), wait_until="domcontentloaded")
     page.wait_for_timeout(500)
 
-    expect(page.locator("#tab-kanban")).to_be_visible()
+    expect(page.locator("#tab-dashboard")).to_be_visible()
     assert errors == []
 
 
@@ -21,7 +21,7 @@ def test_flow_card_opens_issue_detail_drawer(page: Page, web_server: dict[str, o
     """Clicking a flow card focus button opens the issue detail drawer."""
     page.goto(str(web_server["url"]), wait_until="domcontentloaded")
 
-    card_focus = page.locator(".kanban-board .issue-card[data-issue='408'] .card-focus").first
+    card_focus = page.locator(".dashboard-columns .issue-card[data-issue='408'] .card-focus").first
     expect(card_focus).to_be_visible()
     card_focus.click()
 

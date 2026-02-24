@@ -52,6 +52,9 @@ _git = GitCLI(runner=SubprocessCommandRunner())
 # Git writes index.lock during operations; treat short-lived locks as in-flight.
 STALE_GIT_LOCK_SECONDS = 5
 STALE_GIT_LOCK_RECHECK_SECONDS = 2
+_BRANCH_IN_USE_BY_WORKTREE_RE = re.compile(
+    r"fatal:\s+'([^']+)'\s+is already used by worktree at '([^']+)'"
+)
 
 
 def _git_run(
@@ -1166,7 +1169,10 @@ def _init_worktree_context(
     worktree_base.mkdir(parents=True, exist_ok=True)
     branch_name = branch_name or generate_branch_name(issue_number, issue_title)
     worktree_path = worktree_base / f"{repo_root.name}-{issue_number}"
-    disable_reuse = os.environ.get("ORCHESTRATOR_DISABLE_WORKTREE_REUSE") == "1"
+    disable_reuse = (
+        os.environ.get("ORCHESTRATOR_DISABLE_WORKTREE_REUSE") == "1"
+        or reuse_options.disable_reuse
+    )
     base_branch = _resolve_base_branch(repo_root, base_branch)
 
     logger.info(
@@ -1468,6 +1474,14 @@ def _create_fresh_worktree(
 
         logger.info(issue_log(issue_number, "Creating worktree: branch=%s path=%s"), branch_name, worktree_path)
         result = _git_run(repo_root, cmd, check=False)
+        if result.returncode != 0 and _recover_stale_branch_worktree_registration(
+            repo_root=repo_root,
+            issue_number=issue_number,
+            branch_name=branch_name,
+            stderr=result.stderr or "",
+        ):
+            logger.info(issue_log(issue_number, "Retrying worktree create after prune: branch=%s"), branch_name)
+            result = _git_run(repo_root, cmd, check=False)
 
         if result.returncode != 0:
             logger.error(
@@ -1491,6 +1505,41 @@ def _create_fresh_worktree(
         raise
     except Exception as e:
         raise WorktreeError(f"Error creating worktree: {e}")
+
+
+def _recover_stale_branch_worktree_registration(
+    repo_root: Path,
+    issue_number: int,
+    branch_name: str,
+    stderr: str,
+) -> bool:
+    """Prune stale git worktree metadata when branch is bound to a missing path."""
+    match = _BRANCH_IN_USE_BY_WORKTREE_RE.search(stderr)
+    if not match:
+        return False
+    conflict_branch = match.group(1)
+    conflict_path = Path(match.group(2))
+    if conflict_branch != branch_name:
+        return False
+    if conflict_path.exists():
+        return False
+
+    logger.warning(
+        issue_log(
+            issue_number,
+            "Detected stale worktree registration for branch=%s at missing path=%s; pruning",
+        ),
+        branch_name,
+        conflict_path,
+    )
+    prune_result = _git_run(repo_root, ["worktree", "prune"], check=False)
+    if prune_result.returncode != 0:
+        logger.warning(
+            issue_log(issue_number, "Failed to prune stale worktree registration: %s"),
+            (prune_result.stderr or "").strip(),
+        )
+        return False
+    return True
 
 
 def remove_worktree(worktree_path: Path) -> None:

@@ -54,7 +54,6 @@ from .triage_manifest_builder import TriageManifestBuilder
 from ..ports import (
     ManifestDownloader,
     EventSink,
-    TraceEvent,
     ReviewState,
     RepositoryHost,
     Issue as IssueProtocol,
@@ -62,9 +61,11 @@ from ..ports import (
     CommandRunner,
 )
 from ..ports.session_output import SessionOutput
+from ..ports.event_sink import make_session_started_event
 from ..ports.worktree_manager import WorktreeManager, WorktreeReuseOptions, WorktreeInfo
 from ..ports.session_log import detect_ai_system_from_command
 from ..ports.provider_resilience import ProviderErrorType
+from ..ports.event_sink import make_run_scoped_event, make_trace_event
 from .provider_availability import ProviderAvailabilityPolicy
 from .action_applier import ActionApplier
 from .actions import Action, AddCommentAction, AddLabelAction, RemoveLabelAction
@@ -229,13 +230,22 @@ class SessionLauncher:
             label_manager = LabelManager(config)
         self._lm = label_manager
 
-    def _worktree_reuse_options(self, *, allow_remote_branch_delete: bool = True) -> WorktreeReuseOptions:
-        return WorktreeReuseOptions(
+    def _worktree_reuse_options(
+        self,
+        *,
+        allow_remote_branch_delete: bool = True,
+        force_fresh: bool = False,
+    ) -> WorktreeReuseOptions:
+        options = WorktreeReuseOptions(
             reuse_push_preflight=self.config.reuse_push_preflight,
             worktree_branch_on_recreate=self.config.worktree_branch_on_recreate,
             allow_no_verify_dry_run_preflight=self.config.allow_no_verify_dry_run_preflight,
             allow_remote_branch_delete=allow_remote_branch_delete,
         )
+        if force_fresh:
+            options.disable_reuse = True
+            options.worktree_branch_on_recreate = "create_new_branch"
+        return options
 
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
         """Apply mutations through the ActionApplier."""
@@ -252,10 +262,70 @@ class SessionLauncher:
                 )
         return all_ok
 
+    def _interrupted_retry_guard_label(self, mode: str) -> str:
+        retry_cfg = self.config.retry.interrupted_sessions
+        if mode == "coding":
+            return retry_cfg.coding_guard_label
+        return retry_cfg.review_guard_label
+
+    def _clear_interrupted_retry_guard_label(self, *, issue_number: int, mode: str, context: str) -> None:
+        """Best-effort cleanup of interrupted retry guard at launch boundary."""
+        guard_label = self._interrupted_retry_guard_label(mode)
+        self._apply_actions([
+            RemoveLabelAction(
+                issue_number=issue_number,
+                label=guard_label,
+                reason=f"{mode} session relaunched - clearing interrupted retry guard",
+            ),
+        ], context=context)
+
+    def _clear_reset_retry_pending_label(self, *, issue_number: int, context: str) -> None:
+        """Best-effort cleanup of reset+retry pending guard at launch boundary."""
+        pending_label = getattr(self._lm, "reset_retry_pending", None)
+        if not isinstance(pending_label, str) or not pending_label:
+            resolver = getattr(self._lm, "resolve", None)
+            if callable(resolver):
+                resolved = resolver("reset-retry-pending")
+                pending_label = resolved if isinstance(resolved, str) and resolved else "reset-retry-pending"
+            else:
+                pending_label = "reset-retry-pending"
+        actions: list[Action] = [
+            RemoveLabelAction(
+                issue_number=issue_number,
+                label=pending_label,
+                reason="session launched - clearing reset+retry pending guard",
+            ),
+        ]
+        self._apply_actions(actions, context=context)
+
+    def _clear_reset_retry_scratch_pending_label(self, *, issue_number: int, context: str) -> None:
+        """Best-effort cleanup of reset+retry-from-scratch pending guard."""
+        pending_label = getattr(self._lm, "reset_retry_scratch_pending", None)
+        if not isinstance(pending_label, str) or not pending_label:
+            resolver = getattr(self._lm, "resolve", None)
+            if callable(resolver):
+                resolved = resolver("reset-retry-scratch-pending")
+                pending_label = (
+                    resolved
+                    if isinstance(resolved, str) and resolved
+                    else "reset-retry-scratch-pending"
+                )
+            else:
+                pending_label = "reset-retry-scratch-pending"
+        actions: list[Action] = [
+            RemoveLabelAction(
+                issue_number=issue_number,
+                label=pending_label,
+                reason="session launched - clearing reset+retry-from-scratch pending guard",
+            ),
+        ]
+        self._apply_actions(actions, context=context)
+
     def _build_session_env(
         self,
         *,
         completion_path: str,
+        session_id: str,
         agent_label: str,
         issue_number: int,
         run_dir: Path,
@@ -266,18 +336,33 @@ class SessionLauncher:
         reachable — even when the target repo is a foreign (non-orchestrator)
         repository with no ``.venv``.
 
-        NOTE: Validation config is NOT passed via env var.  ``agent-done``
-        reads validation config from the worktree's config file so tests are
-        deterministic (no env var leakage).
+        Also exports orchestrator ``src`` on ``PYTHONPATH`` so subprocess
+        commands launched from arbitrary worktree directories can import
+        ``issue_orchestrator`` without depending on editable installs.
+
+        NOTE: The selected orchestrator config name is exported so ``agent-done``
+        resolves validation from the same config file used by the launcher.
         """
         orch_bin = Path(sys.executable).parent
+        orch_src = Path(__file__).resolve().parents[2]
+        config_exports = ""
+        if self.config.config_path is not None:
+            config_name = self.config.config_path.name
+            config_path = str(self.config.config_path.resolve())
+            config_exports = (
+                f" {ENV_PREFIX}CONFIG_NAME='{config_name}'"
+                f" {ENV_PREFIX}CONFIG_PATH='{config_path}'"
+            )
         return (
             f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
+            f" {ENV_PREFIX}SESSION_ID='{session_id}'"
             f" {ENV_PREFIX}AGENT_LABEL='{agent_label}'"
             f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
+            f"{config_exports}"
             f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
             f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_dir}'"
             f" {ENV_PREFIX}RUN_DIR='{run_dir}'"
+            f' PYTHONPATH="{orch_src}:${{PYTHONPATH:-}}"'
             f' PATH="{orch_bin}:$PATH"'
         )
 
@@ -338,7 +423,7 @@ class SessionLauncher:
                 "issue", issue.number, "AVAILABLE", "SKIP",
                 f"dependencies changed: {report.summary()}"
             )
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.ISSUE_DEPENDENCY_BLOCKED,
                 {
                     "issue_number": issue.number,
@@ -368,7 +453,7 @@ class SessionLauncher:
                 "issue", issue.number, "LAUNCHING", "CLAIM_FAILED",
                 f"claim attempt failed: {claim_result.error}"
             )
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.CLAIM_CONTESTED,
                 {
                     "issue_number": issue.number,
@@ -391,7 +476,7 @@ class SessionLauncher:
                 "convergence failed - another claimant won"
             )
             self._claim_manager.release_claim(issue.number, claim_result.lease_id or "")
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.CLAIM_LOST,
                 {
                     "issue_number": issue.number,
@@ -409,7 +494,7 @@ class SessionLauncher:
         lease_seconds = self.config.claim_lease_seconds if hasattr(self.config, 'claim_lease_seconds') else 900
         acquired_at = datetime.now()
         logger.info(issue_log(issue.number, "Claim acquired: lease_id=%s"), claim_result.lease_id)
-        self.events.publish(TraceEvent(
+        self.events.publish(make_trace_event(
             EventName.CLAIM_ACQUIRED,
             {
                 "issue_number": issue.number,
@@ -555,6 +640,17 @@ class SessionLauncher:
         # Phase 4: Prepare worktree
         step_start = time.time()
         logger.info(issue_log(issue.number, "Creating worktree..."))
+        from_scratch_pending = self._lm.reset_retry_scratch_pending in issue.labels
+        scratch_branch_name: str | None = None
+        if from_scratch_pending:
+            scratch_branch_name = f"{issue.number}-scratch-{int(time.time())}"
+            logger.info(
+                issue_log(
+                    issue.number,
+                    "Reset+retry from scratch requested; forcing fresh branch from base: %s",
+                ),
+                scratch_branch_name,
+            )
         phase_name = "coding-1"  # Initial coding session is always attempt 1
         ctx = WorktreeContext.create(
             worktree_manager=self._worktree_manager,
@@ -565,9 +661,10 @@ class SessionLauncher:
             issue_title=issue.title,
             session_name=session_name,
             agent_label=issue.agent_type,
+            branch_name=scratch_branch_name,
             enforce_hooks=self.config.enforce_hooks,
             pre_push_hook=self.config.pre_push_hook,
-            reuse_options=self._worktree_reuse_options(),
+            reuse_options=self._worktree_reuse_options(force_fresh=from_scratch_pending),
             phase_name=phase_name,
         )
 
@@ -588,7 +685,7 @@ class SessionLauncher:
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_issue")
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.ISSUE_NEEDS_HUMAN,
                 {
                     "issue_number": issue.number,
@@ -653,6 +750,21 @@ class SessionLauncher:
         if self.config.setup_worktree:
             self._run_setup_commands(worktree_path)
 
+        # New coding attempt starts now; clear interrupted retry guard.
+        self._clear_interrupted_retry_guard_label(
+            issue_number=issue.number,
+            mode="coding",
+            context="launch_clear_interrupted_guard_coding",
+        )
+        self._clear_reset_retry_pending_label(
+            issue_number=issue.number,
+            context="launch_clear_reset_retry_pending_coding",
+        )
+        self._clear_reset_retry_scratch_pending_label(
+            issue_number=issue.number,
+            context="launch_clear_reset_retry_scratch_pending_coding",
+        )
+
         # Add in-progress label
         step_start = time.time()
         in_progress_label = self._lm.in_progress
@@ -666,7 +778,7 @@ class SessionLauncher:
         if not label_ok:
             log_transition("issue", issue.number, "LAUNCHING", "FAILED", "in-progress label failed")
             logger.error(issue_log(issue.number, "FAILED: could not add in-progress label"))
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.SESSION_START_FAILED,
                 {
                     "issue_number": issue.number,
@@ -705,6 +817,13 @@ class SessionLauncher:
             logger.warning("[launch] Rebase failed - agent will need to resolve merge conflicts")
 
         # Build command
+        rendered_prompt = agent_config.render_initial_prompt(
+            issue_number=issue.number,
+            issue_title=issue.title,
+            worktree=worktree_path,
+            existing_work=existing_work,
+        )
+        prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command(
             issue_number=issue.number,
             issue_title=issue.title,
@@ -712,13 +831,17 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
-        completion_path = get_completion_path(issue.agent_type, session_name=session_name)
+        completion_path = get_completion_path(issue.agent_type, session_name=ctx.phase_name)
         self._session_output.update_manifest(
             run.run_dir,
-            {"completion_path": completion_path},
+            {
+                "completion_path": completion_path,
+                "session_prompt_path": prompt_path,
+            },
         )
         env_exports = self._build_session_env(
             completion_path=completion_path,
+            session_id=run.session_name,
             agent_label=issue.agent_type,
             issue_number=issue.number,
             run_dir=run.run_dir,
@@ -785,7 +908,7 @@ class SessionLauncher:
 
         # Emit trace event
         full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(TraceEvent(EventName.SESSION_STARTED, {
+        self.events.publish(make_session_started_event({
             "issue_number": issue.number,
             "session_id": session_name,
             "agent": issue.agent_type,
@@ -796,6 +919,7 @@ class SessionLauncher:
             "run_dir": str(run.run_dir),
             "completion_path": completion_path,
             "completion_path_absolute": str(full_completion_path),
+            "session_prompt_path": prompt_path,
         }))
 
         # State machine transitions
@@ -897,7 +1021,7 @@ class SessionLauncher:
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_review")
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.ISSUE_NEEDS_HUMAN,
                 {
                     "issue_number": review.issue_number,
@@ -922,6 +1046,20 @@ class SessionLauncher:
             "session_key": session_key.stable_id(),
             "agent": agent_label,
         })
+        # New review attempt starts now; clear interrupted retry guard.
+        self._clear_interrupted_retry_guard_label(
+            issue_number=review.issue_number,
+            mode="review",
+            context="launch_clear_interrupted_guard_review",
+        )
+        self._clear_reset_retry_pending_label(
+            issue_number=review.issue_number,
+            context="launch_clear_reset_retry_pending_review",
+        )
+        self._clear_reset_retry_scratch_pending_label(
+            issue_number=review.issue_number,
+            context="launch_clear_reset_retry_scratch_pending_review",
+        )
 
         logger.info(
             "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
@@ -947,6 +1085,14 @@ class SessionLauncher:
         existing_work = self._build_review_existing_work(worktree_info, review.pr_number)
 
         # Build command
+        rendered_prompt = agent_config.render_initial_prompt(
+            issue_number=review.issue_number,
+            issue_title=f"Review PR #{review.pr_number}",
+            worktree=worktree_path,
+            pr_number=review.pr_number,
+            existing_work=existing_work,
+        )
+        prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command(
             issue_number=review.issue_number,
             issue_title=f"Review PR #{review.pr_number}",
@@ -955,13 +1101,17 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
-        completion_path = get_completion_path(agent_label, session_name=session_name)
+        completion_path = get_completion_path(agent_label, session_name=ctx.phase_name)
         self._session_output.update_manifest(
             run.run_dir,
-            {"completion_path": completion_path},
+            {
+                "completion_path": completion_path,
+                "session_prompt_path": prompt_path,
+            },
         )
         env_exports = self._build_session_env(
             completion_path=completion_path,
+            session_id=run.session_name,
             agent_label=agent_label,
             issue_number=review.issue_number,
             run_dir=run.run_dir,
@@ -1012,7 +1162,7 @@ class SessionLauncher:
 
         # Emit event
         full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(TraceEvent(EventName.REVIEW_STARTED, {
+        self.events.publish(make_run_scoped_event(EventName.REVIEW_STARTED, {
             "pr_number": review.pr_number,
             "issue_number": review.issue_number,
             "agent": agent_label,
@@ -1022,6 +1172,7 @@ class SessionLauncher:
             "run_dir": str(run.run_dir),
             "completion_path": completion_path,
             "completion_path_absolute": str(full_completion_path),
+            "session_prompt_path": prompt_path,
         }))
 
         # State machine transition
@@ -1149,7 +1300,7 @@ class SessionLauncher:
                     reason="worktree preparation failed",
                 ),
             ], context="worktree_prepare_rework")
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.ISSUE_NEEDS_HUMAN,
                 {
                     "issue_number": issue_number,
@@ -1175,6 +1326,20 @@ class SessionLauncher:
             "agent": rework.agent_type,
             "rework_cycle": rework.rework_cycle,
         })
+        # Rework is a coding retry attempt; clear interrupted retry guard.
+        self._clear_interrupted_retry_guard_label(
+            issue_number=issue_number,
+            mode="coding",
+            context="launch_clear_interrupted_guard_rework",
+        )
+        self._clear_reset_retry_pending_label(
+            issue_number=issue_number,
+            context="launch_clear_reset_retry_pending_rework",
+        )
+        self._clear_reset_retry_scratch_pending_label(
+            issue_number=issue_number,
+            context="launch_clear_reset_retry_scratch_pending_rework",
+        )
 
         logger.info(
             "[SESSION_RUN_START] run_id=%s session=%s issue=%s",
@@ -1231,6 +1396,14 @@ class SessionLauncher:
             )
 
         # Build command
+        rendered_prompt = agent_config.render_initial_prompt(
+            issue_number=issue_number,
+            issue_title=f"Rework PR #{pr_number} (cycle {rework.rework_cycle})",
+            worktree=worktree_path,
+            pr_number=pr_number,
+            existing_work=existing_work,
+        )
+        prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
         base_command = agent_config.get_command(
             issue_number=issue_number,
             issue_title=f"Rework PR #{pr_number} (cycle {rework.rework_cycle})",
@@ -1239,13 +1412,17 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
-        completion_path = get_completion_path(rework.agent_type, session_name=session_name)
+        completion_path = get_completion_path(rework.agent_type, session_name=ctx.phase_name)
         self._session_output.update_manifest(
             run.run_dir,
-            {"completion_path": completion_path},
+            {
+                "completion_path": completion_path,
+                "session_prompt_path": prompt_path,
+            },
         )
         env_exports = self._build_session_env(
             completion_path=completion_path,
+            session_id=run.session_name,
             agent_label=rework.agent_type,
             issue_number=issue_number,
             run_dir=run.run_dir,
@@ -1297,7 +1474,7 @@ class SessionLauncher:
 
         # Emit event
         full_completion_path = (worktree_path / completion_path).resolve()
-        self.events.publish(TraceEvent(EventName.REWORK_STARTED, {
+        self.events.publish(make_run_scoped_event(EventName.REWORK_STARTED, {
             "issue_number": issue_number,
             "pr_number": pr_number,
             "session_name": session_name,
@@ -1306,6 +1483,7 @@ class SessionLauncher:
             "run_dir": str(run.run_dir),
             "completion_path": completion_path,
             "completion_path_absolute": str(full_completion_path),
+            "session_prompt_path": prompt_path,
         }))
 
         # Update rework cycle label
@@ -1319,7 +1497,7 @@ class SessionLauncher:
                 reason="rework started",
             ),
         ], context="rework_remove_needs_rework")
-        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, {
+        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, {
             "pr_number": pr_number,
             "issue_number": issue_number,
             "issue_key": str(issue_number),
@@ -1553,6 +1731,11 @@ class SessionLauncher:
         setup_time = time.time() - step_start
         logger.info("[launch] Setup completed in %.1fs", setup_time)
 
+    def _persist_session_prompt(self, run_dir: Path, prompt_text: str) -> str:
+        """Persist rendered launch prompt into run-scoped artifacts."""
+        prompt_path = self._session_output.write_session_prompt(run_dir, prompt_text)
+        return str(prompt_path)
+
     def _wrap_provider_command(self, base_command: str, agent_config: "AgentConfig", run_dir: Path) -> str:
         """Wrap provider command with retry/circuit reporting."""
         retry_cfg = self.config.provider_resilience.short_retry
@@ -1682,7 +1865,7 @@ class SessionLauncher:
             reason="rework cycle update",
         ))
         self._apply_actions(actions, context="rework_cycle_label")
-        self.events.publish(TraceEvent(EventName.PR_VIEW_CHANGED, {
+        self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, {
             "pr_number": pr_number,
             "issue_number": issue_number,
             "issue_key": str(issue_number),
@@ -1724,6 +1907,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     validation_error: Optional[str] = None,
     validation_error_file: Optional[str] = None,
     review_exchange_completed: bool = False,
+    review_exchange_halted: bool = False,
     blocked_label: Optional[str] = None,
     blocked_reason: Optional[str] = None,
     completion_detail: Optional[dict[str, Any]] = None,
@@ -1796,6 +1980,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
         processing_errors=processing_errors,
         diagnostic_path=diagnostic_path,
         review_exchange_completed=review_exchange_completed,
+        review_exchange_halted=review_exchange_halted,
         blocked_label=blocked_label,
         blocked_reason=blocked_reason,
         completion_detail=completion_detail,
@@ -1841,7 +2026,7 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
                 session.lease_id,
             )
             if events:
-                events.publish(TraceEvent(
+                events.publish(make_trace_event(
                     EventName.CLAIM_RELEASED,
                     {
                         "issue_number": session.issue.number,
@@ -1976,7 +2161,7 @@ def orchestrator_launch_review_session(
     # Always remove from pending after attempting launch
     state.pending_reviews = [r for r in state.pending_reviews if r.pr_number != review.pr_number]
     if result.success and result.session:
-        state.active_sessions.append(result.session)
+        _append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
         # Terminal exists but we can't track it - try to restore/adopt it
         session_name = f"review-{review.pr_number}"
@@ -1985,7 +2170,7 @@ def orchestrator_launch_review_session(
             already_tracked=state.active_sessions,
         )
         if restored:
-            state.active_sessions.extend(restored)
+            _append_unique_active_sessions(state.active_sessions, restored)
             logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
         else:
             logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
@@ -2013,7 +2198,7 @@ def orchestrator_launch_rework_session(
     # Always remove from pending after attempting launch
     state.pending_reworks = [r for r in state.pending_reworks if r.issue_key != rework.issue_key]
     if result.success and result.session:
-        state.active_sessions.append(result.session)
+        _append_unique_active_sessions(state.active_sessions, [result.session])
     elif result.keep_queued:
         # Terminal exists but we can't track it - try to restore/adopt it
         issue_number = rework.resolve_issue_number()
@@ -2026,7 +2211,7 @@ def orchestrator_launch_rework_session(
             already_tracked=state.active_sessions,
         )
         if restored:
-            state.active_sessions.extend(restored)
+            _append_unique_active_sessions(state.active_sessions, restored)
             logger.info("[ORPHAN] Restored tracking for existing terminal: %s", session_name)
         else:
             logger.warning("[ORPHAN] Couldn't restore session %s - terminal may be stale", session_name)
@@ -2078,6 +2263,7 @@ def process_active_sessions(
         validation_error = decision.validation_error
         validation_error_file = decision.validation_error_file
         review_exchange_completed = False
+        review_exchange_halted = False
         if decision.processing_result:
             if decision.processing_result.pr_url:
                 pr_url_hint = decision.processing_result.pr_url
@@ -2086,6 +2272,7 @@ def process_active_sessions(
             if decision.processing_result.diagnostic_path:
                 diagnostic_path = decision.processing_result.diagnostic_path
             review_exchange_completed = decision.processing_result.review_exchange_completed
+            review_exchange_halted = decision.processing_result.review_exchange_halted
         handle_session_completion(
             session, decision.status, state, completion_handler, action_applier,
             observer, worktree_manager, kill_session_fn, config,
@@ -2095,6 +2282,7 @@ def process_active_sessions(
             validation_error=validation_error,
             validation_error_file=str(validation_error_file) if validation_error_file else None,
             review_exchange_completed=review_exchange_completed,
+            review_exchange_halted=review_exchange_halted,
             blocked_label=decision.blocked_label,
             blocked_reason=decision.blocked_reason,
             completion_detail=decision.completion_detail,
@@ -2127,7 +2315,7 @@ def _publish_observation_event(
 ) -> None:
     if not events:
         return
-    events.publish(TraceEvent(EventName.OBSERVATION_RESULT, {
+    events.publish(make_trace_event(EventName.OBSERVATION_RESULT, {
         "issue_number": session.issue.number,
         "session_name": session.terminal_id,
         "status": decision.status.value,
@@ -2164,7 +2352,7 @@ def _release_claim_if_needed(
             session.lease_id,
         )
         if events:
-            events.publish(TraceEvent(
+            events.publish(make_trace_event(
                 EventName.CLAIM_RELEASED,
                 {
                     "issue_number": session.issue.number,
@@ -2235,6 +2423,27 @@ def _warn_if_slow(obs_elapsed: float, session: Session) -> None:
         session.terminal_id,
         session.issue.number,
     )
+
+
+def _append_unique_active_sessions(
+    active_sessions: list[Session],
+    incoming: list[Session],
+) -> int:
+    """Append sessions while preserving unique terminal identity."""
+    existing_ids = {s.terminal_id for s in active_sessions}
+    added = 0
+    for session in incoming:
+        if session.terminal_id in existing_ids:
+            logger.warning(
+                "[ACTIVE_SESSIONS] Duplicate terminal suppressed: %s (issue=%s)",
+                session.terminal_id,
+                session.issue.number,
+            )
+            continue
+        active_sessions.append(session)
+        existing_ids.add(session.terminal_id)
+        added += 1
+    return added
 
 
 def _observe_active_session(
@@ -2354,7 +2563,8 @@ def restore_running_sessions(
     session_restorer: "SessionRestorer",
 ) -> None:
     """Restore running sessions - moved per method table."""
-    active_sessions.extend(session_restorer.restore_sessions(running, active_sessions))
+    restored = session_restorer.restore_sessions(running, active_sessions)
+    _append_unique_active_sessions(active_sessions, restored)
 
 
 def parse_session_ref(
@@ -2368,8 +2578,8 @@ def parse_session_ref(
         return SessionRef.from_name(session_name)
     except ValueError as e:
         from ..events import EventName
-        from ..ports import TraceEvent
-        events.publish(TraceEvent(EventName.SESSION_NAME_PARSE_ERROR, {"session_name": session_name, "error": str(e)}))
+        from ..ports import make_trace_event
+        events.publish(make_trace_event(EventName.SESSION_NAME_PARSE_ERROR, {"session_name": session_name, "error": str(e)}))
         raise
 
 
@@ -2419,5 +2629,5 @@ def orchestrator_launch_session(
     """
     result = session_launcher.launch_issue_session(issue, state.active_sessions)
     if result.success and result.session:
-        state.active_sessions.append(result.session)
+        _append_unique_active_sessions(state.active_sessions, [result.session])
     return result.session if result.success else None

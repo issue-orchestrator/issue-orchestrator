@@ -677,6 +677,16 @@ class GitHubAdapter:
                         self._client.remove_label(issue_number, label)
                     logger.debug(f"Removed label '{label}' from issue {issue_number}")
                     break
+                except GitHubHttpError as exc:
+                    if exc.status_code == 404:
+                        # Label already absent is idempotent success for removal.
+                        logger.info(
+                            "Label '%s' not present on issue %s; treating remove as no-op",
+                            label,
+                            issue_number,
+                        )
+                        return
+                    raise
                 except GitHubTransportError as exc:
                     if attempt >= 3:
                         raise

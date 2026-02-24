@@ -15,10 +15,11 @@ from issue_orchestrator.infra.config import Config
 from tests.conftest import MockGitHubAdapter, MockEventSink, build_test_orchestrator_deps
 from issue_orchestrator.execution import CompositeEventSink
 from issue_orchestrator.execution.timeline_event_sink import TimelineEventSink
-from issue_orchestrator.execution.timeline_store import FileSystemTimelineStore, TimelineStoreConfig
+from issue_orchestrator.execution.timeline_store import SqliteTimelineStore, TimelineStoreConfig
 from issue_orchestrator.execution.timeline_writer import DefaultTimelineWriter
 from issue_orchestrator.execution.timeline_reader import DefaultTimelineReader
 from issue_orchestrator.infra.orchestrator import Orchestrator
+from issue_orchestrator.infra.repo_identity import state_dir
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.planner import Planner
 from issue_orchestrator.control.workflows.review_workflow import ReviewWorkflow
@@ -167,8 +168,13 @@ class TempWorktreeManager:
                base_branch: str | None = None, reuse_options=None):
         worktree = (worktree_base or self.base) / f"sim-wt-{issue_number}"
         worktree.mkdir(parents=True, exist_ok=True)
-        (worktree / ".git").write_text("simulated")
-        return WorktreeInfo(path=worktree, branch_name=branch_name or f"{issue_number}-sim")
+        final_branch = branch_name or f"{issue_number}-sim"
+        # Use a real git repo so branch/introspection commands work in scenarios.
+        subprocess.run(["git", "init"], cwd=worktree, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=worktree, check=True, capture_output=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=worktree, check=True, capture_output=True)
+        subprocess.run(["git", "checkout", "-b", final_branch], cwd=worktree, check=True, capture_output=True)
+        return WorktreeInfo(path=worktree, branch_name=final_branch)
 
     def remove(self, worktree_path: Path) -> None:
         return None
@@ -272,8 +278,8 @@ def build_orchestrator(
     runner = runner or ScriptSessionRunner()
     worktree_manager = worktree_manager or TempWorktreeManager(base=repo_root)
     working_copy = working_copy or StubWorkingCopy()
-    timeline_store = FileSystemTimelineStore(
-        repo_root,
+    timeline_store = SqliteTimelineStore(
+        state_dir(repo_root) / "timeline.sqlite",
         TimelineStoreConfig(max_records=config.timeline.max_records),
     )
     timeline_writer = DefaultTimelineWriter(timeline_store)

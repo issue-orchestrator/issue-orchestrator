@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import urllib.error
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -87,19 +88,15 @@ class TestBuildMenu:
             # Invoke the callable to get menu items
             items = menu_items_fn()
 
-        # 2 engine items + separator + "Open Control Center"
-        assert len(items) == 4
+        # 1 running engine item + separator + "Open Control Center"
+        assert len(items) == 3
 
         # Check engine items have correct labels
         first_label = mock_item.call_args_list[0][0][0]
         assert "my-app" in first_label
         assert "running" in first_label
         assert "\u25cf" in first_label  # filled circle for running
-
-        second_label = mock_item.call_args_list[1][0][0]
-        assert "api-service" in second_label
-        assert "stopped" in second_label
-        assert "\u25cb" in second_label  # hollow circle for stopped
+        assert all("api-service" not in call[0][0] for call in mock_item.call_args_list)
 
     def test_menu_includes_open_control_center(self) -> None:
         """Menu always includes 'Open Control Center' item."""
@@ -112,12 +109,13 @@ class TestBuildMenu:
             menu_items_fn = mock_menu.call_args[0][0]
             items = menu_items_fn()
 
-        # No engines -> just "Open Control Center"
-        assert len(items) == 1
-        assert mock_item.call_args_list[0][0][0] == "Open Control Center"
+        # No engines -> "No running engines" + separator + "Open Control Center"
+        assert len(items) == 3
+        assert mock_item.call_args_list[0][0][0] == "No running engines"
+        assert mock_item.call_args_list[1][0][0] == "Open Control Center"
 
-    def test_no_separator_when_no_engines(self) -> None:
-        """No separator when engine list is empty."""
+    def test_separator_present_when_no_engines(self) -> None:
+        """Separator appears between empty-state line and Open Control Center."""
         from issue_orchestrator.entrypoints import tray
 
         with patch("pystray.Menu") as mock_menu, patch("pystray.MenuItem"):
@@ -127,8 +125,7 @@ class TestBuildMenu:
             menu_items_fn = mock_menu.call_args[0][0]
             items = menu_items_fn()
 
-        # Should not contain the separator
-        assert "---" not in items
+        assert "---" in items
 
     def test_engine_status_fn_exception_handled(self) -> None:
         """If engine_status_fn raises, menu still renders with Open CC."""
@@ -144,8 +141,8 @@ class TestBuildMenu:
             menu_items_fn = mock_menu.call_args[0][0]
             items = menu_items_fn()
 
-        # Should still have "Open Control Center"
-        assert len(items) == 1
+        # Should still show empty state and Open Control Center
+        assert len(items) == 3
 
 
 @_skip_no_pystray
@@ -230,3 +227,63 @@ class TestOpenControlCenter:
         with patch.object(tray.webbrowser, "open") as mock_open:
             callback()
             mock_open.assert_called_once_with(url)
+
+
+class TestTrayControlCenterStatus:
+    """Tests for Control Center status fetch used by tray helper mode."""
+
+    def test_engine_status_returns_pairs_from_control_api(self) -> None:
+        """Engine status parser extracts (name, state) pairs."""
+        from issue_orchestrator.entrypoints import tray
+
+        payload = (
+            b'{"repos":[{"name":"repo-a","status":{"state":"stopped","running_count":1}},'
+            b'{"name":"repo-b","status":{"state":"stopped"}}]}'
+        )
+        response = MagicMock()
+        response.read.return_value = payload
+        response.__enter__.return_value = response
+        response.__exit__.return_value = None
+
+        with patch("urllib.request.urlopen", return_value=response):
+            result = tray._engine_status_from_control_center("http://localhost:19080/")  # noqa: SLF001
+
+        assert result == [("repo-a", "running"), ("repo-b", "stopped")]
+
+    def test_engine_status_returns_empty_on_transport_error(self) -> None:
+        """Transport errors are tolerated and reported as empty status."""
+        from issue_orchestrator.entrypoints import tray
+
+        with patch(
+            "urllib.request.urlopen",
+            side_effect=urllib.error.URLError("offline"),
+        ):
+            result = tray._engine_status_from_control_center("http://localhost:19080/")  # noqa: SLF001
+
+        assert result == []
+
+    def test_dashboard_url_validator_rejects_relative_url(self) -> None:
+        """Tray helper only accepts absolute HTTP(S) dashboard URLs."""
+        from issue_orchestrator.entrypoints import tray
+
+        with pytest.raises(Exception):
+            tray._dashboard_url("/relative/path")  # noqa: SLF001
+
+
+class TestTrayOwnerProcess:
+    """Tests for tray owner process lifecycle helpers."""
+
+    def test_process_exists_true_when_kill_succeeds(self) -> None:
+        """PID is considered alive when os.kill(pid, 0) succeeds."""
+        from issue_orchestrator.entrypoints import tray
+
+        with patch("os.kill") as kill_mock:
+            assert tray._process_exists(1234) is True  # noqa: SLF001
+            kill_mock.assert_called_once_with(1234, 0)
+
+    def test_process_exists_false_when_missing(self) -> None:
+        """Missing PID is reported as not alive."""
+        from issue_orchestrator.entrypoints import tray
+
+        with patch("os.kill", side_effect=ProcessLookupError):
+            assert tray._process_exists(1234) is False  # noqa: SLF001

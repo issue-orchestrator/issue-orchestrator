@@ -50,7 +50,14 @@ class UvicornTestServer:
     def start(self) -> None:
         self.thread = Thread(target=self.server.run, daemon=True)
         self.thread.start()
-        time.sleep(0.5)
+        deadline = time.monotonic() + 10.0
+        while time.monotonic() < deadline:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(0.1)
+                if sock.connect_ex((self.config.host, int(self.config.port))) == 0:
+                    return
+            time.sleep(0.05)
+        raise RuntimeError(f"Uvicorn test server failed to start on {self.config.host}:{self.config.port}")
 
     def stop(self) -> None:
         self.server.should_exit = True

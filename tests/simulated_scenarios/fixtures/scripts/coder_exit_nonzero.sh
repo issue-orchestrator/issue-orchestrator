@@ -2,7 +2,12 @@
 set -euo pipefail
 
 prompt_path="${1:-}"
+completion_path="${ISSUE_ORCHESTRATOR_COMPLETION_PATH:-}"
 if [[ -n "$prompt_path" && -f "$prompt_path" ]]; then
+  echo "coder failed" >&2
+  exit 1
+fi
+if [[ "$completion_path" == *"completion-coder.json" ]]; then
   echo "coder failed" >&2
   exit 1
 fi

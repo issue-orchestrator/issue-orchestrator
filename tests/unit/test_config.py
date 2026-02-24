@@ -1036,7 +1036,7 @@ agents:
         assert config.code_review_agent is None
         assert config.code_review_label is None
         assert config.code_reviewed_label is None
-        assert config.review_exchange_mode == "via-draft-pr"
+        assert config.review_exchange_mode == "via-local-loop"
         assert config.review_exchange_probe_schedule == "daily"
         assert config.review_exchange_probe_interval_days == 1
         assert config.review_exchange_max_rounds == 10

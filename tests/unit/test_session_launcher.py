@@ -580,6 +580,51 @@ class TestLaunchIssueSession:
         actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
         assert any(isinstance(a, AddLabelAction) and a.label == "in-progress" for a in actions)
 
+    def test_issue_launch_clears_coding_interrupted_guard_label(self, launcher_bundle, sample_issue):
+        """Issue launch should clear interrupted coding retry guard."""
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        guard_label = launcher_bundle.launcher.config.retry.interrupted_sessions.coding_guard_label
+        actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
+        assert any(
+            isinstance(a, RemoveLabelAction)
+            and a.issue_number == sample_issue.number
+            and a.label == guard_label
+            for a in actions
+        )
+
+    def test_issue_launch_from_scratch_forces_fresh_worktree_branch(
+        self,
+        launcher_bundle,
+        sample_issue,
+        mock_worktree_manager,
+    ):
+        """Scratch pending label should force fresh worktree + fresh branch from base."""
+        scratch_label = launcher_bundle.launcher._lm.reset_retry_scratch_pending  # noqa: SLF001
+        sample_issue.labels = [*sample_issue.labels, scratch_label]
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        assert len(mock_worktree_manager.create_calls) == 1
+        create_call = mock_worktree_manager.create_calls[0]
+        reuse_options = create_call["reuse_options"]
+        assert reuse_options is not None
+        assert reuse_options.disable_reuse is True
+        assert reuse_options.worktree_branch_on_recreate == "create_new_branch"
+        branch_name = create_call["branch_name"]
+        assert isinstance(branch_name, str)
+        assert branch_name.startswith(f"{sample_issue.number}-scratch-")
+
+        actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
+        assert any(
+            isinstance(a, RemoveLabelAction)
+            and a.issue_number == sample_issue.number
+            and a.label == scratch_label
+            for a in actions
+        )
+
     def test_fails_when_in_progress_label_add_fails(
         self, launcher_bundle, sample_issue, mock_worktree_manager
     ):
@@ -838,6 +883,28 @@ class TestLaunchReviewSession:
         result = launcher_bundle.launcher.launch_review_session(review, active_sessions=[])
 
         assert result.success is True
+
+    def test_review_launch_clears_review_interrupted_guard_label(self, launcher_bundle):
+        """Review launch should clear interrupted review retry guard."""
+        review = PendingReview(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            pr_number=456,
+            pr_url="https://github.com/test/repo/pull/456",
+            branch_name="123-feature",
+            _issue_number=123,
+        )
+
+        result = launcher_bundle.launcher.launch_review_session(review, active_sessions=[])
+
+        assert result.success is True
+        guard_label = launcher_bundle.launcher.config.retry.interrupted_sessions.review_guard_label
+        actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
+        assert any(
+            isinstance(a, RemoveLabelAction)
+            and a.issue_number == review.issue_number
+            and a.label == guard_label
+            for a in actions
+        )
         review_machine = launcher_bundle.review_machines[456]
         assert review_machine.state == ReviewState.IN_REVIEW.value
 
@@ -932,6 +999,26 @@ class TestLaunchReworkSession:
 
         assert result.success is True
         # Uses fallback branch name when no PR
+
+    def test_rework_launch_clears_coding_interrupted_guard_label(self, launcher_bundle):
+        """Rework launch should clear interrupted coding retry guard."""
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="123"),
+            agent_type="agent:web",
+            rework_cycle=1,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        guard_label = launcher_bundle.launcher.config.retry.interrupted_sessions.coding_guard_label
+        actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
+        assert any(
+            isinstance(a, RemoveLabelAction)
+            and a.issue_number == 123
+            and a.label == guard_label
+            for a in actions
+        )
 
     def test_fails_when_agent_config_missing(self, session_launcher):
         """Verify fails when agent config not found (line 585)."""
@@ -1929,3 +2016,12 @@ class TestValidationOutputDir:
 
         # Verify it points to a sessions directory
         assert ".issue-orchestrator/sessions/" in command
+
+    def test_issue_session_exports_selected_config_name(self, launcher_bundle, sample_issue):
+        """Issue sessions should export selected config filename for agent-done."""
+        launcher_bundle.launcher.config.config_path = Path("/tmp/main.yaml")
+        launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert len(launcher_bundle.create_session_calls) == 1
+        command = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "ISSUE_ORCHESTRATOR_CONFIG_NAME='main.yaml'" in command

@@ -85,6 +85,10 @@ class ClaudeCodeProvider(CLIProvider):
         permission_mode = kwargs.get("permission_mode", "bypassPermissions")
         cmd.extend(["--permission-mode", permission_mode])
 
+        # Stream JSON output so orchestrator can surface incremental transcript text.
+        # Claude requires --verbose when using --output-format stream-json with --print.
+        cmd.extend(["--verbose", "--output-format", "stream-json", "--include-partial-messages"])
+
         # Optional system prompt
         system_prompt = kwargs.get("system_prompt")
         if system_prompt:

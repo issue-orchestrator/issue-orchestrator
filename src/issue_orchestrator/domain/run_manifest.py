@@ -8,7 +8,7 @@ knowing about a session is captured here.  It is written progressively:
 3. **Validation** — validation_passed / validation_reason
 
 Downstream consumers (SessionAnalyzer, failure diagnosis, UI) read this
-one file instead of rummaging across completion.json, session.log,
+one file instead of rummaging across completion.json, ui-session.log,
 validation-stderr.log, review-feedback/, etc.
 """
 
@@ -19,6 +19,8 @@ import logging
 from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
+
+from ..contracts.run_manifest import validate_run_manifest_payload
 
 logger = logging.getLogger(__name__)
 
@@ -83,7 +85,9 @@ class RunManifest:
     # Artifact paths (accumulated during lifecycle)
     # ------------------------------------------------------------------
     log_path: str | None = None
+    session_prompt_path: str | None = None
     completion_path: str | None = None
+    completion_record_path: str | None = None
     validation_record_path: str | None = None
     validation_stdout: str | None = None
     validation_stderr: str | None = None
@@ -91,6 +95,7 @@ class RunManifest:
     claude_log_path: str | None = None
     claude_session_id: str | None = None
     orchestrator_tail: str | None = None
+    artifacts: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------
     # Extra fields from the raw manifest that we don't model explicitly.
@@ -136,6 +141,10 @@ class RunManifest:
         """
         manifest_path = run_dir / MANIFEST_FILENAME
         raw = json.loads(manifest_path.read_text())
+        raw.setdefault("run_dir", str(run_dir))
+        raw.setdefault("session_name", "")
+        raw.setdefault("run_id", "")
+        raw = validate_run_manifest_payload(raw)
 
         known = cls._known_field_names()
         known_kwargs: dict[str, Any] = {}
@@ -157,7 +166,11 @@ class RunManifest:
     def save(self) -> None:
         """Write the manifest to disk."""
         manifest_path = self.run_dir / MANIFEST_FILENAME
-        manifest_path.write_text(json.dumps(self.to_dict(), indent=2) + "\n")
+        payload = validate_run_manifest_payload(
+            self.to_dict(),
+            strict_required_artifacts=True,
+        )
+        manifest_path.write_text(json.dumps(payload, indent=2) + "\n")
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to a dict suitable for JSON.

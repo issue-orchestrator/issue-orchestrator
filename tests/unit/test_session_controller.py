@@ -107,7 +107,7 @@ class TestSessionControllerRunning:
 class TestSessionControllerTerminated:
     """Tests for TERMINATED observation (session exited)."""
 
-    def test_terminated_without_completion_record_is_failed(self):
+    def test_terminated_without_completion_record_is_failed(self, tmp_path: Path):
         """Session that exits without completion.json = FAILED."""
         processor = MockCompletionProcessor()
         processor.completion_record = None  # No completion record
@@ -122,7 +122,7 @@ class TestSessionControllerTerminated:
 
         decision = controller.decide_outcome(
             observation=observation,
-            worktree_path=Path("/tmp/test"),
+            worktree_path=tmp_path,
             issue_number=123,
             issue_title="Test Issue",
             session_name="issue-123",
@@ -222,7 +222,7 @@ class TestSessionControllerTerminated:
 class TestSessionControllerTimeout:
     """Tests for TIMED_OUT observation - the key recovery case."""
 
-    def test_timeout_without_completion_record_is_timed_out(self):
+    def test_timeout_without_completion_record_is_timed_out(self, tmp_path: Path):
         """Session that times out without completion.json = TIMED_OUT."""
         processor = MockCompletionProcessor()
         processor.completion_record = None  # No completion record
@@ -241,7 +241,7 @@ class TestSessionControllerTimeout:
 
         decision = controller.decide_outcome(
             observation=observation,
-            worktree_path=Path("/tmp/test"),
+            worktree_path=tmp_path,
             issue_number=123,
             issue_title="Test Issue",
             session_name="issue-123",
@@ -250,6 +250,47 @@ class TestSessionControllerTimeout:
         assert decision.status == SessionStatus.TIMED_OUT
         assert not decision.completion_processed
         assert not decision.recovered_from_timeout
+
+    def test_timeout_without_completion_writes_diagnostic(self, tmp_path: Path):
+        """Missing completion writes a no-completion diagnostic artifact."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = None
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
+
+        observation = SessionObservationResult.timed_out(
+            runtime_minutes=60.0,
+            timeout_minutes=45,
+            session_exists=True,
+        )
+        completion_rel_path = ".issue-orchestrator/sessions/coding-1/completion-agent_backend.json"
+
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=tmp_path,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+            completion_path=completion_rel_path,
+        )
+
+        # Diagnostic should be written to the run dir resolved from the
+        # completion_path session name ("coding-1"), not the session_name
+        # ("issue-123").  _resolve_run_dir prefers completion_session_name.
+        run_dir = controller.session_output.find_run_dir(tmp_path, "coding-1")
+        assert run_dir is not None
+        diagnostic_files = list(run_dir.glob("no-completion-*.json"))
+        assert len(diagnostic_files) == 1
+        diagnostic = FileSystemSessionOutput()._read_json(diagnostic_files[0])
+        assert diagnostic["kind"] == "no-completion-record"
+        assert diagnostic["requested_completion_path"] == completion_rel_path
+        assert diagnostic["requested_completion_exists"] is False
+        assert diagnostic["observation"] == "timed_out"
+        assert decision.status == SessionStatus.TIMED_OUT
 
     def test_timeout_with_completed_record_is_recovered(self):
         """Session that times out WITH completion.json = COMPLETED (recovered)."""

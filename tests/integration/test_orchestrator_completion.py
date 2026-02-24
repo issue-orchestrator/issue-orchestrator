@@ -326,6 +326,7 @@ class TestSessionControllerDecision:
             outcome=CompletionOutcome.REVIEW_APPROVED,
             requested_actions=[
                 RequestedAction.ADD_CODE_REVIEWED_LABEL,
+                RequestedAction.REMOVE_NEEDS_REWORK_LABEL,
                 RequestedAction.REMOVE_CODE_REVIEW_LABEL,
             ],
             session_id=session.terminal_id,
@@ -347,7 +348,8 @@ class TestSessionControllerDecision:
 
         assert decision.status == SessionStatus.COMPLETED
         mock_label_adapter.add_label.assert_called_once_with(session.issue.number, "code-reviewed")
-        mock_label_adapter.remove_label.assert_called_once_with(session.issue.number, "code-review")
+        mock_label_adapter.remove_label.assert_any_call(session.issue.number, "needs-rework")
+        mock_label_adapter.remove_label.assert_any_call(session.issue.number, "code-review")
 
     def test_review_changes_requested_returns_completed_and_adds_rework_label(
         self, session_controller, session_with_worktree, mock_label_adapter

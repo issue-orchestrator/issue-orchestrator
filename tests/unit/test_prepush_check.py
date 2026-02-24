@@ -368,6 +368,72 @@ validation:
         finally:
             os.chdir(orig_cwd)
 
+    def test_allows_runtime_session_latest_dirty_file(self, temp_worktree):
+        """Runtime session-latest metadata should not block dirty-tree guard."""
+
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "echo 'ok'"
+  pre_push_dirty_check: "tracked"
+""")
+
+        runtime_file = temp_worktree / ".issue-orchestrator" / "session-latest.json"
+        runtime_file.parent.mkdir(parents=True, exist_ok=True)
+        runtime_file.write_text("{}\n")
+        subprocess.run(["git", "add", str(runtime_file)], cwd=temp_worktree, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Track runtime session metadata for test"],
+            cwd=temp_worktree,
+            check=True,
+            capture_output=True,
+        )
+        runtime_file.write_text('{"latest":"abc"}\n')
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=False, dirty_only=True)
+            assert result == 0
+        finally:
+            os.chdir(orig_cwd)
+
+    def test_still_blocks_when_runtime_and_real_dirty_files_present(self, temp_worktree):
+        """Guard should still fail if non-excluded files are dirty."""
+
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "echo 'ok'"
+  pre_push_dirty_check: "tracked"
+""")
+
+        runtime_file = temp_worktree / ".issue-orchestrator" / "session-latest.json"
+        runtime_file.parent.mkdir(parents=True, exist_ok=True)
+        runtime_file.write_text("{}\n")
+        subprocess.run(["git", "add", str(runtime_file)], cwd=temp_worktree, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Track runtime session metadata for test"],
+            cwd=temp_worktree,
+            check=True,
+            capture_output=True,
+        )
+
+        runtime_file.write_text('{"latest":"abc"}\n')
+        (temp_worktree / "README.md").write_text("dirty")
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=False, dirty_only=True)
+            assert result == 1
+        finally:
+            os.chdir(orig_cwd)
+
     def test_verbose_output_lists_dirty_files(self, temp_worktree, capsys):
         """Verbose dirty guard output should include dirty file paths."""
 

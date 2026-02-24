@@ -158,6 +158,59 @@ def test_orchestrator_tail_scoped_to_run(tmp_path: Path) -> None:
     assert "first run message" not in tail
 
 
+def test_orchestrator_tail_ignores_snapshot_list_false_matches(tmp_path: Path) -> None:
+    session_name = "issue-4057"
+    session_output = SessionOutputManager()
+    run = session_output.start_run(tmp_path, session_name, issue_number=4057)
+
+    log_path = tmp_path / "orchestrator.log"
+    lines = [
+        f"[SESSION_RUN_START] run_id={run.run_id} session={session_name} issue=4057",
+        "Planner: snapshot=[4048,4057,4058] -> launching=[]",
+        "[issue-4048] unrelated issue line",
+        "[issue-4057] relevant issue line",
+        "issue_key=owner/repo:4057 selected",
+    ]
+    log_path.write_text("\n".join(lines))
+
+    tail_path = session_output.write_orchestrator_tail(
+        run_dir=run.run_dir,
+        log_path=log_path,
+        issue_number=4057,
+        session_name=session_name,
+    )
+    assert tail_path is not None
+    tail = tail_path.read_text()
+    assert "relevant issue line" in tail
+    assert "issue_key=owner/repo:4057 selected" in tail
+    assert "snapshot=[4048,4057,4058]" not in tail
+    assert "[issue-4048] unrelated issue line" not in tail
+
+
+def test_orchestrator_tail_returns_none_when_no_issue_scoped_lines(tmp_path: Path) -> None:
+    session_name = "issue-4057"
+    session_output = SessionOutputManager()
+    run = session_output.start_run(tmp_path, session_name, issue_number=4057)
+
+    log_path = tmp_path / "orchestrator.log"
+    log_path.write_text(
+        "\n".join(
+            [
+                "planner snapshot without scoped markers",
+                "[issue-4048] unrelated issue line",
+            ]
+        )
+    )
+
+    tail_path = session_output.write_orchestrator_tail(
+        run_dir=run.run_dir,
+        log_path=log_path,
+        issue_number=4057,
+        session_name=session_name,
+    )
+    assert tail_path is None
+
+
 def test_session_output_selects_claude_log(tmp_path: Path) -> None:
     session_name = "issue-2"
     claude_dir = tmp_path / ".claude" / "projects" / "test"

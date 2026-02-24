@@ -5,6 +5,7 @@ The planner decides "should we?" - no mocks for tmux/GitHub needed.
 """
 
 import pytest
+import logging
 from pathlib import Path
 from unittest.mock import Mock, MagicMock
 
@@ -1689,6 +1690,42 @@ class TestEdgeCases:
         # has_pending_work looks at snapshot.pending_reviews (which is empty here),
         # so issue 43 could still launch since the queue action hasn't been applied yet.
         # The key invariant is: issue 42 must not be launched.
+
+    def test_trace_queue_decision_logs_session_history_skip(self, caplog: pytest.LogCaptureFixture):
+        """Planner emits an explicit trace-queue decision for session_history skips."""
+        config = make_config(max_concurrent_sessions=3)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        issue = make_issue(4057, title="Issue 4057")
+        snapshot = make_snapshot(
+            issues=[issue],
+            session_history_issue_numbers=frozenset({4057}),
+        )
+
+        with caplog.at_level(logging.INFO):
+            planner.plan(snapshot)
+
+        assert "trace-queue-decision issue=4057 decision=skip reason=session_history" in caplog.text
+
+    def test_trace_queue_decision_logs_only_when_reason_changes(self, caplog: pytest.LogCaptureFixture):
+        """Queue decision traces are emitted on change, not every tick."""
+        config = make_config(max_concurrent_sessions=3)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+        issue = make_issue(4057, title="Issue 4057")
+        snapshot = make_snapshot(
+            issues=[issue],
+            session_history_issue_numbers=frozenset({4057}),
+        )
+
+        with caplog.at_level(logging.INFO):
+            planner.plan(snapshot)
+            first_count = caplog.text.count("trace-queue-decision issue=4057 decision=skip reason=session_history")
+            planner.plan(snapshot)
+            second_count = caplog.text.count("trace-queue-decision issue=4057 decision=skip reason=session_history")
+
+        assert first_count == 1
+        assert second_count == 1
 
     def test_multiple_escalations_all_produce_actions(self):
         """Multiple discovered escalations all produce escalate actions."""

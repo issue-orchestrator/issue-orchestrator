@@ -5,7 +5,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from .domain.event_taxonomy import (
+    EventIntent,
+    infer_event_intent,
+    is_completion_event_name,
+    is_issue_event_name,
+    is_observation_event_name,
+    is_review_event_name,
+    is_review_oriented_event,
+    is_rework_event_name,
+    is_session_event_name,
+    is_validation_event_name,
+)
 from .ports.timeline_store import TimelineRecord
+
+TIMELINE_SCHEMA_VERSION = 4
+MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -40,8 +55,19 @@ class TimelineEvent:
     run_dir: str | None = None
     agent: str | None = None
     task: str | None = None
+    rework_cycle: int | None = None
+    reviewer_agent: str | None = None
+    added: list[str] | None = None
+    removed: list[str] | None = None
+    timeline_schema_version: int | None = None
+    unsupported_schema: bool = False
+    review_oriented: bool = False
+    event_intent: str = EventIntent.SYSTEM.value
+    logical_run: int | None = None
+    logical_cycle: int | None = None
+    logical_phase: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:  # noqa: C901
         d: dict[str, Any] = {
             "event_id": self.event_id,
             "timestamp": self.timestamp,
@@ -62,6 +88,25 @@ class TimelineEvent:
             d["agent"] = self.agent
         if self.task:
             d["task"] = self.task
+        if self.rework_cycle is not None:
+            d["rework_cycle"] = self.rework_cycle
+        if self.reviewer_agent:
+            d["reviewer_agent"] = self.reviewer_agent
+        if self.added is not None:
+            d["added"] = self.added
+        if self.removed is not None:
+            d["removed"] = self.removed
+        if self.timeline_schema_version is not None:
+            d["timeline_schema_version"] = self.timeline_schema_version
+        d["unsupported_schema"] = self.unsupported_schema
+        d["review_oriented"] = self.review_oriented
+        d["event_intent"] = self.event_intent
+        if self.logical_run is not None:
+            d["logical_run"] = self.logical_run
+        if self.logical_cycle is not None:
+            d["logical_cycle"] = self.logical_cycle
+        if self.logical_phase:
+            d["logical_phase"] = self.logical_phase
         return d
 
 
@@ -109,6 +154,34 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
     artifacts = _artifacts_from_data(data)
     agent = data.get("agent") if isinstance(data.get("agent"), str) else None
     task = data.get("task") if isinstance(data.get("task"), str) else None
+    rework_cycle = data.get("rework_cycle") if isinstance(data.get("rework_cycle"), int) else None
+    reviewer_agent = data.get("reviewer_agent") if isinstance(data.get("reviewer_agent"), str) else None
+    added = _string_list_or_none(data.get("added"))
+    removed = _string_list_or_none(data.get("removed"))
+    timeline_schema_version = _timeline_schema_version_from_data(data)
+    logical_run = data.get("logical_run") if isinstance(data.get("logical_run"), int) else None
+    logical_cycle = data.get("logical_cycle") if isinstance(data.get("logical_cycle"), int) else None
+    logical_phase = data.get("logical_phase") if isinstance(data.get("logical_phase"), str) else None
+    unsupported_schema = (
+        timeline_schema_version is None
+        or timeline_schema_version < MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION
+        or logical_run is None
+        or logical_cycle is None
+        or not logical_phase
+    )
+    review_oriented_raw = data.get("review_oriented")
+    if isinstance(review_oriented_raw, bool):
+        review_oriented = review_oriented_raw
+    else:
+        review_oriented = is_review_oriented_event(event_name=event_name, task=task)
+    intent_raw = data.get("event_intent")
+    if isinstance(intent_raw, str):
+        try:
+            event_intent = EventIntent(intent_raw).value
+        except ValueError:
+            event_intent = infer_event_intent(event_name=event_name, task=task).value
+    else:
+        event_intent = infer_event_intent(event_name=event_name, task=task).value
     return TimelineEvent(
         event_id=record.event_id,
         timestamp=record.timestamp,
@@ -126,43 +199,75 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         artifacts=artifacts,
         agent=agent,
         task=task,
+        rework_cycle=rework_cycle,
+        reviewer_agent=reviewer_agent,
+        added=added,
+        removed=removed,
+        timeline_schema_version=timeline_schema_version,
+        unsupported_schema=unsupported_schema,
+        review_oriented=review_oriented,
+        event_intent=event_intent,
+        logical_run=logical_run,
+        logical_cycle=logical_cycle,
+        logical_phase=logical_phase,
     )
 
 
+def _string_list_or_none(value: Any) -> list[str] | None:
+    if not isinstance(value, list):
+        return None
+    items = [item for item in value if isinstance(item, str)]
+    return items if items else None
+
+
+def _timeline_schema_version_from_data(data: dict[str, Any]) -> int | None:
+    raw = data.get("timeline_schema_version")
+    if isinstance(raw, int):
+        return raw
+    return None
+
+
 def _phase_for_event(event_name: str) -> str:
+    if is_validation_event_name(event_name) or event_name in {
+        "session.validation_failed",
+        "session.validation_retry_needed",
+        "issue.pr_created",
+        "review.queued",
+    }:
+        return "orchestrator"
     if event_name in {"issue.completed"}:
         return "completed"
-    if event_name in {"issue.pr_created"}:
-        return "pr_pending"
     if event_name in {"issue.blocked"}:
         return "blocked"
     if event_name in {"issue.needs_human"}:
         return "needs_human"
-    if event_name.startswith("review."):
+    if is_review_event_name(event_name):
         return "reviewing"
-    if event_name.startswith("rework."):
+    if is_rework_event_name(event_name):
         return "rework"
-    if event_name.startswith("issue."):
+    if is_issue_event_name(event_name):
         return "in_progress"
-    if event_name.startswith("session."):
+    if is_session_event_name(event_name):
         return "in_progress"
-    if event_name.startswith("completion.") or event_name.startswith("observation."):
+    if is_completion_event_name(event_name) or is_observation_event_name(event_name):
         return "in_progress"
     return "system"
 
 
 def _step_for_event(event_name: str) -> str:
-    if event_name.startswith("session."):
+    if is_session_event_name(event_name):
         return event_name.replace("session.", "")
-    if event_name.startswith("issue."):
+    if is_issue_event_name(event_name):
         return event_name.replace("issue.", "")
-    if event_name.startswith("review."):
+    if is_review_event_name(event_name):
+        if event_name.startswith("review_exchange."):
+            return event_name.replace("review_exchange.", "")
         return event_name.replace("review.", "")
-    if event_name.startswith("rework."):
+    if is_rework_event_name(event_name):
         return event_name.replace("rework.", "")
-    if event_name.startswith("completion."):
+    if is_completion_event_name(event_name):
         return event_name.replace("completion.", "")
-    if event_name.startswith("observation."):
+    if is_observation_event_name(event_name):
         return event_name.replace("observation.", "")
     return event_name
 
@@ -233,7 +338,7 @@ def _status_for_event(event_name: str) -> str:
 
 
 def _level_for_event(event_name: str) -> str:
-    if event_name.startswith("issue.") or event_name.startswith("review."):
+    if is_issue_event_name(event_name) or is_review_event_name(event_name):
         return "phase"
     return "detail"
 
@@ -255,6 +360,7 @@ def _summary_from_data(data: dict[str, Any]) -> str | None:
 
 
 _MAX_DETAIL = 200
+_MAX_REVIEW_COMMENT_DETAIL = 4000
 
 
 def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail extraction
@@ -294,6 +400,12 @@ def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail
     elif event_name == "session.validation_failed":
         _add_if_new(parts, data.get("validation_reason"), summary_str)
 
+    elif event_name == "session.validation_retry_needed":
+        _add_if_new(parts, data.get("validation_reason"), summary_str)
+        source = data.get("validation_source")
+        if isinstance(source, str) and source:
+            parts.append(f"Source: {source}")
+
     elif event_name == "review.changes_requested":
         _add_if_new(parts, data.get("review_issues"), summary_str)
         risk = data.get("risk_level")
@@ -302,6 +414,9 @@ def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail
 
     elif event_name == "review.approved":
         _add_if_new(parts, data.get("review_summary"), summary_str)
+
+    elif event_name == "review.comment_added":
+        _add_if_new(parts, data.get("comment_excerpt"), summary_str)
 
     elif event_name == "review.escalated":
         rework = data.get("rework_cycle")
@@ -316,8 +431,9 @@ def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail
         return None
 
     text = ". ".join(parts)
-    if len(text) > _MAX_DETAIL:
-        text = text[: _MAX_DETAIL - 1] + "\u2026"
+    max_detail = _MAX_REVIEW_COMMENT_DETAIL if event_name == "review.comment_added" else _MAX_DETAIL
+    if len(text) > max_detail:
+        text = text[: max_detail - 1] + "\u2026"
     return text
 
 

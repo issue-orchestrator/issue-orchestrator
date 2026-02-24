@@ -474,6 +474,15 @@ class TestLabelOperations:
         mock_http_client.remove_label.assert_called_once_with(42, "bug")
         mock_verification_service.verify_condition.assert_called_once()
 
+    def test_remove_label_404_is_noop(self, adapter, mock_http_client, mock_verification_service):
+        """Removing an already-absent label should not raise."""
+        mock_http_client.remove_label.side_effect = GitHubHttpError("Not found", status_code=404)
+
+        adapter.remove_label(42, "bug")
+
+        mock_http_client.remove_label.assert_called_once_with(42, "bug")
+        mock_verification_service.verify_condition.assert_not_called()
+
     def test_remove_label_invalidates_cache(self, adapter, mock_http_client, mock_verification_service, cache):
         """Test that removing a label invalidates the cache."""
         cache.set_issue_labels(42, ["bug"])

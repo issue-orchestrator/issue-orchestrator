@@ -17,6 +17,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from ..contracts.run_manifest import validate_run_manifest_payload
 from ..ports.session_output import (
     ReviewExchangeSummary,
     SessionRun,
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 # Directory and file names
 SESSION_OUTPUT_DIR = "sessions"
-SESSION_LOG_NAME = "session.log"
+SESSION_LOG_NAME = "ui-session.log"
 PANE_LOG_NAME = "pane.log"
 MANIFEST_NAME = "manifest.json"
 LATEST_NAME = "latest.json"
@@ -49,6 +50,7 @@ RETRY_PROMPT_NAME = "retry-prompt.md"
 # Other artifact names
 WORKTREE_NOTE_NAME = "worktree.json"
 SESSION_IDENTITY_NAME = "session-identity.json"
+SESSION_PROMPT_NAME = "session-prompt.txt"
 
 # Review exchange artifacts
 REVIEW_EXCHANGE_DIR_NAME = "review-exchange"
@@ -123,8 +125,30 @@ class FileSystemSessionOutput:
             "retention_days": retention_window_days,
             "retention_expires_at": retention_expires_at,
             "retention_pinned": retention_pinned,
+            "artifacts": {
+                "ui_log": {
+                    "kind": "session_log",
+                    "path": str(log_path),
+                    "content_type": "text/plain",
+                },
+                "agent_log": {
+                    "kind": "session_log",
+                    "path": str(log_path),
+                    "content_type": "text/plain",
+                },
+            },
         }
-        self._write_json(manifest_path, manifest)
+        self._write_json(
+            manifest_path,
+            validate_run_manifest_payload(
+                manifest,
+                strict_required_artifacts=True,
+            ),
+        )
+        # Create run-scoped session log eagerly so run-scoped artifact resolution is valid
+        # from session.started onward, even before terminal output is streamed.
+        if not log_path.exists():
+            log_path.write_text("", encoding="utf-8")
 
         if claude_log_dir:
             self._write_text(run_dir / "claude-log.path", claude_log_dir)
@@ -308,8 +332,16 @@ class FileSystemSessionOutput:
         """Update the manifest with additional data."""
         manifest_path = run_dir / MANIFEST_NAME
         manifest = self._read_json(manifest_path) or {}
+        self._bootstrap_manifest_identity(run_dir, manifest)
         manifest.update(updates)
-        self._write_json(manifest_path, manifest)
+        self._sync_manifest_artifacts(manifest)
+        self._write_json(
+            manifest_path,
+            validate_run_manifest_payload(
+                manifest,
+                strict_required_artifacts=True,
+            ),
+        )
 
     def read_manifest(
         self,
@@ -454,6 +486,18 @@ Timestamp: {self._now_iso()}
         logger.info("Wrote retry prompt to %s", prompt_path)
         return prompt_path
 
+    def write_session_prompt(
+        self,
+        run_dir: Path,
+        content: str,
+    ) -> Path:
+        """Write the run-scoped session prompt used to launch the agent."""
+        prompt_path = run_dir / SESSION_PROMPT_NAME
+        self._write_text(prompt_path, content)
+        self.update_manifest(run_dir, {"session_prompt_path": str(prompt_path)})
+        logger.info("Wrote session prompt to %s", prompt_path)
+        return prompt_path
+
     def clear_retry_state(
         self,
         run_dir: Path,
@@ -522,10 +566,17 @@ Timestamp: {self._now_iso()}
         updates = {
             "review_exchange_dir": str(exchange_dir),
             "review_exchange_summary_path": str(summary_path),
+            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "outcome": str(summary.get("status") or "completed"),
         }
         if stored_validation:
             updates["validation_record_path"] = str(stored_validation)
         self.update_manifest(run_dir, updates)
+        self._append_run_log_line(
+            run_dir,
+            f"review-exchange status={summary.get('status', 'unknown')} "
+            f"reason={summary.get('reason', '')}".strip(),
+        )
 
         return ReviewExchangeSummary(
             summary=summary,
@@ -539,25 +590,40 @@ Timestamp: {self._now_iso()}
         worktree_path: Path,
         session_name: str,
     ) -> ReviewExchangeSummary | None:
-        run_dir = self.find_run_dir(worktree_path, session_name=session_name)
-        if not run_dir:
+        # Resolve against the newest run that has a review-exchange summary.
+        base_dir = self.sessions_base_dir(worktree_path)
+        if not base_dir.exists():
             return None
-        manifest = self.read_manifest(run_dir) or {}
-        manifest_dir = manifest.get("review_exchange_dir")
-        exchange_dir = Path(manifest_dir) if manifest_dir else run_dir / REVIEW_EXCHANGE_DIR_NAME
-        summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
-        if not summary_path.exists():
-            return None
-        summary = self._read_json(summary_path)
-        if not isinstance(summary, dict):
-            return None
-        validation_path = run_dir / VALIDATION_RECORD_NAME
-        return ReviewExchangeSummary(
-            summary=summary,
-            exchange_dir=exchange_dir,
-            summary_path=summary_path,
-            validation_record_path=validation_path if validation_path.exists() else None,
+
+        candidates = sorted(
+            [
+                d
+                for d in base_dir.iterdir()
+                if d.is_dir() and d.name.endswith(f"__{session_name}")
+            ],
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
         )
+        if not candidates:
+            return None
+        for run_dir in candidates:
+            manifest = self.read_manifest(run_dir) or {}
+            manifest_dir = manifest.get("review_exchange_dir")
+            exchange_dir = Path(manifest_dir) if manifest_dir else run_dir / REVIEW_EXCHANGE_DIR_NAME
+            summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
+            if not summary_path.exists():
+                continue
+            summary = self._read_json(summary_path)
+            if not isinstance(summary, dict):
+                continue
+            validation_path = run_dir / VALIDATION_RECORD_NAME
+            return ReviewExchangeSummary(
+                summary=summary,
+                exchange_dir=exchange_dir,
+                summary_path=summary_path,
+                validation_record_path=validation_path if validation_path.exists() else None,
+            )
+        return None
 
     # -------------------------------------------------------------------------
     # Review Feedback (per-cycle storage for diagnostics)
@@ -678,6 +744,10 @@ Timestamp: {self._now_iso()}
             return None
         return self._find_log_in_run_dir(run_dir)
 
+    def get_log_path_for_run_dir(self, run_dir: Path) -> Path | None:
+        """Get the most relevant UI log path for a known run directory."""
+        return self._find_log_in_run_dir(run_dir)
+
     def attach_claude_log(
         self,
         run_dir: Path,
@@ -704,7 +774,7 @@ Timestamp: {self._now_iso()}
         self._ensure_symlink(run_dir / CLAUDE_SESSION_LOG_NAME, log_path)
         return log_path
 
-    def write_orchestrator_tail(
+    def write_orchestrator_tail(  # noqa: C901
         self,
         run_dir: Path,
         log_path: Path,
@@ -732,8 +802,18 @@ Timestamp: {self._now_iso()}
         if not lines:
             return None
 
-        issue_token = f"issue-{issue_number}"
-        session_token = f"session_id={session_name}"
+        issue_patterns = (
+            re.compile(rf"\[issue-{issue_number}\]"),
+            re.compile(rf"\bissue={issue_number}\b"),
+            re.compile(rf"\bissue_number={issue_number}\b"),
+            re.compile(rf"\bissue_key=[^\s:]+:{issue_number}\b"),
+            re.compile(rf"\bissue-{issue_number}\b"),
+            re.compile(rf"/issues/{issue_number}\b"),
+        )
+        session_patterns = (
+            re.compile(rf"\bsession={re.escape(session_name)}\b"),
+            re.compile(rf"\bsession_id={re.escape(session_name)}\b"),
+        )
 
         # Try to find session start by run_id marker
         segment = lines
@@ -750,13 +830,15 @@ Timestamp: {self._now_iso()}
         if not found_marker and started_at:
             segment = self._filter_lines_by_timestamp(lines, started_at)
 
-        scoped = [
-            line
-            for line in segment[-2000:]
-            if issue_token in line or session_token in line
-        ]
+        scoped = []
+        for line in segment[-2000:]:
+            if any(pattern.search(line) for pattern in session_patterns):
+                scoped.append(line)
+                continue
+            if any(pattern.search(line) for pattern in issue_patterns):
+                scoped.append(line)
         if not scoped:
-            scoped = lines[-max_lines:]
+            return None
 
         tail_lines = scoped[-max_lines:]
         tail_path = run_dir / ORCHESTRATOR_TAIL_NAME
@@ -822,6 +904,13 @@ Timestamp: {self._now_iso()}
     def _write_text(path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content)
+
+    @staticmethod
+    def _append_run_log_line(run_dir: Path, line: str) -> None:
+        log_path = run_dir / SESSION_LOG_NAME
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{line}\n")
 
     @staticmethod
     def _delete_tree(path: Path) -> None:
@@ -1094,21 +1183,128 @@ Timestamp: {self._now_iso()}
     def _find_log_in_run_dir(self, run_dir: Path) -> Path | None:
         """Find the best log file in a run directory.
 
-        Checks session.log and pane.log first (terminal backends), then falls
-        back to provider-runner/stdout.log (subprocess backend where
-        AgentRunner redirects stdout to file instead of the PTY).
+        Checks canonical ui-session.log and pane.log only.
         """
         for filename in (SESSION_LOG_NAME, PANE_LOG_NAME):
             candidate = run_dir / filename
             if candidate.exists() and candidate.stat().st_size > 0:
                 return candidate
 
-        # Subprocess backend: agent output goes to provider-runner/stdout.log
-        provider_stdout = run_dir / "provider-runner" / "stdout.log"
-        if provider_stdout.exists() and provider_stdout.stat().st_size > 0:
-            return provider_stdout
-
         return None
+
+    @staticmethod
+    def _ensure_manifest_artifact(
+        manifest: dict[str, Any],
+        *,
+        name: str,
+        kind: str,
+        path: str | None,
+        content_type: str | None = None,
+    ) -> None:
+        if not path:
+            return
+        artifacts = manifest.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+            manifest["artifacts"] = artifacts
+        artifact: dict[str, Any] = {"kind": kind, "path": path}
+        if content_type:
+            artifact["content_type"] = content_type
+        artifacts[name] = artifact
+
+    def _sync_manifest_artifacts(self, manifest: dict[str, Any]) -> None:
+        """Derive canonical artifact entries from known manifest path fields."""
+        self._ensure_manifest_artifact(
+            manifest,
+            name="ui_log",
+            kind="session_log",
+            path=manifest.get("log_path"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="agent_log",
+            kind="session_log",
+            path=manifest.get("log_path"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="prompt",
+            kind="session_prompt",
+            path=manifest.get("session_prompt_path"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="completion_record",
+            kind="completion_record",
+            path=manifest.get("completion_record_path"),
+            content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="validation_record",
+            kind="validation_record",
+            path=manifest.get("validation_record_path"),
+            content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="validation_stdout",
+            kind="validation_stdout",
+            path=manifest.get("validation_stdout"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="validation_stderr",
+            kind="validation_stderr",
+            path=manifest.get("validation_stderr"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="diagnostic",
+            kind="diagnostic",
+            path=manifest.get("diagnostic_path"),
+            content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="claude_log",
+            kind="claude_jsonl",
+            path=manifest.get("claude_log_path"),
+            content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="orchestrator_tail",
+            kind="orchestrator_tail",
+            path=manifest.get("orchestrator_tail"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="review_exchange_summary",
+            kind="review_exchange_summary",
+            path=manifest.get("review_exchange_summary_path"),
+            content_type="application/json",
+        )
+
+    def _bootstrap_manifest_identity(self, run_dir: Path, manifest: dict[str, Any]) -> None:
+        """Fill required manifest identity fields for standalone or legacy paths."""
+        run_name = run_dir.name
+        run_id = manifest.get("run_id")
+        session_name = manifest.get("session_name")
+        if "__" in run_name:
+            parsed_run_id, parsed_session_name = run_name.split("__", 1)
+            run_id = run_id or parsed_run_id
+            session_name = session_name or parsed_session_name
+        manifest.setdefault("run_id", run_id or run_name)
+        manifest.setdefault("session_name", session_name or run_name)
+        manifest.setdefault("run_dir", str(run_dir))
+        manifest.setdefault("log_path", str(run_dir / SESSION_LOG_NAME))
 
 
 # -----------------------------------------------------------------------------

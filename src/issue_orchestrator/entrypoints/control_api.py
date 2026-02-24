@@ -45,7 +45,9 @@ E2E Test Runner API endpoints:
 import asyncio
 import json
 import logging
+import os
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
@@ -57,9 +59,16 @@ from sse_starlette.sse import EventSourceResponse
 from ..control.worktree_manager import get_worktree_path
 from ..control.queue_cache import QueueCache
 from ..domain.models import get_completion_path
+from ..execution.git_working_copy import GitWorkingCopy
 from ..infra.env import ENV_PREFIX
 from ..infra import gh_audit
 from ..infra.supervisor import DefaultSupervisorOps, MultiInstanceStatus, SupervisorOps
+from ..infra.repo_identity import (
+    RepoIdentity,
+    build_repo_identity_with_status,
+    deserialize_repo_identity,
+    diff_repo_identity,
+)
 from ..control.goal_pilot import GoalPilot
 from ..execution.control_center_actions import (
     AuditActionRequest,
@@ -78,10 +87,28 @@ if TYPE_CHECKING:
     from ..infra.config import Config
 
 logger = logging.getLogger(__name__)
+_PREFERRED_REPO_ROOT_ENV = "ISSUE_ORCHESTRATOR_CC_REPO_ROOT"
+_EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
 
 # Default E2E config (used when orchestrator not available)
 from ..infra.config import E2EConfig
 _DEFAULT_E2E_CONFIG = E2EConfig()
+
+
+def _build_repo_identity(repo_root: Path) -> RepoIdentity:
+    """Build repo identity with execution-layer git status resolution."""
+    git = GitWorkingCopy()
+
+    def _resolve_repo_status(root: Path) -> tuple[str | None, list[str]]:
+        branch: str | None = None
+        try:
+            branch = git.get_current_branch(root)
+        except Exception:
+            branch = None
+        dirty_lines = git.get_status_porcelain_lines(root)
+        return branch, dirty_lines
+
+    return build_repo_identity_with_status(repo_root, status_resolver=_resolve_repo_status)
 
 
 def _get_e2e_config(repo_root: Path | None = None) -> E2EConfig:
@@ -160,6 +187,20 @@ def set_control_actions(actions: ControlCenterActions) -> None:
     _control_actions = actions
 
 
+def _preferred_repo_root() -> Path | None:
+    """Resolve preferred repo root for this Control Center process."""
+    raw = os.environ.get(_PREFERRED_REPO_ROOT_ENV, "").strip()
+    if not raw:
+        return None
+    try:
+        root = Path(raw).resolve()
+    except (OSError, ValueError):
+        return None
+    if not root.exists() or not root.is_dir():
+        return None
+    return root
+
+
 # Track orchestrator child PIDs for zombie reaping (used by control_center).
 # This avoids racing with subprocess.run() for unrelated children.
 #
@@ -170,6 +211,50 @@ import threading as _threading
 
 _tracked_pids: set[int] = set()
 _tracked_pids_lock = _threading.Lock()
+_shutdown_ops_lock = _threading.Lock()
+_global_shutdown_operation: dict[str, Any] | None = None
+_engine_shutdown_operations: dict[str, dict[str, Any]] = {}
+
+
+def _coerce_graceful_timeout_seconds(raw: Any, default: int = 2) -> int:
+    """Parse graceful timeout from API payload with safe bounds."""
+    if raw is None:
+        return default
+    try:
+        parsed = int(float(raw))
+    except (TypeError, ValueError):
+        return default
+    return min(max(parsed, 2), 3600)
+
+
+def _global_shutdown_in_progress() -> bool:
+    with _shutdown_ops_lock:
+        op = _global_shutdown_operation
+        if op is None:
+            return False
+        return op.get("state") == "in_progress"
+
+
+def _snapshot_shutdown_ops() -> dict[str, Any]:
+    with _shutdown_ops_lock:
+        return {
+            "global_shutdown": dict(_global_shutdown_operation) if _global_shutdown_operation else None,
+            "engine_shutdowns": [dict(op) for op in _engine_shutdown_operations.values()],
+        }
+
+
+def _schedule_control_center_exit(delay_seconds: float = 0.5) -> None:
+    """Terminate Control Center process after a short delay."""
+    import signal
+    import threading
+
+    def delayed_shutdown() -> None:
+        time.sleep(delay_seconds)
+        os.kill(os.getpid(), signal.SIGTERM)
+        time.sleep(2)
+        os.kill(os.getpid(), signal.SIGKILL)
+
+    threading.Thread(target=delayed_shutdown, daemon=False).start()
 
 
 def track_child_pid(pid: int) -> None:
@@ -966,13 +1051,10 @@ async def retry_issue(issue_number: int) -> JSONResponse:
 
     try:
         lm = _orchestrator.deps.label_manager
+        from ..control.retry_policy import labels_to_remove_for_retry
 
-        # Remove blocking labels
-        labels_to_remove = [
-            lm.blocked,
-            lm.needs_human,
-            lm.blocked_failed,
-        ]
+        current_labels = _orchestrator.repository_host.get_issue_labels(issue_number)
+        labels_to_remove = labels_to_remove_for_retry(current_labels, lm)
 
         removed = []
         for label in labels_to_remove:
@@ -1079,60 +1161,332 @@ async def shutdown_control_center(request: Request) -> JSONResponse:
 
     JSON body (optional):
         stop_orchestrators: bool - If True, stop all running orchestrators first
+        force_orchestrators: bool - If True, force stop orchestrators when stopping first
     """
-    import os
-    import signal
-    import threading
-
     from ..infra.repo_registry import list_repos
 
     sv = get_supervisor()
-
-    # Log force shutdown request
     client_host = request.client.host if request.client else "unknown"
-
-    # Parse optional body
-    stop_orchestrators = False
-    try:
-        body = await request.json()
-        stop_orchestrators = body.get("stop_orchestrators", False)
-    except json.JSONDecodeError:
-        pass  # No body is fine, default to not stopping orchestrators
+    stop_orchestrators, force_orchestrators, graceful_timeout_seconds = await _parse_shutdown_request_body(request)
+    begin_result = _begin_global_shutdown_operation(
+        stop_orchestrators=stop_orchestrators,
+        force_orchestrators=force_orchestrators,
+        graceful_timeout_seconds=graceful_timeout_seconds,
+    )
+    if isinstance(begin_result, JSONResponse):
+        return begin_result
+    global_op_id, superseded_engine_shutdowns = begin_result
 
     logger.info(
-        "Shutdown requested (force): source=web_ui, client=%s, stop_orchestrators=%s, pid=%d",
+        "Shutdown requested (force): source=web_ui, client=%s, stop_orchestrators=%s, force_orchestrators=%s, pid=%d",
         client_host,
         stop_orchestrators,
+        force_orchestrators,
         os.getpid(),
     )
 
-    # Stop orchestrators if requested
-    stopped_repos = []
-    if stop_orchestrators:
-        repos = list_repos()
-        for repo in repos:
-            path = Path(repo.path)
-            if path.exists():
-                status_info = sv.status(path)
-                if status_info.state == "running":
-                    logger.info("Stopping orchestrator for %s before shutdown", repo.path)
-                    if sv.stop(path):
-                        stopped_repos.append(repo.path)
+    if not stop_orchestrators:
+        _complete_global_shutdown_without_orchestrators()
+        return _shutdown_started_response(
+            operation_id=global_op_id,
+            superseded_engine_shutdowns=superseded_engine_shutdowns,
+            graceful_timeout_seconds=graceful_timeout_seconds,
+        )
 
-    def delayed_shutdown():
-        import time
-        time.sleep(0.5)  # Give time for response to be sent
-        os.kill(os.getpid(), signal.SIGTERM)
-        time.sleep(2)  # Give SIGTERM time to work
-        # Force kill if still alive
-        os.kill(os.getpid(), signal.SIGKILL)
+    _start_global_shutdown_worker(
+        operation_id=global_op_id,
+        supervisor=sv,
+        list_repos_fn=list_repos,
+    )
+    return _shutdown_started_response(
+        operation_id=global_op_id,
+        superseded_engine_shutdowns=superseded_engine_shutdowns,
+        graceful_timeout_seconds=graceful_timeout_seconds,
+    )
 
-    # daemon=False so thread survives to send SIGKILL if needed
-    threading.Thread(target=delayed_shutdown, daemon=False).start()
+
+async def _parse_shutdown_request_body(request: Request) -> tuple[bool, bool, int]:
+    stop_orchestrators = False
+    force_orchestrators = False
+    graceful_timeout_seconds = 2
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return stop_orchestrators, force_orchestrators, graceful_timeout_seconds
+
+    stop_orchestrators = bool(body.get("stop_orchestrators", False))
+    force_orchestrators = bool(body.get("force_orchestrators", False))
+    graceful_timeout_seconds = _coerce_graceful_timeout_seconds(
+        body.get("graceful_timeout_seconds"),
+        default=2,
+    )
+    return stop_orchestrators, force_orchestrators, graceful_timeout_seconds
+
+
+def _begin_global_shutdown_operation(
+    *,
+    stop_orchestrators: bool,
+    force_orchestrators: bool,
+    graceful_timeout_seconds: int,
+) -> tuple[str, list[str]] | JSONResponse:
+    global _global_shutdown_operation
+
+    superseded_engine_shutdowns: list[str] = []
+    global_op_id = f"shutdown-{int(time.time() * 1000)}"
+    with _shutdown_ops_lock:
+        if _global_shutdown_operation and _global_shutdown_operation.get("state") == "in_progress":
+            return JSONResponse(
+                {
+                    "error": "shutdown_in_progress",
+                    "detail": "Global shutdown is already in progress.",
+                    "operation_id": _global_shutdown_operation.get("operation_id"),
+                },
+                status_code=409,
+            )
+        if stop_orchestrators and _engine_shutdown_operations:
+            superseded_engine_shutdowns = sorted(_engine_shutdown_operations.keys())
+            _engine_shutdown_operations.clear()
+        _global_shutdown_operation = {
+            "operation_id": global_op_id,
+            "state": "in_progress",
+            "started_at_epoch": time.time(),
+            "stop_orchestrators": bool(stop_orchestrators),
+            "force_orchestrators": bool(force_orchestrators),
+            "graceful_timeout_seconds": graceful_timeout_seconds,
+            "superseded_engine_shutdowns": superseded_engine_shutdowns,
+            "current_repo": None,
+            "total_repos": 0,
+            "completed_repos": 0,
+            "stopped_orchestrators": [],
+            "failed_orchestrators": [],
+            "abort_requested": False,
+            "force_now_requested": False,
+        }
+    return global_op_id, superseded_engine_shutdowns
+
+
+def _complete_global_shutdown_without_orchestrators() -> None:
+    global _global_shutdown_operation
+    with _shutdown_ops_lock:
+        if _global_shutdown_operation:
+            _global_shutdown_operation["state"] = "completed"
+    _schedule_control_center_exit()
+
+
+def _shutdown_started_response(
+    *,
+    operation_id: str,
+    superseded_engine_shutdowns: list[str],
+    graceful_timeout_seconds: int,
+) -> JSONResponse:
     return JSONResponse({
         "status": "shutting_down",
-        "stopped_orchestrators": stopped_repos,
+        "stopped_orchestrators": [],
+        "superseded_engine_shutdowns": superseded_engine_shutdowns,
+        "graceful_timeout_seconds": graceful_timeout_seconds,
+        "operation_id": operation_id,
     })
+
+
+def _start_global_shutdown_worker(*, operation_id: str, supervisor: Any, list_repos_fn: Any) -> None:
+    import threading
+
+    def _worker() -> None:
+        _run_global_shutdown_worker(
+            operation_id=operation_id,
+            supervisor=supervisor,
+            list_repos_fn=list_repos_fn,
+        )
+
+    threading.Thread(target=_worker, daemon=True).start()
+
+
+def _run_global_shutdown_worker(*, operation_id: str, supervisor: Any, list_repos_fn: Any) -> None:
+    stopped_repos: list[str] = []
+    failed_repos: list[str] = []
+    try:
+        repos = list_repos_fn()
+        _set_shutdown_total_repos(operation_id=operation_id, total_repos=len(repos))
+        for repo in repos:
+            result = _process_shutdown_repo(
+                operation_id=operation_id,
+                repo_path=repo.path,
+                supervisor=supervisor,
+            )
+            if result == "aborted":
+                _record_shutdown_abort(
+                    operation_id=operation_id,
+                    stopped_repos=stopped_repos,
+                    failed_repos=failed_repos,
+                )
+                return
+            if result == "stopped":
+                stopped_repos.append(repo.path)
+            elif result == "failed":
+                failed_repos.append(repo.path)
+            _increment_shutdown_completed_repos(operation_id=operation_id)
+        _record_shutdown_completion(
+            operation_id=operation_id,
+            stopped_repos=stopped_repos,
+            failed_repos=failed_repos,
+        )
+    except Exception:
+        logger.exception("Global shutdown worker failed")
+        _record_shutdown_failure(operation_id=operation_id)
+
+
+def _process_shutdown_repo(*, operation_id: str, repo_path: str, supervisor: Any) -> str:
+    path = Path(repo_path)
+    if not path.exists():
+        return "skipped"
+
+    runtime = _resolve_shutdown_runtime(operation_id=operation_id, repo_path=repo_path)
+    if runtime is None:
+        return "aborted"
+    timeout_seconds, force_now = runtime
+
+    status_info = supervisor.status(path)
+    if status_info.state != "running":
+        return "skipped"
+    logger.info("Stopping orchestrator for %s before shutdown", repo_path)
+    stopped_count = supervisor.stop_all_instances(
+        path,
+        force=force_now,
+        graceful_timeout_seconds=timeout_seconds,
+        force_if_graceful_fails=True,
+    )
+    return "stopped" if stopped_count > 0 else "failed"
+
+
+def _resolve_shutdown_runtime(*, operation_id: str, repo_path: str) -> tuple[int, bool] | None:
+    with _shutdown_ops_lock:
+        op = _global_shutdown_operation
+        if not op or op.get("operation_id") != operation_id:
+            return None
+        if op.get("abort_requested"):
+            return None
+        op["current_repo"] = repo_path
+        timeout_seconds = _coerce_graceful_timeout_seconds(op.get("graceful_timeout_seconds"), default=2)
+        force_now = bool(op.get("force_orchestrators") or op.get("force_now_requested"))
+    return timeout_seconds, force_now
+
+
+def _set_shutdown_total_repos(*, operation_id: str, total_repos: int) -> None:
+    with _shutdown_ops_lock:
+        op = _global_shutdown_operation
+        if op and op.get("operation_id") == operation_id:
+            op["total_repos"] = total_repos
+
+
+def _increment_shutdown_completed_repos(*, operation_id: str) -> None:
+    with _shutdown_ops_lock:
+        op = _global_shutdown_operation
+        if not op or op.get("operation_id") != operation_id:
+            return
+        op["completed_repos"] = int(op.get("completed_repos", 0)) + 1
+
+
+def _record_shutdown_abort(*, operation_id: str, stopped_repos: list[str], failed_repos: list[str]) -> None:
+    with _shutdown_ops_lock:
+        op = _global_shutdown_operation
+        if not op or op.get("operation_id") != operation_id:
+            return
+        op["state"] = "aborted"
+        op["current_repo"] = None
+        op["stopped_orchestrators"] = stopped_repos
+        op["failed_orchestrators"] = failed_repos
+
+
+def _record_shutdown_completion(*, operation_id: str, stopped_repos: list[str], failed_repos: list[str]) -> None:
+    with _shutdown_ops_lock:
+        op = _global_shutdown_operation
+        if not op or op.get("operation_id") != operation_id:
+            return
+        op["stopped_orchestrators"] = stopped_repos
+        op["failed_orchestrators"] = failed_repos
+        op["current_repo"] = None
+        if op.get("state") == "in_progress":
+            op["state"] = "failed" if failed_repos else "completed"
+    if not failed_repos:
+        _schedule_control_center_exit()
+
+
+def _record_shutdown_failure(*, operation_id: str) -> None:
+    with _shutdown_ops_lock:
+        op = _global_shutdown_operation
+        if not op or op.get("operation_id") != operation_id:
+            return
+        op["state"] = "failed"
+        op["current_repo"] = None
+
+
+@control_app.get("/control/shutdown/state")
+async def shutdown_state() -> JSONResponse:
+    """Return current shutdown operation state for UI feedback."""
+    return JSONResponse(_snapshot_shutdown_ops())
+
+
+@control_app.post("/control/shutdown/abort")
+async def shutdown_abort() -> JSONResponse:
+    """Request abort of an in-progress global shutdown operation."""
+    with _shutdown_ops_lock:
+        op = _global_shutdown_operation
+        if not op or op.get("state") != "in_progress":
+            return JSONResponse(
+                {"error": "no_shutdown_in_progress", "detail": "No global shutdown is in progress."},
+                status_code=409,
+            )
+        op["abort_requested"] = True
+    return JSONResponse({"status": "abort_requested"})
+
+
+@control_app.post("/control/shutdown/update")
+async def shutdown_update(request: Request) -> JSONResponse:
+    """Update timeout/force policy for an in-progress global shutdown."""
+    body: dict[str, Any] = {}
+    try:
+        payload = await request.json()
+        if isinstance(payload, dict):
+            body = payload
+    except json.JSONDecodeError:
+        body = {}
+
+    timeout_seconds = _coerce_graceful_timeout_seconds(body.get("graceful_timeout_seconds"), default=2)
+    has_force_override = "force_orchestrators" in body
+    requested_force = bool(body.get("force_orchestrators", False))
+    with _shutdown_ops_lock:
+        op = _global_shutdown_operation
+        if not op or op.get("state") != "in_progress":
+            return JSONResponse(
+                {"error": "no_shutdown_in_progress", "detail": "No global shutdown is in progress."},
+                status_code=409,
+            )
+        op["graceful_timeout_seconds"] = timeout_seconds
+        if has_force_override:
+            op["force_orchestrators"] = requested_force
+
+    return JSONResponse(
+        {
+            "status": "updated",
+            "graceful_timeout_seconds": timeout_seconds,
+            "force_orchestrators": bool(op.get("force_orchestrators", False)),
+        }
+    )
+
+
+@control_app.post("/control/shutdown/force")
+async def shutdown_force_now() -> JSONResponse:
+    """Request force escalation for an in-progress global shutdown."""
+    with _shutdown_ops_lock:
+        op = _global_shutdown_operation
+        if not op or op.get("state") != "in_progress":
+            return JSONResponse(
+                {"error": "no_shutdown_in_progress", "detail": "No global shutdown is in progress."},
+                status_code=409,
+            )
+        op["force_now_requested"] = True
+        op["force_orchestrators"] = True
+    return JSONResponse({"status": "force_requested"})
 
 
 @control_app.get("/favicon.ico")
@@ -1226,14 +1580,18 @@ def _load_config_port(repo_root: Path, config_name: str) -> int | None:
     return config.web_port
 
 
-def _detect_orchestrator_by_port(repo_root: Path, config_name: str) -> dict[str, Any] | None:
+def _detect_orchestrator_by_port(
+    repo_root: Path,
+    config_name: str,
+    *,
+    expected_identity: RepoIdentity | None = None,
+) -> dict[str, Any] | None:
     """Detect an orchestrator by probing the configured port.
 
     Returns info dict with port and metadata if an orchestrator responds
     and matches repo_root.
     """
     import httpx
-    import time
 
     port = _load_config_port(repo_root, config_name)
     if not port:
@@ -1251,23 +1609,57 @@ def _detect_orchestrator_by_port(repo_root: Path, config_name: str) -> dict[str,
         return None
 
     details: dict[str, Any] = {"port": port, "info": info}
-    try:
-        status_resp = httpx.get(f"{base_url}/api/status", timeout=0.6)
-        if status_resp.status_code == 200:
-            status_data = status_resp.json()
-            details["status"] = status_data
-            last_tick = status_data.get("last_tick_time")
-            if isinstance(last_tick, (int, float)) and last_tick > 0:
-                tick_age = time.time() - last_tick
-                details["tick_age_seconds"] = tick_age
-                if tick_age > 120:
-                    details["health"] = "stale"
-                else:
-                    details["health"] = "ok"
-    except Exception:
-        details.setdefault("health", "unknown")
+    _annotate_identity_mismatch(details, info, expected_identity)
+    _annotate_orchestrator_health(details, base_url)
 
     return details
+
+
+def _annotate_identity_mismatch(
+    details: dict[str, Any],
+    info: dict[str, Any],
+    expected_identity: RepoIdentity | None,
+) -> None:
+    if expected_identity is None:
+        return
+    observed_identity_payload = info.get("repo_identity")
+    if not isinstance(observed_identity_payload, dict):
+        return
+    observed_identity = RepoIdentity(
+        repo_root=str(observed_identity_payload.get("repo_root", "")),
+        commit_sha=(str(observed_identity_payload["commit_sha"]) if observed_identity_payload.get("commit_sha") else None),
+        branch=(str(observed_identity_payload["branch"]) if observed_identity_payload.get("branch") else None),
+        working_tree_dirty=bool(observed_identity_payload.get("working_tree_dirty", False)),
+        dirty_fingerprint=(str(observed_identity_payload["dirty_fingerprint"]) if observed_identity_payload.get("dirty_fingerprint") else None),
+        source_root=(str(observed_identity_payload["source_root"]) if observed_identity_payload.get("source_root") else None),
+    )
+    identity_mismatch = diff_repo_identity(expected_identity, observed_identity)
+    for volatile_field in ("working_tree_dirty", "dirty_fingerprint"):
+        identity_mismatch.pop(volatile_field, None)
+    if identity_mismatch:
+        details["identity_mismatch"] = identity_mismatch
+        details["observed_identity"] = observed_identity.to_dict()
+        details["expected_identity"] = expected_identity.to_dict()
+
+
+def _annotate_orchestrator_health(details: dict[str, Any], base_url: str) -> None:
+    import httpx
+    import time
+
+    try:
+        status_resp = httpx.get(f"{base_url}/api/status", timeout=0.6)
+        if status_resp.status_code != 200:
+            return
+        status_data = status_resp.json()
+        details["status"] = status_data
+        last_tick = status_data.get("last_tick_time")
+        if not isinstance(last_tick, (int, float)) or last_tick <= 0:
+            return
+        tick_age = time.time() - last_tick
+        details["tick_age_seconds"] = tick_age
+        details["health"] = "stale" if tick_age > 120 else "ok"
+    except Exception:
+        details.setdefault("health", "unknown")
 
 
 def _confirm_orchestrator_at_port(repo_root: Path, port: int) -> bool:
@@ -1343,10 +1735,26 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
     if not config_name.endswith(".yaml"):
         config_name += ".yaml"
     force_restart = bool(body.get("force_restart", False))
+    expected_identity = _build_repo_identity(repo_root)
 
     try:
-        detected = _detect_orchestrator_by_port(repo_root, config_name)
-        if detected and not force_restart:
+        detected = _detect_orchestrator_by_port(
+            repo_root,
+            config_name,
+            expected_identity=expected_identity,
+        )
+        if detected and detected.get("identity_mismatch"):
+            stopped = sv.stop_by_port(detected["port"], force=True)
+            if not stopped:
+                return JSONResponse({
+                    "error": "engine_identity_mismatch",
+                    "detail": "Mismatched engine detected and could not be stopped",
+                    "port": detected["port"],
+                    "expected_identity": detected.get("expected_identity"),
+                    "observed_identity": detected.get("observed_identity"),
+                    "identity_mismatch": detected.get("identity_mismatch"),
+                }, status_code=409)
+        elif detected and not force_restart:
             return JSONResponse({
                 "error": "orphaned_running",
                 "status": "running",
@@ -1378,6 +1786,7 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
             config=config,
             config_name=config_name,
             supervisor_ops=sv,
+            expected_identity=expected_identity.to_dict(),
         )
 
         if launch_result.status == "doctor_error":
@@ -1408,6 +1817,7 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
             "status": "started",
             "repo_root": str(repo_root),
             "config_name": config_name,
+            "repo_identity": expected_identity.to_dict(),
             "doctor": launch_result.doctor.to_dict(),
         }
         if launch_result.supervisor:
@@ -1431,7 +1841,11 @@ async def control_start(request: Request) -> JSONResponse:  # noqa: C901, PLR091
                 import time
                 time.sleep(0.5)
                 # Try starting again
-                info = sv.start(repo_root, config_name=config_name)
+                info = sv.start(
+                    repo_root,
+                    config_name=config_name,
+                    expected_identity=expected_identity.to_dict(),
+                )
                 # Track PID for zombie reaping
                 _track_launched_pids({"pid": info.pid})
                 return JSONResponse({
@@ -1491,38 +1905,73 @@ async def control_stop(request: Request) -> JSONResponse:
         )
 
     force = body.get("force", False)
+    force_if_timeout = bool(body.get("force_if_timeout", True))
+    graceful_timeout_seconds = _coerce_graceful_timeout_seconds(
+        body.get("graceful_timeout_seconds"),
+        default=2,
+    )
     port_override = body.get("port")
     if port_override is not None and (not isinstance(port_override, int) or port_override < 1 or port_override > 65535):
         return JSONResponse({"error": "Invalid port"}, status_code=400)
 
+    if _global_shutdown_in_progress():
+        return JSONResponse({
+            "error": "global_shutdown_in_progress",
+            "detail": "Global shutdown is in progress and already controls engine shutdown behavior.",
+            "actions": [
+                "View global shutdown status",
+                "Change global shutdown",
+                "Abort global shutdown",
+            ],
+        }, status_code=409)
+
+    repo_key = str(repo_root)
+    with _shutdown_ops_lock:
+        _engine_shutdown_operations[repo_key] = {
+            "repo_root": repo_key,
+            "state": "in_progress",
+            "started_at_epoch": time.time(),
+            "force": bool(force),
+            "force_if_timeout": force_if_timeout,
+            "graceful_timeout_seconds": graceful_timeout_seconds,
+        }
+
     logger.info("[control_stop] Calling supervisor.stop(%s, force=%s)", repo_root, force)
 
-    status_info = sv.status(repo_root)
-    if status_info.state != "running" and port_override:
-        if not _confirm_orchestrator_at_port(repo_root, port_override):
-            return JSONResponse({
-                "error": "port_mismatch",
-                "detail": "No matching orchestrator found on the provided port.",
-            }, status_code=409)
-        stopped = sv.stop_by_port(port_override, force=force)
-        stopped_count = 1 if stopped else 0
-    else:
-        # Stop all instances (single and multi-instance)
-        stopped_count = sv.stop_all_instances(repo_root, force=force)
-        stopped = stopped_count > 0
-    logger.info("[control_stop] supervisor.stop_all_instances returned: %d", stopped_count)
+    try:
+        status_info = sv.status(repo_root)
+        if status_info.state != "running" and port_override:
+            if not _confirm_orchestrator_at_port(repo_root, port_override):
+                return JSONResponse({
+                    "error": "port_mismatch",
+                    "detail": "No matching orchestrator found on the provided port.",
+                }, status_code=409)
+            stopped = sv.stop_by_port(port_override, force=force)
+            stopped_count = 1 if stopped else 0
+        else:
+            # Stop all instances (single and multi-instance)
+            stopped_count = sv.stop_all_instances(
+                repo_root,
+                force=force,
+                graceful_timeout_seconds=graceful_timeout_seconds,
+                force_if_graceful_fails=force_if_timeout or force,
+            )
+            stopped = stopped_count > 0
+        logger.info("[control_stop] supervisor.stop_all_instances returned: %d", stopped_count)
 
-    if stopped:
-        return JSONResponse({
-            "status": "stopped",
-            "repo_root": str(repo_root),
-            "stopped_count": stopped_count,
-        })
-    else:
+        if stopped:
+            return JSONResponse({
+                "status": "stopped",
+                "repo_root": str(repo_root),
+                "stopped_count": stopped_count,
+            })
         return JSONResponse({
             "status": "not_running",
             "repo_root": str(repo_root),
         })
+    finally:
+        with _shutdown_ops_lock:
+            _engine_shutdown_operations.pop(repo_key, None)
 
 
 @control_app.post("/control/orchestrator/reconcile")
@@ -2119,16 +2568,35 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
     """
     import httpx
 
-    from ..infra.repo_registry import list_repos
+    from ..infra.repo_registry import add_repo, list_repos
     from ..infra.config import list_configs, get_config_path, Config
 
     sv = get_supervisor()
+    preferred_root = _preferred_repo_root()
+    preferred_repo = str(preferred_root) if preferred_root else None
+
     repos = list_repos()
+    if preferred_repo and all(repo.path != preferred_repo for repo in repos):
+        try:
+            add_repo(preferred_repo)
+            repos = list_repos()
+        except ValueError:
+            # Another process/request may have registered it first.
+            repos = list_repos()
+
+    if preferred_repo:
+        repos = sorted(
+            repos,
+            key=lambda repo: 0 if repo.path == preferred_repo else 1,
+        )
+
+    cwd = Path.cwd().resolve()
     result = []
 
     for repo in repos:
         # Get status for each repo
         path = Path(repo.path)
+        path_resolved = path.resolve() if path.exists() else path
 
         # Check if multi-instance mode is configured
         expected_instances = 1
@@ -2150,6 +2618,7 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
             "name": repo.name,
             "added_at": repo.added_at,
             "exists": path.exists(),
+            "is_current_dir": (path_resolved == cwd),
             "configs": available_configs,
             "selected_config": repo.selected_config,
             "expected_instances": expected_instances,
@@ -2258,13 +2727,23 @@ async def list_repos_endpoint() -> JSONResponse:
 @control_app.get("/control/info")
 async def control_info() -> JSONResponse:
     """Get control center build info."""
-    from ..infra.repo_identity import get_repo_head_sha
     repo_root = Path.cwd()
-    commit_sha = get_repo_head_sha(repo_root)
+    identity = _build_repo_identity(repo_root)
+    preferred_root = _preferred_repo_root()
+    expected_identity_raw = os.environ.get(_EXPECTED_IDENTITY_ENV, "").strip()
+    expected_identity = None
+    if expected_identity_raw:
+        try:
+            expected_identity = deserialize_repo_identity(expected_identity_raw).to_dict()
+        except Exception:
+            expected_identity = None
     return JSONResponse({
         "repo_root": str(repo_root),
-        "commit_sha": commit_sha,
-        "commit_short": commit_sha[:7] if commit_sha else None,
+        "preferred_repo_root": str(preferred_root) if preferred_root else None,
+        "commit_sha": identity.commit_sha,
+        "commit_short": identity.commit_sha[:7] if identity.commit_sha else None,
+        "repo_identity": identity.to_dict(),
+        "expected_engine_identity": expected_identity,
     })
 
 

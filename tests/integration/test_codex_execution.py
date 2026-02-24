@@ -200,7 +200,11 @@ class TestCodexAgentDoneInvocation:
         repo_root = Path(__file__).parent.parent.parent
         scripts_dir = repo_root / "src" / "issue_orchestrator" / "scripts"
 
-        # Create worktree-like structure with git repo
+        # Create worktree-like structure with git repo + local origin remote.
+        # agent-done preflight now validates push viability, so origin must exist.
+        remote_repo = tmp_path / "origin.git"
+        subprocess.run(["git", "init", "--bare", str(remote_repo)], capture_output=True, check=True)
+
         worktree = tmp_path / "test-worktree"
         worktree.mkdir()
         subprocess.run(["git", "init"], cwd=worktree, capture_output=True, check=True)
@@ -216,6 +220,10 @@ class TestCodexAgentDoneInvocation:
         subprocess.run(["git", "add", "."], cwd=worktree, capture_output=True, check=True)
         subprocess.run(
             ["git", "commit", "-m", "init"],
+            cwd=worktree, capture_output=True, check=True
+        )
+        subprocess.run(
+            ["git", "remote", "add", "origin", str(remote_repo)],
             cwd=worktree, capture_output=True, check=True
         )
 

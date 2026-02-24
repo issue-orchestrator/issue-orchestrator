@@ -54,8 +54,12 @@ def _has_github_token() -> bool:
     return False
 
 
-# Mark entire module as requiring infrastructure (excluded from pre-push, run in CI)
-pytestmark = pytest.mark.requires_infra
+# Mark entire module as requiring infrastructure (excluded from pre-push, run in CI).
+# These tests spawn/stop real control center processes, so they must run in one xdist group.
+pytestmark = [
+    pytest.mark.requires_infra,
+    pytest.mark.xdist_group("control-center-lifecycle"),
+]
 
 
 @pytest.fixture(autouse=True, scope="module")

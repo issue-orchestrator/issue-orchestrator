@@ -12,6 +12,7 @@ from issue_orchestrator.infra.env import ENV_PREFIX
 from issue_orchestrator.infra.provider_resilience import ProviderStatus, now_iso, write_provider_status
 from issue_orchestrator.ports.provider_resilience import ProviderErrorType
 from issue_orchestrator.ports.session_log import detect_ai_system_from_command
+from issue_orchestrator.execution.session_output_adapter import SESSION_LOG_NAME
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -51,11 +52,42 @@ def _summarize_error(stdout: str, stderr: str) -> str | None:
     return text
 
 
+def _ensure_run_scoped_session_log(run_dir: Path) -> None:
+    """Prepare provider-runner log paths without clobbering live session logs."""
+    provider_stdout = run_dir / "provider-runner" / "stdout.log"
+    session_log = run_dir / SESSION_LOG_NAME
+    session_log.parent.mkdir(parents=True, exist_ok=True)
+    provider_stdout.parent.mkdir(parents=True, exist_ok=True)
+
+    if session_log.is_symlink():
+        try:
+            if session_log.resolve() == provider_stdout.resolve():
+                return
+        except OSError as exc:
+            raise RuntimeError(
+                f"failed to validate ui-session.log symlink under run_dir={run_dir}: {exc}"
+            ) from exc
+        session_log.unlink()
+        session_log.symlink_to(provider_stdout)
+        return
+    if session_log.exists():
+        # start_run pre-creates an empty placeholder. Replace only that case
+        # so run-scoped UI log points at the provider stream path.
+        if session_log.stat().st_size == 0:
+            session_log.unlink()
+            session_log.symlink_to(provider_stdout)
+            return
+        # Preserve non-empty logs to avoid clobbering already-streaming sessions.
+        return
+    session_log.symlink_to(provider_stdout)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv or sys.argv[1:])
 
     run_dir = _resolve_run_dir(args)
     output_dir = run_dir / "provider-runner"
+    _ensure_run_scoped_session_log(run_dir)
 
     provider = args.provider or detect_ai_system_from_command(args.command) or None
     retry_policy = RetryPolicy(

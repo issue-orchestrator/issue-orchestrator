@@ -116,6 +116,13 @@
             border-bottom: 1px solid var(--border-subtle);
         }
 
+        .sidebar-header-row {
+            display: flex;
+            align-items: center;
+            justify-content: flex-start;
+            gap: 8px;
+        }
+
         .sidebar-logo {
             display: flex;
             align-items: center;
@@ -124,10 +131,10 @@
             color: var(--text-primary);
         }
 
-        .sidebar-logo svg {
+        .sidebar-logo-icon {
             width: 28px;
             height: 28px;
-            fill: var(--accent-blue);
+            display: block;
         }
 
         .sidebar-logo-text {
@@ -138,6 +145,70 @@
 
         .sidebar-logo-text span {
             display: block;
+        }
+
+        .sidebar-app-menu {
+            position: relative;
+            flex-shrink: 0;
+        }
+
+        .sidebar-menu-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 30px;
+            height: 30px;
+            border: 1px solid var(--border-color);
+            border-radius: 6px;
+            background: var(--bg-card);
+            color: var(--text-secondary);
+            cursor: pointer;
+        }
+
+        .sidebar-menu-btn:hover,
+        .sidebar-menu-btn.active {
+            background: var(--bg-card-hover);
+            color: var(--text-primary);
+        }
+
+        .sidebar-app-menu-panel {
+            position: absolute;
+            top: calc(100% + 6px);
+            left: 0;
+            right: auto;
+            min-width: 190px;
+            max-width: calc(var(--sidebar-width) - 32px);
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            box-shadow: var(--shadow);
+            display: none;
+            z-index: 200;
+            padding: 6px;
+        }
+
+        .sidebar-app-menu-panel.visible {
+            display: block;
+        }
+
+        .sidebar-app-menu-item {
+            width: 100%;
+            border: none;
+            background: transparent;
+            color: var(--text-primary);
+            text-align: left;
+            font-size: 13px;
+            padding: 8px 10px;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .sidebar-app-menu-item:hover {
+            background: var(--bg-card-hover);
+        }
+
+        .sidebar-app-menu-item.danger {
+            color: var(--accent-red);
         }
 
         .sidebar-nav {
@@ -205,7 +276,7 @@
            ============================================ */
         .header {
             display: flex;
-            justify-content: space-between;
+            justify-content: flex-start;
             align-items: center;
             padding: 12px 24px;
             border-bottom: 1px solid var(--border-subtle);
@@ -213,6 +284,12 @@
             position: sticky;
             top: 0;
             z-index: 50;
+        }
+
+        .header-main {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
         }
 
         .header-title {
@@ -1259,6 +1336,48 @@
             margin-top: 6px;
         }
 
+        .shutdown-options {
+            margin-top: 12px;
+            text-align: left;
+        }
+
+        .shutdown-options-title {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            color: var(--text-muted);
+            margin-bottom: 8px;
+        }
+
+        .shutdown-options-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .shutdown-option-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 13px;
+            color: var(--text-primary);
+        }
+
+        .shutdown-option-row input[type="checkbox"],
+        .shutdown-option-row input[type="radio"] {
+            margin-top: 0;
+            flex-shrink: 0;
+        }
+
+        .shutdown-timeout-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: 24px;
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
         .goal-pilot-output {
             margin-top: 10px;
             font-size: 12px;
@@ -1647,6 +1766,56 @@
         .toast.error { border-color: var(--accent-red); }
         .toast.warning { border-color: var(--accent-yellow); }
 
+        .shutdown-hud {
+            position: fixed;
+            right: 14px;
+            bottom: 14px;
+            z-index: 1100;
+            width: min(360px, calc(100vw - 28px));
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            box-shadow: var(--shadow);
+            padding: 12px;
+            display: none;
+        }
+
+        .shutdown-hud.visible {
+            display: block;
+        }
+
+        .shutdown-hud-head {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 8px;
+            cursor: move;
+        }
+
+        .shutdown-hud-title {
+            font-size: 13px;
+            font-weight: 600;
+        }
+
+        .shutdown-hud-state {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .shutdown-hud-meta {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+        }
+
+        .shutdown-hud-actions {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 6px;
+            margin-top: 8px;
+        }
+
         @keyframes slideIn {
             from {
                 opacity: 0;
@@ -1690,6 +1859,14 @@
         .modal-backdrop.active {
             opacity: 1;
             visibility: visible;
+        }
+        #shutdownModal.anchor-near-trigger {
+            align-items: flex-start;
+            justify-content: flex-start;
+        }
+        #shutdownModal.anchor-near-trigger .modal {
+            position: absolute;
+            margin: 0;
         }
 
         .modal {
@@ -1816,21 +1993,32 @@
             transition: transform 0.05s;
         }
     </style>
+    <link rel="stylesheet" href="/static/css/ui_primitives.css">
 </head>
 <body>
     <div class="app-layout">
         <!-- Sidebar Navigation -->
         <aside class="sidebar" role="navigation" aria-label="Main navigation">
             <div class="sidebar-header">
-                <a href="/" class="sidebar-logo" aria-label="Issue Orchestrator Home">
-                    <svg viewBox="0 0 24 24" aria-hidden="true">
-                        <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-                    </svg>
-                    <span class="sidebar-logo-text">
-                        <span>Issue</span>
-                        <span>Orchestrator</span>
-                    </span>
-                </a>
+                <div class="sidebar-header-row">
+                    <div class="sidebar-app-menu">
+                        <button class="sidebar-menu-btn" id="sidebarAppMenuBtn" aria-label="Control Center actions" aria-haspopup="menu" aria-expanded="false">
+                            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                                <path fill="currentColor" d="M2 3.25A.75.75 0 012.75 2.5h10.5a.75.75 0 010 1.5H2.75A.75.75 0 012 3.25zm0 4A.75.75 0 012.75 6.5h10.5a.75.75 0 010 1.5H2.75A.75.75 0 012 7.25zm.75 4a.75.75 0 000 1.5h10.5a.75.75 0 000-1.5H2.75z"/>
+                            </svg>
+                        </button>
+                        <div class="sidebar-app-menu-panel" id="sidebarAppMenu" role="menu" aria-label="Control Center actions">
+                            <button class="sidebar-app-menu-item danger" id="sidebarCloseCC" role="menuitem">Close Control Center</button>
+                        </div>
+                    </div>
+                    <a href="/" class="sidebar-logo" aria-label="Issue Orchestrator Home">
+                        <img class="sidebar-logo-icon" src="/favicon.ico" alt="" aria-hidden="true">
+                        <span class="sidebar-logo-text">
+                            <span>Issue</span>
+                            <span>Orchestrator</span>
+                        </span>
+                    </a>
+                </div>
             </div>
 
             <nav class="sidebar-nav">
@@ -1884,15 +2072,10 @@
         <main class="main-content">
             <!-- Header -->
             <header class="header">
-                <div>
+                <div class="header-main">
                     <h1 class="header-title" id="viewTitle">Repository Engines</h1>
                     <div class="header-subtitle">Control Center window visibility is independent from repository engine runtime.</div>
-                    <div class="active-summary" id="activeSummary">0 Running · 0 Paused · 0 Not running</div>
-                </div>
-                <div class="header-actions">
-                    <button class="btn btn-danger btn-sm" id="shutdownBtn">
-                        Close Control Center
-                    </button>
+                    <div class="active-summary" id="activeSummary">Registered engines: 0 Running · 0 Paused · 0 Stopped</div>
                 </div>
             </header>
 
@@ -1971,7 +2154,6 @@
                                     </div>
                                     <div class="action-menu-divider"></div>
                                 </div>
-                                <button class="action-menu-item" id="menuCloseCC"><span class="menu-icon">✕</span> Close Control Center</button>
                             </div>
                         </div>
                         <button class="icon-btn" id="maximizeBtn" aria-label="Maximize dashboard" title="Maximize">
@@ -2429,6 +2611,19 @@
 
     <!-- Toast Container -->
     <div class="toast-container" id="toastContainer" role="status" aria-live="polite"></div>
+    <aside class="shutdown-hud" id="shutdownHud" aria-live="polite">
+        <div class="shutdown-hud-head">
+            <div class="shutdown-hud-title">Global shutdown in progress</div>
+            <button class="btn btn-sm" id="shutdownHudHide">Hide</button>
+        </div>
+        <div class="shutdown-hud-state" id="shutdownHudState">Preparing...</div>
+        <div class="shutdown-hud-meta" id="shutdownHudMeta"></div>
+        <div class="shutdown-hud-actions">
+            <button class="btn btn-sm" id="shutdownHudAbort">Abort shutdown</button>
+            <button class="btn btn-sm" id="shutdownHudChange">Change timeout</button>
+            <button class="btn btn-danger btn-sm" id="shutdownHudForce">Force now</button>
+        </div>
+    </aside>
 
     <!-- Doctor Modal -->
     <div class="modal-backdrop" id="doctorModal" role="dialog" aria-labelledby="doctorModalTitle" aria-modal="true">
@@ -2466,10 +2661,86 @@
             <div class="modal-body">
                 <p id="shutdownSummaryText">This closes the Control Center window and dashboard server. Repository engines keep running independently.</p>
                 <p class="form-hint" id="shutdownRunningText" style="margin-top: 10px;">Checking currently running engines...</p>
+                <div class="shutdown-options">
+                    <div class="shutdown-options-title">Options</div>
+                    <div class="shutdown-options-list">
+                        <label class="shutdown-option-row">
+                            <input type="checkbox" id="shutdownStopOrchestrators">
+                            <span>Stop running repository engines before closing</span>
+                        </label>
+                        <div class="shutdown-timeout-row" id="shutdownTimeoutRow">
+                            <label for="shutdownGracefulTimeout">Graceful timeout</label>
+                            <select id="shutdownGracefulTimeout">
+                                <option value="60">1m</option>
+                                <option value="120">2m</option>
+                                <option value="300">5m</option>
+                                <option value="600">10m</option>
+                                <option value="1200">20m</option>
+                                <option value="1800">30m</option>
+                                <option value="3600">60m</option>
+                            </select>
+                        </div>
+                        <label class="shutdown-option-row">
+                            <input type="radio" name="shutdownMode" id="shutdownModeGraceful" checked>
+                            <span>Wait up to graceful timeout, then force stop</span>
+                        </label>
+                        <label class="shutdown-option-row">
+                            <input type="radio" name="shutdownMode" id="shutdownModeForce">
+                            <span>Force stop immediately</span>
+                        </label>
+                    </div>
+                </div>
             </div>
             <div class="modal-footer">
                 <button class="btn" id="cancelShutdown">Cancel</button>
                 <button class="btn btn-danger" id="confirmShutdown">Close Control Center</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Repository Stop Confirmation Modal -->
+    <div class="modal-backdrop" id="repoStopModal" role="dialog" aria-labelledby="repoStopModalTitle" aria-modal="true">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 class="modal-title" id="repoStopModalTitle">Stop Repository Engine</h2>
+                <button class="modal-close" id="closeRepoStopModal" aria-label="Close dialog">
+                    <svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true">
+                        <path fill="currentColor" fill-rule="evenodd" d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/>
+                    </svg>
+                </button>
+            </div>
+            <div class="modal-body">
+                <p id="repoStopSummaryText">Stop repository engine.</p>
+                <p class="form-hint" id="repoStopRunningText" style="margin-top: 10px;"></p>
+                <div class="shutdown-options">
+                    <div class="shutdown-options-title">Options</div>
+                    <div class="shutdown-options-list">
+                        <label class="shutdown-option-row">
+                            <input type="radio" name="repoStopMode" id="repoStopModeGraceful" checked>
+                            <span>Wait up to graceful timeout, then force stop</span>
+                        </label>
+                        <div class="shutdown-timeout-row" id="repoStopTimeoutRow" style="margin-left: 28px;">
+                            <label for="repoStopGracefulTimeout">Graceful timeout</label>
+                            <select id="repoStopGracefulTimeout">
+                                <option value="60">1m</option>
+                                <option value="120">2m</option>
+                                <option value="300">5m</option>
+                                <option value="600">10m</option>
+                                <option value="1200">20m</option>
+                                <option value="1800">30m</option>
+                                <option value="3600">60m</option>
+                            </select>
+                        </div>
+                        <label class="shutdown-option-row">
+                            <input type="radio" name="repoStopMode" id="repoStopModeForce">
+                            <span>Force stop immediately</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" id="cancelRepoStop">Cancel</button>
+                <button class="btn btn-danger" id="confirmRepoStop">Stop engine</button>
             </div>
         </div>
     </div>
@@ -2663,6 +2934,11 @@
             theme: localStorage.getItem('theme') || 'system',
             dashboardStatus: null
         };
+        const pendingRepoStarts = new Set();
+        const pendingRepoStops = new Set();
+        const SHUTDOWN_TIMEOUT_PRESETS_SECONDS = [60, 120, 300, 600, 1200, 1800, 3600];
+        let shutdownExpectClose = false;
+        let shutdownCloseAttempted = false;
 
         const DISCOVERED_STALE_MS = 5 * 60 * 1000;
 
@@ -2882,7 +3158,7 @@
             if (notRunning.length > 0) {
                 hasItems = true;
                 html += `<div class="dropdown-section">
-                    <div class="dropdown-section-label">Not running</div>
+                    <div class="dropdown-section-label">Stopped (registered)</div>
                     ${notRunning.map(r => renderDropdownItem(r, false)).join('')}
                 </div>`;
             }
@@ -3006,7 +3282,14 @@
                 }
             }
 
-            // Fall back to first running, then first registered
+            // Fall back to current launch directory repo when available.
+            const currentDirRepo = state.repos.find(r => r.is_current_dir);
+            if (currentDirRepo) {
+                selectRepo(currentDirRepo.path, null, 'registered');
+                return;
+            }
+
+            // Then first running, then first registered.
             const running = state.repos.find(r => {
                 const s = r.status || {};
                 return s.state === 'running' || s.state === 'partial';
@@ -3103,6 +3386,16 @@
             if (menu) menu.classList.remove('visible');
             document.getElementById('scopeInfoBtn')?.classList.remove('active');
             document.getElementById('actionMenuBtn')?.classList.remove('active');
+        }
+
+        function closeSidebarAppMenu() {
+            const menu = document.getElementById('sidebarAppMenu');
+            const btn = document.getElementById('sidebarAppMenuBtn');
+            if (menu) menu.classList.remove('visible');
+            if (btn) {
+                btn.classList.remove('active');
+                btn.setAttribute('aria-expanded', 'false');
+            }
         }
 
         function toggleMaximize() {
@@ -3368,8 +3661,24 @@
             return repo.status?.port || null;
         }
 
+        function buildDashboardUrl(port, options = {}) {
+            const params = new URLSearchParams();
+            if (options.embedded) params.set('embedded', '1');
+            if (options.theme) params.set('theme', options.theme);
+            const query = params.toString();
+            return `http://127.0.0.1:${port}/${query ? `?${query}` : ''}`;
+        }
+
         function needsSetup(repo) {
             return !repo.configs || repo.configs.length === 0;
+        }
+
+        function isRepoStartPending(path) {
+            return pendingRepoStarts.has(path);
+        }
+
+        function isRepoStopPending(path) {
+            return pendingRepoStops.has(path);
         }
 
         function renderRepos() {
@@ -3497,16 +3806,18 @@
             if (isNeedsSetup) {
                 actions = `<button class="btn btn-primary" data-action="setup" data-path="${escapeHtml(repo.path)}">Setup</button>`;
             } else if (isNotRunning) {
+                const pendingStart = isRepoStartPending(repo.path);
                 actions = `
-                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}" disabled>Open engine</button>
-                    <button class="btn btn-primary" data-action="start" data-path="${escapeHtml(repo.path)}">Start engine</button>
-                    <button class="btn" data-action="start-paused" data-path="${escapeHtml(repo.path)}">Start paused</button>
+                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}" disabled>Open dashboard</button>
+                    <button class="btn btn-primary" data-action="start" data-path="${escapeHtml(repo.path)}" ${pendingStart ? 'disabled' : ''}>${pendingStart ? 'Starting...' : 'Start engine'}</button>
+                    <button class="btn" data-action="start-paused" data-path="${escapeHtml(repo.path)}" ${pendingStart ? 'disabled' : ''}>${pendingStart ? 'Starting paused...' : 'Start paused'}</button>
                 `;
             } else {
+                const pendingStop = isRepoStopPending(repo.path);
                 actions = `
-                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open engine</button>
+                    <button class="btn" data-action="view" data-path="${escapeHtml(repo.path)}">Open dashboard</button>
                     <button class="btn" data-action="${isPaused ? 'resume' : 'pause'}" data-path="${escapeHtml(repo.path)}">${isPaused ? 'Resume engine' : 'Pause engine'}</button>
-                    <button class="btn btn-danger btn-sm" data-action="stop" data-path="${escapeHtml(repo.path)}">Stop engine</button>
+                    <button class="btn btn-danger btn-sm" data-action="stop" data-path="${escapeHtml(repo.path)}" ${pendingStop ? 'disabled' : ''}>${pendingStop ? 'Stopping...' : 'Stop engine'}</button>
                 `;
             }
 
@@ -3540,8 +3851,8 @@
             if (!el) return;
             const runningCount = state.repos.filter(r => getRepoState(r) === 'running').length;
             const pausedCount = state.repos.filter(r => getRepoState(r) === 'paused').length;
-            const notRunningCount = state.repos.filter(r => getRepoState(r) === 'not running').length;
-            el.textContent = `${runningCount} Running · ${pausedCount} Paused · ${notRunningCount} Not running`;
+            const stoppedCount = state.repos.filter(r => getRepoState(r) === 'not running').length;
+            el.textContent = `Registered engines: ${runningCount} Running · ${pausedCount} Paused · ${stoppedCount} Stopped`;
         }
 
         function updateRecoveryBanner() {
@@ -3728,12 +4039,13 @@
                 const iframeTheme = state.theme === 'system'
                     ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
                     : state.theme;
-                iframe.src = `http://localhost:${port}/?embedded=1&theme=${encodeURIComponent(iframeTheme)}`;
+                iframe.src = buildDashboardUrl(port, { embedded: true, theme: iframeTheme });
             } else {
+                const pendingStart = isRepoStartPending(repo.path);
                 loading.innerHTML = `
                     <p>Repository engine is not running.</p>
-                    <button class="btn btn-primary btn-sm" data-action="start" data-path="${escapeHtml(repo.path)}">Start engine</button>
-                    <button class="btn btn-sm" data-action="start-paused" data-path="${escapeHtml(repo.path)}">Start paused</button>
+                    <button class="btn btn-primary btn-sm" data-action="start" data-path="${escapeHtml(repo.path)}" ${pendingStart ? 'disabled' : ''}>${pendingStart ? 'Starting...' : 'Start engine'}</button>
+                    <button class="btn btn-sm" data-action="start-paused" data-path="${escapeHtml(repo.path)}" ${pendingStart ? 'disabled' : ''}>${pendingStart ? 'Starting paused...' : 'Start paused'}</button>
                 `;
                 loading.style.display = 'block';
                 // Attach action handlers to the inline buttons
@@ -3758,7 +4070,10 @@
                     await startRepo(path, null, true);
                     break;
                 case 'stop':
-                    await stopRepo(path);
+                    showRepoStopModal(path, { forceImmediate: false });
+                    break;
+                case 'stop-force':
+                    showRepoStopModal(path, { forceImmediate: true });
                     break;
                 case 'view':
                     switchView('activity', path);
@@ -3800,7 +4115,16 @@
         }
 
         async function startRepo(path, configName = null, startPaused = false) {
+            if (pendingRepoStarts.has(path)) {
+                return;
+            }
+            pendingRepoStarts.add(path);
             try {
+                if (state.currentView === 'repositories') {
+                    renderRepos();
+                } else if (state.currentView === 'activity' && state.activeRepo?.path === path) {
+                    loadActivityView(path);
+                }
                 // Determine config to use:
                 // 1. Explicit configName parameter
                 // 2. Active repo's config (if same path)
@@ -3846,6 +4170,13 @@
                 }
             } catch (error) {
                 showToast(error.message, 'error');
+            } finally {
+                pendingRepoStarts.delete(path);
+                if (state.currentView === 'repositories') {
+                    renderRepos();
+                } else if (state.currentView === 'activity' && state.activeRepo?.path === path) {
+                    loadActivityView(path);
+                }
             }
         }
 
@@ -3883,36 +4214,155 @@
             }
         }
 
-        async function stopRepo(path) {
+        function getRepoStopGracefulTimeoutSeconds() {
+            const raw = document.getElementById('repoStopGracefulTimeout')?.value;
+            const parsed = parseInt(raw || '120', 10);
+            return Number.isFinite(parsed) && parsed >= 2 ? parsed : 120;
+        }
+
+        function updateRepoStopOptionControls() {
+            const forceImmediate = Boolean(document.getElementById('repoStopModeForce')?.checked);
+            const timeoutRow = document.getElementById('repoStopTimeoutRow');
+            if (timeoutRow) timeoutRow.style.display = forceImmediate ? 'none' : 'flex';
+            const confirmBtn = document.getElementById('confirmRepoStop');
+            if (confirmBtn) {
+                confirmBtn.textContent = forceImmediate ? 'Force stop engine' : 'Stop engine';
+            }
+        }
+
+        function closeRepoStopModal() {
+            document.getElementById('repoStopModal')?.classList.remove('active');
+            const modal = document.getElementById('repoStopModal');
+            if (modal) {
+                delete modal.dataset.repoPath;
+            }
+        }
+
+        function showRepoStopModal(path, options = {}) {
+            if (!path) return;
+            const forceImmediate = Boolean(options.forceImmediate);
             const repo = state.repos.find(r => r.path === path);
             const repoName = repo?.name || path;
-            const confirmed = window.confirm(
-                `Stop engine for ${repoName}?\n\n` +
-                'This requests a graceful stop: running sessions are allowed to finish and state is kept. ' +
-                'You can start the engine again from Control Center.'
-            );
-            if (!confirmed) return;
+            const modal = document.getElementById('repoStopModal');
+            const summary = document.getElementById('repoStopSummaryText');
+            const running = document.getElementById('repoStopRunningText');
+            const modeGraceful = document.getElementById('repoStopModeGraceful');
+            const modeForce = document.getElementById('repoStopModeForce');
+            const timeoutSelect = document.getElementById('repoStopGracefulTimeout');
+            if (!modal || !summary || !running || !modeGraceful || !modeForce) return;
+
+            summary.textContent = `Stop repository engine for ${repoName}.`;
+            running.textContent = forceImmediate
+                ? 'This will attempt immediate force stop.'
+                : '';
+            modal.dataset.repoPath = path;
+            modeForce.checked = forceImmediate;
+            modeGraceful.checked = !forceImmediate;
+            if (timeoutSelect) {
+                timeoutSelect.value = localStorage.getItem('cc.shutdown.graceful-timeout-seconds') || '120';
+            }
+            updateRepoStopOptionControls();
+            modal.classList.add('active');
+        }
+
+        async function confirmRepoStop() {
+            const modal = document.getElementById('repoStopModal');
+            const path = modal?.dataset.repoPath;
+            if (!path) {
+                showToast('Missing repository path for stop request', 'error');
+                return;
+            }
+            const forceImmediate = Boolean(document.getElementById('repoStopModeForce')?.checked);
+            const gracefulTimeoutSeconds = getRepoStopGracefulTimeoutSeconds();
+            localStorage.setItem('cc.shutdown.graceful-timeout-seconds', String(gracefulTimeoutSeconds));
+            closeRepoStopModal();
+            await stopRepo(path, {
+                force: forceImmediate,
+                gracefulTimeoutSeconds,
+            });
+        }
+
+        async function stopRepo(path, options = {}) {
+            if (!path) {
+                showToast('Missing repository path for stop request', 'error');
+                return;
+            }
+            if (pendingRepoStops.has(path)) return;
+
+            const repo = state.repos.find(r => r.path === path);
+            const force = Boolean(options.force);
+            const gracefulTimeoutSeconds = Number.isFinite(options.gracefulTimeoutSeconds)
+                ? Math.max(2, options.gracefulTimeoutSeconds)
+                : (parseInt(localStorage.getItem('cc.shutdown.graceful-timeout-seconds') || '120', 10) || 120);
+            const forceIfTimeout = typeof options.forceIfTimeout === 'boolean'
+                ? options.forceIfTimeout
+                : !force;
+
+            pendingRepoStops.add(path);
+            if (state.currentView === 'repositories') {
+                renderRepos();
+            } else if (state.currentView === 'activity' && state.activeRepo?.path === path) {
+                loadActivityView(path);
+            }
+
             try {
                 const response = await fetch('/control/orchestrator/stop', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ repo_root: path })
+                    body: JSON.stringify({
+                        repo_root: path,
+                        force,
+                        graceful_timeout_seconds: gracefulTimeoutSeconds,
+                        force_if_timeout: forceIfTimeout,
+                    }),
                 });
 
-                if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.detail || 'Failed to stop');
+                let payload = null;
+                try {
+                    payload = await response.json();
+                } catch (_) {
+                    payload = null;
                 }
 
-                showToast('Repository engine stopped', 'success');
+                if (!response.ok) {
+                    const detail = payload?.detail || payload?.error;
+                    if (payload?.error === 'global_shutdown_in_progress') {
+                        throw new Error('Global shutdown is in progress. Use global shutdown controls instead.');
+                    }
+                    throw new Error(detail || `Failed to stop repository engine (HTTP ${response.status})`);
+                }
+
+                if (payload?.status === 'not_running') {
+                    showToast('Repository engine was already stopped', 'info');
+                } else {
+                    showToast(
+                        force
+                            ? 'Repository engine force-stopped'
+                            : `Repository engine stopping (graceful timeout ~${formatGracefulTimeout(gracefulTimeoutSeconds)}, then force if needed)`,
+                        'success'
+                    );
+                }
 
                 if (state.currentView === 'activity' && state.activeRepo?.path === path) {
                     switchView('repositories');
                 }
-
-                await loadRepos();
             } catch (error) {
-                showToast(error.message, 'error');
+                const message = error instanceof TypeError
+                    ? 'Failed to reach Control Center while stopping engine. Refresh and try again.'
+                    : (error?.message || 'Failed to stop repository engine');
+                showToast(message, 'error');
+            } finally {
+                pendingRepoStops.delete(path);
+                try {
+                    await loadRepos(true);
+                } catch (_) {
+                    // Best effort: UI already showed the stop error above.
+                }
+                if (state.currentView === 'repositories') {
+                    renderRepos();
+                } else if (state.currentView === 'activity' && state.activeRepo?.path === path) {
+                    loadActivityView(path);
+                }
             }
         }
 
@@ -4007,26 +4457,154 @@
         // ============================================
         // Shutdown
         // ============================================
-        function showShutdownModal() {
-            const active = state.repos.filter(r => {
-                const s = r.status || {};
-                return s.state === 'running' || s.state === 'partial' || s.paused;
-            });
+        function formatGracefulTimeout(seconds) {
+            const s = Number(seconds) || 0;
+            if (s >= 3600 && s % 3600 === 0) return `${s / 3600}h`;
+            if (s >= 60 && s % 60 === 0) return `${s / 60}m`;
+            return `${Math.max(1, Math.round(s / 60))}m`;
+        }
 
-            // Nothing running — close immediately, no confirmation needed
-            if (active.length === 0) {
+        function getShutdownGracefulTimeoutSeconds() {
+            const raw = document.getElementById('shutdownGracefulTimeout')?.value;
+            const parsed = parseInt(raw || '120', 10);
+            return Number.isFinite(parsed) && parsed >= 60 ? parsed : 120;
+        }
+
+        function showControlCenterClosedFallback() {
+            document.body.innerHTML = `
+                <div style="display:flex;align-items:center;justify-content:center;height:100vh;
+                            background:var(--bg-main,#0f1722);color:var(--text-primary,#d7e2ef);
+                            font-family:'Segoe UI','SF Pro Text','Helvetica Neue',sans-serif;text-align:center;">
+                    <div>
+                        <div style="font-size:48px;margin-bottom:16px;opacity:0.5;">&#x2713;</div>
+                        <h1 style="font-size:20px;font-weight:600;margin:0 0 8px;">Control Center closed</h1>
+                        <p style="color:var(--text-secondary,#90a5bf);margin:0;font-size:14px;">
+                            Shutdown has completed.<br>
+                            You can close this tab.
+                        </p>
+                    </div>
+                </div>
+            `;
+        }
+
+        function attemptControlCenterTabClose() {
+            if (shutdownCloseAttempted) return;
+            shutdownCloseAttempted = true;
+            setTimeout(() => {
+                window.close();
+                setTimeout(() => {
+                    showControlCenterClosedFallback();
+                }, 200);
+            }, 350);
+        }
+
+        function updateShutdownOptionControls() {
+            const stopEngines = document.getElementById('shutdownStopOrchestrators');
+            const modeGraceful = document.getElementById('shutdownModeGraceful');
+            const modeForce = document.getElementById('shutdownModeForce');
+            const timeoutRow = document.getElementById('shutdownTimeoutRow');
+            const enabled = Boolean(stopEngines?.checked);
+            const forceImmediate = Boolean(modeForce?.checked);
+            if (timeoutRow) timeoutRow.style.display = enabled && !forceImmediate ? 'flex' : 'none';
+            if (modeGraceful) {
+                modeGraceful.disabled = !enabled;
+                if (!enabled) modeGraceful.checked = true;
+            }
+            if (modeForce) {
+                modeForce.disabled = !enabled;
+                if (!enabled) modeForce.checked = false;
+            }
+        }
+
+        function _clearShutdownModalAnchor() {
+            const backdrop = document.getElementById('shutdownModal');
+            const modal = backdrop?.querySelector('.modal');
+            backdrop?.classList.remove('anchor-near-trigger');
+            if (modal) {
+                modal.style.left = '';
+                modal.style.top = '';
+            }
+        }
+
+        function hideShutdownModal() {
+            const backdrop = document.getElementById('shutdownModal');
+            backdrop?.classList.remove('active');
+            _clearShutdownModalAnchor();
+        }
+
+        function _positionShutdownModalNear(anchorRect) {
+            const backdrop = document.getElementById('shutdownModal');
+            const modal = backdrop?.querySelector('.modal');
+            if (!backdrop || !modal || !anchorRect) return;
+            backdrop.classList.add('anchor-near-trigger');
+            const gap = 10;
+            const padding = 8;
+            const rect = modal.getBoundingClientRect();
+            let left = anchorRect.left;
+            let top = anchorRect.bottom + gap;
+            if (left + rect.width > window.innerWidth - padding) {
+                left = window.innerWidth - rect.width - padding;
+            }
+            if (left < padding) left = padding;
+            if (top + rect.height > window.innerHeight - padding) {
+                top = anchorRect.top - rect.height - gap;
+            }
+            if (top < padding) top = padding;
+            modal.style.left = `${Math.round(left)}px`;
+            modal.style.top = `${Math.round(top)}px`;
+        }
+
+        function isRepoEngineActive(repo) {
+            const status = repo?.status || {};
+            const stateValue = String(status.state || '').toLowerCase();
+            if (status.paused) return true;
+            if (stateValue === 'running' || stateValue === 'partial') return true;
+            // Treat transition states as active so we don't skip confirmation while status settles.
+            if (stateValue === 'starting' || stateValue === 'stopping') return true;
+            const path = repo?.path;
+            if (path && (state.pendingStarts?.has(path) || state.pendingStops?.has(path))) return true;
+            return false;
+        }
+
+        async function showShutdownModal(anchorRect = null) {
+            let reposRefreshed = true;
+            try {
+                await loadRepos(true);
+            } catch (_) {
+                // If Control Center API is unavailable, do not auto-close based on stale state.
+                reposRefreshed = false;
+            }
+
+            const summary = document.getElementById('shutdownSummaryText');
+            const running = document.getElementById('shutdownRunningText');
+            const stopEngines = document.getElementById('shutdownStopOrchestrators');
+            const modeGraceful = document.getElementById('shutdownModeGraceful');
+            const modeForce = document.getElementById('shutdownModeForce');
+            const timeoutSelect = document.getElementById('shutdownGracefulTimeout');
+            if (stopEngines) stopEngines.checked = false;
+            if (modeGraceful) modeGraceful.checked = true;
+            if (modeForce) modeForce.checked = false;
+            if (timeoutSelect) {
+                timeoutSelect.value = localStorage.getItem('cc.shutdown.graceful-timeout-seconds') || '120';
+            }
+            updateShutdownOptionControls();
+
+            const active = state.repos.filter((repo) => isRepoEngineActive(repo));
+
+            // Nothing running — close immediately, but only when state is freshly confirmed.
+            if (reposRefreshed && active.length === 0) {
                 showToast('Shutting down...');
                 confirmShutdown();
                 return;
             }
 
-            const summary = document.getElementById('shutdownSummaryText');
-            const running = document.getElementById('shutdownRunningText');
             if (summary) {
                 summary.textContent = 'This closes the Control Center window and dashboard server. Repository engines keep running independently.';
             }
             if (running) {
-                if (active.length === 1) {
+                if (!reposRefreshed) {
+                    running.textContent = 'Could not verify running engines. Choose options explicitly.';
+                } else if (active.length === 1) {
                     running.textContent = `1 repository engine remains active: ${active[0].name}.`;
                 } else {
                     const names = active.slice(0, 3).map(r => r.name).join(', ');
@@ -4034,37 +4612,239 @@
                     running.textContent = `${active.length} repository engines remain active: ${names}${suffix}.`;
                 }
             }
-            document.getElementById('shutdownModal').classList.add('active');
+            const shutdownModal = document.getElementById('shutdownModal');
+            shutdownModal.classList.add('active');
+            if (anchorRect) {
+                _positionShutdownModalNear(anchorRect);
+            } else {
+                _clearShutdownModalAnchor();
+            }
         }
 
         async function confirmShutdown() {
             try {
-                await fetch('/control/shutdown', { method: 'POST' });
-                document.getElementById('shutdownModal').classList.remove('active');
-                // Try to close the tab; if blocked, show a "closed" landing page
-                setTimeout(() => {
-                    window.close();
-                    // Browser blocked programmatic close — replace page with closed state
-                    setTimeout(() => {
-                        document.body.innerHTML = `
-                            <div style="display:flex;align-items:center;justify-content:center;height:100vh;
-                                        background:var(--bg-main,#0f1722);color:var(--text-primary,#d7e2ef);
-                                        font-family:'Segoe UI','SF Pro Text','Helvetica Neue',sans-serif;text-align:center;">
-                                <div>
-                                    <div style="font-size:48px;margin-bottom:16px;opacity:0.5;">&#x2713;</div>
-                                    <h1 style="font-size:20px;font-weight:600;margin:0 0 8px;">Control Center closed</h1>
-                                    <p style="color:var(--text-secondary,#90a5bf);margin:0;font-size:14px;">
-                                        Repository engines continue running independently.<br>
-                                        You can close this tab.
-                                    </p>
-                                </div>
-                            </div>
-                        `;
-                    }, 200);
-                }, 500);
+                let stopOrchestrators = Boolean(document.getElementById('shutdownStopOrchestrators')?.checked);
+                const forceOrchestrators = Boolean(document.getElementById('shutdownModeForce')?.checked) && stopOrchestrators;
+                const gracefulTimeoutSeconds = getShutdownGracefulTimeoutSeconds();
+                localStorage.setItem('cc.shutdown.graceful-timeout-seconds', String(gracefulTimeoutSeconds));
+                try {
+                    await loadRepos(true);
+                } catch (_) {
+                    // Best-effort refresh; fall back to current state.
+                }
+                const activeCount = state.repos.filter((repo) => isRepoEngineActive(repo)).length;
+                if (activeCount === 0) {
+                    stopOrchestrators = false;
+                }
+                if (stopOrchestrators) {
+                    const confirmMsg = forceOrchestrators
+                        ? 'Close Control Center and force-stop running repository engines now?'
+                        : `Close Control Center and stop running repository engines (graceful timeout ~${formatGracefulTimeout(gracefulTimeoutSeconds)}, then force if needed)?`;
+                    if (!window.confirm(confirmMsg)) {
+                        return;
+                    }
+                }
+                const response = await fetch('/control/shutdown', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        stop_orchestrators: stopOrchestrators,
+                        force_orchestrators: forceOrchestrators,
+                        graceful_timeout_seconds: gracefulTimeoutSeconds,
+                    }),
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(payload?.error || `Failed to close Control Center (HTTP ${response.status})`);
+                }
+                const superseded = Array.isArray(payload?.superseded_engine_shutdowns)
+                    ? payload.superseded_engine_shutdowns
+                    : [];
+                if (superseded.length > 0) {
+                    showToast('There were other shutdowns in progress; global shutdown superseded them.', 'warning');
+                }
+                hideShutdownModal();
+                if (stopOrchestrators) {
+                    shutdownExpectClose = true;
+                    showToast('Global shutdown started. You can monitor or adjust it from the shutdown panel.', 'info');
+                    await refreshShutdownHud();
+                    return;
+                }
+                attemptControlCenterTabClose();
             } catch (error) {
                 showToast('Failed to close Control Center', 'error');
             }
+        }
+
+        async function refreshShutdownHud() {
+            const hud = document.getElementById('shutdownHud');
+            const hudState = document.getElementById('shutdownHudState');
+            const hudMeta = document.getElementById('shutdownHudMeta');
+            const abortBtn = document.getElementById('shutdownHudAbort');
+            const changeBtn = document.getElementById('shutdownHudChange');
+            const forceBtn = document.getElementById('shutdownHudForce');
+            if (!hud || !hudState || !hudMeta || !abortBtn || !changeBtn || !forceBtn) return;
+            try {
+                const response = await fetch('/control/shutdown/state');
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                const payload = await response.json();
+                const op = payload?.global_shutdown;
+                if (!op) {
+                    hud.classList.remove('visible');
+                    return;
+                }
+
+                const stateLabel = String(op.state || 'unknown').replaceAll('_', ' ');
+                hudState.textContent = `State: ${stateLabel}`;
+                const currentRepo = op.current_repo ? `Current: ${op.current_repo}` : 'Current: —';
+                const progress = `${op.completed_repos || 0}/${op.total_repos || 0}`;
+                const failed = Array.isArray(op.failed_orchestrators) ? op.failed_orchestrators : [];
+                const forceMode = Boolean(op.force_orchestrators || op.force_now_requested);
+                const modeLabel = forceMode
+                    ? 'Mode: immediate force'
+                    : `Mode: graceful (~${formatGracefulTimeout(op.graceful_timeout_seconds || 120)}), then force if needed`;
+                const failedSuffix = failed.length > 0
+                    ? ` · Failed: ${failed.length} (${failed.slice(0, 2).join(', ')}${failed.length > 2 ? ', …' : ''})`
+                    : '';
+                hudMeta.textContent = `${currentRepo} · Progress: ${progress} · ${modeLabel}${failedSuffix}`;
+                hud.classList.add('visible');
+
+                const inProgress = op.state === 'in_progress';
+                abortBtn.disabled = !inProgress;
+                changeBtn.disabled = !inProgress;
+                forceBtn.disabled = !inProgress;
+                if (op.state === 'completed' && op.stop_orchestrators) {
+                    hudState.textContent = 'State: completed';
+                    hudMeta.textContent = 'Control Center is closing...';
+                    attemptControlCenterTabClose();
+                }
+            } catch (_) {
+                // If Control Center is gone, avoid stale "in progress" text in a lingering tab.
+                if (shutdownExpectClose) {
+                    showControlCenterClosedFallback();
+                    return;
+                }
+                hud.classList.add('visible');
+                hudState.textContent = 'State: control center unavailable';
+                hudMeta.textContent = 'Shutdown status cannot be refreshed. The Control Center may already be closed.';
+                abortBtn.disabled = true;
+                changeBtn.disabled = true;
+                forceBtn.disabled = true;
+            }
+        }
+
+        async function requestShutdownAbort() {
+            try {
+                const response = await fetch('/control/shutdown/abort', { method: 'POST' });
+                if (!response.ok) {
+                    throw new Error('No shutdown in progress');
+                }
+                showToast('Shutdown abort requested.', 'warning');
+                await refreshShutdownHud();
+            } catch (error) {
+                showToast(error.message || 'Failed to abort shutdown', 'error');
+            }
+        }
+
+        async function requestShutdownForceNow() {
+            try {
+                const response = await fetch('/control/shutdown/force', { method: 'POST' });
+                if (!response.ok) {
+                    throw new Error('No shutdown in progress');
+                }
+                showToast('Force-stop escalation requested.', 'warning');
+                await refreshShutdownHud();
+            } catch (error) {
+                showToast(error.message || 'Failed to force shutdown', 'error');
+            }
+        }
+
+        async function requestShutdownChangeTimeout() {
+            const current = getShutdownGracefulTimeoutSeconds();
+            const raw = window.prompt('Set graceful timeout (minutes, 1-60):', String(Math.max(1, Math.round(current / 60))));
+            if (raw === null) return;
+            const parsedMinutes = parseInt(raw, 10);
+            if (!Number.isFinite(parsedMinutes) || parsedMinutes < 1 || parsedMinutes > 60) {
+                showToast('Timeout must be between 1 and 60 minutes.', 'error');
+                return;
+            }
+            const parsed = parsedMinutes * 60;
+            try {
+                const response = await fetch('/control/shutdown/update', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ graceful_timeout_seconds: parsed }),
+                });
+                if (!response.ok) {
+                    throw new Error('No shutdown in progress');
+                }
+                showToast(`Shutdown timeout updated to ${formatGracefulTimeout(parsed)}.`, 'success');
+                await refreshShutdownHud();
+            } catch (error) {
+                showToast(error.message || 'Failed to update shutdown timeout', 'error');
+            }
+        }
+
+        function setupShutdownHudDraggable() {
+            const hud = document.getElementById('shutdownHud');
+            const head = hud?.querySelector('.shutdown-hud-head');
+            if (!hud || !head) return;
+
+            const savedPos = localStorage.getItem('cc.shutdown.hud.position');
+            if (savedPos) {
+                try {
+                    const parsed = JSON.parse(savedPos);
+                    if (Number.isFinite(parsed.left) && Number.isFinite(parsed.top)) {
+                        hud.style.left = `${parsed.left}px`;
+                        hud.style.top = `${parsed.top}px`;
+                        hud.style.right = 'auto';
+                        hud.style.bottom = 'auto';
+                    }
+                } catch (_) {
+                    // Ignore invalid stored value
+                }
+            }
+
+            let dragging = false;
+            let offsetX = 0;
+            let offsetY = 0;
+
+            head.addEventListener('mousedown', (event) => {
+                if (event.target.closest('button')) return;
+                const rect = hud.getBoundingClientRect();
+                dragging = true;
+                offsetX = event.clientX - rect.left;
+                offsetY = event.clientY - rect.top;
+                hud.style.right = 'auto';
+                hud.style.bottom = 'auto';
+                event.preventDefault();
+            });
+
+            document.addEventListener('mousemove', (event) => {
+                if (!dragging) return;
+                const nextLeft = Math.min(
+                    Math.max(8, event.clientX - offsetX),
+                    Math.max(8, window.innerWidth - hud.offsetWidth - 8),
+                );
+                const nextTop = Math.min(
+                    Math.max(8, event.clientY - offsetY),
+                    Math.max(8, window.innerHeight - hud.offsetHeight - 8),
+                );
+                hud.style.left = `${nextLeft}px`;
+                hud.style.top = `${nextTop}px`;
+            });
+
+            document.addEventListener('mouseup', () => {
+                if (!dragging) return;
+                dragging = false;
+                const rect = hud.getBoundingClientRect();
+                localStorage.setItem(
+                    'cc.shutdown.hud.position',
+                    JSON.stringify({ left: rect.left, top: rect.top }),
+                );
+            });
         }
 
         // ============================================
@@ -4261,14 +5041,38 @@
             });
 
             // Shutdown
-            document.getElementById('shutdownBtn').addEventListener('click', showShutdownModal);
+            document.getElementById('sidebarCloseCC').addEventListener('click', (event) => {
+                const triggerRect = event.currentTarget?.getBoundingClientRect?.() || null;
+                closeSidebarAppMenu();
+                showShutdownModal(triggerRect);
+            });
             document.getElementById('closeShutdownModal').addEventListener('click', () => {
-                document.getElementById('shutdownModal').classList.remove('active');
+                hideShutdownModal();
             });
             document.getElementById('cancelShutdown').addEventListener('click', () => {
-                document.getElementById('shutdownModal').classList.remove('active');
+                hideShutdownModal();
             });
             document.getElementById('confirmShutdown').addEventListener('click', confirmShutdown);
+            document.getElementById('shutdownStopOrchestrators')?.addEventListener('change', updateShutdownOptionControls);
+            document.getElementById('shutdownGracefulTimeout')?.addEventListener('change', updateShutdownOptionControls);
+            document.getElementById('shutdownModeGraceful')?.addEventListener('change', updateShutdownOptionControls);
+            document.getElementById('shutdownModeForce')?.addEventListener('change', updateShutdownOptionControls);
+            updateShutdownOptionControls();
+            document.getElementById('closeRepoStopModal')?.addEventListener('click', closeRepoStopModal);
+            document.getElementById('cancelRepoStop')?.addEventListener('click', closeRepoStopModal);
+            document.getElementById('confirmRepoStop')?.addEventListener('click', confirmRepoStop);
+            document.getElementById('repoStopModeGraceful')?.addEventListener('change', updateRepoStopOptionControls);
+            document.getElementById('repoStopModeForce')?.addEventListener('change', updateRepoStopOptionControls);
+            document.getElementById('repoStopGracefulTimeout')?.addEventListener('change', updateRepoStopOptionControls);
+            updateRepoStopOptionControls();
+            document.getElementById('shutdownHudAbort')?.addEventListener('click', requestShutdownAbort);
+            document.getElementById('shutdownHudChange')?.addEventListener('click', requestShutdownChangeTimeout);
+            document.getElementById('shutdownHudForce')?.addEventListener('click', requestShutdownForceNow);
+            document.getElementById('shutdownHudHide')?.addEventListener('click', () => {
+                document.getElementById('shutdownHud')?.classList.remove('visible');
+            });
+            setupShutdownHudDraggable();
+            refreshShutdownHud();
 
             // Tools - helper to get current repo (defined in outer scope, see below DOMContentLoaded)
 
@@ -5304,10 +6108,30 @@
                 else if (setupWizardState.step === 3) await loadSetupStep3();
             });
 
-            // Consolidated header menu actions (CC-level only; engine actions are in the dashboard)
-            document.getElementById('menuCloseCC').addEventListener('click', () => {
+            // Consolidated header menu actions (activity/config-level only)
+            const menuCloseCC = document.getElementById('menuCloseCC');
+            if (menuCloseCC) {
+                menuCloseCC.addEventListener('click', (event) => {
+                    const triggerRect = event.currentTarget?.getBoundingClientRect?.() || null;
+                    closeConsolidatedDropdowns();
+                    closeSidebarAppMenu();
+                    showShutdownModal(triggerRect);
+                });
+            }
+
+            // Sidebar app menu toggle
+            document.getElementById('sidebarAppMenuBtn').addEventListener('click', (e) => {
+                e.stopPropagation();
+                const menu = document.getElementById('sidebarAppMenu');
+                const btn = document.getElementById('sidebarAppMenuBtn');
+                const wasVisible = menu.classList.contains('visible');
                 closeConsolidatedDropdowns();
-                showShutdownModal();
+                closeSidebarAppMenu();
+                if (!wasVisible) {
+                    menu.classList.add('visible');
+                    btn.classList.add('active');
+                    btn.setAttribute('aria-expanded', 'true');
+                }
             });
 
             // Scope info popover toggle
@@ -5364,7 +6188,10 @@
             });
 
             // Close consolidated dropdowns on outside click
-            document.addEventListener('click', closeConsolidatedDropdowns);
+            document.addEventListener('click', () => {
+                closeConsolidatedDropdowns();
+                closeSidebarAppMenu();
+            });
 
             // Maximize toggle
             document.getElementById('maximizeBtn').addEventListener('click', toggleMaximize);
@@ -5381,7 +6208,11 @@
             document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
                 backdrop.addEventListener('click', (e) => {
                     if (e.target === backdrop) {
-                        backdrop.classList.remove('active');
+                        if (backdrop.id === 'shutdownModal') {
+                            hideShutdownModal();
+                        } else {
+                            backdrop.classList.remove('active');
+                        }
                     }
                 });
             });
@@ -5390,7 +6221,11 @@
             document.addEventListener('keydown', (e) => {
                 if (e.key === 'Escape') {
                     document.querySelectorAll('.modal-backdrop.active').forEach(modal => {
-                        modal.classList.remove('active');
+                        if (modal.id === 'shutdownModal') {
+                            hideShutdownModal();
+                        } else {
+                            modal.classList.remove('active');
+                        }
                     });
                 }
             });
@@ -5399,7 +6234,9 @@
             setInterval(() => {
                 loadRepos(true);
                 loadSystemState();
+                refreshShutdownHud();
             }, 30000);
+            setInterval(refreshShutdownHud, 3000);
         });
     </script>
 </body>

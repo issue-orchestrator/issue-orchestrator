@@ -44,7 +44,7 @@ def test_build_issue_timeline_maps_phase_and_step():
 
     assert events[0]["phase"] == "in_progress"
     assert events[0]["step"] == "started"
-    assert events[1]["phase"] == "pr_pending"
+    assert events[1]["phase"] == "orchestrator"
     assert events[1]["step"] == "pr_created"
     assert events[1]["artifacts"][0]["type"] == "pull_request"
     assert events[2]["artifacts"][0]["type"] == "completion_record"
@@ -54,6 +54,36 @@ def test_build_issue_timeline_maps_phase_and_step():
     stream = TimelineStream.from_records(123, records)
     grouped = stream.group_by_phase()
     assert grouped["in_progress"][0].step == "started"
+
+
+def test_build_issue_timeline_maps_validation_and_review_queue_to_orchestrator_phase():
+    records = [
+        TimelineRecord(
+            event_id="v1",
+            timestamp="2026-02-06T00:00:00Z",
+            event="validation.completed",
+            data={"issue_number": 123},
+        ),
+        TimelineRecord(
+            event_id="v2",
+            timestamp="2026-02-06T00:01:00Z",
+            event="review.queued",
+            data={"issue_number": 123},
+        ),
+        TimelineRecord(
+            event_id="v3",
+            timestamp="2026-02-06T00:02:00Z",
+            event="session.validation_retry_needed",
+            data={"issue_number": 123},
+        ),
+    ]
+
+    timeline = build_issue_timeline(123, records)
+    assert [event["phase"] for event in timeline["events"]] == [
+        "orchestrator",
+        "orchestrator",
+        "orchestrator",
+    ]
 
 
 def test_build_issue_timeline_status_mapping():

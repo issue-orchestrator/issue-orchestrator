@@ -87,6 +87,7 @@ STATUS_TO_ACTIONS = {
     ],
     AgentStatus.APPROVED: [
         RequestedAction.ADD_CODE_REVIEWED_LABEL,
+        RequestedAction.REMOVE_NEEDS_REWORK_LABEL,
         RequestedAction.REMOVE_CODE_REVIEW_LABEL,
         RequestedAction.POST_COMMENT,
     ],
@@ -123,7 +124,42 @@ def extract_pr_verification_status(pr_body: str) -> tuple[bool, str | None]:
     return (False, None)
 
 
-def _record_validation_artifacts(  # noqa: C901 - handles multiple artifact types (manifest, stdout, stderr) with conditional paths
+def _validation_manifest_updates(validation_result: AgentGateResult, record_path: str | None) -> dict[str, str]:
+    """Build manifest fields that summarize validation state."""
+    updates: dict[str, str] = {
+        "validation_status": "passed" if validation_result.passed else "failed",
+    }
+    if record_path:
+        updates["validation_record_path"] = record_path
+    if not validation_result.passed:
+        updates["validation_reason"] = validation_result.reason
+    return updates
+
+
+def _copy_validation_log(
+    *,
+    worktree_root: Path,
+    run_dir: Path,
+    source_path: str | None,
+    destination_name: str,
+    manifest_key: str,
+    session_output: FileSystemSessionOutput,
+) -> None:
+    """Copy one validation log artifact into the session run directory."""
+    if not source_path:
+        return
+    src = worktree_root / source_path
+    if not src.exists():
+        return
+    dest = run_dir / destination_name
+    try:
+        dest.write_text(src.read_text(errors="ignore"))
+        session_output.update_manifest(run_dir, {manifest_key: str(dest)})
+    except OSError:
+        logger.debug("Failed to write validation log %s for %s", destination_name, run_dir)
+
+
+def _record_validation_artifacts(
     worktree_root: Path,
     session_id: str | None,
     validation_result: AgentGateResult,
@@ -138,37 +174,31 @@ def _record_validation_artifacts(  # noqa: C901 - handles multiple artifact type
 
     session_output = FileSystemSessionOutput()
     run_dir = session_output.ensure_run_dir(worktree_root, session_id)
-    updates: dict[str, str] = {}
-    if record_path:
-        updates["validation_record_path"] = record_path
-    updates["validation_status"] = "passed" if validation_result.passed else "failed"
-    if not validation_result.passed:
-        updates["validation_reason"] = validation_result.reason
-
+    run_record_path = run_dir / "validation-record.json"
+    effective_record_path = str(run_record_path) if run_record_path.exists() else record_path
+    updates = _validation_manifest_updates(validation_result, effective_record_path)
     if updates:
         session_output.update_manifest(run_dir, updates)
 
     if not record:
         return
 
-    if record.stdout_path:
-        stdout_src = worktree_root / record.stdout_path
-        if stdout_src.exists():
-            stdout_dest = run_dir / "validation-stdout.log"
-            try:
-                stdout_dest.write_text(stdout_src.read_text(errors="ignore"))
-                session_output.update_manifest(run_dir, {"validation_stdout": str(stdout_dest)})
-            except OSError:
-                logger.debug("Failed to write validation stdout for %s", run_dir)
-    if record.stderr_path:
-        stderr_src = worktree_root / record.stderr_path
-        if stderr_src.exists():
-            stderr_dest = run_dir / "validation-stderr.log"
-            try:
-                stderr_dest.write_text(stderr_src.read_text(errors="ignore"))
-                session_output.update_manifest(run_dir, {"validation_stderr": str(stderr_dest)})
-            except OSError:
-                logger.debug("Failed to write validation stderr for %s", run_dir)
+    _copy_validation_log(
+        worktree_root=worktree_root,
+        run_dir=run_dir,
+        source_path=record.stdout_path,
+        destination_name="validation-stdout.log",
+        manifest_key="validation_stdout",
+        session_output=session_output,
+    )
+    _copy_validation_log(
+        worktree_root=worktree_root,
+        run_dir=run_dir,
+        source_path=record.stderr_path,
+        destination_name="validation-stderr.log",
+        manifest_key="validation_stderr",
+        session_output=session_output,
+    )
 
 
 def die(message: str) -> NoReturn:
@@ -181,11 +211,11 @@ def die(message: str) -> NoReturn:
 def get_session_id() -> str:
     """Get session ID from environment or generate one.
 
-    The orchestrator sets ORCHESTRATOR_SESSION_ID when launching agents.
+    The orchestrator sets ISSUE_ORCHESTRATOR_SESSION_ID when launching agents.
+    Legacy ORCHESTRATOR_SESSION_ID is also accepted for compatibility.
     If not set, we generate a timestamp-based ID for standalone usage.
     """
-    import os
-    session_id = os.environ.get("ORCHESTRATOR_SESSION_ID")
+    session_id = get_env("SESSION_ID") or os.environ.get("ORCHESTRATOR_SESSION_ID")
     if session_id:
         return session_id
     # Fallback for standalone usage
@@ -195,10 +225,11 @@ def get_session_id() -> str:
 def get_issue_number() -> Optional[int]:
     """Get issue number from environment.
 
-    The orchestrator sets ORCHESTRATOR_ISSUE_NUMBER when launching agents.
+    The orchestrator sets ISSUE_ORCHESTRATOR_ISSUE_NUMBER when launching agents.
+    Legacy ORCHESTRATOR_ISSUE_NUMBER is also accepted for compatibility.
     Returns None if not set (standalone usage).
     """
-    issue_str = os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
+    issue_str = get_env("ISSUE_NUMBER") or os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
     if issue_str:
         try:
             return int(issue_str)
@@ -421,10 +452,27 @@ def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:
     Returns:
         Tuple of (command, timeout_seconds) or (None, 0) if not configured
     """
-    from ...infra.config import load_validation_config
+    from ...infra.config import load_validation_config, load_validation_config_from_file
 
-    # Read validation config from the worktree's config file
-    validation_config = load_validation_config(worktree)
+    # Prefer explicit config file path exported by launcher. This avoids
+    # failures when per-worktree .issue-orchestrator/config is unavailable.
+    config_path_env = get_env("CONFIG_PATH") or os.environ.get("ORCHESTRATOR_CONFIG_PATH")
+    if config_path_env:
+        try:
+            validation_config = load_validation_config_from_file(Path(config_path_env))
+        except FileNotFoundError as exc:
+            die(str(exc))
+        cmd = validation_config.get("cmd")
+        if cmd:
+            return cmd, validation_config.get("timeout_seconds", 300)
+        return None, 0
+
+    # Read validation config from the worktree's selected config file.
+    config_name = get_env("CONFIG_NAME") or os.environ.get("ORCHESTRATOR_CONFIG_NAME")
+    try:
+        validation_config = load_validation_config(worktree, config_name=config_name)
+    except FileNotFoundError as exc:
+        die(str(exc))
 
     cmd = validation_config.get("cmd")
     if cmd:
@@ -482,7 +530,8 @@ def trigger_orchestrator_resume(verbose: bool = False) -> tuple[bool, str | None
     the orchestrator to pick up the completion and continue the flow
     (create PR, run review, etc.).
 
-    Requires ORCHESTRATOR_API_PORT and ORCHESTRATOR_ISSUE_NUMBER env vars,
+    Requires ISSUE_ORCHESTRATOR_API_PORT and ISSUE_ORCHESTRATOR_ISSUE_NUMBER env vars
+    (legacy ORCHESTRATOR_* vars are also accepted),
     which are set automatically when launching debug sessions from the web UI.
 
     Args:
@@ -494,15 +543,15 @@ def trigger_orchestrator_resume(verbose: bool = False) -> tuple[bool, str | None
     import urllib.request
     import urllib.error
 
-    port = os.environ.get("ORCHESTRATOR_API_PORT")
-    issue_number = os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
+    port = get_env("API_PORT") or os.environ.get("ORCHESTRATOR_API_PORT")
+    issue_number = get_env("ISSUE_NUMBER") or os.environ.get("ORCHESTRATOR_ISSUE_NUMBER")
 
     if not port or not issue_number:
         missing = []
         if not port:
-            missing.append("ORCHESTRATOR_API_PORT")
+            missing.append("ISSUE_ORCHESTRATOR_API_PORT")
         if not issue_number:
-            missing.append("ORCHESTRATOR_ISSUE_NUMBER")
+            missing.append("ISSUE_ORCHESTRATOR_ISSUE_NUMBER")
         return False, (
             f"Cannot resume: missing environment variables: {', '.join(missing)}. "
             f"Completion record written. Resume processing from the web UI."
@@ -556,12 +605,13 @@ def run_preflight_push_check(worktree: Path, verbose: bool = False) -> tuple[boo
     import urllib.error
 
     # Get orchestrator port from environment
-    port = os.environ.get("ORCHESTRATOR_API_PORT")
+    # Support prefixed orchestrator env var first, with legacy fallback.
+    port = get_env("API_PORT") or os.environ.get("ORCHESTRATOR_API_PORT")
     if not port:
         # No port configured - skip preflight check
         # This happens when running agent-done outside orchestrator context
         if verbose:
-            print("Note: ORCHESTRATOR_API_PORT not set, skipping push preflight check")
+            print("Note: ISSUE_ORCHESTRATOR_API_PORT not set, skipping push preflight check")
         return True, None, None
 
     url = f"http://localhost:{port}/api/preflight-push"
@@ -840,13 +890,20 @@ The orchestrator reads this file and performs the necessary actions (push, PR, l
 
     # Write completion record
     output_path = write_completion_record(record)
+    output_path_abs = output_path.resolve()
 
-    print(f"Completion record written to: {output_path}")
+    print(f"Completion record written to: {output_path_abs}")
     print(f"Status: {status}")
     print(f"Session: {record.session_id}")
     if validation_result:
         validation_status = "passed" if validation_result.passed else "failed"
         print(f"Validation: {validation_status}")
+        if validation_result.record_path:
+            print(f"Validation record: {Path(validation_result.record_path).resolve()}")
+        if validation_result.record and validation_result.record.stdout_path:
+            print(f"Validation stdout: {Path(validation_result.record.stdout_path).resolve()}")
+        if validation_result.record and validation_result.record.stderr_path:
+            print(f"Validation stderr: {Path(validation_result.record.stderr_path).resolve()}")
 
     # Handle --resume flag: trigger orchestrator to process completion
     if args.resume:

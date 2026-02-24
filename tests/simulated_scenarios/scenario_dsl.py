@@ -396,11 +396,12 @@ class Scenario:
         *,
         require_keys: list[str] | None = None,
         expected_fields: dict[str, object] | None = None,
+        session_name_prefix: str | None = None,
     ) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
             worktree = ctx.worktree
             assert worktree is not None
-            manifest = _latest_run_manifest(worktree)
+            manifest = _latest_run_manifest(worktree, session_name_prefix=session_name_prefix)
             assert manifest is not None, "run manifest.json not found"
             if require_keys:
                 for key in require_keys:
@@ -559,9 +560,14 @@ def _latest_review_feedback(worktree: Path) -> Path | None:
     return records[-1]
 
 
-def _latest_run_manifest(worktree: Path) -> dict | None:
+def _latest_run_manifest(worktree: Path, *, session_name_prefix: str | None = None) -> dict | None:
     root = worktree / ".issue-orchestrator" / "sessions"
     manifests = list(root.rglob("manifest.json"))
+    run_manifests = [p for p in manifests if "__" in p.parent.name]
+    if run_manifests:
+        manifests = run_manifests
+    if session_name_prefix is not None:
+        manifests = [p for p in manifests if p.parent.name.split("__", 1)[-1].startswith(session_name_prefix)]
     if not manifests:
         return None
     manifests.sort(key=lambda p: p.stat().st_mtime)

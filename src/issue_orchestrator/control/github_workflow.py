@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 from ..infra.config import Config
 from ..events import EventName, EventContext
 from ..domain.models import DiscoveredReview, DiscoveredRework, DiscoveredEscalation, DependencyProblem
-from ..ports import EventSink, TraceEvent, RepositoryHost
+from ..ports import EventSink, make_trace_event, RepositoryHost
 
 logger = logging.getLogger(__name__)
 
@@ -168,7 +168,7 @@ class GitHubWorkflow:
         unblocked = set(state.dependency_problems) - set(new)
 
         for n in blocked:
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.DEPENDENCY_BLOCKED,
                 self.event_context.enrich({
                     "issue_number": n,
@@ -176,7 +176,7 @@ class GitHubWorkflow:
                 }),
             ))
         for n in unblocked:
-            self.events.publish(TraceEvent(
+            self.events.publish(make_trace_event(
                 EventName.DEPENDENCY_UNBLOCKED,
                 self.event_context.enrich({"issue_number": n}),
             ))

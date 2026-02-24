@@ -23,7 +23,7 @@ flowchart TD
 
 The review loop can run through different mechanisms. The orchestrator selects the mechanism based on `review.exchange.mode` configuration.
 
-### via-draft-pr (default)
+### via-draft-pr
 
 Traditional GitHub-based flow. The orchestrator creates a draft PR, launches a reviewer agent against it, and uses GitHub labels to drive the loop. No human intervention required — the orchestrator detects label changes and launches rework sessions automatically.
 
@@ -37,7 +37,7 @@ flowchart LR
   REWORK --> REV
 ```
 
-### via-local-loop
+### via-local-loop (default)
 
 Coder and reviewer agents alternate within the orchestrator process. Faster iteration — no GitHub round-trips. The orchestrator runs both agents sequentially and passes results between them.
 
@@ -111,7 +111,7 @@ review:
 
   # Exchange mechanism
   exchange:
-    mode: "via-draft-pr"               # via-draft-pr, via-local-loop, via-mcp, auto
+    mode: "via-local-loop"             # via-local-loop, via-draft-pr, via-mcp, auto
     loop:
       max_rounds: 10                   # Max iterations (local-loop / mcp)
       max_no_progress: 2              # Stop if reviewer reports no progress N times

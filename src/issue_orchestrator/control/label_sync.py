@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Optional, Set, FrozenSet
 
 from ..events import EventName
-from ..ports import EventSink, TraceEvent
+from ..ports import EventSink,  make_trace_event
 from ..infra import gh_audit
 from ..ports.label_set import LabelSet
 from ..ports.pull_request_tracker import PullRequestTracker
@@ -182,7 +182,7 @@ class LabelSync:
         # Emit trace event if anything changed or errors occurred
         if result.changed or result.errors:
             self.events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.LABELS_SYNCED,
                     {
                         "issue_number": issue_number,
@@ -313,7 +313,7 @@ class LabelSync:
                 except Exception as e:
                     logger.warning("[LABEL_SYNC] Failed to reconcile label on PR #%d: %s", pr.number, e)
                     self.events.publish(
-                        TraceEvent(
+                        make_trace_event(
                             EventName.APPLY_FAILED,
                             {
                                 "step_type": "label_sync_reconcile",

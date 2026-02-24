@@ -6,7 +6,7 @@ from dataclasses import asdict, is_dataclass
 from typing import Any, cast
 
 from ..events import EventContext, EventName
-from ..ports import EventSink, TraceEvent
+from ..ports import EventSink,  make_trace_event
 from ..ports.goal_pilot_store import GoalPilotStore
 from ..ports.repository_host import RepositoryHost
 from .action_applier import ActionApplier
@@ -41,7 +41,7 @@ class GoalPilot:
             raise ValueError("GoalPilot run name is required")
         run = self._store.create_run(goals=goals, done_criteria=done_criteria, name=name)
         self._events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.GOAL_PILOT_CREATED,
                 self._ctx.enrich({"run_id": run.run_id, "goals": goals, "name": name}),
             )
@@ -78,7 +78,7 @@ class GoalPilot:
                 note_text=note,
             )
         self._events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.GOAL_PILOT_UPDATED,
                 self._ctx.enrich({"run_id": run_id, "goals": goals}),
             )
@@ -103,7 +103,7 @@ class GoalPilot:
             changes=changes,
         )
         self._events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.GOAL_PILOT_UPDATED,
                 self._ctx.enrich({"run_id": run_id, "phase": phase, "reason": reason}),
             )
@@ -170,7 +170,7 @@ class GoalPilot:
                 status="proposed",
             )
             self._events.publish(
-                TraceEvent(
+                make_trace_event(
                     EventName.GOAL_PILOT_ACTION_PROPOSED,
                     self._ctx.enrich({"run_id": run_id, "action": action}),
                 )
@@ -205,7 +205,7 @@ class GoalPilot:
             status="executed",
         )
         self._events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.GOAL_PILOT_ACTION_EXECUTED,
                 self._ctx.enrich({"run_id": run_id, "action": action}),
             )
@@ -216,7 +216,7 @@ class GoalPilot:
         self._require_run(run_id)
         self._store.update_run_status(run_id, "completed")
         self._events.publish(
-            TraceEvent(
+            make_trace_event(
                 EventName.GOAL_PILOT_COMPLETED,
                 self._ctx.enrich({"run_id": run_id}),
             )
@@ -273,7 +273,7 @@ class GoalPilot:
         else:
             event_name = EventName.GOAL_PILOT_ACTION_FAILED
         self._events.publish(
-            TraceEvent(
+            make_trace_event(
                 event_name,
                 self._ctx.enrich({"run_id": run_id, "action": action, "result": result}),
             )

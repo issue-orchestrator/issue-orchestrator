@@ -119,6 +119,8 @@ class OrchestratorProcess:
                     "permission_mode": cfg.permission_mode,
                     "command": cfg.command,
                     "meta_agent": cfg.meta_agent,
+                    "ai_system": cfg.ai_system,
+                    "ai_system": cfg.ai_system,
                 }
                 for label, cfg in self.config.agents.items()
             },
@@ -260,12 +262,14 @@ class OrchestratorProcess:
         ui_mode = "web"
 
         config_path = self._write_e2e_config()
+        label_arg = self.config.filtering.label or "test-data"
         cmd = [
             str(venv_bin), "--config", str(config_path), "start",
-            "--label", "test-data",
+            "--label", label_arg,
             "--max-issues", str(max_issues),
             "--ui-mode", ui_mode,
         ]
+        print(f"  [E2E] Filtering by label: {label_arg}", flush=True)
 
         # Add web port
         web_port = self.config.web_port

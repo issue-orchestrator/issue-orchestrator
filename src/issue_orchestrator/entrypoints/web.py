@@ -11,6 +11,7 @@ import socket
 import subprocess
 import time
 import webbrowser
+from dataclasses import dataclass
 from pathlib import Path
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Callable
@@ -54,6 +55,24 @@ from ..contracts.ui_openapi_models import (
     IssueRowPayload,
 )
 from ..control.queue_cache import QueueCache, QueueMutationStatus
+from ..events import EventName
+from ..execution.manifest_accessor import (
+    ArtifactNotFoundError,
+    ManifestAccessor,
+    RunIdentity,
+)
+from ..execution.label_ops import LabelOperation, apply_label_operations
+from ..infra.timeline_trace import is_timeline_trace_enabled
+from ..domain.event_taxonomy import (
+    EventIntent,
+    is_review_oriented_event,
+    is_rework_event_name,
+    is_review_event_name,
+    is_session_event_name,
+)
+from ..ports.event_sink import make_trace_event
+from ..timeline import MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION, TIMELINE_SCHEMA_VERSION
+from ..control.label_manager import LabelManager
 
 if TYPE_CHECKING:
     from ..infra.orchestrator import Orchestrator
@@ -69,6 +88,16 @@ class ViewModelSnapshotPayload(BaseModel):
     rows: list[IssueRowPayload]
     active_tab: str
     count: int
+
+
+@dataclass(frozen=True)
+class IssueSessionContext:
+    """Resolved latest session context for an issue across active/history/storage."""
+
+    worktree_path: Path | None = None
+    session_name: str | None = None
+    run_dir: Path | None = None
+
 
 # Pattern to match ANSI escape sequences and control characters:
 # - \x1b[...m (SGR - colors, bold, etc.)
@@ -213,6 +242,100 @@ def dedupe_consecutive_lines(lines: list[str]) -> list[str]:
     return result
 
 
+def _extract_stream_json_text(lines: list[str]) -> list[str] | None:
+    """Decode Claude stream-json log lines into plain transcript lines.
+
+    Returns None when input does not appear to be stream-json output.
+    """
+    saw_stream_json = False
+    text_parts: list[str] = []
+
+    for raw in lines:
+        record = _parse_stream_json_record(raw)
+        if record is None:
+            continue
+        if _append_stream_event_text(record, text_parts):
+            saw_stream_json = True
+            continue
+        if _append_assistant_text(record, text_parts):
+            saw_stream_json = True
+            continue
+        if _append_result_text(record, text_parts):
+            saw_stream_json = True
+
+    if not saw_stream_json:
+        return None
+
+    transcript = "".join(text_parts)
+    if not transcript:
+        return []
+    return transcript.splitlines()
+
+
+def _parse_stream_json_record(raw: str) -> dict[str, Any] | None:
+    candidate = raw.strip()
+    if not candidate or not candidate.startswith("{"):
+        return None
+    try:
+        record = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    event_type = record.get("type")
+    if not isinstance(event_type, str):
+        return None
+    return record
+
+
+def _append_stream_event_text(record: dict[str, Any], text_parts: list[str]) -> bool:
+    if record.get("type") != "stream_event":
+        return False
+    event = record.get("event")
+    if not isinstance(event, dict) or event.get("type") != "content_block_delta":
+        return True
+    delta = event.get("delta")
+    if not isinstance(delta, dict) or delta.get("type") != "text_delta":
+        return True
+    chunk = delta.get("text")
+    if isinstance(chunk, str) and chunk:
+        text_parts.append(chunk)
+    return True
+
+
+def _append_assistant_text(record: dict[str, Any], text_parts: list[str]) -> bool:
+    if record.get("type") != "assistant":
+        return False
+    # Fallback only when deltas are unavailable.
+    if text_parts:
+        return True
+    message = record.get("message")
+    if not isinstance(message, dict):
+        return True
+    content = message.get("content")
+    if not isinstance(content, list):
+        return True
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text:
+            text_parts.append(text)
+    return True
+
+
+def _append_result_text(record: dict[str, Any], text_parts: list[str]) -> bool:
+    if record.get("type") != "result":
+        return False
+    # Fallback only when no assistant/content deltas were seen.
+    if text_parts:
+        return True
+    result_text = record.get("result")
+    if isinstance(result_text, str) and result_text:
+        text_parts.append(result_text)
+    return True
+
+
 # Create FastAPI app
 app = FastAPI(title="Issue Orchestrator")
 
@@ -339,29 +462,6 @@ def set_orchestrator(orchestrator) -> None:
     _orchestrator = orchestrator
 
 
-def _collect_worktree_bases(config) -> list[Path]:
-    bases: list[Path] = []
-    if config.worktree_base:
-        bases.append(Path(config.worktree_base))
-    agents = getattr(config, "agents", {}) or {}
-    for agent in agents.values():
-        agent_base = getattr(agent, "worktree_base", None)
-        if agent_base:
-            bases.append(Path(agent_base))
-    bases.append(config.repo_root.parent)
-    seen: set[Path] = set()
-    unique: list[Path] = []
-    for base in bases:
-        if not base:
-            continue
-        base = base.resolve()
-        if base in seen:
-            continue
-        seen.add(base)
-        unique.append(base)
-    return unique
-
-
 def trigger_server_shutdown():
     """Trigger uvicorn server shutdown."""
     global _server
@@ -390,6 +490,31 @@ def _response_json(response: JSONResponse) -> dict:
     if isinstance(body, memoryview):
         body = body.tobytes()
     return json.loads(body.decode("utf-8"))
+
+
+def _build_dashboard_vm_sync(orchestrator: Any, queue_page: int, active_tab: str, e2e_page: int):
+    return build_dashboard_view_model(
+        orchestrator,
+        queue_page=queue_page,
+        active_tab=active_tab,
+        e2e_page=e2e_page,
+    )
+
+
+def _render_issue_rows_sync(template, view_model) -> list[dict[str, Any]]:
+    rows = []
+    for issue in view_model.issues:
+        html = template.render(
+            issue=issue,
+            active_tab=view_model.active_tab,
+            github_owner=view_model.github_owner,
+            github_repo=view_model.github_repo,
+        )
+        rows.append({
+            "issue_number": issue.get("issue_number"),
+            "html": html,
+        })
+    return rows
 
 
 @app.get("/favicon.ico")
@@ -424,15 +549,25 @@ async def dashboard(request: Request, orchestrator=Depends(get_orchestrator)) ->
 
     templates = get_templates()
     template = templates.get_template("dashboard.html")
-    view_model = build_dashboard_view_model(
+    vm_start = time.time()
+    view_model = await asyncio.to_thread(
+        _build_dashboard_vm_sync,
         orchestrator,
-        queue_page=queue_page,
-        active_tab=active_tab,
-        e2e_page=e2e_page,
+        queue_page,
+        active_tab,
+        e2e_page,
     )
-    html = template.render(**view_model.template_context())
+    vm_elapsed = time.time() - vm_start
+    render_start = time.time()
+    html = await asyncio.to_thread(template.render, **view_model.template_context())
+    render_elapsed = time.time() - render_start
     total_elapsed = time.time() - request_start
-    logger.info("[dashboard] Total request time: %.2fs", total_elapsed)
+    logger.info(
+        "[dashboard] Total request time: %.2fs (view_model=%.2fs render=%.2fs)",
+        total_elapsed,
+        vm_elapsed,
+        render_elapsed,
+    )
     return HTMLResponse(content=html)
 
 
@@ -452,11 +587,12 @@ async def get_view_model(
         e2e_page = 1
     active_tab = request.query_params.get("tab", "flow")
 
-    view_model = build_dashboard_view_model(
+    view_model = await asyncio.to_thread(
+        _build_dashboard_vm_sync,
         orchestrator,
-        queue_page=queue_page,
-        active_tab=active_tab,
-        e2e_page=e2e_page,
+        queue_page,
+        active_tab,
+        e2e_page,
     )
     return DashboardViewModelPayload.model_validate(view_model.to_dict())
 
@@ -478,27 +614,14 @@ async def get_view_model_snapshot(
     queue_page = page
     active_tab = tab
 
-    view_model = build_dashboard_view_model(
-        orchestrator,
-        queue_page=queue_page,
-        active_tab=active_tab,
-        e2e_page=e2e_page,
-    )
-
     templates = get_templates()
     row_template = templates.get_template("issue_row.html")
-    rows = []
-    for issue in view_model.issues:
-        html = row_template.render(
-            issue=issue,
-            active_tab=view_model.active_tab,
-            github_owner=view_model.github_owner,
-            github_repo=view_model.github_repo,
-        )
-        rows.append({
-            "issue_number": issue.get("issue_number"),
-            "html": html,
-        })
+
+    def _build_snapshot_sync() -> tuple[Any, list[dict[str, Any]]]:
+        vm = _build_dashboard_vm_sync(orchestrator, queue_page, active_tab, e2e_page)
+        return vm, _render_issue_rows_sync(row_template, vm)
+
+    view_model, rows = await asyncio.to_thread(_build_snapshot_sync)
 
     return ViewModelSnapshotPayload.model_validate({
         "view_model": view_model.to_dict(),
@@ -522,28 +645,14 @@ async def get_issue_rows(request: Request, orchestrator=Depends(get_orchestrator
         e2e_page = 1
     active_tab = request.query_params.get("tab", "flow")
 
-    view_model = build_dashboard_view_model(
-        orchestrator,
-        queue_page=queue_page,
-        active_tab=active_tab,
-        e2e_page=e2e_page,
-    )
-
     templates = get_templates()
     template = templates.get_template("issue_row.html")
 
-    rows = []
-    for issue in view_model.issues:
-        html = template.render(
-            issue=issue,
-            active_tab=view_model.active_tab,
-            github_owner=view_model.github_owner,
-            github_repo=view_model.github_repo,
-        )
-        rows.append({
-            "issue_number": issue.get("issue_number"),
-            "html": html,
-        })
+    def _build_rows_sync() -> tuple[Any, list[dict[str, Any]]]:
+        vm = _build_dashboard_vm_sync(orchestrator, queue_page, active_tab, e2e_page)
+        return vm, _render_issue_rows_sync(template, vm)
+
+    view_model, rows = await asyncio.to_thread(_build_rows_sync)
 
     return IssueRowsPayload.model_validate({
         "rows": rows,
@@ -593,9 +702,12 @@ async def get_doctor_dialog() -> DoctorDialogPayload | JSONResponse:
 
 
 @app.get("/api/dialog/session-diagnostics/{issue_number}", response_model=SessionDiagnosticsDialogPayload)
-async def get_session_diagnostics_dialog(issue_number: int) -> SessionDiagnosticsDialogPayload | JSONResponse:
+async def get_session_diagnostics_dialog(
+    issue_number: int,
+    run_dir: str | None = None,
+) -> SessionDiagnosticsDialogPayload | JSONResponse:
     """Get view model for session diagnostics dialog."""
-    response = await get_session_manifest(issue_number)
+    response = await get_session_manifest(issue_number, run_dir=run_dir)
     if response.status_code != 200:
         return response
     payload = _response_json(response)
@@ -921,38 +1033,153 @@ async def refresh_issue(issue_number: int) -> JSONResponse:
     })
 
 
+def _label_manager_for_api() -> LabelManager:
+    deps_lm = getattr(getattr(_orchestrator, "deps", None), "label_manager", None)
+    if isinstance(deps_lm, LabelManager):
+        return deps_lm
+    assert _orchestrator is not None
+    return LabelManager(_orchestrator.config)
+
+
+def _terminate_issue_and_hold(issue_number: int, sessions: list[Any]) -> dict[str, Any]:
+    """Terminate running sessions and apply a hold guard to prevent auto-requeue."""
+    assert _orchestrator is not None
+    from datetime import datetime
+    from ..domain.models import SessionHistoryEntry
+
+    state = _orchestrator.state
+    repo = _orchestrator.repository_host
+    lm = _label_manager_for_api()
+
+    killed_sessions: list[str] = []
+    pr_numbers = sorted(
+        {
+            int(s.pr_number)
+            for s in sessions
+            if getattr(s, "pr_number", None) is not None
+        }
+    )
+
+    errors = _terminate_sessions(sessions=sessions, killed_sessions=killed_sessions)
+    _prune_issue_runtime_state(state=state, issue_number=issue_number)
+    _append_operator_termination_history(
+        state=state,
+        issue_number=issue_number,
+        primary_session=sessions[0],
+        session_entry_cls=SessionHistoryEntry,
+        now=datetime.now(),
+    )
+    state.failed_this_cycle.add(issue_number)
+
+    # Label policy:
+    # - issue: add blocked-failed guard, remove in-progress/pr-pending
+    # - linked PR(s): add blocked-failed and remove needs-rework (scanner trigger)
+    label_ops: list[LabelOperation] = [
+        LabelOperation("add", issue_number, lm.blocked_failed),
+        LabelOperation("remove", issue_number, lm.in_progress),
+        LabelOperation("remove", issue_number, lm.pr_pending),
+    ]
+    for pr_number in pr_numbers:
+        label_ops.extend(
+            [
+                LabelOperation("add", pr_number, lm.blocked_failed),
+                LabelOperation("remove", pr_number, lm.needs_rework),
+            ]
+        )
+    apply_label_operations(
+        repo,
+        label_ops,
+        logger=logger,
+        log_prefix="[terminate]",
+    )
+
+    return {
+        "killed_sessions": killed_sessions,
+        "errors": errors,
+        "hold_label": lm.blocked_failed,
+    }
+
+
+def _terminate_sessions(*, sessions: list[Any], killed_sessions: list[str]) -> list[str]:
+    assert _orchestrator is not None
+    errors: list[str] = []
+    for session in sessions:
+        try:
+            _orchestrator.kill_session(session.terminal_id)
+            killed_sessions.append(session.terminal_id)
+        except Exception as exc:
+            errors.append(f"{session.terminal_id}: {exc}")
+    return errors
+
+
+def _prune_issue_runtime_state(*, state: Any, issue_number: int) -> None:
+    state.active_sessions = [s for s in state.active_sessions if s.issue.number != issue_number]
+    state.pending_reviews = [r for r in state.pending_reviews if r.issue_number != issue_number]
+    state.pending_reworks = [r for r in state.pending_reworks if r.resolve_issue_number() != issue_number]
+    state.pending_triage_reviews = [r for r in state.pending_triage_reviews if r.issue_number != issue_number]
+    state.pending_validation_retries = [r for r in state.pending_validation_retries if r.issue_number != issue_number]
+    state.discovered_reviews = [r for r in state.discovered_reviews if r.issue_number != issue_number]
+    state.discovered_reworks = [r for r in state.discovered_reworks if r.issue_number != issue_number]
+    state.discovered_failures = [r for r in state.discovered_failures if r.issue_number != issue_number]
+    state.immediate_cleanups = [c for c in state.immediate_cleanups if c.issue_number != issue_number]
+
+
+def _resolve_agent_label(primary_session: Any) -> str:
+    agent_label = primary_session.agent_label
+    if agent_label:
+        return str(agent_label)
+    for label in primary_session.issue.labels:
+        if label.startswith("agent:"):
+            return label
+    return "agent:unknown"
+
+
+def _append_operator_termination_history(
+    *,
+    state: Any,
+    issue_number: int,
+    primary_session: Any,
+    session_entry_cls: Any,
+    now: Any,
+) -> None:
+    state.session_history.append(
+        session_entry_cls(
+            issue_number=issue_number,
+            title=primary_session.issue.title,
+            agent_type=_resolve_agent_label(primary_session),
+            status="blocked",
+            runtime_minutes=primary_session.runtime_minutes,
+            status_reason="Terminated by operator",
+            worktree_path=primary_session.worktree_path,
+            completed_at=now,
+        )
+    )
+
+
 @app.post("/api/kill/{issue_number}")
 async def kill_session(issue_number: int) -> JSONResponse:
-    """Force kill a specific session."""
+    """Force terminate an issue session and prevent automatic relaunch."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    # Find the session
-    session = None
-    for s in _orchestrator.state.active_sessions:
-        if s.issue.number == issue_number:
-            session = s
-            break
-
-    if not session:
+    sessions = [s for s in _orchestrator.state.active_sessions if s.issue.number == issue_number]
+    if not sessions:
         return JSONResponse({"error": f"Session #{issue_number} not found"}, status_code=404)
 
-    # Kill the session
-    try:
-        _orchestrator.kill_session(session.terminal_id)
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to kill session: {e}"}, status_code=500)
-
-    # Remove from active sessions
-    _orchestrator.state.active_sessions = [
-        s for s in _orchestrator.state.active_sessions
-        if s.issue.number != issue_number
-    ]
+    terminated = _terminate_issue_and_hold(issue_number, sessions)
+    if not terminated["killed_sessions"]:
+        return JSONResponse(
+            {"error": "Failed to terminate session(s)", "details": terminated["errors"]},
+            status_code=500,
+        )
 
     return JSONResponse({
-        "status": "killed",
+        "status": "terminated",
         "issue_number": issue_number,
-        "title": session.issue.title,
+        "title": sessions[0].issue.title,
+        "killed_sessions": terminated["killed_sessions"],
+        "hold_label": terminated["hold_label"],
+        "errors": terminated["errors"],
     })
 
 
@@ -1018,40 +1245,17 @@ async def get_session_log(issue_number: int) -> JSONResponse:  # noqa: C901 - lo
     """
     from pathlib import Path
 
-    orchestrator = _orchestrator
-    if not orchestrator:
+    if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    def _find_worktree_path() -> Path | None:
-        # Check active sessions first
-        for s in orchestrator.state.active_sessions:
-            if s.issue.number == issue_number:
-                return s.worktree_path
-
-        # If not found, check history
-        for entry in orchestrator.state.session_history:
-            if entry.issue_number == issue_number:
-                return getattr(entry, "worktree_path", None)
-        return None
-
-    worktree_path = _find_worktree_path()
+    context = _resolve_issue_session_context(issue_number)
+    worktree_path = context.worktree_path
 
     if not worktree_path:
-        from ..execution.session_output_adapter import find_run_dir_for_issue
-
-        repo_name = orchestrator.config.repo.split("/")[-1] if orchestrator.config.repo else orchestrator.config.repo_root.name
-        run_dir, worktree_path = find_run_dir_for_issue(
-            _collect_worktree_bases(orchestrator.config),
-            repo_name,
-            issue_number,
-        )
-        if run_dir and worktree_path:
-            worktree_path = Path(worktree_path)
-        else:
-            return JSONResponse({
-                "error": f"No worktree path found for issue #{issue_number}",
-                "hint": "Session may have been cleaned up or never started"
-            }, status_code=404)
+        return JSONResponse({
+            "error": f"No worktree path found for issue #{issue_number}",
+            "hint": "Session may have been cleaned up or never started"
+        }, status_code=404)
 
     # Convert path to Claude's escaped format
     # /path/to/worktree -> -path-to-worktree
@@ -1104,11 +1308,11 @@ async def get_session_log(issue_number: int) -> JSONResponse:  # noqa: C901 - lo
 
 @app.get("/api/log/local/{issue_number}")
 async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format detection and streaming
-    issue_number: int, offset: int = 0, limit: int = 200
+    issue_number: int, offset: int = 0, limit: int = 200, run_dir: str | None = None
 ) -> JSONResponse:
     """Get the local agent UI log for an issue.
 
-    This reads .issue-orchestrator/sessions/<session>/session.log from the worktree.
+    This reads .issue-orchestrator/sessions/<session>/ui-session.log from the worktree.
 
     Args:
         issue_number: Issue number to get log for
@@ -1118,51 +1322,34 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    worktree_path = None
-    session = None
-    for s in _orchestrator.state.active_sessions:
-        if s.issue.number == issue_number:
-            worktree_path = s.worktree_path
-            session = s
-            break
-    if not worktree_path:
-        for entry in _orchestrator.state.session_history:
-            if entry.issue_number == issue_number:
-                worktree_path = getattr(entry, "worktree_path", None)
-                break
+    if not run_dir:
+        return JSONResponse({
+            "error": "run_dir is required",
+            "hint": "Open logs from a run-scoped timeline action.",
+        }, status_code=400)
 
-    if not worktree_path:
-        from ..execution.session_output_adapter import find_run_dir_for_issue
-
-        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
-        _, worktree_path = find_run_dir_for_issue(
-            _collect_worktree_bases(_orchestrator.config),
-            repo_name,
-            issue_number,
-        )
-        if not worktree_path:
-            return JSONResponse({
-                "error": f"No worktree path found for issue #{issue_number}",
-                "hint": "Session may have been cleaned up or never started"
-            }, status_code=404)
-
-    from ..execution.session_output_adapter import FileSystemSessionOutput
-    session_output = FileSystemSessionOutput()
-
-    log_path = None
-    if session:
-        log_path = session_output.get_log_path(worktree_path, session.terminal_id)
-    if not log_path:
-        log_path = session_output.find_latest_session_log_path(worktree_path)
-
-    if not log_path:
+    run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
+    accessor = ManifestAccessor(run_identity)
+    stream_observation = _build_ui_log_stream_observation(run_identity.run_dir, resolved_log_path=None)
+    try:
+        artifact = accessor.get_agent_log(allow_empty=True)
+    except ArtifactNotFoundError as e:
         return JSONResponse({
             "error": "No agent UI log found",
             "hint": "Session may not have started or logging was not enabled",
+            "diagnostic": {
+                "run_dir": str(run_identity.run_dir),
+                "detail": str(e),
+            },
+            "stream_observation": stream_observation,
         }, status_code=404)
+    log_path = artifact.path
+    stream_observation = _build_ui_log_stream_observation(run_identity.run_dir, resolved_log_path=log_path)
 
     try:
-        all_lines = log_path.read_text(errors="ignore").splitlines()
+        raw_lines = log_path.read_text(errors="ignore").splitlines()
+        stream_json_lines = _extract_stream_json_text(raw_lines)
+        all_lines = stream_json_lines if stream_json_lines is not None else raw_lines
         total_lines = len(all_lines)
 
         # If offset specified, return lines from that point
@@ -1194,6 +1381,14 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
         # Remove consecutive duplicate lines (repeated separators, prompts, etc.)
         cleaned_lines = dedupe_consecutive_lines(cleaned_lines)
 
+        # Fail-open for readability: if filtering removed everything but the raw
+        # run-scoped log has content, show minimally cleaned raw lines instead of
+        # presenting an empty UI session.
+        if not cleaned_lines and lines:
+            fallback_lines = [clean_terminal_line(line).strip() for line in lines]
+            fallback_lines = [line for line in fallback_lines if line]
+            cleaned_lines = dedupe_consecutive_lines(fallback_lines)
+
         return JSONResponse({
             "issue_number": issue_number,
             "log_path": str(log_path),
@@ -1201,9 +1396,50 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
             "offset": offset,
             "truncated": truncated,
             "lines": cleaned_lines,
+            "stream_observation": stream_observation,
         })
     except Exception as e:
         return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
+
+
+def _build_ui_log_stream_observation(run_dir: Path, *, resolved_log_path: Path | None) -> dict[str, Any]:
+    """Build lightweight file-stat telemetry for run-scoped UI log streaming."""
+    ui_log = run_dir / "ui-session.log"
+    provider_stdout = run_dir / "provider-runner" / "stdout.log"
+    provider_stderr = run_dir / "provider-runner" / "stderr.log"
+    return {
+        "run_dir": str(run_dir),
+        "resolved_log_path": str(resolved_log_path) if resolved_log_path else None,
+        "ui_log": _stream_file_observation(ui_log),
+        "provider_stdout": _stream_file_observation(provider_stdout),
+        "provider_stderr": _stream_file_observation(provider_stderr),
+    }
+
+
+def _stream_file_observation(path: Path) -> dict[str, Any]:
+    data: dict[str, Any] = {
+        "path": str(path),
+        "exists": False,
+        "is_symlink": False,
+        "symlink_target": None,
+        "bytes": None,
+        "mtime_epoch": None,
+    }
+    try:
+        data["is_symlink"] = path.is_symlink()
+        if data["is_symlink"]:
+            try:
+                data["symlink_target"] = str(path.resolve())
+            except OSError:
+                data["symlink_target"] = None
+        if path.exists():
+            stat = path.stat()
+            data["exists"] = True
+            data["bytes"] = int(stat.st_size)
+            data["mtime_epoch"] = float(stat.st_mtime)
+    except OSError:
+        return data
+    return data
 
 
 def _manifest_response(
@@ -1243,40 +1479,33 @@ def _manifest_response(
 
 
 @app.get("/api/session/manifest/{issue_number}")
-async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901, PLR0912 - manifest lookup with multiple path strategies
+async def get_session_manifest(
+    issue_number: int,
+    run_dir: str | None = None,
+) -> JSONResponse:  # noqa: C901, PLR0912 - manifest lookup with multiple path strategies
     """Get the session manifest for an issue."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    session = None
-    worktree_path = None
-    for s in _orchestrator.state.active_sessions:
-        if s.issue.number == issue_number:
-            session = s
-            worktree_path = s.worktree_path
-            break
-    if not worktree_path:
-        for entry in _orchestrator.state.session_history:
-            if entry.issue_number == issue_number:
-                worktree_path = getattr(entry, "worktree_path", None)
-                break
+    requested_run_dir = run_dir
+    context = _resolve_issue_session_context(issue_number)
+    worktree_path = context.worktree_path
+    session_name = context.session_name
+    resolved_run_dir = context.run_dir
 
-    if not worktree_path:
-        from ..execution.session_output_adapter import (
-            FileSystemSessionOutput,
-            find_run_dir_for_issue,
-        )
+    if requested_run_dir:
+        candidate = Path(requested_run_dir)
+        if candidate.exists():
+            resolved_run_dir = candidate
 
-        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
-        run_dir, worktree_path = find_run_dir_for_issue(
-            _collect_worktree_bases(_orchestrator.config),
-            repo_name,
-            issue_number,
-        )
-        if run_dir:
-            session_output_manager = FileSystemSessionOutput()
-            session_output_manager.attach_claude_log(run_dir)
-            return _manifest_response(run_dir, session.terminal_id if session else None)
+    if resolved_run_dir:
+        from ..execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output_manager = FileSystemSessionOutput()
+        if not session_name:
+            session_name = session_output_manager.session_name_from_path(str(resolved_run_dir))
+        session_output_manager.attach_claude_log(resolved_run_dir)
+        return _manifest_response(resolved_run_dir, session_name)
 
     if not worktree_path:
         return JSONResponse({
@@ -1286,18 +1515,18 @@ async def get_session_manifest(issue_number: int) -> JSONResponse:  # noqa: C901
 
     from ..execution.session_output_adapter import FileSystemSessionOutput
     session_output_helper = FileSystemSessionOutput()
-    run_dir = session_output_helper.find_run_dir(
+    resolved_run_dir = session_output_helper.find_run_dir_for_issue(
         worktree_path,
-        session_name=session.terminal_id if session else None,
+        issue_number,
     )
-    if not run_dir:
+    if not resolved_run_dir:
         return JSONResponse({
             "error": "No session run found",
             "hint": "Session may not have started or output was removed",
         }, status_code=404)
-    session_output_helper.attach_claude_log(run_dir)
+    session_output_helper.attach_claude_log(resolved_run_dir)
 
-    return _manifest_response(run_dir, session.terminal_id if session else None)
+    return _manifest_response(resolved_run_dir, session_name)
 
 
 @app.get("/api/session/worktree/{issue_number}")
@@ -1306,29 +1535,8 @@ async def get_session_worktree(issue_number: int) -> JSONResponse:  # noqa: C901
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    session = None
-    worktree_path = None
-    for s in _orchestrator.state.active_sessions:
-        if s.issue.number == issue_number:
-            session = s
-            worktree_path = s.worktree_path
-            break
-
-    if not worktree_path:
-        for entry in _orchestrator.state.session_history:
-            if entry.issue_number == issue_number:
-                worktree_path = getattr(entry, "worktree_path", None)
-                break
-
-    if not worktree_path:
-        from ..execution.session_output_adapter import find_run_dir_for_issue
-
-        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
-        _, worktree_path = find_run_dir_for_issue(
-            _collect_worktree_bases(_orchestrator.config),
-            repo_name,
-            issue_number,
-        )
+    context = _resolve_issue_session_context(issue_number)
+    worktree_path = context.worktree_path
 
     if not worktree_path:
         return JSONResponse({
@@ -1338,7 +1546,7 @@ async def get_session_worktree(issue_number: int) -> JSONResponse:  # noqa: C901
     return JSONResponse({
         "issue_number": issue_number,
         "worktree_path": str(worktree_path),
-        "session_name": session.terminal_id if session else None,
+        "session_name": context.session_name,
     })
 
 
@@ -1352,28 +1560,10 @@ async def get_session_phases(issue_number: int) -> JSONResponse:  # noqa: C901 -
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..execution.session_output_adapter import FileSystemSessionOutput, find_run_dir_for_issue
+    from ..execution.session_output_adapter import FileSystemSessionOutput
 
-    # Find worktree for this issue
-    worktree_path = None
-    for s in _orchestrator.state.active_sessions:
-        if s.issue.number == issue_number:
-            worktree_path = s.worktree_path
-            break
-
-    if not worktree_path:
-        for entry in _orchestrator.state.session_history:
-            if entry.issue_number == issue_number:
-                worktree_path = getattr(entry, "worktree_path", None)
-                break
-
-    if not worktree_path:
-        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
-        _, worktree_path = find_run_dir_for_issue(
-            _collect_worktree_bases(_orchestrator.config),
-            repo_name,
-            issue_number,
-        )
+    context = _resolve_issue_session_context(issue_number)
+    worktree_path = context.worktree_path
 
     if not worktree_path:
         return JSONResponse({
@@ -1423,11 +1613,30 @@ async def get_issue_timeline(issue_number: int) -> JSONResponse:
     reader = _orchestrator.deps.timeline_reader
     stream = reader.read(issue_number, limit=2000)
     payload = stream.to_dict()
-    events = _filter_timeline_events(payload.get("events", []))
+    raw_events = payload.get("events", [])
+    filtered_events = _filter_timeline_events(raw_events)
+    events, dropped_missing_semantics = _retain_semantic_timeline_events(filtered_events)
     events = _decorate_timeline_events(events, issue_number)
     payload["events"] = events
     payload["phase_toc"] = _build_phase_toc(events)
     payload["cycles"] = _build_timeline_cycles(events)
+    if is_timeline_trace_enabled():
+        logger.info(
+            "[TIMELINE] api.timeline issue=%s raw=%s filtered=%s semantic=%s dropped_missing_semantics=%s cycles=%s",
+            issue_number,
+            len(raw_events),
+            len(filtered_events),
+            len(events),
+            dropped_missing_semantics,
+            len(payload["cycles"]) if isinstance(payload.get("cycles"), list) else 0,
+        )
+    diagnostic = _timeline_missing_diagnostic(
+        issue_number,
+        events,
+        dropped_missing_semantics=dropped_missing_semantics,
+    )
+    if diagnostic:
+        payload["diagnostic"] = diagnostic
     return JSONResponse(payload)
 
 
@@ -1440,7 +1649,9 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
     reader = _orchestrator.deps.timeline_reader
     stream = reader.read(issue_number, limit=2000)
     timeline = stream.to_dict()
-    events = _filter_timeline_events(timeline.get("events", []))
+    raw_events = timeline.get("events", [])
+    filtered_events = _filter_timeline_events(raw_events)
+    events, dropped_missing_semantics = _retain_semantic_timeline_events(filtered_events)
     events = _decorate_timeline_events(events, issue_number)
     phase_toc = _build_phase_toc(events)
     cycles = _build_timeline_cycles(events)
@@ -1456,6 +1667,36 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
         cycles=cycles,
         context=context,
     )
+    if is_timeline_trace_enabled():
+        runs = payload.get("runs")
+        run_count = len(runs) if isinstance(runs, list) else 0
+        cycle_count = sum(
+            len(run.get("cycles", []))
+            for run in runs
+            if isinstance(run, dict) and isinstance(run.get("cycles"), list)
+        ) if isinstance(runs, list) else 0
+        logger.info(
+            "[TIMELINE] api.issue_detail issue=%s raw=%s filtered=%s semantic=%s dropped_missing_semantics=%s runs=%s cycles=%s",
+            issue_number,
+            len(raw_events),
+            len(filtered_events),
+            len(events),
+            dropped_missing_semantics,
+            run_count,
+            cycle_count,
+        )
+    diagnostic = _timeline_missing_diagnostic(
+        issue_number,
+        events,
+        dropped_missing_semantics=dropped_missing_semantics,
+    )
+    if diagnostic:
+        summary = payload.get("summary")
+        if isinstance(summary, dict):
+            summary["timeline_diagnostic"] = diagnostic
+        payload["status_explanation"] = (
+            f"Timeline data missing ({', '.join(diagnostic.get('signals', []))})"
+        )
     return IssueDetailPayload.model_validate(payload)
 
 
@@ -1586,15 +1827,20 @@ def _build_timeline_cycles(events: list[dict[str, Any]]) -> list[dict[str, Any]]
     cycles: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     cycle_number = 0
-    cycle_phases = {"in_progress", "reviewing", "rework", "triage"}
+    cycle_phases = {"in_progress", "reviewing", "rework", "triage", "orchestrator"}
+    cycle_start_events = {"session.started", "rework.started", "review.started", "triage.launching"}
 
     for event in events:
+        event_name = str(event.get("event") or "")
         phase = str(event.get("phase") or "system")
         if phase not in cycle_phases:
             continue
 
+        # Do not start a new cycle from orchestration-only events.
+        if current is None and event_name not in cycle_start_events:
+            continue
+
         # A new session.started event means a new cycle — close the previous one
-        event_name = str(event.get("event") or "")
         if current is not None and event_name == "session.started":
             cycles.append(current)
             current = None
@@ -1630,43 +1876,243 @@ def _latest_history_entries(session_history: list[Any], limit: int = 50) -> list
     return latest_history_entries_by_issue(session_history, limit=limit)
 
 
+def _timeline_missing_diagnostic(
+    issue_number: int,
+    events: list[dict[str, Any]],
+    *,
+    dropped_missing_semantics: int = 0,
+) -> dict[str, Any] | None:
+    """Return diagnostic details when timeline is unexpectedly empty."""
+    if events or not _orchestrator:
+        return None
+
+    state = _orchestrator.state
+    signals: list[str] = []
+
+    if any(session.issue.number == issue_number for session in state.active_sessions):
+        signals.append("active_session_present")
+    if any(entry.issue_number == issue_number for entry in state.session_history):
+        signals.append("session_history_present")
+    if any(review.issue_number == issue_number for review in state.pending_reviews):
+        signals.append("pending_review_present")
+    if any(rework.resolve_issue_number() == issue_number for rework in state.pending_reworks):
+        signals.append("pending_rework_present")
+    if issue_number in state.completed_today:
+        signals.append("completed_today_present")
+
+    # Fall back to persisted run presence as a stronger signal.
+    context = _resolve_issue_session_context(issue_number)
+    if context.run_dir is not None:
+        signals.append("session_run_present")
+
+    if dropped_missing_semantics > 0:
+        signals.append("logical_semantics_missing")
+
+    if not signals:
+        return None
+
+    logger.warning(
+        "Timeline missing for issue #%s despite signals: %s",
+        issue_number,
+        ", ".join(signals),
+    )
+    from ..infra.repo_identity import state_dir
+
+    timeline_db_path = state_dir(_orchestrator.config.repo_root) / "timeline.sqlite"
+    state = "logical_semantics_missing" if dropped_missing_semantics > 0 else "expected_history_missing"
+    return {
+        "state": state,
+        "signals": signals,
+        "expected_timeline_store": str(timeline_db_path),
+        "expected_timeline_store_exists": timeline_db_path.exists(),
+        "resolved_run_dir": str(context.run_dir) if context.run_dir else None,
+        "dropped_missing_semantics": dropped_missing_semantics,
+    }
+
+
+def _retain_semantic_timeline_events(events: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """Keep only events with required logical semantics for correctness-first rendering."""
+    kept: list[dict[str, Any]] = []
+    dropped = 0
+    for event in events:
+        timeline_schema_version = event.get("timeline_schema_version")
+        if (
+            isinstance(timeline_schema_version, int)
+            and timeline_schema_version == TIMELINE_SCHEMA_VERSION
+            and
+            isinstance(event.get("logical_run"), int)
+            and isinstance(event.get("logical_cycle"), int)
+            and isinstance(event.get("logical_phase"), str)
+            and bool(str(event.get("logical_phase") or "").strip())
+        ):
+            kept.append(event)
+        else:
+            dropped += 1
+    return kept, dropped
+
+
+def _latest_session_history_entry(issue_number: int) -> Any | None:
+    """Return the most recent history entry for an issue."""
+    if not _orchestrator:
+        return None
+    for entry in reversed(_orchestrator.state.session_history):
+        if entry.issue_number == issue_number:
+            return entry
+    return None
+
+
+def _resolve_issue_session_context(issue_number: int) -> IssueSessionContext:
+    """Resolve current issue session context from active or local history."""
+    if not _orchestrator:
+        return IssueSessionContext()
+
+    from ..execution.session_output_adapter import FileSystemSessionOutput
+
+    session_output = FileSystemSessionOutput()
+
+    # Active session is authoritative.
+    for session in _orchestrator.state.active_sessions:
+        if session.issue.number == issue_number:
+            run_dir = session_output.find_run_dir(
+                session.worktree_path,
+                session_name=session.terminal_id,
+            )
+            return IssueSessionContext(
+                worktree_path=session.worktree_path,
+                session_name=session.terminal_id,
+                run_dir=run_dir,
+            )
+
+    # Otherwise use the latest matching history entry.
+    history_entry = _latest_session_history_entry(issue_number)
+    if history_entry:
+        worktree_value = getattr(history_entry, "worktree_path", None)
+        worktree_path = Path(worktree_value) if worktree_value else None
+        run_dir = None
+        if worktree_path:
+            run_dir = session_output.find_run_dir_for_issue(worktree_path, issue_number)
+        session_name = session_output.session_name_from_path(str(run_dir)) if run_dir else None
+        return IssueSessionContext(
+            worktree_path=worktree_path,
+            session_name=session_name,
+            run_dir=run_dir,
+        )
+
+    # Fail-fast: do not scan sibling worktrees/repos for session state.
+    return IssueSessionContext()
+
+
 def _filter_timeline_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop high-volume low-signal events from timeline payloads."""
-    return [
-        event
-        for event in events
-        if str(event.get("event")) not in _NOISY_TIMELINE_EVENTS
-    ]
+    filtered: list[dict[str, Any]] = []
+    for event in events:
+        event_name = str(event.get("event"))
+        if event_name in _NOISY_TIMELINE_EVENTS and not _is_high_signal_timeline_event(event):
+            continue
+        filtered.append(event)
+    return filtered
+
+
+def _is_high_signal_timeline_event(event: dict[str, Any]) -> bool:
+    """Return True for otherwise-noisy events that affect lifecycle semantics."""
+    event_name = str(event.get("event"))
+    if event_name != "issue.labels_changed":
+        return False
+    removed = event.get("removed")
+    if not isinstance(removed, list):
+        return False
+    return any(
+        isinstance(label, str) and label.split(":", 1)[0] == "pr-pending"
+        for label in removed
+    )
 
 
 def _decorate_timeline_events(events: list[dict[str, Any]], issue_number: int) -> list[dict[str, Any]]:
     decorated: list[dict[str, Any]] = []
     for event in events:
         event_with_actions = dict(event)
-        event_with_actions["actions"] = _timeline_event_actions(event, issue_number)
+        try:
+            event_with_actions["actions"] = _timeline_event_actions(event, issue_number)
+        except Exception as exc:
+            # UI should keep rendering even if one event's optional actions cannot be resolved.
+            logger.warning(
+                "Timeline action decoration failed (issue=%s event=%s run_dir=%s): %s",
+                issue_number,
+                event.get("event"),
+                event.get("run_dir"),
+                exc,
+            )
+            error_message = str(exc)
+            fallback_actions = _timeline_event_fallback_actions(event, issue_number)
+            fallback_actions.append(
+                {
+                    "type": "show_actions_error",
+                    "label": "What is missing?",
+                    "issue_number": issue_number,
+                    "error_message": error_message,
+                    "error_messages": [error_message],
+                }
+            )
+            event_with_actions["actions"] = fallback_actions
+            event_with_actions["actions_error"] = error_message
         decorated.append(event_with_actions)
     return decorated
 
 
+def _timeline_event_fallback_actions(event: dict[str, Any], issue_number: int) -> list[dict[str, Any]]:
+    """Build safe fallback actions when strict run-scoped decoration fails."""
+    actions: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def _add_action(action: dict[str, Any], dedupe_value: str) -> None:
+        action_type = str(action.get("type") or "")
+        key = (action_type, dedupe_value)
+        if key in seen:
+            return
+        seen.add(key)
+        actions.append(action)
+
+    # Keep direct artifact access where possible.
+    _timeline_event_artifact_actions(
+        event=event,
+        issue_number=issue_number,
+        add_action=_add_action,
+    )
+    # Always keep diagnostics entrypoints, but avoid ambiguous run-scoped log actions.
+    _timeline_event_default_actions(
+        issue_number=issue_number,
+        include_run_scoped=False,
+        add_action=_add_action,
+    )
+    return actions
+
+
 def _timeline_event_recommended_actions(
     *,
+    event: dict[str, Any],
     event_name: str,
     issue_number: int,
+    agent_log_label: str = "View UI Session",
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
     """Add event-specific suggested actions."""
+    if bool(event.get("review_oriented")) or is_review_event_name(event_name):
+        add_action(
+            {"type": "open_review_feedback", "label": "View Review Feedback", "issue_number": issue_number},
+            f"review-feedback:{issue_number}",
+        )
     if event_name in _TIMELINE_START_EVENTS:
         add_action(
-            {"type": "open_agent_log", "label": "View Agent UI Log", "issue_number": issue_number},
+            {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
             f"agent:{issue_number}",
         )
         add_action(
-            {"type": "view_claude_log", "label": "View Claude Log", "issue_number": issue_number},
+            {"type": "view_claude_log", "label": "View Claude Session Log", "issue_number": issue_number},
             f"claude:{issue_number}",
         )
     if event_name.startswith("validation."):
         add_action(
-            {"type": "open_orchestrator_log", "label": "View Orchestrator Log", "issue_number": issue_number},
+            {"type": "open_orchestrator_log", "label": "Open Orchestrator Log for This Issue ↗", "issue_number": issue_number},
             f"orchestrator:{issue_number}",
         )
     if event_name in _TIMELINE_FAILURE_EVENTS:
@@ -1718,19 +2164,22 @@ def _timeline_event_artifact_actions(
 def _timeline_event_default_actions(
     *,
     issue_number: int,
+    agent_log_label: str = "View UI Session",
+    include_run_scoped: bool = True,
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
     """Add default diagnostics and log actions shown for every timeline event."""
+    if include_run_scoped:
+        add_action(
+            {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
+            f"agent:{issue_number}",
+        )
+        add_action(
+            {"type": "view_claude_log", "label": "View Claude Session Log", "issue_number": issue_number},
+            f"claude:{issue_number}",
+        )
     add_action(
-        {"type": "open_agent_log", "label": "View Agent UI Log", "issue_number": issue_number},
-        f"agent:{issue_number}",
-    )
-    add_action(
-        {"type": "view_claude_log", "label": "View Claude Log", "issue_number": issue_number},
-        f"claude:{issue_number}",
-    )
-    add_action(
-        {"type": "open_orchestrator_log", "label": "View Orchestrator Log", "issue_number": issue_number},
+        {"type": "open_orchestrator_log", "label": "Open Orchestrator Log for This Issue ↗", "issue_number": issue_number},
         f"orchestrator:{issue_number}",
     )
     add_action(
@@ -1743,22 +2192,143 @@ def _timeline_event_default_actions(
     )
 
 
+def _agent_log_is_usable(log_path: Path, *, event_name: str) -> bool:
+    """Return True when run-scoped agent log should be exposed in timeline actions."""
+    try:
+        if not log_path.exists():
+            return False
+        # Expose UI session whenever the run-scoped log artifact exists.
+        # UI handles empty files with a waiting message until first output arrives.
+        return True
+    except OSError:
+        return False
+
+
+def _validate_timeline_event_requirements(
+    *,
+    event: dict[str, Any],
+    issue_number: int,
+    event_name: str,
+    timeline_schema_version: int,
+    event_run_dir: str,
+) -> None:
+    if timeline_schema_version < MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION:
+        raise RuntimeError(
+            "timeline event has unsupported schema version: "
+            f"issue={issue_number} event={event_name} version={timeline_schema_version} "
+            f"min_supported={MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION}"
+        )
+    if _timeline_event_requires_run_dir(event) and not event_run_dir:
+        raise RuntimeError(
+            f"timeline event missing required run_dir: issue={issue_number} event={event_name}"
+        )
+
+
+def _validated_run_scoped_artifact(
+    *,
+    action_type: str,
+    issue_number: int,
+    event_name: str,
+    event_run_dir: str,
+    run_scoped_validated: set[str],
+) -> str | None:
+    if action_type in run_scoped_validated:
+        return None
+    if not event_run_dir:
+        raise RuntimeError(
+            f"timeline run-scoped action requires run_dir: issue={issue_number} event={event_name} action={action_type}"
+        )
+    accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(event_run_dir)))
+    if action_type == "open_agent_log":
+        artifact = accessor.get_agent_log(allow_empty=True)
+        if not _agent_log_is_usable(artifact.path, event_name=event_name):
+            raise RuntimeError(
+                f"run-scoped agent log is empty/unusable: issue={issue_number} event={event_name} run_dir={event_run_dir}"
+            )
+    elif action_type == "view_claude_log":
+        artifact = accessor.get_claude_log()
+    else:
+        raise RuntimeError(
+            f"unsupported run-scoped action type: issue={issue_number} event={event_name} action={action_type}"
+        )
+    if not artifact.path.exists():
+        raise RuntimeError(
+            f"resolved artifact path missing: issue={issue_number} event={event_name} action={action_type} run_dir={event_run_dir}"
+        )
+    run_scoped_validated.add(action_type)
+    return None
+
+
+def _decorate_timeline_action_with_run_dir(action: dict[str, Any], event_run_dir: str) -> dict[str, Any]:
+    if not event_run_dir:
+        return action
+    if str(action.get("type") or "") in {
+        "open_agent_log",
+        "view_claude_log",
+        "open_orchestrator_log",
+        "open_session_diagnostics",
+    }:
+        return {**action, "run_dir": event_run_dir}
+    return action
+
+
 def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+    action_warnings: list[str] = []
     event_name = str(event.get("event") or "")
+    agent_log_label = _agent_log_label_for_event(event)
+    event_run_dir = str(event.get("run_dir") or "")
+    timeline_schema_version_raw = event.get("timeline_schema_version")
+    timeline_schema_version = timeline_schema_version_raw if isinstance(timeline_schema_version_raw, int) else 0
+    run_scoped_action_types = {
+        "open_agent_log",
+        "view_claude_log",
+    }
+    run_scoped_validated: set[str] = set()
 
     def _add_action(action: dict[str, Any], dedupe_value: str) -> None:
         action_type = str(action.get("type") or "")
+        if action_type in run_scoped_action_types and not event_run_dir:
+            raise RuntimeError(
+                f"timeline run-scoped action missing run_dir: issue={issue_number} event={event_name} action={action_type}"
+            )
+        if action_type in run_scoped_action_types:
+            try:
+                _validated_run_scoped_artifact(
+                    action_type=action_type,
+                    issue_number=issue_number,
+                    event_name=event_name,
+                    event_run_dir=event_run_dir,
+                    run_scoped_validated=run_scoped_validated,
+                )
+            except Exception as exc:
+                if action_type == "view_claude_log":
+                    if isinstance(exc, ArtifactNotFoundError) and str(exc).strip() == "manifest missing claude_log_path":
+                        return
+                    action_warnings.append(f"{action_type} unavailable: {exc}")
+                    return
+                raise
+        action = _decorate_timeline_action_with_run_dir(action, event_run_dir)
         key = (action_type, dedupe_value)
         if key in seen:
             return
         seen.add(key)
         actions.append(action)
 
+    _validate_timeline_event_requirements(
+        event=event,
+        issue_number=issue_number,
+        event_name=event_name,
+        timeline_schema_version=timeline_schema_version,
+        event_run_dir=event_run_dir,
+    )
+
     _timeline_event_recommended_actions(
+        event=event,
         event_name=event_name,
         issue_number=issue_number,
+        agent_log_label=agent_log_label,
         add_action=_add_action,
     )
     _timeline_event_artifact_actions(
@@ -1768,9 +2338,60 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
     )
     _timeline_event_default_actions(
         issue_number=issue_number,
+        agent_log_label=agent_log_label,
+        include_run_scoped=bool(event_run_dir),
         add_action=_add_action,
     )
+    if action_warnings:
+        # Preserve all missing-item diagnostics for this event in one explicit action.
+        joined = " | ".join(action_warnings)
+        _add_action(
+            {
+                "type": "show_actions_error",
+                "label": "What is missing?",
+                "issue_number": issue_number,
+                "error_message": joined,
+                "error_messages": action_warnings,
+            },
+            f"missing:{issue_number}:{joined}",
+        )
     return actions
+
+
+def _timeline_event_requires_run_dir(event: dict[str, Any]) -> bool:
+    """Return True when a timeline event is expected to be tied to a run directory."""
+    event_name = str(event.get("event") or "")
+    return (
+        event_name in _TIMELINE_START_EVENTS
+        or is_session_event_name(event_name)
+        or bool(event.get("review_oriented"))
+        or is_rework_event_name(event_name)
+    )
+
+
+def _agent_log_label_for_event(event: dict[str, Any]) -> str:
+    """Describe which session log the user will see for this event."""
+    event_name = str(event.get("event") or "")
+    task = str(event.get("task") or "").strip().lower()
+    intent = str(event.get("event_intent") or "")
+    if intent == EventIntent.REVIEW.value or bool(event.get("review_oriented")) or is_review_oriented_event(event_name=event_name, task=task):
+        return "View Reviewer UI Session"
+    if intent == EventIntent.REWORK.value or is_rework_event_name(event_name) or task == "rework":
+        return "View Rework UI Session"
+    if intent == EventIntent.CODING.value or is_session_event_name(event_name) or task in {"code", "coding"}:
+        return "View Coding UI Session"
+    return "View UI Session"
+
+
+def _worktree_path_from_run_dir(run_dir: Path) -> Path | None:
+    """Infer worktree root from a run directory path."""
+    parts = run_dir.resolve().parts
+    if ".issue-orchestrator" not in parts:
+        return None
+    idx = parts.index(".issue-orchestrator")
+    if idx <= 0:
+        return None
+    return Path(*parts[:idx])
 
 
 def _issue_title_for(issue_number: int) -> str:
@@ -1782,7 +2403,7 @@ def _issue_title_for(issue_number: int) -> str:
     for issue in _orchestrator.state.cached_queue_issues:
         if issue.number == issue_number:
             return issue.title
-    for entry in _orchestrator.state.session_history:
+    for entry in reversed(_orchestrator.state.session_history):
         if entry.issue_number == issue_number:
             return entry.title
     return f"Issue #{issue_number}"
@@ -1813,7 +2434,7 @@ def _phase_status_icon(status: str) -> str:
 
 
 @app.get("/api/session/orchestrator-log/{issue_number}")
-async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:  # noqa: C901, PLR0912 - log filtering with pattern matching
+async def get_filtered_orchestrator_log(issue_number: int, run_dir: str | None = None) -> JSONResponse:  # noqa: C901, PLR0912 - log filtering with pattern matching
     """Generate and return a filtered orchestrator log for an issue.
 
     This generates the log on demand, filtering to entries relevant to the issue.
@@ -1822,37 +2443,23 @@ async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:  # n
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..execution.session_output_adapter import FileSystemSessionOutput, find_run_dir_for_issue
+    from ..execution.session_output_adapter import FileSystemSessionOutput
     from ..infra.logging_config import get_repo_log_path
 
     session_output_util = FileSystemSessionOutput()
 
-    # Find the session/worktree for this issue
-    worktree_path = None
-    session_name = None
-    for s in _orchestrator.state.active_sessions:
-        if s.issue.number == issue_number:
-            worktree_path = s.worktree_path
-            session_name = s.terminal_id
-            break
-
-    if not worktree_path:
-        for entry in _orchestrator.state.session_history:
-            if entry.issue_number == issue_number:
-                worktree_path = getattr(entry, "worktree_path", None)
-                session_name = getattr(entry, "session_name", None)
-                break
-
-    if not worktree_path:
-        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
-        run_dir, worktree_path = find_run_dir_for_issue(
-            _collect_worktree_bases(_orchestrator.config),
-            repo_name,
-            issue_number,
-        )
-        if run_dir:
-            # Try to extract session name from run dir
-            session_name = session_output_util.session_name_from_path(str(run_dir))
+    context = _resolve_issue_session_context(issue_number)
+    worktree_path = context.worktree_path
+    session_name = context.session_name
+    resolved_run_dir = context.run_dir
+    if run_dir:
+        candidate = Path(run_dir)
+        if candidate.exists():
+            resolved_run_dir = candidate
+            inferred_worktree = _worktree_path_from_run_dir(candidate)
+            if inferred_worktree:
+                worktree_path = inferred_worktree
+            session_name = session_output_util.session_name_from_path(str(candidate))
 
     if not worktree_path:
         return JSONResponse({
@@ -1860,7 +2467,12 @@ async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:  # n
         }, status_code=404)
 
     if not session_name:
-        session_name = f"issue-{issue_number}"
+        session_name = session_output_util.session_name_from_path(str(resolved_run_dir)) if resolved_run_dir else None
+    if not session_name:
+        return JSONResponse({
+            "error": "Could not determine session name for issue log filtering",
+            "worktree_path": str(worktree_path),
+        }, status_code=500)
 
     # Get the orchestrator log path
     log_path = get_repo_log_path(_orchestrator.config.repo_root)
@@ -1871,14 +2483,15 @@ async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:  # n
         }, status_code=404)
 
     # Generate the filtered log
-    run_dir = session_output_util.find_run_dir(worktree_path, session_name)
-    if not run_dir:
+    if not resolved_run_dir:
+        resolved_run_dir = session_output_util.find_run_dir_for_issue(worktree_path, issue_number)
+    if not resolved_run_dir:
         return JSONResponse({
             "error": "Could not find session run directory",
             "worktree_path": str(worktree_path),
         }, status_code=500)
     tail_path = session_output_util.write_orchestrator_tail(
-        run_dir,
+        resolved_run_dir,
         log_path,
         issue_number,
         session_name,
@@ -1887,8 +2500,7 @@ async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:  # n
 
     if not tail_path:
         return JSONResponse({
-            "error": "Could not generate filtered log",
-            "full_log_path": str(log_path),
+            "error": f"No issue-scoped orchestrator log entries found for issue #{issue_number}",
         }, status_code=500)
 
     return JSONResponse({
@@ -1900,7 +2512,7 @@ async def get_filtered_orchestrator_log(issue_number: int) -> JSONResponse:  # n
 
 @app.get("/api/session/claude-log/{issue_number}")
 async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval with multiple format handling
-    issue_number: int, limit: int = 200
+    issue_number: int, limit: int = 200, run_dir: str | None = None
 ) -> JSONResponse:
     """Fetch and parse Claude session log for viewing in the dashboard.
 
@@ -1908,54 +2520,25 @@ async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval
     """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
-
-    from ..domain.run_manifest import RunManifest
-    from ..execution.session_output_adapter import FileSystemSessionOutput, find_run_dir_for_issue
-
-    session_output_mgr = FileSystemSessionOutput()
-
-    # Find the run directory for this issue
-    worktree_path = None
-    for s in _orchestrator.state.active_sessions:
-        if s.issue.number == issue_number:
-            worktree_path = s.worktree_path
-            break
-
-    if not worktree_path:
-        for entry in _orchestrator.state.session_history:
-            if entry.issue_number == issue_number:
-                worktree_path = getattr(entry, "worktree_path", None)
-                break
-
-    run_dir = None
-    if worktree_path:
-        run_dir = session_output_mgr.find_run_dir(Path(worktree_path))
-
     if not run_dir:
-        repo_name = _orchestrator.config.repo.split("/")[-1] if _orchestrator.config.repo else _orchestrator.config.repo_root.name
-        run_dir, worktree_path = find_run_dir_for_issue(
-            _collect_worktree_bases(_orchestrator.config),
-            repo_name,
-            issue_number,
-        )
-
-    if not run_dir:
-        return JSONResponse({"error": f"No session found for issue #{issue_number}"}, status_code=404)
-
-    # Get claude_log_path from manifest via RunManifest
+        return JSONResponse({
+            "error": "run_dir is required",
+            "hint": "Open Claude log from a run-scoped timeline action.",
+        }, status_code=400)
+    run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
+    accessor = ManifestAccessor(run_identity)
     try:
-        manifest = RunManifest.load(run_dir)
-    except FileNotFoundError:
-        return JSONResponse({"error": "Session manifest not found"}, status_code=404)
-    except Exception as e:
-        return JSONResponse({"error": f"Failed to read manifest: {e}"}, status_code=500)
-
-    if not manifest.claude_log_path:
-        return JSONResponse({"error": "No Claude log path in manifest"}, status_code=404)
-
-    log_path = Path(manifest.claude_log_path)
-    if not log_path.exists():
-        return JSONResponse({"error": f"Claude log file not found: {manifest.claude_log_path}"}, status_code=404)
+        artifact = accessor.get_claude_log()
+    except ArtifactNotFoundError as e:
+        return JSONResponse(
+            {
+                "error": "Claude log not found",
+                "run_dir": str(run_identity.run_dir),
+                "detail": str(e),
+            },
+            status_code=404,
+        )
+    log_path = artifact.path
 
     # Parse JSONL file
     entries = []
@@ -1978,9 +2561,79 @@ async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval
     return JSONResponse({
         "log_path": str(log_path),
         "issue_number": issue_number,
+        "run_dir": str(run_identity.run_dir),
         "entry_count": len(entries),
         "entries": entries,
     })
+
+
+def _latest_review_exchange_prompt(run_dir: Path) -> Path | None:
+    """Return newest review-exchange prompt artifact under run_dir if present."""
+    exchange_root = run_dir / "review-exchange"
+    if not exchange_root.exists():
+        return None
+    candidates = sorted(
+        list(exchange_root.glob("round-*/coder-prompt.txt"))
+        + list(exchange_root.glob("round-*/reviewer-prompt.txt")),
+        key=lambda p: p.stat().st_mtime if p.exists() else 0,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
+
+
+@app.get("/api/session/prompt/{issue_number}")
+async def get_session_prompt_content(issue_number: int, run_dir: str | None = None) -> JSONResponse:
+    """Return run-scoped prompt content for a session."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+    if not run_dir:
+        return JSONResponse(
+            {
+                "error": "run_dir is required",
+                "hint": "Open prompt from a run-scoped timeline action.",
+            },
+            status_code=400,
+        )
+
+    run_path = Path(run_dir)
+    if not run_path.exists():
+        return JSONResponse({"error": f"run_dir does not exist: {run_dir}"}, status_code=404)
+
+    from ..domain.run_manifest import RunManifest
+    from ..execution.session_output_adapter import SESSION_PROMPT_NAME
+
+    manifest_prompt_path: Path | None = None
+    try:
+        manifest = RunManifest.load(run_path)
+        session_prompt_path = manifest.to_dict().get("session_prompt_path")
+        if isinstance(session_prompt_path, str) and session_prompt_path:
+            manifest_prompt_path = Path(session_prompt_path)
+    except Exception:
+        manifest_prompt_path = None
+
+    candidates = [
+        manifest_prompt_path,
+        run_path / SESSION_PROMPT_NAME,
+        run_path / "retry-prompt.md",
+        _latest_review_exchange_prompt(run_path),
+    ]
+    prompt_path = next((p for p in candidates if p and p.exists() and p.stat().st_size > 0), None)
+    if not prompt_path:
+        return JSONResponse({"error": "No run-scoped prompt artifact found for this session"}, status_code=404)
+
+    try:
+        content = prompt_path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return JSONResponse({"error": f"Failed to read prompt: {exc}"}, status_code=500)
+
+    return JSONResponse(
+        {
+            "issue_number": issue_number,
+            "run_dir": str(run_path),
+            "prompt_path": str(prompt_path),
+            "content": content,
+        }
+    )
 
 
 @app.post("/api/prompt/{agent_type}")
@@ -2152,8 +2805,9 @@ async def get_info() -> JSONResponse:
 
     state = _orchestrator.state
     config = _orchestrator.config
-    from ..infra.repo_identity import get_repo_head_sha
-    commit_sha = get_repo_head_sha(config.repo_root)
+    from ..infra.repo_identity import build_repo_identity
+    repo_identity = build_repo_identity(config.repo_root)
+    commit_sha = repo_identity.commit_sha
 
     return JSONResponse({
         "version": "0.1.0",  # TODO: get from package
@@ -2163,6 +2817,7 @@ async def get_info() -> JSONResponse:
         "terminal_backend": config.terminal_adapter or "subprocess",
         "commit_sha": commit_sha,
         "commit_short": commit_sha[:7] if commit_sha else None,
+        "repo_identity": repo_identity.to_dict(),
         "max_sessions": config.max_concurrent_sessions,
         "active_sessions": len(state.active_sessions),
         "completed_today": len(state.completed_today),
@@ -2356,34 +3011,26 @@ async def bulk_retry(request: Request) -> JSONResponse:
 
 @app.post("/api/bulk-kill")
 async def bulk_kill(request: Request) -> JSONResponse:
-    """Kill sessions and re-queue for retry."""
+    """Terminate sessions and hold issues until explicit retry/unblock."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
     body = await request.json()
     issue_numbers = body.get("issue_numbers", [])
-    state = _orchestrator.state
-    killed = []
+    terminated: list[int] = []
+    failed: list[dict[str, Any]] = []
     for num in issue_numbers:
-        # Kill active session if any
-        for session in list(state.active_sessions):
-            if session.issue.number == num:
-                try:
-                    _orchestrator.kill_session(session.terminal_id)
-                except Exception:
-                    pass
-                state.active_sessions = [
-                    s for s in state.active_sessions
-                    if s.issue.number != num
-                ]
-        # Remove from history
-        state.session_history = [
-            entry for entry in state.session_history
-            if entry.issue_number != num
-        ]
-        if num in state.completed_today:
-            state.completed_today.remove(num)
-        killed.append(num)
-    return JSONResponse({"killed": killed})
+        sessions = [s for s in _orchestrator.state.active_sessions if s.issue.number == num]
+        if not sessions:
+            failed.append({"issue_number": num, "error": "Session not found"})
+            continue
+        result = _terminate_issue_and_hold(num, sessions)
+        if result["killed_sessions"]:
+            terminated.append(num)
+        else:
+            failed.append(
+                {"issue_number": num, "error": "Failed to terminate", "details": result["errors"]}
+            )
+    return JSONResponse({"terminated": terminated, "failed": failed})
 
 
 @app.post("/api/bulk-deprioritize")
@@ -2518,18 +3165,19 @@ async def open_file(request: Request) -> JSONResponse:
 
 @app.post("/api/unblock-retry")
 async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901 - multi-step unblock with state transitions
-    """Remove blocking labels from issues and trigger a refresh.
+    """Remove retry-blocking labels from issues and trigger a refresh.
 
     JSON body:
         issues: list[int] - Issue numbers to unblock
 
-    Removes all blocking labels from each issue, clears them from history,
+    Removes all blocking labels and ``pr-pending`` from each issue, clears them from history,
     and triggers a single refresh so they'll be picked up on the next cycle.
     """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     from ..control.actions import RemoveLabelAction
+    from ..control.retry_policy import labels_to_remove_for_retry
 
     try:
         body = await request.json()
@@ -2550,12 +3198,12 @@ async def unblock_and_retry(request: Request) -> JSONResponse:  # noqa: C901 - m
 
     for issue_number in issue_numbers:
         try:
-            # Get current labels to find blocking ones
+            # Get current labels to find labels that prevent requeue
             current_labels = repository_host.get_issue_labels(issue_number)
-            blocking_labels = lm.get_blocking(current_labels)
+            labels_to_remove = labels_to_remove_for_retry(current_labels, lm)
 
-            if blocking_labels:
-                for label in blocking_labels:
+            if labels_to_remove:
+                for label in labels_to_remove:
                     action = RemoveLabelAction(
                         issue_number=issue_number,
                         label=label,
@@ -2603,6 +3251,7 @@ async def reset_and_retry(request: Request) -> JSONResponse:
 
     JSON body:
         issues: list[int] - Issue numbers to reset
+        from_scratch: bool - Force next launch onto a fresh branch from base
 
     This "nuclear option" cleans up all local and remote state:
     - Deletes local worktrees
@@ -2615,7 +3264,7 @@ async def reset_and_retry(request: Request) -> JSONResponse:
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
-    from ..control.maintenance import reset_issue, ResetResult
+    from ..control.maintenance import reset_issue
 
     try:
         body = await request.json()
@@ -2623,6 +3272,7 @@ async def reset_and_retry(request: Request) -> JSONResponse:
         return JSONResponse({"error": "Invalid JSON"}, status_code=400)
 
     issue_numbers = body.get("issues", [])
+    from_scratch = bool(body.get("from_scratch", False))
     if not issue_numbers or not isinstance(issue_numbers, list):
         return JSONResponse({"error": "issues must be a non-empty list"}, status_code=400)
 
@@ -2631,67 +3281,255 @@ async def reset_and_retry(request: Request) -> JSONResponse:
     repository_host = _orchestrator.repository_host
     deps = _orchestrator.deps
     lm = deps.label_manager
+    queue_cache = QueueCache(config, state)
 
     reset_results: list[dict] = []
     failed: list[dict] = []
+    pending_label = lm.reset_retry_pending
+    scratch_pending_label = lm.reset_retry_scratch_pending
 
     for issue_number in issue_numbers:
-        try:
-            # Get current labels for full orchestrator label cleanup
-            current_labels = repository_host.get_issue_labels(issue_number)
-
-            result: ResetResult = reset_issue(
-                issue_number=issue_number,
-                config=config,
-                worktree_manager=deps.worktree_manager,
-                working_copy=deps.working_copy,
-                action_applier=deps.action_applier,
-                label_manager=lm,
-                current_labels=current_labels,
-                session_history=state.session_history,
-                completed_today=state.completed_today,
-                label_store=deps.label_store,
-            )
-
-            if result.success:
-                reset_results.append({
-                    "issue": result.issue_number,
-                    "deleted_worktree": result.deleted_worktree,
-                    "deleted_branch": result.deleted_branch,
-                    "labels_removed": result.labels_removed,
-                })
-                logger.info(
-                    "[reset-retry] Reset issue #%d: worktree=%s branch=%s labels=%s",
-                    issue_number,
-                    result.deleted_worktree or "(none)",
-                    result.deleted_branch or "(none)",
-                    result.labels_removed or "(none)",
-                )
-            else:
-                failed.append({
-                    "issue": issue_number,
-                    "error": result.error or "Unknown error",
-                    "partial": {
-                        "deleted_worktree": result.deleted_worktree,
-                        "deleted_branch": result.deleted_branch,
-                        "labels_removed": result.labels_removed,
-                    },
-                })
-
-        except Exception as e:
-            logger.error("[reset-retry] Failed to reset issue #%d: %s", issue_number, e)
-            failed.append({"issue": issue_number, "error": str(e)})
-
-    # Trigger a refresh so the orchestrator picks up the reset issues
-    if reset_results:
-        _orchestrator.request_refresh()
-        logger.info("[reset-retry] Reset %d issues, refresh triggered", len(reset_results))
+        success_payload, failure_payload = _reset_and_retry_issue(
+            issue_number=issue_number,
+            from_scratch=from_scratch,
+            pending_label=pending_label,
+            scratch_pending_label=scratch_pending_label,
+            repository_host=repository_host,
+            queue_cache=queue_cache,
+            state=state,
+            deps=deps,
+            config=config,
+            reset_issue_fn=reset_issue,
+        )
+        if success_payload is not None:
+            reset_results.append(success_payload)
+            continue
+        if failure_payload is not None:
+            failed.append(failure_payload)
+            continue
+        failed.append({"issue": issue_number, "error": "Unknown reset+retry failure"})
 
     return JSONResponse({
         "reset": reset_results,
         "failed": failed,
-        "refresh_triggered": len(reset_results) > 0,
+        "from_scratch": from_scratch,
+        "refresh_triggered": False,
     })
+
+
+def _reset_and_retry_issue(  # noqa: PLR0913
+    *,
+    issue_number: int,
+    from_scratch: bool,
+    pending_label: str,
+    scratch_pending_label: str,
+    repository_host: Any,
+    queue_cache: QueueCache,
+    state: Any,
+    deps: Any,
+    config: Any,
+    reset_issue_fn: Callable[..., Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    from ..control.actions import AddLabelAction
+
+    try:
+        current_labels = repository_host.get_issue_labels(issue_number)
+        result = reset_issue_fn(
+            issue_number=issue_number,
+            config=config,
+            worktree_manager=deps.worktree_manager,
+            working_copy=deps.working_copy,
+            action_applier=deps.action_applier,
+            label_manager=deps.label_manager,
+            current_labels=current_labels,
+            session_history=state.session_history,
+            completed_today=state.completed_today,
+            label_store=deps.label_store,
+        )
+        if not result.success:
+            return None, _make_reset_failure(issue_number, result, result.error or "Unknown error")
+
+        pending_labels_to_add = _pending_labels_for_retry(
+            from_scratch=from_scratch,
+            pending_label=pending_label,
+            scratch_pending_label=scratch_pending_label,
+        )
+        pending_label_error = _apply_reset_retry_pending_labels(
+            issue_number=issue_number,
+            labels=pending_labels_to_add,
+            action_applier=deps.action_applier,
+            add_label_action_cls=AddLabelAction,
+        )
+        if pending_label_error is not None:
+            failure = _make_reset_failure(issue_number, result, pending_label_error, from_scratch=from_scratch)
+            return None, failure
+
+        enqueue_error = _enqueue_reset_retry_issue(
+            issue_number=issue_number,
+            repository_host=repository_host,
+            queue_cache=queue_cache,
+            state=state,
+            pending_labels_to_add=pending_labels_to_add,
+            from_scratch=from_scratch,
+            result=result,
+        )
+        if enqueue_error is not None:
+            return None, enqueue_error
+
+        _emit_reset_retry_unblocked(
+            issue_number=issue_number,
+            from_scratch=from_scratch,
+            pending_label=pending_label,
+            pending_labels_to_add=pending_labels_to_add,
+            events=deps.events,
+        )
+        success = _make_reset_success(issue_number, result, from_scratch, pending_label, pending_labels_to_add)
+        logger.info(
+            "[reset-retry] Reset issue #%d: worktree=%s branch=%s labels=%s pending=%s from_scratch=%s queued_now=true",
+            issue_number,
+            result.deleted_worktree or "(none)",
+            result.deleted_branch or "(none)",
+            result.labels_removed or "(none)",
+            pending_label,
+            from_scratch,
+        )
+        return success, None
+    except Exception as exc:
+        logger.error("[reset-retry] Failed to reset issue #%d: %s", issue_number, exc)
+        return None, {"issue": issue_number, "error": str(exc)}
+
+
+def _pending_labels_for_retry(
+    *,
+    from_scratch: bool,
+    pending_label: str,
+    scratch_pending_label: str,
+) -> list[str]:
+    labels = [pending_label]
+    if from_scratch:
+        labels.append(scratch_pending_label)
+    return labels
+
+
+def _apply_reset_retry_pending_labels(
+    *,
+    issue_number: int,
+    labels: list[str],
+    action_applier: Any,
+    add_label_action_cls: Any,
+) -> str | None:
+    for label in labels:
+        result = action_applier.apply(
+            add_label_action_cls(
+                issue_number=issue_number,
+                label=label,
+                reason="reset+retry requested via web",
+            )
+        )
+        if not result.success:
+            return result.error or f"Failed to set {label}"
+    return None
+
+
+def _enqueue_reset_retry_issue(
+    *,
+    issue_number: int,
+    repository_host: Any,
+    queue_cache: QueueCache,
+    state: Any,
+    pending_labels_to_add: list[str],
+    from_scratch: bool,
+    result: Any,
+) -> dict[str, Any] | None:
+    refreshed_issue = repository_host.get_issue(issue_number)
+    if refreshed_issue is None:
+        return _make_reset_failure(issue_number, result, f"Issue #{issue_number} not found after reset")
+
+    outcome = queue_cache.upsert_refreshed_issue(refreshed_issue)
+    refreshed_at = time.time()
+    if outcome.status == QueueMutationStatus.ACCEPTED:
+        state.issue_refresh_timestamps[issue_number] = refreshed_at
+        state.issue_last_refreshed_at[issue_number] = refreshed_at
+        queue_cache.prune_refresh_timestamps()
+        if issue_number not in state.priority_queue:
+            state.priority_queue.insert(0, issue_number)
+        return None
+
+    state.issue_refresh_timestamps.pop(issue_number, None)
+    state.issue_last_refreshed_at.pop(issue_number, None)
+    return _make_reset_failure(
+        issue_number,
+        result,
+        f"Issue #{issue_number} is not queue-eligible after reset ({outcome.status.value})",
+        pending_labels=pending_labels_to_add,
+        from_scratch=from_scratch,
+    )
+
+
+def _emit_reset_retry_unblocked(
+    *,
+    issue_number: int,
+    from_scratch: bool,
+    pending_label: str,
+    pending_labels_to_add: list[str],
+    events: Any,
+) -> None:
+    events.publish(
+        make_trace_event(
+            EventName.ISSUE_UNBLOCKED,
+            {
+                "issue_number": issue_number,
+                "reason": "reset_retry_requested",
+                "source": "web.reset-retry",
+                "pending_label": pending_label,
+                "pending_labels": pending_labels_to_add,
+                "from_scratch": from_scratch,
+            },
+        )
+    )
+
+
+def _make_reset_success(
+    issue_number: int,
+    result: Any,
+    from_scratch: bool,
+    pending_label: str,
+    pending_labels_to_add: list[str],
+) -> dict[str, Any]:
+    return {
+        "issue": issue_number,
+        "deleted_worktree": result.deleted_worktree,
+        "deleted_branch": result.deleted_branch,
+        "labels_removed": result.labels_removed,
+        "pending_label": pending_label,
+        "pending_labels": pending_labels_to_add,
+        "from_scratch": from_scratch,
+        "queued_now": True,
+    }
+
+
+def _make_reset_failure(
+    issue_number: int,
+    result: Any,
+    error: str,
+    *,
+    pending_labels: list[str] | None = None,
+    from_scratch: bool | None = None,
+) -> dict[str, Any]:
+    partial: dict[str, Any] = {
+        "deleted_worktree": result.deleted_worktree,
+        "deleted_branch": result.deleted_branch,
+        "labels_removed": result.labels_removed,
+    }
+    if pending_labels:
+        partial["pending_labels"] = pending_labels
+    if from_scratch is not None:
+        partial["from_scratch"] = from_scratch
+    return {
+        "issue": issue_number,
+        "error": error,
+        "partial": partial,
+    }
 
 
 @app.get("/api/debug")

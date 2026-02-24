@@ -152,6 +152,10 @@ class TestSessionLauncherClaimAcquisition:
                     max_backoff_seconds=1,
                     jitter=False,
                 ))
+                mock_config.retry = MagicMock(interrupted_sessions=MagicMock(
+                    coding_guard_label="io:auto-retried-interrupted-coding",
+                    review_guard_label="io:auto-retried-interrupted-review",
+                ))
 
                 launcher = SessionLauncher(
                     config=mock_config,

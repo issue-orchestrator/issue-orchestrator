@@ -34,6 +34,10 @@ If a user says “discuss” or “explore”, do not implement until you:
 - Summarize the proposed approach in 3–6 bullets
 - Ask for confirmation to proceed
 
+## UI Changes
+
+For UI-facing changes, follow `.claude/skills/frontend-design/SKILL.md`; task is incomplete without required non-UI behavior tests and UI guardrail tests.
+
 ## What This Is
 
 **issue-orchestrator** orchestrates multiple AI agents working on GitHub issues in parallel. It fetches issues, creates git worktrees, launches agent sessions, enforces structured completion via `agent-done`, and manages the full lifecycle including code review and triage.

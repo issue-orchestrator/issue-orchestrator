@@ -36,6 +36,7 @@ from issue_orchestrator.control.actions import (
     ActionType,
     AddLabelAction,
     LaunchSessionAction,
+    SessionType,
 )
 from issue_orchestrator.control.health_gate import HealthGate, HealthDecision
 from issue_orchestrator.domain.models import (
@@ -951,6 +952,26 @@ class TestOrchestratorSupportApplyPlan:
 
         support.action_applier.apply = Mock(
             return_value=ActionResult.fail(action, "boom")
+        )
+
+        support.apply_plan(plan, Mock())
+
+        assert 42 in sample_orchestrator_state.failed_this_cycle
+
+    def test_failed_launch_action_marks_failed_this_cycle(self, support, sample_orchestrator_state):
+        """Launch failures must mark the issue failed_this_cycle for queue diagnostics."""
+        action = LaunchSessionAction(
+            session_type=SessionType.ISSUE,
+            number=42,
+            command="",
+            working_dir="",
+        )
+        plan = MagicMock()
+        plan.action_count = 1
+        plan.actions = [action]
+
+        support.action_applier.apply = Mock(
+            return_value=ActionResult.fail(action, "worktree create failed")
         )
 
         support.apply_plan(plan, Mock())
