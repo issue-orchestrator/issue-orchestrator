@@ -3747,16 +3747,16 @@ class TestIssueLogEndpointsUseLatestHistory:
         finally:
             set_orchestrator(None)
 
-    def test_agent_ui_log_falls_back_when_filtering_removes_all_lines(self, tmp_path: Path):
-        """GET /api/log/local should still return content when filters strip all lines."""
+    def test_agent_ui_log_serves_file_content_directly(self, tmp_path: Path):
+        """GET /api/log/local serves pre-cleaned file content, filtering only blanks."""
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
         mock_orch = create_mock_orchestrator()
         session_output = FileSystemSessionOutput()
-        worktree = tmp_path / "wt-filter-fallback"
+        worktree = tmp_path / "wt-direct-serve"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-123", issue_number=123)
-        run.log_path.write_text("*\nthinking)\n", encoding="utf-8")
+        run.log_path.write_text("Line one\n\nLine two\n", encoding="utf-8")
 
         set_orchestrator(mock_orch)
         try:
@@ -3764,8 +3764,8 @@ class TestIssueLogEndpointsUseLatestHistory:
             response = client.get(f"/api/log/local/123?run_dir={run.run_dir}")
             assert response.status_code == 200
             payload = response.json()
-            assert payload["total_lines"] >= 2
-            assert payload["lines"], "Expected fallback lines when filtered output is empty"
+            assert payload["lines"] == ["Line one", "Line two"]
+            assert payload["total_lines"] == 2
             assert "stream_observation" in payload
             stream_obs = payload["stream_observation"]
             assert stream_obs["ui_log"]["path"].endswith("/ui-session.log")
@@ -4102,196 +4102,6 @@ class TestIssueSessionContextIsolation:
             assert ctx.session_name is None
         finally:
             set_orchestrator(None)
-
-
-class TestLogCleaning:
-    """Test terminal log cleaning functions.
-
-    These tests verify that raw terminal output (with ANSI codes, spinner
-    animations, cursor movement, etc.) is properly cleaned for display
-    in the web UI.
-
-    IMPORTANT: These tests exist to prevent regression. The log cleaning
-    logic has been lost/broken multiple times. If you change the cleaning
-    functions, ensure these tests still pass.
-    """
-
-    def test_strip_ansi_codes_removes_colors(self):
-        """ANSI color codes should be stripped."""
-        from issue_orchestrator.entrypoints.web import strip_ansi_codes
-
-        # SGR color codes
-        assert strip_ansi_codes("\x1b[38;2;215;119;87mHello\x1b[39m") == "Hello"
-        assert strip_ansi_codes("\x1b[1mBold\x1b[22m") == "Bold"
-        assert strip_ansi_codes("\x1b[2mDim\x1b[22m") == "Dim"
-
-    def test_strip_ansi_codes_removes_cursor_movement(self):
-        """ANSI cursor movement sequences should be stripped."""
-        from issue_orchestrator.entrypoints.web import strip_ansi_codes
-
-        # Cursor movement
-        assert strip_ansi_codes("\x1b[6AMove up") == "Move up"
-        assert strip_ansi_codes("\x1b[2CMove right") == "Move right"
-        assert strip_ansi_codes("\x1b[K") == ""  # Erase to end of line
-
-    def test_strip_ansi_codes_removes_private_modes(self):
-        """Private mode sequences (cursor hide, etc.) should be stripped."""
-        from issue_orchestrator.entrypoints.web import strip_ansi_codes
-
-        # Private modes
-        assert strip_ansi_codes("\x1b[?25lHidden cursor\x1b[?25h") == "Hidden cursor"
-        assert strip_ansi_codes("\x1b[?2026hSync") == "Sync"
-
-    def test_strip_ansi_codes_removes_osc_sequences(self):
-        """OSC sequences (terminal title, etc.) should be stripped."""
-        from issue_orchestrator.entrypoints.web import strip_ansi_codes
-
-        # OSC (terminal title)
-        assert strip_ansi_codes("\x1b]0;My Title\x07Rest") == "Rest"
-
-    def test_clean_terminal_line_handles_carriage_return(self):
-        """Carriage returns (spinner animations) should take last segment."""
-        from issue_orchestrator.entrypoints.web import clean_terminal_line
-
-        # Spinner animation - takes the last meaningful segment
-        assert clean_terminal_line("* spin\r/ spin\r- spin").strip() == "- spin"
-        assert clean_terminal_line("old\rnew").strip() == "new"
-
-    def test_clean_terminal_line_handles_mixed_ansi_and_cr(self):
-        """Mixed ANSI codes and carriage returns should both be handled."""
-        from issue_orchestrator.entrypoints.web import clean_terminal_line
-
-        # Real-world example: spinner with colors
-        line = "\x1b[38;2;215;119;87m*\x1b[39m\r\x1b[38;2;215;119;87m·\x1b[39m Thinking"
-        assert "Thinking" in clean_terminal_line(line)
-
-    def test_is_spinner_fragment_filters_short_garbage(self):
-        """Short garbage fragments from cursor updates should be filtered."""
-        from issue_orchestrator.entrypoints.web import is_spinner_fragment
-
-        # These are real fragments seen in terminal logs
-        assert is_spinner_fragment("ddl") is True
-        assert is_spinner_fragment("-fa") is True
-        assert is_spinner_fragment("ea") is True
-        assert is_spinner_fragment("bn") is True
-        assert is_spinner_fragment("6") is True
-
-    def test_is_spinner_fragment_filters_spinner_chars(self):
-        """Lines of just spinner characters should be filtered."""
-        from issue_orchestrator.entrypoints.web import is_spinner_fragment
-
-        assert is_spinner_fragment("*") is True
-        assert is_spinner_fragment("·") is True
-        assert is_spinner_fragment("✶") is True
-        assert is_spinner_fragment("✻✽") is True
-
-    def test_is_spinner_fragment_filters_thinking_messages(self):
-        """Repetitive thinking/loading status should be filtered."""
-        from issue_orchestrator.entrypoints.web import is_spinner_fragment
-
-        assert is_spinner_fragment("Fiddle-faddling…") is True
-        assert is_spinner_fragment("· Fiddle-faddling… (ctrl+c to interrupt)") is True
-        assert is_spinner_fragment("thinking)") is True
-        # Partial think-time display fragments
-        assert is_spinner_fragment("ought for 2s)") is True
-        assert is_spinner_fragment("thought for 5s)") is True
-
-    def test_is_spinner_fragment_keeps_meaningful_content(self):
-        """Meaningful tool output should NOT be filtered."""
-        from issue_orchestrator.entrypoints.web import is_spinner_fragment
-
-        # Tool calls and results
-        assert is_spinner_fragment("⏺Read(.issue-orchestrator/prompts/simple-fix.md)") is False
-        assert is_spinner_fragment("⎿ Read 221 lines") is False
-        assert is_spinner_fragment("⏺Bash(git status)") is False
-
-        # Actual content
-        assert is_spinner_fragment("Welcome back Bruce!") is False
-        assert is_spinner_fragment("On branch main") is False
-        assert is_spinner_fragment("./src/issue_orchestrator/infra/hooks/hooks.py") is False
-
-    def test_is_spinner_fragment_keeps_separator_lines(self):
-        """Separator lines (───) should be kept."""
-        from issue_orchestrator.entrypoints.web import is_spinner_fragment
-
-        assert is_spinner_fragment("────────────") is False
-        assert is_spinner_fragment("━━━━━━━━━━━━") is False
-
-    def test_is_spinner_fragment_keeps_prompts(self):
-        """Prompt characters should be kept."""
-        from issue_orchestrator.entrypoints.web import is_spinner_fragment
-
-        assert is_spinner_fragment("❯") is False
-
-    def test_dedupe_consecutive_lines_removes_duplicates(self):
-        """Consecutive identical lines should be collapsed."""
-        from issue_orchestrator.entrypoints.web import dedupe_consecutive_lines
-
-        lines = ["line1", "line1", "line1", "line2", "line2", "line3"]
-        result = dedupe_consecutive_lines(lines)
-        assert result == ["line1", "line2", "line3"]
-
-    def test_dedupe_consecutive_lines_collapses_separators(self):
-        """Consecutive separator lines should be collapsed to one."""
-        from issue_orchestrator.entrypoints.web import dedupe_consecutive_lines
-
-        lines = [
-            "Some text",
-            "────────────────",
-            "──────────────────────",
-            "More text",
-        ]
-        result = dedupe_consecutive_lines(lines)
-        assert len([l for l in result if l.startswith("─")]) == 1
-
-    def test_full_cleaning_pipeline_with_real_garbage(self):
-        """End-to-end test with realistic terminal garbage.
-
-        This test uses actual samples from Claude Code terminal logs
-        to verify the full cleaning pipeline works.
-        """
-        from issue_orchestrator.entrypoints.web import (
-            clean_terminal_line,
-            is_spinner_fragment,
-            dedupe_consecutive_lines,
-        )
-
-        # Realistic raw lines from a terminal log
-        raw_lines = [
-            "\x1b[?25l\x1b[?2004h\x1b[?1004h\x1b[>1u",  # Init sequences
-            "\x1b[38;2;215;119;87m· Fiddle-faddling…\x1b[39m",  # Thinking status
-            "*\r/\r-\r\\",  # Spinner animation
-            "\x1b[6A\x1b[2Cddl",  # Cursor movement + fragment
-            "⏺Bash(git status)",  # Actual tool call
-            "On branch main",  # Actual output
-            "  nothing to commit",  # Actual output
-            "\x1b[38;2;215;119;87m✶\x1b[39m Fiddle-faddling…",  # More thinking
-            "────────────────────────",  # Separator
-            "────────────────────────",  # Duplicate separator
-            "❯",  # Prompt
-        ]
-
-        # Clean and filter
-        cleaned = []
-        for line in raw_lines:
-            c = clean_terminal_line(line)
-            if c.strip() and not is_spinner_fragment(c):
-                cleaned.append(c)
-        cleaned = dedupe_consecutive_lines(cleaned)
-
-        # Should keep meaningful content
-        content = "\n".join(cleaned)
-        assert "⏺Bash(git status)" in content or "Bash(git status)" in content
-        assert "On branch main" in content
-        assert "nothing to commit" in content
-
-        # Should filter garbage
-        assert "ddl" not in content
-        assert "Fiddle-faddling" not in content
-
-        # Should have at most one separator line
-        separator_count = sum(1 for l in cleaned if l.strip().startswith("─"))
-        assert separator_count <= 1
 
 
 class TestDependencyProblemsEndpoint:
@@ -5050,101 +4860,6 @@ class TestRunWithWebDashboard:
 
                         set_orchestrator(None)
                         set_server(None)
-
-
-class TestStripAnsiCodes:
-    """Test the strip_ansi_codes function."""
-
-    def test_strips_color_codes(self):
-        """Test stripping SGR color codes."""
-        from issue_orchestrator.entrypoints.web import strip_ansi_codes
-
-        # Red text
-        text = "\x1b[31mError\x1b[0m"
-        assert strip_ansi_codes(text) == "Error"
-
-        # Bold green
-        text = "\x1b[1;32mSuccess\x1b[0m"
-        assert strip_ansi_codes(text) == "Success"
-
-        # 256-color
-        text = "\x1b[38;5;196mBright Red\x1b[0m"
-        assert strip_ansi_codes(text) == "Bright Red"
-
-        # 24-bit RGB color (like Claude Code uses)
-        text = "\x1b[38;2;215;119;87m✶\x1b[0m"
-        assert strip_ansi_codes(text) == "✶"
-
-    def test_strips_cursor_movement(self):
-        """Test stripping cursor movement codes."""
-        from issue_orchestrator.entrypoints.web import strip_ansi_codes
-
-        # Cursor up
-        text = "\x1b[6AText"
-        assert strip_ansi_codes(text) == "Text"
-
-        # Cursor down, right, left
-        text = "Start\x1b[2B\x1b[1C\x1b[3DEnd"
-        assert strip_ansi_codes(text) == "StartEnd"
-
-    def test_strips_private_mode_sequences(self):
-        """Test stripping private mode sequences like ?2026h."""
-        from issue_orchestrator.entrypoints.web import strip_ansi_codes
-
-        # Synchronized output mode (used by Claude Code spinner)
-        text = "\x1b[?2026lText\x1b[?2026h"
-        assert strip_ansi_codes(text) == "Text"
-
-        # Other private modes
-        text = "\x1b[?25hVisible\x1b[?25l"  # Show/hide cursor
-        assert strip_ansi_codes(text) == "Visible"
-
-    def test_strips_osc_sequences(self):
-        """Test stripping OSC sequences (terminal title, etc.)."""
-        from issue_orchestrator.entrypoints.web import strip_ansi_codes
-
-        # Set terminal title
-        text = "\x1b]0;My Title\x07Content"
-        assert strip_ansi_codes(text) == "Content"
-
-    def test_real_claude_code_spinner_output(self):
-        """Test stripping real Claude Code spinner output."""
-        from issue_orchestrator.entrypoints.web import strip_ansi_codes
-
-        # Actual output from Claude Code spinner
-        # Note: Must include \x1b before each [ for real ANSI sequences
-        text = "\x1b[?2026l\x1b[?2026h\n\x1b[6A\x1b[38;2;215;119;87m✶\x1b[1C\x1b[38;2;221;125;93mPerusing…\x1b[39m"
-        result = strip_ansi_codes(text)
-        # Should preserve the visible text
-        assert "✶" in result
-        assert "Perusing…" in result
-        # Should remove escape sequences
-        assert "\x1b[?2026" not in result
-        assert "\x1b[6A" not in result
-        assert "\x1b[38;2;" not in result
-
-    def test_preserves_plain_text(self):
-        """Test that plain text without ANSI codes is preserved."""
-        from issue_orchestrator.entrypoints.web import strip_ansi_codes
-
-        text = "Hello, World!"
-        assert strip_ansi_codes(text) == "Hello, World!"
-
-        text = "Line 1\nLine 2\nLine 3"
-        assert strip_ansi_codes(text) == "Line 1\nLine 2\nLine 3"
-
-    def test_empty_string(self):
-        """Test with empty string."""
-        from issue_orchestrator.entrypoints.web import strip_ansi_codes
-
-        assert strip_ansi_codes("") == ""
-
-    def test_mixed_content(self):
-        """Test with mixed ANSI codes and regular text."""
-        from issue_orchestrator.entrypoints.web import strip_ansi_codes
-
-        text = "Normal \x1b[1mbold\x1b[0m normal \x1b[31mred\x1b[0m end"
-        assert strip_ansi_codes(text) == "Normal bold normal red end"
 
 
 class TestPublishJobsEndpoint:

@@ -21,9 +21,10 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, BinaryIO
+from typing import TYPE_CHECKING
 
 from ..control.isolation import build_isolation_prefix
+from ..infra.terminal_cleaning import CleaningLogWriter
 
 if TYPE_CHECKING:
     import pexpect
@@ -240,7 +241,7 @@ class SubprocessPlugin:
         self._registry = _SubprocessRegistry(repo_root)
         self._children: dict[str, "pexpect.spawn"] = {}  # pexpect child processes
         self._watcher_threads: dict[str, threading.Thread] = {}  # Process watchers
-        self._log_files: dict[str, BinaryIO] = {}  # Open log file handles
+        self._log_files: dict[str, CleaningLogWriter] = {}  # Open log file handles
         allow_stdin_val = get_env("SUBPROCESS_ALLOW_STDIN") or ""
         self._allow_stdin = allow_stdin_val.lower() in {"1", "true", "yes"}
 
@@ -267,7 +268,7 @@ class SubprocessPlugin:
         isolation_prefix = build_isolation_prefix(working_dir, scrub_env=True, isolate_home=False)
         return f'cd "{working_dir}" && export PATH="{path_prefix}" && {isolation_prefix}{command}'
 
-    def _start_process_watcher(self, child: "pexpect.spawn", session_name: str, log_file: BinaryIO) -> None:
+    def _start_process_watcher(self, child: "pexpect.spawn", session_name: str, log_file: CleaningLogWriter) -> None:
         """Start a thread that waits for the process to complete and closes resources."""
         import pexpect as pexp  # Lazy import to avoid circular dependency with agent-done
 
@@ -310,8 +311,9 @@ class SubprocessPlugin:
         full_cmd = self._build_process_command(command, working_dir)
         log_path = self._session_log_path(working_dir, session_name, command)
 
-        # Open log file for binary writing (pexpect writes bytes)
-        log_file = open(log_path, "wb", buffering=0)
+        # Wrap log in CleaningLogWriter so ui-session.log is always
+        # human-readable (ANSI stripped, spinners filtered, deduped).
+        log_file = CleaningLogWriter(log_path)
         self._log_files[session_name] = log_file
 
         # Use pexpect.spawn which handles PTY correctly, including EOF timing
