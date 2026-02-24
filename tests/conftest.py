@@ -43,6 +43,30 @@ def isolate_git_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def isolate_orchestrator_env(monkeypatch):
+    """Strip orchestrator runtime env vars to prevent test pollution.
+
+    When running inside a real orchestrator session, ISSUE_ORCHESTRATOR_*
+    env vars are set by the launcher. Tests that exercise agent-done or
+    config-loading behavior must start from a clean slate; otherwise
+    ISSUE_ORCHESTRATOR_SESSION_ID, CONFIG_PATH, etc. bleed into the test
+    and produce environment-specific failures.
+
+    Tests that need specific values simply set them after this fixture runs.
+    """
+    runtime_vars = [
+        "ISSUE_ORCHESTRATOR_SESSION_ID",
+        "ISSUE_ORCHESTRATOR_CONFIG_PATH",
+        "ISSUE_ORCHESTRATOR_CONFIG_NAME",
+        "ISSUE_ORCHESTRATOR_RUN_DIR",
+        "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR",
+        "ISSUE_ORCHESTRATOR_COMPLETION_PATH",
+    ]
+    for var in runtime_vars:
+        monkeypatch.delenv(var, raising=False)
+
+
 class MockGitHubAdapter:
     """Mock GitHub adapter implementing port interfaces for testing.
 

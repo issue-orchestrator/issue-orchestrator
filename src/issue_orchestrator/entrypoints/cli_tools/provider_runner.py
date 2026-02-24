@@ -82,12 +82,26 @@ def _ensure_run_scoped_session_log(run_dir: Path) -> None:
     session_log.symlink_to(provider_stdout)
 
 
+def _scrub_orchestrator_env() -> None:
+    """Remove orchestrator env vars so agent subprocesses (e.g. make validate-quick) see a clean env.
+
+    Without this, env vars like ORCHESTRATOR_WORKTREE_BASE_BRANCH leak into
+    the agent's shell and cause spurious unit test failures.
+    """
+    _strip_prefixes = ("ORCHESTRATOR_", "E2E_")
+    # Keep ISSUE_ORCHESTRATOR_* vars - those are needed by agent-done
+    for key in list(os.environ):
+        if any(key.startswith(p) for p in _strip_prefixes):
+            del os.environ[key]
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv or sys.argv[1:])
 
     run_dir = _resolve_run_dir(args)
     output_dir = run_dir / "provider-runner"
     _ensure_run_scoped_session_log(run_dir)
+    _scrub_orchestrator_env()
 
     provider = args.provider or detect_ai_system_from_command(args.command) or None
     retry_policy = RetryPolicy(
@@ -104,6 +118,7 @@ def main(argv: list[str] | None = None) -> int:
         timeout_seconds=args.timeout_seconds,
         output_dir=output_dir,
         retry_policy=retry_policy,
+        use_pty=True,
     ))
 
     error_type = None

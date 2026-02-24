@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import (
@@ -25,6 +26,10 @@ from issue_orchestrator.view_models.dashboard import (
     build_dashboard_view_model,
 )
 from issue_orchestrator.contracts.public import DashboardViewModelContract
+from issue_orchestrator.ports.provider_resilience import (
+    InMemoryProviderCircuitStore,
+    ProviderCircuitState,
+)
 
 
 @dataclass
@@ -32,6 +37,7 @@ class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+    deps: Any = None
 
 
 def _make_config() -> Config:
@@ -681,3 +687,98 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def _make_mock_deps_with_circuit_store(store: InMemoryProviderCircuitStore) -> Any:
+    """Build a minimal deps stub exposing provider_resilience with the given store."""
+    class _MockProviderResilience:
+        def __init__(self, s: InMemoryProviderCircuitStore) -> None:
+            self.store = s
+
+    class _MockDeps:
+        def __init__(self, s: InMemoryProviderCircuitStore) -> None:
+            self.provider_resilience = _MockProviderResilience(s)
+
+    return _MockDeps(store)
+
+
+def test_provider_circuit_status_empty_when_no_open_breakers():
+    """providerCircuitStatus is empty when no circuit breakers have fired."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    store = InMemoryProviderCircuitStore()
+    orchestrator = _OrchestratorStub(
+        state=state,
+        config=config,
+        deps=_make_mock_deps_with_circuit_store(store),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_status == []
+    assert view_model.dashboard_data()["providerCircuitStatus"] == []
+
+
+def test_provider_circuit_status_shows_open_circuit_breaker():
+    """providerCircuitStatus surfaces open circuit breaker state."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    open_until = now + timedelta(minutes=5)
+    store.save(ProviderCircuitState(
+        provider="claude-opus",
+        open_until=open_until,
+        consecutive_outages=2,
+        last_error_summary="Rate limit exceeded",
+        updated_at=now,
+    ))
+    orchestrator = _OrchestratorStub(
+        state=state,
+        config=config,
+        deps=_make_mock_deps_with_circuit_store(store),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_status) == 1
+    entry = view_model.provider_circuit_status[0]
+    assert entry["provider"] == "claude-opus"
+    assert entry["status"] == "open"
+    assert entry["consecutive_outages"] == 2
+    assert entry["last_error_summary"] == "Rate limit exceeded"
+    assert entry["open_until"] is not None
+
+    dashboard_entries = view_model.dashboard_data()["providerCircuitStatus"]
+    assert len(dashboard_entries) == 1
+    assert dashboard_entries[0]["provider"] == "claude-opus"
+    assert dashboard_entries[0]["status"] == "open"
+
+
+def test_provider_circuit_status_without_deps():
+    """providerCircuitStatus is empty when orchestrator has no deps (e.g. test stubs)."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)  # no deps
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_status == []
