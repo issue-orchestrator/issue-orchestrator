@@ -622,14 +622,12 @@ def run_local_loop_exchange(  # noqa: PLR0913
 
     def _emit(event_name: EventName, payload: dict[str, Any]) -> None:
         if events is None or event_context is None:
-            logger.warning("_emit skipping %s (no event sink)", event_name)
             return
         enriched = dict(payload)
         if run_dir is not None:
             enriched["run_dir"] = str(run_dir)
         if run_id is not None:
             enriched["session_run_id"] = run_id
-        logger.info("_emit publishing: %s", event_name)
         events.publish(make_trace_event(event_name, event_context.enrich(enriched)))
 
     # Set up run directory
