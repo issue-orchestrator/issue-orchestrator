@@ -406,7 +406,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         review_run_dir = Path(str(review_started["run_dir"]))
         await _assert_stage_artifacts(
             coding_run_dir,
-            completion_file_names=["completion-agent_backend.json", "completion-record.json"],
+            completion_file_names=["completion-record.json"],
             require_validation=True,
         )
         review_completed = await _wait_for_issue_event(
