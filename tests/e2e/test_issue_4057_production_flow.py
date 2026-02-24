@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import os
 import shutil
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 import httpx
 import pytest
@@ -365,8 +368,11 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             ),
         )
         issue = issue_key_for_number(repo_name, issue_number)
+        logger.info("[4057] Waiting for issue_seen...")
         await flow.issue_seen(issue, timeout_s=120)
+        logger.info("[4057] issue_seen OK. Waiting for session_started...")
         await flow.session_started(issue, timeout_s=10 * 60)
+        logger.info("[4057] session_started OK. Waiting for SESSION_STARTED event...")
 
         coding_started = await _wait_for_run_event(
             runtime.watcher,
@@ -375,6 +381,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             timeout_s=10 * 60,
         )
         coding_run_dir = Path(str(coding_started["run_dir"]))
+        logger.info("[4057] SESSION_STARTED event found. run_dir=%s", coding_run_dir)
 
         detail_during_coding = await _fetch_issue_detail(config.web_port, issue_number)
         coding_steps = _steps_from_issue_detail(detail_during_coding)
@@ -389,6 +396,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             for step in coding_steps
         )
         assert has_coding_log_action, "Expected run-scoped open_agent_log action during coding"
+        logger.info("[4057] UI assertions OK. Starting live log stream check...")
 
         await _assert_live_ui_session_log_stream(
             issue_number=issue_number,
@@ -396,6 +404,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             web_port=config.web_port,
             watcher=runtime.watcher,
         )
+        logger.info("[4057] Live log stream OK. Waiting for REVIEW_EXCHANGE_STARTED event...")
 
         review_started = await _wait_for_run_event(
             runtime.watcher,
@@ -404,11 +413,14 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             timeout_s=20 * 60,
         )
         review_run_dir = Path(str(review_started["run_dir"]))
+        logger.info("[4057] REVIEW_EXCHANGE_STARTED found. run_dir=%s", review_run_dir)
+        logger.info("[4057] Checking coding stage artifacts...")
         await _assert_stage_artifacts(
             coding_run_dir,
             completion_file_names=["completion-record.json"],
             require_validation=True,
         )
+        logger.info("[4057] Coding artifacts OK. Waiting for REVIEW_EXCHANGE_COMPLETED event...")
         review_completed = await _wait_for_issue_event(
             runtime.watcher,
             issue_number=issue_number,
@@ -417,19 +429,23 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         )
         status = str(review_completed.get("status") or "")
         reason = str(review_completed.get("reason") or "")
+        logger.info("[4057] REVIEW_EXCHANGE_COMPLETED: status=%s reason=%s", status, reason)
         assert status == "ok", (
             "Review exchange did not finish successfully "
             f"(status={status!r}, reason={reason!r}, payload={review_completed})"
         )
+        logger.info("[4057] Checking review stage artifacts...")
         await _assert_review_stage_artifacts(review_run_dir, require_validation=True)
         await _wait_for_file(review_run_dir / "review-exchange" / "summary.json")
         review_stdout = (review_run_dir / "provider-runner" / "stdout.log").read_text(errors="replace").lower()
         assert "protocol error" not in review_stdout, (
             f"Detected protocol error in review exchange output for {review_run_dir}"
         )
+        logger.info("[4057] Review artifacts OK. Waiting for pr_created...")
 
         pr_number = await flow.pr_created(issue, timeout_s=35 * 60)
         assert pr_number > 0
+        logger.info("[4057] PR #%d created. Checking diagnostics...", pr_number)
 
         diagnostics = None
         diagnostics_deadline = time.monotonic() + (25 * 60)
@@ -453,6 +469,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             "Session diagnostics never exposed both validation actions for coding run "
             f"(run_dir={coding_run_dir})"
         )
+        logger.info("[4057] Diagnostics found. Checking validation paths...")
 
         actions = diagnostics.get("actions")
         assert isinstance(actions, list)
@@ -466,6 +483,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         assert validation_record_path.exists(), f"Validation record missing: {validation_record_path}"
         assert validation_output_path.exists(), f"Validation output missing: {validation_output_path}"
         assert validation_output_path.stat().st_size > 0, f"Validation output empty: {validation_output_path}"
+        logger.info("[4057] Validation paths OK. Checking issue detail timeline...")
 
         detail_after_review = await _fetch_issue_detail(config.web_port, issue_number)
         steps_after_review = _steps_from_issue_detail(detail_after_review)
@@ -485,6 +503,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             for step in steps_after_review
         )
         assert has_diagnostics_action, "Expected run-scoped diagnostics action in timeline steps"
+        logger.info("[4057] ALL ASSERTIONS PASSED!")
 
     finally:
         if flow and pr_number:
