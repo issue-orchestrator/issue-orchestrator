@@ -413,11 +413,15 @@ def _completion_to_reviewer_response(
             raw_json=data,
             raw_output=raw_output,
         )
-    # changes_requested or anything else
+    # changes_requested or anything else.
+    # getting_closer=None (unknown) rather than False so that each
+    # changes_requested round does not automatically count as
+    # "no progress".  The reviewer finding *new* issues after the coder
+    # addressed old ones is progress, not stagnation.
     return ReviewExchangeResponse(
         response_type="changes_requested",
         response_text=data.get("review_issues") or data.get("summary", "Changes requested"),
-        getting_closer=False,
+        getting_closer=None,
         raw_json=data,
         raw_output=raw_output,
     )
