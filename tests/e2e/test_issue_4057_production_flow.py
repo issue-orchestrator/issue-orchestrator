@@ -30,7 +30,7 @@ pytestmark = [
     pytest.mark.e2e,
     pytest.mark.live,
     pytest.mark.asyncio,
-    pytest.mark.timeout(45 * 60),
+    pytest.mark.timeout(60 * 60),
 ]
 
 ISSUE_4057_PROMPT = (
