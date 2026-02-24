@@ -152,19 +152,23 @@ class MaterializedView:
 
     def _handle_queue_changed(self, payload: dict[str, Any]) -> None:
         """Handle queue.changed event."""
-        # Handle new issues discovered during refresh
+        # Handle new issues discovered during refresh.
+        # Prefer issue_key (stable external_id) over str(number) for consistent
+        # keying with snapshots and PR_VIEW_CHANGED / ISSUE_LABELS_CHANGED events.
         for added in payload.get("added", []):
-            num = added.get("number")
-            if num is not None:
-                # Create issue key in expected format (just the number as string)
-                ik = str(num)
-                if ik not in self.issues:
-                    self.issues[ik] = IssueView(issue_key=ik)
+            ik = added.get("issue_key")
+            if ik is None:
+                num = added.get("number")
+                ik = str(num) if num is not None else None
+            if ik is not None and ik not in self.issues:
+                self.issues[ik] = IssueView(issue_key=ik)
         # Remove issues that are no longer in queue
         for removed in payload.get("removed", []):
-            num = removed.get("number")
-            if num is not None:
-                ik = str(num)
+            ik = removed.get("issue_key")
+            if ik is None:
+                num = removed.get("number")
+                ik = str(num) if num is not None else None
+            if ik is not None:
                 self.issues.pop(ik, None)
         self._mark_progress()
 

@@ -72,6 +72,10 @@ class QueueProjection:
             added_numbers = new_numbers - old_numbers
             removed_numbers = old_numbers - new_numbers
 
+            # Capture stable issue keys before the cache is replaced (needed for
+            # removal events — the Issue objects won't be available afterwards).
+            old_key_by_number = {i.number: i.key.stable_id() for i in state.cached_queue_issues}
+
             # Update state through queue cache abstraction.
             QueueCache(self._config, state).replace_from_refresh(queue_issues)
 
@@ -87,10 +91,16 @@ class QueueProjection:
                 added = [i for i in queue_issues if i.number in added_numbers]
                 change = QueueChange(added=added, removed=list(removed_numbers), total=len(queue_issues))
 
-                # Emit structured event
+                # Emit structured event with issue_key for consistent keying
                 self._events.publish(make_trace_event(EventName.QUEUE_CHANGED, {
-                    "added": [{"number": i.number, "title": i.title} for i in change.added],
-                    "removed": [{"number": num} for num in change.removed],
+                    "added": [
+                        {"number": i.number, "title": i.title, "issue_key": i.key.stable_id()}
+                        for i in change.added
+                    ],
+                    "removed": [
+                        {"number": num, "issue_key": old_key_by_number.get(num, str(num))}
+                        for num in change.removed
+                    ],
                     "total": change.total,
                 }))
                 logger.info("Queue changed: %d added, %d removed, %d total",

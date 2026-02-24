@@ -24,7 +24,7 @@ from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import AgentConfig
 from issue_orchestrator.testing.support.test_data import close_issue
 from tests.e2e.conftest import e2e_label, find_free_port
-from tests.e2e.flows import E2EFlow, issue_key_for_number, start_orchestrator_runtime
+from tests.e2e.flows import E2EFlow, start_orchestrator_runtime
 
 pytestmark = [
     pytest.mark.e2e,
@@ -367,16 +367,10 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
                 "- Validation must run through make validate-quick\n"
             ),
         )
-        # The watcher has two key formats: queue.changed uses str(issue_number),
-        # while snapshot/PR events use the external_id (e.g. "M4-057").
-        # Use the number-based key for early waits that rely on queue.changed,
-        # and the external_id key (from create_issue) for PR/snapshot operations.
-        issue_num_key = issue_key_for_number(repo_name, issue_number)
-        logger.info("[4057] Waiting for issue_seen...")
-        await flow.issue_seen(issue_num_key, timeout_s=120)
-        logger.info("[4057] issue_seen OK. Waiting for session_started...")
-        await flow.session_started(issue_num_key, timeout_s=10 * 60)
-        logger.info("[4057] session_started OK. Waiting for SESSION_STARTED event...")
+        # issue from create_issue uses the stable external_id (e.g. "M4-057"),
+        # which now matches the key format used by all watcher events.
+        await flow.issue_seen(issue, timeout_s=120)
+        await flow.session_started(issue, timeout_s=10 * 60)
 
         coding_started = await _wait_for_run_event(
             runtime.watcher,
