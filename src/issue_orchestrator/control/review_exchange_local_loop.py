@@ -139,10 +139,10 @@ class _PtySession:
     def send_follow_up(self, prompt_file: Path) -> None:
         """Send a follow-up prompt by referencing a file.
 
-        We use ``send(msg + '\\r')`` instead of ``sendline(msg)`` because
-        Claude Code runs in raw terminal mode.  In raw mode ``\\n`` (what
-        ``sendline`` appends) inserts a newline *inside* the text area
-        whereas ``\\r`` (carriage return = Enter key) submits the message.
+        NOTE: This does NOT work with Claude Code's TUI — the text appears
+        in the input area but is never submitted.  Kept for non-Claude
+        providers that read raw stdin.  For Claude Code, start a new
+        process per round instead.
         """
         msg = f"Read and follow your next instructions in {prompt_file}"
         self.child.send(msg + "\r")
@@ -679,51 +679,8 @@ def run_local_loop_exchange(  # noqa: PLR0913
     # so a second session would hang during initialization.
     _kill_existing_claude_sessions(worktree_path)
 
-    # Build first reviewer prompt
-    reviewer_prompt_text = _build_reviewer_prompt(
-        issue_number=issue_number,
-        issue_title=issue_title,
-        round_index=1,
-        last_coder_text=None,
-        last_reviewer_text=None,
-        require_validation=require_validation,
-        run_dir=run_dir,
-    )
-    reviewer_prompt_path = _write_prompt_file(exchange_dir, 1, "reviewer", reviewer_prompt_text)
-    _append_session_log(
-        run_dir, round_index=1, role="reviewer", section="prompt", content=reviewer_prompt_text,
-    )
-
-    # Start reviewer session with first prompt
-    reviewer_initial_prompt = (
-        f"You are the reviewer in a coder↔reviewer exchange for issue "
-        f"#{issue_number}: {issue_title}. "
-        f"Read your review instructions at {reviewer_prompt_path}. "
-        f"After reviewing, use `reviewer-agent-done` to report your verdict. "
-        f"Do NOT exit when done - stay available for additional review rounds."
-    )
-    reviewer_session = _start_pty_session(
-        role="reviewer",
-        agent=reviewer_agent,
-        worktree_path=worktree_path,
-        run_dir=run_dir,
-        exchange_dir=exchange_dir,
-        issue_number=issue_number,
-        issue_title=issue_title,
-        session_name=session_name,
-        agent_label=reviewer_label,
-        web_port=web_port,
-        initial_prompt=reviewer_initial_prompt,
-        prompt_file=str(reviewer_prompt_path),
-    )
-
-    coder_session_holder: list[_PtySession | None] = [None]
-    current_round = 0
-
     try:
         outcome = _run_exchange_rounds(
-            reviewer_session=reviewer_session,
-            coder_session_holder=coder_session_holder,
             worktree_path=worktree_path,
             run_dir=run_dir,
             exchange_dir=exchange_dir,
@@ -748,23 +705,73 @@ def run_local_loop_exchange(  # noqa: PLR0913
         _emit(EventName.REVIEW_EXCHANGE_FAILED, {
             "issue_number": issue_number,
             "session_name": session_name,
-            "round_index": current_round,
+            "round_index": 0,
             "error": str(exc),
             "exception_type": type(exc).__name__,
         })
         raise
-    finally:
-        # Clean up sessions
-        reviewer_session.terminate()
-        coder = coder_session_holder[0]
-        if coder is not None:
-            coder.terminate()
+
+
+def _run_phase(
+    *,
+    role: str,
+    agent: AgentConfig,
+    worktree_path: Path,
+    run_dir: Path,
+    exchange_dir: Path,
+    issue_number: int,
+    issue_title: str,
+    session_name: str,
+    agent_label: str,
+    web_port: int | None,
+    prompt_file_path: Path,
+) -> tuple[_PtySession, dict[str, Any] | None]:
+    """Start a fresh PTY session for one phase and wait for completion.
+
+    Claude Code's TUI cannot accept follow-up messages via PTY stdin, so
+    each phase (reviewer or coder) gets its own process.  The initial
+    prompt is passed on the command line, which Claude reads reliably.
+
+    Returns (session, completion_data).  The caller must terminate the
+    session when done.
+    """
+    initial_prompt = (
+        f"You are the {role} in a review exchange for issue "
+        f"#{issue_number}: {issue_title}. "
+        f"Read your instructions at {prompt_file_path}. "
+    )
+    if role == "reviewer":
+        initial_prompt += (
+            "After reviewing, use `reviewer-agent-done` to report your verdict."
+        )
+    else:
+        initial_prompt += (
+            "Address the feedback, run validation, then use "
+            "`coder-agent-done` to report completion."
+        )
+
+    session = _start_pty_session(
+        role=role,
+        agent=agent,
+        worktree_path=worktree_path,
+        run_dir=run_dir,
+        exchange_dir=exchange_dir,
+        issue_number=issue_number,
+        issue_title=issue_title,
+        session_name=session_name,
+        agent_label=agent_label,
+        web_port=web_port,
+        initial_prompt=initial_prompt,
+        prompt_file=str(prompt_file_path),
+    )
+
+    timeout = agent.timeout_minutes * 60
+    data = _wait_for_completion(session, timeout_seconds=timeout)
+    return session, data
 
 
 def _run_exchange_rounds(  # noqa: PLR0913
     *,
-    reviewer_session: _PtySession,
-    coder_session_holder: list[_PtySession | None],
     worktree_path: Path,
     run_dir: Path,
     exchange_dir: Path,
@@ -782,7 +789,12 @@ def _run_exchange_rounds(  # noqa: PLR0913
     emit: Callable[[EventName, dict[str, Any]], None],
     session_output: SessionOutput,
 ) -> ReviewExchangeOutcome:
-    """Execute the review exchange rounds with persistent sessions."""
+    """Execute the review exchange rounds.
+
+    Each phase (reviewer, coder) gets a fresh PTY process because Claude
+    Code's TUI cannot accept follow-up messages via PTY stdin.  Context
+    from previous rounds is included in the prompt text.
+    """
     no_progress_count = 0
     last_reviewer_text: str | None = None
     last_coder_text: str | None = None
@@ -795,62 +807,75 @@ def _run_exchange_rounds(  # noqa: PLR0913
         })
 
         # --- Reviewer phase ---
-        if round_index > 1:
-            # Send follow-up prompt to existing reviewer session
-            reviewer_prompt_text = _build_reviewer_prompt(
-                issue_number=issue_number,
-                issue_title=issue_title,
-                round_index=round_index,
-                last_coder_text=last_coder_text,
-                last_reviewer_text=last_reviewer_text,
-                require_validation=require_validation,
-                run_dir=run_dir,
-            )
-            reviewer_prompt_path = _write_prompt_file(
-                exchange_dir, round_index, "reviewer", reviewer_prompt_text,
-            )
-            _append_session_log(
-                run_dir,
-                round_index=round_index,
-                role="reviewer",
-                section="prompt",
-                content=reviewer_prompt_text,
-            )
-            reviewer_session.send_follow_up(reviewer_prompt_path)
-
-        # Wait for reviewer completion
-        reviewer_timeout = reviewer_agent.timeout_minutes * 60
-        reviewer_data = _wait_for_completion(reviewer_session, timeout_seconds=reviewer_timeout)
-
-        if reviewer_data is None:
-            _append_session_log(
-                run_dir,
-                round_index=round_index,
-                role="reviewer",
-                section="completion",
-                content="(no completion - timeout or session died)",
-            )
-            summary = _write_summary(exchange_dir, round_index, reviewer_response=None)
-            emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
-                "issue_number": issue_number,
-                "session_name": session_name,
-                "rounds": round_index,
-                "status": "error",
-                "reason": "reviewer_no_completion",
-            })
-            return ReviewExchangeOutcome(
-                status="error",
-                rounds=round_index,
-                reason="reviewer_no_completion",
-                exchange_dir=exchange_dir,
-                summary=summary,
-            )
-
-        _append_provider_runner_logs(
-            run_dir, round_index=round_index, role="reviewer", completion_data=reviewer_data,
+        reviewer_prompt_text = _build_reviewer_prompt(
+            issue_number=issue_number,
+            issue_title=issue_title,
+            round_index=round_index,
+            last_coder_text=last_coder_text,
+            last_reviewer_text=last_reviewer_text,
+            require_validation=require_validation,
+            run_dir=run_dir,
         )
-        reviewer_response = _completion_to_reviewer_response(reviewer_data)
-        _archive_completion(reviewer_session, round_index)
+        reviewer_prompt_path = _write_prompt_file(
+            exchange_dir, round_index, "reviewer", reviewer_prompt_text,
+        )
+        _append_session_log(
+            run_dir,
+            round_index=round_index,
+            role="reviewer",
+            section="prompt",
+            content=reviewer_prompt_text,
+        )
+
+        # Kill leftover sessions before each new phase
+        _kill_existing_claude_sessions(worktree_path)
+
+        reviewer_session, reviewer_data = _run_phase(
+            role="reviewer",
+            agent=reviewer_agent,
+            worktree_path=worktree_path,
+            run_dir=run_dir,
+            exchange_dir=exchange_dir,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=reviewer_label,
+            web_port=web_port,
+            prompt_file_path=reviewer_prompt_path,
+        )
+
+        try:
+            if reviewer_data is None:
+                _append_session_log(
+                    run_dir,
+                    round_index=round_index,
+                    role="reviewer",
+                    section="completion",
+                    content="(no completion - timeout or session died)",
+                )
+                summary = _write_summary(exchange_dir, round_index, reviewer_response=None)
+                emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "rounds": round_index,
+                    "status": "error",
+                    "reason": "reviewer_no_completion",
+                })
+                return ReviewExchangeOutcome(
+                    status="error",
+                    rounds=round_index,
+                    reason="reviewer_no_completion",
+                    exchange_dir=exchange_dir,
+                    summary=summary,
+                )
+
+            _append_provider_runner_logs(
+                run_dir, round_index=round_index, role="reviewer", completion_data=reviewer_data,
+            )
+            reviewer_response = _completion_to_reviewer_response(reviewer_data)
+            _archive_completion(reviewer_session, round_index)
+        finally:
+            reviewer_session.terminate()
 
         # Enforce validation if required
         if require_validation and reviewer_response.response_type == "ok":
@@ -959,77 +984,63 @@ def _run_exchange_rounds(  # noqa: PLR0913
             content=coder_prompt_text,
         )
 
-        if coder_session_holder[0] is None:
-            # Start coder session lazily on first need
-            coder_initial_prompt = (
-                f"You are the coder in a review exchange for issue "
-                f"#{issue_number}: {issue_title}. "
-                f"Read the review feedback at {coder_prompt_path}. "
-                f"Address the feedback, run validation, then use "
-                f"`coder-agent-done` to report completion. "
-                f"Do NOT exit when done - stay available for additional rounds."
-            )
-            coder_session_holder[0] = _start_pty_session(
-                role="coder",
-                agent=coder_agent,
-                worktree_path=worktree_path,
-                run_dir=run_dir,
-                exchange_dir=exchange_dir,
-                issue_number=issue_number,
-                issue_title=issue_title,
-                session_name=session_name,
-                agent_label=coder_label,
-                web_port=web_port,
-                initial_prompt=coder_initial_prompt,
-                prompt_file=str(coder_prompt_path),
-            )
-        else:
-            # Send follow-up to existing coder session
-            coder_session_holder[0].send_follow_up(coder_prompt_path)
+        # Kill reviewer before starting coder
+        _kill_existing_claude_sessions(worktree_path)
 
-        coder_session = coder_session_holder[0]
-
-        # Wait for coder completion
-        coder_timeout = coder_agent.timeout_minutes * 60
-        coder_data = _wait_for_completion(coder_session, timeout_seconds=coder_timeout)
-
-        if coder_data is None:
-            _append_session_log(
-                run_dir,
-                round_index=round_index,
-                role="coder",
-                section="completion",
-                content="(no completion - timeout or session died)",
-            )
-            summary = _write_summary(exchange_dir, round_index, reviewer_response)
-            emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
-                "issue_number": issue_number,
-                "session_name": session_name,
-                "round_index": round_index,
-                "reviewer_response_type": reviewer_response.response_type,
-                "coder_response_type": "error",
-            })
-            emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
-                "issue_number": issue_number,
-                "session_name": session_name,
-                "rounds": round_index,
-                "status": "error",
-                "reason": "coder_no_completion",
-            })
-            return ReviewExchangeOutcome(
-                status="error",
-                rounds=round_index,
-                reason="coder_no_completion",
-                reviewer_response=reviewer_response,
-                exchange_dir=exchange_dir,
-                summary=summary,
-            )
-
-        _append_provider_runner_logs(
-            run_dir, round_index=round_index, role="coder", completion_data=coder_data,
+        coder_session, coder_data = _run_phase(
+            role="coder",
+            agent=coder_agent,
+            worktree_path=worktree_path,
+            run_dir=run_dir,
+            exchange_dir=exchange_dir,
+            issue_number=issue_number,
+            issue_title=issue_title,
+            session_name=session_name,
+            agent_label=coder_label,
+            web_port=web_port,
+            prompt_file_path=coder_prompt_path,
         )
-        coder_response = _completion_to_coder_response(coder_data)
-        _archive_completion(coder_session, round_index)
+
+        try:
+            if coder_data is None:
+                _append_session_log(
+                    run_dir,
+                    round_index=round_index,
+                    role="coder",
+                    section="completion",
+                    content="(no completion - timeout or session died)",
+                )
+                summary = _write_summary(exchange_dir, round_index, reviewer_response)
+                emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "round_index": round_index,
+                    "reviewer_response_type": reviewer_response.response_type,
+                    "coder_response_type": "error",
+                })
+                emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "rounds": round_index,
+                    "status": "error",
+                    "reason": "coder_no_completion",
+                })
+                return ReviewExchangeOutcome(
+                    status="error",
+                    rounds=round_index,
+                    reason="coder_no_completion",
+                    reviewer_response=reviewer_response,
+                    exchange_dir=exchange_dir,
+                    summary=summary,
+                )
+
+            _append_provider_runner_logs(
+                run_dir, round_index=round_index, role="coder", completion_data=coder_data,
+            )
+            coder_response = _completion_to_coder_response(coder_data)
+            _archive_completion(coder_session, round_index)
+        finally:
+            coder_session.terminate()
 
         _write_round_log(
             exchange_dir=exchange_dir,
