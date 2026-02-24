@@ -67,6 +67,7 @@ class DashboardViewModelPayload(BaseModel):
     history_items: list[IssueItemPayload]
     issues: list[IssueItemPayload]
     paused: bool
+    provider_status: list[dict[str, Any]]
     queue_count: int
     queue_items: list[IssueItemPayload]
     queue_page: int

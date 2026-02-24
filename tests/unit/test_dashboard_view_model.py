@@ -681,3 +681,52 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_surfaces_provider_circuit_breaker_status():
+    from datetime import timezone
+    from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
+
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    open_until = datetime.now(timezone.utc) + timedelta(minutes=5)
+    store.save(ProviderCircuitState(
+        provider="claude-code",
+        open_until=open_until,
+        consecutive_outages=2,
+        last_error_summary="Rate limit exceeded",
+        updated_at=datetime.now(timezone.utc),
+    ))
+
+    class _MockProviderResilience:
+        def __init__(self, s):
+            self.store = s
+
+    class _MockDeps:
+        def __init__(self, pr):
+            self.provider_resilience = pr
+
+    orchestrator = _OrchestratorStub(state=state, config=config)
+    orchestrator.deps = _MockDeps(_MockProviderResilience(store))  # type: ignore[attr-defined]
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_status) == 1
+    entry = view_model.provider_status[0]
+    assert entry["provider"] == "claude-code"
+    assert entry["is_open"] is True
+    assert entry["consecutive_outages"] == 2
+    assert entry["last_error_summary"] == "Rate limit exceeded"
+    assert entry["open_until"] is not None
+
+    dashboard_data = view_model.dashboard_data()
+    assert len(dashboard_data["providerStatus"]) == 1
+    assert dashboard_data["providerStatus"][0]["provider"] == "claude-code"
