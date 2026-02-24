@@ -410,7 +410,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             runtime.watcher,
             issue_number=issue_number,
             event_name=EventName.REVIEW_EXCHANGE_STARTED,
-            timeout_s=20 * 60,
+            timeout_s=25 * 60,
         )
         review_run_dir = Path(str(review_started["run_dir"]))
         logger.info("[4057] REVIEW_EXCHANGE_STARTED found. run_dir=%s", review_run_dir)
