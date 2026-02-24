@@ -24,7 +24,7 @@ from issue_orchestrator.events import EventName
 from issue_orchestrator.infra.config import AgentConfig
 from issue_orchestrator.testing.support.test_data import close_issue
 from tests.e2e.conftest import e2e_label, find_free_port
-from tests.e2e.flows import E2EFlow, issue_key_for_number, start_orchestrator_runtime
+from tests.e2e.flows import E2EFlow, start_orchestrator_runtime
 
 pytestmark = [
     pytest.mark.e2e,
@@ -367,7 +367,6 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
                 "- Validation must run through make validate-quick\n"
             ),
         )
-        issue = issue_key_for_number(repo_name, issue_number)
         logger.info("[4057] Waiting for issue_seen...")
         await flow.issue_seen(issue, timeout_s=120)
         logger.info("[4057] issue_seen OK. Waiting for session_started...")
