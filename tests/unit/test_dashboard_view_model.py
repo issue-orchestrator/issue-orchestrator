@@ -681,3 +681,71 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_provider_circuit_status_open_circuit_in_view_model():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    open_circuit = {
+        "provider": "claude-3-5-sonnet",
+        "open_until": "2099-01-01T00:00:00+00:00",
+        "consecutive_outages": 2,
+        "last_error_summary": "Rate limit exceeded",
+    }
+
+    def provider(orch):
+        return {"any_open": True, "open_circuits": [open_circuit]}
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        provider_circuit_status_provider=provider,
+    )
+
+    assert view_model.provider_circuit_status["any_open"] is True
+    assert len(view_model.provider_circuit_status["open_circuits"]) == 1
+    assert view_model.provider_circuit_status["open_circuits"][0]["provider"] == "claude-3-5-sonnet"
+    assert view_model.dashboard_data()["providerCircuitStatus"]["any_open"] is True
+
+
+def test_provider_circuit_status_no_open_circuits():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        provider_circuit_status_provider=lambda _: {"any_open": False, "open_circuits": []},
+    )
+
+    assert view_model.provider_circuit_status["any_open"] is False
+    assert view_model.provider_circuit_status["open_circuits"] == []
+    assert view_model.dashboard_data()["providerCircuitStatus"]["any_open"] is False
+
+
+def test_provider_circuit_status_default_provider_safe_with_stub():
+    """Default provider_circuit_status_provider handles stub orchestrators gracefully."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    # No provider_circuit_status_provider passed - default must not raise on stub
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert "any_open" in view_model.provider_circuit_status
+    assert view_model.provider_circuit_status["any_open"] is False
