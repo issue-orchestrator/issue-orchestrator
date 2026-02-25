@@ -773,6 +773,7 @@ class SessionLauncher:
                 issue_number=issue.number,
                 label=in_progress_label,
                 reason="session launched",
+                issue_key=issue.key.stable_id(),
             ),
         ], context="launch_in_progress_label")
         if not label_ok:
@@ -878,6 +879,7 @@ class SessionLauncher:
                     issue_number=issue.number,
                     label=self._lm.in_progress,
                     reason="session creation failed",
+                    issue_key=issue.key.stable_id(),
                 ),
             ], context="launch_session_creation_failed")
             self._release_claim_if_held(issue.number, claim)
@@ -2057,7 +2059,8 @@ def handle_session_completion(  # noqa: C901, PLR0912 - handles validation, acti
     if result.should_queue_review and result.pr_url and result.pr_number:
         state.discovered_reviews.append(DiscoveredReview(
             session.issue.number, result.pr_number, result.pr_url, session.branch_name,
-            agent_label=session.agent_label
+            agent_label=session.agent_label,
+            issue_key=session.issue.key.stable_id(),
         ))
     if status in (SessionStatus.FAILED, SessionStatus.TIMED_OUT):
         state.discovered_failures.append(DiscoveredFailure(session.issue.number, session.issue.title, status.value))
