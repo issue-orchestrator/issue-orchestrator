@@ -268,7 +268,7 @@ class ActionApplier:
             self._persist_label_add(action.issue_number, action.label)
             self._record_label_stat(action.issue_number, "label_add_applied")
             logger.info(issue_log(action.issue_number, "Label added: %s"), action.label)
-            self._emit_issue_labels_changed(action.issue_number, [action.label], [])
+            self._emit_issue_labels_changed(action.issue_number, [action.label], [], issue_key=action.issue_key)
             return ActionResult.ok(
                 action,
                 issue_number=action.issue_number,
@@ -316,7 +316,7 @@ class ActionApplier:
             self._persist_label_remove(action.issue_number, action.label)
             self._record_label_stat(action.issue_number, "label_remove_applied")
             logger.info(issue_log(action.issue_number, "Label removed: %s"), action.label)
-            self._emit_issue_labels_changed(action.issue_number, [], [action.label])
+            self._emit_issue_labels_changed(action.issue_number, [], [action.label], issue_key=action.issue_key)
             return ActionResult.ok(
                 action,
                 issue_number=action.issue_number,
@@ -599,6 +599,7 @@ class ActionApplier:
             action.issue_number,
             list(action.add_labels),
             list(action.remove_labels),
+            issue_key=action.issue_key,
         )
         return ActionResult.ok(
             action,
@@ -763,6 +764,7 @@ class ActionApplier:
             issue_number=action.issue_number,
             added=added_labels,
             removed=removed_labels,
+            issue_key=action.issue_key,
         )
 
         # Post explanatory comment
@@ -881,6 +883,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                     issue_number=action.issue_number,
                     added=[action.code_review_label],
                     removed=[],
+                    issue_key=action.issue_key,
                 )
             except Exception as e:
                 self._record_label_stat(action.issue_number or action.pr_number, "label_mutation_failed")
@@ -1033,6 +1036,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         issue_number: int,
         added: list[str],
         removed: list[str],
+        issue_key: str = "",
     ) -> None:
         if not added and not removed:
             return
@@ -1040,7 +1044,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
             EventName.ISSUE_LABELS_CHANGED,
             {
                 "issue_number": issue_number,
-                "issue_key": str(issue_number),
+                "issue_key": issue_key or str(issue_number),
                 "added": added,
                 "removed": removed,
             },
@@ -1052,6 +1056,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         issue_number: int | None,
         added: list[str],
         removed: list[str],
+        issue_key: str = "",
     ) -> None:
         if not added and not removed:
             return
@@ -1062,7 +1067,7 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         }
         if issue_number is not None:
             payload["issue_number"] = issue_number
-            payload["issue_key"] = str(issue_number)
+            payload["issue_key"] = issue_key or str(issue_number)
         self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, payload))
 
     @staticmethod

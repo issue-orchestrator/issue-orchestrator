@@ -34,6 +34,9 @@ DEFAULT_FORBIDDEN_ENV_VARS: list[str] = [
     "AWS_SESSION_TOKEN",
     # SSH agent - can forward credentials
     "SSH_AUTH_SOCK",
+    # Claude Code nesting detection - must not leak into child agents
+    "CLAUDECODE",
+    "CLAUDE_CODE_ENTRYPOINT",
 ]
 
 # Environment variables to set for safe git behavior

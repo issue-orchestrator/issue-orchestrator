@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from .state_machine_manager import StateMachineManager
     from .label_manager import LabelManager
 
+from ..domain.issue_key import StableIssueId
 from ..infra.config import Config
 from ..events import EventName
 from ..infra.logging_config import log_context, get_repo_log_path
@@ -950,7 +951,7 @@ class CompletionHandler:
     def _emit_pr_view_changed(
         self,
         pr_info: Any,
-        issue_key: str | None,
+        issue_key: StableIssueId | None,
         issue_number: int | None,
     ) -> None:
         payload = {
@@ -968,7 +969,7 @@ class CompletionHandler:
         self,
         pr_number: int,
         pr_url: str,
-        issue_key: str,
+        issue_key: StableIssueId,
         issue_number: int,
     ) -> None:
         payload = {

@@ -27,7 +27,9 @@ Usage:
 
 import re
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import NewType, Protocol, runtime_checkable
+
+StableIssueId = NewType("StableIssueId", str)
 
 
 @runtime_checkable
@@ -38,7 +40,7 @@ class IssueKey(Protocol):
     Resolution belongs to IssueResolver, not here.
     """
 
-    def stable_id(self) -> str:
+    def stable_id(self) -> StableIssueId:
         """Stable, human-meaningful identifier (e.g. 'M1-011')."""
         ...
 
@@ -71,8 +73,8 @@ class GitHubIssueKey:
     repo: str
     external_id: str  # M1-011
 
-    def stable_id(self) -> str:
-        return self.external_id
+    def stable_id(self) -> StableIssueId:
+        return StableIssueId(self.external_id)
 
     def scope(self) -> str:
         return self.repo
@@ -91,8 +93,8 @@ class FakeIssueKey:
     name: str
     test_scope: str = "test"
 
-    def stable_id(self) -> str:
-        return self.name
+    def stable_id(self) -> StableIssueId:
+        return StableIssueId(self.name)
 
     def scope(self) -> str:
         return self.test_scope

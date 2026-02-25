@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID, uuid4
 
+from ..domain.issue_key import StableIssueId
 from .catalog import EVENT_SCHEMA_VERSION
 
 
@@ -50,7 +51,7 @@ class EventContext:
         }
 
     def for_issue(
-        self, issue_key: str, issue_number: int | None = None
+        self, issue_key: StableIssueId, issue_number: int | None = None
     ) -> dict[str, Any]:
         """Create a base payload for issue-related events.
 
@@ -69,7 +70,7 @@ class EventContext:
     def for_session(
         self,
         session_id: str,
-        issue_key: str,
+        issue_key: StableIssueId,
         issue_number: int | None = None,
     ) -> dict[str, Any]:
         """Create a base payload for session-related events.

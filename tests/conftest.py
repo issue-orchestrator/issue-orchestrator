@@ -43,6 +43,34 @@ def isolate_git_env(monkeypatch):
         monkeypatch.delenv(var, raising=False)
 
 
+@pytest.fixture(autouse=True)
+def isolate_orchestrator_env(monkeypatch):
+    """Strip orchestrator env vars to prevent test pollution from parent processes.
+
+    When the orchestrator launches an agent, it exports ISSUE_ORCHESTRATOR_*
+    vars (SESSION_ID, CONFIG_PATH, etc.) for agent-done. If the agent then runs
+    `make validate-quick` (pytest), these vars leak into unit tests and cause
+    failures — e.g., CONFIG_PATH overrides test-local configs, SESSION_ID
+    overrides mocked values.
+
+    Similarly, ORCHESTRATOR_WORKTREE_BASE_BRANCH (set by e2e fixtures) can
+    override test expectations in resolve_base_branch tests.
+
+    This fixture strips them so tests always start with a clean env.
+    Tests that need specific values set them explicitly via patch.dict.
+    """
+    orchestrator_env_vars = [
+        "ORCHESTRATOR_WORKTREE_BASE_BRANCH",
+    ]
+    for var in orchestrator_env_vars:
+        monkeypatch.delenv(var, raising=False)
+
+    # Strip all ISSUE_ORCHESTRATOR_* vars (SESSION_ID, CONFIG_PATH, etc.)
+    for var in list(os.environ):
+        if var.startswith("ISSUE_ORCHESTRATOR_"):
+            monkeypatch.delenv(var, raising=False)
+
+
 class MockGitHubAdapter:
     """Mock GitHub adapter implementing port interfaces for testing.
 

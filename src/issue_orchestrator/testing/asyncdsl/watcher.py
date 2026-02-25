@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import logging
 from typing import Optional
 
+from issue_orchestrator.domain.issue_key import StableIssueId
 from .contracts import EventStream, SnapshotProvider, ReplayProvider
 from .materializer import MaterializedView
 from .dsl import IssueWatch, SystemWatch
@@ -60,7 +61,7 @@ class OrchestratorWatcher:
         except asyncio.CancelledError:
             pass
 
-    def issue(self, issue_key: str) -> IssueWatch:
+    def issue(self, issue_key: StableIssueId) -> IssueWatch:
         return IssueWatch(issue_key=issue_key, view=self.view, cfg=self.cfg, _notify=self._notify)
 
     def system(self) -> SystemWatch:

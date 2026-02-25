@@ -458,12 +458,14 @@ class Planner:
 
         for review in snapshot.discovered_reviews:
             if review.pr_number not in queued_pr_numbers:
+                ik = review.issue_key or str(review.issue_number)
                 # Add pr-pending label to prevent issue re-pickup while awaiting merge
                 actions.append(AddLabelAction(
                     issue_number=review.issue_number,
                     label=self._lm.pr_pending,
                     reason=f"session completed with PR #{review.pr_number} - awaiting merge",
                     expected=build_expected_for_mutation(),
+                    issue_key=ik,
                 ))
                 # Skip review for dry-run PRs (fake PR numbers 90000-99999)
                 is_dry_run_pr = 90000 <= review.pr_number <= 99999
@@ -478,6 +480,7 @@ class Planner:
                         agent_label=review.agent_label,
                         reason=f"session completed with PR #{review.pr_number}",
                         expected=build_expected_for_mutation(),
+                        issue_key=ik,
                     ))
                     logger.debug("Planner: queuing review for PR #%d", review.pr_number)
                 else:
@@ -544,6 +547,7 @@ class Planner:
                     label=label,
                     reason=f"provider unavailable: {', '.join(sorted(providers))}",
                     expected=build_expected_for_mutation(),
+                    issue_key=issue.key.stable_id(),
                 ))
                 plan_context.record_add(issue.number, label)
             if (
@@ -556,6 +560,7 @@ class Planner:
                     label=label,
                     reason=f"provider available: {', '.join(sorted(providers))}",
                     expected=build_expected_for_mutation(),
+                    issue_key=issue.key.stable_id(),
                 ))
                 plan_context.record_remove(issue.number, label)
         return actions
@@ -587,6 +592,7 @@ class Planner:
 
         for observed in snapshot.observed_completions:
             issue_number = observed.issue_number
+            ik = observed.issue_key_str
 
             # Always remove in-progress label when session completes
             actions.append(RemoveLabelAction(
@@ -594,6 +600,7 @@ class Planner:
                 label=self._lm.in_progress,
                 reason=f"session completed with outcome={observed.outcome}",
                 expected=build_expected_for_mutation(),
+                issue_key=ik,
             ))
 
             # Add outcome-specific label immediately
@@ -606,6 +613,7 @@ class Planner:
                         label=self._lm.pr_pending,
                         reason="session completed - publish job pending",
                         expected=build_expected_for_mutation(),
+                        issue_key=ik,
                     ))
                     logger.debug(
                         "Planner: projecting pr-pending label for issue #%d (publish job pending)",
@@ -620,6 +628,7 @@ class Planner:
                         label=blocked_label,
                         reason=f"session blocked: {observed.blocked_reason or 'unknown'}",
                         expected=build_expected_for_mutation(),
+                        issue_key=ik,
                     ))
                     plan_context.record_add(issue_number, blocked_label)
                     logger.debug("Planner: adding blocked label for issue #%d", issue_number)
@@ -631,6 +640,7 @@ class Planner:
                         label=self._lm.needs_human,
                         reason="session needs human intervention",
                         expected=build_expected_for_mutation(),
+                        issue_key=ik,
                     ))
                     plan_context.record_add(issue_number, self._lm.needs_human)
                     logger.debug("Planner: adding blocked-needs-human label for issue #%d", issue_number)
@@ -911,6 +921,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 label=self._lm.in_progress,
                 reason="stale - no running session",
                 expected=build_expected_for_mutation(),
+                issue_key=issue.key.stable_id(),
             ))
             logger.info("Planner: removing stale in-progress label from issue #%d",
                        issue.number)
@@ -944,6 +955,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 label=self._lm.io_claimed,
                 reason="stale claim expired",
                 expected=build_expected_for_mutation(),
+                issue_key=issue.key.stable_id(),
             ))
             # Add blocked:stale-claim label for visibility
             actions.append(AddLabelAction(
@@ -951,6 +963,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                 label=self._lm.blocked_stale_claim,
                 reason="stale claim detected - orchestrator may have crashed",
                 expected=build_expected_for_mutation(),
+                issue_key=issue.key.stable_id(),
             ))
             logger.info("Planner: cleaning up stale claim on issue #%d",
                        issue.number)
@@ -1012,6 +1025,7 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     label=self._lm.blocked_cross_milestone,
                     reason=f"dependency violates milestone scope: {reason}",
                     expected=build_expected_for_mutation(),
+                    issue_key=issue.key.stable_id(),
                 ))
 
         # Filter out providers with open circuit

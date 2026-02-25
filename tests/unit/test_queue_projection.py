@@ -238,7 +238,7 @@ class TestUpdateAndEmit:
             event = sample_event_sink.last_event(str(EventName.QUEUE_CHANGED))
             assert event is not None
             assert event.data["added"] == []
-            assert event.data["removed"] == [{"number": 1}]
+            assert event.data["removed"] == [{"number": 1, "issue_key": "1"}]
             assert event.data["total"] == 0
 
     def test_queue_changed_both_added_and_removed(self, queue_projection, sample_event_sink):

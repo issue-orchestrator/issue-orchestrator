@@ -95,6 +95,7 @@ class AddLabelAction(Action):
 
     issue_number: int = 0
     label: str = ""
+    issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     action_type: ActionType = field(default=ActionType.ADD_LABEL, init=False)
 
 
@@ -104,6 +105,7 @@ class RemoveLabelAction(Action):
 
     issue_number: int = 0
     label: str = ""
+    issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     action_type: ActionType = field(default=ActionType.REMOVE_LABEL, init=False)
 
 
@@ -114,6 +116,7 @@ class SyncLabelsAction(Action):
     issue_number: int = 0
     add_labels: tuple[str, ...] = field(default_factory=tuple)
     remove_labels: tuple[str, ...] = field(default_factory=tuple)
+    issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     action_type: ActionType = field(default=ActionType.SYNC_LABELS, init=False)
 
 
@@ -166,6 +169,7 @@ class QueueReviewAction(Action):
     branch_name: str = ""
     code_review_label: str = ""  # Label to add (e.g., needs-code-review)
     agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
+    issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     action_type: ActionType = field(default=ActionType.QUEUE_REVIEW, init=False)
 
 
@@ -224,6 +228,7 @@ class EscalateToHumanAction(Action):
     needs_rework_label: str = "needs-rework"
     max_rework_cycles: int = 3  # For comment message
     latest_review_body: Optional[str] = None  # Latest review feedback to include
+    issue_key: str = ""  # stable_id for SSE events; falls back to str(issue_number) when empty
     action_type: ActionType = field(default=ActionType.ESCALATE_TO_HUMAN, init=False)
 
 

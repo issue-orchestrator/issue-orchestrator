@@ -321,6 +321,7 @@ class CompletionObserver:
                 issue_title=session.issue.title,
                 session_key=session.key.stable_id(),
                 terminal_id=session.terminal_id,
+                issue_key=session.issue.key.stable_id(),
             ),
             worktree=WorktreeLocation(
                 path=str(session.worktree_path),

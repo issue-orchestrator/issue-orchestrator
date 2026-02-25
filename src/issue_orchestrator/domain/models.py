@@ -125,6 +125,7 @@ class SessionIdentity:
     issue_title: str
     session_key: str  # e.g., "code:123" or "review:456"
     terminal_id: str
+    issue_key: str = ""  # stable_id (e.g., "M1-011"); falls back to str(issue_number) when empty
 
 
 @dataclass(frozen=True)
@@ -690,6 +691,7 @@ class DiscoveredReview:
     pr_url: str
     branch_name: str
     agent_label: Optional[str] = None  # Agent that created the PR (for per-agent reviewer)
+    issue_key: str = ""  # stable_id; falls back to str(issue_number) when empty
 
 
 @dataclass(frozen=True)
@@ -887,6 +889,11 @@ class ObservedCompletion:
     @property
     def terminal_id(self) -> str:
         return self.identity.terminal_id
+
+    @property
+    def issue_key_str(self) -> str:
+        """Stable issue key for SSE events; falls back to str(issue_number)."""
+        return self.identity.issue_key or str(self.identity.issue_number)
 
     @property
     def worktree_path(self) -> str:

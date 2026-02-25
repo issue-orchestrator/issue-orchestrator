@@ -2,6 +2,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Set
 
+from issue_orchestrator.domain.issue_key import StableIssueId
+
 @dataclass
 class PRView:
     number: Optional[int] = None
@@ -10,7 +12,7 @@ class PRView:
 
 @dataclass
 class IssueView:
-    issue_key: str
+    issue_key: StableIssueId
     labels: Set[str] = field(default_factory=set)
     state: Optional[str] = None
     pr: PRView = field(default_factory=PRView)
@@ -28,4 +30,4 @@ class OrchestratorView:
 class Snapshot:
     snapshot_id: int
     orchestrator: OrchestratorView
-    issues: Dict[str, IssueView]
+    issues: Dict[StableIssueId, IssueView]

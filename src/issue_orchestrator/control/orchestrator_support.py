@@ -660,9 +660,31 @@ def _fetch_and_update_queue(
             _, dep_blocked = scheduler.get_available_issues(all_issues)
             github_workflow.update_dependency_problems(state, dep_blocked)
 
+        # Capture old queue state BEFORE mutation so the diff is correct.
+        # (replace_from_refresh mutates state.cached_queue_issues in-place.)
+        old_numbers = {i.number for i in state.cached_queue_issues}
+        old_key_by_number = {i.number: i.key.stable_id() for i in state.cached_queue_issues}
+
         queue_cache = QueueCache(config, state)
         new_queue = queue_cache.replace_from_refresh(all_issues)
-        _emit_queue_changes(events, state, new_queue)
+
+        new_numbers = {i.number for i in new_queue}
+        added_numbers = new_numbers - old_numbers
+        removed_numbers = old_numbers - new_numbers
+        if added_numbers or removed_numbers:
+            added = [
+                {"number": i.number, "title": i.title, "issue_key": i.key.stable_id()}
+                for i in new_queue if i.number in added_numbers
+            ]
+            removed = [
+                {"number": num, "issue_key": old_key_by_number.get(num, str(num))}
+                for num in removed_numbers
+            ]
+            events.publish(make_trace_event(EventName.QUEUE_CHANGED, {
+                "added": added, "removed": removed, "total": len(new_queue),
+            }))
+            logger.info("Queue changed: %d added, %d removed, %d total",
+                        len(added), len(removed), len(new_queue))
         state.queue_last_refresh_at = refresh_started_at
         state.queue_last_network_sync_at = refresh_started_at
         state.queue_refresh_count += 1
@@ -919,14 +941,27 @@ def emit_queue_changes(events: EventSink, state: "OrchestratorState", new_queue:
 
 
 def _emit_queue_changes(events: EventSink, state: "OrchestratorState", new_queue: list["Issue"]) -> None:
-    """Detect and emit queue changes."""
+    """Detect and emit queue changes.
+
+    NOTE: ``state.cached_queue_issues`` must still reflect the *old* queue
+    when this function is called.  If a caller mutates the cache first
+    (e.g. via ``replace_from_refresh``), the diff will be empty and no
+    event will be published.
+    """
     old_numbers = {i.number for i in state.cached_queue_issues}
+    old_key_by_number = {i.number: i.key.stable_id() for i in state.cached_queue_issues}
     new_numbers = {i.number for i in new_queue}
     added_numbers = new_numbers - old_numbers
     removed_numbers = old_numbers - new_numbers
     if added_numbers or removed_numbers:
-        added = [{"number": i.number, "title": i.title} for i in new_queue if i.number in added_numbers]
-        removed = [{"number": n} for n in removed_numbers]
+        added = [
+            {"number": i.number, "title": i.title, "issue_key": i.key.stable_id()}
+            for i in new_queue if i.number in added_numbers
+        ]
+        removed = [
+            {"number": num, "issue_key": old_key_by_number.get(num, str(num))}
+            for num in removed_numbers
+        ]
         events.publish(make_trace_event(EventName.QUEUE_CHANGED, {"added": added, "removed": removed, "total": len(new_queue)}))
         logger.info("Queue changed: %d added, %d removed, %d total", len(added), len(removed), len(new_queue))
 
