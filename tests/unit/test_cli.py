@@ -497,6 +497,11 @@ class TestSetupLogging:
         from issue_orchestrator.infra.logging_config import reset_logging
         reset_logging()
 
+    @pytest.fixture(autouse=True)
+    def clear_log_env(self, monkeypatch):
+        """Clear env vars that affect logging behavior."""
+        monkeypatch.delenv("ORCHESTRATOR_LOG_TO_STDERR", raising=False)
+
     def test_setup_logging_default(self):
         """Verify logging setup with default settings."""
         with patch('logging.getLogger') as mock_get_logger:

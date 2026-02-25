@@ -681,3 +681,55 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_provider_circuit_breaker_status_surfaced_when_open():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    open_circuit = {
+        "provider": "anthropic",
+        "is_open": True,
+        "open_until": "2026-02-25T13:00:00+00:00",
+        "consecutive_outages": 2,
+        "last_error": "API error 429: rate limit exceeded",
+    }
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        circuit_breaker_provider=lambda _: [open_circuit],
+    )
+
+    assert len(view_model.provider_circuit_breaker) == 1
+    assert view_model.provider_circuit_breaker[0]["provider"] == "anthropic"
+    assert view_model.provider_circuit_breaker[0]["is_open"] is True
+    assert view_model.provider_circuit_breaker[0]["consecutive_outages"] == 2
+
+    dashboard_data = view_model.dashboard_data()
+    assert dashboard_data["providerCircuitOpen"] is True
+    assert len(dashboard_data["providerCircuitBreaker"]) == 1
+
+
+def test_provider_circuit_breaker_status_empty_when_no_outages():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        circuit_breaker_provider=lambda _: [],
+    )
+
+    assert view_model.provider_circuit_breaker == []
+    dashboard_data = view_model.dashboard_data()
+    assert dashboard_data["providerCircuitOpen"] is False
+    assert dashboard_data["providerCircuitBreaker"] == []

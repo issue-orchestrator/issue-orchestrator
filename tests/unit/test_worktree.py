@@ -148,6 +148,11 @@ class TestBranchSuffix:
 class TestCreateWorktree:
     """Test the create_worktree function."""
 
+    @pytest.fixture(autouse=True)
+    def clear_worktree_env(self, monkeypatch):
+        """Clear env vars that affect worktree reuse behavior."""
+        monkeypatch.delenv("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", raising=False)
+
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_success(self, mock_run, tmp_path):
         """Test successful worktree creation."""
@@ -1287,6 +1292,11 @@ class TestInstallClaudeSettings:
 
 class TestCreateWorktreeReuse:
     """Test reuse flow via create_worktree (public API)."""
+
+    @pytest.fixture(autouse=True)
+    def clear_worktree_env(self, monkeypatch):
+        """Clear env vars that affect worktree reuse behavior."""
+        monkeypatch.delenv("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", raising=False)
 
     def _policy(self):
         from issue_orchestrator.ports.worktree_policy import ValidationResult, SyncResult

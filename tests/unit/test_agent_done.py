@@ -161,7 +161,7 @@ class TestGetSessionId:
 
     def test_get_session_id_from_env(self):
         """Test getting session ID from environment variable."""
-        with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "test-session-123"}):
+        with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "test-session-123"}, clear=True):
             session_id = get_session_id()
             assert session_id == "test-session-123"
 
@@ -652,6 +652,18 @@ class TestWriteMarkerFile:
 class TestMain:
     """Test the main function."""
 
+    @pytest.fixture(autouse=True)
+    def clear_orchestrator_env(self, monkeypatch):
+        """Clear orchestrator env vars that would leak from real sessions."""
+        for var in [
+            f"{ENV_PREFIX}SESSION_ID",
+            f"{ENV_PREFIX}CONFIG_PATH",
+            f"{ENV_PREFIX}CONFIG_NAME",
+            f"{ENV_PREFIX}API_PORT",
+            f"{ENV_PREFIX}ISSUE_NUMBER",
+        ]:
+            monkeypatch.delenv(var, raising=False)
+
     def test_main_completed_dry_run(self, capsys):
         """Test dry run mode for completed status."""
         with patch('sys.argv', [
@@ -930,6 +942,18 @@ class TestCompletionRecordSerialization:
 
 class TestAgentGateIntegration:
     """Test agent gate validation integration in the main function."""
+
+    @pytest.fixture(autouse=True)
+    def clear_orchestrator_env(self, monkeypatch):
+        """Clear orchestrator env vars that would leak from real sessions."""
+        for var in [
+            f"{ENV_PREFIX}SESSION_ID",
+            f"{ENV_PREFIX}CONFIG_PATH",
+            f"{ENV_PREFIX}CONFIG_NAME",
+            f"{ENV_PREFIX}API_PORT",
+            f"{ENV_PREFIX}ISSUE_NUMBER",
+        ]:
+            monkeypatch.delenv(var, raising=False)
 
     def test_agent_gate_runs_when_configured(self, tmp_path, capsys):
         """Test that agent gate validation runs when configured."""

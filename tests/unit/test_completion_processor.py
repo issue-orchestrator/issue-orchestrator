@@ -1216,6 +1216,11 @@ class TestCompletionProcessorPRActions:
 class TestCompletionProcessorGitActions:
     """Tests for git-related actions from completion records."""
 
+    @pytest.fixture(autouse=True)
+    def clear_e2e_env(self, monkeypatch):
+        """Clear e2e env vars that would leak from real sessions."""
+        monkeypatch.delenv("E2E_SKIP_PUSH_HOOKS", raising=False)
+
     def test_push_branch_action_calls_adapter(
         self, processor, mock_git_adapter, worktree_with_completion
     ):
