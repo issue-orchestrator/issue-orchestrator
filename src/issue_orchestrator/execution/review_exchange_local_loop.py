@@ -36,7 +36,7 @@ from ..ports.session_output import SessionOutput
 from ..events import EventName, EventContext
 from ..resources import get_agent_done_instructions
 
-from .review_exchange_loop import (
+from ..control.review_exchange_loop import (
     ReviewExchangeOutcome,
     ReviewExchangeResponse,
     _escape_claude_project_path,
@@ -54,6 +54,44 @@ _COMPLETION_POLL_INTERVAL = 2.0  # seconds between completion file checks
 # ---------------------------------------------------------------------------
 # Pre-flight cleanup
 # ---------------------------------------------------------------------------
+
+
+def _pid_cwd_in_worktree(pid: int, worktree_str: str) -> bool:
+    """Return True if *pid*'s cwd is inside *worktree_str*."""
+    try:
+        lsof = subprocess.run(
+            ["lsof", "-p", str(pid), "-Fn"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False
+    cwd_found = False
+    for line in lsof.stdout.splitlines():
+        if line == "fcwd":
+            cwd_found = True
+        elif cwd_found and line.startswith("n"):
+            proc_cwd = line[1:]
+            return proc_cwd == worktree_str or proc_cwd.startswith(worktree_str + "/")
+        else:
+            cwd_found = False
+    return False
+
+
+def _wait_and_force_kill(pids: list[int], timeout: float) -> None:
+    """Wait for *pids* to exit; SIGKILL any that survive past *timeout*."""
+    deadline = time.monotonic() + timeout
+    for pid in pids:
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+                time.sleep(0.5)
+            except ProcessLookupError:
+                break
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
 
 
 def _kill_existing_claude_sessions(worktree_path: Path, *, timeout: float = 10.0) -> None:
@@ -79,24 +117,10 @@ def _kill_existing_claude_sessions(worktree_path: Path, *, timeout: float = 10.0
     killed: list[int] = []
     for pid in pids:
         try:
-            lsof = subprocess.run(
-                ["lsof", "-p", str(pid), "-Fn"],
-                capture_output=True, text=True, timeout=5,
-            )
-            # Check if the cwd (field 'n' after 'cwd' type) is inside the worktree
-            cwd_found = False
-            for line in lsof.stdout.splitlines():
-                if line == "fcwd":
-                    cwd_found = True
-                elif cwd_found and line.startswith("n"):
-                    proc_cwd = line[1:]
-                    if proc_cwd == worktree_str or proc_cwd.startswith(worktree_str + "/"):
-                        os.kill(pid, signal.SIGTERM)
-                        killed.append(pid)
-                    cwd_found = False
-                else:
-                    cwd_found = False
-        except (subprocess.SubprocessError, OSError, ProcessLookupError):
+            if _pid_cwd_in_worktree(pid, worktree_str):
+                os.kill(pid, signal.SIGTERM)
+                killed.append(pid)
+        except (OSError, ProcessLookupError):
             continue
 
     if killed:
@@ -104,21 +128,7 @@ def _kill_existing_claude_sessions(worktree_path: Path, *, timeout: float = 10.0
             "Terminated %d existing Claude session(s) in %s: pids=%s",
             len(killed), worktree_path, killed,
         )
-        # Give processes time to exit gracefully
-        deadline = time.monotonic() + timeout
-        for pid in killed:
-            while time.monotonic() < deadline:
-                try:
-                    os.kill(pid, 0)  # Check if still alive
-                    time.sleep(0.5)
-                except ProcessLookupError:
-                    break
-            else:
-                # Force kill if still alive
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
+        _wait_and_force_kill(killed, timeout)
 
 
 # ---------------------------------------------------------------------------

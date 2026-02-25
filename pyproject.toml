@@ -400,6 +400,16 @@ source_modules = [
   "issue_orchestrator.infra.validators.worktree",
 ]
 forbidden_modules = ["issue_orchestrator._vendor.agent_runner"]
+# The agent_runner facade re-exports from _vendor — that IS the facade's job.
+# Ignore facade-internal links so the contract enforces "use facade, not vendor"
+# without being tripped by the facade's own implementation.
+ignore_imports = [
+  "issue_orchestrator.agent_runner.env_filter -> issue_orchestrator._vendor.agent_runner.env_filter",
+  "issue_orchestrator.agent_runner.ports -> issue_orchestrator._vendor.agent_runner.ports",
+  "issue_orchestrator.agent_runner.ports -> issue_orchestrator._vendor.agent_runner.errors",
+  "issue_orchestrator.agent_runner.providers -> issue_orchestrator._vendor.agent_runner.providers",
+  "issue_orchestrator.agent_runner.runner -> issue_orchestrator._vendor.agent_runner.runner",
+]
 
 [[tool.importlinter.contracts]]
 name = "orchestrator must not import external agent_runner package"
