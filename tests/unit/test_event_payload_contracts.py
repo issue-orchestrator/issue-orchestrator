@@ -41,7 +41,7 @@ def test_queue_changed_event_payload_shape():
     payload = matches[0].data
     assert {"added", "removed", "total"}.issubset(payload.keys())
     assert payload["total"] == 2
-    assert payload["added"] == [{"number": 2, "title": "New"}]
+    assert payload["added"] == [{"number": 2, "title": "New", "issue_key": "2"}]
     assert payload["removed"] == []
     QueueChangedPayload.model_validate(payload)
 

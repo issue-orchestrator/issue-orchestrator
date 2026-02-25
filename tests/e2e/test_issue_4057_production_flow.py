@@ -164,6 +164,7 @@ async def _assert_review_stage_artifacts(run_dir: Path, *, require_validation: b
 async def _assert_live_ui_session_log_stream(
     *,
     issue_number: int,
+    issue_key: str,
     run_dir: Path,
     web_port: int,
     watcher,
@@ -196,7 +197,7 @@ async def _assert_live_ui_session_log_stream(
             if validation_output.exists():
                 validation_observed = True
 
-            issue_view = watcher.view.issues.get(str(issue_number))
+            issue_view = watcher.view.issues.get(issue_key)
             in_progress = bool(issue_view and "in-progress" in issue_view.labels)
             if in_progress and len(total_lines_values) >= 3:
                 line_growth = max(total_lines_values) > min(total_lines_values)
@@ -398,6 +399,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
 
         await _assert_live_ui_session_log_stream(
             issue_number=issue_number,
+            issue_key=issue.stable_id(),
             run_dir=coding_run_dir,
             web_port=config.web_port,
             watcher=runtime.watcher,
