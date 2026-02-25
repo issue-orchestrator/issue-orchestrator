@@ -309,6 +309,7 @@
           "e2e_page",
           "e2e_total_pages",
           "e2e_total",
+          "provider_circuit_states",
           "dashboard_data"
         ],
         "properties": {
@@ -347,6 +348,7 @@
           "e2e_page": {"type": "integer"},
           "e2e_total_pages": {"type": "integer"},
           "e2e_total": {"type": "integer"},
+          "provider_circuit_states": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "dashboard_data": {"$ref": "#/components/schemas/DashboardDataPayload"}
         }
       },

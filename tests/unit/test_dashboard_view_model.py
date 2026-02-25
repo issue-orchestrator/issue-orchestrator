@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -18,6 +18,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
 from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
@@ -681,3 +682,126 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# --- Provider circuit breaker status tests ---
+
+
+@dataclass
+class _ProviderResilienceStub:
+    store: InMemoryProviderCircuitStore
+
+
+@dataclass
+class _OrchestratorDepsStub:
+    provider_resilience: _ProviderResilienceStub
+
+
+@dataclass
+class _OrchestratorWithDepsStub:
+    state: OrchestratorState
+    config: Config
+    deps: _OrchestratorDepsStub
+    shutdown_requested: bool = False
+
+
+def test_provider_circuit_states_empty_without_deps():
+    """Orchestrators without deps (e.g. test stubs) yield no circuit states."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_states == []
+    assert view_model.dashboard_data()["providerCircuitStates"] == []
+
+
+def test_provider_circuit_states_open_circuit():
+    """An open circuit is surfaced with is_open=True and a positive cooldown."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    store.save(ProviderCircuitState(
+        provider="claude",
+        open_until=now + timedelta(seconds=120),
+        consecutive_outages=2,
+        last_error_summary="Rate limit exceeded",
+        updated_at=now,
+    ))
+
+    deps = _OrchestratorDepsStub(provider_resilience=_ProviderResilienceStub(store=store))
+    orchestrator = _OrchestratorWithDepsStub(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_states) == 1
+    entry = view_model.provider_circuit_states[0]
+    assert entry["provider"] == "claude"
+    assert entry["is_open"] is True
+    assert entry["cooldown_remaining_seconds"] > 0
+    assert entry["consecutive_outages"] == 2
+    assert entry["last_error_summary"] == "Rate limit exceeded"
+    assert entry["open_until"] is not None
+
+    dashboard_data = view_model.dashboard_data()
+    assert len(dashboard_data["providerCircuitStates"]) == 1
+    assert dashboard_data["providerCircuitStates"][0]["is_open"] is True
+
+
+def test_provider_circuit_states_closed_circuit():
+    """An expired circuit (open_until in the past) shows is_open=False."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    past = datetime.now(timezone.utc) - timedelta(seconds=60)
+    store.save(ProviderCircuitState(
+        provider="claude",
+        open_until=past,
+        consecutive_outages=1,
+        last_error_summary="Temporary error",
+        updated_at=past,
+    ))
+
+    deps = _OrchestratorDepsStub(provider_resilience=_ProviderResilienceStub(store=store))
+    orchestrator = _OrchestratorWithDepsStub(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_states) == 1
+    entry = view_model.provider_circuit_states[0]
+    assert entry["provider"] == "claude"
+    assert entry["is_open"] is False
+    assert entry["cooldown_remaining_seconds"] == 0.0
+
+
+def test_provider_circuit_states_in_template_context():
+    """provider_circuit_states is included in template_context and to_dict."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    ctx = view_model.template_context()
+    assert "provider_circuit_states" in ctx
+    assert ctx["provider_circuit_states"] == []
+
+    d = view_model.to_dict()
+    assert "provider_circuit_states" in d
+    assert d["provider_circuit_states"] == []
