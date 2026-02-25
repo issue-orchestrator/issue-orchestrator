@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Deque
 from collections import deque
 
+from issue_orchestrator.domain.issue_key import StableIssueId
 from .models import IssueView, OrchestratorView, PRView
 from .errors import EventGapDetected
 
@@ -24,10 +25,10 @@ def _ensure_int(x: Any) -> int:
 class MaterializedView:
     last_event_id: int = 0
     orchestrator: OrchestratorView = field(default_factory=OrchestratorView)
-    issues: Dict[str, IssueView] = field(default_factory=dict)
+    issues: Dict[StableIssueId, IssueView] = field(default_factory=dict)
 
     global_events: Deque[dict[str, Any]] = field(default_factory=lambda: deque(maxlen=200))
-    issue_events: Dict[str, Deque[dict[str, Any]]] = field(default_factory=dict)
+    issue_events: Dict[StableIssueId, Deque[dict[str, Any]]] = field(default_factory=dict)
 
     last_progress_monotonic: float = field(default_factory=time.monotonic)
 
@@ -36,8 +37,9 @@ class MaterializedView:
 
     def _push_event(self, event: dict[str, Any]) -> None:
         self.global_events.append(event)
-        ik = event.get("issue_key")
-        if ik:
+        raw_ik = event.get("issue_key")
+        if raw_ik:
+            ik = StableIssueId(raw_ik)
             dq = self.issue_events.get(ik)
             if dq is None:
                 dq = deque(maxlen=self.global_events.maxlen)
@@ -56,7 +58,8 @@ class MaterializedView:
             last_tick_id=orch_raw.get("last_tick_id"),
         )
         self.issues = {}
-        for issue_key, iv in (raw.get("issues", {}) or {}).items():
+        for raw_key, iv in (raw.get("issues", {}) or {}).items():
+            issue_key = StableIssueId(raw_key)
             labels = set(iv.get("labels", []) or [])
             pr_raw = iv.get("pr", {}) or {}
             pr = PRView(
@@ -128,7 +131,7 @@ class MaterializedView:
             iv.pr.labels = (iv.pr.labels | added) - removed
 
     def _handle_labels_or_pr_changed(
-        self, etype: str, issue_key: str | None, payload: dict[str, Any]
+        self, etype: str, issue_key: StableIssueId | None, payload: dict[str, Any]
     ) -> bool:
         """Handle issue.labels.changed or pr.view.changed events.
 
@@ -156,20 +159,22 @@ class MaterializedView:
         # Prefer issue_key (stable external_id) over str(number) for consistent
         # keying with snapshots and PR_VIEW_CHANGED / ISSUE_LABELS_CHANGED events.
         for added in payload.get("added", []):
-            ik = added.get("issue_key")
-            if ik is None:
+            raw_ik = added.get("issue_key")
+            if raw_ik is None:
                 num = added.get("number")
-                ik = str(num) if num is not None else None
-            if ik is not None and ik not in self.issues:
-                self.issues[ik] = IssueView(issue_key=ik)
+                raw_ik = str(num) if num is not None else None
+            if raw_ik is not None:
+                ik = StableIssueId(raw_ik)
+                if ik not in self.issues:
+                    self.issues[ik] = IssueView(issue_key=ik)
         # Remove issues that are no longer in queue
         for removed in payload.get("removed", []):
-            ik = removed.get("issue_key")
-            if ik is None:
+            raw_ik = removed.get("issue_key")
+            if raw_ik is None:
                 num = removed.get("number")
-                ik = str(num) if num is not None else None
-            if ik is not None:
-                self.issues.pop(ik, None)
+                raw_ik = str(num) if num is not None else None
+            if raw_ik is not None:
+                self.issues.pop(StableIssueId(raw_ik), None)
         self._mark_progress()
 
     def apply_event(self, event: dict[str, Any], *, gap_check: bool = True) -> None:
@@ -187,7 +192,8 @@ class MaterializedView:
 
         etype = event.get("type")
         payload = event.get("payload", {}) or {}
-        issue_key = event.get("issue_key")
+        raw_issue_key = event.get("issue_key")
+        issue_key: StableIssueId | None = StableIssueId(raw_issue_key) if raw_issue_key is not None else None
 
         # Orchestrator idle state - only idle event exists, no explicit "active" event
         if etype == EventName.ORCHESTRATOR_IDLE.value:

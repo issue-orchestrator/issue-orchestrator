@@ -3,6 +3,7 @@
 import pytest
 from uuid import UUID
 
+from issue_orchestrator.domain.issue_key import StableIssueId
 from issue_orchestrator.events import EventName, EventContext
 from issue_orchestrator.events.catalog import EVENT_SCHEMA_VERSION
 from issue_orchestrator.ports import TraceEvent, InMemoryEventSink
@@ -79,7 +80,7 @@ class TestEventContext:
         ctx = EventContext()
         ctx.tick_id = 3
 
-        payload = ctx.for_issue("M1-011", issue_number=42)
+        payload = ctx.for_issue(StableIssueId("M1-011"), issue_number=42)
 
         assert payload["issue_key"] == "M1-011"
         assert payload["issue_number"] == 42
@@ -89,7 +90,7 @@ class TestEventContext:
     def test_for_issue_without_number(self):
         """for_issue() should work without issue_number."""
         ctx = EventContext()
-        payload = ctx.for_issue("M1-011")
+        payload = ctx.for_issue(StableIssueId("M1-011"))
 
         assert payload["issue_key"] == "M1-011"
         assert "issue_number" not in payload
@@ -99,7 +100,7 @@ class TestEventContext:
         ctx = EventContext()
         ctx.tick_id = 7
 
-        payload = ctx.for_session("session-123", "M1-011", issue_number=42)
+        payload = ctx.for_session("session-123", StableIssueId("M1-011"), issue_number=42)
 
         assert payload["session_id"] == "session-123"
         assert payload["issue_key"] == "M1-011"

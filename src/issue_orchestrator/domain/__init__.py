@@ -10,6 +10,7 @@ from .state_machines import (
     SessionStateMachine,
 )
 from .issue_key import (
+    StableIssueId,
     IssueKey,
     GitHubIssueKey,
     FakeIssueKey,
@@ -42,6 +43,7 @@ __all__ = [
     "ReviewState",
     "ReviewStateMachine",
     # Issue identity
+    "StableIssueId",
     "IssueKey",
     "GitHubIssueKey",
     "FakeIssueKey",

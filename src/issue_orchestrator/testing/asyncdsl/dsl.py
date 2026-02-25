@@ -5,6 +5,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Optional, Any
 
+from issue_orchestrator.domain.issue_key import StableIssueId
 from issue_orchestrator.events.catalog import EventName
 
 from .materializer import MaterializedView
@@ -26,7 +27,7 @@ def _deadline(timeout_s: float) -> float:
 
 @dataclass
 class IssueWatch:
-    issue_key: str
+    issue_key: StableIssueId
     view: MaterializedView
     cfg: WatcherConfig
     _notify: asyncio.Event

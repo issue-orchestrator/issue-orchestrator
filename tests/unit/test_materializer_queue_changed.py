@@ -1,6 +1,7 @@
 """Tests for MaterializedView handling of queue.changed events."""
 
 import pytest
+from issue_orchestrator.domain.issue_key import StableIssueId
 from issue_orchestrator.testing.asyncdsl.materializer import MaterializedView
 
 
@@ -54,8 +55,8 @@ def test_queue_changed_removes_issues():
     from issue_orchestrator.testing.asyncdsl.models import IssueView
 
     view = MaterializedView()
-    view.issues["M1-001"] = IssueView(issue_key="M1-001")
-    view.issues["M2-042"] = IssueView(issue_key="M2-042")
+    view.issues[StableIssueId("M1-001")] = IssueView(issue_key=StableIssueId("M1-001"))
+    view.issues[StableIssueId("M2-042")] = IssueView(issue_key=StableIssueId("M2-042"))
     assert len(view.issues) == 2
 
     event = {
@@ -80,7 +81,7 @@ def test_queue_changed_does_not_duplicate_existing():
     from issue_orchestrator.testing.asyncdsl.models import IssueView
 
     view = MaterializedView()
-    view.issues["M1-001"] = IssueView(issue_key="M1-001", labels={"bug", "urgent"})
+    view.issues[StableIssueId("M1-001")] = IssueView(issue_key=StableIssueId("M1-001"), labels={"bug", "urgent"})
 
     event = {
         "event_id": 1,

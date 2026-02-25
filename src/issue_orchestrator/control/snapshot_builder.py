@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ..domain.issue_key import StableIssueId
 from ..infra.config import Config
 from ..infra import gh_audit
 from ..ports.repository_host import RepositoryHost
@@ -29,7 +30,7 @@ class SnapshotBuilder:
             scope=gh_audit.AuditScope.MANUAL,
         ):
             issues = self._fetch_issues()
-        issue_views: dict[str, Any] = {}
+        issue_views: dict[StableIssueId, Any] = {}
 
         for issue in issues:
             issue_key = issue.key.stable_id()

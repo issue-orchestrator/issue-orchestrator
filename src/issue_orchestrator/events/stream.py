@@ -9,6 +9,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Any, Deque
 
+from ..domain.issue_key import StableIssueId
 from ..ports import EventSink, TraceEvent
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ class StreamEvent:
 
     event_id: int
     type: str
-    issue_key: str | None
+    issue_key: StableIssueId | None
     payload: dict[str, Any]
 
 
@@ -153,11 +154,15 @@ class EventHub(EventSink):
             }
 
     def _to_stream_event(self, event: TraceEvent) -> StreamEvent:
-        issue_key = event.data.get("issue_key")
-        if issue_key is None:
+        raw_key = event.data.get("issue_key")
+        if raw_key is not None:
+            issue_key: StableIssueId | None = StableIssueId(raw_key)
+        else:
             issue_number = event.data.get("issue_number")
             if issue_number is not None:
-                issue_key = str(issue_number)
+                issue_key = StableIssueId(str(issue_number))
+            else:
+                issue_key = None
 
         event_type = _map_event_type(event.name)
         return StreamEvent(
