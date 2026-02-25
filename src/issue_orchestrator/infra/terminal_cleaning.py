@@ -89,19 +89,6 @@ def _is_ui_noise(lower: str) -> bool:
     return False
 
 
-def _is_meaningful_short_line(stripped: str) -> bool:
-    """Return True when a short line (<8 chars) is meaningful content."""
-    if stripped.startswith(("─", "━")):
-        return True
-    if stripped in ("❯", ">", "$", "%"):
-        return True
-    if stripped.startswith(("⏺", "⎿")):
-        return True
-    if stripped.startswith(("✓", "✗", "•")) and len(stripped) > 4:
-        return True
-    return False
-
-
 def is_spinner_fragment(line: str) -> bool:
     """Return True when *line* is a spinner animation fragment to filter."""
     stripped = line.strip()
@@ -111,8 +98,6 @@ def is_spinner_fragment(line: str) -> bool:
         return True
     if _is_ui_noise(stripped.lower()):
         return True
-    if len(stripped) < 8:
-        return not _is_meaningful_short_line(stripped)
     return False
 
 

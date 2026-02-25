@@ -99,12 +99,14 @@ class TestCleanTerminalLine:
 
 
 class TestIsSpinnerFragment:
-    def test_filters_short_garbage(self):
-        assert is_spinner_fragment("ddl") is True
-        assert is_spinner_fragment("-fa") is True
-        assert is_spinner_fragment("ea") is True
-        assert is_spinner_fragment("bn") is True
-        assert is_spinner_fragment("6") is True
+    def test_keeps_short_meaningful_lines(self):
+        """Short lines are NOT filtered — only spinner chars and UI noise are."""
+        assert is_spinner_fragment("PASS") is False
+        assert is_spinner_fragment("ok") is False
+        assert is_spinner_fragment("FAIL") is False
+        assert is_spinner_fragment("done") is False
+        assert is_spinner_fragment("1234567") is False
+        assert is_spinner_fragment("yes") is False
 
     def test_filters_spinner_chars(self):
         assert is_spinner_fragment("*") is True
@@ -205,7 +207,6 @@ class TestFullCleaningPipeline:
         assert "Bash(git status)" in content
         assert "On branch main" in content
         assert "nothing to commit" in content
-        assert "ddl" not in content
         assert "Fiddle-faddling" not in content
         assert sum(1 for l in cleaned if l.strip().startswith("─")) <= 1
 
