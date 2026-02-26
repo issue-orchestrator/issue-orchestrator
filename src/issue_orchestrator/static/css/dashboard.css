@@ -583,6 +583,8 @@ body.column-focus-mode .column-expanded {
 .expanded-cards-list {
     display: grid;
     gap: 8px;
+    align-content: start;
+    grid-auto-rows: max-content;
     flex: 1;
     min-height: 0;
     overflow: auto;

@@ -243,6 +243,7 @@ class Orchestrator:
         with self._state_lock:
             self._last_tick_time = time.time()
             self.deps.provider_resilience.close_expired()
+            self.deps.services.state_health_check()
             self._loop_iteration, cont = _run_tick_impl(
                 self._loop_iteration,
                 self._event_context,

@@ -639,6 +639,7 @@ def build_orchestrator(
         timeline_reader=timeline_reader,
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
+        state_health_check=timeline_store.check_health,
     )
 
     # Bundle all dependencies into OrchestratorDeps (no nulls, no optionals)

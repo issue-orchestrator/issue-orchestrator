@@ -7,7 +7,8 @@ This replaces 7 individual fields on ``OrchestratorDeps``.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -18,6 +19,10 @@ if TYPE_CHECKING:
     from ..ports.timeline_writer import TimelineWriter
     from .label_manager import LabelManager
     from .provider_resilience import ProviderResilienceManager
+
+
+def _noop_health_check() -> None:
+    """Default no-op health check for tests and disabled configurations."""
 
 
 @dataclass(frozen=True)
@@ -36,3 +41,4 @@ class InfraServices:
     timeline_reader: "TimelineReader"
     timeline_writer: "TimelineWriter"
     goal_pilot_store: "GoalPilotStore"
+    state_health_check: Callable[[], None] = field(default=_noop_health_check)

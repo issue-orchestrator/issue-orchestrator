@@ -396,3 +396,24 @@ def test_journey_empty_state_falls_back_to_no_activity_when_no_diagnostic() -> N
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "_renderJourneyRuns")
     assert "No activity recorded." in body
+
+
+def test_expanded_cards_list_uses_start_aligned_grid() -> None:
+    """Cards in expanded view should not stretch to fill the container."""
+    css = _read(DASHBOARD_CSS)
+    # Find the .expanded-cards-list rule
+    start = css.find(".expanded-cards-list {")
+    assert start != -1, ".expanded-cards-list rule not found in dashboard.css"
+    end = css.find("}", start)
+    rule = css[start : end + 1]
+    assert "align-content: start" in rule
+    assert "grid-auto-rows: max-content" in rule
+
+
+def test_expanded_column_state_handles_running_column() -> None:
+    """expanded_column_state.js must map 'running' to active_items."""
+    js = Path(
+        ROOT / "src" / "issue_orchestrator" / "static" / "js" / "expanded_column_state.js"
+    ).read_text(encoding="utf-8")
+    assert "columnId === 'running'" in js
+    assert "active_items" in js
