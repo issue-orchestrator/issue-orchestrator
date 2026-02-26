@@ -31,6 +31,7 @@ from ..agent_runner.env_filter import build_filtered_env
 from ..domain.models import AgentConfig
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import get_repo_log_path
+from ..infra.terminal_cleaning import CleaningLogWriter, clean_terminal_line, is_spinner_fragment
 from ..ports import EventSink, make_trace_event
 from ..ports.session_output import SessionOutput
 from ..events import EventName, EventContext
@@ -299,7 +300,7 @@ def _start_pty_session(
     shell_command = shlex.join(command)
 
     log_path = exchange_dir / f"{role}-pty.log"
-    log_file = open(log_path, "w", buffering=1)  # noqa: SIM115
+    log_file = CleaningLogWriter(log_path)
 
     completion_relpath = env[f"{ENV_PREFIX}COMPLETION_PATH"]
     completion_abs = worktree_path / completion_relpath
@@ -574,10 +575,14 @@ def _append_session_log(
     """Append transcript content to run-scoped ui-session.log."""
     log_path = run_dir / "ui-session.log"
     timestamp = datetime.now(timezone.utc).isoformat()
-    chunk = (
-        f"[{timestamp}] round={round_index} role={role} section={section}\n"
-        f"{content.rstrip()}\n\n"
-    )
+    header = f"[{timestamp}] round={round_index} role={role} section={section}\n"
+    cleaned_lines = []
+    for line in content.splitlines():
+        cleaned = clean_terminal_line(line)
+        if cleaned.strip() and not is_spinner_fragment(cleaned):
+            cleaned_lines.append(cleaned)
+    cleaned_content = "\n".join(cleaned_lines)
+    chunk = f"{header}{cleaned_content.rstrip()}\n\n"
     _append_text(log_path, chunk)
 
 

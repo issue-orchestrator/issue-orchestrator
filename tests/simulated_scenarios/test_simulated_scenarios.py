@@ -67,10 +67,7 @@ def _assert_run_dir_has_core_artifacts(run_dir: Path) -> None:
 
 
 _skip_if_no_agent_cli = pytest.mark.skipif(
-    (
-        (shutil.which("claude") is None or "CLAUDECODE" in os.environ)
-        and shutil.which("codex") is None
-    ),
+    shutil.which("claude") is None and shutil.which("codex") is None,
     reason="Agent CLI not available (claude/codex); skipping agent-backed scenario assertions",
 )
 

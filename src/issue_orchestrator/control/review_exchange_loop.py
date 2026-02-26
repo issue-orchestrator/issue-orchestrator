@@ -15,6 +15,7 @@ from ..agent_runner import AgentRunner, RunSpec
 from ..domain.models import AgentConfig
 from ..infra.logging_config import get_repo_log_path
 from ..infra.env import ENV_PREFIX
+from ..infra.terminal_cleaning import clean_terminal_line, is_spinner_fragment
 from ..ports.session_output import SessionOutput
 from ..ports import EventSink,  make_trace_event
 from ..events import EventName, EventContext
@@ -828,10 +829,14 @@ def _append_session_log(
     """Append review-exchange transcript content to run-scoped ui-session.log."""
     log_path = run_dir / "ui-session.log"
     timestamp = datetime.now(timezone.utc).isoformat()
-    chunk = (
-        f"[{timestamp}] round={round_index} role={role} section={section}\n"
-        f"{content.rstrip()}\n\n"
-    )
+    header = f"[{timestamp}] round={round_index} role={role} section={section}\n"
+    cleaned_lines = []
+    for line in content.splitlines():
+        cleaned = clean_terminal_line(line)
+        if cleaned.strip() and not is_spinner_fragment(cleaned):
+            cleaned_lines.append(cleaned)
+    cleaned_content = "\n".join(cleaned_lines)
+    chunk = f"{header}{cleaned_content.rstrip()}\n\n"
     _append_text(log_path, chunk)
 
 

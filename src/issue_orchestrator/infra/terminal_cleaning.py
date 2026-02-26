@@ -250,8 +250,10 @@ class CleaningLogWriter:
 
     # -- pexpect logfile interface ------------------------------------------
 
-    def write(self, data: bytes) -> int:
+    def write(self, data: bytes | str) -> int:
         """Buffer *data* and write complete cleaned lines."""
+        if isinstance(data, str):
+            data = data.encode("utf-8")
         self._buffer += data
         while b"\n" in self._buffer:
             line_bytes, self._buffer = self._buffer.split(b"\n", 1)

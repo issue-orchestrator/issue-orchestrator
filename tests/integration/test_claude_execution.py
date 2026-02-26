@@ -67,17 +67,6 @@ def _run_claude(
         ) from exc
 
 
-@pytest.fixture(autouse=True)
-def _strip_nested_session_env(monkeypatch):
-    """Allow Claude subprocess invocations from within a Claude Code session.
-
-    Claude Code sets CLAUDECODE to detect (and reject) nested launches.
-    Strip it so integration tests that spawn Claude subprocesses work
-    regardless of whether the test runner itself is a Claude Code agent.
-    """
-    monkeypatch.delenv("CLAUDECODE", raising=False)
-
-
 @pytest.fixture
 def require_claude():
     """Fixture that fails fast if Claude CLI is not installed."""
@@ -89,10 +78,6 @@ def require_claude():
 
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
-@pytest.mark.skipif(
-    "CLAUDECODE" in os.environ,
-    reason="Cannot launch Claude inside another Claude Code session",
-)
 class TestClaudeExecution:
     """Integration tests that actually run Claude Code."""
 
@@ -210,10 +195,6 @@ class TestClaudeExecution:
 
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
-@pytest.mark.skipif(
-    "CLAUDECODE" in os.environ,
-    reason="Cannot launch Claude inside another Claude Code session",
-)
 class TestClaudeWithEnvironmentIsolation:
     """Integration tests for Claude with environment isolation (no HOME isolation).
 
@@ -362,10 +343,6 @@ class TestShellEscaping:
 
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
-@pytest.mark.skipif(
-    "CLAUDECODE" in os.environ,
-    reason="Cannot launch Claude inside another Claude Code session",
-)
 class TestClaudeViaAdapterPath:
     """E2E test that runs Claude through the same path as tmux adapters.
 
@@ -569,10 +546,6 @@ class TestClaudeViaAdapterPath:
 
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
-@pytest.mark.skipif(
-    "CLAUDECODE" in os.environ,
-    reason="Cannot launch Claude inside another Claude Code session",
-)
 class TestAgentDoneInvocation:
     """Integration tests for agent-done invocation from Claude.
 
