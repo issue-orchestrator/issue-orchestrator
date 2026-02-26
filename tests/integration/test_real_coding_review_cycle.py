@@ -60,10 +60,6 @@ def _wait_until(condition, *, timeout_seconds: int, interval_seconds: float = 0.
 
 
 @pytest.mark.skipif(not _claude_available(), reason="Claude CLI not installed")
-@pytest.mark.skipif(
-    "CLAUDECODE" in os.environ,
-    reason="Cannot launch Claude inside another Claude Code session",
-)
 def test_real_claude_coding_and_review_cycle_uses_4057_prompt(tmp_path, monkeypatch):
     source_repo_root = Path(__file__).resolve().parents[2]
     worktree = tmp_path / f"real-worktree-{uuid4().hex[:8]}"

@@ -44,3 +44,15 @@ def isolated_registry(tmp_path: Path) -> Generator[Path, None, None]:
         os.environ.pop("ISSUE_ORCHESTRATOR_SKIP_DOCTOR", None)
     else:
         os.environ["ISSUE_ORCHESTRATOR_SKIP_DOCTOR"] = old_skip
+
+
+@pytest.fixture(autouse=True)
+def _strip_nested_session_env(monkeypatch):
+    """Allow Claude subprocess invocations from within a Claude Code session.
+
+    Claude Code sets CLAUDECODE and CLAUDE_CODE_ENTRYPOINT to detect nested
+    launches. Strip them so integration tests that spawn Claude subprocesses
+    work regardless of whether the test runner itself is a Claude Code agent.
+    """
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)

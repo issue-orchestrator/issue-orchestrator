@@ -3,12 +3,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
 import pytest
 
 from issue_orchestrator.domain.models import Issue, AgentConfig
+from issue_orchestrator.infra.terminal_cleaning import CleaningLogWriter
 from issue_orchestrator.ports.working_copy import BranchStatus, CommitInfo, PreflightResult, PushResult, RebaseResult
 from issue_orchestrator.ports.worktree_manager import WorktreeInfo
 from issue_orchestrator.infra.config import Config
@@ -26,8 +28,22 @@ from issue_orchestrator.control.workflows.review_workflow import ReviewWorkflow
 from issue_orchestrator.control.workflows.rework_workflow import ReworkWorkflow
 
 
+@pytest.fixture(autouse=True)
+def _strip_nested_session_env(monkeypatch):
+    """Allow Claude subprocess invocations from within a Claude Code session.
+
+    Claude Code sets CLAUDECODE and CLAUDE_CODE_ENTRYPOINT to detect nested
+    launches. Strip them so integration tests that spawn Claude subprocesses
+    work regardless of whether the test runner itself is a Claude Code agent.
+    """
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS_DIR = REPO_ROOT / "tests" / "simulated_scenarios" / "fixtures" / "scripts"
+
+_RUN_DIR_RE = re.compile(r"ISSUE_ORCHESTRATOR_RUN_DIR=(['\"]?)([^'\"\s]+)\1")
 
 
 class ScriptSessionRunner:
@@ -51,7 +67,31 @@ class ScriptSessionRunner:
             capture_output=True,
             text=True,
         )
-        self._last_output[session_name] = (result.stdout or "") + (result.stderr or "")
+        output = (result.stdout or "") + (result.stderr or "")
+        self._last_output[session_name] = output
+        # Write filtered session log: the provider_runner writes raw output to
+        # provider-runner/stdout.log and symlinks ui-session.log to it.  Read
+        # the raw log (following the symlink), clean it, and replace the
+        # symlink with a regular file containing cleaned text.
+        match = _RUN_DIR_RE.search(command)
+        if match:
+            run_dir = Path(match.group(2))
+            if not run_dir.is_absolute():
+                run_dir = (Path(working_dir) / run_dir).resolve()
+            log_path = run_dir / "ui-session.log"
+            raw_log = run_dir / "provider-runner" / "stdout.log"
+            raw_content = ""
+            if raw_log.exists():
+                raw_content = raw_log.read_text(encoding="utf-8", errors="replace")
+            elif output:
+                raw_content = output
+            if raw_content:
+                # Remove symlink if present so we write a regular file
+                if log_path.is_symlink():
+                    log_path.unlink()
+                writer = CleaningLogWriter(log_path)
+                writer.write(raw_content)
+                writer.close()
         return result.returncode == 0
 
     def session_exists(self, session_id: int, session_name: str) -> bool:

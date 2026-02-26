@@ -593,8 +593,8 @@ def test_foreign_repo_real_pty_agent_invocation(
 @pytest.mark.live
 @pytest.mark.xdist_group("pty")
 @pytest.mark.skipif(
-    shutil.which("claude") is None or "CLAUDECODE" in os.environ,
-    reason="Claude Code CLI not installed or running inside a Claude session",
+    shutil.which("claude") is None,
+    reason="Claude Code CLI not installed",
 )
 def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
     """Claude Code invokes agent-done in a foreign repo worktree."""
