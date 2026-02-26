@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import sqlite3
 import threading
 import uuid
@@ -22,6 +24,8 @@ from ..domain.goal_pilot import (
 )
 from ..infra.repo_identity import state_dir
 from ..infra.sqlite_connection import open_sqlite
+
+logger = logging.getLogger(__name__)
 
 
 _SCHEMA = """
@@ -147,6 +151,16 @@ class SqliteGoalPilotStore:
         conn.executescript(_SCHEMA)
         self._ensure_run_name_not_null()
         self._ensure_run_phase_column()
+        try:
+            inode = os.stat(self._db_path).st_ino
+        except FileNotFoundError:
+            inode = None
+        logger.info(
+            "GoalPilot store initialized: db=%s inode=%s pid=%d",
+            self._db_path,
+            inode,
+            os.getpid(),
+        )
 
     def _ensure_run_phase_column(self) -> None:
         conn = self._get_connection()

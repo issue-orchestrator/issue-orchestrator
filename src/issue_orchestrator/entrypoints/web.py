@@ -1360,7 +1360,14 @@ async def get_issue_timeline(issue_number: int) -> JSONResponse:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     reader = _orchestrator.deps.timeline_reader
-    stream = reader.read(issue_number, limit=2000)
+    try:
+        stream = reader.read(issue_number, limit=2000)
+    except RuntimeError as e:
+        logger.error("Timeline read failed for issue %d: %s", issue_number, e)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "timeline_unavailable", "detail": str(e)},
+        )
     payload = stream.to_dict()
     raw_events = payload.get("events", [])
     filtered_events = _filter_timeline_events(raw_events)
@@ -1396,7 +1403,14 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
     reader = _orchestrator.deps.timeline_reader
-    stream = reader.read(issue_number, limit=2000)
+    try:
+        stream = reader.read(issue_number, limit=2000)
+    except RuntimeError as e:
+        logger.error("Timeline read failed for issue %d: %s", issue_number, e)
+        return JSONResponse(
+            status_code=503,
+            content={"error": "timeline_unavailable", "detail": str(e)},
+        )
     timeline = stream.to_dict()
     raw_events = timeline.get("events", [])
     filtered_events = _filter_timeline_events(raw_events)

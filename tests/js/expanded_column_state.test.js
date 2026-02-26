@@ -15,6 +15,7 @@ test('getExpandedItemsFromViewModel returns column-specific items', () => {
     assert.deepEqual(expandedColumnState.getExpandedItemsFromViewModel(vm, 'blocked'), [{ issue_number: 2 }]);
     assert.deepEqual(expandedColumnState.getExpandedItemsFromViewModel(vm, 'awaiting-merge'), [{ issue_number: 3 }]);
     assert.deepEqual(expandedColumnState.getExpandedItemsFromViewModel(vm, 'completed'), [{ issue_number: 4 }]);
+    assert.deepEqual(expandedColumnState.getExpandedItemsFromViewModel(vm, 'running'), []);
     assert.deepEqual(expandedColumnState.getExpandedItemsFromViewModel(vm, 'unknown'), []);
 });
 
@@ -61,6 +62,18 @@ test('computeExpandedItemsFingerprint reflects blocked viewed state', () => {
     });
 
     assert.notEqual(unviewed, viewed);
+});
+
+test('getExpandedItemsFromViewModel returns active_items for running column', () => {
+    const vm = {
+        active_items: [{ issue_number: 5 }, { issue_number: 6 }],
+        queue_items: [{ issue_number: 1 }],
+    };
+
+    assert.deepEqual(
+        expandedColumnState.getExpandedItemsFromViewModel(vm, 'running'),
+        [{ issue_number: 5 }, { issue_number: 6 }],
+    );
 });
 
 test('reconcileSelectedIssues keeps only selected issues still present', () => {

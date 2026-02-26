@@ -80,8 +80,11 @@ class CompositeEventSink:
             try:
                 sink.publish(event)
             except Exception as e:
-                logger.warning("Sink %s failed for event %s: %s",
-                             type(sink).__name__, event.name, e)
+                logger.error(
+                    "Sink %s failed for event %s: %s",
+                    type(sink).__name__, event.name, e,
+                    exc_info=True,
+                )
 
 
 class LoggingEventSink:

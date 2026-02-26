@@ -79,12 +79,12 @@ class SqliteTimelineStore(TimelineStore):
         conn = self._get_connection()
         self._ensure_schema(conn)
         self._db_inode = self._capture_db_inode()
-        if _timeline_trace_enabled():
-            logger.info(
-                "[TIMELINE] trace enabled db=%s inode=%s",
-                self._db_path,
-                self._db_inode,
-            )
+        logger.info(
+            "Timeline store initialized: db=%s inode=%s pid=%d",
+            self._db_path,
+            self._db_inode,
+            os.getpid(),
+        )
 
     def _get_connection(self) -> sqlite3.Connection:
         self._assert_db_file_unchanged()
@@ -120,6 +120,14 @@ class SqliteTimelineStore(TimelineStore):
             return os.stat(self._db_path).st_ino
         except FileNotFoundError:
             return None
+
+    def check_health(self) -> None:
+        """Verify the DB file still exists with the expected inode.
+
+        Raises RuntimeError if the file was deleted or replaced.
+        Call this at tick boundaries to detect state file tampering early.
+        """
+        self._assert_db_file_unchanged()
 
     def _assert_db_file_unchanged(self) -> None:
         expected = self._db_inode

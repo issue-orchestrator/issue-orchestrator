@@ -86,6 +86,16 @@ class _SubprocessRegistry:
                 """
             )
             conn.commit()
+        try:
+            inode = os.stat(self._db_path).st_ino
+        except FileNotFoundError:
+            inode = None
+        logger.info(
+            "Session registry initialized: db=%s inode=%s pid=%d",
+            self._db_path,
+            inode,
+            os.getpid(),
+        )
 
     def _migrate_legacy_db_if_needed(self) -> None:
         if not self._legacy_db_path.exists() or self._db_path.exists():

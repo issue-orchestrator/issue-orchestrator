@@ -8,6 +8,8 @@ Follows the same patterns as ``provider_circuit_store.py``.
 
 from __future__ import annotations
 
+import logging
+import os
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -16,6 +18,8 @@ from pathlib import Path
 from typing import Iterator
 
 from ..infra.sqlite_connection import open_sqlite
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS issue_labels (
@@ -40,6 +44,16 @@ class LabelStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = self._get_connection()
         conn.executescript(_SCHEMA)
+        try:
+            inode = os.stat(self._db_path).st_ino
+        except FileNotFoundError:
+            inode = None
+        logger.info(
+            "Label store initialized: db=%s inode=%s pid=%d",
+            self._db_path,
+            inode,
+            os.getpid(),
+        )
 
     def _get_connection(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)

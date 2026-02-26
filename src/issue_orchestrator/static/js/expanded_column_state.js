@@ -20,6 +20,7 @@
         if (columnId === 'blocked') return viewModel.blocked_items || [];
         if (columnId === 'awaiting-merge') return viewModel.awaiting_merge_items || [];
         if (columnId === 'completed') return viewModel.completed_items || [];
+        if (columnId === 'running') return viewModel.active_items || [];
         return [];
     }
 
