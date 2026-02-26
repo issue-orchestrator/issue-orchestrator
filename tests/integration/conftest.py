@@ -8,7 +8,27 @@ from typing import Generator
 
 import pytest
 
-_BASE_REPO_ROOT = Path(__file__).resolve().parents[2]
+def _resolve_base_repo_root() -> Path:
+    """Resolve the actual base repo root, following worktree references.
+
+    In a git worktree, ``.git`` is a *file* containing
+    ``gitdir: /base/repo/.git/worktrees/<name>``.  We follow that reference
+    so the guardrail protects the real base repo, not the worktree (which is
+    ephemeral and expected to have state files during integration tests).
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    git_path = repo_root / ".git"
+    if git_path.is_file():
+        # Worktree: .git contains "gitdir: /path/to/.git/worktrees/<name>"
+        content = git_path.read_text().strip()
+        if content.startswith("gitdir:"):
+            gitdir = Path(content.split(": ", 1)[1])
+            # gitdir is /base/repo/.git/worktrees/<name> → base repo is 3 levels up
+            return gitdir.parent.parent.parent
+    return repo_root
+
+
+_BASE_REPO_ROOT = _resolve_base_repo_root()
 _STATE_DIR = _BASE_REPO_ROOT / ".issue-orchestrator" / "state"
 
 
