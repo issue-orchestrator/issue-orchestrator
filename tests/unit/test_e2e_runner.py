@@ -1,5 +1,7 @@
 """Unit tests for E2E runner manager."""
 
+import json
+
 import pytest
 import subprocess
 from pathlib import Path
@@ -13,6 +15,24 @@ from issue_orchestrator.infra.e2e_runner import (
     maybe_trigger_e2e,
 )
 from issue_orchestrator.infra.e2e_db import E2EDB, E2ERun
+
+
+@pytest.fixture
+def e2e_worktree_path(tmp_path: Path) -> Path:
+    """Return a worktree directory for tests that need it."""
+    wt = tmp_path / "repo-e2e-worktree"
+    wt.mkdir()
+    return wt
+
+
+@pytest.fixture(autouse=True)
+def mock_ensure_e2e_worktree(e2e_worktree_path: Path):
+    """Patch ensure_e2e_worktree so start()/resume don't run real git commands."""
+    with patch(
+        "issue_orchestrator.infra.e2e_runner.ensure_e2e_worktree",
+        return_value=e2e_worktree_path,
+    ) as mock:
+        yield mock
 
 
 class TestE2ERunnerManager:
@@ -157,6 +177,236 @@ class TestE2ERunnerManager:
 
         assert "orch-1" in finished
         assert "orch-2" in finished
+
+
+class TestWorktreeIsolation:
+    """Test that E2E runs use the worktree for isolation."""
+
+    @pytest.fixture
+    def manager(self) -> E2ERunnerManager:
+        return E2ERunnerManager()
+
+    @pytest.fixture
+    def mock_popen(self):
+        with patch("subprocess.Popen") as mock:
+            proc = MagicMock()
+            proc.pid = 12345
+            proc.poll.return_value = None
+            mock.return_value = proc
+            yield mock, proc
+
+    def test_start_uses_worktree_as_cwd(
+        self,
+        manager: E2ERunnerManager,
+        mock_popen,
+        tmp_path: Path,
+        e2e_worktree_path: Path,
+    ):
+        """start() should run the subprocess with cwd=worktree."""
+        popen_mock, _ = mock_popen
+
+        manager.start(repo_root=tmp_path, orchestrator_id="test-orch", pytest_args=["tests/e2e"])
+
+        popen_call = popen_mock.call_args
+        assert popen_call.kwargs["cwd"] == e2e_worktree_path
+
+    def test_start_repo_root_arg_points_to_worktree(
+        self,
+        manager: E2ERunnerManager,
+        mock_popen,
+        tmp_path: Path,
+        e2e_worktree_path: Path,
+    ):
+        """--repo-root in the subprocess cmd should point to the worktree."""
+        popen_mock, _ = mock_popen
+
+        manager.start(repo_root=tmp_path, orchestrator_id="test-orch", pytest_args=["tests/e2e"])
+
+        cmd = popen_mock.call_args[0][0]
+        repo_root_idx = cmd.index("--repo-root") + 1
+        assert cmd[repo_root_idx] == str(e2e_worktree_path)
+
+    def test_start_db_path_stays_in_base_repo(
+        self,
+        manager: E2ERunnerManager,
+        mock_popen,
+        tmp_path: Path,
+        e2e_worktree_path: Path,
+    ):
+        """--db-path should stay in the base repo (not the worktree)."""
+        popen_mock, _ = mock_popen
+
+        manager.start(repo_root=tmp_path, orchestrator_id="test-orch", pytest_args=["tests/e2e"])
+
+        cmd = popen_mock.call_args[0][0]
+        db_path_idx = cmd.index("--db-path") + 1
+        db_path = Path(cmd[db_path_idx])
+        # DB must be under the base repo, not the worktree
+        assert str(db_path).startswith(str(tmp_path))
+        assert str(e2e_worktree_path) not in str(db_path)
+
+    def test_start_log_path_stays_in_base_repo(
+        self,
+        manager: E2ERunnerManager,
+        mock_popen,
+        tmp_path: Path,
+        e2e_worktree_path: Path,
+    ):
+        """--log-file should stay in the base repo."""
+        popen_mock, _ = mock_popen
+
+        manager.start(repo_root=tmp_path, orchestrator_id="test-orch", pytest_args=["tests/e2e"])
+
+        cmd = popen_mock.call_args[0][0]
+        log_idx = cmd.index("--log-file") + 1
+        log_path = cmd[log_idx]
+        assert str(tmp_path) in log_path
+        assert str(e2e_worktree_path) not in log_path
+
+    def test_start_uses_worktree_python(
+        self,
+        manager: E2ERunnerManager,
+        mock_popen,
+        tmp_path: Path,
+        e2e_worktree_path: Path,
+    ):
+        """Python interpreter should come from the worktree's venv."""
+        popen_mock, _ = mock_popen
+
+        # Create venv in worktree (not base repo)
+        wt_python = e2e_worktree_path / ".venv" / "bin" / "python"
+        wt_python.parent.mkdir(parents=True)
+        wt_python.touch()
+
+        manager.start(repo_root=tmp_path, orchestrator_id="test-orch", pytest_args=["tests/e2e"])
+
+        cmd = popen_mock.call_args[0][0]
+        assert cmd[0] == str(wt_python)
+
+    def test_resume_uses_worktree_as_cwd(
+        self,
+        tmp_path: Path,
+        e2e_worktree_path: Path,
+    ):
+        """_resume_run should also use the worktree as cwd."""
+        # Set up DB with an interrupted run
+        db_path = tmp_path / ".issue-orchestrator" / "e2e.db"
+        db_path.parent.mkdir(parents=True)
+        db = E2EDB(db_path)
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e", "-v"],
+            commit_sha="abc123",
+            branch="main",
+        )
+        db.upsert_test_result(run_id, "tests/e2e/test_foo.py::test_bar", "passed", 1.0)
+        db.finish_run(run_id, "interrupted")
+
+        manager = E2ERunnerManager()
+        with patch("subprocess.Popen") as popen_mock, \
+             patch("builtins.open", MagicMock()):
+            proc = MagicMock()
+            proc.pid = 12345
+            proc.poll.return_value = None
+            popen_mock.return_value = proc
+
+            result = manager.start_or_resume(
+                repo_root=tmp_path,
+                orchestrator_id="test-orch",
+                pytest_args=["tests/e2e", "-v"],
+            )
+
+            assert result["resumed"] is True
+            popen_call = popen_mock.call_args
+            assert popen_call.kwargs["cwd"] == e2e_worktree_path
+
+    def test_resume_repo_root_points_to_worktree(
+        self,
+        tmp_path: Path,
+        e2e_worktree_path: Path,
+    ):
+        """On resume, --repo-root should point to the worktree."""
+        db_path = tmp_path / ".issue-orchestrator" / "e2e.db"
+        db_path.parent.mkdir(parents=True)
+        db = E2EDB(db_path)
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+            commit_sha="abc123",
+            branch="main",
+        )
+        db.upsert_test_result(run_id, "tests/e2e/test_foo.py::test_bar", "passed", 1.0)
+        db.finish_run(run_id, "interrupted")
+
+        manager = E2ERunnerManager()
+        with patch("subprocess.Popen") as popen_mock, \
+             patch("builtins.open", MagicMock()):
+            proc = MagicMock()
+            proc.pid = 12345
+            proc.poll.return_value = None
+            popen_mock.return_value = proc
+
+            manager.start_or_resume(
+                repo_root=tmp_path,
+                orchestrator_id="test-orch",
+                pytest_args=["tests/e2e"],
+            )
+
+            cmd = popen_mock.call_args[0][0]
+            repo_root_idx = cmd.index("--repo-root") + 1
+            assert cmd[repo_root_idx] == str(e2e_worktree_path)
+
+    def test_resume_db_path_stays_in_base_repo(
+        self,
+        tmp_path: Path,
+        e2e_worktree_path: Path,
+    ):
+        """On resume, --db-path should stay in the base repo."""
+        db_path = tmp_path / ".issue-orchestrator" / "e2e.db"
+        db_path.parent.mkdir(parents=True)
+        db = E2EDB(db_path)
+        run_id = db.start_run(
+            repo_root=str(tmp_path),
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+            commit_sha="abc123",
+            branch="main",
+        )
+        db.upsert_test_result(run_id, "tests/e2e/test_foo.py::test_bar", "passed", 1.0)
+        db.finish_run(run_id, "interrupted")
+
+        manager = E2ERunnerManager()
+        with patch("subprocess.Popen") as popen_mock, \
+             patch("builtins.open", MagicMock()):
+            proc = MagicMock()
+            proc.pid = 12345
+            proc.poll.return_value = None
+            popen_mock.return_value = proc
+
+            manager.start_or_resume(
+                repo_root=tmp_path,
+                orchestrator_id="test-orch",
+                pytest_args=["tests/e2e"],
+            )
+
+            cmd = popen_mock.call_args[0][0]
+            db_path_idx = cmd.index("--db-path") + 1
+            assert str(tmp_path) in cmd[db_path_idx]
+            assert str(e2e_worktree_path) not in cmd[db_path_idx]
+
+    def test_ensure_e2e_worktree_called_with_repo_root(
+        self,
+        manager: E2ERunnerManager,
+        mock_popen,
+        mock_ensure_e2e_worktree,
+        tmp_path: Path,
+    ):
+        """ensure_e2e_worktree should receive the original repo_root."""
+        manager.start(repo_root=tmp_path, orchestrator_id="test-orch", pytest_args=["tests/e2e"])
+
+        mock_ensure_e2e_worktree.assert_called_once_with(tmp_path)
 
 
 class TestMaybeTriggerE2E:
@@ -349,7 +599,6 @@ class TestStopOnFirstFailure:
 
         # Find the pytest args in the command
         pytest_args_idx = cmd.index("--pytest-args-json") + 1
-        import json
         pytest_args = json.loads(cmd[pytest_args_idx])
 
         assert "-x" in pytest_args
@@ -372,7 +621,6 @@ class TestStopOnFirstFailure:
         cmd = call_args[0][0]
 
         pytest_args_idx = cmd.index("--pytest-args-json") + 1
-        import json
         pytest_args = json.loads(cmd[pytest_args_idx])
 
         assert "-x" not in pytest_args
@@ -395,7 +643,6 @@ class TestStopOnFirstFailure:
         cmd = call_args[0][0]
 
         pytest_args_idx = cmd.index("--pytest-args-json") + 1
-        import json
         pytest_args = json.loads(cmd[pytest_args_idx])
 
         # Should only have one -x
@@ -479,11 +726,12 @@ class TestResolveRepoPython:
         result = _resolve_repo_python(tmp_path)
         assert result == sys.executable
 
-    def test_worker_uses_repo_venv(self, tmp_path: Path):
-        """Verify the E2E worker subprocess gets the repo's Python, not sys.executable."""
+    def test_worker_uses_worktree_venv(self, tmp_path: Path, e2e_worktree_path: Path):
+        """Verify the E2E worker subprocess gets the worktree's Python."""
         import sys
 
-        venv_python = tmp_path / ".venv" / "bin" / "python"
+        # Create venv in the worktree (where _resolve_repo_python now looks)
+        venv_python = e2e_worktree_path / ".venv" / "bin" / "python"
         venv_python.parent.mkdir(parents=True)
         venv_python.touch()
 
@@ -503,15 +751,16 @@ class TestResolveRepoPython:
 
             cmd = popen_mock.call_args[0][0]
             assert cmd[0] == str(venv_python), (
-                f"Expected repo venv python {venv_python}, got {cmd[0]}"
+                f"Expected worktree venv python {venv_python}, got {cmd[0]}"
             )
             assert cmd[0] != sys.executable
 
-    def test_resume_run_uses_repo_venv(self, tmp_path: Path):
-        """Verify _resume_run also uses the repo's Python, not sys.executable."""
+    def test_resume_run_uses_worktree_venv(self, tmp_path: Path, e2e_worktree_path: Path):
+        """Verify _resume_run also uses the worktree's Python."""
         import sys
 
-        venv_python = tmp_path / ".venv" / "bin" / "python"
+        # Create venv in the worktree
+        venv_python = e2e_worktree_path / ".venv" / "bin" / "python"
         venv_python.parent.mkdir(parents=True)
         venv_python.touch()
 
@@ -548,6 +797,6 @@ class TestResolveRepoPython:
             assert result["resumed"] is True
             cmd = popen_mock.call_args[0][0]
             assert cmd[0] == str(venv_python), (
-                f"Expected repo venv python {venv_python}, got {cmd[0]}"
+                f"Expected worktree venv python {venv_python}, got {cmd[0]}"
             )
             assert cmd[0] != sys.executable

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from .e2e_db import E2EDB
+from .e2e_worktree import ensure_e2e_worktree
 
 if TYPE_CHECKING:
     from .config import E2EConfig
@@ -116,7 +117,12 @@ class E2ERunnerManager:
         if proc is not None and proc.poll() is None:
             raise E2EAlreadyRunning(orchestrator_id, proc.pid)
 
-        # Prepare paths
+        # Prepare the E2E worktree so tests run in isolation.
+        # The worktree has its own .issue-orchestrator/state/ so E2E
+        # fixtures that delete state files cannot affect the live orchestrator.
+        worktree_path = ensure_e2e_worktree(repo_root)
+
+        # DB and logs stay in the base repo (read by web UI).
         db_path = repo_root / ".issue-orchestrator" / "e2e.db"
         log_dir = repo_root / ".issue-orchestrator" / "logs" / "e2e"
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -130,18 +136,16 @@ class E2ERunnerManager:
         if stop_on_first_failure and "-x" not in effective_pytest_args:
             effective_pytest_args.append("-x")
 
-        # Use the target repo's venv Python, not the parent process's interpreter.
-        # When the control center runs from a worktree, sys.executable points to
-        # that worktree's venv which may lack dependencies needed by the E2E tests.
-        python = _resolve_repo_python(repo_root)
+        # Use the worktree's venv Python so tests run with correct deps.
+        python = _resolve_repo_python(worktree_path)
 
-        # Build command
+        # Build command — --repo-root points to worktree, --db-path to base repo
         cmd = [
             python,
             "-m",
             "issue_orchestrator.entrypoints.e2e_worker",
             "--repo-root",
-            str(repo_root),
+            str(worktree_path),
             "--db-path",
             str(db_path),
             "--orchestrator-id",
@@ -171,7 +175,7 @@ class E2ERunnerManager:
         log_file_handle = open(log_path, "w")
         proc = subprocess.Popen(
             cmd,
-            cwd=repo_root,
+            cwd=worktree_path,
             stdout=log_file_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
@@ -291,7 +295,10 @@ class E2ERunnerManager:
         db: E2EDB,
     ) -> dict:
         """Resume an interrupted run by starting worker with --deselect for passed tests."""
-        # Prepare paths
+        # Prepare the E2E worktree (same isolation as start()).
+        worktree_path = ensure_e2e_worktree(repo_root)
+
+        # Logs and DB stay in base repo.
         log_dir = repo_root / ".issue-orchestrator" / "logs" / "e2e"
         log_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -302,14 +309,14 @@ class E2ERunnerManager:
         if stop_on_first_failure and "-x" not in effective_pytest_args:
             effective_pytest_args.append("-x")
 
-        # Build command with --deselect for passed tests
-        python = _resolve_repo_python(repo_root)
+        # Build command — --repo-root points to worktree, --db-path to base repo
+        python = _resolve_repo_python(worktree_path)
         cmd = [
             python,
             "-m",
             "issue_orchestrator.entrypoints.e2e_worker",
             "--repo-root",
-            str(repo_root),
+            str(worktree_path),
             "--db-path",
             str(repo_root / ".issue-orchestrator" / "e2e.db"),
             "--orchestrator-id",
@@ -344,7 +351,7 @@ class E2ERunnerManager:
         log_file_handle = open(log_path, "w")
         proc = subprocess.Popen(
             cmd,
-            cwd=repo_root,
+            cwd=worktree_path,
             stdout=log_file_handle,
             stderr=subprocess.STDOUT,
             start_new_session=True,
