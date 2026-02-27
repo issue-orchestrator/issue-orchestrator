@@ -370,7 +370,7 @@ validate-raw:
 	@echo "✓ All validations passed!"
 
 # Internal target for parallel execution (excludes test-vscode to avoid VS Code runner flakiness under -j)
-_validate-impl: typecheck lint-arch lint-complexity test-unit test-simulated test-integration test-web
+_validate-impl: typecheck lint-arch lint-complexity test-unit test-simulated test-integration-no-infra test-web
 
 # Full validation including e2e tests
 validate-full:

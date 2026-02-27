@@ -27,6 +27,7 @@ from issue_orchestrator.infra.env import ENV_PREFIX
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.live,
+    pytest.mark.requires_infra,
     pytest.mark.xdist_group("pty"),
     pytest.mark.timeout(35 * 60),
 ]
