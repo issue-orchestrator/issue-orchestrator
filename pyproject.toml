@@ -249,6 +249,7 @@ forbidden_modules = ["subprocess"]
 # Allow TYPE_CHECKING import of Orchestrator for type hints
 ignore_imports = [
   "issue_orchestrator.control.orchestrator_support -> issue_orchestrator.infra.orchestrator",
+  "issue_orchestrator.control.validation_retry -> issue_orchestrator._vendor.agent_runner",
 ]
 
 [[tool.importlinter.contracts]]
@@ -409,6 +410,10 @@ ignore_imports = [
   "issue_orchestrator.agent_runner.ports -> issue_orchestrator._vendor.agent_runner.errors",
   "issue_orchestrator.agent_runner.providers -> issue_orchestrator._vendor.agent_runner.providers",
   "issue_orchestrator.agent_runner.runner -> issue_orchestrator._vendor.agent_runner.runner",
+  "issue_orchestrator.execution.agent_runner -> issue_orchestrator._vendor.agent_runner.env_filter",
+  "issue_orchestrator.execution.agent_runner -> issue_orchestrator._vendor.agent_runner.errors",
+  "issue_orchestrator.entrypoints.cli_tools.provider_runner -> issue_orchestrator._vendor.agent_runner",
+  "issue_orchestrator.control.validation_retry -> issue_orchestrator._vendor.agent_runner",
 ]
 
 [[tool.importlinter.contracts]]

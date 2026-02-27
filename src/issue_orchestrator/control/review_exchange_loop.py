@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from ..execution.agent_runner import AgentRunner, AgentSpec
+from ..agent_runner import AgentRunner, AgentSpec
 from ..domain.models import AgentConfig
 from ..infra.logging_config import get_repo_log_path
 from ..infra.env import ENV_PREFIX

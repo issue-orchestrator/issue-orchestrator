@@ -16,7 +16,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
 
-from issue_orchestrator.agent_runner import AgentRunner, RunResult, RunSpec
+# Phase 2 migration: validation_retry still uses vendored AgentRunner/RunSpec.
+# Import directly from _vendor until migrated to unified AgentRunner.
+from issue_orchestrator._vendor.agent_runner import AgentRunner, RunResult, RunSpec
 
 from ..infra.config import RetryConfig
 
