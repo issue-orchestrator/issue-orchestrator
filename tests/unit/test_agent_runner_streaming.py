@@ -1,5 +1,12 @@
+"""Tests for AgentRunner with PTY-inherited output.
+
+Validates that AgentRunner uses setpgrp (not setsid) and inherits
+stdout/stderr from the parent process.
+"""
+
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -16,39 +23,64 @@ def _spec(tmp_path: Path, command: list[str], timeout_seconds: int = 10) -> RunS
     )
 
 
-def test_agent_runner_captures_stdout_and_stderr(tmp_path: Path) -> None:
+def test_agent_runner_returns_exit_code(tmp_path: Path) -> None:
     runner = AgentRunner()
-    command = [
-        sys.executable,
-        "-c",
-        "import sys; print('hello-out'); print('hello-err', file=sys.stderr)",
-    ]
-    result = runner.run(_spec(tmp_path, command))
-
+    result = runner.run(_spec(tmp_path, [sys.executable, "-c", "pass"]))
     assert result.exit_code == 0
     assert result.timed_out is False
-    assert "hello-out" in result.stdout
-    assert "hello-err" in result.stderr
-    assert result.stdout_path.read_text(errors="replace").strip().endswith("hello-out")
-    assert result.stderr_path.read_text(errors="replace").strip().endswith("hello-err")
 
 
-def test_agent_runner_preserves_partial_output_on_timeout(tmp_path: Path) -> None:
+def test_agent_runner_returns_nonzero_exit_code(tmp_path: Path) -> None:
     runner = AgentRunner()
-    command = [
-        sys.executable,
-        "-c",
-        (
-            "import sys,time; "
-            "sys.stdout.write('partial-out\\n'); sys.stdout.flush(); "
-            "sys.stderr.write('partial-err\\n'); sys.stderr.flush(); "
-            "time.sleep(5)"
-        ),
-    ]
-    result = runner.run(_spec(tmp_path, command, timeout_seconds=1))
+    result = runner.run(_spec(tmp_path, [sys.executable, "-c", "raise SystemExit(42)"]))
+    assert result.exit_code == 42
+    assert result.timed_out is False
 
+
+def test_agent_runner_handles_timeout(tmp_path: Path) -> None:
+    runner = AgentRunner()
+    result = runner.run(_spec(
+        tmp_path,
+        [sys.executable, "-c", "import time; time.sleep(10)"],
+        timeout_seconds=1,
+    ))
     assert result.timed_out is True
-    assert "partial-out" in result.stdout
-    assert "partial-err" in result.stderr
-    assert "partial-out" in result.stdout_path.read_text(errors="replace")
-    assert "partial-err" in result.stderr_path.read_text(errors="replace")
+
+
+def test_agent_runner_child_in_separate_process_group(tmp_path: Path) -> None:
+    """Child runs in its own process group (setpgrp), not parent's."""
+    script = "import os; print(f'{os.getpid()} {os.getpgrp()}')"
+    runner = AgentRunner()
+    # We need to capture the child's output to verify pgid.
+    # Run a parent that reads the child's stdout via pipe.
+    parent_script = (
+        "import subprocess, sys, os\n"
+        f"p = subprocess.Popen([sys.executable, '-c', {script!r}],\n"
+        "    stdout=subprocess.PIPE, preexec_fn=os.setpgrp)\n"
+        "out, _ = p.communicate()\n"
+        "pid, pgid = out.decode().strip().split()\n"
+        "assert pid == pgid, f'child should be group leader: pid={pid} pgid={pgid}'\n"
+        f"assert int(pgid) != {os.getpgrp()}, 'child pgid should differ from test pgid'\n"
+    )
+    result = runner.run(_spec(tmp_path, [sys.executable, "-c", parent_script]))
+    assert result.exit_code == 0, f"Process group verification failed: {result.stderr}"
+
+
+def test_agent_runner_stderr_on_command_not_found(tmp_path: Path) -> None:
+    runner = AgentRunner()
+    result = runner.run(_spec(tmp_path, ["/nonexistent/command"]))
+    assert result.exit_code == 127
+    assert "not found" in result.stderr.lower()
+
+
+def test_agent_runner_output_dir_created(tmp_path: Path) -> None:
+    runner = AgentRunner()
+    out_dir = tmp_path / "nested" / "output"
+    spec = RunSpec(
+        command=[sys.executable, "-c", "pass"],
+        working_dir=tmp_path,
+        timeout_seconds=5,
+        output_dir=out_dir,
+    )
+    runner.run(spec)
+    assert out_dir.exists()

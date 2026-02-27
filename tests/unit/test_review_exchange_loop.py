@@ -8,12 +8,22 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from issue_orchestrator.control.review_exchange_loop import (
+    REVIEW_RESPONSE_FILENAME,
     _parse_exchange_response,
     _run_agent_round,
     _resolve_provider,
     run_review_exchange_loop,
 )
 from issue_orchestrator.domain.models import AgentConfig
+from issue_orchestrator.infra.env import ENV_PREFIX
+
+
+def _write_response_file(spec, json_text: str) -> None:
+    """Simulate an agent writing its response to the review response file."""
+    response_path = spec.env_overrides.get(f"{ENV_PREFIX}REVIEW_RESPONSE_FILE")
+    if response_path:
+        Path(response_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(response_path).write_text(json_text, encoding="utf-8")
 
 
 def test_agent_round_returns_error_on_nonzero_exit(tmp_path: Path) -> None:
@@ -35,7 +45,6 @@ def test_agent_round_returns_error_on_nonzero_exit(tmp_path: Path) -> None:
                 succeeded=False,
                 exit_code=2,
                 timed_out=False,
-                stdout="",
                 stderr="boom",
             )
 
@@ -84,11 +93,11 @@ def test_run_agent_round_prefers_provider_mode_when_ai_system_is_provider(tmp_pa
         def run(self, spec):
             nonlocal seen_command
             seen_command = spec.command
+            _write_response_file(spec, '{"response_type":"ok","response_text":"looks good"}\n')
             return SimpleNamespace(
                 succeeded=True,
                 exit_code=0,
                 timed_out=False,
-                stdout='{"response_type":"ok","response_text":"looks good"}\n',
                 stderr="",
             )
 
@@ -126,12 +135,12 @@ def test_run_agent_round_writes_run_scoped_provider_runner_logs(tmp_path: Path) 
     agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
 
     class DummyRunner:
-        def run(self, _spec):
+        def run(self, spec):
+            _write_response_file(spec, '{"response_type":"ok","response_text":"looks good"}\n')
             return SimpleNamespace(
                 succeeded=True,
                 exit_code=0,
                 timed_out=False,
-                stdout='{"response_type":"ok","response_text":"looks good"}\n',
                 stderr="runner-note",
             )
 
@@ -152,12 +161,12 @@ def test_run_agent_round_writes_run_scoped_provider_runner_logs(tmp_path: Path) 
     )
 
     assert response.response_type == "ok"
-    stdout_log = run_dir / "provider-runner" / "stdout.log"
+    responses_log = run_dir / "provider-runner" / "responses.log"
     stderr_log = run_dir / "provider-runner" / "stderr.log"
-    assert stdout_log.exists()
+    assert responses_log.exists()
     assert stderr_log.exists()
-    assert "round=1 role=reviewer" in stdout_log.read_text(encoding="utf-8")
-    assert '"response_type":"ok"' in stdout_log.read_text(encoding="utf-8")
+    assert "round=1 role=reviewer" in responses_log.read_text(encoding="utf-8")
+    assert '"response_type":"ok"' in responses_log.read_text(encoding="utf-8")
     assert "runner-note" in stderr_log.read_text(encoding="utf-8")
 
 
@@ -173,12 +182,12 @@ def test_review_exchange_run_manifest_includes_claude_log_dir(tmp_path: Path, mo
     session_output.start_run.return_value = SimpleNamespace(run_dir=run_dir, run_id="run-exchange")
 
     class DummyRunner:
-        def run(self, _spec):
+        def run(self, spec):
+            _write_response_file(spec, '{"response_type":"ok","response_text":"looks good"}\n')
             return SimpleNamespace(
                 succeeded=True,
                 exit_code=0,
                 timed_out=False,
-                stdout='{"response_type":"ok","response_text":"looks good"}\n',
                 stderr="",
             )
 
@@ -226,21 +235,21 @@ def test_review_exchange_retries_coder_when_completion_artifact_missing(tmp_path
         def run(self, spec):
             role = Path(spec.output_dir).name
             if role == "reviewer":
+                _write_response_file(spec, '{"response_type":"changes_requested","getting_closer":true,"response_text":"fix"}\n')
                 return SimpleNamespace(
                     succeeded=True,
                     exit_code=0,
                     timed_out=False,
-                    stdout='{"response_type":"changes_requested","getting_closer":true,"response_text":"fix"}\n',
                     stderr="",
                 )
             self.coder_calls += 1
             if self.coder_calls == 2:
                 (run_dir / "completion-coder.json").write_text("{}", encoding="utf-8")
+            _write_response_file(spec, '{"response_type":"ok","response_text":"updated"}\n')
             return SimpleNamespace(
                 succeeded=True,
                 exit_code=0,
                 timed_out=False,
-                stdout='{"response_type":"ok","response_text":"updated"}\n',
                 stderr="",
             )
 
@@ -290,19 +299,19 @@ def test_review_exchange_fails_after_protocol_retries_exhausted(tmp_path: Path, 
         def run(self, spec):
             role = Path(spec.output_dir).name
             if role == "reviewer":
+                _write_response_file(spec, '{"response_type":"changes_requested","getting_closer":true,"response_text":"fix"}\n')
                 return SimpleNamespace(
                     succeeded=True,
                     exit_code=0,
                     timed_out=False,
-                    stdout='{"response_type":"changes_requested","getting_closer":true,"response_text":"fix"}\n',
                     stderr="",
                 )
             self.coder_calls += 1
+            _write_response_file(spec, '{"response_type":"ok","response_text":"updated"}\n')
             return SimpleNamespace(
                 succeeded=True,
                 exit_code=0,
                 timed_out=False,
-                stdout='{"response_type":"ok","response_text":"updated"}\n',
                 stderr="",
             )
 
@@ -352,11 +361,11 @@ def test_review_exchange_retries_when_validation_artifact_missing(tmp_path: Path
         def run(self, spec):
             role = Path(spec.output_dir).name
             if role == "reviewer":
+                _write_response_file(spec, '{"response_type":"changes_requested","getting_closer":true,"response_text":"fix"}')
                 return SimpleNamespace(
                     succeeded=True,
                     exit_code=0,
                     timed_out=False,
-                    stdout='{"response_type":"changes_requested","getting_closer":true,"response_text":"fix"}\n',
                     stderr="",
                 )
             self.coder_calls += 1
@@ -371,7 +380,6 @@ def test_review_exchange_retries_when_validation_artifact_missing(tmp_path: Path
                 succeeded=True,
                 exit_code=0,
                 timed_out=False,
-                stdout='{"response_type":"ok","response_text":"updated"}\n',
                 stderr="",
             )
 
@@ -426,18 +434,17 @@ def test_review_exchange_calls_on_started_before_agent_rounds(tmp_path: Path, mo
             assert callback_state["run_dir"] == run_dir
             role = Path(spec.output_dir).name
             if role == "reviewer":
+                _write_response_file(spec, '{"response_type":"ok","getting_closer":true,"response_text":"approved"}')
                 return SimpleNamespace(
                     succeeded=True,
                     exit_code=0,
                     timed_out=False,
-                    stdout='{"response_type":"ok","getting_closer":true,"response_text":"approved"}\n',
                     stderr="",
                 )
             return SimpleNamespace(
                 succeeded=True,
                 exit_code=0,
                 timed_out=False,
-                stdout='{"response_type":"ok","response_text":"updated"}\n',
                 stderr="",
             )
 
@@ -516,18 +523,17 @@ def test_review_exchange_seeds_initial_validation_record(tmp_path: Path, monkeyp
             if role == "reviewer":
                 # Validation should already be present in the review-exchange run dir.
                 assert (run_dir / "validation-record.json").exists()
+                _write_response_file(spec, '{"response_type":"ok","getting_closer":true,"response_text":"approved"}')
                 return SimpleNamespace(
                     succeeded=True,
                     exit_code=0,
                     timed_out=False,
-                    stdout='{"response_type":"ok","getting_closer":true,"response_text":"approved"}\n',
                     stderr="",
                 )
             return SimpleNamespace(
                 succeeded=True,
                 exit_code=0,
                 timed_out=False,
-                stdout='{"response_type":"ok","response_text":"updated"}\n',
                 stderr="",
             )
 

@@ -132,7 +132,8 @@ async def _assert_stage_artifacts(
     require_validation: bool,
 ) -> None:
     await _wait_for_file(run_dir / "ui-session.log", non_empty=True)
-    await _wait_for_file(run_dir / "provider-runner" / "stdout.log", non_empty=True)
+    # Note: provider-runner/stdout.log no longer exists — agent output flows
+    # through the parent's PTY to ui-session.log via CleaningLogWriter.
     for name in completion_file_names:
         await _wait_for_file(run_dir / name, non_empty=True)
     if require_validation:
@@ -154,7 +155,8 @@ async def _assert_stage_artifacts(
 async def _assert_review_stage_artifacts(run_dir: Path, *, require_validation: bool) -> None:
     """Review-exchange runs are protocol-driven and may not emit reviewer completion files."""
     await _wait_for_file(run_dir / "ui-session.log", non_empty=True)
-    await _wait_for_file(run_dir / "provider-runner" / "stdout.log", non_empty=True)
+    # Note: provider-runner/stdout.log no longer exists — agent output flows
+    # through the parent's PTY to ui-session.log via CleaningLogWriter.
     await _wait_for_file(run_dir / "review-exchange" / "summary.json", non_empty=True)
     await _wait_for_file(run_dir / "review-exchange" / "round-001.json", non_empty=True)
     if require_validation:
@@ -437,10 +439,13 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         logger.info("[4057] Checking review stage artifacts...")
         await _assert_review_stage_artifacts(review_run_dir, require_validation=True)
         await _wait_for_file(review_run_dir / "review-exchange" / "summary.json")
-        review_stdout = (review_run_dir / "provider-runner" / "stdout.log").read_text(errors="replace").lower()
-        assert "protocol error" not in review_stdout, (
-            f"Detected protocol error in review exchange output for {review_run_dir}"
-        )
+        # Check ui-session.log for protocol errors (output flows through PTY, not stdout.log)
+        review_log = review_run_dir / "ui-session.log"
+        if review_log.exists():
+            review_content = review_log.read_text(errors="replace").lower()
+            assert "protocol error" not in review_content, (
+                f"Detected protocol error in review exchange output for {review_run_dir}"
+            )
         logger.info("[4057] Review artifacts OK. Waiting for pr_created...")
 
         pr_number = await flow.pr_created(issue, timeout_s=35 * 60)

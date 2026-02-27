@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from ..agent_runner import AgentRunner, RunSpec
+from ..execution.agent_runner import AgentRunner, AgentSpec
 from ..domain.models import AgentConfig
 from ..infra.logging_config import get_repo_log_path
 from ..infra.env import ENV_PREFIX
@@ -22,6 +22,7 @@ from ..events import EventName, EventContext
 
 logger = logging.getLogger(__name__)
 _CODER_PROTOCOL_RETRY_LIMIT = 2
+REVIEW_RESPONSE_FILENAME = "review-response.json"
 
 
 def _resolve_provider(agent: AgentConfig) -> str | None:
@@ -714,7 +715,8 @@ def _run_agent_round(
         meta_agent=agent.meta_agent,
         initial_prompt=(
             "Follow the instructions in {prompt}. "
-            "Respond with exactly one line of JSON and then exit."
+            "Write exactly one line of JSON to the file at $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE "
+            "and then exit."
         ),
         ai_system=agent.ai_system,
         retry_prompt_template=agent.retry_prompt_template,
@@ -729,6 +731,9 @@ def _run_agent_round(
 
     round_dir = exchange_dir / f"round-{round_index:03d}" / role
     round_dir.mkdir(parents=True, exist_ok=True)
+    response_file = run_dir / REVIEW_RESPONSE_FILENAME
+    # Remove stale response from previous round so we don't read it back
+    response_file.unlink(missing_ok=True)
     env_overrides = _build_env_overrides(
         run_dir,
         role=role,
@@ -737,19 +742,26 @@ def _run_agent_round(
         issue_number=issue_number,
         session_name=session_name,
     )
-    spec = RunSpec(
+    spec = AgentSpec(
         command=command,
         working_dir=worktree_path,
         timeout_seconds=agent.timeout_minutes * 60,
+        log_path=round_dir / "agent-output.log",
         output_dir=round_dir,
         env_overrides=env_overrides,
     )
     result = runner.run(spec)
+
+    # Read structured response from file (agent writes here instead of stdout)
+    response_text = ""
+    if response_file.exists():
+        response_text = response_file.read_text(encoding="utf-8", errors="replace")
+
     _append_provider_runner_logs(
         run_dir,
         round_index=round_index,
         role=role,
-        stdout=result.stdout or "",
+        response_text=response_text,
         stderr=result.stderr or "",
         exit_code=result.exit_code,
         timed_out=result.timed_out,
@@ -763,7 +775,7 @@ def _run_agent_round(
         content=(
             f"exit_code={result.exit_code} timed_out={result.timed_out} "
             f"succeeded={result.succeeded}\n"
-            f"stdout:\n{result.stdout or '(empty)'}\n\n"
+            f"response_file:\n{response_text or '(empty)'}\n\n"
             f"stderr:\n{result.stderr or '(empty)'}"
         ),
     )
@@ -777,14 +789,14 @@ def _run_agent_round(
                 f"exit_code={result.exit_code} timed_out={result.timed_out}. "
                 f"stderr:\n{stderr_preview}"
             ),
-            raw_output=f"stdout:\n{result.stdout}\n\nstderr:\n{result.stderr}",
+            raw_output=f"response_file:\n{response_text}\n\nstderr:\n{result.stderr}",
         )
-    response = _parse_exchange_response(result.stdout)
+    response = _parse_exchange_response(response_text)
     if response is None:
         return ReviewExchangeResponse(
             response_type="error",
             response_text="Unable to parse JSON response from agent output.",
-            raw_output=result.stdout,
+            raw_output=response_text,
         )
     return response
 
@@ -794,7 +806,7 @@ def _append_provider_runner_logs(
     *,
     round_index: int,
     role: str,
-    stdout: str,
+    response_text: str,
     stderr: str,
     exit_code: int | None,
     timed_out: bool,
@@ -808,7 +820,7 @@ def _append_provider_runner_logs(
         f"[{timestamp}] round={round_index} role={role} "
         f"exit_code={exit_code} timed_out={timed_out} succeeded={succeeded}\n"
     )
-    _append_text(output_dir / "stdout.log", header + (stdout.rstrip() or "(empty)") + "\n\n")
+    _append_text(output_dir / "responses.log", header + (response_text.rstrip() or "(empty)") + "\n\n")
     _append_text(output_dir / "stderr.log", header + (stderr.rstrip() or "(empty)") + "\n\n")
 
 
@@ -855,6 +867,7 @@ def _build_env_overrides(
         f"{ENV_PREFIX}VALIDATION_OUTPUT_DIR": str(run_dir),
         f"{ENV_PREFIX}AGENT_LABEL": agent_label,
         f"{ENV_PREFIX}ISSUE_NUMBER": str(issue_number),
+        f"{ENV_PREFIX}REVIEW_RESPONSE_FILE": str(run_dir / REVIEW_RESPONSE_FILENAME),
         "ORCHESTRATOR_ISSUE_NUMBER": str(issue_number),
         "ORCHESTRATOR_SESSION_ID": session_name,
     }

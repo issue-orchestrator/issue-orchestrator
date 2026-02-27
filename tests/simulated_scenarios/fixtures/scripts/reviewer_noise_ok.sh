@@ -3,4 +3,5 @@ set -euo pipefail
 
 echo "some log line"
 echo "another line"
-echo '{"response_type":"ok","getting_closer":true,"response_text":"LGTM after noise"}'
+echo '{"response_type":"ok","getting_closer":true,"response_text":"LGTM after noise"}' \
+  > "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"

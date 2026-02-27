@@ -68,16 +68,19 @@ _FATAL_TOKENS = (
 
 def classify_provider_error(
     *,
-    stdout: str,
     stderr: str,
     exit_code: int | None,
     timed_out: bool,
 ) -> ProviderErrorType | None:
-    """Classify provider error based on output and exit status."""
+    """Classify provider error based on output and exit status.
+
+    Note: stderr here only contains launch-level errors (command not found, etc.).
+    Agent output flows through the PTY to ui-session.log, not through this path.
+    """
     if timed_out:
         return ProviderErrorType.TRANSIENT
 
-    text = f"{stdout}\n{stderr}".lower()
+    text = stderr.lower()
 
     if any(token in text for token in _RATE_LIMIT_TOKENS):
         return ProviderErrorType.RATE_LIMIT

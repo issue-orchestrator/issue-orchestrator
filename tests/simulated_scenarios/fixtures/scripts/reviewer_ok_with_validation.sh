@@ -8,4 +8,5 @@ if [[ -n "${ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR:-}" ]]; then
 JSON
 fi
 
-echo '{"response_type":"ok","getting_closer":true,"response_text":"Validation recorded"}'
+echo '{"response_type":"ok","getting_closer":true,"response_text":"Validation recorded"}' \
+  > "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"
