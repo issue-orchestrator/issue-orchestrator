@@ -131,6 +131,43 @@ class TestEnsureE2EWorktree:
         assert calls[3][0][0][0] == "uv"
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
+    def test_recovery_removes_stale_non_worktree_directory(self, mock_run, repo_root: Path):
+        """When a stale directory exists but is not a registered worktree,
+        recovery must rmtree it before git worktree add."""
+        worktree_path = get_e2e_worktree_path(repo_root)
+        worktree_path.mkdir()
+        # Place a file so the directory is non-empty
+        (worktree_path / "leftover.txt").write_text("stale")
+
+        call_count = 0
+
+        def side_effect(cmd, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                # checkout fails (not a valid worktree)
+                raise subprocess.CalledProcessError(1, cmd, stderr="not a git repo")
+            if call_count == 2:
+                # worktree remove fails (not a registered worktree)
+                raise subprocess.CalledProcessError(128, cmd, stderr="not a working tree")
+            # worktree add + uv sync succeed
+            return subprocess.CompletedProcess(cmd, 0)
+
+        mock_run.side_effect = side_effect
+
+        result = ensure_e2e_worktree(repo_root)
+
+        assert result == worktree_path
+        # The stale directory should have been deleted before worktree add
+        calls = mock_run.call_args_list
+        # call 0: checkout (failed)
+        # call 1: worktree remove (failed - not registered)
+        # call 2: worktree add (succeeds because rmtree cleared the path)
+        assert "add" in calls[2][0][0]
+        # call 3: uv sync
+        assert calls[3][0][0][0] == "uv"
+
+    @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_raises_on_git_failure(self, mock_run, repo_root: Path):
         """When git commands fail fatally, raise RuntimeError."""
         mock_run.side_effect = subprocess.CalledProcessError(
