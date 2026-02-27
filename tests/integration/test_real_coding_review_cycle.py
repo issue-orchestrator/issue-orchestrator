@@ -25,8 +25,10 @@ from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin
 from issue_orchestrator.infra.env import ENV_PREFIX
 
 pytestmark = [
+    pytest.mark.skip(reason="Mothballed: #4057 prompt is stale once merged; belongs in e2e tier, not integration"),
     pytest.mark.integration,
     pytest.mark.live,
+    pytest.mark.requires_infra,
     pytest.mark.xdist_group("pty"),
     pytest.mark.timeout(35 * 60),
 ]
