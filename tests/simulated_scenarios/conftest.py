@@ -263,6 +263,10 @@ def build_config(
     config.review_exchange_max_no_progress = review_exchange_max_no_progress
     config.filtering.label = "simulated-scenario"
     config.retry.max_validation_retries = max_validation_retries
+    # Use port 0 so agent-done's push preflight check cannot accidentally
+    # connect to a real orchestrator running on the default port (8080).
+    # Connection to port 0 always fails with URLError → preflight skipped.
+    config.web_port = 0
 
     if validation_cmd:
         config.validation.cmd = validation_cmd
