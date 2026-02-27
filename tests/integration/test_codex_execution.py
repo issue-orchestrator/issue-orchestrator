@@ -124,9 +124,11 @@ class TestCodexWithAgentRunner:
         AgentRunner inherits stdout/stderr (PTY passthrough). We verify
         process management, not output capture.
         """
-        from issue_orchestrator.agent_runner import AgentRunner
-        from issue_orchestrator.agent_runner.ports import RunSpec
-        from issue_orchestrator.agent_runner.providers import CodexProvider
+        # Use vendored AgentRunner — Codex tests exercise the subprocess-based
+        # runner (not the unified pexpect-based one in execution.agent_runner).
+        from issue_orchestrator._vendor.agent_runner import AgentRunner
+        from issue_orchestrator._vendor.agent_runner.ports import RunSpec
+        from issue_orchestrator._vendor.agent_runner.providers import CodexProvider
 
         # Set up a git repo
         subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
@@ -333,9 +335,11 @@ class TestCodexWithAgentRunnerFullPath:
         Note: AgentRunner does NOT capture output. Output flows through the
         parent's PTY. We only verify process management and completion protocol.
         """
-        from issue_orchestrator.agent_runner import AgentRunner
-        from issue_orchestrator.agent_runner.ports import RunSpec
-        from issue_orchestrator.agent_runner.providers import CodexProvider
+        # Use vendored AgentRunner — Codex tests exercise the subprocess-based
+        # runner (not the unified pexpect-based one in execution.agent_runner).
+        from issue_orchestrator._vendor.agent_runner import AgentRunner
+        from issue_orchestrator._vendor.agent_runner.ports import RunSpec
+        from issue_orchestrator._vendor.agent_runner.providers import CodexProvider
 
         # Get scripts directory
         repo_root = Path(__file__).parent.parent.parent
