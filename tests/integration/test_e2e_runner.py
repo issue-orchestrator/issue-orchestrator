@@ -17,6 +17,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -31,6 +32,21 @@ from issue_orchestrator.infra.e2e_db import E2EDB
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def mock_ensure_e2e_worktree():
+    """Bypass E2E worktree creation in integration tests.
+
+    These tests use temporary (non-git) directories, so the real
+    ensure_e2e_worktree would fail.  Patching it to return the
+    repo_root unchanged keeps the worker running against the test repo.
+    """
+    with patch(
+        "issue_orchestrator.infra.e2e_runner.ensure_e2e_worktree",
+        side_effect=lambda repo_root: repo_root,
+    ):
+        yield
 
 
 @pytest.fixture
