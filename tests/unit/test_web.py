@@ -4407,9 +4407,12 @@ class TestPortUtilityFunctions:
         """Test killing process on port when no process exists."""
         from issue_orchestrator.entrypoints.web import _kill_process_on_port
 
-        # Get a dynamically allocated port (no process using it)
-        port = _get_available_port()
-        result = _kill_process_on_port(port)
+        # Mock lsof to return empty (no process found) — avoids TOCTOU race
+        # where a released dynamic port gets grabbed by another process
+        # between allocation and the lsof check.
+        mock_result = MagicMock(returncode=1, stdout="")
+        with patch("issue_orchestrator.entrypoints.web.subprocess.run", return_value=mock_result):
+            result = _kill_process_on_port(9999)
         assert result is False
 
     def test_ensure_port_available_when_available(self):
