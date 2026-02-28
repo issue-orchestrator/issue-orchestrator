@@ -14,11 +14,14 @@ from pathlib import Path
 
 import pytest
 
-# Mark all tests in this module as integration tests that spawn Claude
+# Mark all tests in this module as integration + live.
+# Most classes run hook subprocesses → xdist_group("hooks") to serialise with
+# other hook tests.  Only TestAiGate actually spawns Claude and overrides to
+# xdist_group("claude") at the class level.
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.live,  # These tests actually spawn Claude (AI gate)
-    pytest.mark.xdist_group("claude"),
+    pytest.mark.live,
+    pytest.mark.xdist_group("hooks"),
 ]
 
 @pytest.fixture(autouse=True, scope="module")
@@ -300,6 +303,7 @@ class TestHookBlocking:
         assert result.returncode == 0, f"Expected exit code 0 (allowed), got {result.returncode}"
 
 
+@pytest.mark.xdist_group("claude")
 class TestAiGate:
     """Tests that spawn Claude to verify end-to-end AI gate enforcement.
 
