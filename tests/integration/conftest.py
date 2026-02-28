@@ -49,6 +49,8 @@ def _assert_no_base_repo_state_pollution():
     This catches any test or code path that accidentally targets the real repo
     root instead of tmp_path.
     """
+    # Only check actual .sqlite database files, not transient WAL artifacts
+    # (-wal, -shm) which the live orchestrator creates/removes normally.
     before = set(_STATE_DIR.glob("*.sqlite")) if _STATE_DIR.exists() else set()
     yield
     after = set(_STATE_DIR.glob("*.sqlite")) if _STATE_DIR.exists() else set()

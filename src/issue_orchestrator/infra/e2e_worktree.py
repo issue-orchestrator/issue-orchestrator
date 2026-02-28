@@ -6,6 +6,7 @@ SQLite files.
 """
 
 import logging
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -75,6 +76,12 @@ def _recover_worktree(repo_root: Path, worktree_path: Path) -> None:
         )
     except (subprocess.CalledProcessError, FileNotFoundError):
         pass
+    # The directory may still exist on disk if it was never a registered
+    # worktree (e.g. partial cleanup or corruption).  Remove it so that
+    # ``git worktree add`` doesn't fail with "already exists".
+    if worktree_path.exists():
+        logger.warning("Removing stale directory %s", worktree_path)
+        shutil.rmtree(worktree_path)
     _create_worktree(repo_root, worktree_path)
 
 
