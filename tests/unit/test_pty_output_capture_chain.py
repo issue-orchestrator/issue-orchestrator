@@ -399,12 +399,12 @@ class TestAgentRunnerConfigIntegration:
     doesn't break the PTY output chain.
     """
 
-    def test_agent_runner_tees_stdout_to_parent(self) -> None:
-        """Vendored AgentRunner captures stdout via PIPE but tees to parent stdout.
+    def test_agent_runner_tees_both_streams_to_parent(self) -> None:
+        """Vendored AgentRunner captures both streams via PIPE and tees to parent.
 
         Both stdout and stderr are captured for provider error classification.
-        A relay thread tees stdout to sys.stdout.buffer so output still flows
-        through the pexpect PTY to CleaningLogWriter → ui-session.log.
+        Relay threads tee both to sys.stdout.buffer / sys.stderr.buffer so output
+        still flows through the pexpect PTY to CleaningLogWriter → ui-session.log.
         """
         import inspect
         from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
@@ -413,12 +413,15 @@ class TestAgentRunnerConfigIntegration:
         assert "capture_output=True" not in source, (
             "AgentRunner must not use capture_output=True — use explicit PIPE + tee"
         )
-        # Verify the tee relay is present
+        # Verify both tee relays are present
         assert "sys.stdout.buffer" in source, (
             "AgentRunner must tee stdout to sys.stdout.buffer for PTY passthrough"
         )
+        assert "sys.stderr.buffer" in source, (
+            "AgentRunner must tee stderr to sys.stderr.buffer for PTY passthrough"
+        )
         assert "_tee_stream" in source, (
-            "AgentRunner must use _tee_stream to relay stdout to parent"
+            "AgentRunner must use _tee_stream to relay streams to parent"
         )
 
     def test_agent_runner_does_not_use_setsid(self) -> None:

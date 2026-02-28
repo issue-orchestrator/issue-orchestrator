@@ -8,8 +8,9 @@ It handles:
 - Stdout/stderr capture with real-time tee to parent process
 
 Both stdout and stderr are captured via PIPE for provider error classification
-(retry logic). A relay thread tees stdout to the parent's stdout in real-time
-so output still flows through the pexpect PTY to CleaningLogWriter → ui-session.log.
+(retry logic). Relay threads tee both streams to the parent's stdout/stderr in
+real-time so output still flows through the pexpect PTY to CleaningLogWriter →
+ui-session.log.
 """
 
 import logging
@@ -41,18 +42,6 @@ def _tee_stream(
                 break
             dest.write(chunk)
             dest.flush()
-            captured_chunks.append(chunk)
-    except (OSError, ValueError):
-        pass
-
-
-def _drain_stream(source, captured_chunks: list[bytes]) -> None:
-    """Read from *source* pipe and accumulate in *captured_chunks*."""
-    try:
-        while True:
-            chunk = source.read(4096)
-            if not chunk:
-                break
             captured_chunks.append(chunk)
     except (OSError, ValueError):
         pass
@@ -212,8 +201,8 @@ class AgentRunner:
                 preexec_fn=os.setpgrp,
             )
 
-            # Drain both pipes with threads. We cannot use communicate()
-            # because it would race with our stdout tee thread.
+            # Tee both pipes to the parent with threads. We cannot use
+            # communicate() because it would race with our tee threads.
             stdout_chunks: list[bytes] = []
             stderr_chunks: list[bytes] = []
 
@@ -223,8 +212,8 @@ class AgentRunner:
                 daemon=True,
             )
             stderr_thread = threading.Thread(
-                target=_drain_stream,
-                args=(process.stderr, stderr_chunks),
+                target=_tee_stream,
+                args=(process.stderr, sys.stderr.buffer, stderr_chunks),
                 daemon=True,
             )
             stdout_thread.start()
