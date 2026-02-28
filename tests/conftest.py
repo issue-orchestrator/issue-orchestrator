@@ -44,8 +44,8 @@ def isolate_git_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def isolate_orchestrator_env(monkeypatch):
-    """Strip orchestrator env vars to prevent test pollution from parent processes.
+def isolate_orchestrator_env(monkeypatch, tmp_path):
+    """Strip orchestrator env vars and set safe defaults.
 
     When the orchestrator launches an agent, it exports ISSUE_ORCHESTRATOR_*
     vars (SESSION_ID, CONFIG_PATH, etc.) for agent-done. If the agent then runs
@@ -56,8 +56,11 @@ def isolate_orchestrator_env(monkeypatch):
     Similarly, ORCHESTRATOR_WORKTREE_BASE_BRANCH (set by e2e fixtures) can
     override test expectations in resolve_base_branch tests.
 
-    This fixture strips them so tests always start with a clean env.
-    Tests that need specific values set them explicitly via patch.dict.
+    This fixture strips them so tests always start with a clean env, then
+    sets ISSUE_ORCHESTRATOR_REPO_ROOT to a temp directory so any code that
+    resolves repo_root from the environment (e.g. SubprocessPlugin) never
+    accidentally targets the real repo.  Tests that need a specific repo_root
+    override this with their own ``monkeypatch.setenv()``.
     """
     orchestrator_env_vars = [
         "ORCHESTRATOR_WORKTREE_BASE_BRANCH",
@@ -69,6 +72,14 @@ def isolate_orchestrator_env(monkeypatch):
     for var in list(os.environ):
         if var.startswith("ISSUE_ORCHESTRATOR_"):
             monkeypatch.delenv(var, raising=False)
+
+    # Set a safe default REPO_ROOT so SubprocessPlugin (and anything else
+    # that reads this env var) never falls back to Path.cwd() (the base repo).
+    # This prevents tests from accidentally opening session_registry.sqlite
+    # in the real repo's state dir.
+    safe_repo = tmp_path / "isolated-repo-root"
+    safe_repo.mkdir(exist_ok=True)
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_REPO_ROOT", str(safe_repo))
 
 
 class MockGitHubAdapter:

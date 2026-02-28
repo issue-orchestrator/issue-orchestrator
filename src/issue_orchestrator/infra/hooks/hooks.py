@@ -334,7 +334,7 @@ class ClaudeCodeAdapter(AiAgentAdapter):
                 input=test_input,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=30,
                 cwd=str(project_root) if project_root else None,
                 env=env,
             )
@@ -539,7 +539,7 @@ class CursorAdapter(AiAgentAdapter):
                 input=test_input,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=30,
                 cwd=str(project_root) if project_root else None,
                 env=env,
             )
@@ -791,7 +791,7 @@ class GeminiAdapter(AiAgentAdapter):
                 input=test_input,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=30,
                 cwd=str(project_root) if project_root else None,
                 env=env,
             )
@@ -1030,7 +1030,7 @@ class CopilotAdapter(AiAgentAdapter):
                 input=test_input,
                 capture_output=True,
                 text=True,
-                timeout=10,
+                timeout=30,
                 cwd=str(project_root) if project_root else None,
                 env=env,
             )
@@ -1284,7 +1284,7 @@ class CodexAdapter(AiAgentAdapter):
             ["codex", "execpolicy", "check", "--rules", str(rules_file), "--pretty", "--", *command],
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=30,
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or "execpolicy check failed")

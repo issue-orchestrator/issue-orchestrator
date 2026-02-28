@@ -37,7 +37,7 @@ def temp_repo_root(tmp_path: Path) -> Path:
 def plugin_manager(temp_repo_root: Path, monkeypatch: pytest.MonkeyPatch) -> pluggy.PluginManager:
     """Create a pluggy plugin manager with the subprocess plugin."""
     # Set REPO_ROOT so SubprocessPlugin uses our temp directory
-    monkeypatch.setenv("REPO_ROOT", str(temp_repo_root))
+    monkeypatch.setenv("ISSUE_ORCHESTRATOR_REPO_ROOT", str(temp_repo_root))
 
     pm = pluggy.PluginManager(PROJECT_NAME)
     pm.add_hookspecs(TerminalSpec)

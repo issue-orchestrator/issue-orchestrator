@@ -64,43 +64,36 @@ def test_subprocess_registry_migrates_legacy_index(tmp_path):
     assert "issue-9" in recovered
 
 
-def test_process_alive_handles_waitpid_race(tmp_path, monkeypatch):
+def test_session_exists_returns_false_when_session_not_alive(tmp_path, monkeypatch):
+    """session_exists returns False and cleans up when the AgentSession reports dead.
+
+    Replaces the old waitpid race tests: race handling is now encapsulated inside
+    AgentSession.is_alive(), so we test the observable behaviour — a dead session
+    is removed from the registry and reported as non-existent.
+    """
     repo_root = tmp_path / "repo"
     worktree = repo_root / "wt"
     worktree.mkdir(parents=True)
     monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
 
-    class _FlakyChild:
-        pid = 4242
-
-        def isalive(self) -> bool:
-            raise ChildProcessError("waitpid race")
-
     plugin = SubprocessPlugin()
-    plugin._children["issue-1"] = _FlakyChild()
 
-    assert plugin._process_alive(4242, "issue-1") is False
+    # Register a session in the registry so session_exists finds it
+    record = _SessionRecord(
+        session_name="issue-1",
+        issue_number=1,
+        worktree_path=str(worktree),
+        pid=4242,
+        started_at="2026-01-01T00:00:00",
+        log_path=str(worktree / "ui-session.log"),
+        tab_name="Issue 1",
+        is_review=False,
+    )
+    plugin._registry.upsert(record)  # noqa: SLF001
 
-
-def test_process_alive_handles_pexpect_waitpid_race(tmp_path, monkeypatch):
-    repo_root = tmp_path / "repo"
-    worktree = repo_root / "wt"
-    worktree.mkdir(parents=True)
-    monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
-
-    class ExceptionPexpect(Exception):
-        pass
-
-    class _FlakyPexpectChild:
-        pid = 4343
-
-        def isalive(self) -> bool:
-            raise ExceptionPexpect("waitpid race wrapped by pexpect")
-
-    plugin = SubprocessPlugin()
-    plugin._children["issue-2"] = _FlakyPexpectChild()
-
-    assert plugin._process_alive(4343, "issue-2") is False
+    # session_exists should report False because the PID doesn't exist
+    # (falls through to kill(pid, 0) which raises OSError for nonexistent PID)
+    assert plugin.session_exists(1, "issue-1") is False
 
 
 def test_session_log_path_uses_issue_orchestrator_run_dir_when_present(tmp_path, monkeypatch):

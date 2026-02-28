@@ -41,6 +41,11 @@ def _assert_no_base_repo_state_pollution():
     1. No new .sqlite files appeared (creation pollution)
     2. No existing .sqlite files were deleted (deletion culprit detection)
 
+    Only checks actual ``.sqlite`` database files — transient WAL-mode journal
+    files (``.sqlite-wal``, ``.sqlite-shm``) are excluded because they appear
+    and disappear as connections open/close and trigger false positives under
+    xdist parallel execution.
+
     This catches any test or code path that accidentally targets the real repo
     root instead of tmp_path.
     """

@@ -392,6 +392,107 @@ class TestAnsiCleaningThroughPty:
 
 
 @pytest.mark.xdist_group("pty")
+class TestSigttinPreventionWithDevnullStdin:
+    """Regression tests for SIGTTIN prevention.
+
+    When a Popen child uses preexec_fn=os.setpgrp inside a pexpect PTY,
+    the child is in a background process group. If the child reads from
+    the inherited PTY stdin, the kernel sends SIGTTIN and stops the process.
+
+    The fix: stdin=subprocess.DEVNULL prevents any stdin read from triggering
+    SIGTTIN. These tests verify output still flows correctly with DEVNULL.
+    """
+
+    def test_setpgrp_with_devnull_stdin_produces_output(self, tmp_path: Path) -> None:
+        """Popen(setpgrp, stdin=DEVNULL) inside pexpect → output reaches log.
+
+        This is the immediate fix for the SIGTTIN bug. The child gets its own
+        process group (setpgrp) and stdin is /dev/null, so no SIGTTIN can occur.
+        """
+        log_path = tmp_path / "ui-session.log"
+        log_writer = CleaningLogWriter(log_path)
+
+        agent_script = textwrap.dedent("""\
+            import os, subprocess, sys
+            proc = subprocess.Popen(
+                [sys.executable, "-c", "print('DEVNULL_STDIN_MARKER')"],
+                stdin=subprocess.DEVNULL,
+                preexec_fn=os.setpgrp,
+            )
+            proc.wait()
+        """)
+
+        child = pexpect.spawn(
+            "/bin/bash",
+            ["-c", f'{sys.executable} -c {_shell_quote(agent_script)}'],
+            logfile=log_writer,
+            timeout=10,
+        )
+
+        _wait_for_exit(child)
+        log_writer.close()
+
+        content = log_path.read_text()
+        assert "DEVNULL_STDIN_MARKER" in content, (
+            f"setpgrp + stdin=DEVNULL child output did not reach ui-session.log. "
+            f"Log content: {content!r}"
+        )
+
+    def test_pipe_tee_with_devnull_stdin_reaches_session_log(self, tmp_path: Path) -> None:
+        """Full production pattern: PIPE+tee+DEVNULL+setpgrp → output reaches log.
+
+        This is the exact pattern the vendored AgentRunner uses:
+        - stdout=PIPE for error classification
+        - stdin=DEVNULL to prevent SIGTTIN
+        - preexec_fn=os.setpgrp for clean killpg
+        - tee thread relays to sys.stdout.buffer for PTY passthrough
+        """
+        log_path = tmp_path / "ui-session.log"
+        log_writer = CleaningLogWriter(log_path)
+
+        agent_script = textwrap.dedent("""\
+            import os, subprocess, sys, threading
+
+            def _tee(source, dest, chunks):
+                while True:
+                    chunk = source.read(4096)
+                    if not chunk:
+                        break
+                    dest.write(chunk)
+                    dest.flush()
+                    chunks.append(chunk)
+
+            proc = subprocess.Popen(
+                [sys.executable, "-c", "print('DEVNULL_TEE_MARKER')"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                preexec_fn=os.setpgrp,
+            )
+            chunks = []
+            t = threading.Thread(target=_tee, args=(proc.stdout, sys.stdout.buffer, chunks))
+            t.start()
+            proc.wait()
+            t.join(timeout=5)
+        """)
+
+        child = pexpect.spawn(
+            "/bin/bash",
+            ["-c", f'{sys.executable} -c {_shell_quote(agent_script)}'],
+            logfile=log_writer,
+            timeout=10,
+        )
+
+        _wait_for_exit(child)
+        log_writer.close()
+
+        content = log_path.read_text()
+        assert "DEVNULL_TEE_MARKER" in content, (
+            f"PIPE+tee+DEVNULL output did not reach PTY log. "
+            f"Log content: {content!r}"
+        )
+
+
+@pytest.mark.xdist_group("pty")
 class TestAgentRunnerConfigIntegration:
     """Verify AgentRunner's actual subprocess configuration is PTY-compatible.
 
@@ -447,4 +548,21 @@ class TestAgentRunnerConfigIntegration:
         source = inspect.getsource(AgentRunner)
         assert "os.setpgrp" in source, (
             "AgentRunner must use preexec_fn=os.setpgrp for process group isolation"
+        )
+
+    def test_agent_runner_uses_devnull_stdin(self) -> None:
+        """Vendored AgentRunner must use stdin=subprocess.DEVNULL.
+
+        Without DEVNULL, setpgrp puts the child in a background process group
+        and any stdin read from the inherited PTY triggers SIGTTIN → process
+        stopped → no output. This is the root cause of the empty ui-session.log
+        bug when running inside SubprocessPlugin's pexpect PTY.
+        """
+        import inspect
+        from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
+
+        source = inspect.getsource(AgentRunner)
+        assert "subprocess.DEVNULL" in source, (
+            "AgentRunner must use stdin=subprocess.DEVNULL to prevent SIGTTIN. "
+            "Without it, setpgrp + inherited PTY stdin → SIGTTIN → process stopped."
         )

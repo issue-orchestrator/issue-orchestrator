@@ -81,9 +81,16 @@ class AgentRunner:
                 # Capture stderr for provider error classification (retry logic).
                 # Stdout is inherited from parent so output flows through
                 # the pexpect PTY to CleaningLogWriter -> ui-session.log.
+                #
+                # stdin=DEVNULL prevents SIGTTIN: setpgrp puts the child in a
+                # background process group relative to the parent's PTY, so
+                # any read from the inherited PTY slave triggers SIGTTIN and
+                # stops the process. Agents don't need stdin.
+                #
                 # setpgrp creates a new process group (for clean killpg)
                 # without creating a new session (which would disconnect
                 # from the controlling terminal and break interactive mode).
+                stdin=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 preexec_fn=os.setpgrp,
             )
