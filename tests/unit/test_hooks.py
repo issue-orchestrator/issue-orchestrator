@@ -10,6 +10,12 @@ from unittest.mock import Mock
 
 import pytest
 
+# Hook tests spawn shell scripts via subprocess.run with a timeout.
+# Under xdist CPU contention, the timeout fires before the subprocess
+# completes, returning False instead of the expected exit code.
+# Serialize all hook tests in one worker to avoid this.
+pytestmark = pytest.mark.xdist_group("hooks")
+
 
 def _hook_env(env: dict[str, str] | None) -> dict[str, str]:
     merged = os.environ.copy()
@@ -41,7 +47,7 @@ def run_hook_test(
             input=test_input,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=30,
             cwd=str(project_root) if project_root else None,
             env=_hook_env(env),
         )
@@ -75,7 +81,7 @@ def run_cursor_hook_test(
             input=test_input,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=30,
             cwd=str(project_root) if project_root else None,
             env=_hook_env(env),
         )
@@ -119,7 +125,7 @@ def run_copilot_hook_test(
             input=test_input,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=30,
             cwd=str(project_root) if project_root else None,
             env=_hook_env(env),
         )
