@@ -337,11 +337,11 @@ class TestAgentRunnerConfigIntegration:
     doesn't break the PTY output chain.
     """
 
-    def test_agent_runner_does_not_use_pipe_capture(self) -> None:
-        """AgentRunner must NOT use stdout=PIPE or stderr=PIPE.
+    def test_agent_runner_does_not_capture_stdout(self) -> None:
+        """Vendored AgentRunner must NOT capture stdout (breaks PTY output chain).
 
-        If this assertion fails, someone re-added PIPE capture which
-        would break the pexpect output chain.
+        Stderr capture via PIPE is intentional — it's used for provider error
+        classification (retry logic). Only stdout must flow through the PTY.
         """
         import inspect
         from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
@@ -349,9 +349,6 @@ class TestAgentRunnerConfigIntegration:
         source = inspect.getsource(AgentRunner)
         assert "stdout=subprocess.PIPE" not in source, (
             "AgentRunner must not use stdout=PIPE — it breaks PTY output capture"
-        )
-        assert "stderr=subprocess.PIPE" not in source, (
-            "AgentRunner must not use stderr=PIPE — it breaks PTY output capture"
         )
         assert "capture_output=True" not in source, (
             "AgentRunner must not use capture_output=True — it breaks PTY output capture"

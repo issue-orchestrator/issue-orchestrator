@@ -820,7 +820,7 @@ def _append_provider_runner_logs(
         f"[{timestamp}] round={round_index} role={role} "
         f"exit_code={exit_code} timed_out={timed_out} succeeded={succeeded}\n"
     )
-    _append_text(output_dir / "responses.log", header + (response_text.rstrip() or "(empty)") + "\n\n")
+    _append_text(output_dir / "stdout.log", header + (response_text.rstrip() or "(empty)") + "\n\n")
     _append_text(output_dir / "stderr.log", header + (stderr.rstrip() or "(empty)") + "\n\n")
 
 

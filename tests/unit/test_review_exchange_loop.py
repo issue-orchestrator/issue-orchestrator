@@ -161,12 +161,12 @@ def test_run_agent_round_writes_run_scoped_provider_runner_logs(tmp_path: Path) 
     )
 
     assert response.response_type == "ok"
-    responses_log = run_dir / "provider-runner" / "responses.log"
+    stdout_log = run_dir / "provider-runner" / "stdout.log"
     stderr_log = run_dir / "provider-runner" / "stderr.log"
-    assert responses_log.exists()
+    assert stdout_log.exists()
     assert stderr_log.exists()
-    assert "round=1 role=reviewer" in responses_log.read_text(encoding="utf-8")
-    assert '"response_type":"ok"' in responses_log.read_text(encoding="utf-8")
+    assert "round=1 role=reviewer" in stdout_log.read_text(encoding="utf-8")
+    assert '"response_type":"ok"' in stdout_log.read_text(encoding="utf-8")
     assert "runner-note" in stderr_log.read_text(encoding="utf-8")
 
 

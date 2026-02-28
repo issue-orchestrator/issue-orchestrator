@@ -65,9 +65,9 @@ class RunResult:
     This is the output from AgentRunner.run(). It captures everything that
     happened during agent execution.
 
-    Agent stdout/stderr are NOT captured here — they flow through the parent's
-    PTY to pexpect/CleaningLogWriter for ui-session.log. The stderr field only
-    contains error messages from process launch failures (command not found, etc.).
+    Stdout flows through the parent's PTY to pexpect/CleaningLogWriter for
+    ui-session.log. Stderr is captured via PIPE for provider error classification
+    (retry logic) and also contains launch failure messages (command not found, etc.).
 
     Attributes:
         exit_code: Process exit code, or None if timed out

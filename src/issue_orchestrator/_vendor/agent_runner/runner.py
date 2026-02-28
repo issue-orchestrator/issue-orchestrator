@@ -1,13 +1,14 @@
-"""Core agent runner implementation.
+"""Core agent runner implementation (vendored, used by provider_runner).
 
 This module provides the AgentRunner class that executes AI agents as subprocesses.
 It handles:
 - Subprocess invocation with proper isolation
 - Timeout management
 - Clean process termination
+- Stderr capture for provider error classification (retry logic)
 
-Output is NOT captured by AgentRunner. The agent's stdout/stderr are inherited
-from the parent process so they flow through the pexpect PTY to CleaningLogWriter.
+Stdout is inherited from the parent process so it flows through the pexpect PTY
+to CleaningLogWriter. Stderr is captured via PIPE for error classification.
 """
 
 import logging
@@ -164,16 +165,20 @@ class AgentRunner:
                 spec.command,
                 cwd=spec.working_dir,
                 env=env,
-                # Inherit stdout/stderr from parent so output flows through
+                # Capture stderr for provider error classification (retry logic).
+                # Stdout is inherited from parent so output flows through
                 # the pexpect PTY to CleaningLogWriter -> ui-session.log.
                 # setpgrp creates a new process group (for clean killpg)
                 # without creating a new session (which would disconnect
                 # from the controlling terminal and break interactive mode).
+                stderr=subprocess.PIPE,
                 preexec_fn=os.setpgrp,
             )
 
             try:
-                exit_code = process.wait(timeout=spec.timeout_seconds)
+                _, raw_stderr = process.communicate(timeout=spec.timeout_seconds)
+                exit_code = process.returncode
+                stderr = raw_stderr.decode("utf-8", errors="replace") if raw_stderr else ""
             except subprocess.TimeoutExpired:
                 timed_out = True
                 logger.warning(

@@ -72,10 +72,10 @@ def classify_provider_error(
     exit_code: int | None,
     timed_out: bool,
 ) -> ProviderErrorType | None:
-    """Classify provider error based on output and exit status.
+    """Classify provider error based on stderr output and exit status.
 
-    Note: stderr here only contains launch-level errors (command not found, etc.).
-    Agent output flows through the PTY to ui-session.log, not through this path.
+    The vendored runner captures stderr via PIPE for this classification.
+    Stdout flows through the PTY to ui-session.log and is not available here.
     """
     if timed_out:
         return ProviderErrorType.TRANSIENT
