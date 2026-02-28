@@ -12,7 +12,9 @@ if [[ -z "$round_num" ]]; then
 fi
 
 if [[ "$round_num" -lt 2 ]]; then
-  echo '{"response_type":"disagree","getting_closer":true,"response_text":"Disagree with changes"}'
+  echo '{"response_type":"disagree","getting_closer":true,"response_text":"Disagree with changes"}' \
+    > "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"
 else
-  echo '{"response_type":"ok","getting_closer":true,"response_text":"Resolved"}'
+  echo '{"response_type":"ok","getting_closer":true,"response_text":"Resolved"}' \
+    > "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"
 fi

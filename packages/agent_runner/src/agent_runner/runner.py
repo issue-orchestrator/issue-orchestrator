@@ -4,11 +4,16 @@ This module provides the AgentRunner class that executes AI agents as subprocess
 It handles:
 - Subprocess invocation with proper isolation
 - Timeout management
-- Output capture to files
 - Clean process termination
+- Stderr capture for provider error classification (retry logic)
+
+Stdout is inherited from the parent process so it flows through the pexpect PTY
+to CleaningLogWriter. Stderr is captured via PIPE for error classification.
 """
 
 import logging
+import os
+import signal
 import subprocess
 import time
 from .env_filter import build_filtered_env
@@ -22,9 +27,11 @@ class AgentRunner:
 
     AgentRunner is a simple, single-shot executor. It:
     - Runs the agent command exactly once
-    - Captures stdout/stderr to files
     - Enforces a timeout
-    - Returns a result with exit code, output, and timing
+    - Returns a result with exit code and timing
+
+    Stdout flows through the parent's PTY (pexpect) to CleaningLogWriter.
+    Stderr is captured via PIPE for provider error classification (retry logic).
 
     It does NOT:
     - Retry on failure
@@ -33,22 +40,6 @@ class AgentRunner:
     - Manage terminal sessions (tmux, etc.)
 
     Those responsibilities belong to the orchestrator.
-
-    Example:
-        runner = AgentRunner()
-        result = runner.run(RunSpec(
-            command=["claude", "-p", "Fix the bug"],
-            working_dir=Path("/repo"),
-            timeout_seconds=300,
-            output_dir=Path("/output"),
-        ))
-
-        if result.succeeded:
-            print("Agent completed successfully")
-        elif result.timed_out:
-            print("Agent timed out")
-        else:
-            print(f"Agent failed with exit code {result.exit_code}")
     """
 
     def run(self, spec: RunSpec) -> RunResult:
@@ -58,13 +49,10 @@ class AgentRunner:
             spec: Specification for what to run
 
         Returns:
-            RunResult with exit code, output, timing, and timeout status
+            RunResult with exit code, timing, and timeout status
         """
         # Ensure output directory exists
         spec.output_dir.mkdir(parents=True, exist_ok=True)
-
-        stdout_path = spec.output_dir / "stdout.log"
-        stderr_path = spec.output_dir / "stderr.log"
 
         # Build filtered environment
         env = build_filtered_env(
@@ -83,53 +71,51 @@ class AgentRunner:
         start_time = time.monotonic()
         timed_out = False
         exit_code: int | None = None
+        stderr = ""
 
         try:
-            with (
-                open(stdout_path, "w") as stdout_file,
-                open(stderr_path, "w") as stderr_file,
-            ):
-                process = subprocess.Popen(
-                    spec.command,
-                    cwd=spec.working_dir,
-                    env=env,
-                    stdout=stdout_file,
-                    stderr=stderr_file,
-                    # Start in new session to allow clean termination
-                    start_new_session=True,
-                )
+            process = subprocess.Popen(
+                spec.command,
+                cwd=spec.working_dir,
+                env=env,
+                # Capture stderr for provider error classification (retry logic).
+                # Stdout is inherited from parent so output flows through
+                # the pexpect PTY to CleaningLogWriter -> ui-session.log.
+                # setpgrp creates a new process group (for clean killpg)
+                # without creating a new session (which would disconnect
+                # from the controlling terminal and break interactive mode).
+                stderr=subprocess.PIPE,
+                preexec_fn=os.setpgrp,
+            )
 
-                try:
-                    exit_code = process.wait(timeout=spec.timeout_seconds)
-                except subprocess.TimeoutExpired:
-                    logger.warning(
-                        "Agent timed out after %ds, terminating",
-                        spec.timeout_seconds,
-                    )
-                    timed_out = True
-                    self._terminate_process(process)
+            try:
+                _, raw_stderr = process.communicate(timeout=spec.timeout_seconds)
+                exit_code = process.returncode
+                stderr = raw_stderr.decode("utf-8", errors="replace") if raw_stderr else ""
+            except subprocess.TimeoutExpired:
+                logger.warning(
+                    "Agent timed out after %ds, terminating",
+                    spec.timeout_seconds,
+                )
+                timed_out = True
+                self._terminate_process(process)
 
         except FileNotFoundError:
             logger.error("Command not found: %s", spec.command[0])
-            # Write error to stderr file
-            stderr_path.write_text(f"Command not found: {spec.command[0]}\n")
-            exit_code = 127  # Standard "command not found" exit code
+            stderr = f"Command not found: {spec.command[0]}"
+            exit_code = 127
 
         except PermissionError:
             logger.error("Permission denied executing: %s", spec.command[0])
-            stderr_path.write_text(f"Permission denied: {spec.command[0]}\n")
-            exit_code = 126  # Standard "permission denied" exit code
+            stderr = f"Permission denied: {spec.command[0]}"
+            exit_code = 126
 
         except OSError as e:
             logger.error("OS error running agent: %s", e)
-            stderr_path.write_text(f"OS error: {e}\n")
+            stderr = f"OS error: {e}"
             exit_code = 1
 
         duration = time.monotonic() - start_time
-
-        # Read output files
-        stdout = stdout_path.read_text() if stdout_path.exists() else ""
-        stderr = stderr_path.read_text() if stderr_path.exists() else ""
 
         logger.info(
             "Agent finished: exit_code=%s, timed_out=%s, duration=%.1fs",
@@ -140,31 +126,19 @@ class AgentRunner:
 
         return RunResult(
             exit_code=exit_code,
-            stdout=stdout,
             stderr=stderr,
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
             duration_seconds=duration,
             timed_out=timed_out,
             command=spec.command,
         )
 
     def _terminate_process(self, process: subprocess.Popen) -> None:
-        """Terminate a process gracefully, then forcefully if needed.
-
-        Args:
-            process: The subprocess to terminate
-        """
-        import os
-        import signal
-
+        """Terminate a process gracefully, then forcefully if needed."""
         # Try SIGTERM first (graceful)
         try:
-            # Kill the process group (includes any children)
             pgid = os.getpgid(process.pid)
             os.killpg(pgid, signal.SIGTERM)
         except (ProcessLookupError, OSError):
-            # Process already gone
             return
 
         # Wait briefly for graceful termination
@@ -181,5 +155,4 @@ class AgentRunner:
             os.killpg(pgid, signal.SIGKILL)
             process.wait(timeout=5)
         except (ProcessLookupError, OSError, subprocess.TimeoutExpired):
-            # Best effort - process may be in uninterruptible state
             pass

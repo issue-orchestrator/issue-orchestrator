@@ -1,4 +1,10 @@
-"""Run provider command with retry/circuit reporting."""
+"""Run provider command with retry/circuit reporting.
+
+Output capture is NOT handled here. The agent's stdout/stderr are inherited
+from the parent process (pexpect PTY), flowing through CleaningLogWriter
+to ui-session.log. This module only handles retry logic and circuit breaker
+status reporting.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +13,14 @@ import os
 import sys
 from pathlib import Path
 
-from issue_orchestrator.agent_runner import AgentRunner, RunSpec, RetryPolicy
+# Phase 2 migration: provider_runner still uses vendored AgentRunner (subprocess.Popen)
+# because it runs INSIDE a PTY — nested pexpect would break the output chain.
+# Import directly from _vendor until migrated.
+from issue_orchestrator._vendor.agent_runner import AgentRunner, RunSpec, RetryPolicy
 from issue_orchestrator.infra.env import ENV_PREFIX
 from issue_orchestrator.infra.provider_resilience import ProviderStatus, now_iso, write_provider_status
 from issue_orchestrator.ports.provider_resilience import ProviderErrorType
 from issue_orchestrator.ports.session_log import detect_ai_system_from_command
-from issue_orchestrator.execution.session_output_adapter import SESSION_LOG_NAME
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
@@ -43,8 +51,8 @@ def _build_command(command: str) -> list[str]:
     return [shell, "-lc", command]
 
 
-def _summarize_error(stdout: str, stderr: str) -> str | None:
-    text = (stderr or stdout or "").strip()
+def _summarize_error(stderr: str) -> str | None:
+    text = stderr.strip()
     if not text:
         return None
     if len(text) > 300:
@@ -52,42 +60,11 @@ def _summarize_error(stdout: str, stderr: str) -> str | None:
     return text
 
 
-def _ensure_run_scoped_session_log(run_dir: Path) -> None:
-    """Prepare provider-runner log paths without clobbering live session logs."""
-    provider_stdout = run_dir / "provider-runner" / "stdout.log"
-    session_log = run_dir / SESSION_LOG_NAME
-    session_log.parent.mkdir(parents=True, exist_ok=True)
-    provider_stdout.parent.mkdir(parents=True, exist_ok=True)
-
-    if session_log.is_symlink():
-        try:
-            if session_log.resolve() == provider_stdout.resolve():
-                return
-        except OSError as exc:
-            raise RuntimeError(
-                f"failed to validate ui-session.log symlink under run_dir={run_dir}: {exc}"
-            ) from exc
-        session_log.unlink()
-        session_log.symlink_to(provider_stdout)
-        return
-    if session_log.exists():
-        # start_run pre-creates an empty placeholder. Replace only that case
-        # so run-scoped UI log points at the provider stream path.
-        if session_log.stat().st_size == 0:
-            session_log.unlink()
-            session_log.symlink_to(provider_stdout)
-            return
-        # Preserve non-empty logs to avoid clobbering already-streaming sessions.
-        return
-    session_log.symlink_to(provider_stdout)
-
-
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv or sys.argv[1:])
 
     run_dir = _resolve_run_dir(args)
     output_dir = run_dir / "provider-runner"
-    _ensure_run_scoped_session_log(run_dir)
 
     provider = args.provider or detect_ai_system_from_command(args.command) or None
     retry_policy = RetryPolicy(
@@ -117,7 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         succeeded=result.succeeded,
         exit_code=result.exit_code,
         timed_out=result.timed_out,
-        last_error_summary=_summarize_error(result.stdout, result.stderr),
+        last_error_summary=_summarize_error(result.stderr),
         last_attempt_at=now_iso(),
     )
     write_provider_status(run_dir, status)

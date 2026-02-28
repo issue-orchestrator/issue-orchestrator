@@ -9,4 +9,5 @@ echo "···"
 echo "Reviewing file: src/auth.py"
 echo "Review verdict: code-quality-approved"
 
-echo '{"response_type":"ok","getting_closer":true,"response_text":"LGTM - code quality approved"}'
+echo '{"response_type":"ok","getting_closer":true,"response_text":"LGTM - code quality approved"}' \
+  > "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE"

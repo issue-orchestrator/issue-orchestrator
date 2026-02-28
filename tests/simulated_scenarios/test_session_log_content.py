@@ -141,9 +141,9 @@ def test_session_log_reviewer_markers_via_local_loop(scenario_repo: Path):
 
     all_content = "\n".join(_read_session_log(log) for log in logs)
 
-    # Reviewer markers must survive filtering (from _append_session_log)
-    _assert_contains(all_content, "src/auth.py", "reviewer output")
-    _assert_contains(all_content, "code-quality-approved", "reviewer output")
-
-    # ANSI escape codes must be stripped
-    _assert_no_ansi_escapes(all_content, "reviewer ui-session.log")
+    # Reviewer structured response is read from file and logged via _append_session_log.
+    # Stdout chatter (ANSI codes, "src/auth.py" etc.) flows through the parent's
+    # PTY in production but is NOT captured by the review exchange loop.
+    # We verify the JSON response content appears in the session log.
+    _assert_contains(all_content, "LGTM", "reviewer response")
+    _assert_contains(all_content, "response_type", "reviewer response JSON")

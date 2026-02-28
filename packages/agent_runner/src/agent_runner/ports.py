@@ -48,25 +48,20 @@ class RunSpec:
 class RunResult:
     """Result of running an AI agent.
 
-    This is the output from AgentRunner.run(). It captures everything that
-    happened during agent execution.
+    Stdout flows through the parent's PTY to pexpect/CleaningLogWriter for
+    ui-session.log. Stderr is captured via PIPE for provider error classification
+    (retry logic) and also contains launch failure messages (command not found, etc.).
 
     Attributes:
         exit_code: Process exit code, or None if timed out
-        stdout: Captured stdout content
-        stderr: Captured stderr content
-        stdout_path: Path to stdout file (in output_dir)
-        stderr_path: Path to stderr file (in output_dir)
+        stderr: Error message from launch failure, or empty string
         duration_seconds: How long the agent ran
         timed_out: True if the agent was killed due to timeout
         command: The command that was executed (for debugging)
     """
 
     exit_code: int | None
-    stdout: str
     stderr: str
-    stdout_path: Path
-    stderr_path: Path
     duration_seconds: float
     timed_out: bool
     command: list[str]

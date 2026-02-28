@@ -39,7 +39,7 @@ Example usage:
 """
 
 from .ports import AIProvider, RunSpec, RunResult, RetryPolicy
-from .errors import ProviderErrorType
+from .errors import ProviderErrorType, classify_provider_error
 from .providers import get_provider, is_valid_provider, list_providers
 from .runner import AgentRunner
 
@@ -51,6 +51,7 @@ __all__ = [
     "RunResult",
     "RetryPolicy",
     "ProviderErrorType",
+    "classify_provider_error",
     # Provider registry
     "list_providers",
     "get_provider",

@@ -65,12 +65,14 @@ class RunResult:
     This is the output from AgentRunner.run(). It captures everything that
     happened during agent execution.
 
+    Both stdout and stderr are captured via PIPE and tee'd to the parent's
+    stdout/stderr in real-time, so PTY output is preserved while the captured
+    text is available for provider error classification (retry logic).
+
     Attributes:
         exit_code: Process exit code, or None if timed out
-        stdout: Captured stdout content
-        stderr: Captured stderr content
-        stdout_path: Path to stdout file (in output_dir)
-        stderr_path: Path to stderr file (in output_dir)
+        stdout: Captured stdout content (also tee'd to parent stdout)
+        stderr: Captured stderr content (also tee'd to parent stderr)
         duration_seconds: How long the agent ran
         timed_out: True if the agent was killed due to timeout
         command: The command that was executed (for debugging)
@@ -81,8 +83,6 @@ class RunResult:
     exit_code: int | None
     stdout: str
     stderr: str
-    stdout_path: Path
-    stderr_path: Path
     duration_seconds: float
     timed_out: bool
     command: list[str]

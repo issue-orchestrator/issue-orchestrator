@@ -10,7 +10,7 @@ import sys
 import pytest
 
 from issue_orchestrator.domain.models import Issue, AgentConfig
-from issue_orchestrator.infra.terminal_cleaning import CleaningLogWriter
+from issue_orchestrator.execution.agent_runner import AgentRunner, AgentSpec
 from issue_orchestrator.ports.working_copy import BranchStatus, CommitInfo, PreflightResult, PushResult, RebaseResult
 from issue_orchestrator.ports.worktree_manager import WorktreeInfo
 from issue_orchestrator.infra.config import Config
@@ -47,52 +47,49 @@ _RUN_DIR_RE = re.compile(r"ISSUE_ORCHESTRATOR_RUN_DIR=(['\"]?)([^'\"\s]+)\1")
 
 
 class ScriptSessionRunner:
-    """SessionRunner that executes commands synchronously via bash."""
+    """SessionRunner that executes commands via the unified AgentRunner.
+
+    Uses the same pexpect PTY → CleaningLogWriter → ui-session.log chain
+    as production.  This ensures simulated scenario tests exercise the real
+    output capture path, preventing regressions like #4057.
+    """
 
     def __init__(self) -> None:
         self._last_output: dict[str, str] = {}
+        self._runner = AgentRunner()
 
     def create_session(self, session_id: int, command: str, working_dir: str, title: str | None, session_name: str) -> bool:
-        # Ensure fixture scripts that invoke `python` use the same interpreter
-        # as the test process (e.g., .venv/bin/python in CI).
-        env = dict(os.environ)
         python_bin_dir = str(Path(sys.executable).parent)
-        env["PATH"] = f"{python_bin_dir}:{env.get('PATH', '')}"
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=working_dir,
-            executable="/bin/bash",
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-        output = (result.stdout or "") + (result.stderr or "")
-        self._last_output[session_name] = output
-        # Write filtered session log: the provider_runner writes raw output to
-        # provider-runner/stdout.log and symlinks ui-session.log to it.  Read
-        # the raw log (following the symlink), clean it, and replace the
-        # symlink with a regular file containing cleaned text.
+
+        # Extract run_dir from command to determine log/output paths.
         match = _RUN_DIR_RE.search(command)
         if match:
             run_dir = Path(match.group(2))
             if not run_dir.is_absolute():
                 run_dir = (Path(working_dir) / run_dir).resolve()
-            log_path = run_dir / "ui-session.log"
-            raw_log = run_dir / "provider-runner" / "stdout.log"
-            raw_content = ""
-            if raw_log.exists():
-                raw_content = raw_log.read_text(encoding="utf-8", errors="replace")
-            elif output:
-                raw_content = output
-            if raw_content:
-                # Remove symlink if present so we write a regular file
-                if log_path.is_symlink():
-                    log_path.unlink()
-                writer = CleaningLogWriter(log_path)
-                writer.write(raw_content)
-                writer.close()
-        return result.returncode == 0
+        else:
+            run_dir = Path(working_dir) / ".issue-orchestrator" / "sessions" / "fallback"
+
+        spec = AgentSpec(
+            command=["bash", "-c", command],
+            working_dir=Path(working_dir),
+            timeout_seconds=120,
+            log_path=run_dir / "ui-session.log",
+            output_dir=run_dir,
+            env_overrides={"PATH": f"{python_bin_dir}:{os.environ.get('PATH', '')}"},
+        )
+        result = self._runner.run(spec)
+
+        # Populate _last_output from the session log for get_session_output()
+        log_path = run_dir / "ui-session.log"
+        if log_path.exists():
+            self._last_output[session_name] = log_path.read_text(
+                encoding="utf-8", errors="replace",
+            )
+        else:
+            self._last_output[session_name] = ""
+
+        return result.succeeded
 
     def session_exists(self, session_id: int, session_name: str) -> bool:
         return False

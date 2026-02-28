@@ -1,25 +1,50 @@
-"""Core agent runner implementation.
+"""Core agent runner implementation (vendored, used by provider_runner).
 
 This module provides the AgentRunner class that executes AI agents as subprocesses.
 It handles:
 - Subprocess invocation with proper isolation
 - Timeout management
-- Output capture to files
 - Clean process termination
+- Stdout/stderr capture with real-time tee to parent process
+
+Both stdout and stderr are captured via PIPE for provider error classification
+(retry logic). Relay threads tee both streams to the parent's stdout/stderr in
+real-time so output still flows through the pexpect PTY to CleaningLogWriter →
+ui-session.log.
 """
 
 import logging
+import os
 import random
 import shlex
 import subprocess
+import sys
+import threading
 import time
 
 from .env_filter import build_filtered_env
 from .errors import ProviderErrorType, classify_provider_error
 from .ports import RunResult, RunSpec
-from .stream_capture import capture_process_output
 
 logger = logging.getLogger(__name__)
+
+
+def _tee_stream(
+    source,
+    dest,
+    captured_chunks: list[bytes],
+) -> None:
+    """Read from *source* pipe, write to *dest* in real-time, accumulate for classification."""
+    try:
+        while True:
+            chunk = source.read(4096)
+            if not chunk:
+                break
+            dest.write(chunk)
+            dest.flush()
+            captured_chunks.append(chunk)
+    except (OSError, ValueError):
+        pass
 
 
 def _format_command_for_log(command: list[str], max_arg_length: int = 160) -> str:
@@ -113,10 +138,8 @@ class AgentRunner:
         assert last_result is not None
         return RunResult(
             exit_code=last_result.exit_code,
-            stdout=last_result.stdout,
+            stdout="",
             stderr=last_result.stderr,
-            stdout_path=last_result.stdout_path,
-            stderr_path=last_result.stderr_path,
             duration_seconds=last_result.duration_seconds,
             timed_out=last_result.timed_out,
             command=last_result.command,
@@ -138,9 +161,6 @@ class AgentRunner:
         """Execute a single attempt of the agent command."""
         # Ensure output directory exists
         spec.output_dir.mkdir(parents=True, exist_ok=True)
-
-        stdout_path = spec.output_dir / "stdout.log"
-        stderr_path = spec.output_dir / "stderr.log"
 
         # Build filtered environment
         env = build_filtered_env(
@@ -170,43 +190,63 @@ class AgentRunner:
                 spec.command,
                 cwd=spec.working_dir,
                 env=env,
+                # Capture both streams for provider error classification.
+                # A tee thread relays stdout to the parent in real-time so
+                # output still flows through the pexpect PTY → ui-session.log.
+                # setpgrp creates a new process group (for clean killpg)
+                # without creating a new session (which would disconnect
+                # from the controlling terminal and break interactive mode).
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                # Start in new session to allow clean termination
-                start_new_session=True,
+                preexec_fn=os.setpgrp,
             )
 
-            capture = capture_process_output(
-                process,
-                stdout_path=stdout_path,
-                stderr_path=stderr_path,
-                timeout_seconds=spec.timeout_seconds,
-                on_timeout=lambda: self._terminate_process(process),
+            # Tee both pipes to the parent with threads. We cannot use
+            # communicate() because it would race with our tee threads.
+            stdout_chunks: list[bytes] = []
+            stderr_chunks: list[bytes] = []
+
+            stdout_thread = threading.Thread(
+                target=_tee_stream,
+                args=(process.stdout, sys.stdout.buffer, stdout_chunks),
+                daemon=True,
             )
-            exit_code = capture.exit_code
-            timed_out = capture.timed_out
-            stdout = capture.stdout
-            stderr = capture.stderr
-            if timed_out:
+            stderr_thread = threading.Thread(
+                target=_tee_stream,
+                args=(process.stderr, sys.stderr.buffer, stderr_chunks),
+                daemon=True,
+            )
+            stdout_thread.start()
+            stderr_thread.start()
+
+            try:
+                exit_code = process.wait(timeout=spec.timeout_seconds)
+            except subprocess.TimeoutExpired:
+                timed_out = True
                 logger.warning(
                     "Agent timed out after %ds, terminating",
                     spec.timeout_seconds,
                 )
+                self._terminate_process(process)
+
+            stdout_thread.join(timeout=5)
+            stderr_thread.join(timeout=5)
+            stdout = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+            stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace")
 
         except FileNotFoundError:
             logger.error("Command not found: %s", spec.command[0])
-            # Write error to stderr file
-            stderr_path.write_text(f"Command not found: {spec.command[0]}\n")
-            exit_code = 127  # Standard "command not found" exit code
+            stderr = f"Command not found: {spec.command[0]}"
+            exit_code = 127
 
         except PermissionError:
             logger.error("Permission denied executing: %s", spec.command[0])
-            stderr_path.write_text(f"Permission denied: {spec.command[0]}\n")
-            exit_code = 126  # Standard "permission denied" exit code
+            stderr = f"Permission denied: {spec.command[0]}"
+            exit_code = 126
 
         except OSError as e:
             logger.error("OS error running agent: %s", e)
-            stderr_path.write_text(f"OS error: {e}\n")
+            stderr = f"OS error: {e}"
             exit_code = 1
 
         duration = time.monotonic() - start_time
@@ -222,8 +262,6 @@ class AgentRunner:
             exit_code=exit_code,
             stdout=stdout,
             stderr=stderr,
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
             duration_seconds=duration,
             timed_out=timed_out,
             command=spec.command,
@@ -235,7 +273,6 @@ class AgentRunner:
         Args:
             process: The subprocess to terminate
         """
-        import os
         import signal
 
         # Try SIGTERM first (graceful)

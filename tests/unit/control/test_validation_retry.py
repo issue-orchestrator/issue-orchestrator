@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from issue_orchestrator.agent_runner import AgentRunner, RunResult, RunSpec
+from issue_orchestrator._vendor.agent_runner import AgentRunner, RunResult, RunSpec
 from issue_orchestrator.control.validation_retry import (
     RETRY_PROMPT_TEMPLATE,
     ValidationResult,
@@ -44,14 +44,12 @@ def controller(mock_runner: MagicMock, retry_config: RetryConfig, command_runner
 
 
 @pytest.fixture
-def successful_run_result(tmp_path: Path) -> RunResult:
+def successful_run_result() -> RunResult:
     """Create a successful run result."""
     return RunResult(
         exit_code=0,
-        stdout="Agent completed",
+        stdout="",
         stderr="",
-        stdout_path=tmp_path / "stdout.log",
-        stderr_path=tmp_path / "stderr.log",
         duration_seconds=10.0,
         timed_out=False,
         command=["agent", "run"],
@@ -59,14 +57,12 @@ def successful_run_result(tmp_path: Path) -> RunResult:
 
 
 @pytest.fixture
-def failed_run_result(tmp_path: Path) -> RunResult:
+def failed_run_result() -> RunResult:
     """Create a failed run result."""
     return RunResult(
         exit_code=1,
         stdout="",
         stderr="Agent crashed",
-        stdout_path=tmp_path / "stdout.log",
-        stderr_path=tmp_path / "stderr.log",
         duration_seconds=5.0,
         timed_out=False,
         command=["agent", "run"],
@@ -74,14 +70,12 @@ def failed_run_result(tmp_path: Path) -> RunResult:
 
 
 @pytest.fixture
-def timeout_run_result(tmp_path: Path) -> RunResult:
+def timeout_run_result() -> RunResult:
     """Create a timeout run result."""
     return RunResult(
         exit_code=None,
         stdout="",
         stderr="",
-        stdout_path=tmp_path / "stdout.log",
-        stderr_path=tmp_path / "stderr.log",
         duration_seconds=300.0,
         timed_out=True,
         command=["agent", "run"],

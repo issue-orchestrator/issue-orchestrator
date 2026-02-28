@@ -1,41 +1,25 @@
-from pathlib import Path
+"""Tests for provider_runner.
 
-import pytest
+The key architectural invariant: provider_runner does NOT capture agent
+output. Output flows through the parent's PTY (pexpect) to CleaningLogWriter.
+provider_runner only handles retry/circuit-breaker status reporting.
+"""
 
-from issue_orchestrator.entrypoints.cli_tools.provider_runner import _ensure_run_scoped_session_log
-
-
-def test_ensure_run_scoped_session_log_creates_symlink(tmp_path: Path) -> None:
-    run_dir = tmp_path / "run"
-    run_dir.mkdir(parents=True)
-
-    _ensure_run_scoped_session_log(run_dir)
-
-    session_log = run_dir / "ui-session.log"
-    assert session_log.is_symlink()
-    assert session_log.resolve() == (run_dir / "provider-runner" / "stdout.log").resolve()
+from issue_orchestrator.entrypoints.cli_tools.provider_runner import _summarize_error
 
 
-def test_ensure_run_scoped_session_log_replaces_empty_placeholder_file(tmp_path: Path) -> None:
-    run_dir = tmp_path / "run"
-    run_dir.mkdir(parents=True)
-    session_log = run_dir / "ui-session.log"
-    session_log.write_text("")
-
-    _ensure_run_scoped_session_log(run_dir)
-
-    assert session_log.is_symlink()
-    assert session_log.resolve() == (run_dir / "provider-runner" / "stdout.log").resolve()
+def test_summarize_error_returns_none_for_empty() -> None:
+    assert _summarize_error("") is None
+    assert _summarize_error("   ") is None
 
 
-def test_ensure_run_scoped_session_log_keeps_non_empty_file(tmp_path: Path) -> None:
-    run_dir = tmp_path / "run"
-    run_dir.mkdir(parents=True)
-    session_log = run_dir / "ui-session.log"
-    session_log.write_text("existing")
+def test_summarize_error_returns_short_text() -> None:
+    assert _summarize_error("rate limit exceeded") == "rate limit exceeded"
 
-    _ensure_run_scoped_session_log(run_dir)
 
-    assert session_log.exists()
-    assert not session_log.is_symlink()
-    assert session_log.read_text() == "existing"
+def test_summarize_error_truncates_long_text() -> None:
+    long_text = "x" * 500
+    result = _summarize_error(long_text)
+    assert result is not None
+    assert len(result) == 303  # 300 + "..."
+    assert result.endswith("...")

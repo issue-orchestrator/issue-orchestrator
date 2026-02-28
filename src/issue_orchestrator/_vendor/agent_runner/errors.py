@@ -73,7 +73,12 @@ def classify_provider_error(
     exit_code: int | None,
     timed_out: bool,
 ) -> ProviderErrorType | None:
-    """Classify provider error based on output and exit status."""
+    """Classify provider error based on output and exit status.
+
+    Both stdout and stderr are captured via PIPE and tee'd to the parent's
+    stdout/stderr in real-time so PTY output is preserved. The captured text
+    is used here for transient error classification (retry logic).
+    """
     if timed_out:
         return ProviderErrorType.TRANSIENT
 

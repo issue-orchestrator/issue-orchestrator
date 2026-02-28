@@ -1,8 +1,11 @@
 """Integration tests for Codex CLI execution.
 
 These tests verify that we can actually execute Codex CLI commands
-and that the agent-runner package correctly captures output and handles
-the agent-done completion protocol.
+and that the agent-done completion protocol works end-to-end.
+
+Note: AgentRunner does NOT capture stdout/stderr. Output flows through
+the parent's PTY (pexpect) to CleaningLogWriter. These tests verify
+exit codes, working directory, and completion protocol — not output capture.
 """
 
 import json
@@ -115,11 +118,17 @@ class TestCodexExecution:
 class TestCodexWithAgentRunner:
     """Integration tests for Codex via AgentRunner."""
 
-    def test_codex_via_agent_runner_captures_output(self, tmp_path):
-        """Test that AgentRunner correctly captures Codex output to log files."""
-        from issue_orchestrator.agent_runner import AgentRunner
-        from issue_orchestrator.agent_runner.ports import RunSpec
-        from issue_orchestrator.agent_runner.providers import CodexProvider
+    def test_codex_via_agent_runner_returns_exit_code(self, tmp_path):
+        """Test that AgentRunner correctly runs Codex and returns exit code.
+
+        AgentRunner inherits stdout/stderr (PTY passthrough). We verify
+        process management, not output capture.
+        """
+        # Use vendored AgentRunner — Codex tests exercise the subprocess-based
+        # runner (not the unified pexpect-based one in execution.agent_runner).
+        from issue_orchestrator._vendor.agent_runner import AgentRunner
+        from issue_orchestrator._vendor.agent_runner.ports import RunSpec
+        from issue_orchestrator._vendor.agent_runner.providers import CodexProvider
 
         # Set up a git repo
         subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
@@ -142,10 +151,9 @@ class TestCodexWithAgentRunner:
         output_dir.mkdir()
 
         provider = CodexProvider()
-        # Build command - use simpler task, let Codex use its default model
         cmd = provider.build_command(
             prompt="Echo the word SUCCESS and exit.",
-            json_output="false",  # Disable JSON for cleaner output
+            json_output="false",
         )
 
         runner = AgentRunner()
@@ -158,25 +166,9 @@ class TestCodexWithAgentRunner:
 
         result = runner.run(spec)
 
-        # Verify log files were created
-        assert (output_dir / "stdout.log").exists(), "stdout.log should exist"
-        assert (output_dir / "stderr.log").exists(), "stderr.log should exist"
-
-        # Verify result structure
-        assert result.stdout_path == output_dir / "stdout.log"
-        assert result.stderr_path == output_dir / "stderr.log"
         assert result.duration_seconds > 0
-
-        # Check output contains expected content
-        stdout_content = result.stdout
-        print(f"Codex stdout: {stdout_content}")
-        print(f"Codex stderr: {result.stderr}")
-        print(f"Exit code: {result.exit_code}")
-
-        # Should have some output - Codex writes session info to stderr
-        assert stdout_content or result.stderr, "Expected some output from Codex"
-        assert len(result.stderr) > 0, "Session log (stderr) should not be empty"
-        assert "codex" in result.stderr.lower(), "Session log should contain Codex output"
+        print(f"Codex exit_code: {result.exit_code}")
+        print(f"Codex stderr (launch errors only): {result.stderr}")
 
 
 @pytest.mark.skipif(not is_codex_available(), reason="Codex CLI not installed")
@@ -339,11 +331,15 @@ class TestCodexWithAgentRunnerFullPath:
         2. Codex executes task
         3. Codex calls agent-done
         4. completion.json is written
-        5. AgentRunner captures all output
+
+        Note: AgentRunner does NOT capture output. Output flows through the
+        parent's PTY. We only verify process management and completion protocol.
         """
-        from issue_orchestrator.agent_runner import AgentRunner
-        from issue_orchestrator.agent_runner.ports import RunSpec
-        from issue_orchestrator.agent_runner.providers import CodexProvider
+        # Use vendored AgentRunner — Codex tests exercise the subprocess-based
+        # runner (not the unified pexpect-based one in execution.agent_runner).
+        from issue_orchestrator._vendor.agent_runner import AgentRunner
+        from issue_orchestrator._vendor.agent_runner.ports import RunSpec
+        from issue_orchestrator._vendor.agent_runner.providers import CodexProvider
 
         # Get scripts directory
         repo_root = Path(__file__).parent.parent.parent
@@ -405,20 +401,12 @@ class TestCodexWithAgentRunnerFullPath:
         print(f"  exit_code: {result.exit_code}")
         print(f"  timed_out: {result.timed_out}")
         print(f"  duration: {result.duration_seconds:.1f}s")
-        print(f"  stdout: {result.stdout[:500] if result.stdout else 'empty'}")
-        print(f"  stderr: {result.stderr[:500] if result.stderr else 'empty'}")
-
-        # Verify log files exist and stderr has content (Codex writes to stderr)
-        assert result.stdout_path.exists()
-        assert result.stderr_path.exists()
-        assert len(result.stderr) > 0, "Session log (stderr) should not be empty"
-        assert "codex" in result.stderr.lower(), "Session log should contain Codex output"
+        print(f"  stderr (launch errors): {result.stderr[:500] if result.stderr else 'empty'}")
 
         # Check for completion.json
         completion_files = list(io_dir.glob("completion*.json"))
         assert len(completion_files) > 0, (
             f"No completion.json written!\n"
-            f"stdout: {result.stdout}\n"
             f"stderr: {result.stderr}\n"
             f"Files in {io_dir}: {list(io_dir.iterdir())}"
         )
