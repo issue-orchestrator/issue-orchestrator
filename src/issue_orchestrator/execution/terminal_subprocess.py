@@ -3,10 +3,9 @@
 This provides a tmux-free execution option while still emitting a session log
 per worktree for debugging and session health checks.
 
-Uses pexpect for robust PTY handling. This solves the race condition where
-fast-exiting processes (like printf) would exit before their output was fully
-readable from the PTY buffer. pexpect correctly waits for all output before
-signaling EOF, avoiding data loss under parallel test execution load.
+Delegates all process spawning to ``AgentRunner.start()`` which handles PTY
+creation, ``CleaningLogWriter`` setup, and process group isolation. This plugin
+only manages session lifecycle (registry, existence checks, cleanup).
 """
 
 from __future__ import annotations
@@ -21,13 +20,8 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
-
 from ..control.isolation import build_isolation_prefix
-from ..infra.terminal_cleaning import CleaningLogWriter
-
-if TYPE_CHECKING:
-    import pexpect
+from .agent_runner import AgentRunner, AgentSession, AgentSpec
 from ..infra.env import get_env
 from ..infra.hooks.hookspec import hookimpl
 from ..infra.repo_identity import state_dir
@@ -241,17 +235,16 @@ class _SubprocessRegistry:
 class SubprocessPlugin:
     """Terminal plugin that uses subprocesses instead of tmux.
 
-    Uses pexpect for robust PTY handling. This ensures all output is captured
-    even for fast-exiting processes, avoiding the race condition where processes
-    exit before their output is readable from the PTY buffer.
+    Delegates process spawning to :class:`AgentRunner` which handles PTY
+    creation, ``CleaningLogWriter`` setup, and process group isolation.
+    This plugin manages session lifecycle: registry, existence checks, cleanup.
     """
 
     def __init__(self) -> None:
         repo_root = Path(get_env("REPO_ROOT") or Path.cwd()).resolve()
         self._registry = _SubprocessRegistry(repo_root)
-        self._children: dict[str, "pexpect.spawn"] = {}  # pexpect child processes
-        self._watcher_threads: dict[str, threading.Thread] = {}  # Process watchers
-        self._log_files: dict[str, CleaningLogWriter] = {}  # Open log file handles
+        self._sessions: dict[str, AgentSession] = {}
+        self._watcher_threads: dict[str, threading.Thread] = {}
         allow_stdin_val = get_env("SUBPROCESS_ALLOW_STDIN") or ""
         self._allow_stdin = allow_stdin_val.lower() in {"1", "true", "yes"}
 
@@ -278,84 +271,45 @@ class SubprocessPlugin:
         isolation_prefix = build_isolation_prefix(working_dir, scrub_env=True, isolate_home=False)
         return f'cd "{working_dir}" && export PATH="{path_prefix}" && {isolation_prefix}{command}'
 
-    def _start_process_watcher(self, child: "pexpect.spawn", session_name: str, log_file: CleaningLogWriter) -> None:
-        """Start a thread that waits for the process to complete and closes resources."""
-        import pexpect as pexp  # Lazy import to avoid circular dependency with agent-done
+    def _start_session_watcher(self, session: AgentSession, session_name: str) -> None:
+        """Start a thread that waits for the session to complete."""
 
-        def _watch():
-            try:
-                # Wait for EOF - pexpect guarantees all output is read before returning
-                child.expect(pexp.EOF, timeout=None)
-            except pexp.TIMEOUT:
-                pass
-            except pexp.ExceptionPexpect:
-                pass
-            finally:
-                # Close child and flush log
-                try:
-                    child.close()
-                except Exception:
-                    pass
-                try:
-                    log_file.close()
-                except Exception:
-                    pass
-                self._log_files.pop(session_name, None)
+        def _watch() -> None:
+            session.wait()  # Blocks until exit; auto-flushes log
 
         thread = threading.Thread(target=_watch, daemon=True)
         self._watcher_threads[session_name] = thread
         thread.start()
 
-    def _start_process(self, command: str, working_dir: Path, session_name: str) -> "pexpect.spawn":
-        """Start a subprocess with pexpect, capturing output to log file.
+    def _start_process(self, command: str, working_dir: Path, session_name: str) -> AgentSession:
+        """Start an agent session via :class:`AgentRunner`.
 
-        Uses pexpect.spawn which creates a PTY. This is required for interactive
-        programs like Claude that behave differently without a TTY.
-
-        Note: Python 3.14+ warns about forkpty() in multi-threaded processes.
-        Tests using this code are grouped in xdist_group("pty") to run sequentially,
-        and the warning is suppressed in pyproject.toml filterwarnings.
+        Builds the full command with isolation prefix, constructs an
+        :class:`AgentSpec`, and delegates to ``AgentRunner.start()``.
         """
-        import pexpect
-
         full_cmd = self._build_process_command(command, working_dir)
         log_path = self._session_log_path(working_dir, session_name, command)
 
-        # Wrap log in CleaningLogWriter so ui-session.log is always
-        # human-readable (ANSI stripped, spinners filtered, deduped).
-        log_file = CleaningLogWriter(log_path)
-        self._log_files[session_name] = log_file
-
-        # Use pexpect.spawn which handles PTY correctly, including EOF timing
-        # The logfile parameter captures all output automatically
-        child = pexpect.spawn(
-            "/bin/bash",
-            ["-lc", full_cmd],
-            cwd=str(working_dir),
-            logfile=log_file,
-            timeout=None,  # No timeout - sessions run until completion
+        spec = AgentSpec(
+            command=["/bin/bash", "-lc", full_cmd],
+            working_dir=working_dir,
+            timeout_seconds=7200,  # Sessions manage their own timeout via provider_runner
+            log_path=log_path,
+            output_dir=log_path.parent,
         )
+        runner = AgentRunner()
+        session = runner.start(spec)
 
-        self._children[session_name] = child
-        self._start_process_watcher(child, session_name, log_file)
-        return child
+        self._sessions[session_name] = session
+        self._start_session_watcher(session, session_name)
+        return session
 
     def _process_alive(self, pid: int, session_name: str | None = None) -> bool:
         """Check if a process is still running."""
-        child = self._children.get(session_name) if session_name else None
-        if child is not None:
-            try:
-                return child.isalive()
-            except (ChildProcessError, OSError):
-                # ptyprocess can race with waitpid() under parallel load
-                # and raise when the child has already been reaped.
-                return False
-            except Exception as exc:
-                # pexpect may wrap waitpid races in ExceptionPexpect.
-                if exc.__class__.__name__ == "ExceptionPexpect":
-                    return False
-                raise
-        # Fall back to kill(0) check for processes we don't track directly
+        session = self._sessions.get(session_name) if session_name else None
+        if session is not None:
+            return session.is_alive()
+        # Fall back to kill(0) check for recovered sessions without a handle
         try:
             os.kill(pid, 0)
             return True
@@ -363,21 +317,18 @@ class SubprocessPlugin:
             return False
 
     def _kill_process(self, pid: int, session_name: str | None = None) -> None:
-        """Kill a process, trying process group first."""
-        child = self._children.get(session_name) if session_name else None
-        if child is not None:
-            try:
-                child.terminate(force=True)
-                return
-            except Exception:
-                pass
-        # Fall back to manual kill
+        """Kill a process, trying AgentSession first."""
+        session = self._sessions.get(session_name) if session_name else None
+        if session is not None:
+            session.kill()
+            return
+        # Fall back to manual kill for recovered sessions without a handle
         try:
-            os.killpg(pid, signal.SIGTERM)
-        except Exception:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (ProcessLookupError, OSError):
             try:
                 os.kill(pid, signal.SIGTERM)
-            except Exception:
+            except (ProcessLookupError, OSError):
                 return
 
     @hookimpl
@@ -398,7 +349,7 @@ class SubprocessPlugin:
         if self.session_exists(session_id, session_name):
             return False
 
-        child = self._start_process(command, worktree, session_name)
+        session = self._start_process(command, worktree, session_name)
         is_review = session_name.startswith("review-")
         tab_name = title or session_name
         if is_review:
@@ -408,14 +359,12 @@ class SubprocessPlugin:
             except ValueError:
                 tab_name = session_name
 
-        # pexpect.spawn.pid is None only before spawn() completes, which can't
-        # happen here since we just created the child
-        assert child.pid is not None, "pexpect child has no pid"
+        assert session.pid is not None, "AgentSession has no pid"
         record = _SessionRecord(
             session_name=session_name,
             issue_number=session_id,
             worktree_path=str(worktree.resolve()),
-            pid=child.pid,
+            pid=session.pid,
             started_at=datetime.now().isoformat(),
             log_path=str(self._session_log_path(worktree, session_name, command)),
             tab_name=tab_name,
@@ -434,14 +383,7 @@ class SubprocessPlugin:
     def _cleanup_session(self, session_name: str) -> None:
         """Clean up all resources for a session."""
         self._wait_for_watcher_thread(session_name)
-        self._children.pop(session_name, None)
-        # Close log file if still open
-        log_file = self._log_files.pop(session_name, None)
-        if log_file is not None:
-            try:
-                log_file.close()
-            except Exception:
-                pass
+        self._sessions.pop(session_name, None)
 
     @hookimpl
     def session_exists(self, session_id: int, session_name: str) -> bool | None:
@@ -517,20 +459,10 @@ class SubprocessPlugin:
     def send_to_session(self, session_id: int, text: str, session_name: str) -> bool | None:
         if not self._allow_stdin:
             return False
-        child = self._children.get(session_name)
-        if not child:
+        session = self._sessions.get(session_name)
+        if not session:
             return False
-        try:
-            child.sendline(text)
-            return True
-        except Exception:
-            if not self._process_alive(child.pid or 0, session_name):
-                return False
-            try:
-                child.sendline(text)
-                return True
-            except Exception:
-                return False
+        return session.send(text)
 
     @hookimpl
     def send_to_session_by_name(self, session_name: str, text: str) -> bool | None:
@@ -542,7 +474,7 @@ class SubprocessPlugin:
 
     @hookimpl
     def on_orchestrator_startup(self) -> None:
-        logger.info("[subprocess] Terminal backend ready (pexpect).")
+        logger.info("[subprocess] Terminal backend ready (AgentRunner).")
 
     @hookimpl
     def on_orchestrator_shutdown(self) -> None:
@@ -553,14 +485,7 @@ class SubprocessPlugin:
         # Wait for all watcher threads to finish
         for session_name in list(self._watcher_threads.keys()):
             self._wait_for_watcher_thread(session_name, timeout=1.0)
-        # Close any remaining log files
-        for log_file in list(self._log_files.values()):
-            try:
-                log_file.close()
-            except Exception:
-                pass
-        self._log_files.clear()
-        self._children.clear()
+        self._sessions.clear()
         self._registry.clear()
 
     @hookimpl

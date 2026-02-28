@@ -26,7 +26,6 @@ TESTS_ROOT = Path(__file__).resolve().parents[2] / "tests"
 # Remove entries here as each file is migrated to AgentRunner.
 # ---------------------------------------------------------------------------
 KNOWN_PEXPECT_SPAWN_VIOLATIONS = {
-    "execution/terminal_subprocess.py",
     "execution/review_exchange_local_loop.py",
 }
 
@@ -93,6 +92,48 @@ class TestOnlyAgentRunnerSpawnsAgents:
                 f"{rel_path} no longer calls pexpect.spawn() — "
                 f"remove it from KNOWN_PEXPECT_SPAWN_VIOLATIONS (migration complete!)"
             )
+
+
+class TestSubprocessPluginDelegatesToAgentRunner:
+    """SubprocessPlugin must delegate to AgentRunner, not use pexpect directly."""
+
+    def test_terminal_subprocess_does_not_import_pexpect(self) -> None:
+        """terminal_subprocess.py must not import pexpect.
+
+        After migration to AgentRunner, all PTY management is handled by
+        AgentRunner.start(). Direct pexpect usage would re-create the
+        divergent I/O path that caused the SIGTTIN bug.
+        """
+        source_file = SRC_ROOT / "execution" / "terminal_subprocess.py"
+        tree = ast.parse(source_file.read_text(encoding="utf-8"), filename=str(source_file))
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    assert alias.name != "pexpect", (
+                        "terminal_subprocess.py must not import pexpect — "
+                        "delegate to AgentRunner instead"
+                    )
+            elif isinstance(node, ast.ImportFrom):
+                if node.module and "pexpect" in node.module:
+                    pytest.fail(
+                        "terminal_subprocess.py must not import from pexpect — "
+                        "delegate to AgentRunner instead"
+                    )
+
+    def test_terminal_subprocess_uses_agent_runner(self) -> None:
+        """terminal_subprocess.py must import from agent_runner."""
+        source_file = SRC_ROOT / "execution" / "terminal_subprocess.py"
+        source = source_file.read_text(encoding="utf-8")
+        assert "from .agent_runner import" in source, (
+            "terminal_subprocess.py must import from .agent_runner"
+        )
+        assert "AgentRunner" in source, (
+            "terminal_subprocess.py must use AgentRunner"
+        )
+        assert "AgentSpec" in source, (
+            "terminal_subprocess.py must use AgentSpec"
+        )
 
 
 class TestScriptSessionRunnerUsesAgentRunner:

@@ -143,6 +143,20 @@ class AgentSession:
     def pid(self) -> int | None:
         return self._child.pid
 
+    def send(self, text: str) -> bool:
+        """Send text to the agent's PTY stdin.
+
+        Used by SubprocessPlugin.send_to_session() to relay interactive input.
+        Returns False if the session is already closed or the send fails.
+        """
+        if self._closed:
+            return False
+        try:
+            self._child.sendline(text)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
     def is_alive(self) -> bool:
         """Check whether the agent process is still running."""
         if self._closed:
