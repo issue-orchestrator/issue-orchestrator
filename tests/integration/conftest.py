@@ -41,12 +41,17 @@ def _assert_no_base_repo_state_pollution():
     1. No new .sqlite files appeared (creation pollution)
     2. No existing .sqlite files were deleted (deletion culprit detection)
 
+    Only checks actual ``.sqlite`` database files — transient WAL-mode journal
+    files (``.sqlite-wal``, ``.sqlite-shm``) are excluded because they appear
+    and disappear as connections open/close and trigger false positives under
+    xdist parallel execution.
+
     This catches any test or code path that accidentally targets the real repo
     root instead of tmp_path.
     """
-    before = set(_STATE_DIR.glob("*.sqlite*")) if _STATE_DIR.exists() else set()
+    before = set(_STATE_DIR.glob("*.sqlite")) if _STATE_DIR.exists() else set()
     yield
-    after = set(_STATE_DIR.glob("*.sqlite*")) if _STATE_DIR.exists() else set()
+    after = set(_STATE_DIR.glob("*.sqlite")) if _STATE_DIR.exists() else set()
     new_files = after - before
     assert not new_files, (
         f"Integration test created SQLite file(s) in base repo state dir!\n"
