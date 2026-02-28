@@ -357,6 +357,7 @@ class AgentRunner:
             session = self.start(spec)
             last_result = session.wait(timeout=spec.timeout_seconds)
             last_error_type = classify_provider_error(
+                stdout="",  # stdout flows through PTY, not captured
                 stderr=last_result.stderr,
                 exit_code=last_result.exit_code,
                 timed_out=last_result.timed_out,

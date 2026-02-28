@@ -48,6 +48,7 @@ def successful_run_result() -> RunResult:
     """Create a successful run result."""
     return RunResult(
         exit_code=0,
+        stdout="",
         stderr="",
         duration_seconds=10.0,
         timed_out=False,
@@ -60,6 +61,7 @@ def failed_run_result() -> RunResult:
     """Create a failed run result."""
     return RunResult(
         exit_code=1,
+        stdout="",
         stderr="Agent crashed",
         duration_seconds=5.0,
         timed_out=False,
@@ -72,6 +74,7 @@ def timeout_run_result() -> RunResult:
     """Create a timeout run result."""
     return RunResult(
         exit_code=None,
+        stdout="",
         stderr="",
         duration_seconds=300.0,
         timed_out=True,

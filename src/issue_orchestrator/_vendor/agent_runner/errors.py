@@ -68,19 +68,21 @@ _FATAL_TOKENS = (
 
 def classify_provider_error(
     *,
+    stdout: str,
     stderr: str,
     exit_code: int | None,
     timed_out: bool,
 ) -> ProviderErrorType | None:
-    """Classify provider error based on stderr output and exit status.
+    """Classify provider error based on output and exit status.
 
-    The vendored runner captures stderr via PIPE for this classification.
-    Stdout flows through the PTY to ui-session.log and is not available here.
+    Both stdout and stderr are captured via PIPE and tee'd to the parent's
+    stdout/stderr in real-time so PTY output is preserved. The captured text
+    is used here for transient error classification (retry logic).
     """
     if timed_out:
         return ProviderErrorType.TRANSIENT
 
-    text = stderr.lower()
+    text = f"{stdout}\n{stderr}".lower()
 
     if any(token in text for token in _RATE_LIMIT_TOKENS):
         return ProviderErrorType.RATE_LIMIT

@@ -182,12 +182,74 @@ class TestPtyOutputCaptureWithSetpgrp:
 
 
 @pytest.mark.xdist_group("pty")
+class TestPipePlusTeeReachesPty:
+    """Verify that PIPE + tee relay restores PTY output passthrough.
+
+    The vendored AgentRunner captures stdout via PIPE for error classification,
+    then a relay thread writes to sys.stdout.buffer. This test proves that
+    the tee pattern delivers output through the PTY to CleaningLogWriter.
+    """
+
+    def test_pipe_with_tee_reaches_session_log(self, tmp_path: Path) -> None:
+        """stdout=PIPE + write to sys.stdout.buffer → output reaches PTY log.
+
+        This is the actual production pattern: capture stdout via PIPE for
+        classification, then relay to sys.stdout.buffer so pexpect sees it.
+        """
+        log_path = tmp_path / "ui-session.log"
+        log_writer = CleaningLogWriter(log_path)
+
+        # Script that captures stdout via PIPE, then tees to sys.stdout.buffer
+        agent_script = textwrap.dedent("""\
+            import os, subprocess, sys, threading
+
+            def _tee(source, dest, chunks):
+                while True:
+                    chunk = source.read(4096)
+                    if not chunk:
+                        break
+                    dest.write(chunk)
+                    dest.flush()
+                    chunks.append(chunk)
+
+            proc = subprocess.Popen(
+                [sys.executable, "-c", "print('TEE_RELAY_MARKER')"],
+                stdout=subprocess.PIPE,
+                preexec_fn=os.setpgrp,
+            )
+            chunks = []
+            t = threading.Thread(target=_tee, args=(proc.stdout, sys.stdout.buffer, chunks))
+            t.start()
+            proc.wait()
+            t.join(timeout=5)
+        """)
+
+        child = pexpect.spawn(
+            "/bin/bash",
+            ["-c", f'{sys.executable} -c {_shell_quote(agent_script)}'],
+            logfile=log_writer,
+            timeout=10,
+        )
+
+        _wait_for_exit(child)
+        log_writer.close()
+
+        content = log_path.read_text()
+        assert "TEE_RELAY_MARKER" in content, (
+            f"PIPE+tee output did not reach PTY log. "
+            f"This means the tee relay pattern is broken. "
+            f"Log content: {content!r}"
+        )
+
+
+@pytest.mark.xdist_group("pty")
 class TestPipeCaptureBreaksPtyPath:
-    """Document that subprocess.PIPE diverts output away from the PTY.
+    """Document that subprocess.PIPE WITHOUT tee diverts output away from the PTY.
 
     This is the core anti-pattern that caused #4057. When AgentRunner
-    used subprocess.PIPE to capture stdout, output went to the pipe
-    instead of flowing through pexpect's PTY to CleaningLogWriter.
+    used subprocess.PIPE to capture stdout WITHOUT relaying it back,
+    output went to the pipe instead of flowing through pexpect's PTY
+    to CleaningLogWriter.
     """
 
     def test_pipe_capture_prevents_output_reaching_session_log(self, tmp_path: Path) -> None:
@@ -337,21 +399,26 @@ class TestAgentRunnerConfigIntegration:
     doesn't break the PTY output chain.
     """
 
-    def test_agent_runner_does_not_capture_stdout(self) -> None:
-        """Vendored AgentRunner must NOT capture stdout (breaks PTY output chain).
+    def test_agent_runner_tees_stdout_to_parent(self) -> None:
+        """Vendored AgentRunner captures stdout via PIPE but tees to parent stdout.
 
-        Stderr capture via PIPE is intentional — it's used for provider error
-        classification (retry logic). Only stdout must flow through the PTY.
+        Both stdout and stderr are captured for provider error classification.
+        A relay thread tees stdout to sys.stdout.buffer so output still flows
+        through the pexpect PTY to CleaningLogWriter → ui-session.log.
         """
         import inspect
         from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
 
         source = inspect.getsource(AgentRunner)
-        assert "stdout=subprocess.PIPE" not in source, (
-            "AgentRunner must not use stdout=PIPE — it breaks PTY output capture"
-        )
         assert "capture_output=True" not in source, (
-            "AgentRunner must not use capture_output=True — it breaks PTY output capture"
+            "AgentRunner must not use capture_output=True — use explicit PIPE + tee"
+        )
+        # Verify the tee relay is present
+        assert "sys.stdout.buffer" in source, (
+            "AgentRunner must tee stdout to sys.stdout.buffer for PTY passthrough"
+        )
+        assert "_tee_stream" in source, (
+            "AgentRunner must use _tee_stream to relay stdout to parent"
         )
 
     def test_agent_runner_does_not_use_setsid(self) -> None:

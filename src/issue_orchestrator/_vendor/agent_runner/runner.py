@@ -5,10 +5,11 @@ It handles:
 - Subprocess invocation with proper isolation
 - Timeout management
 - Clean process termination
-- Stderr capture for provider error classification (retry logic)
+- Stdout/stderr capture with real-time tee to parent process
 
-Stdout is inherited from the parent process so it flows through the pexpect PTY
-to CleaningLogWriter. Stderr is captured via PIPE for error classification.
+Both stdout and stderr are captured via PIPE for provider error classification
+(retry logic). A relay thread tees stdout to the parent's stdout in real-time
+so output still flows through the pexpect PTY to CleaningLogWriter → ui-session.log.
 """
 
 import logging
@@ -16,6 +17,8 @@ import os
 import random
 import shlex
 import subprocess
+import sys
+import threading
 import time
 
 from .env_filter import build_filtered_env
@@ -23,6 +26,36 @@ from .errors import ProviderErrorType, classify_provider_error
 from .ports import RunResult, RunSpec
 
 logger = logging.getLogger(__name__)
+
+
+def _tee_stream(
+    source,
+    dest,
+    captured_chunks: list[bytes],
+) -> None:
+    """Read from *source* pipe, write to *dest* in real-time, accumulate for classification."""
+    try:
+        while True:
+            chunk = source.read(4096)
+            if not chunk:
+                break
+            dest.write(chunk)
+            dest.flush()
+            captured_chunks.append(chunk)
+    except (OSError, ValueError):
+        pass
+
+
+def _drain_stream(source, captured_chunks: list[bytes]) -> None:
+    """Read from *source* pipe and accumulate in *captured_chunks*."""
+    try:
+        while True:
+            chunk = source.read(4096)
+            if not chunk:
+                break
+            captured_chunks.append(chunk)
+    except (OSError, ValueError):
+        pass
 
 
 def _format_command_for_log(command: list[str], max_arg_length: int = 160) -> str:
@@ -89,6 +122,7 @@ class AgentRunner:
             attempts += 1
             last_result = self._run_once(spec, attempts=attempts, max_attempts=max_attempts)
             last_error_type = classify_provider_error(
+                stdout=last_result.stdout,
                 stderr=last_result.stderr,
                 exit_code=last_result.exit_code,
                 timed_out=last_result.timed_out,
@@ -115,6 +149,7 @@ class AgentRunner:
         assert last_result is not None
         return RunResult(
             exit_code=last_result.exit_code,
+            stdout="",
             stderr=last_result.stderr,
             duration_seconds=last_result.duration_seconds,
             timed_out=last_result.timed_out,
@@ -158,6 +193,7 @@ class AgentRunner:
         start_time = time.monotonic()
         timed_out = False
         exit_code: int | None = None
+        stdout = ""
         stderr = ""
 
         try:
@@ -165,20 +201,37 @@ class AgentRunner:
                 spec.command,
                 cwd=spec.working_dir,
                 env=env,
-                # Capture stderr for provider error classification (retry logic).
-                # Stdout is inherited from parent so output flows through
-                # the pexpect PTY to CleaningLogWriter -> ui-session.log.
+                # Capture both streams for provider error classification.
+                # A tee thread relays stdout to the parent in real-time so
+                # output still flows through the pexpect PTY → ui-session.log.
                 # setpgrp creates a new process group (for clean killpg)
                 # without creating a new session (which would disconnect
                 # from the controlling terminal and break interactive mode).
+                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 preexec_fn=os.setpgrp,
             )
 
+            # Drain both pipes with threads. We cannot use communicate()
+            # because it would race with our stdout tee thread.
+            stdout_chunks: list[bytes] = []
+            stderr_chunks: list[bytes] = []
+
+            stdout_thread = threading.Thread(
+                target=_tee_stream,
+                args=(process.stdout, sys.stdout.buffer, stdout_chunks),
+                daemon=True,
+            )
+            stderr_thread = threading.Thread(
+                target=_drain_stream,
+                args=(process.stderr, stderr_chunks),
+                daemon=True,
+            )
+            stdout_thread.start()
+            stderr_thread.start()
+
             try:
-                _, raw_stderr = process.communicate(timeout=spec.timeout_seconds)
-                exit_code = process.returncode
-                stderr = raw_stderr.decode("utf-8", errors="replace") if raw_stderr else ""
+                exit_code = process.wait(timeout=spec.timeout_seconds)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 logger.warning(
@@ -186,6 +239,11 @@ class AgentRunner:
                     spec.timeout_seconds,
                 )
                 self._terminate_process(process)
+
+            stdout_thread.join(timeout=5)
+            stderr_thread.join(timeout=5)
+            stdout = b"".join(stdout_chunks).decode("utf-8", errors="replace")
+            stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace")
 
         except FileNotFoundError:
             logger.error("Command not found: %s", spec.command[0])
@@ -213,6 +271,7 @@ class AgentRunner:
 
         return RunResult(
             exit_code=exit_code,
+            stdout=stdout,
             stderr=stderr,
             duration_seconds=duration,
             timed_out=timed_out,
