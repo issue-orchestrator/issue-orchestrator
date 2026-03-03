@@ -37,9 +37,10 @@ class LabelEntry:
 
 
 # Legacy labels that predated the blocked-* convention
-_LEGACY_BLOCKING = frozenset({"needs-human", "failed"})
+_LEGACY_BLOCKING = frozenset({"needs-human", "failed", "publish-failed"})
 
 _REWORK_CYCLE_RE = re.compile(r"^rework-cycle-(\d+)$")
+_PUBLISH_FAIL_COUNT_RE = re.compile(r"^publish-fail-count-(\d+)$")
 
 
 class LabelManager:
@@ -89,11 +90,13 @@ class LabelManager:
             ),
             LabelEntry("blocked", config.label_blocked, LabelCategory.BLOCKING, "Blocked"),
             LabelEntry("blocked_failed", "blocked-failed", LabelCategory.BLOCKING, "Failed run"),
+            LabelEntry("publish_failed", "publish-failed", LabelCategory.BLOCKING, "Publishing failed"),
             LabelEntry("blocked_needs_human", config.label_needs_human, LabelCategory.BLOCKING, "Needs human"),
             LabelEntry("blocked_cross_milestone", "blocked-cross-milestone", LabelCategory.BLOCKING, "Cross-milestone dep"),
             LabelEntry("needs_rework", config.label_needs_rework, LabelCategory.LIFECYCLE, "Needs rework"),
             LabelEntry("validation_failed", config.label_validation_failed, LabelCategory.LIFECYCLE, "Validation failed"),
             LabelEntry("rework_cycle", "rework-cycle-{N}", LabelCategory.INFORMATIONAL, "Rework cycle N", pattern=True),
+            LabelEntry("publish_fail_count", "publish-fail-count-{N}", LabelCategory.INFORMATIONAL, "Publish failure count", pattern=True),
             LabelEntry("io_claimed", "io:claimed", LabelCategory.CLAIM, "Claimed by orchestrator"),
             LabelEntry("blocked_claim_lost", "blocked:claim-lost", LabelCategory.BLOCKING, "Claim lost"),
             LabelEntry("blocked_stale_claim", "blocked:stale-claim", LabelCategory.BLOCKING, "Stale claim"),
@@ -148,6 +151,10 @@ class LabelManager:
     @property
     def blocked_failed(self) -> str:
         return self._resolved["blocked_failed"]
+
+    @property
+    def publish_failed(self) -> str:
+        return self._resolved["publish_failed"]
 
     @property
     def needs_human(self) -> str:
@@ -205,9 +212,11 @@ class LabelManager:
         """Return True if *label* is any registered orchestrator label (prefix-aware)."""
         if label in self._resolved_set:
             return True
-        # Check rework-cycle pattern
+        # Check pattern-based labels
         base = self._strip_prefix(label)
         if _REWORK_CYCLE_RE.match(base):
+            return True
+        if _PUBLISH_FAIL_COUNT_RE.match(base):
             return True
         return False
 
@@ -284,16 +293,39 @@ class LabelManager:
         return best
 
     # ------------------------------------------------------------------
+    # Publish-fail-count helpers
+    # ------------------------------------------------------------------
+
+    def publish_fail_count_label(self, n: int) -> str:
+        """Return the resolved publish-fail-count-N label."""
+        return self._resolve_base(f"publish-fail-count-{n}")
+
+    def extract_publish_fail_count(self, labels: Sequence[str]) -> int:
+        """Parse and return the highest publish-fail-count number, or 0."""
+        best = 0
+        for label in labels:
+            base = self._strip_prefix(label)
+            m = _PUBLISH_FAIL_COUNT_RE.match(base)
+            if m:
+                val = int(m.group(1))
+                if val > best:
+                    best = val
+        return best
+
+    # ------------------------------------------------------------------
     # Description / display
     # ------------------------------------------------------------------
 
     def describe(self, label: str) -> str:
         """Human-readable description of *label*."""
         base = self._strip_prefix(label)
-        # Check rework-cycle pattern first
+        # Check pattern-based labels first
         m = _REWORK_CYCLE_RE.match(base)
         if m:
             return f"Rework cycle {m.group(1)}"
+        m = _PUBLISH_FAIL_COUNT_RE.match(base)
+        if m:
+            return f"Publish failure count {m.group(1)}"
         # Look up in registry by base_name
         for entry in self._entries.values():
             if entry.base_name == base:

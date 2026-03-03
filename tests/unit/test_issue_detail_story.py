@@ -87,6 +87,21 @@ def test_status_explanation_running_review() -> None:
     assert _build_status_explanation(ctx, []) == "Code review in progress (7 min)"
 
 
+def test_status_explanation_blocked_publish_failed() -> None:
+    ctx = _ctx(flow_stage="blocked", labels=("publish-failed",))
+    result = _build_status_explanation(ctx, [])
+    assert "Publishing failed" in result
+
+
+def test_status_explanation_blocked_publish_failed_no_matching_event() -> None:
+    """publish-failed label without a blocking event uses the label-based explanation."""
+    ctx = _ctx(flow_stage="blocked", labels=("publish-failed",))
+    # Non-blocking event present — label check still fires
+    events = [{"event": "issue.pr_created", "summary": "PR #42"}]
+    result = _build_status_explanation(ctx, events)
+    assert "Publishing failed" in result
+
+
 def test_status_explanation_awaiting_merge() -> None:
     ctx = _ctx(flow_stage="awaiting_merge", pr_number=4124)
     assert _build_status_explanation(ctx, []) == "PR #4124 approved — ready to merge"

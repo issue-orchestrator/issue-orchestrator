@@ -538,6 +538,20 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.max_rework_cycles",
         },
     )
+    max_consecutive_publish_failures: int = Field(
+        3,
+        title="Max Consecutive Publish Failures",
+        description="Escalate to needs-human after this many consecutive push/PR creation failures",
+        ge=1,
+        le=10,
+        json_schema_extra={
+            "doc_examples": ["2", "3", "5"],
+            "doc_notes": "After N consecutive publish failures for the same issue, escalate to needs-human instead of publish-failed.",
+            "section": "Code Review Workflow",
+            "config_attr": "max_consecutive_publish_failures",
+            "yaml_path": "review.max_consecutive_publish_failures",
+        },
+    )
     keep_current_approach_label: str = Field(
         "reviewer-keep-current-approach",
         title="Keep Current Approach Label",

@@ -190,6 +190,12 @@ def _blocked_explanation(ctx: IssueStoryContext, events: list[dict[str, Any]]) -
         reason = event_summary or "session crashed"
         return f"Session failed \u2014 {reason}"
 
+    # Publish failure (push/PR creation failed after agent completed)
+    if "publish-failed" in labels:
+        if event_summary:
+            return f"Publishing failed: {event_summary}"
+        return "Publishing failed — could not push or create PR"
+
     # Generic blocked label
     if "blocked-failed" in labels:
         if event_summary:
@@ -966,7 +972,7 @@ def _is_blocking_label(label: str) -> bool:
         return True
     if label.startswith("blocked-") or label.startswith("blocked:"):
         return True
-    if label in ("needs-human", "failed"):
+    if label in ("needs-human", "failed", "publish-failed"):
         return True
     return False
 

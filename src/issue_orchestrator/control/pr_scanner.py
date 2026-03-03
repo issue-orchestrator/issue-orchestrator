@@ -283,6 +283,17 @@ class PRScanner:
                 blocking_labels=self._lm.get_blocking(pr.labels),
                 reason="blocking_label",
             )
+        # Also check the linked issue's labels — a publish failure marks the
+        # issue as blocked-failed but may leave needs-rework on the PR.
+        issue = self.repository.get_issue(issue_number)
+        if issue is not None and self._lm.is_blocking_any(issue.labels):
+            return _ReworkScanDecision(
+                decision="skip",
+                issue_number=issue_number,
+                rework_cycle=rework_cycle,
+                blocking_labels=self._lm.get_blocking(issue.labels),
+                reason="issue_blocked",
+            )
         if rework_cycle > self.config.max_rework_cycles:
             return _ReworkScanDecision(
                 decision="escalate",
