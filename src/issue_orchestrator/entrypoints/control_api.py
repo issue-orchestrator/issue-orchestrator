@@ -3859,8 +3859,8 @@ Your worktree is at: {{worktree}}
 
 ## Important
 - Always use `agent-done` when finished (not `git push` directly)
-- If blocked, use `agent-done --blocked "reason"`
-- If you need human input, use `agent-done --needs-human "question"`
+- If blocked, use `agent-done blocked --reason "reason" --attempted "what you tried"`
+- If you need human input, use `agent-done needs_human --question "question"`
 """
 
 
@@ -3891,7 +3891,12 @@ gh pr review {{{{pr_number}}}} --approve --body "LGTM!"
 gh pr edit {{{{pr_number}}}} --remove-label "{code_review_label}" --add-label "{code_reviewed_label}"
 ```
 
-Then: `agent-done completed --implementation "Reviewed PR #{{{{pr_number}}}}. Approved."`
+Then: `agent-done approved --summary "Reviewed PR #{{{{pr_number}}}}. Approved." --risk low`
+
+If changes are needed:
+```bash
+agent-done changes_requested --issues "Describe what must be fixed" --risk medium
+```
 """
 
 
@@ -3914,7 +3919,7 @@ Find PRs with `{review_label}` label and audit them for patterns, issues, and qu
 
 ## Completion
 
-`agent-done completed --implementation "Audited N PRs. Summary of findings."`
+`agent-done completed --implementation "Audited N PRs. Summary of findings." --problems "None"`
 """
 
 
