@@ -45,9 +45,11 @@ def _run_claude(
     argv: list[str],
     *,
     timeout: int,
+    retry_timeout: int | None = None,
     cwd: str | None = None,
     env: dict | None = None,
 ) -> subprocess.CompletedProcess:
+    retry_timeout = retry_timeout or (timeout * 2)
     try:
         return subprocess.run(
             argv,
@@ -58,13 +60,26 @@ def _run_claude(
             env=env,
         )
     except subprocess.TimeoutExpired as exc:
-        stdout = (exc.stdout or "")[:500]
-        stderr = (exc.stderr or "")[:500]
-        raise AssertionError(
-            "Claude command timed out.\n"
-            f"stdout (truncated): {stdout}\n"
-            f"stderr (truncated): {stderr}"
-        ) from exc
+        # Live Claude CLI calls can intermittently stall under heavily parallelized
+        # integration runs; retry once with a longer timeout before failing.
+        try:
+            return subprocess.run(
+                argv,
+                capture_output=True,
+                text=True,
+                timeout=retry_timeout,
+                cwd=cwd,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as retry_exc:
+            stdout = (retry_exc.stdout or exc.stdout or "")[:500]
+            stderr = (retry_exc.stderr or exc.stderr or "")[:500]
+            raise AssertionError(
+                "Claude command timed out after retry.\n"
+                f"initial_timeout={timeout}s retry_timeout={retry_timeout}s\n"
+                f"stdout (truncated): {stdout}\n"
+                f"stderr (truncated): {stderr}"
+            ) from retry_exc
 
 
 @pytest.fixture
