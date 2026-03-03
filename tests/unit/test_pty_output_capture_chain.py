@@ -185,9 +185,10 @@ class TestPtyOutputCaptureWithSetpgrp:
 class TestPipePlusTeeReachesPty:
     """Verify that PIPE + tee relay restores PTY output passthrough.
 
-    The vendored AgentRunner captures stdout via PIPE for error classification,
-    then a relay thread writes to sys.stdout.buffer. This test proves that
-    the tee pattern delivers output through the PTY to CleaningLogWriter.
+    NOTE: The vendored AgentRunner no longer uses stdout=PIPE; it inherits
+    stdout for real-time streaming. These tests verify the tee mechanism
+    still works (used for stderr), and serve as documentation of why PIPE+tee
+    was replaced by direct inheritance.
     """
 
     def test_pipe_with_tee_reaches_session_log(self, tmp_path: Path) -> None:
@@ -439,13 +440,11 @@ class TestSigttinPreventionWithDevnullStdin:
         )
 
     def test_pipe_tee_with_devnull_stdin_reaches_session_log(self, tmp_path: Path) -> None:
-        """Full production pattern: PIPE+tee+DEVNULL+setpgrp → output reaches log.
+        """PIPE+tee+DEVNULL+setpgrp → output reaches log.
 
-        This is the exact pattern the vendored AgentRunner uses:
-        - stdout=PIPE for error classification
-        - stdin=DEVNULL to prevent SIGTTIN
-        - preexec_fn=os.setpgrp for clean killpg
-        - tee thread relays to sys.stdout.buffer for PTY passthrough
+        NOTE: This was the vendored AgentRunner's old pattern. Production now
+        inherits stdout directly for real-time streaming. This test verifies
+        that the tee mechanism works correctly (still used for stderr relay).
         """
         log_path = tmp_path / "ui-session.log"
         log_writer = CleaningLogWriter(log_path)
@@ -500,29 +499,28 @@ class TestAgentRunnerConfigIntegration:
     doesn't break the PTY output chain.
     """
 
-    def test_agent_runner_tees_both_streams_to_parent(self) -> None:
-        """Vendored AgentRunner captures both streams via PIPE and tees to parent.
+    def test_agent_runner_inherits_stdout_tees_stderr(self) -> None:
+        """Vendored AgentRunner inherits stdout and tees stderr to parent.
 
-        Both stdout and stderr are captured for provider error classification.
-        Relay threads tee both to sys.stdout.buffer / sys.stderr.buffer so output
-        still flows through the pexpect PTY to CleaningLogWriter → ui-session.log.
+        Stdout inherits the parent PTY for real-time streaming to ui-session.log.
+        Only stderr is captured via PIPE for provider error classification;
+        a tee thread relays it to sys.stderr.buffer.
         """
         import inspect
         from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
 
         source = inspect.getsource(AgentRunner)
         assert "capture_output=True" not in source, (
-            "AgentRunner must not use capture_output=True — use explicit PIPE + tee"
+            "AgentRunner must not use capture_output=True"
         )
-        # Verify both tee relays are present
-        assert "sys.stdout.buffer" in source, (
-            "AgentRunner must tee stdout to sys.stdout.buffer for PTY passthrough"
+        assert "stdout=subprocess.PIPE" not in source, (
+            "AgentRunner must NOT pipe stdout — inherit for real-time streaming"
         )
         assert "sys.stderr.buffer" in source, (
             "AgentRunner must tee stderr to sys.stderr.buffer for PTY passthrough"
         )
         assert "_tee_stream" in source, (
-            "AgentRunner must use _tee_stream to relay streams to parent"
+            "AgentRunner must use _tee_stream to relay stderr to parent"
         )
 
     def test_agent_runner_does_not_use_setsid(self) -> None:
