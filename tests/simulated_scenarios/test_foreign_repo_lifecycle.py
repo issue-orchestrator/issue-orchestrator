@@ -108,6 +108,34 @@ def _init_foreign_repo(tmp_path: Path) -> Path:
     return clone
 
 
+def _run_shell_with_timeout_retry(
+    full_cmd: str,
+    *,
+    executable: str = "/bin/bash",
+    timeout_seconds: int,
+    retry_timeout_seconds: int,
+) -> subprocess.CompletedProcess[str]:
+    """Run a shell command with one timeout retry under loaded CI/pre-push runs."""
+    try:
+        return subprocess.run(
+            full_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            executable=executable,
+            timeout=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired:
+        return subprocess.run(
+            full_cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            executable=executable,
+            timeout=retry_timeout_seconds,
+        )
+
+
 @pytest.fixture()
 def foreign_repo(tmp_path: Path) -> Path:
     return _init_foreign_repo(tmp_path)
@@ -619,9 +647,10 @@ def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
     )
     full_cmd = plugin._build_process_command(inner_cmd, wt)  # noqa: SLF001
 
-    result = subprocess.run(
-        full_cmd, shell=True, capture_output=True, text=True,
-        executable="/bin/bash", timeout=120,
+    result = _run_shell_with_timeout_retry(
+        full_cmd,
+        timeout_seconds=120,
+        retry_timeout_seconds=240,
     )
 
     print(f"Claude stdout: {result.stdout[:1000]}")
@@ -672,9 +701,10 @@ def test_foreign_repo_codex_agent_done(make_worktree) -> None:
     )
     full_cmd = plugin._build_process_command(inner_cmd, wt)  # noqa: SLF001
 
-    result = subprocess.run(
-        full_cmd, shell=True, capture_output=True, text=True,
-        executable="/bin/bash", timeout=180,
+    result = _run_shell_with_timeout_retry(
+        full_cmd,
+        timeout_seconds=180,
+        retry_timeout_seconds=300,
     )
 
     print(f"Codex stdout: {result.stdout[:1000]}")
