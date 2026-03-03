@@ -1275,16 +1275,16 @@ As you review, build a mental report:
 Use `reviewer-done` to report your findings. The orchestrator will post your report and update labels.
 
 ```bash
-reviewer-done completed \\
-  --implementation "Audited N PRs. Summary: X no concerns, Y flagged. Patterns: [key patterns]. Recommendations: [suggestions]" \\
-  --problems "Process issues found, or 'None'"
+reviewer-done approved \\
+  --summary "Audited N PRs. Summary: X no concerns, Y flagged. Patterns: [key patterns]. Recommendations: [suggestions]" \\
+  --risk low
 ```
 
 **If no PRs to review:**
 ```bash
-reviewer-done completed \\
-  --implementation "No PRs with '{review_label}' label found. Nothing to audit." \\
-  --problems "None"
+reviewer-done approved \\
+  --summary "No PRs with '{review_label}' label found. Nothing to audit." \\
+  --risk low
 ```
 
 **What happens after `reviewer-done`:**

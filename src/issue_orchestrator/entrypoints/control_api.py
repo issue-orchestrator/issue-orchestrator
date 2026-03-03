@@ -3892,7 +3892,7 @@ gh pr review {{{{pr_number}}}} --approve --body "LGTM!"
 gh pr edit {{{{pr_number}}}} --remove-label "{code_review_label}" --add-label "{code_reviewed_label}"
 ```
 
-Then: `coding-done completed --implementation "Reviewed PR #{{{{pr_number}}}}. Approved."`
+Then: `reviewer-done approved --summary "Reviewed PR #{{{{pr_number}}}}. Approved." --risk low`
 """
 
 
@@ -3915,7 +3915,7 @@ Find PRs with `{review_label}` label and audit them for patterns, issues, and qu
 
 ## Completion
 
-`coding-done completed --implementation "Audited N PRs. Summary of findings."`
+`reviewer-done approved --summary "Audited N PRs. Summary of findings." --risk low`
 """
 
 

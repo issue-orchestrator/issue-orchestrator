@@ -183,9 +183,9 @@ class TestCreateTriageReviewPrompt:
 
         content = prompt_path.read_text()
 
-        assert "reviewer-done completed" in content
-        assert "--implementation" in content
-        assert "--problems" in content
+        assert "reviewer-done approved" in content
+        assert "--summary" in content
+        assert "--risk" in content
 
     def test_creates_parent_directories(self, tmp_path):
         """Test that parent directories are created."""
