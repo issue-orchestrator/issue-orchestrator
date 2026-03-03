@@ -164,7 +164,7 @@ def _blocked_explanation(ctx: IssueStoryContext, events: list[dict[str, Any]]) -
 
     # Session timeout
     if event_name == "session.timeout":
-        return f"Timed out \u2014 agent didn't invoke agent-done"
+        return f"Timed out \u2014 agent didn't invoke completion command"
 
     # Validation failed
     if event_name == "session.validation_failed" or "validation-failed" in labels:
@@ -175,7 +175,7 @@ def _blocked_explanation(ctx: IssueStoryContext, events: list[dict[str, Any]]) -
     if any(l in labels for l in ("blocked-needs-human", "needs-human")):
         if event_name == "issue.needs_human" and event_summary:
             return f"Needs human input: {event_summary}"
-        # Agent didn't invoke agent-done (session exited without completion)
+        # Agent didn't invoke completion command (session exited without completion)
         if event_summary:
             return f"Needs investigation: {event_summary}"
         return "Needs human investigation"

@@ -434,12 +434,12 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
         if is_review_agent:
             initial_prompt = (
                 "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. "
-                "Follow the instructions in {prompt}. When done, use agent-done to report your verdict."
+                "Follow the instructions in {prompt}. When done, use reviewer-done to report your verdict."
             )
         else:
             initial_prompt = (
                 "Work on issue #{issue_number}: {issue_title}. "
-                "Follow the instructions in {prompt}. When done, use agent-done to report completion."
+                "Follow the instructions in {prompt}. When done, use coding-done to report completion."
             )
 
         agent_config: dict[str, Any] = {
@@ -606,7 +606,7 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
 
     # Validation
     prompter.print("\n--- Validation ---")
-    prompter.print("Validation runs on agent-done and pre-push.")
+    prompter.print("Validation runs on coding-done and pre-push.")
     validation_cmd = prompter.input("Validation command (optional)", "make test")
     if validation_cmd.strip():
         timeout = prompter.input("Validation timeout (seconds)", "300")
@@ -797,12 +797,12 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
                 if is_review_agent:
                     initial_prompt = (
                         "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. "
-                        "Follow the instructions in {prompt}. When done, use agent-done to report your verdict."
+                        "Follow the instructions in {prompt}. When done, use reviewer-done to report your verdict."
                     )
                 else:
                     initial_prompt = (
                         "Work on issue #{issue_number}: {issue_title}. "
-                        "Follow the instructions in {prompt}. When done, use agent-done to report completion."
+                        "Follow the instructions in {prompt}. When done, use coding-done to report completion."
                     )
 
                 if "agents" not in config:
@@ -1053,35 +1053,35 @@ The orchestrator handles all GitHub operations after you complete your work.
 3. Write tests if applicable
 4. Run existing tests to ensure nothing is broken
 5. Commit your changes locally
-6. Use `agent-done` to signal completion (see below)
+6. Use `coding-done` to signal completion (see below)
 
 ## Completion (MANDATORY)
 
-You MUST use `agent-done` to complete. This runs validation, then the orchestrator pushes your code and creates the PR.
+You MUST use `coding-done` to complete. This runs validation, then the orchestrator pushes your code and creates the PR.
 
 ### When work is complete:
 ```bash
-agent-done completed \\
+coding-done completed \\
   --implementation "Brief description of what you implemented" \\
   --problems "Any issues encountered, or 'None'"
 ```
 
 ### If blocked (cannot proceed):
 ```bash
-agent-done blocked \\
+coding-done blocked \\
   --reason "Why you cannot proceed" \\
   --attempted "What you tried"
 ```
 
 ### If you need human input:
 ```bash
-agent-done needs_human \\
+coding-done needs_human \\
   --question "Specific question for the human"
 ```
 
-Run `agent-done --help` for all options.
+Run `coding-done --help or reviewer-done --help` for all options.
 
-**What happens after `agent-done`:**
+**What happens after `coding-done`:**
 1. Validation runs (tests, linting) - if it fails, fix and retry
 2. Orchestrator pushes your branch
 3. Orchestrator creates PR and posts comment
@@ -1124,7 +1124,7 @@ You do NOT:
 - Post GitHub comments directly
 - Mutate labels
 
-You analyze the code and report your verdict via `agent-done`. The orchestrator handles all GitHub operations.
+You analyze the code and report your verdict via `reviewer-done`. The orchestrator handles all GitHub operations.
 
 ## Review Process
 
@@ -1156,12 +1156,12 @@ npm test  # or pytest, cargo test, etc.
 
 ## Completion (MANDATORY)
 
-Use `agent-done` to report your verdict. The orchestrator will post your review and update labels.
+Use `reviewer-done` to report your verdict. The orchestrator will post your review and update labels.
 
 ### If the PR looks good:
 
 ```bash
-agent-done approved \\
+reviewer-done approved \\
   --summary "Brief summary of what you reviewed and why it's good" \\
   --risk low  # or medium, high
 ```
@@ -1169,12 +1169,12 @@ agent-done approved \\
 ### If changes are needed:
 
 ```bash
-agent-done changes_requested \\
+reviewer-done changes_requested \\
   --issues "Specific issues that need fixing (be detailed)" \\
   --risk medium  # or low, high
 ```
 
-**What happens after `agent-done`:**
+**What happens after `reviewer-done`:**
 1. Orchestrator posts your review comment on the PR
 2. Orchestrator updates labels (`{code_review_label}` → `{code_reviewed_label}` or triggers rework)
 3. If changes requested, work agent is re-queued to fix issues
@@ -1220,7 +1220,7 @@ You do NOT:
 - Post GitHub comments directly
 - Mutate labels
 
-You analyze PRs and report findings via `agent-done`. The orchestrator handles all GitHub operations.
+You analyze PRs and report findings via `reviewer-done`. The orchestrator handles all GitHub operations.
 
 ## Review Process
 
@@ -1272,22 +1272,22 @@ As you review, build a mental report:
 
 ## Completion (MANDATORY)
 
-Use `agent-done` to report your findings. The orchestrator will post your report and update labels.
+Use `reviewer-done` to report your findings. The orchestrator will post your report and update labels.
 
 ```bash
-agent-done completed \\
+reviewer-done completed \\
   --implementation "Audited N PRs. Summary: X no concerns, Y flagged. Patterns: [key patterns]. Recommendations: [suggestions]" \\
   --problems "Process issues found, or 'None'"
 ```
 
 **If no PRs to review:**
 ```bash
-agent-done completed \\
+reviewer-done completed \\
   --implementation "No PRs with '{review_label}' label found. Nothing to audit." \\
   --problems "None"
 ```
 
-**What happens after `agent-done`:**
+**What happens after `reviewer-done`:**
 1. Orchestrator posts your triage report as a comment
 2. Orchestrator updates PR labels (`{review_label}` → `{reviewed_label}`)
 3. Session completes

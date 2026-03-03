@@ -41,7 +41,7 @@ class TestLiveOrchestratorLifecycle:
         This is the main happy-path e2e test that verifies:
         1. Orchestrator picks up the issue
         2. Session is launched (in-progress label added)
-        3. Agent runs and completes via agent-done
+        3. Agent runs and completes via coding-done
         4. PR is created
         5. Completion comment is posted
         """

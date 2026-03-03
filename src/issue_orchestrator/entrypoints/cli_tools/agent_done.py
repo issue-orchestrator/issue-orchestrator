@@ -1,32 +1,21 @@
-"""Agent completion CLI - writes structured completion record.
+"""Shared core for agent completion commands (coding-done, reviewer-done).
 
-This command is the ONLY sanctioned way for agents to complete their work.
-It writes a structured JSON completion record that the orchestrator processes.
+This module contains shared utilities used by both coding-done and reviewer-done.
+It is NOT a CLI entry point — use coding-done or reviewer-done instead.
 
 Architecture principle: The agent reports intent; the orchestrator decides and executes.
-
-The agent does NOT:
-- Push code
-- Create PRs
-- Post comments
-- Mutate labels
-
-All those actions are performed by the orchestrator after validating
-the completion record as untrusted input.
 """
 
 import argparse
 import json
 import logging
 import sys
-import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import NoReturn, Optional
 
 import os
 
-from ...infra.logging_config import issue_log
 from ...infra.env import get_env
 
 logger = logging.getLogger(__name__)
@@ -159,7 +148,7 @@ def _copy_validation_log(
         logger.debug("Failed to write validation log %s for %s", destination_name, run_dir)
 
 
-def _record_validation_artifacts(
+def record_validation_artifacts(
     worktree_root: Path,
     session_id: str | None,
     validation_result: AgentGateResult,
@@ -645,290 +634,6 @@ def run_preflight_push_check(worktree: Path, verbose: bool = False) -> tuple[boo
         return True, None, None
 
 
-def main() -> None:  # noqa: C901, PLR0912 - CLI entry point with argument parsing, validation, preflight, and status-specific handling
-    """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="Complete agent work with structured status reporting.",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-EXAMPLES:
-  Completed successfully:
-    agent-done completed --implementation "Added user auth" --problems "None"
-
-  Completed with resume (debug session):
-    agent-done completed --implementation "Fixed the bug" --problems "None" --resume
-
-  Blocked:
-    agent-done blocked --reason "Need API credentials" --attempted "Checked env vars"
-
-  Need human input:
-    agent-done needs_human --question "Should we use OAuth or API keys?"
-
-  Review approved:
-    agent-done approved --summary "Code is clean" --risk low --checks tests_added
-
-  Review requests changes:
-    agent-done changes_requested --issues "Missing error handling" --risk medium
-
-STATUSES:
-  completed          - Work done, PR ready (requires: --implementation, --problems)
-  blocked            - Cannot proceed (requires: --reason, --attempted)
-  needs_human        - Need decision (requires: --question)
-  approved           - Review passed (requires: --summary, --risk)
-  changes_requested  - Review needs fixes (requires: --issues, --risk)
-
-This command writes a completion record to .issue-orchestrator/completion.json.
-The orchestrator reads this file and performs the necessary actions (push, PR, labels).
-"""
-    )
-
-    # Positional: status (required)
-    parser.add_argument(
-        "status",
-        choices=["completed", "blocked", "needs_human", "approved", "changes_requested"],
-        help="Completion status"
-    )
-
-    # Completion fields
-    parser.add_argument("--implementation", "-i", help="What was implemented")
-    parser.add_argument("--problems", "-p", help="Problems encountered")
-
-    # Blocked fields
-    parser.add_argument("--reason", "-r", help="Why blocked")
-    parser.add_argument("--attempted", "-a", help="What was attempted")
-    parser.add_argument("--blocked-by", "-b", type=int, nargs="+", help="Blocking issue numbers")
-    parser.add_argument("--when-unblocked", "-w", help="Hint for when blocker is resolved")
-
-    # Needs human fields
-    parser.add_argument("--question", "-q", help="Question for human")
-    parser.add_argument("--context", "-c", help="Context for the question")
-    parser.add_argument("--options", "-o", nargs="+", help="Available options")
-    parser.add_argument("--default", help="Default action if no response")
-
-    # Reviewer fields
-    parser.add_argument("--summary", "-s", help="Summary of review")
-    parser.add_argument("--issues", help="Issues found that need fixing")
-    parser.add_argument("--risk", choices=["low", "medium", "high"], help="Risk level")
-    parser.add_argument("--checks", nargs="+", help="Checks that passed")
-    parser.add_argument("--checks-needed", nargs="+", help="Checks that need to be done")
-
-    # PR options
-    parser.add_argument(
-        "--pr-labels",
-        nargs="+",
-        help="Extra labels to add to the PR (e.g., --pr-labels test-data needs-review)",
-    )
-
-    # Meta options
-    parser.add_argument("--dry-run", action="store_true", help="Show what would be written")
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        help="Show detailed output",
-    )
-    parser.add_argument(
-        "--resume",
-        action="store_true",
-        help="After writing completion, trigger orchestrator to resume processing. "
-             "Requires ORCHESTRATOR_API_PORT and ORCHESTRATOR_ISSUE_NUMBER env vars "
-             "(set automatically when launching debug sessions from the web UI).",
-    )
-
-    args = parser.parse_args()
-    status = args.status
-    issue_number = get_issue_number()
-
-    # Log start of agent-done
-    if issue_number:
-        logger.info(issue_log(issue_number, "agent-done starting: status=%s"), status)
-    else:
-        logger.info("[agent-done] Starting (standalone): status=%s", status)
-
-    # Validate required fields
-    validate_fields(status, args)
-
-    # Build completion record
-    record = build_completion_record(status, args)
-
-    if args.dry_run:
-        print("--- DRY RUN: Would write this completion record ---")
-        print(json.dumps(record.to_dict(), indent=2))
-        print("--- END ---")
-        return
-
-    # Find worktree root
-    worktree_root = find_worktree_root()
-
-    # Run validation if configured (and not skipped)
-    # Skip validation for blocked/needs_human - the agent is already reporting a problem
-    validation_result = None
-    statuses_requiring_validation = {
-        AgentStatus.COMPLETED,
-        AgentStatus.APPROVED,
-        AgentStatus.CHANGES_REQUESTED,
-    }
-    should_validate = status in statuses_requiring_validation
-
-    if should_validate:
-        # Check if validation is configured before requiring session output
-        validation_cmd, _ = load_validation_cmd(worktree_root)
-        if validation_cmd:
-            # Get session output dir for validation to write directly there
-            if not record.session_id:
-                logger.error("[agent-done] Validation requires session_id but none found")
-                sys.exit(1)
-            session_output_helper = FileSystemSessionOutput()
-            session_output_dir = session_output_helper.find_run_dir(
-                worktree_root, session_name=record.session_id
-            )
-            if session_output_dir is None:
-                logger.error(
-                    "[agent-done] Validation requires session output dir but not found for %s",
-                    record.session_id,
-                )
-                sys.exit(1)
-            validation_result = run_validation(
-                worktree_root,
-                session_output_dir=session_output_dir,
-                verbose=args.verbose,
-            )
-        if validation_result and not validation_result.passed:
-            _record_validation_artifacts(worktree_root, record.session_id, validation_result)
-            print(f"\n{'='*60}")
-            print("❌ VALIDATION FAILED - agent-done cannot complete")
-            print(f"{'='*60}")
-            print(f"\nReason: {validation_result.reason}")
-
-            # Print actual error output so Claude can see what failed
-            if validation_result.record and validation_result.record.stderr_path:
-                stderr_path = Path(validation_result.record.stderr_path)
-                if stderr_path.exists():
-                    stderr_content = stderr_path.read_text()
-                    if stderr_content.strip():
-                        print(f"\n--- STDERR (what failed) ---")
-                        # Show last 50 lines to keep it manageable
-                        lines = stderr_content.strip().split('\n')
-                        if len(lines) > 50:
-                            print(f"... ({len(lines) - 50} lines truncated)")
-                            lines = lines[-50:]
-                        print('\n'.join(lines))
-                        print("--- END STDERR ---")
-
-            if validation_result.record and validation_result.record.stdout_path:
-                stdout_path = Path(validation_result.record.stdout_path)
-                if stdout_path.exists():
-                    stdout_content = stdout_path.read_text()
-                    if stdout_content.strip():
-                        print(f"\n--- STDOUT ---")
-                        lines = stdout_content.strip().split('\n')
-                        if len(lines) > 30:
-                            print(f"... ({len(lines) - 30} lines truncated)")
-                            lines = lines[-30:]
-                        print('\n'.join(lines))
-                        print("--- END STDOUT ---")
-
-            # Print paths to full output files (only if they exist)
-            output_paths = []
-            if validation_result.record and validation_result.record.stderr_path:
-                if Path(validation_result.record.stderr_path).exists():
-                    output_paths.append(f"  stderr: {validation_result.record.stderr_path}")
-            if validation_result.record and validation_result.record.stdout_path:
-                if Path(validation_result.record.stdout_path).exists():
-                    output_paths.append(f"  stdout: {validation_result.record.stdout_path}")
-            if output_paths:
-                print(f"\nFull output saved to:")
-                for path in output_paths:
-                    print(path)
-
-            print(f"\n{'='*60}")
-            print("TO FIX: Read the errors above, fix them, then run agent-done again.")
-            print("If you CANNOT fix after 2-3 attempts, use:")
-            print('  agent-done blocked --reason "Validation failing: <error>" --attempted "..."')
-            print(f"{'='*60}")
-
-            # Log validation failure
-            if issue_number:
-                logger.info(issue_log(issue_number, "agent-done outcome: status=%s validation=FAILED"), status)
-            else:
-                logger.info("[agent-done] Outcome (standalone): status=%s validation=FAILED", status)
-
-            sys.exit(1)
-    elif status in {AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}:
-        # Log that we're skipping validation for these statuses
-        status_name = status.value if hasattr(status, 'value') else status
-        print(f"Note: Skipping validation for '{status_name}' status (agent is reporting a problem)")
-
-    # If validation ran, include the record path in the completion record
-    if validation_result and validation_result.record_path:
-        record.validation_record_path = validation_result.record_path
-
-    # Run preflight push check for statuses that will push
-    # This catches issues like branch divergence while the agent can still fix them
-    statuses_that_push = {AgentStatus.COMPLETED, AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}
-    if status in statuses_that_push:
-        would_succeed, error, fix_hint = run_preflight_push_check(worktree_root, verbose=args.verbose)
-        if not would_succeed:
-            print(f"\n{'='*60}")
-            print("❌ PUSH WOULD FAIL - agent-done cannot complete")
-            print(f"{'='*60}")
-            print(f"\nError: {error}")
-            if fix_hint:
-                print(f"\nTo fix: {fix_hint}")
-            print(f"\n{'='*60}")
-            print("Fix the issue above, then run agent-done again.")
-            print(f"{'='*60}")
-
-            if issue_number:
-                logger.info(issue_log(issue_number, "agent-done outcome: status=%s push_preflight=FAILED"), status)
-            else:
-                logger.info("[agent-done] Outcome (standalone): status=%s push_preflight=FAILED", status)
-
-            sys.exit(1)
-
-    # Write marker file first (indicates agent-done was called)
-    write_marker_file(status)
-
-    # Write completion record
-    output_path = write_completion_record(record)
-    output_path_abs = output_path.resolve()
-
-    print(f"Completion record written to: {output_path_abs}")
-    print(f"Status: {status}")
-    print(f"Session: {record.session_id}")
-    if validation_result:
-        validation_status = "passed" if validation_result.passed else "failed"
-        print(f"Validation: {validation_status}")
-        if validation_result.record_path:
-            print(f"Validation record: {Path(validation_result.record_path).resolve()}")
-        if validation_result.record and validation_result.record.stdout_path:
-            print(f"Validation stdout: {Path(validation_result.record.stdout_path).resolve()}")
-        if validation_result.record and validation_result.record.stderr_path:
-            print(f"Validation stderr: {Path(validation_result.record.stderr_path).resolve()}")
-
-    # Handle --resume flag: trigger orchestrator to process completion
-    if args.resume:
-        print("\nTriggering orchestrator resume...")
-        resume_success, resume_error = trigger_orchestrator_resume(verbose=args.verbose)
-        if resume_success:
-            print("Orchestrator resume triggered successfully.")
-            print("The orchestrator will now process this completion and continue the flow.")
-        else:
-            print(f"\n{resume_error}")
-            # Don't exit with error - completion was written successfully,
-            # user can still use web UI to resume
-    else:
-        print("\nThe orchestrator will process this record and perform the necessary actions.")
-
-    # Log successful outcome
-    if issue_number:
-        logger.info(issue_log(issue_number, "agent-done outcome: status=%s validation=%s resume=%s"),
-                   status, "passed" if validation_result and validation_result.passed else "skipped",
-                   "triggered" if args.resume else "not_requested")
-    else:
-        logger.info("[agent-done] Outcome (standalone): status=%s resume=%s", status,
-                   "triggered" if args.resume else "not_requested")
-
-
 def write_error_completion(error_msg: str, status: str) -> Optional[Path]:
     """Write an error completion record when agent-done itself fails.
 
@@ -954,51 +659,3 @@ def write_error_completion(error_msg: str, status: str) -> Optional[Path]:
         # If we can't even write the error record, there's nothing more we can do
         return None
 
-
-def safe_main() -> None:
-    """Wrapper around main() that catches unexpected errors.
-
-    If agent-done crashes after the AI agent called it, we still want to
-    write a completion record so the orchestrator knows what happened.
-    The AI agent did its job - it called agent-done. Infrastructure failure
-    after that is not the AI's fault.
-    """
-    status = "unknown"
-    issue_number = get_issue_number()
-
-    try:
-        # Parse just enough to get status for error reporting
-        if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
-            status = sys.argv[1]
-        main()
-    except SystemExit:
-        # Normal exit (including validation failures) - don't intercept
-        raise
-    except Exception as e:
-        # Unexpected error - write error completion so orchestrator knows
-        error_msg = f"{type(e).__name__}: {e}\n{traceback.format_exc()}"
-
-        if issue_number:
-            logger.error(issue_log(issue_number, "agent-done crashed: %s"), str(e))
-        else:
-            logger.error("[agent-done] Crashed (standalone): %s", str(e))
-
-        print(f"\n{'='*60}", file=sys.stderr)
-        print("❌ AGENT-DONE INTERNAL ERROR", file=sys.stderr)
-        print(f"{'='*60}", file=sys.stderr)
-        print(f"\nError: {e}", file=sys.stderr)
-        print(f"\n{traceback.format_exc()}", file=sys.stderr)
-
-        # Try to write error completion
-        error_path = write_error_completion(error_msg, status)
-        if error_path:
-            print(f"\nError completion written to: {error_path}", file=sys.stderr)
-            print("The orchestrator will mark this issue as blocked.", file=sys.stderr)
-        else:
-            print("\nCould not write error completion record.", file=sys.stderr)
-
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    safe_main()

@@ -1,0 +1,38 @@
+#!/bin/bash
+# reviewer-done wrapper - forwards to the orchestrator's venv installation
+#
+# This script is placed in the scripts directory which gets prepended to PATH
+# when agents run. It forwards all arguments to the actual reviewer-done command
+# in the orchestrator's venv.
+
+# The scripts directory
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Find the orchestrator's venv by going up from the scripts dir
+# Structure: .../issue-orchestrator/src/issue_orchestrator/scripts/
+#                                   ^-- 3 levels up to issue-orchestrator
+# We need: .../issue-orchestrator/.venv/bin/reviewer-done
+ORCHESTRATOR_ROOT="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
+REVIEWER_DONE="$ORCHESTRATOR_ROOT/.venv/bin/reviewer-done"
+
+if [[ -x "$REVIEWER_DONE" ]]; then
+    exec "$REVIEWER_DONE" "$@"
+fi
+
+# Fallback: try to find in PATH (if installed globally)
+REAL_REVIEWER_DONE=$(which -a reviewer-done 2>/dev/null | grep -v "$SCRIPT_DIR" | head -1)
+if [[ -x "$REAL_REVIEWER_DONE" ]]; then
+    exec "$REAL_REVIEWER_DONE" "$@"
+fi
+
+echo "╔════════════════════════════════════════════════════════════════╗" >&2
+echo "║  ❌ ERROR: reviewer-done not found                             ║" >&2
+echo "╠════════════════════════════════════════════════════════════════╣" >&2
+echo "║                                                                ║" >&2
+echo "║  The issue-orchestrator package may not be installed.         ║" >&2
+echo "║                                                                ║" >&2
+echo "║  Expected location:                                           ║" >&2
+echo "║  $REVIEWER_DONE" >&2
+echo "║                                                                ║" >&2
+echo "╚════════════════════════════════════════════════════════════════╝" >&2
+exit 1

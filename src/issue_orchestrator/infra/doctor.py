@@ -376,24 +376,26 @@ def _check_worktree_setup(result: DoctorResult, config: Config) -> None:
     """Check worktree setup readiness for foreign repos."""
     import sys
 
-    # Check agent-done is available from the orchestrator's venv
-    agent_done_bin = Path(sys.executable).parent / "agent-done"
-    if agent_done_bin.exists():
-        result.checks.append(Check(
-            name="agent-done",
-            status="ok",
-            detail=f"Found at {agent_done_bin}",
-        ))
-    else:
-        result.checks.append(Check(
-            name="agent-done",
-            status="error",
-            detail=(
-                f"Not found at {agent_done_bin}. "
-                "Agents need agent-done to report completion. "
-                "Reinstall the orchestrator: pip install -e '.[dev]'"
-            ),
-        ))
+    # Check coding-done and reviewer-done are available from the orchestrator's venv
+    venv_bin = Path(sys.executable).parent
+    for tool_name in ("coding-done", "reviewer-done"):
+        tool_bin = venv_bin / tool_name
+        if tool_bin.exists():
+            result.checks.append(Check(
+                name=tool_name,
+                status="ok",
+                detail=f"Found at {tool_bin}",
+            ))
+        else:
+            result.checks.append(Check(
+                name=tool_name,
+                status="error",
+                detail=(
+                    f"Not found at {tool_bin}. "
+                    f"Agents need {tool_name} to report completion. "
+                    "Reinstall the orchestrator: pip install -e '.[dev]'"
+                ),
+            ))
 
     # Check worktree setup commands
     if config.setup_worktree:

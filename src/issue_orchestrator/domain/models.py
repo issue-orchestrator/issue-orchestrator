@@ -403,7 +403,7 @@ class AgentConfig:
     # Command template - escape hatch to override provider-generated command
     # If set, this is used instead of provider.build_command()
     # For non-interactive mode, add -p flag (Claude), use 'exec' (Codex), or -p (Gemini)
-    # Note: {system_prompt} includes agent-done instructions + "Read {prompt} for task instructions"
+    # Note: {system_prompt} includes completion instructions + "Read {prompt} for task instructions"
     command: str = "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
     # Optional override for hook verification AI agent (e.g., "claude-code")
     meta_agent: Optional[str] = None
@@ -451,6 +451,7 @@ class AgentConfig:
         worktree: Path,
         pr_number: Optional[int] = None,
         existing_work: Optional[str] = None,
+        task_kind: str = "code",
     ) -> str:
         """Render the command template with actual values, including initial prompt.
 
@@ -465,6 +466,8 @@ class AgentConfig:
                        uses {pr_number} but this is not provided, a KeyError is raised.
             existing_work: Optional context about existing commits in the worktree.
                           If provided, prepended to prompt so agent knows to complete vs restart.
+            task_kind: The task kind value (e.g., "code", "rework", "review", "triage").
+                      Determines which completion instructions are injected.
         """
         prompt_for_command = self.prompt_relative if self.prompt_relative else str(self.prompt_path)
         rendered_prompt = self.render_initial_prompt(
@@ -477,18 +480,18 @@ class AgentConfig:
 
         # If provider is set, use provider-based command building
         if self.provider:
-            return self._build_provider_command(rendered_prompt, prompt_for_command)
+            return self._build_provider_command(rendered_prompt, prompt_for_command, task_kind)
 
         # Legacy template-based command building
-        from issue_orchestrator.resources import get_agent_done_instructions
+        from issue_orchestrator.resources import get_completion_instructions
 
         # Escape single quotes in the prompt for shell safety
         escaped_prompt = rendered_prompt.replace("'", "'\\''")
 
-        # Build the full system prompt with agent-done instructions
-        agent_done_docs = get_agent_done_instructions()
+        # Build the full system prompt with completion instructions
+        completion_docs = get_completion_instructions(task_kind)
         system_prompt = (
-            f"{agent_done_docs}\n\n"
+            f"{completion_docs}\n\n"
             f"---\n\n"
             f"Read {prompt_for_command} for your task-specific instructions."
         )
@@ -522,18 +525,19 @@ class AgentConfig:
 
         return self.command.format(**format_kwargs)
 
-    def _build_provider_command(self, prompt: str, prompt_file: str) -> str:
+    def _build_provider_command(self, prompt: str, prompt_file: str, task_kind: str) -> str:
         """Build command using the configured provider.
 
         Args:
             prompt: The fully rendered prompt to send to the agent
             prompt_file: Path to the prompt/instructions file (for system prompt)
+            task_kind: The task kind value (e.g., "code", "rework", "review", "triage").
 
         Returns:
             Shell-safe command string
         """
         from issue_orchestrator.agent_runner import get_provider
-        from issue_orchestrator.resources import get_agent_done_instructions
+        from issue_orchestrator.resources import get_completion_instructions
 
         # self.provider is guaranteed non-None here (caller checks)
         assert self.provider is not None
@@ -542,20 +546,20 @@ class AgentConfig:
         # Build provider-specific kwargs from provider_args
         kwargs = dict(self.provider_args)
 
-        # STRICT ENFORCEMENT: Agent-done is ALWAYS injected for ALL providers.
+        # STRICT ENFORCEMENT: Completion instructions are ALWAYS injected for ALL providers.
         # - For Claude: inject via system_prompt (--append-system-prompt)
         # - For other providers: prepend to the prompt itself
-        agent_done_docs = get_agent_done_instructions()
-        agent_done_with_prompt_ref = (
-            f"{agent_done_docs}\n\n"
+        completion_docs = get_completion_instructions(task_kind)
+        completion_with_prompt_ref = (
+            f"{completion_docs}\n\n"
             f"---\n\n"
             f"Read {prompt_file} for your task-specific instructions."
         )
 
         if self.provider == "claude-code":
-            # Claude Code uses --append-system-prompt for agent-done
-            system_prompt = agent_done_with_prompt_ref
-            # Append any user-provided system_prompt (agent-done always comes first)
+            # Claude Code uses --append-system-prompt for completion instructions
+            system_prompt = completion_with_prompt_ref
+            # Append any user-provided system_prompt (completion instructions always come first)
             user_system_prompt = kwargs.pop("system_prompt", None)
             if user_system_prompt:
                 system_prompt = f"{system_prompt}\n\n---\n\n{user_system_prompt}"
@@ -563,8 +567,8 @@ class AgentConfig:
             # Use permission_mode from provider_args or fall back to legacy field
             kwargs.setdefault("permission_mode", self.permission_mode)
         else:
-            # Other providers (Codex, etc.): prepend agent-done to the prompt itself
-            prompt = f"{agent_done_with_prompt_ref}\n\n---\n\n{prompt}"
+            # Other providers (Codex, etc.): prepend completion instructions to prompt
+            prompt = f"{completion_with_prompt_ref}\n\n---\n\n{prompt}"
 
         # Build the command (returns list[str])
         cmd_list = provider.build_command(prompt=prompt, model=self.model, **kwargs)

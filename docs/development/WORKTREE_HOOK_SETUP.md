@@ -70,7 +70,7 @@ cat > .claude/settings.local.json << EOF
     ],
     "Stop": [
       {
-        "hooks": [{"type": "command", "command": "test -f .agent-done-marker || echo 'WARNING: Session ending without agent-done!'", "timeout": 5}]
+        "hooks": [{"type": "command", "command": "test -f .agent-done-marker || echo 'WARNING: Session ending without coding-done/reviewer-done!'", "timeout": 5}]
       }
     ]
   }
@@ -204,7 +204,7 @@ Create `.claude/settings.local.json` in the issue-orchestrator repo (this file i
         "hooks": [
           {
             "type": "command",
-            "command": "test -f .agent-done-marker || echo '⚠️  WARNING: Session ending without agent-done! Run: agent-done completed/blocked/needs_human'",
+            "command": "test -f .agent-done-marker || echo '⚠️  WARNING: Session ending without completion command! Run: coding-done completed/blocked/needs_human'",
             "timeout": 5
           }
         ]

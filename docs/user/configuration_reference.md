@@ -119,7 +119,7 @@ _Auto-generated from settings schema._
 | `worktrees.base` | string | `../` | Directory where git worktrees are created | `../`, `../worktrees`, `/tmp/worktrees` | Relative paths are resolved from the repo root. |
 | `worktrees.base_branch_override` | string (optional) | `None` | Override the base branch for worktree creation (auto-detect if unset) | `main`, `master` | Use when your default branch is not auto-detected correctly. |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch | `delete`, `create_new_branch` | Use create_new_branch to keep the old branch intact. |
-| `worktrees.setup` | string | `` | Commands to run in each new worktree after creation (one per line) | `npm install`, `pip install -e '.[dev]'`, `make setup` | Each command runs in the worktree directory. Leave empty if no setup needed. The orchestrator's own setup (hooks, agent-done, Claude settings) is automatic. |
+| `worktrees.setup` | string | `` | Commands to run in each new worktree after creation (one per line) | `npm install`, `pip install -e '.[dev]'`, `make setup` | Each command runs in the worktree directory. Leave empty if no setup needed. The orchestrator's own setup (hooks, coding-done, reviewer-done, Claude settings) is automatic. |
 
 
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->

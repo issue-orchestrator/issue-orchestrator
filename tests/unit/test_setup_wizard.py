@@ -82,7 +82,7 @@ class TestCreateStarterPrompt:
         assert "Backend Agent Prompt" in content
         assert "{issue_number}" in content
         assert "{issue_title}" in content
-        assert "agent-done" in content
+        assert "coding-done" in content
 
     def test_creates_parent_directories(self, tmp_path):
         """Test that parent directories are created."""
@@ -175,15 +175,15 @@ class TestCreateTriageReviewPrompt:
         assert "gh pr diff" in content
         assert "For Each PR" in content
 
-    def test_includes_agent_done_completion(self, tmp_path):
-        """Test that agent-done completion instructions are included."""
+    def test_includes_completion_instructions(self, tmp_path):
+        """Test that completion instructions are included."""
         prompt_path = tmp_path / "cto.md"
 
         create_triage_review_prompt(prompt_path, "review", "reviewed")
 
         content = prompt_path.read_text()
 
-        assert "agent-done completed" in content
+        assert "reviewer-done completed" in content
         assert "--implementation" in content
         assert "--problems" in content
 

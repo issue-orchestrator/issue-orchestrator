@@ -105,7 +105,7 @@ CLAUDE_SETTINGS_FOR_AGENTS = {
                 "hooks": [
                     {
                         "type": "command",
-                        "command": "test -f .agent-done-marker || echo '⚠️  WARNING: Session ending without agent-done! Run: agent-done completed/blocked/needs_human'",
+                        "command": "test -f .agent-done-marker || echo '⚠️  WARNING: Session ending without completion command! Run: coding-done completed/blocked/needs_human'",
                         "timeout": 5
                     }
                 ]

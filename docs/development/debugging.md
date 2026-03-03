@@ -91,11 +91,11 @@ cat /tmp/e2e-worktrees/issue-orchestrator-{N}/.issue-orchestrator/sessions/issue
 ### Issue → PR → Review Flow
 1. Issue created with `agent:X` label
 2. Orchestrator creates worktree, launches Claude with agent prompt
-3. Agent runs `agent-done completed` → creates completion.json
+3. Agent runs `coding-done completed` → creates completion.json
 4. Orchestrator processes completion: pushes branch, creates PR
 5. PR gets `needs-code-review` label
 6. Orchestrator launches review session with `code_review_agent`
-7. Review agent runs `agent-done approved` or `agent-done changes-requested`
+7. Review agent runs `reviewer-done approved` or `reviewer-done changes_requested`
 8. Orchestrator processes: adds `code-reviewed` or `needs-rework`, removes `needs-code-review`
 
 ### Key Config Settings
@@ -133,7 +133,7 @@ review:
 **Check**:
 1. `tmux list-sessions` - is session still running?
 2. Check session.log for errors
-3. Check if agent-done was called
+3. Check if coding-done/reviewer-done was called
 
 ## Debugging Commands
 

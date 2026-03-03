@@ -65,7 +65,7 @@ Fix these errors. The failures may be directly in code you changed, or transitiv
 related (e.g., you broke an import, renamed something other code depends on, or
 violated a project guardrail).
 
-When done, run: agent-done completed --implementation "..." --problems "..."
+When done, run: coding-done completed --implementation "..." --problems "..."
 """
 
 

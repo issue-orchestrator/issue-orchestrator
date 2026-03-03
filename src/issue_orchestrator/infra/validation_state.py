@@ -62,12 +62,12 @@ Fix these validation errors. The failures may be:
 
 When you've fixed the errors, run:
 ```
-agent-done completed --implementation "describe what you fixed" --problems "any remaining issues"
+coding-done completed --implementation "describe what you fixed" --problems "any remaining issues"
 ```
 
 If you cannot fix the problem (e.g., it requires human decision, external dependency, or unclear requirements), run:
 ```
-agent-done blocked --reason "explain why you're blocked"
+coding-done blocked --reason "explain why you're blocked"
 ```
 """
 

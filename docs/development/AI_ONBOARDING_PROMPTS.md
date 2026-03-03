@@ -31,7 +31,7 @@ Task:
 3. Start the orchestrator in the simplest UI mode.
 4. Create a test issue in the configured repo.
 5. Confirm the issue is picked up and a session starts.
-6. Attempt completion using the documented flow (agent-done).
+6. Attempt completion using the documented flow (coding-done/reviewer-done).
 7. Verify outcome: labels changed as expected, PR created or dry-run behavior clearly indicated.
 8. If anything fails, consult README/docs only then, and note whether it helped.
 9. Create issues for all friction points, applying the grouping strategy.

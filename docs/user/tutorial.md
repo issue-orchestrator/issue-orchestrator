@@ -141,19 +141,19 @@ You are working on GitHub issue #{issue_number}: {issue_title}
 
 ## Completion (REQUIRED)
 
-When done, use the `agent-done` command:
+When done, use the `coding-done` command:
 
 ### If you completed the work:
-agent-done completed \
+coding-done completed \
   --implementation "What you implemented" \
   --problems "Any issues encountered, or 'None'"
 
 ### If you're blocked:
-agent-done blocked \
+coding-done blocked \
   --reason "Why you cannot proceed" \
   --attempted "What you tried"
 
-Sessions that exit without calling `agent-done` are marked as failed.
+Sessions that exit without calling `coding-done` are marked as failed.
 ```
 
 ### Step 5: Install Safety Hooks
@@ -226,8 +226,8 @@ There are two priority signals:
 | Label | Meaning | Who Sets It |
 |-------|---------|-------------|
 | `in-progress` | Being worked on | Orchestrator |
-| `blocked` | Agent hit a blocker | Agent (via `agent-done blocked`) |
-| `needs-human` | Agent has a question | Agent (via `agent-done needs_human`) |
+| `blocked` | Agent hit a blocker | Agent (via `coding-done blocked`) |
+| `needs-human` | Agent has a question | Agent (via `coding-done needs_human`) |
 
 ---
 
@@ -269,20 +269,20 @@ You are a backend engineer working on issue #{issue_number}: {issue_title}
 
 ## Completion
 
-Use `agent-done` when finished:
+Use `coding-done` when finished:
 
 # Success
-agent-done completed \
+coding-done completed \
   --implementation "Added /users endpoint with JWT auth" \
   --problems "None"
 
 # Blocked
-agent-done blocked \
+coding-done blocked \
   --reason "Need database credentials" \
   --attempted "Checked .env, asked in issue comments"
 
 # Need help
-agent-done needs_human --question "Should we use OAuth or API keys?"
+coding-done needs_human --question "Should we use OAuth or API keys?"
 
 **Important**: Report ALL problems honestly.
 ```
@@ -446,10 +446,10 @@ Creating worktree for issue #42...
 
 The orchestrator starts Claude in the worktree with the configured prompt. The agent reads the issue, explores the code, implements the solution, writes tests, and commits.
 
-### 6. Agent Calls `agent-done`
+### 6. Agent Calls `coding-done`
 
 ```bash
-agent-done completed \
+coding-done completed \
   --implementation "Added GET /users/{id}/profile endpoint with rate limiting" \
   --problems "None"
 ```
@@ -506,7 +506,7 @@ issue-orchestrator status
 ### Agent Session Fails
 
 1. Check session logs in the web dashboard
-2. Check if `agent-done` was called (sessions without it are marked failed)
+2. Check if `coding-done` was called (sessions without it are marked failed)
 3. Common causes: missing dependencies, prompt file not found, API rate limits
 
 ### Hooks Not Blocking

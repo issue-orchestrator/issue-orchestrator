@@ -1,6 +1,10 @@
-"""Unit tests for agent_done module.
+"""Unit tests for agent_done shared core and the split CLI entry points.
 
-Tests the refactored agent_done which ONLY writes JSON completion records.
+Tests cover:
+- agent_done shared utilities (statuses, fields, serialization, record building)
+- coding_done main() for coding/rework agent completion (completed, blocked, needs_human)
+- reviewer_done main() for review agent completion (approved, changes_requested)
+
 The orchestrator handles all side effects (push, PR, comments, labels).
 """
 
@@ -28,8 +32,9 @@ from issue_orchestrator.entrypoints.cli_tools.agent_done import (
     build_completion_record,
     write_completion_record,
     write_marker_file,
-    main,
 )
+from issue_orchestrator.entrypoints.cli_tools.coding_done import main as coding_done_main
+from issue_orchestrator.entrypoints.cli_tools.reviewer_done import main as reviewer_done_main
 from issue_orchestrator.domain.models import (
     CompletionOutcome,
     RequestedAction,
@@ -650,114 +655,117 @@ class TestWriteMarkerFile:
 
 
 class TestMain:
-    """Test the main function."""
+    """Test the split CLI entry points: coding_done_main and reviewer_done_main."""
 
-    def test_main_completed_dry_run(self, capsys):
-        """Test dry run mode for completed status."""
+    def test_coding_done_completed_dry_run(self, capsys):
+        """Test dry run mode for completed status via coding-done."""
         with patch('sys.argv', [
-            'agent-done', 'completed',
+            'coding-done', 'completed',
             '--implementation', 'Added feature',
             '--problems', 'None',
             '--dry-run'
         ]):
             with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                main()
+                coding_done_main()
 
                 captured = capsys.readouterr()
                 assert "DRY RUN" in captured.out
                 assert "completed" in captured.out
 
-    def test_main_blocked_dry_run(self, capsys):
-        """Test dry run mode for blocked status."""
+    def test_coding_done_blocked_dry_run(self, capsys):
+        """Test dry run mode for blocked status via coding-done."""
         with patch('sys.argv', [
-            'agent-done', 'blocked',
+            'coding-done', 'blocked',
             '--reason', 'Need API key',
             '--attempted', 'Checked env vars',
             '--dry-run'
         ]):
             with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                main()
+                coding_done_main()
 
                 captured = capsys.readouterr()
                 assert "DRY RUN" in captured.out
                 assert "blocked" in captured.out
 
-    def test_main_needs_human_dry_run(self, capsys):
-        """Test dry run mode for needs_human status."""
+    def test_coding_done_needs_human_dry_run(self, capsys):
+        """Test dry run mode for needs_human status via coding-done."""
         with patch('sys.argv', [
-            'agent-done', 'needs_human',
+            'coding-done', 'needs_human',
             '--question', 'Which approach?',
             '--dry-run'
         ]):
             with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                main()
+                coding_done_main()
 
                 captured = capsys.readouterr()
                 assert "DRY RUN" in captured.out
                 assert "needs_human" in captured.out
 
-    def test_main_approved_dry_run(self, capsys):
-        """Test dry run mode for approved status."""
+    def test_reviewer_done_approved_dry_run(self, capsys):
+        """Test dry run mode for approved status via reviewer-done."""
         with patch('sys.argv', [
-            'agent-done', 'approved',
+            'reviewer-done', 'approved',
             '--summary', 'LGTM',
             '--risk', 'low',
             '--dry-run'
         ]):
             with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                main()
+                reviewer_done_main()
 
                 captured = capsys.readouterr()
                 assert "DRY RUN" in captured.out
                 assert "review_approved" in captured.out
 
-    def test_main_changes_requested_dry_run(self, capsys):
-        """Test dry run mode for changes_requested status."""
+    def test_reviewer_done_changes_requested_dry_run(self, capsys):
+        """Test dry run mode for changes_requested status via reviewer-done."""
         with patch('sys.argv', [
-            'agent-done', 'changes_requested',
+            'reviewer-done', 'changes_requested',
             '--issues', 'Missing tests',
             '--risk', 'medium',
             '--dry-run'
         ]):
             with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                main()
+                reviewer_done_main()
 
                 captured = capsys.readouterr()
                 assert "DRY RUN" in captured.out
                 assert "review_changes_requested" in captured.out
 
-    def test_main_missing_required_field(self):
-        """Test error when required field is missing."""
+    def test_coding_done_missing_required_field(self):
+        """Test error when required field is missing for coding-done."""
         with patch('sys.argv', [
-            'agent-done', 'completed',
+            'coding-done', 'completed',
             '--implementation', 'Added feature'
             # Missing --problems
         ]):
             with pytest.raises(SystemExit):
-                main()
+                coding_done_main()
 
-    def test_main_invalid_status(self):
-        """Test error with invalid status."""
-        with patch('sys.argv', ['agent-done', 'invalid']):
+    def test_coding_done_invalid_status(self):
+        """Test error with invalid status for coding-done."""
+        with patch('sys.argv', ['coding-done', 'invalid']):
             with pytest.raises(SystemExit):
-                main()
+                coding_done_main()
 
-    def test_main_help_flag(self):
-        """Test --help flag displays usage."""
-        with patch('sys.argv', ['agent-done', '--help']):
+    def test_coding_done_help_flag(self):
+        """Test --help flag displays usage for coding-done."""
+        with patch('sys.argv', ['coding-done', '--help']):
             with pytest.raises(SystemExit) as exc_info:
-                main()
+                coding_done_main()
             # argparse exits with 0 for --help
             assert exc_info.value.code == 0
 
-    def test_main_no_args(self):
-        """Test error when no arguments provided."""
-        with patch('sys.argv', ['agent-done']):
+    def test_coding_done_no_args(self):
+        """Test error when no arguments provided to coding-done."""
+        with patch('sys.argv', ['coding-done']):
             with pytest.raises(SystemExit):
-                main()
+                coding_done_main()
 
-    def test_main_writes_completion_record(self, tmp_path):
-        """Test that main writes completion record to file."""
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.run_preflight_push_check', return_value=(True, None, None))
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.load_validation_cmd', return_value=(None, None))
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_coding_done_writes_completion_record(self, _mock_dirty, _mock_val, _mock_push, tmp_path):
+        """Test that coding-done writes completion record to file."""
         # Create fake git repo
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
@@ -768,12 +776,12 @@ class TestMain:
             os.chdir(tmp_path)
 
             with patch('sys.argv', [
-                'agent-done', 'completed',
+                'coding-done', 'completed',
                 '--implementation', 'Added feature',
                 '--problems', 'None',
             ]):
                 with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                    main()
+                    coding_done_main()
 
             # Check file was written
             record_path = tmp_path / COMPLETION_RECORD_PATH
@@ -789,8 +797,10 @@ class TestMain:
             if original_completion_path is not None:
                 os.environ[f"{ENV_PREFIX}COMPLETION_PATH"] = original_completion_path
 
-    def test_main_writes_marker_file(self, tmp_path):
-        """Test that main writes marker file."""
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.run_preflight_push_check', return_value=(True, None, None))
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_coding_done_writes_marker_file(self, _mock_dirty, _mock_push, tmp_path):
+        """Test that coding-done writes marker file."""
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
 
@@ -799,12 +809,12 @@ class TestMain:
             os.chdir(tmp_path)
 
             with patch('sys.argv', [
-                'agent-done', 'blocked',
+                'coding-done', 'blocked',
                 '--reason', 'Need API',
                 '--attempted', 'Checked env',
             ]):
                 with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                    main()
+                    coding_done_main()
 
             # Check marker file was written
             marker_path = tmp_path / ".agent-done-marker"
@@ -816,46 +826,46 @@ class TestMain:
 
 
 class TestShortFlags:
-    """Test short flag versions."""
+    """Test short flag versions for coding-done."""
 
     def test_short_flags_completed(self, capsys):
-        """Test using short flags for completed status."""
+        """Test using short flags for completed status via coding-done."""
         with patch('sys.argv', [
-            'agent-done', 'completed',
+            'coding-done', 'completed',
             '-i', 'Implementation text',
             '-p', 'No problems',
             '--dry-run'
         ]):
             with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                main()
+                coding_done_main()
 
                 captured = capsys.readouterr()
                 assert "Implementation text" in captured.out
 
     def test_short_flags_blocked(self, capsys):
-        """Test using short flags for blocked status."""
+        """Test using short flags for blocked status via coding-done."""
         with patch('sys.argv', [
-            'agent-done', 'blocked',
+            'coding-done', 'blocked',
             '-r', 'Reason text',
             '-a', 'Attempted text',
             '--dry-run'
         ]):
             with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                main()
+                coding_done_main()
 
                 captured = capsys.readouterr()
                 assert "Reason text" in captured.out
 
     def test_short_flags_needs_human(self, capsys):
-        """Test using short flags for needs_human status."""
+        """Test using short flags for needs_human status via coding-done."""
         with patch('sys.argv', [
-            'agent-done', 'needs_human',
+            'coding-done', 'needs_human',
             '-q', 'Question text',
             '-c', 'Context text',
             '--dry-run'
         ]):
             with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                main()
+                coding_done_main()
 
                 captured = capsys.readouterr()
                 assert "Question text" in captured.out
@@ -929,10 +939,11 @@ class TestCompletionRecordSerialization:
 
 
 class TestAgentGateIntegration:
-    """Test agent gate validation integration in the main function."""
+    """Test agent gate validation integration in coding-done."""
 
-    def test_agent_gate_runs_when_configured(self, tmp_path, capsys):
-        """Test that agent gate validation runs when configured."""
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_agent_gate_runs_when_configured(self, _mock_dirty, tmp_path, capsys):
+        """Test that agent gate validation runs when configured via coding-done."""
         # Create fake git repo
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
@@ -964,20 +975,21 @@ validation:
             os.chdir(tmp_path)
 
             with patch('sys.argv', [
-                'agent-done', 'completed',
+                'coding-done', 'completed',
                 '--implementation', 'Added feature',
                 '--problems', 'None',
                 '--verbose'
             ]):
                 with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                    main()
+                    coding_done_main()
 
             captured = capsys.readouterr()
             assert "Validation passed" in captured.out
         finally:
             os.chdir(original_cwd)
 
-    def test_validation_failure_exits_with_error(self, tmp_path, capsys):
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_validation_failure_exits_with_error(self, _mock_dirty, tmp_path, capsys):
         """Test that validation failure exits with error and writes diagnostics."""
         # Create fake git repo
         git_dir = tmp_path / ".git"
@@ -1010,14 +1022,14 @@ validation:
             os.chdir(tmp_path)
 
             with patch('sys.argv', [
-                'agent-done', 'completed',
+                'coding-done', 'completed',
                 '--implementation', 'Added feature',
                 '--problems', 'None',
                 '--verbose'
             ]):
                 with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                     with pytest.raises(SystemExit) as exc_info:
-                        main()
+                        coding_done_main()
                     # Should exit with error code 1
                     assert exc_info.value.code == 1
 
@@ -1043,7 +1055,8 @@ validation:
         finally:
             os.chdir(original_cwd)
 
-    def test_validation_failure_shows_stderr_inline(self, tmp_path, capsys):
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_validation_failure_shows_stderr_inline(self, _mock_dirty, tmp_path, capsys):
         """Test that validation failure shows the actual error output inline.
 
         This verifies Claude can see what failed without reading separate files.
@@ -1080,30 +1093,31 @@ validation:
             os.chdir(tmp_path)
 
             with patch('sys.argv', [
-                'agent-done', 'completed',
+                'coding-done', 'completed',
                 '--implementation', 'Added feature',
                 '--problems', 'None',
             ]):
                 with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                     with pytest.raises(SystemExit) as exc_info:
-                        main()
+                        coding_done_main()
                     assert exc_info.value.code == 1
 
             captured = capsys.readouterr()
 
             # Verify the new output format
             assert "VALIDATION FAILED" in captured.out
-            assert "agent-done cannot complete" in captured.out
+            assert "coding-done cannot complete" in captured.out
             assert "--- STDERR (what failed) ---" in captured.out
             assert "FAILED test_something.py::test_case - AssertionError" in captured.out
             assert "--- END STDERR ---" in captured.out
             assert "TO FIX:" in captured.out
-            assert 'agent-done blocked --reason "Validation failing:' in captured.out
+            assert 'coding-done blocked --reason "Validation failing:' in captured.out
         finally:
             os.chdir(original_cwd)
 
-    def test_validation_uses_selected_config_name_env(self, tmp_path, capsys):
-        """agent-done should honor ISSUE_ORCHESTRATOR_CONFIG_NAME (e.g., main.yaml)."""
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_validation_uses_selected_config_name_env(self, _mock_dirty, tmp_path, capsys):
+        """coding-done should honor ISSUE_ORCHESTRATOR_CONFIG_NAME (e.g., main.yaml)."""
         # Create fake git repo
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
@@ -1139,7 +1153,7 @@ validation:
                 with patch(
                     "sys.argv",
                     [
-                        "agent-done",
+                        "coding-done",
                         "completed",
                         "--implementation",
                         "Added feature",
@@ -1152,7 +1166,7 @@ validation:
                         return_value="test-123",
                     ):
                         with pytest.raises(SystemExit) as exc_info:
-                            main()
+                            coding_done_main()
                         # Validation should run and fail
                         assert exc_info.value.code == 1
 
@@ -1170,8 +1184,9 @@ validation:
         finally:
             os.chdir(original_cwd)
 
-    def test_missing_selected_config_name_fails_fast(self, tmp_path, capsys):
-        """agent-done should fail loudly when selected config file is missing."""
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_missing_selected_config_name_fails_fast(self, _mock_dirty, tmp_path, capsys):
+        """coding-done should fail loudly when selected config file is missing."""
         git_dir = tmp_path / ".git"
         git_dir.mkdir()
         (tmp_path / "README.md").write_text("test")
@@ -1202,7 +1217,7 @@ validation:
                 with patch(
                     "sys.argv",
                     [
-                        "agent-done",
+                        "coding-done",
                         "completed",
                         "--implementation",
                         "Added feature",
@@ -1211,7 +1226,7 @@ validation:
                     ],
                 ):
                     with pytest.raises(SystemExit) as exc_info:
-                        main()
+                        coding_done_main()
                     assert exc_info.value.code == 1
 
             captured = capsys.readouterr()
@@ -1219,8 +1234,9 @@ validation:
         finally:
             os.chdir(original_cwd)
 
-    def test_blocked_status_skips_validation(self, tmp_path, capsys):
-        """Test that blocked status skips validation entirely.
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_blocked_status_skips_validation(self, _mock_dirty, tmp_path, capsys):
+        """Test that blocked status skips validation entirely via coding-done.
 
         This is important because if tests fail and agent can't fix them,
         they should be able to report blocked without validation blocking them.
@@ -1252,13 +1268,13 @@ validation:
             os.chdir(tmp_path)
 
             with patch('sys.argv', [
-                'agent-done', 'blocked',
+                'coding-done', 'blocked',
                 '--reason', 'Tests failing and cannot fix',
                 '--attempted', 'Tried multiple fixes',
             ]):
                 with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
                     # Should NOT raise - blocked skips validation
-                    main()
+                    coding_done_main()
 
             captured = capsys.readouterr()
             # Should indicate validation was skipped

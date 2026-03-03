@@ -113,7 +113,7 @@ def _analyze_timeout(m: RunManifest) -> SessionAnalysis:
 
     return SessionAnalysis(
         headline=_trunc(headline, _MAX_HEADLINE),
-        detail=_trunc("Agent did not invoke agent-done before the timeout.", _MAX_DETAIL),
+        detail=_trunc("Agent did not invoke completion command before the timeout.", _MAX_DETAIL),
         log_excerpt=_tail(m.log_tail, 10),
         suggestions=[
             "Check transcript for what the agent was doing",
@@ -123,7 +123,7 @@ def _analyze_timeout(m: RunManifest) -> SessionAnalysis:
 
 
 def _analyze_failed(m: RunManifest) -> SessionAnalysis:
-    headline = "Session ended without agent-done"
+    headline = "Session ended without completion command"
 
     parts: list[str] = []
     if m.problems:

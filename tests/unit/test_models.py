@@ -169,7 +169,7 @@ class TestAgentConfig:
 
         # Should include agent-done docs
         assert "CRITICAL" in cmd
-        assert "agent-done" in cmd
+        assert "coding-done" in cmd
         # Should include instruction to read prompt file
         assert "prompt.md" in cmd
 
@@ -188,7 +188,7 @@ class TestAgentConfig:
 
         # Should include agent-done docs
         assert "CRITICAL" in cmd
-        assert "agent-done" in cmd
+        assert "coding-done" in cmd
         assert "prompt.md" in cmd
         assert "--output-format stream-json" in cmd
         assert "--include-partial-messages" in cmd
@@ -210,7 +210,7 @@ class TestAgentConfig:
 
         # Should include BOTH agent-done docs AND user content
         assert "CRITICAL" in cmd  # Agent-done enforcement
-        assert "agent-done" in cmd
+        assert "coding-done" in cmd
         assert "Custom user instructions here" in cmd  # User content appended
         # Agent-done should come BEFORE user content in the command
         critical_pos = cmd.find("CRITICAL")
@@ -234,7 +234,7 @@ class TestAgentConfig:
 
         # Agent-done MUST still be present (strict enforcement)
         assert "CRITICAL" in cmd
-        assert "agent-done" in cmd
+        assert "coding-done" in cmd
         # User content is also present (extensibility)
         assert "My own instructions without agent-done" in cmd
 
@@ -254,7 +254,7 @@ class TestAgentConfig:
 
         # Agent-done MUST be present even for non-Claude providers
         assert "CRITICAL" in cmd
-        assert "agent-done" in cmd
+        assert "coding-done" in cmd
         assert "prompt.md" in cmd
         # Should use codex executable
         assert "codex" in cmd
@@ -276,7 +276,7 @@ class TestAgentConfig:
 
         # Both agent-done and the initial prompt should be in the command
         assert "CRITICAL" in cmd
-        assert "agent-done" in cmd
+        assert "coding-done" in cmd
         assert "Do the work on issue #123" in cmd
         # Agent-done should come before the user's initial prompt
         critical_pos = cmd.find("CRITICAL")

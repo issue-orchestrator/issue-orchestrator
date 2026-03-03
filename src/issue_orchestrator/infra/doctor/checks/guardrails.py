@@ -35,8 +35,8 @@ def check_guardrails_in_worktree_impl(
     # Run gh CLI guards (blocked by wrappers or gh_guard)
     checks.extend(_check_gh_guards(worktree_path, runner, env))
 
-    # Check agent-done availability
-    checks.append(_check_agent_done_available(worktree_path, runner, env))
+    # Check completion command availability
+    checks.extend(_check_completion_commands_available(worktree_path, runner, env))
 
     # Run bypass tests
     checks.extend(_check_bypass_tests(worktree_path, runner))
@@ -146,35 +146,39 @@ def _check_gh_guards(
     ]
 
 
-def _check_agent_done_available(
+def _check_completion_commands_available(
     worktree_path: Path,
     runner: CommandRunner,
     env: dict,
-) -> Check:
-    """Check that agent-done command is available."""
-    result = runner.run(
-        ["agent-done", "--help"],
-        cwd=worktree_path,
-        env=env,
-        timeout_seconds=5,
-    )
-    if result.returncode == 0:
-        return Check(
-            name="agent-done Available",
-            status="ok",
-            detail="agent-done command found",
+) -> list[Check]:
+    """Check that coding-done and reviewer-done commands are available."""
+    checks: list[Check] = []
+    for cmd_name in ("coding-done", "reviewer-done"):
+        result = runner.run(
+            [cmd_name, "--help"],
+            cwd=worktree_path,
+            env=env,
+            timeout_seconds=5,
         )
-    if "not found" in result.stderr.lower() or "no such file" in result.stderr.lower():
-        return Check(
-            name="agent-done Available",
-            status="error",
-            detail="agent-done command not found in PATH",
-        )
-    return Check(
-        name="agent-done Available",
-        status="error",
-        detail=f"agent-done command not working: {result.stderr[:100]}",
-    )
+        if result.returncode == 0:
+            checks.append(Check(
+                name=f"{cmd_name} Available",
+                status="ok",
+                detail=f"{cmd_name} command found",
+            ))
+        elif "not found" in result.stderr.lower() or "no such file" in result.stderr.lower():
+            checks.append(Check(
+                name=f"{cmd_name} Available",
+                status="error",
+                detail=f"{cmd_name} command not found in PATH",
+            ))
+        else:
+            checks.append(Check(
+                name=f"{cmd_name} Available",
+                status="error",
+                detail=f"{cmd_name} command not working: {result.stderr[:100]}",
+            ))
+    return checks
 
 
 def _check_bypass_tests(

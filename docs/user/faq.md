@@ -62,7 +62,7 @@ A: The guard prevents a mismatch between what you validated and what you push. A
 A: Yes. See [VS Code Integration](vscode.md). VS Code derivatives that support extensions generally work the same way, as long as they can run the extension and have the `issue-orchestrator-mcp` entrypoint on your PATH.
 
 **Q13: An issue failed. Now what?**
-A: Start with the Control Center: open the issue, check the last agent message, and look for the `blocked`/`validation-failed`/`needs-human` labels. Use the Doctor panel to validate config and environment. If the failure is due to validation, re-run the validation command in the worktree, fix the errors, and re-run `agent-done`. For deeper troubleshooting, see [Troubleshooting](../development/TROUBLESHOOTING.md).
+A: Start with the Control Center: open the issue, check the last agent message, and look for the `blocked`/`validation-failed`/`needs-human` labels. Use the Doctor panel to validate config and environment. If the failure is due to validation, re-run the validation command in the worktree, fix the errors, and re-run `coding-done`. For deeper troubleshooting, see [Troubleshooting](../development/TROUBLESHOOTING.md).
 
 **Q14: My issue ran but was blocked. Now what?**
 A: Read the agent's last comment and the `blocked` label reason. Provide the missing input, then re-queue the issue by removing the `blocked` label and re-applying the agent label.

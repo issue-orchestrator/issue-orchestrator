@@ -90,7 +90,7 @@ stateDiagram-v2
   state "blocked-needs-human" as BNH
 
   [*] --> IP : session launched
-  IP --> PR : agent-done completed, PR created
+  IP --> PR : coding-done completed, PR created
   PR --> NCR : review queued
   NCR --> CR : reviewer approves
   NCR --> NR : reviewer requests changes

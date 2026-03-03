@@ -5,7 +5,7 @@
 **Boundaries**:
 - Thin layer: parse input, call into control/domain, format output
 - No business logic - delegate to control layer
-- `cli_tools/` contains tools agents use (e.g., `agent-done`)
+- `cli_tools/` contains tools agents use (e.g., `coding-done`, `reviewer-done`)
 - Web endpoints serve the dashboard and API
 
 ## Key Files

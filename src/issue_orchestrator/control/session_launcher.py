@@ -830,6 +830,7 @@ class SessionLauncher:
             issue_title=issue.title,
             worktree=worktree_path,
             existing_work=existing_work,
+            task_kind=TaskKind.CODE.value,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(issue.agent_type, session_name=ctx.phase_name)
@@ -1101,6 +1102,7 @@ class SessionLauncher:
             worktree=worktree_path,
             pr_number=review.pr_number,
             existing_work=existing_work,
+            task_kind=TaskKind.REVIEW.value,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(agent_label, session_name=ctx.phase_name)
@@ -1412,6 +1414,7 @@ class SessionLauncher:
             worktree=worktree_path,
             pr_number=pr_number,
             existing_work=existing_work,
+            task_kind=TaskKind.REWORK.value,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(rework.agent_type, session_name=ctx.phase_name)

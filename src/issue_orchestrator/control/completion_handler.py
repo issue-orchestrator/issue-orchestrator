@@ -235,7 +235,7 @@ class CompletionHandler:
                 number=session.issue.number,
                 comment=(
                     f"🔁 **{session_kind.capitalize()} Session Interrupted**\n\n"
-                    f"The {session_kind} session exited without a completion record (`agent-done`).\n\n"
+                    f"The {session_kind} session exited without a completion record (`completion command`).\n\n"
                     f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                     f"- Session: `{session.terminal_id}`\n\n"
                     "Auto-retry is enabled, so this will be retried on the next scheduler cycle.\n"
@@ -1173,7 +1173,7 @@ class CompletionHandler:
         session: Session,
         expected: ExpectedState,
     ) -> list[Action]:
-        """Generate actions when session failed without agent-done."""
+        """Generate actions when session failed without completion command."""
         if retry_actions := self._generate_interrupted_retry_actions(session, expected):
             return retry_actions
 
@@ -1187,21 +1187,22 @@ class CompletionHandler:
                 AddLabelAction(
                     issue_number=issue_number,
                     label=self._lm.needs_human,
-                    reason="Session terminated without calling agent-done (mandatory)",
+                    reason="Session terminated without calling completion command (mandatory)",
                     expected=expected,
                 ),
                 AddCommentAction(
                     number=issue_number,
                     comment=f"🔍 **Session Needs Investigation**\n\n"
-                            f"The agent session terminated without calling `agent-done`.\n\n"
-                            f"**This is unexpected** - `agent-done` is mandatory and must be called "
+                            f"The agent session terminated without calling the completion command "
+                            f"(`coding-done` or `reviewer-done`).\n\n"
+                            f"**This is unexpected** - the completion command is mandatory and must be called "
                             f"to complete any session (completed, blocked, or needs_human).\n\n"
                             f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                             f"- Session: `{session.terminal_id}`\n\n"
                             f"**Possible causes:**\n"
                             f"- Agent crashed or was interrupted\n"
                             f"- Orchestrator shutdown/restart interrupted the session lifecycle\n"
-                            f"- Agent ignored the mandatory `agent-done` requirement\n"
+                            f"- Agent ignored the mandatory completion command requirement\n"
                             f"- Infrastructure issue prevented completion\n\n"
                             f"This issue has been marked as `{self._lm.needs_human}` for investigation.\n"
                             f"Remove the label after investigating to allow reprocessing.",
@@ -1220,8 +1221,8 @@ class CompletionHandler:
                 AddCommentAction(
                     number=issue_number,
                     comment=f"🔍 **{session_kind.capitalize()} Session Needs Investigation**\n\n"
-                            f"The {session_kind} session terminated without calling `agent-done`.\n\n"
-                            f"**This is unexpected** - `agent-done` is mandatory.\n\n"
+                            f"The {session_kind} session terminated without calling the completion command.\n\n"
+                            f"**This is unexpected** - the completion command is mandatory.\n\n"
                             f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                             f"- Session: `{session.terminal_id}`\n\n"
                             f"Possible causes include orchestrator shutdown/restart, agent crash, or workflow interruption.\n\n"

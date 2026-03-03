@@ -1082,7 +1082,7 @@ class AdvancedSettings(BaseModel):
         json_schema_extra={
             "doc_examples": ["npm install", "pip install -e '.[dev]'", "make setup"],
             "doc_notes": "Each command runs in the worktree directory. Leave empty if no setup needed. "
-            "The orchestrator's own setup (hooks, agent-done, Claude settings) is automatic.",
+            "The orchestrator's own setup (hooks, coding-done, reviewer-done, Claude settings) is automatic.",
             "section": "Worktrees",
             "restart_required": True,
             "config_attr": "setup_worktree",
