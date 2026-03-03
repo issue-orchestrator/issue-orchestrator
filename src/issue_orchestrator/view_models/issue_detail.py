@@ -190,17 +190,11 @@ def _blocked_explanation(ctx: IssueStoryContext, events: list[dict[str, Any]]) -
         reason = event_summary or "session crashed"
         return f"Session failed \u2014 {reason}"
 
-    # Publish failure (push/PR creation failed after agent completed)
+    # Publish failure or generic blocked-failed
     if "publish-failed" in labels:
-        if event_summary:
-            return f"Publishing failed: {event_summary}"
-        return "Publishing failed — could not push or create PR"
-
-    # Generic blocked label
+        return f"Publishing failed: {event_summary}" if event_summary else "Publishing failed — could not push or create PR"
     if "blocked-failed" in labels:
-        if event_summary:
-            return f"Failed: {event_summary}"
-        return "Session failed"
+        return f"Failed: {event_summary}" if event_summary else "Session failed"
 
     # Fallback
     if event_summary:
