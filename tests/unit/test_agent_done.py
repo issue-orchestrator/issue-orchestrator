@@ -33,7 +33,10 @@ from issue_orchestrator.entrypoints.cli_tools.agent_done import (
     write_completion_record,
     write_marker_file,
 )
-from issue_orchestrator.entrypoints.cli_tools.coding_done import main as coding_done_main
+from issue_orchestrator.entrypoints.cli_tools.coding_done import (
+    main as coding_done_main,
+    check_dirty_files,
+)
 from issue_orchestrator.entrypoints.cli_tools.reviewer_done import main as reviewer_done_main
 from issue_orchestrator.domain.models import (
     CompletionOutcome,
@@ -652,6 +655,35 @@ class TestWriteMarkerFile:
             assert "agent-done completed called at" in content
         finally:
             os.chdir(original_cwd)
+
+
+class TestCheckDirtyFiles:
+    """Test check_dirty_files excludes orchestrator runtime artifacts."""
+
+    def test_excludes_issue_orchestrator_paths(self):
+        """Orchestrator session logs are excluded from dirty check."""
+        porcelain = (
+            "?? .issue-orchestrator/sessions/20260303__coder-81/ui-session.log\n"
+            "?? .issue-orchestrator/sessions/20260303__coder-81/manifest.json\n"
+            " M src/app.py\n"
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout=porcelain)
+            result = check_dirty_files()
+        assert result == ["M src/app.py"]
+
+    def test_returns_all_when_no_orchestrator_files(self):
+        porcelain = "?? newfile.py\n M existing.py\n"
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout=porcelain)
+            result = check_dirty_files()
+        assert len(result) == 2
+
+    def test_clean_tree_returns_empty(self):
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout="")
+            result = check_dirty_files()
+        assert result == []
 
 
 class TestMain:

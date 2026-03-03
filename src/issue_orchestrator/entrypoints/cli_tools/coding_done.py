@@ -48,6 +48,8 @@ def check_dirty_files() -> list[str]:
     """Check for uncommitted files in the working tree.
 
     Returns list of dirty file paths, or empty list if clean.
+    Excludes ``.issue-orchestrator/`` paths (runtime artifacts created
+    by the orchestrator session infrastructure, not agent work).
     """
     try:
         result = subprocess.run(
@@ -59,7 +61,9 @@ def check_dirty_files() -> list[str]:
         if result.returncode != 0:
             return []  # Can't determine — don't block
         lines = [line.strip() for line in result.stdout.strip().split("\n") if line.strip()]
-        return lines
+        # Filter out orchestrator runtime artifacts (session logs, manifests, etc.)
+        # These are created by create_session() before the agent command runs.
+        return [line for line in lines if ".issue-orchestrator/" not in line]
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return []  # Can't determine — don't block
 

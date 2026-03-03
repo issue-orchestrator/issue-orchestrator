@@ -55,7 +55,7 @@ def _ensure_worktree_venv(worktree: Path) -> None:
     repo_root = Path(__file__).resolve().parents[2]
     venv_path = repo_root / ".venv"
     if not venv_path.exists():
-        pytest.skip("Repo .venv not found; subprocess integration tests require agent-done")
+        pytest.skip("Repo .venv not found; subprocess integration tests require coding-done")
     target = worktree / ".venv"
     if not target.exists():
         target.symlink_to(venv_path)
@@ -80,13 +80,18 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
     (worktree / ".issue-orchestrator").mkdir()
     _init_git_repo_with_origin(worktree, tmp_path / "origin.git")
     _ensure_worktree_venv(worktree)
+    # Commit everything so coding-done's dirty-file check passes
+    subprocess.run(["git", "add", "."], cwd=worktree, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "setup"], cwd=worktree, capture_output=True, check=True,
+    )
 
     monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
     completion_path = ".issue-orchestrator/sessions/issue-42/completion.json"
     command = (
         "echo 'hello-from-subprocess' && "
         f"export {ENV_PREFIX}COMPLETION_PATH='{completion_path}' && "
-        "agent-done completed --implementation 'subprocess test' --problems 'none'"
+        "coding-done completed --implementation 'subprocess test' --problems 'none'"
     )
 
     plugin = SubprocessPlugin()

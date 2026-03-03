@@ -5,7 +5,7 @@ one that has no orchestrator source tree, no ``.venv``, no ``Makefile``.
 
 Tests use the **real** ``GitWorktreeManager`` adapter so worktrees are created
 via ``git worktree add``, and verify:
-- Orchestrator-internal setup (hooks, Claude settings, agent-done, worktree-id)
+- Orchestrator-internal setup (hooks, Claude settings, coding-done, worktree-id)
 - PATH resolution uses the orchestrator's own package, not the target repo
 - sync_cli_tools copies from the orchestrator package, not repo_root
 - setup_worktree defaults to empty (no orchestrator-specific commands)
@@ -334,8 +334,11 @@ def test_foreign_repo_scripts_dir_from_package() -> None:
     assert scripts_dir.exists(), (
         f"Scripts dir from command PATH does not exist: {scripts_dir}"
     )
-    assert (scripts_dir / "agent-done").exists(), (
-        f"Expected agent-done wrapper in scripts dir: {scripts_dir}"
+    assert (scripts_dir / "coding-done").exists(), (
+        f"Expected coding-done wrapper in scripts dir: {scripts_dir}"
+    )
+    assert (scripts_dir / "reviewer-done").exists(), (
+        f"Expected reviewer-done wrapper in scripts dir: {scripts_dir}"
     )
 
 
@@ -390,14 +393,14 @@ def test_foreign_repo_with_setup_commands(foreign_repo: Path, tmp_path: Path) ->
 
 
 # ---------------------------------------------------------------------------
-# Real PATH chain tests — prove agent-done is findable in a foreign repo
-# worktree through the actual command construction used in production.
+# Real PATH chain tests — prove coding-done/reviewer-done are findable in a
+# foreign repo worktree through the actual command construction used in production.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_foreign_repo_real_path_chain_finds_agent_done(make_worktree) -> None:
-    """The full PATH chain (session_launcher + terminal_subprocess) finds agent-done."""
+def test_foreign_repo_real_path_chain_finds_coding_done(make_worktree) -> None:
+    """The full PATH chain (session_launcher + terminal_subprocess) finds coding-done."""
     handle = make_worktree(77, "path-chain-test")
     wt = handle.path
 
@@ -409,7 +412,7 @@ def test_foreign_repo_real_path_chain_finds_agent_done(make_worktree) -> None:
     plugin = SubprocessPlugin()
     exports = _build_session_exports(77)
     full_cmd = plugin._build_process_command(  # noqa: SLF001
-        f"{exports} && which agent-done", wt
+        f"{exports} && which coding-done", wt
     )
 
     result = subprocess.run(
@@ -417,24 +420,24 @@ def test_foreign_repo_real_path_chain_finds_agent_done(make_worktree) -> None:
     )
 
     assert result.returncode == 0, (
-        f"agent-done not found via real PATH chain in foreign repo worktree.\n"
+        f"coding-done not found via real PATH chain in foreign repo worktree.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}\ncommand: {full_cmd}"
     )
-    assert "agent-done" in result.stdout, (
-        f"Expected 'agent-done' in which output, got: {result.stdout!r}"
+    assert "coding-done" in result.stdout, (
+        f"Expected 'coding-done' in which output, got: {result.stdout!r}"
     )
 
 
 @pytest.mark.integration
-def test_foreign_repo_real_path_chain_agent_done_executes(make_worktree) -> None:
-    """agent-done actually executes (not just findable) through the real PATH chain."""
-    handle = make_worktree(78, "agent-done-exec-test")
+def test_foreign_repo_real_path_chain_coding_done_executes(make_worktree) -> None:
+    """coding-done actually executes (not just findable) through the real PATH chain."""
+    handle = make_worktree(78, "coding-done-exec-test")
     wt = handle.path
 
     plugin = SubprocessPlugin()
     exports = _build_session_exports(78)
     full_cmd = plugin._build_process_command(  # noqa: SLF001
-        f"{exports} && agent-done --help", wt
+        f"{exports} && coding-done --help", wt
     )
 
     result = subprocess.run(
@@ -442,11 +445,11 @@ def test_foreign_repo_real_path_chain_agent_done_executes(make_worktree) -> None
     )
 
     assert result.returncode == 0, (
-        f"agent-done --help failed in foreign repo worktree.\n"
+        f"coding-done --help failed in foreign repo worktree.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}\ncommand: {full_cmd}"
     )
     assert "completed" in result.stdout.lower() or "usage" in result.stdout.lower(), (
-        f"Expected agent-done help output, got: {result.stdout!r}"
+        f"Expected coding-done help output, got: {result.stdout!r}"
     )
 
 
@@ -478,20 +481,29 @@ def test_foreign_repo_real_path_chain_validation_runs(make_worktree) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Real agent invocation — prove agent-done writes completion in a foreign repo
+# Real agent invocation — prove coding-done writes completion in a foreign repo
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.integration
-def test_foreign_repo_agent_done_writes_completion(make_worktree) -> None:
-    """agent-done completed writes a completion record in a foreign repo worktree."""
-    handle = make_worktree(80, "agent-done-completion-test")
+def test_foreign_repo_coding_done_writes_completion(make_worktree) -> None:
+    """coding-done completed writes a completion record in a foreign repo worktree."""
+    handle = make_worktree(80, "coding-done-completion-test")
     wt = handle.path
     completion_rel = ".issue-orchestrator/completion.json"
 
+    # coding-done enforces clean working tree — commit setup files first
+    subprocess.run(
+        ["git", "add", "."], cwd=wt, capture_output=True, check=True,
+    )
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@test.com",
+         "commit", "-m", "worktree setup"], cwd=wt, capture_output=True, check=True,
+    )
+
     exports = _build_session_exports(80, completion_rel)
     agent_cmd = (
-        "agent-done completed"
+        "coding-done completed"
         " --implementation 'Foreign repo test implementation'"
         " --problems 'None'"
     )
@@ -507,13 +519,13 @@ def test_foreign_repo_agent_done_writes_completion(make_worktree) -> None:
     )
 
     assert result.returncode == 0, (
-        f"agent-done completed failed in foreign repo worktree.\n"
+        f"coding-done completed failed in foreign repo worktree.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}\ncommand: {full_cmd}"
     )
 
     completion_file = wt / completion_rel
     assert completion_file.exists(), (
-        f"agent-done should have written {completion_rel} in worktree.\n"
+        f"coding-done should have written {completion_rel} in worktree.\n"
         f"stdout: {result.stdout}\nstderr: {result.stderr}"
     )
 
@@ -528,21 +540,31 @@ def test_foreign_repo_agent_done_writes_completion(make_worktree) -> None:
 def test_foreign_repo_real_pty_agent_invocation(
     make_worktree, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A real PTY session (pexpect) runs agent-done in a foreign repo worktree."""
+    """A real PTY session (pexpect) runs coding-done in a foreign repo worktree."""
     handle = make_worktree(81, "pty-agent-test")
     wt = handle.path
     completion_rel = ".issue-orchestrator/completion.json"
 
-    # Write a test agent script that calls agent-done
+    # Write a test agent script that calls coding-done
     agent_script = wt / "test-agent.sh"
     agent_script.write_text(
         "#!/bin/bash\n"
         "set -e\n"
-        "agent-done completed"
+        "coding-done completed"
         " --implementation 'PTY foreign repo test'"
         " --problems 'None'\n"
     )
     agent_script.chmod(0o755)
+
+    # Commit setup files so coding-done's dirty-file check passes
+    # (orchestrator runtime files in .issue-orchestrator/ are auto-excluded)
+    subprocess.run(
+        ["git", "add", "."], cwd=wt, capture_output=True, check=True,
+    )
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@test.com",
+         "commit", "-m", "worktree setup"], cwd=wt, capture_output=True, check=True,
+    )
 
     exports = _build_session_exports(81, completion_rel)
     command = f"{exports} && ./test-agent.sh"
@@ -562,7 +584,7 @@ def test_foreign_repo_real_pty_agent_invocation(
     )
     assert created is True, "create_session should return True"
 
-    # Poll until the session finishes (agent-done is fast)
+    # Poll until the session finishes (coding-done is fast)
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if not plugin.session_exists(81, session_name):
@@ -576,9 +598,12 @@ def test_foreign_repo_real_pty_agent_invocation(
     write_deadline = time.monotonic() + 5
     while time.monotonic() < write_deadline and not completion_file.exists():
         time.sleep(0.1)
+    # Debug: show session output
+    output = plugin.get_session_output(81, 100, session_name)
     assert completion_file.exists(), (
-        f"agent-done should have written {completion_rel} via PTY session.\n"
-        f"Worktree contents: {list(wt.iterdir())}"
+        f"coding-done should have written {completion_rel} via PTY session.\n"
+        f"Worktree contents: {list(wt.iterdir())}\n"
+        f"Session output: {output}"
     )
 
     record = json.loads(completion_file.read_text())
@@ -588,7 +613,7 @@ def test_foreign_repo_real_pty_agent_invocation(
 
 
 # ---------------------------------------------------------------------------
-# Real AI agent tests — prove Claude Code / Codex can run agent-done in a
+# Real AI agent tests — prove Claude Code / Codex can run coding-done in a
 # foreign repo worktree through the full production PATH chain.
 # ---------------------------------------------------------------------------
 
@@ -601,16 +626,23 @@ def test_foreign_repo_real_pty_agent_invocation(
     reason="Claude Code CLI not installed",
 )
 def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
-    """Claude Code invokes agent-done in a foreign repo worktree."""
+    """Claude Code invokes coding-done in a foreign repo worktree."""
     handle = make_worktree(90, "claude-foreign-test")
     wt = handle.path
     completion_rel = ".issue-orchestrator/completion.json"
+
+    # coding-done enforces clean working tree — commit setup files first
+    subprocess.run(["git", "add", "."], cwd=wt, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@test.com",
+         "commit", "-m", "setup"], cwd=wt, capture_output=True, check=True,
+    )
 
     exports = _build_session_exports(90, completion_rel)
 
     prompt = (
         "You are in a test. Run this exact bash command and nothing else: "
-        'agent-done completed --implementation "claude foreign repo test" '
+        'coding-done completed --implementation "claude foreign repo test" '
         '--problems "none". '
         "Do not explain anything, just run the command above."
     )
@@ -653,16 +685,23 @@ def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
     reason="Codex CLI not installed",
 )
 def test_foreign_repo_codex_agent_done(make_worktree) -> None:
-    """Codex invokes agent-done in a foreign repo worktree."""
+    """Codex invokes coding-done in a foreign repo worktree."""
     handle = make_worktree(91, "codex-foreign-test")
     wt = handle.path
     completion_rel = ".issue-orchestrator/completion.json"
+
+    # coding-done enforces clean working tree — commit setup files first
+    subprocess.run(["git", "add", "."], cwd=wt, capture_output=True, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=Test", "-c", "user.email=test@test.com",
+         "commit", "-m", "setup"], cwd=wt, capture_output=True, check=True,
+    )
 
     exports = _build_session_exports(91, completion_rel)
 
     prompt = (
         "You are in a test. Run this exact bash command and nothing else: "
-        'agent-done completed --implementation "codex foreign repo test" '
+        'coding-done completed --implementation "codex foreign repo test" '
         '--problems "none". '
         "Do not explain anything, just run the command above using the shell tool."
     )
