@@ -288,11 +288,15 @@ def test_foreign_repo_sync_cli_tools_from_package(make_worktree, foreign_repo: P
 
 @pytest.mark.integration
 def test_foreign_repo_agent_done_on_path() -> None:
-    """agent-done is findable from the orchestrator's own venv."""
+    """coding-done and reviewer-done are findable from the orchestrator's own venv."""
     orch_bin = Path(sys.executable).parent
-    agent_done = orch_bin / "agent-done"
-    assert agent_done.exists(), (
-        f"agent-done should be in orchestrator venv bin at {agent_done}"
+    coding_done = orch_bin / "coding-done"
+    assert coding_done.exists(), (
+        f"coding-done should be in orchestrator venv bin at {coding_done}"
+    )
+    reviewer_done = orch_bin / "reviewer-done"
+    assert reviewer_done.exists(), (
+        f"reviewer-done should be in orchestrator venv bin at {reviewer_done}"
     )
 
 

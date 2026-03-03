@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# In review-loop mode, output invalid JSON
 prompt_path="${1:-}"
 completion_path="${ISSUE_ORCHESTRATOR_COMPLETION_PATH:-}"
 if [[ -n "$prompt_path" && -f "$prompt_path" ]]; then
@@ -12,6 +13,6 @@ if [[ "$completion_path" == *"completion-coder.json" ]]; then
   exit 0
 fi
 
-python -m issue_orchestrator.entrypoints.cli_tools.agent_done completed \
-  --implementation "Simulated scenario completed" \
-  --problems "None"
+# Standalone mode: write normal completion
+source "$(dirname "$0")/_write_completion.sh"
+write_completion completed "Simulated scenario completed" "None"
