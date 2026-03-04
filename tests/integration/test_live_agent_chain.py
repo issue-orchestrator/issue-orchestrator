@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import shlex
 import shutil
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -30,10 +31,33 @@ from issue_orchestrator.execution.agent_runner_types import AgentSpec
 # Markers / skip conditions
 # ---------------------------------------------------------------------------
 
-_CLAUDE_AVAILABLE = shutil.which("claude") is not None
+_CLAUDE_INSTALLED = shutil.which("claude") is not None
 
 
-@pytest.mark.skipif(not _CLAUDE_AVAILABLE, reason="Claude CLI not installed")
+def _claude_authenticated() -> bool:
+    """Check if Claude CLI is installed AND authenticated.
+
+    Runs a minimal -p invocation.  Must scrub CLAUDECODE from the
+    environment so the probe works when tests run inside a Claude Code
+    session (nested-session guard).
+    """
+    if not _CLAUDE_INSTALLED:
+        return False
+    try:
+        env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
+        result = subprocess.run(
+            ["claude", "-p", "--model", "haiku", "Reply with OK"],
+            capture_output=True, text=True, timeout=30, env=env,
+        )
+        return result.returncode == 0
+    except (subprocess.SubprocessError, OSError):
+        return False
+
+
+_CLAUDE_READY = _claude_authenticated()
+
+
+@pytest.mark.skipif(not _CLAUDE_READY, reason="Claude CLI not installed or not authenticated")
 class TestLiveAgentChain:
     """Prove the full pexpect → bash → provider_runner → Claude chain works."""
 
