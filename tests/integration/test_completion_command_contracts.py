@@ -36,7 +36,11 @@ from issue_orchestrator.entrypoints.control_api import (
     _create_starter_prompt,
     _create_triage_review_prompt,
 )
+from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.resources import get_coding_done_instructions, get_reviewer_done_instructions
+
+# Single source of truth for label names — avoids hardcoded string literals.
+_lm = LabelManager(Config())
 
 _COMPLETION_CMDS = ("coding-done", "reviewer-done")
 
@@ -239,7 +243,7 @@ def test_setup_wizard_generated_prompts_have_valid_completion_commands(tmp_path:
 def test_control_api_prompt_templates_have_valid_completion_commands(tmp_path: Path) -> None:
     prompts = [
         _create_starter_prompt("backend"),
-        _create_code_review_prompt("needs-code-review", "code-reviewed"),
+        _create_code_review_prompt(_lm.code_review, _lm.code_reviewed),
         _create_triage_review_prompt("triage-review", "triage-reviewed"),
     ]
     commands = _extract_completion_commands("\n".join(prompts))
@@ -306,7 +310,7 @@ def test_completion_record_schema_contract_for_all_statuses(tmp_path: Path) -> N
 
 def test_prompt_role_status_contracts() -> None:
     work_prompt = _create_starter_prompt("backend")
-    review_prompt = _create_code_review_prompt("needs-code-review", "code-reviewed")
+    review_prompt = _create_code_review_prompt(_lm.code_review, _lm.code_reviewed)
     triage_prompt = _create_triage_review_prompt("triage-review", "triage-reviewed")
 
     work_statuses = _extract_statuses(_extract_completion_commands(work_prompt))
@@ -344,6 +348,7 @@ def test_completion_record_drives_expected_review_actions(tmp_path: Path) -> Non
         pr_adapter=pr_adapter,
         git_adapter=_NoopGitAdapter(),
         session_output=FileSystemSessionOutput(),
+        label_config=_lm.to_label_config_dict(),
     )
     controller = SessionController(
         completion_processor=processor,
@@ -365,9 +370,9 @@ def test_completion_record_drives_expected_review_actions(tmp_path: Path) -> Non
     )
 
     assert decision.status.name == "COMPLETED"
-    assert (100, "code-reviewed") in label_adapter.added
-    assert (100, "needs-rework") in label_adapter.removed
-    assert any(target == 100 and label.endswith("code-review") for target, label in label_adapter.removed)
+    assert (100, _lm.code_reviewed) in label_adapter.added
+    assert (100, _lm.needs_rework) in label_adapter.removed
+    assert any(target == 100 and label == _lm.code_review for target, label in label_adapter.removed)
     assert any(target == 100 for target, _body in pr_adapter.comments)
 
 
@@ -429,13 +434,13 @@ def test_publish_failure_multi_attempt_contract(tmp_path: Path) -> None:
         )
         # Each attempt either adds publish-failed or escalates to needs-human
         assert any(
-            isinstance(action, AddLabelAction) and action.label in ("publish-failed", "needs-human")
+            isinstance(action, AddLabelAction) and action.label in (_lm.publish_failed, _lm.needs_human)
             for action in result.actions
         )
-        assert any(isinstance(action, RemoveLabelAction) and action.label == "in-progress" for action in result.actions)
+        assert any(isinstance(action, RemoveLabelAction) and action.label == _lm.in_progress for action in result.actions)
         issue = _apply_label_actions_to_issue(issue, result.actions)
 
-    assert "publish-failed" in issue.labels
+    assert _lm.publish_failed in issue.labels
 
 
 def test_wrapper_and_git_guardrail_path_resolution(tmp_path: Path) -> None:

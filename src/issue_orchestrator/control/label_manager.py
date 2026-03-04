@@ -193,6 +193,14 @@ class LabelManager:
         return self._resolved["needs_reconcile"]
 
     @property
+    def code_review(self) -> str:
+        return self._resolved["code_review"]
+
+    @property
+    def code_reviewed(self) -> str:
+        return self._resolved["code_reviewed"]
+
+    @property
     def review_keep_approach(self) -> str:
         return self._resolved["review_keep_approach"]
 
