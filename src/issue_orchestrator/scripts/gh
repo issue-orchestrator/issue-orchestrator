@@ -4,7 +4,7 @@
 # WHITELIST APPROACH: Only explicitly allowed commands pass through.
 # Everything else is blocked unless authorized via ORCHESTRATOR_GH_AUTH.
 #
-# Agents should use 'agent-done' for any write operations.
+# Agents should use 'coding-done'/'reviewer-done' for any write operations.
 
 set -euo pipefail
 
@@ -68,7 +68,7 @@ is_allowed_command() {
 
 # === CHECK AUTHORIZATION ===
 
-# If authorized by agent-done, allow everything
+# If authorized by completion command, allow everything
 if [[ "${ORCHESTRATOR_GH_AUTH:-}" == "agent-done-authorized" ]]; then
     if [[ -n "${ORCHESTRATOR_REAL_GH:-}" && -x "${ORCHESTRATOR_REAL_GH}" ]]; then
         exec "${ORCHESTRATOR_REAL_GH}" "$@"
@@ -124,7 +124,7 @@ echo "║  ❌ BLOCKED: 'gh $cmd${subcmd:+ $subcmd}' is not allowed             
 echo "╠════════════════════════════════════════════════════════════════╣" >&2
 echo "║                                                                ║" >&2
 echo "║  Agents have READ-ONLY access to GitHub.                       ║" >&2
-echo "║  Use 'agent-done' for any write operations.                    ║" >&2
+echo "║  Use 'coding-done' or 'reviewer-done' for write operations.     ║" >&2
 echo "║                                                                ║" >&2
 echo "║  ✅ Allowed commands (read-only):                              ║" >&2
 echo "║     gh pr view/list/diff/checks/status                         ║" >&2
@@ -134,11 +134,11 @@ echo "║     gh search repos/issues/prs/commits/code                    ║" >&
 echo "║     gh auth status                                             ║" >&2
 echo "║                                                                ║" >&2
 echo "║  ✅ For completing work:                                       ║" >&2
-echo "║     agent-done completed --implementation \"...\" --problems ... ║" >&2
+echo "║     coding-done completed --implementation \"...\" --problems .. ║" >&2
 echo "║                                                                ║" >&2
 echo "║  ✅ For code review:                                           ║" >&2
-echo "║     agent-done approved --summary \"...\"                        ║" >&2
-echo "║     agent-done changes_requested --issues \"...\"                ║" >&2
+echo "║     reviewer-done approved --summary \"...\" --risk low          ║" >&2
+echo "║     reviewer-done changes_requested --issues \"...\" --risk med  ║" >&2
 echo "║                                                                ║" >&2
 echo "╚════════════════════════════════════════════════════════════════╝" >&2
 echo "" >&2

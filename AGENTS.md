@@ -40,7 +40,7 @@ For UI-facing changes, follow `.claude/skills/frontend-design/SKILL.md`; task is
 
 ## What This Is
 
-**issue-orchestrator** orchestrates multiple AI agents working on GitHub issues in parallel. It fetches issues, creates git worktrees, launches agent sessions, enforces structured completion via `agent-done`, and manages the full lifecycle including code review and triage.
+**issue-orchestrator** orchestrates multiple AI agents working on GitHub issues in parallel. It fetches issues, creates git worktrees, launches agent sessions, enforces structured completion via `coding-done`/`reviewer-done`, and manages the full lifecycle including code review and triage.
 
 ## Architecture Principles
 
@@ -85,19 +85,25 @@ orchestrator = build_orchestrator_for_testing(config, events=mock, runner=mock) 
 | `bootstrap.py` | Composition root - wires all dependencies |
 | `orchestrator.py` | Main loop, session lifecycle, delegates to ports |
 | `cli.py` | CLI commands, calls `build_orchestrator()` |
-| `agent_done.py` | `agent-done` CLI - enforced completion command |
+| `agent_done.py` | Shared completion core (used by `coding-done` and `reviewer-done`) |
+| `coding_done.py` | `coding-done` CLI - coding/rework agent completion |
+| `reviewer_done.py` | `reviewer-done` CLI - review agent completion |
 | `ports/` | Protocol definitions (EventSink, SessionRunner, etc.) |
 | `execution/` | Adapters (GitHub, terminal plugins, stores) |
 
-## The `agent-done` Command
+## Completion Commands
 
-Agents MUST use `agent-done` to complete. Direct `git push` is blocked by hooks.
+Agents MUST use `coding-done` or `reviewer-done` to complete. Direct `git push` is blocked by hooks.
 
 ```bash
-agent-done completed --implementation "What was done" --problems "None"
-agent-done blocked --reason "Why" --attempted "What was tried"
-agent-done approved --summary "Code looks good"  # Reviewer
-agent-done changes_requested --issues "Missing tests"  # Reviewer
+# Coding/rework agents:
+coding-done completed --implementation "What was done" --problems "None"
+coding-done blocked --reason "Why" --attempted "What was tried"
+coding-done needs_human --question "Need clarification on X"
+
+# Review agents:
+reviewer-done approved --summary "Code looks good" --risk low
+reviewer-done changes_requested --issues "Missing tests" --risk medium
 ```
 
 ## Detailed Documentation

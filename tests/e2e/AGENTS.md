@@ -62,6 +62,6 @@ This ensures deterministic test runs regardless of previous state.
 
 - Issue creation and pickup
 - Session launch and completion
-- PR creation via agent-done
+- PR creation via coding-done
 - Label management
 - Event observation via IPC

@@ -77,11 +77,11 @@ the `pyproject.toml` change.
 **Symptom:** Sessions end with "without completion markers", marked as FAILED.
 
 **Causes:**
-1. Agent prompt doesn't include `agent-done` instructions
+1. Agent prompt doesn't include `coding-done`/`reviewer-done` instructions
 2. Pre-push hook blocking push
 3. Agent crashing/timeout before completion
 
-**Fix:** Ensure agent prompts include `agent-done` usage in "When Done" section.
+**Fix:** Ensure agent prompts include `coding-done`/`reviewer-done` usage in "When Done" section.
 
 ### Pre-Push Validation Failed
 

@@ -11,6 +11,5 @@ echo -e "\x1b[33mWARNING: deprecated API detected\x1b[0m"
 echo "PASS"
 echo "Tests passed: 5/5"
 
-python -m issue_orchestrator.entrypoints.cli_tools.agent_done completed \
-  --implementation "Implemented user authentication module" \
-  --problems "None"
+source "$(dirname "$0")/_write_completion.sh"
+write_completion completed "Implemented user authentication module" "None"

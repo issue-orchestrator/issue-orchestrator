@@ -5,12 +5,12 @@ It handles:
 - Subprocess invocation with proper isolation
 - Timeout management
 - Clean process termination
-- Stdout/stderr capture with real-time tee to parent process
+- Stderr capture for provider error classification
 
-Both stdout and stderr are captured via PIPE for provider error classification
-(retry logic). Relay threads tee both streams to the parent's stdout/stderr in
-real-time so output still flows through the pexpect PTY to CleaningLogWriter →
-ui-session.log.
+Stdout inherits the parent process's file descriptor (typically a PTY slave)
+so output flows in real-time through pexpect → CleaningLogWriter → ui-session.log.
+Only stderr is captured via PIPE for provider error classification (retry logic);
+a tee thread relays it to the parent's stderr in real-time.
 """
 
 import logging
@@ -190,40 +190,32 @@ class AgentRunner:
                 spec.command,
                 cwd=spec.working_dir,
                 env=env,
-                # Capture both streams for provider error classification.
-                # A tee thread relays stdout to the parent in real-time so
-                # output still flows through the pexpect PTY → ui-session.log.
-                #
                 # stdin=DEVNULL prevents SIGTTIN: setpgrp puts the child in a
                 # background process group relative to the parent's PTY, so
                 # any read from the inherited PTY slave triggers SIGTTIN and
                 # stops the process. Agents don't need stdin.
                 #
+                # stdout inherits the parent's fd (PTY slave) so output
+                # streams in real-time through pexpect → ui-session.log.
+                # Only stderr is captured via PIPE for error classification.
+                #
                 # setpgrp creates a new process group (for clean killpg)
                 # without creating a new session (which would disconnect
                 # from the controlling terminal and break interactive mode).
                 stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 preexec_fn=os.setpgrp,
             )
 
-            # Tee both pipes to the parent with threads. We cannot use
-            # communicate() because it would race with our tee threads.
-            stdout_chunks: list[bytes] = []
+            # Tee stderr to the parent in real-time while accumulating for
+            # error classification. Stdout flows directly through the PTY.
             stderr_chunks: list[bytes] = []
 
-            stdout_thread = threading.Thread(
-                target=_tee_stream,
-                args=(process.stdout, sys.stdout.buffer, stdout_chunks),
-                daemon=True,
-            )
             stderr_thread = threading.Thread(
                 target=_tee_stream,
                 args=(process.stderr, sys.stderr.buffer, stderr_chunks),
                 daemon=True,
             )
-            stdout_thread.start()
             stderr_thread.start()
 
             try:
@@ -236,9 +228,7 @@ class AgentRunner:
                 )
                 self._terminate_process(process)
 
-            stdout_thread.join(timeout=5)
             stderr_thread.join(timeout=5)
-            stdout = b"".join(stdout_chunks).decode("utf-8", errors="replace")
             stderr = b"".join(stderr_chunks).decode("utf-8", errors="replace")
 
         except FileNotFoundError:

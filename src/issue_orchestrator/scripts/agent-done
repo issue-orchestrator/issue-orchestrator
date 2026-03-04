@@ -1,38 +1,22 @@
 #!/bin/bash
-# agent-done wrapper - forwards to the orchestrator's venv installation
+# agent-done backward-compatibility wrapper → forwards to coding-done.
 #
-# This script is placed in the scripts directory which gets prepended to PATH
-# when agents run. It forwards all arguments to the actual agent-done command
-# in the orchestrator's venv.
+# New code should use coding-done or reviewer-done directly.
+# This wrapper exists so agents started with older prompts still work.
 
-# The scripts directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Find the orchestrator's venv by going up from the scripts dir
-# Structure: .../issue-orchestrator/src/issue_orchestrator/scripts/
-#                                   ^-- 3 levels up to issue-orchestrator
-# We need: .../issue-orchestrator/.venv/bin/agent-done
-ORCHESTRATOR_ROOT="$(dirname "$(dirname "$(dirname "$SCRIPT_DIR")")")"
-AGENT_DONE="$ORCHESTRATOR_ROOT/.venv/bin/agent-done"
+# coding-done lives alongside this script in the scripts directory
+CODING_DONE="$SCRIPT_DIR/coding-done"
 
-if [[ -x "$AGENT_DONE" ]]; then
-    exec "$AGENT_DONE" "$@"
+if [[ -x "$CODING_DONE" ]]; then
+    exec "$CODING_DONE" "$@"
 fi
 
-# Fallback: try to find in PATH (if installed globally)
-REAL_AGENT_DONE=$(which -a agent-done 2>/dev/null | grep -v "$SCRIPT_DIR" | head -1)
-if [[ -x "$REAL_AGENT_DONE" ]]; then
-    exec "$REAL_AGENT_DONE" "$@"
+# Fallback: try coding-done on PATH
+if command -v coding-done &>/dev/null; then
+    exec coding-done "$@"
 fi
 
-echo "╔════════════════════════════════════════════════════════════════╗" >&2
-echo "║  ❌ ERROR: agent-done not found                                ║" >&2
-echo "╠════════════════════════════════════════════════════════════════╣" >&2
-echo "║                                                                ║" >&2
-echo "║  The issue-orchestrator package may not be installed.         ║" >&2
-echo "║                                                                ║" >&2
-echo "║  Expected location:                                           ║" >&2
-echo "║  $AGENT_DONE" >&2
-echo "║                                                                ║" >&2
-echo "╚════════════════════════════════════════════════════════════════╝" >&2
+echo "ERROR: coding-done not found (agent-done is a backward-compat wrapper)" >&2
 exit 1

@@ -782,7 +782,7 @@ async def resume_issue(issue_number: int) -> JSONResponse:
         return JSONResponse({
             "success": False,
             "error": "No completion record found",
-            "hint": "Run 'agent-done completed --implementation ... --problems ...' first.",
+            "hint": "Run 'coding-done completed --implementation ... --problems ...' first.",
         }, status_code=404)
 
     issue_title = _get_issue_title(_orchestrator, issue_number)
@@ -816,7 +816,7 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
     """Launch an interactive debug session for a blocked issue.
 
     This endpoint creates a terminal session in the issue's existing worktree,
-    with environment variables set so `agent-done --resume` can signal completion
+    with environment variables set so `coding-done --resume` can signal completion
     back to the orchestrator.
 
     The session runs the issue's configured agent in interactive mode (without
@@ -908,13 +908,14 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
     debug_context = (
         "This is an INTERACTIVE DEBUG SESSION. A previous automated run failed or was blocked. "
         "Work with the user to investigate and fix the issue. When done, the user will run "
-        "'agent-done --resume' to continue the orchestrator flow."
+        "'coding-done --resume' to continue the orchestrator flow."
     )
     base_command = agent_config.get_command(
         issue_number=issue_number,
         issue_title=issue.title,
         worktree=worktree,
         existing_work=debug_context,
+        task_kind="code",
     )
 
     completion_path = get_completion_path(agent_type, session_name=session_name)
@@ -928,13 +929,13 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
         },
     )
 
-    # Set env vars for agent-done --resume
+    # Set env vars for coding-done --resume
     env_exports = f"export ORCHESTRATOR_ISSUE_NUMBER='{issue_number}'"
     env_exports += f" ORCHESTRATOR_API_PORT='{config.web_port}'"
     env_exports += f" ORCHESTRATOR_AGENT_LABEL='{agent_type}'"
     env_exports += f" ORCHESTRATOR_SESSION_ID='{session_name}'"
     env_exports += f" {ENV_PREFIX}COMPLETION_PATH='{completion_path}'"
-    # Ensure orchestrator tools (agent-done) are on PATH for all backends.
+    # Ensure orchestrator tools (coding-done, reviewer-done) are on PATH for all backends.
     orch_bin = Path(sys.executable).parent
     env_exports += f' PATH="{orch_bin}:$PATH"'
     command = f"{env_exports} && {base_command}"
@@ -965,7 +966,7 @@ async def launch_debug_session(issue_number: int) -> JSONResponse:  # noqa: C901
         "session_name": session_name,
         "worktree_path": str(worktree),
         "agent": agent_type.replace("agent:", ""),
-        "hint": f"Debug session launched. When done, run 'agent-done --resume' to process completion.",
+        "hint": f"Debug session launched. When done, run 'coding-done --resume' to process completion.",
     })
 
 
@@ -3855,12 +3856,12 @@ Your worktree is at: {{worktree}}
 2. Implement the necessary changes
 3. Write tests if applicable
 4. Run existing tests to ensure nothing is broken
-5. When complete, use `agent-done` to create a PR
+5. When complete, use `coding-done` to create a PR
 
 ## Important
-- Always use `agent-done` when finished (not `git push` directly)
-- If blocked, use `agent-done blocked --reason "reason" --attempted "what you tried"`
-- If you need human input, use `agent-done needs_human --question "question"`
+- Always use `coding-done` when finished (not `git push` directly)
+- If blocked, use `coding-done blocked --reason "reason" --attempted "what you tried"`
+- If you need human input, use `coding-done needs_human --question "question"`
 """
 
 
@@ -3891,11 +3892,11 @@ gh pr review {{{{pr_number}}}} --approve --body "LGTM!"
 gh pr edit {{{{pr_number}}}} --remove-label "{code_review_label}" --add-label "{code_reviewed_label}"
 ```
 
-Then: `agent-done approved --summary "Reviewed PR #{{{{pr_number}}}}. Approved." --risk low`
+Then: `reviewer-done approved --summary "Reviewed PR #{{{{pr_number}}}}. Approved." --risk low`
 
 If changes are needed:
 ```bash
-agent-done changes_requested --issues "Describe what must be fixed" --risk medium
+reviewer-done changes_requested --issues "Describe what must be fixed" --risk medium
 ```
 """
 
@@ -3919,7 +3920,7 @@ Find PRs with `{review_label}` label and audit them for patterns, issues, and qu
 
 ## Completion
 
-`agent-done completed --implementation "Audited N PRs. Summary of findings." --problems "None"`
+`reviewer-done approved --summary "Audited N PRs. Summary of findings." --risk low`
 """
 
 

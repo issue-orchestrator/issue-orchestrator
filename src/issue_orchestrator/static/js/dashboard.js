@@ -4855,7 +4855,7 @@ async function launchDebugSession(issueNumber, event) {
         const data = await res.json();
 
         if (data.success) {
-            showToast(`Debug session launched for #${issueNumber}. Use 'agent-done --resume' when done.`);
+            showToast(`Debug session launched for #${issueNumber}. Use 'coding-done --resume' when done.`);
             closeBlockedModal();
             // Reload to show updated state
             setTimeout(() => location.reload(), 500);

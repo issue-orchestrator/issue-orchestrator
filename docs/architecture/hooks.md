@@ -58,7 +58,7 @@ These are installed automatically by issue-orchestrator when creating worktrees.
 |------|------|----------|---------|
 | Pre-push wrapper | Git | `.git/hooks/pre-push` | Chains project + orchestrator hooks, writes audit trail |
 | Pre-push (orchestrator) | Git | `.git/hooks/pre-push.orchestrator` | Validates Agent-Status trailers, blocks test-skipping patterns, rejects dirty tracked files (configurable) |
-| Stop hook | Claude Code | `.claude/settings.json` | Warns if session exits without `agent-done` |
+| Stop hook | Claude Code | `.claude/settings.json` | Warns if session exits without `coding-done`/`reviewer-done` |
 | gh wrapper | PATH script | `scripts/gh` | Blocks `gh pr create` without auth token |
 
 ### Target Project Hooks (project-specific)
@@ -149,7 +149,7 @@ Blocks unauthorized GitHub CLI operations:
 # BLOCKED - no auth token
 gh pr create --title "..." --body "..."
 
-# ALLOWED - agent-done sets ORCHESTRATOR_GH_AUTH
+# ALLOWED - completion command sets ORCHESTRATOR_GH_AUTH
 ORCHESTRATOR_GH_AUTH=agent-done-authorized gh pr create ...
 ```
 
@@ -410,6 +410,6 @@ Check which layer failed:
 
 1. AI-level hook logs (if any)
 2. `.git/hooks/pre-push.log` audit trail
-3. GitHub PR - was it created through `agent-done`?
+3. GitHub PR - was it created through the completion command?
 
 If all hooks were in place, file a bug report with the bypass method.

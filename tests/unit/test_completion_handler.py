@@ -1146,7 +1146,7 @@ class TestLabelActionGeneration:
     def test_publish_blocked_error_generates_blocked_failed_actions(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
     ) -> None:
-        """Completed+publish-blocked should yield blocked-failed + comment + release claim."""
+        """Completed+publish-blocked should yield publish-failed + comment + release claim."""
         from issue_orchestrator.control.completion_processor import ERROR_PREFIX_PUBLISH_BLOCKED
 
         issue = make_issue(number=321)
@@ -1162,12 +1162,118 @@ class TestLabelActionGeneration:
         )
 
         actions = result.actions
-        assert any(isinstance(a, AddLabelAction) and a.label == "blocked-failed" for a in actions)
+        assert any(isinstance(a, AddLabelAction) and a.label == "publish-failed" for a in actions)
         assert any(isinstance(a, RemoveLabelAction) and a.label == config.get_label_in_progress() for a in actions)
         assert any(
-            isinstance(a, AddCommentAction) and "Processing Failed" in a.comment
+            isinstance(a, AddCommentAction) and "Publishing Failed" in a.comment
             for a in actions
         )
+
+    def test_publish_failure_removes_needs_rework_label(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Publish failure should remove needs-rework to prevent re-queuing loop."""
+        from issue_orchestrator.control.completion_processor import ERROR_PREFIX_PUBLISH_BLOCKED
+
+        issue = make_issue(number=321)
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[
+                f"{ERROR_PREFIX_PUBLISH_BLOCKED}: push failed"
+            ],
+        )
+
+        actions = result.actions
+        remove_rework = [
+            a for a in actions
+            if isinstance(a, RemoveLabelAction) and a.label == "needs-rework"
+        ]
+        assert len(remove_rework) == 1, "Should remove needs-rework on publish failure"
+
+    def test_publish_failure_adds_count_label(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """First publish failure should add publish-fail-count-1 label."""
+        from issue_orchestrator.control.completion_processor import ERROR_PREFIX_PUBLISH_BLOCKED
+
+        issue = make_issue(number=321)
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[f"{ERROR_PREFIX_PUBLISH_BLOCKED}: push failed"],
+        )
+
+        actions = result.actions
+        assert any(
+            isinstance(a, AddLabelAction) and a.label == "publish-fail-count-1"
+            for a in actions
+        ), "Should add publish-fail-count-1 on first failure"
+
+    def test_publish_failure_increments_count_label(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Second publish failure should replace count-1 with count-2."""
+        from issue_orchestrator.control.completion_processor import ERROR_PREFIX_PUBLISH_BLOCKED
+
+        issue = make_issue(number=321, labels=["agent:test", "publish-fail-count-1"])
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[f"{ERROR_PREFIX_PUBLISH_BLOCKED}: push failed"],
+        )
+
+        actions = result.actions
+        assert any(
+            isinstance(a, RemoveLabelAction) and a.label == "publish-fail-count-1"
+            for a in actions
+        ), "Should remove old count label"
+        assert any(
+            isinstance(a, AddLabelAction) and a.label == "publish-fail-count-2"
+            for a in actions
+        ), "Should add incremented count label"
+
+    def test_publish_failure_escalates_after_max(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """After max consecutive publish failures, escalate to needs-human."""
+        from issue_orchestrator.control.completion_processor import ERROR_PREFIX_PUBLISH_BLOCKED
+
+        config.max_consecutive_publish_failures = 3
+        # Issue already has count-2 (two previous failures)
+        issue = make_issue(number=321, labels=["agent:test", "publish-fail-count-2"])
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        handler = make_handler(config)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[f"{ERROR_PREFIX_PUBLISH_BLOCKED}: push failed"],
+        )
+
+        actions = result.actions
+        # Should escalate to needs-human, NOT publish-failed
+        assert any(
+            isinstance(a, AddLabelAction) and a.label == "needs-human"
+            for a in actions
+        ), "Should escalate to needs-human after max failures"
+        assert not any(
+            isinstance(a, AddLabelAction) and a.label == "publish-failed"
+            for a in actions
+        ), "Should NOT add publish-failed when escalating"
+        assert any(
+            isinstance(a, AddCommentAction) and "Escalated" in a.comment
+            for a in actions
+        ), "Comment should mention escalation"
 
     def test_failure_generates_blocked_needs_human_label_and_comment(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path

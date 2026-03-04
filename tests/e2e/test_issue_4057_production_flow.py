@@ -46,12 +46,12 @@ ISSUE_4057_PROMPT = (
     "For this session, run validation with `make validate-quick` "
     "(do not run `make validate`). "
     "If the provider circuit breaker status is already correctly surfaced and covered by tests, "
-    "make no code changes: run `make validate-quick` and complete with agent-done. "
+    "make no code changes: run `make validate-quick` and complete with coding-done. "
     "Prefer the smallest possible diff; do not add broad refactors or extra coverage beyond this issue. "
     "If any unrelated validation failure appears, do not chase it; continue with the current issue-focused changes only. "
     "Do not look up or reference other issue numbers. "
     "Follow repo-specific/prompts/simple-fix.md exactly. "
-    "Use agent-done to report outcome and include validation artifacts. "
+    "Use coding-done to report outcome and include validation artifacts. "
     "When finished, exit with /exit."
 )
 async def _wait_for_run_event(
@@ -365,8 +365,8 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
                 "Requirements:\n"
                 "- Follow repo-specific/prompts/simple-fix.md\n"
                 "- Limit edits to src/issue_orchestrator/view_models/dashboard.py and tests/unit/test_dashboard_view_model.py unless absolutely required\n"
-                "- If behavior is already implemented, do not edit code; just run make validate-quick and complete via agent-done\n"
-                "- Complete via agent-done\n"
+                "- If behavior is already implemented, do not edit code; just run make validate-quick and complete via coding-done\n"
+                "- Complete via coding-done\n"
                 "- Validation must run through make validate-quick\n"
             ),
         )

@@ -171,7 +171,7 @@ class TestWriteRetryPrompt:
         assert "Fix the login bug" in content
         assert "make validate" in content
         assert "TypeError: undefined" in content
-        assert "agent-done completed" in content
+        assert "coding-done completed" in content
 
     def test_retry_prompt_truncates_long_errors(self, tmp_path: Path):
         """Long errors are truncated in prompt."""
@@ -249,8 +249,8 @@ class TestWriteRetryPrompt:
 
         content = path.read_text()
         # Should use default template which contains agent-done instructions
-        assert "agent-done completed" in content
-        assert "agent-done blocked" in content
+        assert "coding-done completed" in content
+        assert "coding-done blocked" in content
 
     def test_default_template_includes_blocked_option(self, tmp_path: Path):
         """Default template includes agent-done blocked option."""
@@ -267,7 +267,7 @@ class TestWriteRetryPrompt:
         )
 
         content = path.read_text()
-        assert "agent-done blocked" in content
+        assert "coding-done blocked" in content
         assert "cannot fix" in content.lower() or "unable" in content.lower()
 
 

@@ -603,6 +603,34 @@ class TestScanForReworksEscalation:
         assert issue_number == 42
         assert rework_cycle == 3
 
+    def test_skips_rework_when_issue_has_blocking_label(self, scanner, mock_repository):
+        """Skips rework when the linked issue has a blocking label (e.g. blocked-failed)."""
+        issue = (
+            IssueBuilder()
+            .with_number(42)
+            .with_title("Issue 42")
+            .with_agent("agent:developer")
+            .with_labels("agent:developer", "blocked-failed")
+            .build()
+        )
+        mock_repository.issues.append(issue)
+
+        pr = make_pr_info(
+            100,
+            branch="42-feature",
+            body="Closes #42",
+            labels=["needs-rework"],
+        )
+        mock_repository.prs["42-feature"] = [pr]
+
+        result, escalations = scanner.scan_for_reworks(
+            already_queued=[],
+            active_sessions=[],
+        )
+
+        assert result == [], "Should skip rework when issue is blocked"
+        assert escalations == []
+
     def test_no_escalation_at_max_cycle(self, scanner, mock_repository, mock_config):
         """Does not escalate when exactly at max rework cycles."""
         mock_config.max_rework_cycles = 2

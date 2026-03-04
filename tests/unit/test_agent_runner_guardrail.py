@@ -234,3 +234,41 @@ class TestAgentRunnerImplementation:
         assert "build_filtered_env" in source, (
             "AgentRunner must use build_filtered_env for security"
         )
+
+
+class TestVendoredRunnerConfiguration:
+    """Verify the vendored provider runner has correct subprocess configuration."""
+
+    def test_vendored_runner_does_not_pipe_stdout(self) -> None:
+        """Vendored runner must NOT use stdout=subprocess.PIPE.
+
+        Stdout must inherit the parent PTY for real-time streaming to
+        ui-session.log. Using PIPE causes block-buffering: the child
+        detects stdout isn't a TTY and buffers output until exit.
+        """
+        from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
+
+        source = inspect.getsource(AgentRunner)
+        assert "stdout=subprocess.PIPE" not in source, (
+            "Vendored runner must NOT pipe stdout — inherit for real-time streaming. "
+            "See #4057: stdout=PIPE causes block-buffering, emptying ui-session.log "
+            "until process exit."
+        )
+
+    def test_vendored_runner_pipes_stderr(self) -> None:
+        """Vendored runner must capture stderr via PIPE for error classification."""
+        from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
+
+        source = inspect.getsource(AgentRunner)
+        assert "stderr=subprocess.PIPE" in source, (
+            "Vendored runner must capture stderr via PIPE for provider error classification"
+        )
+
+    def test_vendored_runner_uses_devnull_stdin(self) -> None:
+        """Vendored runner must use stdin=subprocess.DEVNULL to prevent SIGTTIN."""
+        from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
+
+        source = inspect.getsource(AgentRunner)
+        assert "subprocess.DEVNULL" in source, (
+            "Vendored runner must use stdin=DEVNULL — see #4258 SIGTTIN fix"
+        )

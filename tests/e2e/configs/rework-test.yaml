@@ -24,7 +24,7 @@ security:
   enforce_hooks: false
 
 agents:
-  # Script that completes immediately (creates file, commits, calls agent-done)
+  # Script that completes immediately (creates file, commits, calls coding-done)
   "agent:script-completes":
     command: "exec bash {prompt}"
     prompt: "tests/e2e/fixtures/scripts/complete-immediately.sh"

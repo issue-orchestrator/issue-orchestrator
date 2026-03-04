@@ -196,8 +196,8 @@ def test_processing_failure_push_error_marks_blocked_failed(scenario_repo: Path)
         .reviewer(script("reviewer_ok.sh", prompt=True)) \
         .review_exchange(mode="via-draft-pr") \
         .use_working_copy(FailingPushWorkingCopy()) \
-        .expect_issue_label("blocked-failed") \
-        .expect_issue_comment_contains("Processing Failed") \
+        .expect_issue_label("publish-failed") \
+        .expect_issue_comment_contains("Publishing Failed") \
         .run()
 
 

@@ -655,7 +655,7 @@ def _run_coder_round_with_protocol_retries(
             f"{reviewer_response.response_text}\n\n"
             "Protocol error from orchestrator:\n"
             f"{protocol_error}\n"
-            "You must run `agent-done completed --implementation ... --problems ...` "
+            "You must run `coding-done completed --implementation ... --problems ...` "
             "in this run so completion artifacts are written."
         )
         coder_response = _run_coder_round(
@@ -726,6 +726,7 @@ def _run_agent_round(
         issue_number=issue_number,
         issue_title=issue_title,
         worktree=worktree_path,
+        task_kind="review",
     )
     command = shlex.split(command_str)
 
@@ -891,7 +892,7 @@ def _build_reviewer_prompt(
         validation_note = (
             "Validation is required. Only respond ok if validation-record.json exists "
             f"and passed in {run_dir}. If missing or failed, respond changes_requested "
-            "asking the coder to run make validate via agent-done."
+            "asking the coder to run make validate via coding-done."
         )
     prior = ""
     if last_coder_text:
@@ -930,7 +931,7 @@ def _build_coder_prompt(
         "Review the feedback below and update the worktree accordingly.\n"
         "If you disagree, set response_type=disagree and explain why.\n"
         "Otherwise apply fixes and run validation. Then run "
-        "`agent-done completed --implementation ... --problems ...`.\n"
+        "`coding-done completed --implementation ... --problems ...`.\n"
         "Before responding, ensure these files exist under Session output dir:\n"
         "- completion-coder.json\n"
         "- validation-record.json\n"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python -m issue_orchestrator.entrypoints.cli_tools.agent_done needs_human \
-  --question "Simulated scenario needs human input"
+source "$(dirname "$0")/_write_completion.sh"
+write_completion needs_human "Simulated scenario needs human input"

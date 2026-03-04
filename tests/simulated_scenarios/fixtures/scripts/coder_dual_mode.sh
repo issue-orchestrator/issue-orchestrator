@@ -1,20 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source "$(dirname "$0")/_write_completion.sh"
+
 write_review_loop_completion() {
-  completion_path="${ISSUE_ORCHESTRATOR_COMPLETION_PATH:-}"
-  if [[ -z "$completion_path" ]]; then
-    return
-  fi
-  if [[ "$completion_path" = /* ]]; then
-    resolved_path="$completion_path"
-  else
-    resolved_path="$(pwd)/$completion_path"
-  fi
-  mkdir -p "$(dirname "$resolved_path")"
-  cat > "$resolved_path" <<'JSON'
-{"session_id":"sim-review-loop","outcome":"completed"}
-JSON
+  write_completion completed "Simulated scenario completed" "None"
 }
 
 prompt_path="${1:-}"
@@ -30,6 +20,4 @@ if [[ "${ISSUE_ORCHESTRATOR_COMPLETION_PATH:-}" == *"completion-coder.json" ]]; 
   exit 0
 fi
 
-python -m issue_orchestrator.entrypoints.cli_tools.agent_done completed \
-  --implementation "Simulated scenario completed" \
-  --problems "None"
+write_completion completed "Simulated scenario completed" "None"

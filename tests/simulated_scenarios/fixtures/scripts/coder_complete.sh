@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-python -m issue_orchestrator.entrypoints.cli_tools.agent_done completed \
-  --implementation "Simulated scenario completed" \
-  --problems "None"
+source "$(dirname "$0")/_write_completion.sh"
+write_completion completed "Simulated scenario completed" "None"

@@ -100,7 +100,7 @@ class TestFailed:
     def test_headline(self, run_dir: Path) -> None:
         m = _manifest(run_dir, outcome="failed")
         a = analyze(m)
-        assert "without agent-done" in a.headline.lower()
+        assert "without completion command" in a.headline.lower()
 
     def test_detail_uses_problems(self, run_dir: Path) -> None:
         m = _manifest(run_dir, outcome="failed", problems="Segfault in build")

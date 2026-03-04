@@ -12,10 +12,10 @@ if [ -f "$MARKER_FILE" ]; then
     exit 0
 else
     # agent-done was NOT called - warn
-    echo "⚠️  WARNING: Session ending without agent-done being called!"
+    echo "⚠️  WARNING: Session ending without completion command being called!"
     echo "   Work may not be properly recorded. Please run:"
-    echo "   agent-done completed --implementation '...' --problems '...'"
-    echo "   or: agent-done blocked --reason '...' --attempted '...'"
+    echo "   coding-done completed --implementation '...' --problems '...'"
+    echo "   or: coding-done blocked --reason '...' --attempted '...'"
     # Exit 0 so we don't block - this is informational
     exit 0
 fi

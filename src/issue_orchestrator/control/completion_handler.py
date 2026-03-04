@@ -235,7 +235,7 @@ class CompletionHandler:
                 number=session.issue.number,
                 comment=(
                     f"🔁 **{session_kind.capitalize()} Session Interrupted**\n\n"
-                    f"The {session_kind} session exited without a completion record (`agent-done`).\n\n"
+                    f"The {session_kind} session exited without a completion record (`completion command`).\n\n"
                     f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                     f"- Session: `{session.terminal_id}`\n\n"
                     "Auto-retry is enabled, so this will be retried on the next scheduler cycle.\n"
@@ -1071,11 +1071,20 @@ class CompletionHandler:
         diagnostic_path: Optional[str],
         expected: ExpectedState,
     ) -> list[Action]:
-        """Generate actions when agent said completed but push/PR creation failed."""
+        """Generate actions when agent said completed but push/PR creation failed.
+
+        Tracks consecutive publish failures via publish-fail-count-N labels.
+        After max_consecutive_publish_failures, escalates to needs-human.
+        """
         from pathlib import Path
 
         issue_number = session.issue.number
         in_progress_label = self._lm.in_progress
+
+        # Count previous consecutive publish failures from issue labels
+        prev_count = self._lm.extract_publish_fail_count(session.issue.labels)
+        new_count = prev_count + 1
+        max_failures = self.config.max_consecutive_publish_failures
 
         # Brief error hint for comment (not full details - those are in diagnostic file)
         first_error = critical_errors[0][:100] if critical_errors else "Unknown error"
@@ -1088,22 +1097,61 @@ class CompletionHandler:
             worktree_name = Path(session.worktree_path).name
             diagnostic_info = f"\n**Diagnostic file:** `{worktree_name}/{diagnostic_path}`\n"
 
-        return [
+        # Escalate to needs-human after too many consecutive failures
+        if new_count >= max_failures:
+            logger.info(
+                "[COMPLETION] Publish failure count %d >= max %d, escalating to needs-human: issue=%d",
+                new_count, max_failures, issue_number,
+            )
+            return [
+                AddLabelAction(
+                    issue_number=issue_number,
+                    label=self._lm.needs_human,
+                    reason=f"Publishing failed {new_count} consecutive times — escalating to needs-human",
+                    expected=expected,
+                ),
+                AddCommentAction(
+                    number=issue_number,
+                    comment=f"❌ **Publishing Failed — Escalated**\n\n"
+                            f"Publishing has failed **{new_count} consecutive times** "
+                            f"(max: {max_failures}). This issue needs human investigation.\n\n"
+                            f"**Latest error:** {first_error}\n"
+                            f"{diagnostic_info}\n"
+                            f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
+                            f"- Session: `{session.terminal_id}`\n",
+                    reason="Escalate repeated publish failure to human",
+                    expected=expected,
+                ),
+                RemoveLabelAction(
+                    issue_number=issue_number,
+                    label=in_progress_label,
+                    reason="Publishing failed - releasing claim",
+                    expected=expected,
+                ),
+                RemoveLabelAction(
+                    issue_number=issue_number,
+                    label=self._lm.needs_rework,
+                    reason="Publishing failed - clearing needs-rework to prevent re-queuing loop",
+                    expected=expected,
+                ),
+            ]
+
+        actions: list[Action] = [
             AddLabelAction(
                 issue_number=issue_number,
-                label=self._lm.blocked_failed,
-                reason="Processing failed after agent completion (push/PR creation failed)",
+                label=self._lm.publish_failed,
+                reason="Publishing failed after agent completion (push/PR creation failed)",
                 expected=expected,
             ),
             AddCommentAction(
                 number=issue_number,
-                comment=f"❌ **Processing Failed**\n\n"
+                comment=f"❌ **Publishing Failed** (attempt {new_count}/{max_failures})\n\n"
                         f"The agent completed its work, but the orchestrator could not push or create a PR.\n\n"
                         f"**Error:** {first_error}\n"
                         f"{diagnostic_info}\n"
                         f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                         f"- Session: `{session.terminal_id}`\n\n"
-                        f"This issue has been marked as `{self._lm.blocked_failed}` and will not be automatically retried.\n"
+                        f"This issue has been marked as `{self._lm.publish_failed}` and will not be automatically retried.\n"
                         f"Remove the label to retry.",
                 reason="Notify about processing failure",
                 expected=expected,
@@ -1114,7 +1162,30 @@ class CompletionHandler:
                 reason="Processing failed - releasing claim",
                 expected=expected,
             ),
+            RemoveLabelAction(
+                issue_number=issue_number,
+                label=self._lm.needs_rework,
+                reason="Publishing failed - clearing needs-rework to prevent re-queuing loop",
+                expected=expected,
+            ),
         ]
+
+        # Update publish-fail-count label (remove old, add new)
+        if prev_count > 0:
+            actions.append(RemoveLabelAction(
+                issue_number=issue_number,
+                label=self._lm.publish_fail_count_label(prev_count),
+                reason="Updating publish failure count",
+                expected=expected,
+            ))
+        actions.append(AddLabelAction(
+            issue_number=issue_number,
+            label=self._lm.publish_fail_count_label(new_count),
+            reason=f"Publish failure #{new_count}",
+            expected=expected,
+        ))
+
+        return actions
 
     def _generate_timeout_actions(
         self,
@@ -1173,7 +1244,7 @@ class CompletionHandler:
         session: Session,
         expected: ExpectedState,
     ) -> list[Action]:
-        """Generate actions when session failed without agent-done."""
+        """Generate actions when session failed without completion command."""
         if retry_actions := self._generate_interrupted_retry_actions(session, expected):
             return retry_actions
 
@@ -1187,21 +1258,22 @@ class CompletionHandler:
                 AddLabelAction(
                     issue_number=issue_number,
                     label=self._lm.needs_human,
-                    reason="Session terminated without calling agent-done (mandatory)",
+                    reason="Session terminated without calling completion command (mandatory)",
                     expected=expected,
                 ),
                 AddCommentAction(
                     number=issue_number,
                     comment=f"🔍 **Session Needs Investigation**\n\n"
-                            f"The agent session terminated without calling `agent-done`.\n\n"
-                            f"**This is unexpected** - `agent-done` is mandatory and must be called "
+                            f"The agent session terminated without calling the completion command "
+                            f"(`coding-done` or `reviewer-done`).\n\n"
+                            f"**This is unexpected** - the completion command is mandatory and must be called "
                             f"to complete any session (completed, blocked, or needs_human).\n\n"
                             f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                             f"- Session: `{session.terminal_id}`\n\n"
                             f"**Possible causes:**\n"
                             f"- Agent crashed or was interrupted\n"
                             f"- Orchestrator shutdown/restart interrupted the session lifecycle\n"
-                            f"- Agent ignored the mandatory `agent-done` requirement\n"
+                            f"- Agent ignored the mandatory completion command requirement\n"
                             f"- Infrastructure issue prevented completion\n\n"
                             f"This issue has been marked as `{self._lm.needs_human}` for investigation.\n"
                             f"Remove the label after investigating to allow reprocessing.",
@@ -1220,8 +1292,8 @@ class CompletionHandler:
                 AddCommentAction(
                     number=issue_number,
                     comment=f"🔍 **{session_kind.capitalize()} Session Needs Investigation**\n\n"
-                            f"The {session_kind} session terminated without calling `agent-done`.\n\n"
-                            f"**This is unexpected** - `agent-done` is mandatory.\n\n"
+                            f"The {session_kind} session terminated without calling the completion command.\n\n"
+                            f"**This is unexpected** - the completion command is mandatory.\n\n"
                             f"- Runtime: {session.runtime_minutes:.1f} minutes\n"
                             f"- Session: `{session.terminal_id}`\n\n"
                             f"Possible causes include orchestrator shutdown/restart, agent crash, or workflow interruption.\n\n"

@@ -166,7 +166,7 @@ class GitHubE2EIssueTracker(E2EIssueTracker):
             "1. Analyze whether this is a test bug or a code bug",
             "2. Fix the underlying issue",
             "3. Run the test locally to verify the fix",
-            "4. Use `agent-done completed` when finished",
+            "4. Use `coding-done completed` when finished",
             "",
             "_This issue was auto-generated from E2E test failure._",
         ])

@@ -2279,7 +2279,7 @@ class TestDebugSessionEndpoint:
         assert data["session_name"] == "debug-123"
         assert data["worktree_path"] == str(worktree)
         assert data["agent"] == "claude"
-        assert "agent-done --resume" in data["hint"]
+        assert "coding-done --resume" in data["hint"]
 
         # Verify get_command was called with debug context
         mock_agent_config.get_command.assert_called_once()

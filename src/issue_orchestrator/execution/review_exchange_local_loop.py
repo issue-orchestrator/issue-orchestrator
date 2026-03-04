@@ -3,7 +3,7 @@
 Each agent (coder, reviewer) runs as a persistent PTY session that stays
 alive across review rounds. Communication uses file-based prompts sent
 via stdin references; completion is detected via structured files written
-by coder-agent-done / reviewer-agent-done.
+by coding-done / reviewer-done.
 
 This is a discrete abstraction for the via-local-loop exchange mode,
 separate from other modes (via-draft-pr, via-mcp).
@@ -35,7 +35,7 @@ from ..infra.terminal_cleaning import CleaningLogWriter, clean_terminal_line, is
 from ..ports import EventSink, make_trace_event
 from ..ports.session_output import SessionOutput
 from ..events import EventName, EventContext
-from ..resources import get_agent_done_instructions
+from ..resources import get_reviewer_done_instructions
 
 from ..control.review_exchange_loop import (
     ReviewExchangeOutcome,
@@ -218,7 +218,7 @@ def _build_session_env(
     if web_port is not None:
         overrides["ORCHESTRATOR_API_PORT"] = str(web_port)
 
-    # Ensure orchestrator binaries (coder-agent-done, reviewer-agent-done) are on PATH
+    # Ensure orchestrator binaries (coding-done, reviewer-done) are on PATH
     orch_bin = str(Path(sys.executable).parent)
     scripts_dir = str(Path(__file__).resolve().parents[1] / "scripts")
     worktree_venv_bin = str(worktree_path / ".venv" / "bin")
@@ -242,10 +242,10 @@ def _build_agent_command(
 
     kwargs = dict(agent.provider_args)
 
-    # Build system prompt with agent-done instructions
-    agent_done_docs = get_agent_done_instructions()
+    # Build system prompt with reviewer-done instructions
+    reviewer_done_docs = get_reviewer_done_instructions()
     system_prompt = (
-        f"{agent_done_docs}\n\n"
+        f"{reviewer_done_docs}\n\n"
         f"---\n\n"
         f"Read {prompt_file} for your task-specific instructions."
     )
@@ -414,7 +414,7 @@ def _completion_to_reviewer_response(
 ) -> ReviewExchangeResponse:
     """Map a reviewer completion record to a ReviewExchangeResponse."""
     outcome = data.get("outcome", "")
-    # reviewer-agent-done writes "review_approved" / "review_changes_requested",
+    # reviewer-done writes "review_approved" / "review_changes_requested",
     # while the legacy agent-done writes "approved" / "changes_requested".
     if outcome in ("approved", "review_approved"):
         return ReviewExchangeResponse(
@@ -496,7 +496,7 @@ def _build_reviewer_prompt(
         validation_note = (
             "Validation is required. Only approve if validation-record.json exists "
             f"and passed in {run_dir}. If missing or failed, request changes "
-            "asking the coder to run make validate via coder-agent-done."
+            "asking the coder to run make validate via coding-done."
         )
     prior = ""
     if last_coder_text:
@@ -516,10 +516,10 @@ def _build_reviewer_prompt(
         "D) docs/ if needed for intended behavior\n"
         f"{prior}\n"
         "When your review is complete, report your verdict using:\n"
-        "  reviewer-agent-done approved --summary '...' --risk low|medium|high\n"
-        "  reviewer-agent-done changes_requested --issues '...' --risk low|medium|high\n"
+        "  reviewer-done approved --summary '...' --risk low|medium|high\n"
+        "  reviewer-done changes_requested --issues '...' --risk low|medium|high\n"
         "\n"
-        "After calling reviewer-agent-done, STOP and wait. "
+        "After calling reviewer-done, STOP and wait. "
         "Do NOT exit. Do NOT take further actions. "
         "The orchestrator will send your next task.\n"
     )
@@ -539,15 +539,15 @@ def _build_coder_prompt(
         f"Round {round_index}.\n"
         "Review the feedback below and update the worktree accordingly.\n"
         "After making changes, run validation and report completion using:\n"
-        "  coder-agent-done completed --implementation '...' --problems '...'\n"
+        "  coding-done completed --implementation '...' --problems '...'\n"
         "\n"
         "If you cannot fix the issues:\n"
-        "  coder-agent-done blocked --reason '...' --attempted '...'\n"
+        "  coding-done blocked --reason '...' --attempted '...'\n"
         "\n"
         f"Session output dir: {run_dir}\n"
         f"\nReviewer feedback:\n{reviewer_feedback}\n"
         "\n"
-        "After calling coder-agent-done, STOP and wait. "
+        "After calling coding-done, STOP and wait. "
         "Do NOT exit. Do NOT take further actions. "
         "The orchestrator will send your next task.\n"
     )
@@ -763,12 +763,12 @@ def _run_phase(
     )
     if role == "reviewer":
         initial_prompt += (
-            "After reviewing, use `reviewer-agent-done` to report your verdict."
+            "After reviewing, use `reviewer-done` to report your verdict."
         )
     else:
         initial_prompt += (
             "Address the feedback, run validation, then use "
-            "`coder-agent-done` to report completion."
+            "`coding-done` to report completion."
         )
 
     session = _start_pty_session(

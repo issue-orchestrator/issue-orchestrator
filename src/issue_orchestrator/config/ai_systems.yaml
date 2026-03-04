@@ -31,7 +31,7 @@ ai_systems:
       - "permission"
       - "denied"
       - "failed"
-    completion_marker: "agent-done"
+    completion_marker: "coding-done"
 
   codex:
     description: "OpenAI Codex CLI"
@@ -46,7 +46,7 @@ ai_systems:
     error_patterns:
       - "error"
       - "failed"
-    completion_marker: null  # Codex doesn't use agent-done
+    completion_marker: null  # Codex doesn't use coding-done
 
   gemini:
     description: "Google Gemini CLI"

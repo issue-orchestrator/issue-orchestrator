@@ -81,6 +81,9 @@ class TestNamedProperties:
     def test_blocked_failed(self, lm: LabelManager) -> None:
         assert lm.blocked_failed == "blocked-failed"
 
+    def test_publish_failed(self, lm: LabelManager) -> None:
+        assert lm.publish_failed == "publish-failed"
+
     def test_needs_human(self, lm: LabelManager) -> None:
         assert lm.needs_human == "needs-human"
 
@@ -122,6 +125,9 @@ class TestNamedPropertiesPrefixed:
 
     def test_blocked_failed(self, plm: LabelManager) -> None:
         assert plm.blocked_failed == "bot:blocked-failed"
+
+    def test_publish_failed(self, plm: LabelManager) -> None:
+        assert plm.publish_failed == "bot:publish-failed"
 
     def test_reset_retry_scratch_pending(self, plm: LabelManager) -> None:
         assert plm.reset_retry_scratch_pending == "bot:reset-retry-scratch-pending"
@@ -208,6 +214,9 @@ class TestBlocking:
 
     def test_legacy_failed(self, lm: LabelManager) -> None:
         assert lm.is_blocking("failed") is True
+
+    def test_publish_failed_is_blocking(self, lm: LabelManager) -> None:
+        assert lm.is_blocking("publish-failed") is True
 
     def test_prefixed_blocking(self, plm: LabelManager) -> None:
         """Fixes the latent bug: bot:blocked-failed was not detected as blocking."""
@@ -306,6 +315,36 @@ class TestReworkCycle:
 
     def test_extract_rework_cycle_prefixed(self, plm: LabelManager) -> None:
         assert plm.extract_rework_cycle(["bot:rework-cycle-3"]) == 3
+
+
+# ===================================================================
+# Publish-fail-count helpers
+# ===================================================================
+
+class TestPublishFailCount:
+    def test_publish_fail_count_label(self, lm: LabelManager) -> None:
+        assert lm.publish_fail_count_label(2) == "publish-fail-count-2"
+
+    def test_publish_fail_count_label_prefixed(self, plm: LabelManager) -> None:
+        assert plm.publish_fail_count_label(3) == "bot:publish-fail-count-3"
+
+    def test_extract_publish_fail_count(self, lm: LabelManager) -> None:
+        assert lm.extract_publish_fail_count(["publish-fail-count-2", "in-progress"]) == 2
+
+    def test_extract_publish_fail_count_highest(self, lm: LabelManager) -> None:
+        assert lm.extract_publish_fail_count(["publish-fail-count-1", "publish-fail-count-3"]) == 3
+
+    def test_extract_publish_fail_count_none(self, lm: LabelManager) -> None:
+        assert lm.extract_publish_fail_count(["in-progress"]) == 0
+
+    def test_extract_publish_fail_count_prefixed(self, plm: LabelManager) -> None:
+        assert plm.extract_publish_fail_count(["bot:publish-fail-count-2"]) == 2
+
+    def test_is_ours_publish_fail_count(self, lm: LabelManager) -> None:
+        assert lm.is_ours("publish-fail-count-1") is True
+
+    def test_is_ours_publish_fail_count_prefixed(self, plm: LabelManager) -> None:
+        assert plm.is_ours("bot:publish-fail-count-5") is True
 
 
 # ===================================================================

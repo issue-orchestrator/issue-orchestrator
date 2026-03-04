@@ -1,8 +1,9 @@
 """Synthetic integration tests for completion command contract integrity.
 
 These tests validate that completion command examples emitted by prompt
-generators are executable by the real CLI entrypoint (`agent-done`).
-This prevents drift where prompt text suggests invalid command forms.
+generators are executable by the real CLI entrypoints (`coding-done`
+and `reviewer-done`).  This prevents drift where prompt text suggests
+invalid command forms.
 """
 
 from __future__ import annotations
@@ -35,14 +36,19 @@ from issue_orchestrator.entrypoints.control_api import (
     _create_starter_prompt,
     _create_triage_review_prompt,
 )
-from issue_orchestrator.resources import get_agent_done_instructions
+from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.resources import get_coding_done_instructions, get_reviewer_done_instructions
 
+# Single source of truth for label names — avoids hardcoded string literals.
+_lm = LabelManager(Config())
+
+_COMPLETION_CMDS = ("coding-done", "reviewer-done")
 
 _FENCED_BLOCK_RE = re.compile(r"```(?:bash)?\n(.*?)```", re.DOTALL)
-_INLINE_CODE_RE = re.compile(r"`([^`]*agent-done[^`]*)`")
+_INLINE_CODE_RE = re.compile(r"`([^`]*(?:coding-done|reviewer-done)[^`]*)`")
 
 
-def _extract_agent_done_commands(text: str) -> list[str]:
+def _extract_completion_commands(text: str) -> list[str]:
     commands: list[str] = []
 
     for block in _FENCED_BLOCK_RE.findall(text):
@@ -65,12 +71,12 @@ def _extract_agent_done_commands(text: str) -> list[str]:
             logical_lines.append(current)
 
         for line in logical_lines:
-            if line.startswith("agent-done "):
+            if any(line.startswith(f"{cmd} ") for cmd in _COMPLETION_CMDS):
                 commands.append(line)
 
     for inline in _INLINE_CODE_RE.findall(text):
         line = inline.strip()
-        if line.startswith("agent-done "):
+        if any(line.startswith(f"{cmd} ") for cmd in _COMPLETION_CMDS):
             commands.append(line)
 
     # Preserve order while deduping
@@ -84,16 +90,17 @@ def _extract_agent_done_commands(text: str) -> list[str]:
     return deduped
 
 
-def _run_agent_done_command(command: str, cwd: Path) -> subprocess.CompletedProcess[str]:
+def _run_completion_command(command: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     argv = shlex.split(command)
     if "--help" not in argv and "--dry-run" not in argv:
         argv.append("--dry-run")
 
-    agent_done_bin = Path(sys.executable).parent / "agent-done"
-    assert agent_done_bin.exists(), f"agent-done not found at {agent_done_bin}"
+    bin_name = argv[0]  # coding-done or reviewer-done
+    cli_bin = Path(sys.executable).parent / bin_name
+    assert cli_bin.exists(), f"{bin_name} not found at {cli_bin}"
 
     return subprocess.run(
-        [str(agent_done_bin), *argv[1:]],
+        [str(cli_bin), *argv[1:]],
         cwd=cwd,
         text=True,
         capture_output=True,
@@ -106,15 +113,25 @@ def _init_git_repo(path: Path) -> None:
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True, capture_output=True, text=True)
     subprocess.run(["git", "config", "user.name", "Test User"], cwd=path, check=True, capture_output=True, text=True)
     (path / "README.md").write_text("test\n")
+    (path / ".gitignore").write_text(".agent-done-marker\n.issue-orchestrator/\n")
     subprocess.run(["git", "add", "."], cwd=path, check=True, capture_output=True, text=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=path, check=True, capture_output=True, text=True)
 
 
-def _run_agent_done_raw(argv: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    agent_done_bin = Path(sys.executable).parent / "agent-done"
-    assert agent_done_bin.exists(), f"agent-done not found at {agent_done_bin}"
+_REVIEWER_STATUSES = {"approved", "changes_requested"}
+
+
+def _bin_for_status(status: str) -> str:
+    """Return the correct CLI binary name for a given status."""
+    return "reviewer-done" if status in _REVIEWER_STATUSES else "coding-done"
+
+
+def _run_completion_raw(argv: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    bin_name = _bin_for_status(argv[0])
+    cli_bin = Path(sys.executable).parent / bin_name
+    assert cli_bin.exists(), f"{bin_name} not found at {cli_bin}"
     return subprocess.run(
-        [str(agent_done_bin), *argv],
+        [str(cli_bin), *argv],
         cwd=cwd,
         env=env,
         text=True,
@@ -124,11 +141,11 @@ def _run_agent_done_raw(argv: list[str], cwd: Path, env: dict[str, str] | None =
 
 
 def _assert_commands_are_valid(commands: list[str], cwd: Path) -> None:
-    assert commands, "No agent-done commands found in prompt text"
+    assert commands, "No completion commands found in prompt text"
 
     failures: list[str] = []
     for command in commands:
-        result = _run_agent_done_command(command, cwd=cwd)
+        result = _run_completion_command(command, cwd=cwd)
         if result.returncode != 0:
             failures.append(
                 f"Command failed: {command}\n"
@@ -144,7 +161,7 @@ def _extract_statuses(commands: list[str]) -> set[str]:
     statuses: set[str] = set()
     for command in commands:
         argv = shlex.split(command)
-        if len(argv) >= 2 and argv[0] == "agent-done":
+        if len(argv) >= 2 and argv[0] in _COMPLETION_CMDS:
             statuses.add(argv[1])
     return statuses
 
@@ -219,22 +236,23 @@ def test_setup_wizard_generated_prompts_have_valid_completion_commands(tmp_path:
     create_triage_review_prompt(triage_prompt, "needs-triage-review", "triage-reviewed")
 
     combined = work_prompt.read_text() + "\n" + triage_prompt.read_text()
-    commands = _extract_agent_done_commands(combined)
+    commands = _extract_completion_commands(combined)
     _assert_commands_are_valid(commands, cwd=tmp_path)
 
 
 def test_control_api_prompt_templates_have_valid_completion_commands(tmp_path: Path) -> None:
     prompts = [
         _create_starter_prompt("backend"),
-        _create_code_review_prompt("needs-code-review", "code-reviewed"),
+        _create_code_review_prompt(_lm.code_review, _lm.code_reviewed),
         _create_triage_review_prompt("triage-review", "triage-reviewed"),
     ]
-    commands = _extract_agent_done_commands("\n".join(prompts))
+    commands = _extract_completion_commands("\n".join(prompts))
     _assert_commands_are_valid(commands, cwd=tmp_path)
 
 
-def test_canonical_agent_done_instructions_have_valid_completion_commands(tmp_path: Path) -> None:
-    commands = _extract_agent_done_commands(get_agent_done_instructions())
+def test_canonical_completion_instructions_have_valid_commands(tmp_path: Path) -> None:
+    combined = get_coding_done_instructions() + "\n" + get_reviewer_done_instructions()
+    commands = _extract_completion_commands(combined)
     _assert_commands_are_valid(commands, cwd=tmp_path)
 
 
@@ -281,7 +299,7 @@ def test_completion_record_schema_contract_for_all_statuses(tmp_path: Path) -> N
     for argv, expected_outcome, expected_actions in cases:
         if completion_path.exists():
             completion_path.unlink()
-        result = _run_agent_done_raw(argv, cwd=repo, env=common_env)
+        result = _run_completion_raw(argv, cwd=repo, env=common_env)
         assert result.returncode == 0, result.stderr
         assert completion_path.exists()
         payload = json.loads(completion_path.read_text())
@@ -292,16 +310,16 @@ def test_completion_record_schema_contract_for_all_statuses(tmp_path: Path) -> N
 
 def test_prompt_role_status_contracts() -> None:
     work_prompt = _create_starter_prompt("backend")
-    review_prompt = _create_code_review_prompt("needs-code-review", "code-reviewed")
+    review_prompt = _create_code_review_prompt(_lm.code_review, _lm.code_reviewed)
     triage_prompt = _create_triage_review_prompt("triage-review", "triage-reviewed")
 
-    work_statuses = _extract_statuses(_extract_agent_done_commands(work_prompt))
-    review_statuses = _extract_statuses(_extract_agent_done_commands(review_prompt))
-    triage_statuses = _extract_statuses(_extract_agent_done_commands(triage_prompt))
+    work_statuses = _extract_statuses(_extract_completion_commands(work_prompt))
+    review_statuses = _extract_statuses(_extract_completion_commands(review_prompt))
+    triage_statuses = _extract_statuses(_extract_completion_commands(triage_prompt))
 
     assert {"blocked", "needs_human"} <= work_statuses
     assert review_statuses == {"approved", "changes_requested"}
-    assert triage_statuses == {"completed"}
+    assert triage_statuses == {"approved"}
 
 
 def test_completion_record_drives_expected_review_actions(tmp_path: Path) -> None:
@@ -316,7 +334,7 @@ def test_completion_record_drives_expected_review_actions(tmp_path: Path) -> Non
         "ISSUE_ORCHESTRATOR_COMPLETION_PATH": str(completion_path.relative_to(worktree)),
         "ISSUE_ORCHESTRATOR_SESSION_ID": "review-100",
     }
-    write_result = _run_agent_done_raw(
+    write_result = _run_completion_raw(
         ["approved", "--summary", "LGTM", "--risk", "low"],
         cwd=worktree,
         env=env,
@@ -330,6 +348,7 @@ def test_completion_record_drives_expected_review_actions(tmp_path: Path) -> Non
         pr_adapter=pr_adapter,
         git_adapter=_NoopGitAdapter(),
         session_output=FileSystemSessionOutput(),
+        label_config=_lm.to_label_config_dict(),
     )
     controller = SessionController(
         completion_processor=processor,
@@ -351,9 +370,9 @@ def test_completion_record_drives_expected_review_actions(tmp_path: Path) -> Non
     )
 
     assert decision.status.name == "COMPLETED"
-    assert (100, "code-reviewed") in label_adapter.added
-    assert (100, "needs-rework") in label_adapter.removed
-    assert any(target == 100 and label.endswith("code-review") for target, label in label_adapter.removed)
+    assert (100, _lm.code_reviewed) in label_adapter.added
+    assert (100, _lm.needs_rework) in label_adapter.removed
+    assert any(target == 100 and label == _lm.code_review for target, label in label_adapter.removed)
     assert any(target == 100 for target, _body in pr_adapter.comments)
 
 
@@ -413,11 +432,15 @@ def test_publish_failure_multi_attempt_contract(tmp_path: Path) -> None:
             SessionStatus.COMPLETED,
             processing_errors=["publish_blocked: simulated push failure"],
         )
-        assert any(isinstance(action, AddLabelAction) and action.label == "blocked-failed" for action in result.actions)
-        assert any(isinstance(action, RemoveLabelAction) and action.label == "in-progress" for action in result.actions)
+        # Each attempt either adds publish-failed or escalates to needs-human
+        assert any(
+            isinstance(action, AddLabelAction) and action.label in (_lm.publish_failed, _lm.needs_human)
+            for action in result.actions
+        )
+        assert any(isinstance(action, RemoveLabelAction) and action.label == _lm.in_progress for action in result.actions)
         issue = _apply_label_actions_to_issue(issue, result.actions)
 
-    assert "blocked-failed" in issue.labels
+    assert _lm.publish_failed in issue.labels
 
 
 def test_wrapper_and_git_guardrail_path_resolution(tmp_path: Path) -> None:
@@ -437,7 +460,7 @@ def test_wrapper_and_git_guardrail_path_resolution(tmp_path: Path) -> None:
         timeout=20,
     )
     assert wrapper_result.returncode == 0
-    assert "Complete agent work" in wrapper_result.stdout
+    assert "agent work" in wrapper_result.stdout.lower()
 
     blocked_push = subprocess.run(
         [str(git_wrapper), "push"],

@@ -64,7 +64,7 @@ The orchestrator:
 1. Fetches labeled issues from GitHub
 2. Creates an isolated git worktree for each issue
 3. Launches your AI tool in that worktree with a prompt
-4. Waits for the agent to call `agent-done` (the structured completion command)
+4. Waits for the agent to call `coding-done` or `reviewer-done` (the structured completion commands)
 5. Runs validation (tests, linting)
 6. Queues code review if configured
 7. Creates a PR when everything passes
