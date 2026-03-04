@@ -280,6 +280,7 @@ class StartupManager:
         analysis = analyze_issue(
             issue=issue, repo=self.config.repo, issue_branches=issue_branches,
             check_session_fn=lambda n: self._session_exists(f"issue-{n}"),
+            pr_tracker=self.repository_host,
         )
 
         if issue.is_blocked:

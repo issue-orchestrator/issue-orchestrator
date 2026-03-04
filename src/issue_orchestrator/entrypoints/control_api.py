@@ -3860,8 +3860,8 @@ Your worktree is at: {{worktree}}
 
 ## Important
 - Always use `coding-done` when finished (not `git push` directly)
-- If blocked, use `coding-done --blocked "reason"`
-- If you need human input, use `coding-done --needs-human "question"`
+- If blocked, use `coding-done blocked --reason "reason" --attempted "what you tried"`
+- If you need human input, use `coding-done needs_human --question "question"`
 """
 
 
@@ -3893,6 +3893,11 @@ gh pr edit {{{{pr_number}}}} --remove-label "{code_review_label}" --add-label "{
 ```
 
 Then: `reviewer-done approved --summary "Reviewed PR #{{{{pr_number}}}}. Approved." --risk low`
+
+If changes are needed:
+```bash
+reviewer-done changes_requested --issues "Describe what must be fixed" --risk medium
+```
 """
 
 
