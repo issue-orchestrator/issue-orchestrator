@@ -237,12 +237,12 @@ class TestPtyAgentRunnerImplementation:
         )
 
     def test_uses_preexec_fn(self) -> None:
-        """AgentRunner must pass preexec_fn=_agent_preexec to pexpect.spawn."""
+        """AgentRunner must pass preexec_fn=_pty_preexec to pexpect.spawn."""
         from issue_orchestrator.execution.agent_runner import AgentRunner
 
         source = inspect.getsource(AgentRunner)
-        assert "_agent_preexec" in source, (
-            "AgentRunner must use preexec_fn=_agent_preexec for SIGTTIN immunity"
+        assert "_pty_preexec" in source, (
+            "AgentRunner must use preexec_fn=_pty_preexec for SIGTTIN immunity"
         )
 
 

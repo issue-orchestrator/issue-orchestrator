@@ -26,13 +26,13 @@ from issue_orchestrator.execution.agent_runner_types import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["BaseAgentRunner", "_agent_preexec"]
+__all__ = ["BaseAgentRunner", "_agent_preexec", "_pty_preexec"]
 
 _GRACEFUL_KILL_TIMEOUT = 5
 
 
 def _agent_preexec() -> None:
-    """Pre-exec setup for agent child processes.
+    """Pre-exec setup for subprocess-launched agent child processes.
 
     - setpgrp: creates a new process group so killpg can cleanly terminate the
       agent and all its children without hitting the parent.
@@ -41,8 +41,24 @@ def _agent_preexec() -> None:
       directly, the kernel would send SIGTTIN/SIGTTOU and stop the entire
       process group. Ignoring these signals causes the read/write to return EIO
       instead of stopping the process — the agent handles this gracefully.
+
+    NOTE: Do NOT use this with pexpect/ptyprocess — use ``_pty_preexec``
+    instead.  ``os.setpgrp()`` makes the child a process group leader, which
+    causes ptyprocess's ``os.setsid()`` to fail with EPERM.
     """
     os.setpgrp()
+    signal.signal(signal.SIGTTIN, signal.SIG_IGN)
+    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+
+
+def _pty_preexec() -> None:
+    """Pre-exec setup for pexpect/ptyprocess-launched agent child processes.
+
+    Only ignores SIGTTIN/SIGTTOU — does NOT call ``os.setpgrp()`` because
+    ptyprocess already calls ``os.setsid()`` which creates a new session and
+    process group.  Calling ``setpgrp()`` before ``setsid()`` would make the
+    child a process group leader, causing ``setsid()`` to fail with EPERM.
+    """
     signal.signal(signal.SIGTTIN, signal.SIG_IGN)
     signal.signal(signal.SIGTTOU, signal.SIG_IGN)
 

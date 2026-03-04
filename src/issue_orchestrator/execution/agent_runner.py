@@ -23,7 +23,7 @@ import pexpect
 
 from issue_orchestrator.execution.agent_runner_base import (
     BaseAgentRunner,
-    _agent_preexec,
+    _pty_preexec,
 )
 from issue_orchestrator.execution.agent_runner_env import build_filtered_env
 from issue_orchestrator.execution.agent_runner_types import (
@@ -253,7 +253,7 @@ class AgentRunner(BaseAgentRunner):
             env=env,  # type: ignore[arg-type]  # pexpect accepts dict[str, str]
             logfile=log_writer,
             timeout=None,
-            preexec_fn=_agent_preexec,
+            preexec_fn=_pty_preexec,
         )
 
         return AgentSession(child, log_writer, spec, time.monotonic())
