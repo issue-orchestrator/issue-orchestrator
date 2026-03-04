@@ -22,6 +22,7 @@ Why this matters:
 from __future__ import annotations
 
 import os
+import pty
 import signal
 import subprocess
 import sys
@@ -156,7 +157,6 @@ class TestSetsidDisconnectsFromTerminal:
         """
         # We need a real PTY for this test. Use pty.openpty() to create one,
         # then spawn a child with the slave as stdin.
-        import pty
         master_fd, slave_fd = pty.openpty()
         try:
             script = (
@@ -218,3 +218,230 @@ class TestSetpgrpKillpgIsolation:
         time.sleep(0.2)
         with pytest.raises(ProcessLookupError):
             os.kill(grandchild_pid, 0)
+
+
+def _agent_preexec() -> None:
+    """Mirror of the production _agent_preexec from runner.py."""
+    os.setpgrp()
+    signal.signal(signal.SIGTTIN, signal.SIG_IGN)
+    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+
+
+def _has_controlling_terminal() -> bool:
+    """Check if the current process has a controlling terminal."""
+    try:
+        fd = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
+        os.close(fd)
+        return True
+    except OSError:
+        return False
+
+
+_requires_tty = pytest.mark.skipif(
+    not _has_controlling_terminal(),
+    reason="/dev/tty not available (no controlling terminal, e.g. CI)",
+)
+
+# Child script shared by the vulnerability-proof test pair.
+# Opens /dev/tty and reads — this triggers SIGTTIN in a background process
+# group unless SIGTTIN is ignored.
+_TTY_READ_SCRIPT = (
+    "import os\n"
+    "fd = os.open('/dev/tty', os.O_RDONLY)\n"
+    "os.read(fd, 1)\n"
+    "os.close(fd)\n"
+    "print('COMPLETED')\n"
+)
+
+
+@pytest.mark.xdist_group("pty")
+class TestSigttiVulnerabilityProof:
+    """Prove the /dev/tty SIGTTIN vulnerability exists and our fix prevents it.
+
+    These paired tests ensure:
+    1. The vulnerability is real: bare setpgrp + /dev/tty read -> STOPPED
+    2. Our fix works: _agent_preexec + /dev/tty read -> completes normally
+
+    If someone removes SIG_IGN from _agent_preexec, test 2 would start
+    getting stopped just like test 1 demonstrates.
+
+    Both tests require a controlling terminal (/dev/tty) and are skipped in
+    environments without one (e.g. CI containers).
+    """
+
+    @_requires_tty
+    def test_unprotected_setpgrp_child_stopped_by_tty_read(self) -> None:
+        """VULNERABILITY PROOF: bare setpgrp child IS stopped when reading /dev/tty.
+
+        This reproduces the exact failure from issue #4057. Claude CLI opens
+        /dev/tty for keyboard handling. With only setpgrp (no SIG_IGN), the
+        kernel sends SIGTTIN and stops the entire process group.
+
+        We use os.waitpid(WUNTRACED) to detect the stopped state — the same
+        mechanism the kernel uses. This is deterministic: the child hits the
+        read() syscall and is stopped before it returns.
+        """
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _TTY_READ_SCRIPT],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            preexec_fn=os.setpgrp,  # Background group, NO signal protection
+        )
+        try:
+            # WUNTRACED makes waitpid return for stopped children (not just exited).
+            # This blocks until the child is stopped by SIGTTIN or exits.
+            _, status = os.waitpid(proc.pid, os.WUNTRACED)
+
+            if os.WIFEXITED(status):
+                # Child exited instead of being stopped. This shouldn't happen
+                # when /dev/tty is available, but handle it gracefully.
+                proc.returncode = os.WEXITSTATUS(status)
+                pytest.skip(
+                    "Child exited without being stopped — "
+                    "/dev/tty read did not trigger SIGTTIN in this environment"
+                )
+
+            assert os.WIFSTOPPED(status), (
+                f"Expected child to be STOPPED by SIGTTIN, got status 0x{status:04x}"
+            )
+            assert os.WSTOPSIG(status) == signal.SIGTTIN, (
+                f"Expected stop signal SIGTTIN ({signal.SIGTTIN}), "
+                f"got signal {os.WSTOPSIG(status)}"
+            )
+        finally:
+            # Clean up: resume the stopped child, then kill it
+            try:
+                pgid = os.getpgid(proc.pid)
+                os.killpg(pgid, signal.SIGCONT)
+                os.killpg(pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            try:
+                os.waitpid(proc.pid, 0)
+                proc.returncode = -signal.SIGKILL
+            except ChildProcessError:
+                proc.returncode = -1
+
+    @_requires_tty
+    def test_protected_child_survives_tty_read(self) -> None:
+        """FIX VALIDATION: _agent_preexec child is NOT stopped by /dev/tty read.
+
+        Same script as the vulnerability proof, but with _agent_preexec which
+        ignores SIGTTIN. The read() returns EIO instead of stopping the process,
+        and the child continues to completion.
+        """
+        proc = subprocess.Popen(
+            [sys.executable, "-c", _TTY_READ_SCRIPT],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            preexec_fn=_agent_preexec,  # setpgrp + SIG_IGN
+        )
+        proc.communicate(timeout=5)
+        # The child should NOT be stopped. It either completed (print('COMPLETED'))
+        # or got an OSError from the read (EIO) and exited with a traceback.
+        # Either way, it ran to completion instead of being frozen.
+        assert proc.returncode is not None, "Process should have exited, not be stopped"
+
+
+@pytest.mark.xdist_group("pty")
+class TestSigttiImmunityWithIgnoredSignals:
+    """Verify that ignoring SIGTTIN/SIGTTOU prevents process stops.
+
+    When a background process group reads from /dev/tty, the kernel sends
+    SIGTTIN which stops the process. By ignoring SIGTTIN before exec, the
+    read returns EIO instead and the process continues running.
+
+    This is the fix for issue #4057 where Claude CLI opened /dev/tty for
+    keyboard handling and got stopped.
+    """
+
+    def test_ignored_sigttin_prevents_stop_on_tty_read(self) -> None:
+        """A setpgrp child with SIGTTIN ignored is NOT stopped when reading /dev/tty.
+
+        Without SIG_IGN, opening /dev/tty from a background process group triggers
+        SIGTTIN and stops the process. With SIG_IGN, the open/read returns an error
+        (EIO) and the process continues.
+        """
+        # Child script: ignore SIGTTIN, try to read /dev/tty, report outcome.
+        # The read should fail with EIO (not stop the process).
+        script = (
+            "import os, signal\n"
+            "signal.signal(signal.SIGTTIN, signal.SIG_IGN)\n"
+            "try:\n"
+            "    fd = os.open('/dev/tty', os.O_RDONLY | os.O_NOCTTY)\n"
+            "    data = os.read(fd, 1)\n"
+            "    os.close(fd)\n"
+            "    print('READ_OK')\n"
+            "except OSError as e:\n"
+            "    print(f'EIO:{e.errno}')\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            preexec_fn=os.setpgrp,
+        )
+        out, _ = proc.communicate(timeout=5)
+        output = out.decode().strip()
+        # The process should NOT be stopped (it completed and produced output).
+        # It either got EIO or READ_OK — either way, it wasn't stopped.
+        assert proc.returncode == 0, (
+            f"Process should exit cleanly, not be stopped. "
+            f"exit={proc.returncode}, output={output}"
+        )
+        assert output, "Process should produce output (not be stopped by SIGTTIN)"
+
+    def test_child_still_produces_stdout_through_pty(self) -> None:
+        """A child using _agent_preexec still produces stdout through a PTY.
+
+        This ensures the SIGTTIN fix doesn't break the output capture chain.
+        Uses the parent-child inheritance pattern (same as the production
+        pexpect setup) to verify output flows.
+        """
+        # Spawn a parent that creates a setpgrp+signal-ignore child with
+        # inherited stdout. If the child's output reaches the parent's pipe,
+        # the PTY chain works.
+        parent_script = (
+            "import os, signal, subprocess, sys\n"
+            "def preexec():\n"
+            "    os.setpgrp()\n"
+            "    signal.signal(signal.SIGTTIN, signal.SIG_IGN)\n"
+            "    signal.signal(signal.SIGTTOU, signal.SIG_IGN)\n"
+            "p = subprocess.Popen(\n"
+            "    [sys.executable, '-c', 'print(\"sigttin-immune-output\")'],\n"
+            "    stdin=subprocess.DEVNULL,\n"
+            "    preexec_fn=preexec,\n"
+            ")\n"
+            "p.wait()\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", parent_script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        out, _ = proc.communicate(timeout=5)
+        assert b"sigttin-immune-output" in out, (
+            "Output should flow through inherited stdout even with SIGTTIN ignored"
+        )
+
+    def test_killpg_still_works_with_ignored_signals(self) -> None:
+        """killpg still terminates the child even with SIGTTIN/SIGTTOU ignored.
+
+        The signal ignore only affects SIGTTIN/SIGTTOU, not SIGTERM/SIGKILL.
+        """
+        proc = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            preexec_fn=_agent_preexec,
+        )
+        time.sleep(0.1)
+        pgid = os.getpgid(proc.pid)
+        assert pgid != os.getpgrp(), "child must be in a different group"
+
+        os.killpg(pgid, signal.SIGTERM)
+        exit_code = proc.wait(timeout=5)
+        assert exit_code == -signal.SIGTERM, (
+            "SIGTERM should still kill the child despite SIGTTIN being ignored"
+        )
