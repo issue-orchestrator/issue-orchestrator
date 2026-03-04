@@ -445,3 +445,84 @@ class TestSigttiImmunityWithIgnoredSignals:
         assert exit_code == -signal.SIGTERM, (
             "SIGTERM should still kill the child despite SIGTTIN being ignored"
         )
+
+
+@pytest.mark.xdist_group("pty")
+class TestZshResetsInheritedSignals:
+    """Document that zsh resets inherited SIG_IGN for SIGTTIN (violating POSIX).
+
+    POSIX requires SIG_IGN to survive exec(). bash and /bin/sh comply.
+    zsh does NOT — it resets SIGTTIN/SIGTTOU to SIG_DFL during startup.
+
+    This is the root cause of the agent freeze in issue #4057: the provider_runner
+    wrapped commands in ``$SHELL -lc ...`` which picked up zsh on macOS. The
+    preexec_fn set SIG_IGN, but zsh reset it, and the agent got SIGTTIN when
+    opening /dev/tty from a background process group.
+
+    The fix: provider_runner now uses ``/bin/sh -c`` instead of ``$SHELL -lc``.
+    """
+
+    # Script that reports whether SIGTTIN is SIG_IGN or SIG_DFL
+    _CHECK_SIGNAL = (
+        "import signal; "
+        "h = signal.getsignal(signal.SIGTTIN); "
+        "print('SIG_IGN' if h == signal.SIG_IGN else 'SIG_DFL')"
+    )
+
+    def test_sh_preserves_inherited_sig_ign(self) -> None:
+        """/bin/sh preserves inherited SIG_IGN for SIGTTIN (POSIX compliant)."""
+        proc = subprocess.Popen(
+            ["/bin/sh", "-c", f"{sys.executable} -c {_shell_quote(self._CHECK_SIGNAL)}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            preexec_fn=_agent_preexec,
+        )
+        out, _ = proc.communicate(timeout=5)
+        assert b"SIG_IGN" in out, (
+            f"/bin/sh should preserve inherited SIG_IGN; got {out.decode().strip()}"
+        )
+
+    def test_bash_preserves_inherited_sig_ign(self) -> None:
+        """/bin/bash preserves inherited SIG_IGN for SIGTTIN (POSIX compliant)."""
+        proc = subprocess.Popen(
+            ["/bin/bash", "-c", f"{sys.executable} -c {_shell_quote(self._CHECK_SIGNAL)}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            preexec_fn=_agent_preexec,
+        )
+        out, _ = proc.communicate(timeout=5)
+        assert b"SIG_IGN" in out, (
+            f"/bin/bash should preserve inherited SIG_IGN; got {out.decode().strip()}"
+        )
+
+    @pytest.mark.skipif(
+        not os.path.exists("/bin/zsh"),
+        reason="/bin/zsh not available",
+    )
+    def test_zsh_resets_inherited_sig_ign(self) -> None:
+        """zsh resets inherited SIG_IGN for SIGTTIN to SIG_DFL (POSIX violation).
+
+        This test documents the zsh bug. If zsh ever fixes this, the test
+        will start failing — which is fine, it means the underlying issue
+        is resolved at the OS level.
+        """
+        proc = subprocess.Popen(
+            ["/bin/zsh", "-c", f"{sys.executable} -c {_shell_quote(self._CHECK_SIGNAL)}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            stdin=subprocess.DEVNULL,
+            preexec_fn=_agent_preexec,
+        )
+        out, _ = proc.communicate(timeout=5)
+        # zsh resets SIG_IGN → SIG_DFL. If this starts showing SIG_IGN,
+        # zsh fixed the bug and we can simplify provider_runner._build_command.
+        assert b"SIG_DFL" in out, (
+            f"Expected zsh to reset SIG_IGN to SIG_DFL (known POSIX violation); "
+            f"got {out.decode().strip()}. If zsh now preserves SIG_IGN, "
+            f"provider_runner._build_command can be simplified."
+        )
+
+
+def _shell_quote(s: str) -> str:
+    """Quote a string for safe use inside shell single quotes."""
+    import shlex
+    return shlex.quote(s)
