@@ -18,6 +18,7 @@ _PTY_MODULE = "issue_orchestrator.execution.agent_runner"
 _SUBPROCESS_MODULE = "issue_orchestrator.execution.subprocess_runner"
 _ENV_MODULE = "issue_orchestrator.execution.agent_runner_env"
 _ERRORS_MODULE = "issue_orchestrator.execution.agent_runner_errors"
+_VENDOR_PORTS_MODULE = "issue_orchestrator._vendor.agent_runner.ports"
 _VENDOR_PROVIDERS_MODULE = "issue_orchestrator._vendor.agent_runner.providers"
 
 # Map export name → module that provides it
@@ -44,7 +45,7 @@ _EXPORT_MAP: dict[str, str] = {
     "ProviderErrorType": _ERRORS_MODULE,
     "classify_provider_error": _ERRORS_MODULE,
     # Provider registry (still in _vendor for now — providers are unchanged)
-    "AIProvider": _VENDOR_PROVIDERS_MODULE,
+    "AIProvider": _VENDOR_PORTS_MODULE,
     "list_providers": _VENDOR_PROVIDERS_MODULE,
     "get_provider": _VENDOR_PROVIDERS_MODULE,
     "is_valid_provider": _VENDOR_PROVIDERS_MODULE,
