@@ -10,7 +10,7 @@ agents:
     model: haiku
     ai_system: claude-code
     permission_mode: bypassPermissions
-    command: "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
+    command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
   agent:frontend:
     prompt: repo-specific/prompts/simple-fix.md
     model: haiku

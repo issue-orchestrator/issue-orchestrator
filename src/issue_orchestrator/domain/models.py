@@ -404,10 +404,10 @@ class AgentConfig:
     # If set, this is used instead of provider.build_command()
     # For non-interactive mode, add -p flag (Claude), use 'exec' (Codex), or -p (Gemini)
     # Note: {system_prompt} includes completion instructions + "Read {prompt} for task instructions"
-    command: str = "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
+    command: str = "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
     # Optional override for hook verification AI agent (e.g., "claude-code")
     meta_agent: Optional[str] = None
-    initial_prompt: str = "Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, exit with /exit."
+    initial_prompt: str = "Work on issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use coding-done to report completion."
     # AI system type for log retrieval (e.g., "claude-code", "codex", "gemini", "aider")
     # If not set, auto-detected from command. Must match an entry in ai-systems.yaml.
     ai_system: Optional[str] = None
