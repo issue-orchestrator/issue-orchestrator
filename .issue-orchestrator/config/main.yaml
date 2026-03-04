@@ -8,36 +8,36 @@ agents:
   agent:backend:
     prompt: repo-specific/prompts/simple-fix.md
     model: haiku
+    provider: claude-code
     ai_system: claude-code
     permission_mode: bypassPermissions
-    command: "claude {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
   agent:frontend:
     prompt: repo-specific/prompts/simple-fix.md
     model: haiku
+    provider: claude-code
     ai_system: claude-code
     permission_mode: bypassPermissions
-    command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
   agent:mobile:
     prompt: repo-specific/prompts/simple-fix.md
     model: haiku
+    provider: claude-code
     ai_system: claude-code
     permission_mode: bypassPermissions
-    command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
   agent:reviewer:
     prompt: repo-specific/prompts/reviewer.md
     model: sonnet
+    provider: claude-code
     ai_system: claude-code
     timeout_minutes: 30
     permission_mode: bypassPermissions
-    command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
     initial_prompt: "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report your verdict."
   agent:triage:
     prompt: repo-specific/prompts/triage.md
     model: sonnet
+    provider: claude-code
     ai_system: claude-code
     timeout_minutes: 60
     permission_mode: bypassPermissions
-    command: "claude -p {claude_args} --permission-mode {permission_mode} --model {model} --append-system-prompt '{system_prompt}' '{initial_prompt}'"
     initial_prompt: "Triage review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report completion."
   agent:goal-pilot:
     prompt: repo-specific/prompts/goal-pilot.md
