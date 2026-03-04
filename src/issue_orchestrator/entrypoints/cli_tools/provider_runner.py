@@ -47,8 +47,12 @@ def _resolve_run_dir(args: argparse.Namespace) -> Path:
 
 
 def _build_command(command: str) -> list[str]:
-    shell = os.environ.get("SHELL") or "/bin/sh"
-    return [shell, "-lc", command]
+    # Use /bin/sh, not $SHELL. zsh resets inherited SIG_IGN for SIGTTIN/SIGTTOU
+    # (violating POSIX), which defeats the preexec_fn signal fix in the vendored
+    # AgentRunner and causes agents to freeze when they open /dev/tty from a
+    # background process group. The outer SubprocessPlugin shell already sets up
+    # PATH and environment, so a login shell is unnecessary here.
+    return ["/bin/sh", "-c", command]
 
 
 def _summarize_error(stderr: str) -> str | None:
