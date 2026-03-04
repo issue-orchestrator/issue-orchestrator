@@ -538,14 +538,16 @@ class TestAgentRunnerConfigIntegration:
             "use preexec_fn=os.setpgrp instead (see #4057)"
         )
 
-    def test_agent_runner_uses_setpgrp(self) -> None:
-        """AgentRunner must use preexec_fn=os.setpgrp for process group isolation."""
+    def test_agent_runner_uses_agent_preexec(self) -> None:
+        """AgentRunner must use preexec_fn=_agent_preexec for process group isolation
+        and SIGTTIN/SIGTTOU immunity."""
         import inspect
         from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
 
         source = inspect.getsource(AgentRunner)
-        assert "os.setpgrp" in source, (
-            "AgentRunner must use preexec_fn=os.setpgrp for process group isolation"
+        assert "_agent_preexec" in source, (
+            "AgentRunner must use preexec_fn=_agent_preexec for process group "
+            "isolation and SIGTTIN/SIGTTOU immunity"
         )
 
     def test_agent_runner_uses_devnull_stdin(self) -> None:

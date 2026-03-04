@@ -22,6 +22,22 @@ from .ports import RunResult, RunSpec
 logger = logging.getLogger(__name__)
 
 
+def _agent_preexec() -> None:
+    """Pre-exec setup for agent child processes.
+
+    - setpgrp: creates a new process group so killpg can cleanly terminate the
+      agent and all its children without hitting the parent.
+    - SIG_IGN for SIGTTIN/SIGTTOU: the child is in a background process group
+      relative to the terminal. If the agent (e.g. Claude CLI) opens /dev/tty
+      directly, the kernel would send SIGTTIN/SIGTTOU and stop the entire
+      process group. Ignoring these signals causes the read/write to return EIO
+      instead of stopping the process — the agent handles this gracefully.
+    """
+    os.setpgrp()
+    signal.signal(signal.SIGTTIN, signal.SIG_IGN)
+    signal.signal(signal.SIGTTOU, signal.SIG_IGN)
+
+
 class AgentRunner:
     """Executes AI agents as subprocesses.
 
@@ -78,21 +94,19 @@ class AgentRunner:
                 spec.command,
                 cwd=spec.working_dir,
                 env=env,
-                # Capture stderr for provider error classification (retry logic).
-                # Stdout is inherited from parent so output flows through
-                # the pexpect PTY to CleaningLogWriter -> ui-session.log.
+                # stdin=DEVNULL prevents SIGTTIN from fd 0 reads.
                 #
-                # stdin=DEVNULL prevents SIGTTIN: setpgrp puts the child in a
-                # background process group relative to the parent's PTY, so
-                # any read from the inherited PTY slave triggers SIGTTIN and
-                # stops the process. Agents don't need stdin.
+                # _agent_preexec additionally ignores SIGTTIN/SIGTTOU so
+                # that direct /dev/tty opens (e.g. Claude CLI keyboard
+                # handling) return EIO instead of stopping the process
+                # group. It also calls setpgrp for clean killpg isolation.
                 #
-                # setpgrp creates a new process group (for clean killpg)
-                # without creating a new session (which would disconnect
-                # from the controlling terminal and break interactive mode).
+                # stdout inherits the parent's fd (PTY slave) so output
+                # flows through pexpect PTY to CleaningLogWriter -> ui-session.log.
+                # Stderr is captured via PIPE for error classification.
                 stdin=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
-                preexec_fn=os.setpgrp,
+                preexec_fn=_agent_preexec,
             )
 
             try:
