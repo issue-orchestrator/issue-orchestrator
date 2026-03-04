@@ -1,6 +1,7 @@
-"""Facade for vendored agent_runner ports."""
+"""Facade for agent_runner types and errors — now in execution/."""
 
-from .._vendor.agent_runner.ports import AIProvider, RunResult, RunSpec, RetryPolicy
-from .._vendor.agent_runner.errors import ProviderErrorType
+from ..execution.agent_runner_types import AgentResult as RunResult, AgentSpec as RunSpec, RetryPolicy
+from ..execution.agent_runner_errors import ProviderErrorType
+from .._vendor.agent_runner.ports import AIProvider
 
 __all__ = ["AIProvider", "RunSpec", "RunResult", "RetryPolicy", "ProviderErrorType"]

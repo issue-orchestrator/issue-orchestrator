@@ -13,10 +13,8 @@ import os
 import sys
 from pathlib import Path
 
-# Phase 2 migration: provider_runner still uses vendored AgentRunner (subprocess.Popen)
-# because it runs INSIDE a PTY — nested pexpect would break the output chain.
-# Import directly from _vendor until migrated.
-from issue_orchestrator._vendor.agent_runner import AgentRunner, RunSpec, RetryPolicy
+from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner
+from issue_orchestrator.execution.agent_runner_types import AgentSpec, RetryPolicy
 from issue_orchestrator.infra.env import ENV_PREFIX
 from issue_orchestrator.infra.provider_resilience import ProviderStatus, now_iso, write_provider_status
 from issue_orchestrator.ports.provider_resilience import ProviderErrorType
@@ -74,8 +72,8 @@ def main(argv: list[str] | None = None) -> int:
         jitter=args.jitter,
     )
 
-    runner = AgentRunner()
-    result = runner.run(RunSpec(
+    runner = SubprocessAgentRunner()
+    result = runner.run(AgentSpec(
         command=_build_command(args.command),
         working_dir=Path.cwd(),
         timeout_seconds=args.timeout_seconds,

@@ -507,7 +507,7 @@ class TestAgentRunnerConfigIntegration:
         a tee thread relays it to sys.stderr.buffer.
         """
         import inspect
-        from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
+        from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner as AgentRunner
 
         source = inspect.getsource(AgentRunner)
         assert "capture_output=True" not in source, (
@@ -530,7 +530,7 @@ class TestAgentRunnerConfigIntegration:
         and loses the controlling terminal.
         """
         import inspect
-        from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
+        from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner as AgentRunner
 
         source = inspect.getsource(AgentRunner)
         assert "start_new_session=True" not in source, (
@@ -542,7 +542,7 @@ class TestAgentRunnerConfigIntegration:
         """AgentRunner must use preexec_fn=_agent_preexec for process group isolation
         and SIGTTIN/SIGTTOU immunity."""
         import inspect
-        from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
+        from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner as AgentRunner
 
         source = inspect.getsource(AgentRunner)
         assert "_agent_preexec" in source, (
@@ -559,7 +559,7 @@ class TestAgentRunnerConfigIntegration:
         bug when running inside SubprocessPlugin's pexpect PTY.
         """
         import inspect
-        from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
+        from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner as AgentRunner
 
         source = inspect.getsource(AgentRunner)
         assert "subprocess.DEVNULL" in source, (

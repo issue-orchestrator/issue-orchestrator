@@ -1,6 +1,6 @@
-"""Tests for AgentRunner with PTY-inherited output.
+"""Tests for SubprocessAgentRunner with PTY-inherited output.
 
-Validates that AgentRunner uses setpgrp (not setsid) and inherits
+Validates that SubprocessAgentRunner uses setpgrp (not setsid) and inherits
 stdout/stderr from the parent process.
 """
 
@@ -10,12 +10,12 @@ import os
 import sys
 from pathlib import Path
 
-from issue_orchestrator._vendor.agent_runner.ports import RunSpec
-from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
+from issue_orchestrator.execution.agent_runner_types import AgentSpec
+from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner
 
 
-def _spec(tmp_path: Path, command: list[str], timeout_seconds: int = 10) -> RunSpec:
-    return RunSpec(
+def _spec(tmp_path: Path, command: list[str], timeout_seconds: int = 10) -> AgentSpec:
+    return AgentSpec(
         command=command,
         working_dir=tmp_path,
         timeout_seconds=timeout_seconds,
@@ -24,21 +24,21 @@ def _spec(tmp_path: Path, command: list[str], timeout_seconds: int = 10) -> RunS
 
 
 def test_agent_runner_returns_exit_code(tmp_path: Path) -> None:
-    runner = AgentRunner()
+    runner = SubprocessAgentRunner()
     result = runner.run(_spec(tmp_path, [sys.executable, "-c", "pass"]))
     assert result.exit_code == 0
     assert result.timed_out is False
 
 
 def test_agent_runner_returns_nonzero_exit_code(tmp_path: Path) -> None:
-    runner = AgentRunner()
+    runner = SubprocessAgentRunner()
     result = runner.run(_spec(tmp_path, [sys.executable, "-c", "raise SystemExit(42)"]))
     assert result.exit_code == 42
     assert result.timed_out is False
 
 
 def test_agent_runner_handles_timeout(tmp_path: Path) -> None:
-    runner = AgentRunner()
+    runner = SubprocessAgentRunner()
     result = runner.run(_spec(
         tmp_path,
         [sys.executable, "-c", "import time; time.sleep(10)"],
@@ -50,7 +50,7 @@ def test_agent_runner_handles_timeout(tmp_path: Path) -> None:
 def test_agent_runner_child_in_separate_process_group(tmp_path: Path) -> None:
     """Child runs in its own process group (setpgrp), not parent's."""
     script = "import os; print(f'{os.getpid()} {os.getpgrp()}')"
-    runner = AgentRunner()
+    runner = SubprocessAgentRunner()
     # We need to capture the child's output to verify pgid.
     # Run a parent that reads the child's stdout via pipe.
     parent_script = (
@@ -67,16 +67,16 @@ def test_agent_runner_child_in_separate_process_group(tmp_path: Path) -> None:
 
 
 def test_agent_runner_stderr_on_command_not_found(tmp_path: Path) -> None:
-    runner = AgentRunner()
+    runner = SubprocessAgentRunner()
     result = runner.run(_spec(tmp_path, ["/nonexistent/command"]))
     assert result.exit_code == 127
     assert "not found" in result.stderr.lower()
 
 
 def test_agent_runner_output_dir_created(tmp_path: Path) -> None:
-    runner = AgentRunner()
+    runner = SubprocessAgentRunner()
     out_dir = tmp_path / "nested" / "output"
-    spec = RunSpec(
+    spec = AgentSpec(
         command=[sys.executable, "-c", "pass"],
         working_dir=tmp_path,
         timeout_seconds=5,

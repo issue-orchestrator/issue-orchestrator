@@ -250,7 +250,6 @@ forbidden_modules = ["subprocess"]
 # Allow TYPE_CHECKING import of Orchestrator for type hints
 ignore_imports = [
   "issue_orchestrator.control.orchestrator_support -> issue_orchestrator.infra.orchestrator",
-  "issue_orchestrator.control.validation_retry -> issue_orchestrator._vendor.agent_runner",
 ]
 
 [[tool.importlinter.contracts]]
@@ -402,19 +401,11 @@ source_modules = [
   "issue_orchestrator.infra.validators.worktree",
 ]
 forbidden_modules = ["issue_orchestrator._vendor.agent_runner"]
-# The agent_runner facade re-exports from _vendor — that IS the facade's job.
-# Ignore facade-internal links so the contract enforces "use facade, not vendor"
-# without being tripped by the facade's own implementation.
+# The agent_runner facade still re-exports providers and AIProvider from _vendor.
+# These are the only remaining _vendor references — everything else is in execution/.
 ignore_imports = [
-  "issue_orchestrator.agent_runner.env_filter -> issue_orchestrator._vendor.agent_runner.env_filter",
   "issue_orchestrator.agent_runner.ports -> issue_orchestrator._vendor.agent_runner.ports",
-  "issue_orchestrator.agent_runner.ports -> issue_orchestrator._vendor.agent_runner.errors",
   "issue_orchestrator.agent_runner.providers -> issue_orchestrator._vendor.agent_runner.providers",
-  "issue_orchestrator.agent_runner.runner -> issue_orchestrator._vendor.agent_runner.runner",
-  "issue_orchestrator.execution.agent_runner -> issue_orchestrator._vendor.agent_runner.env_filter",
-  "issue_orchestrator.execution.agent_runner -> issue_orchestrator._vendor.agent_runner.errors",
-  "issue_orchestrator.entrypoints.cli_tools.provider_runner -> issue_orchestrator._vendor.agent_runner",
-  "issue_orchestrator.control.validation_retry -> issue_orchestrator._vendor.agent_runner",
 ]
 
 [[tool.importlinter.contracts]]

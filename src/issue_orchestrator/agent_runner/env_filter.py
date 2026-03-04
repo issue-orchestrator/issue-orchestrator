@@ -1,6 +1,6 @@
-"""Facade for vendored agent_runner env_filter."""
+"""Facade for agent_runner env_filter — now in execution/."""
 
-from .._vendor.agent_runner.env_filter import (
+from ..execution.agent_runner_env import (
     DEFAULT_FORBIDDEN_ENV_VARS,
     GIT_SAFE_ENV,
     all_env_scrubbed,

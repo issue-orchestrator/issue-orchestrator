@@ -126,9 +126,9 @@ class TestCodexWithAgentRunner:
         """
         # Use vendored AgentRunner — Codex tests exercise the subprocess-based
         # runner (not the unified pexpect-based one in execution.agent_runner).
-        from issue_orchestrator._vendor.agent_runner import AgentRunner
-        from issue_orchestrator._vendor.agent_runner.ports import RunSpec
-        from issue_orchestrator._vendor.agent_runner.providers import CodexProvider
+        from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner as AgentRunner
+        from issue_orchestrator.execution.agent_runner_types import AgentSpec as RunSpec
+        from issue_orchestrator.agent_runner.providers import CodexProvider
 
         # Set up a git repo
         subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
@@ -337,9 +337,9 @@ class TestCodexWithAgentRunnerFullPath:
         """
         # Use vendored AgentRunner — Codex tests exercise the subprocess-based
         # runner (not the unified pexpect-based one in execution.agent_runner).
-        from issue_orchestrator._vendor.agent_runner import AgentRunner
-        from issue_orchestrator._vendor.agent_runner.ports import RunSpec
-        from issue_orchestrator._vendor.agent_runner.providers import CodexProvider
+        from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner as AgentRunner
+        from issue_orchestrator.execution.agent_runner_types import AgentSpec as RunSpec
+        from issue_orchestrator.agent_runner.providers import CodexProvider
 
         # Get scripts directory
         repo_root = Path(__file__).parent.parent.parent
