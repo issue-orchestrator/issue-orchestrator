@@ -1,4 +1,4 @@
-from issue_orchestrator._vendor.agent_runner.runner import _format_command_for_log
+from issue_orchestrator.execution.agent_runner_types import _format_command_for_log
 
 
 def test_format_command_for_log_keeps_flags_visible() -> None:

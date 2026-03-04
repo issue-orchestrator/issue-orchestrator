@@ -16,9 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional, TYPE_CHECKING
 
-# Phase 2 migration: validation_retry still uses vendored AgentRunner/RunSpec.
-# Import directly from _vendor until migrated to unified AgentRunner.
-from issue_orchestrator._vendor.agent_runner import AgentRunner, RunResult, RunSpec
+from issue_orchestrator.agent_runner import AgentResult, AgentSpec, BaseAgentRunner
 
 from ..infra.config import RetryConfig
 
@@ -33,7 +31,7 @@ class ValidationResult:
     """Result of running an agent with validation.
 
     Attributes:
-        run_result: The final RunResult from agent-runner
+        run_result: The final AgentResult from agent-runner
         validation_passed: True if validation passed (or was not configured)
         validation_output: Stdout from validation command (if run)
         validation_error: Stderr from validation command (if failed)
@@ -41,7 +39,7 @@ class ValidationResult:
         final_error_file: Path to the validation errors file (if written)
     """
 
-    run_result: RunResult
+    run_result: AgentResult
     validation_passed: bool
     validation_output: str
     validation_error: str
@@ -86,7 +84,7 @@ class ValidationRetryController:
 
     def __init__(
         self,
-        runner: AgentRunner,
+        runner: BaseAgentRunner,
         config: RetryConfig,
         command_runner: "CommandRunner | None" = None,
     ) -> None:
@@ -192,24 +190,24 @@ class ValidationRetryController:
 
     def run_with_validation(
         self,
-        spec: RunSpec,
+        spec: AgentSpec,
         validation_cmd: Optional[str],
         validation_timeout_seconds: int,
         session_output_dir: Path,
         original_prompt: str,
-        build_retry_spec: Callable[[str], RunSpec],
+        build_retry_spec: Callable[[str], AgentSpec],
     ) -> ValidationResult:
         """Run an agent with validation and retry on failure.
 
         This is the main entry point for the retry loop.
 
         Args:
-            spec: Initial RunSpec for the agent
+            spec: Initial AgentSpec for the agent
             validation_cmd: Validation command (None to skip validation)
             validation_timeout_seconds: Timeout for validation command
             session_output_dir: Directory for session output
             original_prompt: Original task prompt (for retry context)
-            build_retry_spec: Callable that builds a new RunSpec given a retry prompt
+            build_retry_spec: Callable that builds a new AgentSpec given a retry prompt
 
         Returns:
             ValidationResult with final status

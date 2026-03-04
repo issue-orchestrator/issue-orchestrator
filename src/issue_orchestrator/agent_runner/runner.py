@@ -1,5 +1,5 @@
-"""Facade for vendored agent_runner runner."""
+"""Facade for agent_runner runner — now SubprocessAgentRunner in execution/."""
 
-from .._vendor.agent_runner.runner import AgentRunner
+from ..execution.subprocess_runner import SubprocessAgentRunner as AgentRunner
 
 __all__ = ["AgentRunner"]

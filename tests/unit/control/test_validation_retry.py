@@ -6,7 +6,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from issue_orchestrator._vendor.agent_runner import AgentRunner, RunResult, RunSpec
+from issue_orchestrator.execution.agent_runner_types import AgentResult, AgentSpec
+from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner
 from issue_orchestrator.control.validation_retry import (
     RETRY_PROMPT_TEMPLATE,
     ValidationResult,
@@ -28,7 +29,7 @@ def retry_config() -> RetryConfig:
 @pytest.fixture
 def mock_runner() -> MagicMock:
     """Create a mock AgentRunner."""
-    return MagicMock(spec=AgentRunner)
+    return MagicMock(spec=SubprocessAgentRunner)
 
 
 @pytest.fixture
@@ -44,9 +45,9 @@ def controller(mock_runner: MagicMock, retry_config: RetryConfig, command_runner
 
 
 @pytest.fixture
-def successful_run_result() -> RunResult:
+def successful_run_result() -> AgentResult:
     """Create a successful run result."""
-    return RunResult(
+    return AgentResult(
         exit_code=0,
         stdout="",
         stderr="",
@@ -57,9 +58,9 @@ def successful_run_result() -> RunResult:
 
 
 @pytest.fixture
-def failed_run_result() -> RunResult:
+def failed_run_result() -> AgentResult:
     """Create a failed run result."""
-    return RunResult(
+    return AgentResult(
         exit_code=1,
         stdout="",
         stderr="Agent crashed",
@@ -70,9 +71,9 @@ def failed_run_result() -> RunResult:
 
 
 @pytest.fixture
-def timeout_run_result() -> RunResult:
+def timeout_run_result() -> AgentResult:
     """Create a timeout run result."""
-    return RunResult(
+    return AgentResult(
         exit_code=None,
         stdout="",
         stderr="",
@@ -89,13 +90,13 @@ class TestValidationRetryController:
         self,
         controller: ValidationRetryController,
         mock_runner: MagicMock,
-        successful_run_result: RunResult,
+        successful_run_result: AgentResult,
         tmp_path: Path,
     ) -> None:
         """Test that when validation passes, we return success."""
         mock_runner.run.return_value = successful_run_result
 
-        spec = RunSpec(
+        spec = AgentSpec(
             command=["agent", "run"],
             working_dir=tmp_path,
             timeout_seconds=300,
@@ -122,13 +123,13 @@ class TestValidationRetryController:
         self,
         controller: ValidationRetryController,
         mock_runner: MagicMock,
-        successful_run_result: RunResult,
+        successful_run_result: AgentResult,
         tmp_path: Path,
     ) -> None:
         """Test that when validation is not configured, we skip it."""
         mock_runner.run.return_value = successful_run_result
 
-        spec = RunSpec(
+        spec = AgentSpec(
             command=["agent", "run"],
             working_dir=tmp_path,
             timeout_seconds=300,
@@ -151,13 +152,13 @@ class TestValidationRetryController:
         self,
         controller: ValidationRetryController,
         mock_runner: MagicMock,
-        failed_run_result: RunResult,
+        failed_run_result: AgentResult,
         tmp_path: Path,
     ) -> None:
         """Test that when agent fails, we don't run validation."""
         mock_runner.run.return_value = failed_run_result
 
-        spec = RunSpec(
+        spec = AgentSpec(
             command=["agent", "run"],
             working_dir=tmp_path,
             timeout_seconds=300,
@@ -182,13 +183,13 @@ class TestValidationRetryController:
         self,
         controller: ValidationRetryController,
         mock_runner: MagicMock,
-        timeout_run_result: RunResult,
+        timeout_run_result: AgentResult,
         tmp_path: Path,
     ) -> None:
         """Test that when agent times out, we don't run validation."""
         mock_runner.run.return_value = timeout_run_result
 
-        spec = RunSpec(
+        spec = AgentSpec(
             command=["agent", "run"],
             working_dir=tmp_path,
             timeout_seconds=300,
@@ -213,13 +214,13 @@ class TestValidationRetryController:
         self,
         controller: ValidationRetryController,
         mock_runner: MagicMock,
-        successful_run_result: RunResult,
+        successful_run_result: AgentResult,
         tmp_path: Path,
     ) -> None:
         """Test that when validation fails once but succeeds on retry."""
         mock_runner.run.return_value = successful_run_result
 
-        spec = RunSpec(
+        spec = AgentSpec(
             command=["agent", "run"],
             working_dir=tmp_path,
             timeout_seconds=300,
@@ -250,7 +251,7 @@ class TestValidationRetryController:
     def test_validation_fails_exhausted(
         self,
         mock_runner: MagicMock,
-        successful_run_result: RunResult,
+        successful_run_result: AgentResult,
         tmp_path: Path,
     ) -> None:
         """Test that max retries are respected."""
@@ -259,7 +260,7 @@ class TestValidationRetryController:
 
         mock_runner.run.return_value = successful_run_result
 
-        spec = RunSpec(
+        spec = AgentSpec(
             command=["agent", "run"],
             working_dir=tmp_path,
             timeout_seconds=300,
@@ -288,13 +289,13 @@ class TestValidationRetryController:
         self,
         controller: ValidationRetryController,
         mock_runner: MagicMock,
-        successful_run_result: RunResult,
+        successful_run_result: AgentResult,
         tmp_path: Path,
     ) -> None:
         """Test that validation errors are written to file."""
         mock_runner.run.return_value = successful_run_result
 
-        spec = RunSpec(
+        spec = AgentSpec(
             command=["agent", "run"],
             working_dir=tmp_path,
             timeout_seconds=300,

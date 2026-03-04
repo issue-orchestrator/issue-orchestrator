@@ -1,11 +1,12 @@
-"""Architectural guardrails for the unified AgentRunner.
+"""Architectural guardrails for the unified agent runner hierarchy.
 
-These tests enforce that ALL agent process spawning goes through the unified
-AgentRunner in ``execution/agent_runner.py``.  Any code that bypasses it
-risks creating an untested I/O path — the root cause of #4057.
+These tests enforce that ALL agent process spawning goes through the
+runner hierarchy in ``execution/``:
+- AgentRunner (pexpect PTY) for sessions with CleaningLogWriter
+- SubprocessAgentRunner (Popen) for provider_runner/validation_retry
 
-Phase 1 known violations are files not yet migrated to AgentRunner.
-They must shrink to empty in Phase 2.
+Any code that bypasses these risks creating an untested I/O path —
+the root cause of #4057.
 """
 
 from __future__ import annotations
@@ -22,8 +23,8 @@ TESTS_ROOT = Path(__file__).resolve().parents[2] / "tests"
 
 
 # ---------------------------------------------------------------------------
-# Phase 2 migration targets — files allowed to use pexpect.spawn directly.
-# Remove entries here as each file is migrated to AgentRunner.
+# Files allowed to use pexpect.spawn directly (besides AgentRunner).
+# Remove entries here as each file is migrated.
 # ---------------------------------------------------------------------------
 KNOWN_PEXPECT_SPAWN_VIOLATIONS = {
     "execution/review_exchange_local_loop.py",
@@ -169,8 +170,8 @@ class TestScriptSessionRunnerUsesAgentRunner:
         pytest.fail("ScriptSessionRunner class not found in conftest.py")
 
 
-class TestAgentRunnerImplementation:
-    """Verify the unified AgentRunner uses the correct mechanisms."""
+class TestPtyAgentRunnerImplementation:
+    """Verify the PTY AgentRunner uses the correct mechanisms."""
 
     def test_uses_pexpect_not_subprocess(self) -> None:
         """AgentRunner must use pexpect (PTY), not raw subprocess."""
@@ -235,40 +236,74 @@ class TestAgentRunnerImplementation:
             "AgentRunner must use build_filtered_env for security"
         )
 
+    def test_uses_preexec_fn(self) -> None:
+        """AgentRunner must pass preexec_fn=_pty_preexec to pexpect.spawn."""
+        from issue_orchestrator.execution.agent_runner import AgentRunner
 
-class TestVendoredRunnerConfiguration:
-    """Verify the vendored provider runner has correct subprocess configuration."""
+        source = inspect.getsource(AgentRunner)
+        assert "_pty_preexec" in source, (
+            "AgentRunner must use preexec_fn=_pty_preexec for SIGTTIN immunity"
+        )
 
-    def test_vendored_runner_does_not_pipe_stdout(self) -> None:
-        """Vendored runner must NOT use stdout=subprocess.PIPE.
+
+class TestSubprocessAgentRunnerConfiguration:
+    """Verify SubprocessAgentRunner has correct subprocess configuration."""
+
+    def test_does_not_pipe_stdout(self) -> None:
+        """SubprocessAgentRunner must NOT use stdout=subprocess.PIPE.
 
         Stdout must inherit the parent PTY for real-time streaming to
-        ui-session.log. Using PIPE causes block-buffering: the child
-        detects stdout isn't a TTY and buffers output until exit.
+        ui-session.log. Using PIPE causes block-buffering.
         """
-        from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
+        from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner
 
-        source = inspect.getsource(AgentRunner)
+        source = inspect.getsource(SubprocessAgentRunner)
         assert "stdout=subprocess.PIPE" not in source, (
-            "Vendored runner must NOT pipe stdout — inherit for real-time streaming. "
-            "See #4057: stdout=PIPE causes block-buffering, emptying ui-session.log "
-            "until process exit."
+            "SubprocessAgentRunner must NOT pipe stdout — inherit for real-time streaming"
         )
 
-    def test_vendored_runner_pipes_stderr(self) -> None:
-        """Vendored runner must capture stderr via PIPE for error classification."""
-        from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
+    def test_pipes_stderr(self) -> None:
+        """SubprocessAgentRunner must capture stderr via PIPE for error classification."""
+        from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner
 
-        source = inspect.getsource(AgentRunner)
+        source = inspect.getsource(SubprocessAgentRunner)
         assert "stderr=subprocess.PIPE" in source, (
-            "Vendored runner must capture stderr via PIPE for provider error classification"
+            "SubprocessAgentRunner must capture stderr via PIPE for provider error classification"
         )
 
-    def test_vendored_runner_uses_devnull_stdin(self) -> None:
-        """Vendored runner must use stdin=subprocess.DEVNULL to prevent SIGTTIN."""
-        from issue_orchestrator._vendor.agent_runner.runner import AgentRunner
+    def test_uses_devnull_stdin(self) -> None:
+        """SubprocessAgentRunner must use stdin=subprocess.DEVNULL to prevent SIGTTIN."""
+        from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner
 
-        source = inspect.getsource(AgentRunner)
+        source = inspect.getsource(SubprocessAgentRunner)
         assert "subprocess.DEVNULL" in source, (
-            "Vendored runner must use stdin=DEVNULL — see #4258 SIGTTIN fix"
+            "SubprocessAgentRunner must use stdin=DEVNULL — see #4258 SIGTTIN fix"
+        )
+
+    def test_uses_agent_preexec(self) -> None:
+        """SubprocessAgentRunner must use preexec_fn=_agent_preexec."""
+        from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner
+
+        source = inspect.getsource(SubprocessAgentRunner)
+        assert "_agent_preexec" in source, (
+            "SubprocessAgentRunner must use preexec_fn=_agent_preexec for process group "
+            "isolation and SIGTTIN/SIGTTOU immunity"
+        )
+
+    def test_extends_base_agent_runner(self) -> None:
+        """SubprocessAgentRunner must extend BaseAgentRunner."""
+        from issue_orchestrator.execution.agent_runner_base import BaseAgentRunner
+        from issue_orchestrator.execution.subprocess_runner import SubprocessAgentRunner
+
+        assert issubclass(SubprocessAgentRunner, BaseAgentRunner), (
+            "SubprocessAgentRunner must extend BaseAgentRunner"
+        )
+
+    def test_pty_runner_extends_base_agent_runner(self) -> None:
+        """AgentRunner (PTY) must extend BaseAgentRunner."""
+        from issue_orchestrator.execution.agent_runner import AgentRunner
+        from issue_orchestrator.execution.agent_runner_base import BaseAgentRunner
+
+        assert issubclass(AgentRunner, BaseAgentRunner), (
+            "AgentRunner must extend BaseAgentRunner"
         )

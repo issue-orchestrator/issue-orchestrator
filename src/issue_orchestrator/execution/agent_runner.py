@@ -1,12 +1,11 @@
-"""Unified agent runner — the single abstraction for all agent execution.
+"""PTY-based agent runner — pexpect with CleaningLogWriter.
 
-Every agent subprocess in the orchestrator MUST go through this module.
-It creates a pexpect PTY, routes output through CleaningLogWriter,
+This runner creates a pexpect PTY, routes output through CleaningLogWriter,
 applies environment filtering, and enforces timeouts.
 
 Architecture:
     AgentRunner.start(spec)  →  AgentSession (handle)
-    AgentRunner.run(spec)    →  AgentResult  (start + wait + retry)
+    AgentRunner.run(spec)    →  AgentResult  (start + wait + retry, inherited from base)
 
 All callers — coding sessions, review exchange rounds, simulated tests —
 use the same code path. No subprocess.run, no raw pexpect.spawn elsewhere.
@@ -16,105 +15,35 @@ from __future__ import annotations
 
 import logging
 import os
-import random
 import shlex
 import signal
 import time
-from dataclasses import dataclass, field
-from pathlib import Path
 
 import pexpect
 
-from issue_orchestrator._vendor.agent_runner.env_filter import build_filtered_env
-from issue_orchestrator._vendor.agent_runner.errors import (
-    ProviderErrorType,
-    classify_provider_error,
+from issue_orchestrator.execution.agent_runner_base import (
+    BaseAgentRunner,
+    _pty_preexec,
+)
+from issue_orchestrator.execution.agent_runner_env import build_filtered_env
+from issue_orchestrator.execution.agent_runner_types import (
+    AgentResult,
+    AgentSpec,
+    RetryPolicy,
+    _format_command_for_log,
 )
 from issue_orchestrator.infra.terminal_cleaning import CleaningLogWriter
 
 logger = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Data types
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class RetryPolicy:
-    """Retry policy for transient provider failures."""
-
-    max_attempts: int = 4
-    initial_backoff_seconds: int = 5
-    max_backoff_seconds: int = 60
-    jitter: bool = True
-
-
-@dataclass
-class AgentSpec:
-    """What to run.
-
-    Attributes:
-        command: Agent command as argv list (e.g. ["claude", "-p", "prompt"]).
-                 Passed to ``bash -c`` via :func:`shlex.join`.
-        working_dir: Directory to run the agent in (typically a git worktree).
-        timeout_seconds: Maximum time to wait for the agent to complete.
-        log_path: Path for the cleaned session log (ui-session.log).
-        output_dir: Directory for artifacts (completion.json, etc.).
-        env_overrides: Environment variables to set (highest priority).
-        env_scrub: Variables to remove from the environment (security).
-        env_passthrough: Allowlist mode — only these vars pass through.
-        retry_policy: Optional retry policy for transient provider errors.
-    """
-
-    command: list[str]
-    working_dir: Path
-    timeout_seconds: int
-    log_path: Path
-    output_dir: Path
-    env_overrides: dict[str, str] = field(default_factory=dict)
-    env_passthrough: list[str] = field(default_factory=list)
-    env_scrub: list[str] = field(default_factory=list)
-    retry_policy: RetryPolicy | None = None
-
-    def __post_init__(self) -> None:
-        if not self.command:
-            raise ValueError("command cannot be empty")
-        if self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
-
-
-@dataclass
-class AgentResult:
-    """What happened.
-
-    The ``stderr`` field only contains launch-level errors (command not found,
-    permission denied).  Agent output flows through the PTY to
-    CleaningLogWriter → ui-session.log.
-    """
-
-    exit_code: int | None
-    timed_out: bool
-    duration_seconds: float
-    stderr: str
-    command: list[str]
-    provider_error_type: ProviderErrorType | None = None
-    attempts: int = 1
-
-    @property
-    def succeeded(self) -> bool:
-        """True if the agent exited with code 0 and didn't time out."""
-        return self.exit_code == 0 and not self.timed_out
-
-    @property
-    def failed(self) -> bool:
-        """True if the agent exited with a non-zero code."""
-        return self.exit_code is not None and self.exit_code != 0
-
-
-# ---------------------------------------------------------------------------
-# AgentSession — handle to a running agent
-# ---------------------------------------------------------------------------
+# Re-export types so existing ``from execution.agent_runner import ...`` still works.
+__all__ = [
+    "AgentResult",
+    "AgentRunner",
+    "AgentSession",
+    "AgentSpec",
+    "RetryPolicy",
+]
 
 _GRACEFUL_KILL_TIMEOUT = 5
 
@@ -129,7 +58,7 @@ class AgentSession:
     def __init__(
         self,
         child: pexpect.spawn,
-        log_writer: CleaningLogWriter,
+        log_writer: CleaningLogWriter | None,
         spec: AgentSpec,
         start_time: float,
     ) -> None:
@@ -237,10 +166,11 @@ class AgentSession:
             pass
 
         # Flush remaining log output
-        try:
-            self._log_writer.close()
-        except Exception:  # noqa: BLE001
-            pass
+        if self._log_writer is not None:
+            try:
+                self._log_writer.close()
+            except Exception:  # noqa: BLE001
+                pass
 
         exit_code = self._child.exitstatus
         stderr = ""
@@ -266,27 +196,8 @@ class AgentSession:
         )
 
 
-# ---------------------------------------------------------------------------
-# AgentRunner — the single entry point
-# ---------------------------------------------------------------------------
-
-
-def _format_command_for_log(command: list[str], max_arg_length: int = 160) -> str:
-    """Render argv for logs while keeping long prompt args bounded."""
-    rendered: list[str] = []
-    for arg in command:
-        text = str(arg)
-        if len(text) > max_arg_length:
-            text = text[:max_arg_length] + "..."
-        rendered.append(shlex.quote(text))
-    return " ".join(rendered)
-
-
-class AgentRunner:
-    """The single abstraction for running agent commands.
-
-    Every agent subprocess — coding sessions, review exchange rounds,
-    simulated scenario tests — MUST go through this class.
+class AgentRunner(BaseAgentRunner):
+    """PTY-based agent runner using pexpect + CleaningLogWriter.
 
     Two usage modes (same underlying mechanism):
 
@@ -309,12 +220,14 @@ class AgentRunner:
         - Cleaned output via CleaningLogWriter → spec.log_path
         - Filtered environment (credentials scrubbed, overrides applied)
         - Process group isolation (for clean termination)
+        - SIGTTIN/SIGTTOU immunity via preexec_fn
 
         The caller is responsible for calling :meth:`AgentSession.wait`
         or :meth:`AgentSession.kill` when done.
         """
         spec.output_dir.mkdir(parents=True, exist_ok=True)
-        spec.log_path.parent.mkdir(parents=True, exist_ok=True)
+        if spec.log_path is not None:
+            spec.log_path.parent.mkdir(parents=True, exist_ok=True)
 
         env = build_filtered_env(
             scrub_vars=spec.env_scrub if spec.env_scrub else None,
@@ -330,7 +243,7 @@ class AgentRunner:
         )
         logger.info("Agent argv: %s", _format_command_for_log(spec.command))
 
-        log_writer = CleaningLogWriter(spec.log_path)
+        log_writer = CleaningLogWriter(spec.log_path) if spec.log_path else None
 
         shell_cmd = shlex.join(spec.command)
         child = pexpect.spawn(
@@ -340,78 +253,12 @@ class AgentRunner:
             env=env,  # type: ignore[arg-type]  # pexpect accepts dict[str, str]
             logfile=log_writer,
             timeout=None,
+            preexec_fn=_pty_preexec,
         )
 
         return AgentSession(child, log_writer, spec, time.monotonic())
 
-    def run(self, spec: AgentSpec) -> AgentResult:
-        """Start an agent, wait for it, and optionally retry on transient errors.
-
-        This is the sync convenience method.  Equivalent to::
-
-            session = self.start(spec)
-            result = session.wait(timeout=spec.timeout_seconds)
-
-        With retry logic when ``spec.retry_policy`` is set.
-        """
-        attempts = 0
-        last_result: AgentResult | None = None
-        last_error_type: ProviderErrorType | None = None
-
-        max_attempts = spec.retry_policy.max_attempts if spec.retry_policy else 1
-
-        while True:
-            attempts += 1
-            logger.info(
-                "Agent attempt %d/%d",
-                attempts,
-                max_attempts,
-            )
-
-            session = self.start(spec)
-            last_result = session.wait(timeout=spec.timeout_seconds)
-            last_error_type = classify_provider_error(
-                stdout="",  # stdout flows through PTY, not captured
-                stderr=last_result.stderr,
-                exit_code=last_result.exit_code,
-                timed_out=last_result.timed_out,
-            )
-
-            if last_result.succeeded:
-                break
-            if spec.retry_policy is None:
-                break
-            if last_error_type != ProviderErrorType.TRANSIENT:
-                break
-            if attempts >= spec.retry_policy.max_attempts:
-                break
-
-            backoff = self._compute_backoff(spec, attempts)
-            logger.warning(
-                "Transient provider error, retrying in %.1fs (attempt %d/%d)",
-                backoff,
-                attempts + 1,
-                spec.retry_policy.max_attempts,
-            )
-            time.sleep(backoff)
-
-        assert last_result is not None
-        return AgentResult(
-            exit_code=last_result.exit_code,
-            timed_out=last_result.timed_out,
-            duration_seconds=last_result.duration_seconds,
-            stderr=last_result.stderr,
-            command=last_result.command,
-            provider_error_type=last_error_type,
-            attempts=attempts,
-        )
-
-    @staticmethod
-    def _compute_backoff(spec: AgentSpec, attempts: int) -> float:
-        if spec.retry_policy is None:
-            return 0.0
-        base = spec.retry_policy.initial_backoff_seconds * (2 ** max(0, attempts - 1))
-        delay = min(base, spec.retry_policy.max_backoff_seconds)
-        if spec.retry_policy.jitter:
-            return random.uniform(0, delay)
-        return delay
+    def _execute_once(self, spec: AgentSpec, *, attempt: int) -> AgentResult:
+        """Execute a single attempt via pexpect PTY."""
+        session = self.start(spec)
+        return session.wait(timeout=spec.timeout_seconds)

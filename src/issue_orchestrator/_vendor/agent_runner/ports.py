@@ -1,103 +1,10 @@
-"""Core interfaces and data structures for agent-runner.
+"""AI provider protocol — the only remaining vendored type.
 
-This module defines the contracts between agent-runner and its consumers:
-- RunSpec: What to run
-- RunResult: What happened
-- AIProvider: How to build commands for different AI agents
+RunSpec, RunResult, RetryPolicy, and ProviderErrorType have been moved to
+``execution/agent_runner_types.py`` and ``execution/agent_runner_errors.py``.
 """
 
-from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Protocol
-
-from .errors import ProviderErrorType
-
-
-@dataclass
-class RetryPolicy:
-    """Retry policy for transient provider failures."""
-
-    max_attempts: int = 4
-    initial_backoff_seconds: int = 5
-    max_backoff_seconds: int = 60
-    jitter: bool = True
-
-
-@dataclass
-class RunSpec:
-    """Specification for running an AI agent.
-
-    This is the input to AgentRunner.run(). It describes everything needed
-    to invoke an agent subprocess.
-
-    Attributes:
-        command: Full command as argv list (e.g., ["claude", "-p", "prompt"])
-        working_dir: Directory to run the agent in (typically a git worktree)
-        timeout_seconds: Maximum time to wait for the agent to complete
-        output_dir: Directory to write stdout/stderr files to
-        env_overrides: Environment variables to set (overrides inherited env)
-        env_passthrough: List of env var names to pass through from parent process
-        env_scrub: List of env var names to explicitly remove (security)
-        retry_policy: Optional retry policy for transient errors
-    """
-
-    command: list[str]
-    working_dir: Path
-    timeout_seconds: int
-    output_dir: Path
-    env_overrides: dict[str, str] = field(default_factory=dict)
-    env_passthrough: list[str] = field(default_factory=list)
-    env_scrub: list[str] = field(default_factory=list)
-    retry_policy: RetryPolicy | None = None
-
-    def __post_init__(self) -> None:
-        """Validate the spec."""
-        if not self.command:
-            raise ValueError("command cannot be empty")
-        if self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
-
-
-@dataclass
-class RunResult:
-    """Result of running an AI agent.
-
-    This is the output from AgentRunner.run(). It captures everything that
-    happened during agent execution.
-
-    Both stdout and stderr are captured via PIPE and tee'd to the parent's
-    stdout/stderr in real-time, so PTY output is preserved while the captured
-    text is available for provider error classification (retry logic).
-
-    Attributes:
-        exit_code: Process exit code, or None if timed out
-        stdout: Captured stdout content (also tee'd to parent stdout)
-        stderr: Captured stderr content (also tee'd to parent stderr)
-        duration_seconds: How long the agent ran
-        timed_out: True if the agent was killed due to timeout
-        command: The command that was executed (for debugging)
-        provider_error_type: Classified provider error type (if any)
-        attempts: Number of attempts executed (including retries)
-    """
-
-    exit_code: int | None
-    stdout: str
-    stderr: str
-    duration_seconds: float
-    timed_out: bool
-    command: list[str]
-    provider_error_type: ProviderErrorType | None = None
-    attempts: int = 1
-
-    @property
-    def succeeded(self) -> bool:
-        """True if the agent exited with code 0 and didn't time out."""
-        return self.exit_code == 0 and not self.timed_out
-
-    @property
-    def failed(self) -> bool:
-        """True if the agent exited with non-zero code."""
-        return self.exit_code is not None and self.exit_code != 0
 
 
 class AIProvider(Protocol):
@@ -105,15 +12,6 @@ class AIProvider(Protocol):
 
     Providers know how to build command-line invocations for their respective
     AI agents. They handle CLI flag differences between agents.
-
-    Example:
-        provider = ClaudeCodeProvider()
-        command = provider.build_command(
-            prompt="Fix the bug",
-            model="sonnet",
-            permission_mode="bypassPermissions",
-        )
-        # Returns: ["claude", "-p", "--model", "sonnet", "--permission-mode", ...]
     """
 
     @property
@@ -127,14 +25,5 @@ class AIProvider(Protocol):
         model: str,
         **kwargs: str,
     ) -> list[str]:
-        """Build the command-line invocation for this provider.
-
-        Args:
-            prompt: The task/prompt to send to the agent
-            model: Model identifier (provider-specific, e.g., 'sonnet', 'gpt-5-codex')
-            **kwargs: Provider-specific options (e.g., permission_mode for Claude)
-
-        Returns:
-            Command as argv list, ready for subprocess execution
-        """
+        """Build the command-line invocation for this provider."""
         ...
