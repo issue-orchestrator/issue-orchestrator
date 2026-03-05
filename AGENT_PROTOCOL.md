@@ -77,20 +77,26 @@ reviewer-done changes_requested \
 | `approved` | `--summary`, `--risk` |
 | `changes_requested` | `--issues`, `--risk` |
 
-### What Happens After `coding-done` / `reviewer-done`
+### What Happens After `coding-done`
 
 1. Validation runs (if configured) - tests, linting, type checks
-2. If validation fails, `coding-done`/`reviewer-done` exits non-zero - agent can fix and retry
+2. If validation fails, `coding-done` exits non-zero - agent can fix and retry
 3. If validation passes, completion record is written to `.issue-orchestrator/completion.json`
 4. Orchestrator detects the file and processes it
 5. Orchestrator executes requested actions (push, create PR, add labels, post comment)
 
+### What Happens After `reviewer-done`
+
+1. Completion record is written immediately (no validation — reviewers don't make code changes)
+2. Orchestrator detects the file and processes it
+3. Orchestrator posts the review and updates labels
+
 ## Validation
 
-Before writing the completion record, `coding-done`/`reviewer-done` runs the configured validation gate:
+Before writing the completion record, `coding-done` runs the configured validation gate:
 
 ```
-coding-done completed   (or reviewer-done approved)
+coding-done completed
        │
        ▼
   Run validation (tests, linting, type checks)
@@ -104,7 +110,9 @@ Write     Exit non-zero
 record    Agent fixes and retries
 ```
 
-This gives agents fast feedback. See [ADR-0019](docs/architecture/ADR/0019-agent-done-completion-protocol.md) for the design rationale behind the shared completion core.
+Note: `reviewer-done` skips validation entirely — it writes the completion record directly.
+
+This gives coding agents fast feedback. See [ADR-0019](docs/architecture/ADR/0019-agent-done-completion-protocol.md) for the design rationale behind the shared completion core.
 
 ## Completion Record Format
 
