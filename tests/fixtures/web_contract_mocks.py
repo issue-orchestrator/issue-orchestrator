@@ -73,6 +73,9 @@ class MockOrchestratorForWeb:
     def request_refresh(self, inflight_stable_ids: set[str] | None = None) -> None:
         _ = inflight_stable_ids
 
+    def get_provider_circuit_status(self) -> list[dict]:
+        return []
+
     def get_failure_diagnosis(self, issue_number: int) -> dict[str, object]:
         return {
             "issue_number": issue_number,
