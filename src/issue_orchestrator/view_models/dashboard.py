@@ -80,6 +80,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuit_status: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -118,6 +119,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_status": self.provider_circuit_status,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -139,6 +141,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuitStatus": self.provider_circuit_status,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -178,6 +181,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_status": self.provider_circuit_status,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -1429,6 +1433,18 @@ def build_dashboard_view_model(
             "refresh": refresh_status,
         }
 
+    # Build provider circuit status list
+    provider_circuit_status: list[dict[str, Any]] = []
+    if orchestrator and hasattr(orchestrator, 'deps') and orchestrator.deps.provider_resilience:
+        for state in orchestrator.deps.provider_resilience.store.list_all():
+            provider_circuit_status.append({
+                "provider": state.provider,
+                "open_until": state.open_until.isoformat() if state.open_until else None,
+                "consecutive_outages": state.consecutive_outages,
+                "last_error_summary": state.last_error_summary,
+                "updated_at": state.updated_at.isoformat(),
+            })
+
     return DashboardViewModel(
         issues=issues,
         active_items=active_items,
@@ -1466,4 +1482,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuit_status=provider_circuit_status,
     )

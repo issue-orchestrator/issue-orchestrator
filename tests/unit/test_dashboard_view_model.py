@@ -681,3 +681,31 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_includes_provider_circuit_status():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Verify provider_circuit_status field exists and is a list
+    assert hasattr(view_model, "provider_circuit_status")
+    assert isinstance(view_model.provider_circuit_status, list)
+
+    # Verify it's included in to_dict()
+    view_dict = view_model.to_dict()
+    assert "provider_circuit_status" in view_dict
+    assert isinstance(view_dict["provider_circuit_status"], list)
+
+    # Verify it's included in dashboard_data()
+    dashboard_data = view_model.dashboard_data()
+    assert "providerCircuitStatus" in dashboard_data
+    assert isinstance(dashboard_data["providerCircuitStatus"], list)
