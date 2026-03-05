@@ -976,7 +976,8 @@ class TestAgentGateIntegration:
     """Test agent gate validation integration in coding-done."""
 
     @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
-    def test_agent_gate_runs_when_configured(self, _mock_dirty, tmp_path, capsys):
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.run_preflight_push_check', return_value=(True, None, None))
+    def test_agent_gate_runs_when_configured(self, _mock_push, _mock_dirty, tmp_path, capsys):
         """Test that agent gate validation runs when configured via coding-done."""
         # Create fake git repo
         git_dir = tmp_path / ".git"
@@ -989,6 +990,7 @@ class TestAgentGateIntegration:
         subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
         subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/test/test.git"], cwd=tmp_path, capture_output=True)
 
         # Create config with passing validation
         config_dir = tmp_path / ".issue-orchestrator" / "config"
@@ -1269,7 +1271,8 @@ validation:
             os.chdir(original_cwd)
 
     @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
-    def test_blocked_status_skips_validation(self, _mock_dirty, tmp_path, capsys):
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.run_preflight_push_check', return_value=(True, None, None))
+    def test_blocked_status_skips_validation(self, _mock_push, _mock_dirty, tmp_path, capsys):
         """Test that blocked status skips validation entirely via coding-done.
 
         This is important because if tests fail and agent can't fix them,
@@ -1286,6 +1289,7 @@ validation:
         subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True)
         subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True)
         subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True)
+        subprocess.run(["git", "remote", "add", "origin", "https://github.com/test/test.git"], cwd=tmp_path, capture_output=True)
 
         # Create config with validation that would fail
         config_dir = tmp_path / ".issue-orchestrator" / "config"
