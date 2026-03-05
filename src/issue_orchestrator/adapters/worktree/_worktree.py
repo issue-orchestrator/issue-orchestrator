@@ -96,8 +96,8 @@ def _ensure_origin_branch(repo_root: Path, branch: str) -> None:
 # Path to bundled hooks (in issue_orchestrator/hooks/, 3 levels up from this module)
 HOOKS_DIR = Path(__file__).parent.parent.parent / "hooks"
 
-# Claude Code settings to enforce agent-done on exit
-# The Stop hook checks for a marker file that agent-done creates
+# Claude Code settings to enforce completion command usage on exit
+# The Stop hook checks for a marker file that coding-done/reviewer-done creates
 CLAUDE_SETTINGS_FOR_AGENTS = {
     "hooks": {
         "Stop": [
@@ -366,7 +366,7 @@ def sync_cli_tools(worktree_path: Path) -> None:
     Sync CLI tools from the orchestrator package to worktree.
 
     This ensures the worktree has the latest orchestrator tools (especially
-    agent-done) regardless of when the worktree was created or what branch
+    coding-done/reviewer-done) regardless of when the worktree was created or what branch
     it's on.
 
     Uses package-relative paths so this works even when the target repo is
@@ -445,10 +445,10 @@ def _install_worktree_identity(worktree_path: Path) -> str:
 
 def install_claude_settings(worktree_path: Path) -> None:
     """
-    Install Claude Code settings to enforce agent-done on exit.
+    Install Claude Code settings to enforce completion command usage on exit.
 
     Creates .claude/settings.json in the worktree with a Stop hook
-    that checks if agent-done was called before allowing exit.
+    that checks if a completion command was called before allowing exit.
 
     Args:
         worktree_path: Path to the worktree
@@ -766,7 +766,7 @@ def next_branch_name(repo_root: Path, branch_name: str) -> str:
 def _delete_remote_branch(repo_root: Path, branch_name: str) -> bool:
     result = _git_run(
         repo_root,
-        # Bypass local hooks (agent-done) for branch deletion only.
+        # Bypass local hooks (completion commands) for branch deletion only.
         ["push", "--no-verify", "origin", "--delete", branch_name],
         check=False,
         env=_git_env_no_prompt(),

@@ -1296,7 +1296,7 @@ class TestLabelActionGeneration:
         assert add_label.label == "needs-human"  # Needs human investigation
 
         assert comment is not None
-        assert "Investigation" in comment.comment  # Explains agent-done was not called
+        assert "Investigation" in comment.comment  # Explains coding-done/reviewer-done was not called
 
         assert remove_label is not None
         assert remove_label.label == config.get_label_in_progress()

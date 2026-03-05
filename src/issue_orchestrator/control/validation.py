@@ -542,7 +542,7 @@ class AgentGate:
 
         Unlike PublishGate.check(), this always runs the validation
         (no cache lookup) because we want to capture the result at
-        the specific point in time when agent_done is called.
+        the specific point in time when the completion command is called.
 
         Args:
             session_output_dir: Directory to write validation output

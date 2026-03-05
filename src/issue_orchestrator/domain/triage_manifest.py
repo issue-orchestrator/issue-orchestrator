@@ -7,7 +7,7 @@ reads the manifest to find its work.
 Flow:
 1. Orchestrator: build_triage_manifest() -> TriageManifest
 2. Downloader: download_manifest_data() -> writes files, updates manifest
-3. Agent: reads manifest.json, reads local files, reports via agent-done
+3. Agent: reads manifest.json, reads local files, reports via coding-done
 4. Orchestrator: adds triage-reviewed label to all PRs in manifest
 """
 

@@ -282,7 +282,7 @@ for log_file in log_files:
 Look for:
 - What did the agent attempt?
 - Where did it get stuck?
-- Did it try to use `agent-done`? What happened?
+- Did it try to use `coding-done`/`reviewer-done`? What happened?
 - Were there pre-existing failures blocking progress?
 - Did the agent give up prematurely or make reasonable choices?
 
@@ -290,7 +290,7 @@ Look for:
 
 **Infrastructure failures** (fix in orchestrator/tooling):
 - Missing labels in GitHub repo
-- `agent-done` not in PATH
+- `coding-done`/`reviewer-done` not in PATH
 - Pre-existing test/lint failures on main branch (agent starts with broken build)
 - Missing `worktrees.setup` commands (e.g., npm install, pip install)
 - Timeout too short for complex issues
@@ -347,10 +347,10 @@ This ensures humans stay in the loop for process changes and scheduling.
 
 ## Completion
 
-When done, use `agent-done`:
+When done, use `coding-done`:
 
 ```bash
-agent-done completed \
+coding-done completed \
   --implementation "Reviewed {N} PRs. {summary: X approved, Y need changes}. Created {M} follow-up issues." \
   --problems "{any process issues found, or 'None'}"
 ```

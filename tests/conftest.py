@@ -48,7 +48,7 @@ def isolate_orchestrator_env(monkeypatch, tmp_path):
     """Strip orchestrator env vars and set safe defaults.
 
     When the orchestrator launches an agent, it exports ISSUE_ORCHESTRATOR_*
-    vars (SESSION_ID, CONFIG_PATH, etc.) for agent-done. If the agent then runs
+    vars (SESSION_ID, CONFIG_PATH, etc.) for coding-done/reviewer-done. If the agent then runs
     `make validate-quick` (pytest), these vars leak into unit tests and cause
     failures — e.g., CONFIG_PATH overrides test-local configs, SESSION_ID
     overrides mocked values.

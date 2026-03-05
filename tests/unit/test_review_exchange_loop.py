@@ -479,14 +479,14 @@ def test_parse_exchange_response_accepts_embedded_json_from_claude_result_event(
         '{"type":"stream_event","event":{"type":"message_stop"}}\n'
         '{"type":"result","subtype":"success","result":"The validation record is missing.\\n\\n'
         '{\\"response_type\\":\\"changes_requested\\",\\"getting_closer\\":true,'
-        '\\"response_text\\":\\"Run make validate via agent-done.\\"}"}\n'
+        '\\"response_text\\":\\"Run make validate via coding-done.\\"}"}\n'
     )
 
     response = _parse_exchange_response(stdout)
 
     assert response is not None
     assert response.response_type == "changes_requested"
-    assert response.response_text == "Run make validate via agent-done."
+    assert response.response_text == "Run make validate via coding-done."
     assert response.getting_closer is True
 
 

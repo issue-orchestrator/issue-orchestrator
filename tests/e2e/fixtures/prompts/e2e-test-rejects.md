@@ -12,9 +12,9 @@ No matter what the code looks like, you MUST request changes immediately.
 ## Commands to Run
 
 ```bash
-.venv/bin/agent-done changes_requested --issues "E2E TEST: Intentionally requesting changes to test rework cycle." --risk low
+.venv/bin/reviewer-done changes_requested --issues "E2E TEST: Intentionally requesting changes to test rework cycle." --risk low
 ```
 
 Run this command now, then exit.
 
-**IMPORTANT**: After running `.venv/bin/agent-done`, you MUST exit by typing `/exit`. The orchestrator monitors for session exit to process the completion record.
+**IMPORTANT**: After running `.venv/bin/reviewer-done`, you MUST exit by typing `/exit`. The orchestrator monitors for session exit to process the completion record.

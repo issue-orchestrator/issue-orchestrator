@@ -415,7 +415,7 @@ def _completion_to_reviewer_response(
     """Map a reviewer completion record to a ReviewExchangeResponse."""
     outcome = data.get("outcome", "")
     # reviewer-done writes "review_approved" / "review_changes_requested",
-    # while the legacy agent-done writes "approved" / "changes_requested".
+    # while the legacy completion format writes "approved" / "changes_requested".
     if outcome in ("approved", "review_approved"):
         return ReviewExchangeResponse(
             response_type="ok",

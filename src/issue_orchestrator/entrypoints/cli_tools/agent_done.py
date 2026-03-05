@@ -91,8 +91,8 @@ STATUS_TO_ACTIONS = {
 def extract_pr_verification_status(pr_body: str) -> tuple[bool, str | None]:
     """Extract verification status from PR body.
 
-    Looks for the agent-done verification marker that proves the PR
-    was created through the proper agent-done workflow.
+    Looks for the completion-command verification marker that proves the PR
+    was created through the proper coding-done/reviewer-done workflow.
 
     Args:
         pr_body: The PR description body text
@@ -410,9 +410,10 @@ def write_completion_record(record: CompletionRecord) -> Path:
 
 
 def write_marker_file(status: str) -> None:
-    """Write marker file indicating agent-done was called.
+    """Write marker file indicating a completion command was called.
 
-    This is checked by the Stop hook to detect sessions that exit without agent-done.
+    This is checked by the Stop hook to detect sessions that exit without
+    calling coding-done/reviewer-done.
     """
     marker_file = Path(".agent-done-marker")
     marker_file.write_text(
@@ -598,7 +599,7 @@ def run_preflight_push_check(worktree: Path, verbose: bool = False) -> tuple[boo
     port = get_env("API_PORT") or os.environ.get("ORCHESTRATOR_API_PORT")
     if not port:
         # No port configured - skip preflight check
-        # This happens when running agent-done outside orchestrator context
+        # This happens when running coding-done/reviewer-done outside orchestrator context
         if verbose:
             print("Note: ISSUE_ORCHESTRATOR_API_PORT not set, skipping push preflight check")
         return True, None, None
@@ -635,10 +636,10 @@ def run_preflight_push_check(worktree: Path, verbose: bool = False) -> tuple[boo
 
 
 def write_error_completion(error_msg: str, status: str) -> Optional[Path]:
-    """Write an error completion record when agent-done itself fails.
+    """Write an error completion record when a completion command itself fails.
 
     This ensures the orchestrator knows something went wrong even if
-    agent-done crashes after the AI agent called it.
+    coding-done/reviewer-done crashes after the AI agent called it.
     """
     try:
         worktree_root = find_worktree_root()

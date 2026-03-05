@@ -112,7 +112,7 @@ class EventName(str, Enum):
     WORKTREE_RESET = "worktree.reset"  # Worktree reset to main, discarding local work
 
     # =========================================================================
-    # Completion lookup (agent-done processing)
+    # Completion lookup (coding-done/reviewer-done processing)
     # =========================================================================
     COMPLETION_LOOKUP = "completion.lookup"
 

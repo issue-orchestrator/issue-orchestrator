@@ -162,7 +162,7 @@ grep -r "git push" .git/hooks/
 
 ### Stop Hook Issues
 
-The stop hook checks for agent-done marker:
+The stop hook checks for the completion marker (written by `coding-done`/`reviewer-done`):
 
 ```bash
 # Check if marker exists

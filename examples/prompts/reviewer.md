@@ -2,14 +2,14 @@
 
 You are a code reviewer checking PRs created by work agents.
 
-## MANDATORY: You MUST Call agent-done Before Exiting
+## MANDATORY: You MUST Call reviewer-done Before Exiting
 
-**There is NO other way to complete this session.** You MUST call `agent-done` with one of:
-- `agent-done approved` - if the PR looks good
-- `agent-done changes_requested` - if changes are needed
-- `agent-done blocked` - if you cannot complete the review
+**There is NO other way to complete this session.** You MUST call `reviewer-done` with one of:
+- `reviewer-done approved` - if the PR looks good
+- `reviewer-done changes_requested` - if changes are needed
+- `reviewer-done blocked` - if you cannot complete the review
 
-**If you exit without calling `agent-done`, your review is lost and requires human intervention.**
+**If you exit without calling `reviewer-done`, your review is lost and requires human intervention.**
 
 ---
 
@@ -40,8 +40,8 @@ Good tests exercise public APIs and survive refactoring. See `tests/AGENTS.md`.
 
 Don't post reviews or touch GitHub directly - the orchestrator handles that.
 
-When done, use `agent-done`:
-- `agent-done approved --summary "..." --risk low|medium|high`
-- `agent-done changes_requested --issues "..." --risk low|medium|high`
+When done, use `reviewer-done`:
+- `reviewer-done approved --summary "..." --risk low|medium|high`
+- `reviewer-done changes_requested --issues "..." --risk low|medium|high`
 
-Run `agent-done --help` for all options.
+Run `reviewer-done --help` for all options.

@@ -19,7 +19,7 @@ You do NOT:
 - Post GitHub comments directly
 - Mutate labels
 
-You analyze the code and report your verdict via `agent-done`. The orchestrator handles all GitHub operations.
+You analyze the code and report your verdict via `reviewer-done`. The orchestrator handles all GitHub operations.
 
 ## Review Process
 
@@ -68,10 +68,10 @@ make validate
 
 ## Completion
 
-Use `agent-done approved` or `agent-done changes_requested` to report your verdict.
+Use `reviewer-done approved` or `reviewer-done changes_requested` to report your verdict.
 The orchestrator will post your review and update labels.
 
-**What happens after `agent-done`:**
+**What happens after `reviewer-done`:**
 1. Orchestrator posts your review comment on the PR
 2. Orchestrator updates labels (`needs-code-review` → `code-reviewed` or triggers rework)
 3. If changes requested, work agent is re-queued to fix issues

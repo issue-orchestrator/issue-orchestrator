@@ -1,9 +1,9 @@
-"""Unit tests for agent_done shared core and the split CLI entry points.
+"""Unit tests for the completion command shared core and split CLI entry points.
 
 Tests cover:
 - agent_done shared utilities (statuses, fields, serialization, record building)
-- coding_done main() for coding/rework agent completion (completed, blocked, needs_human)
-- reviewer_done main() for review agent completion (approved, changes_requested)
+- coding-done main() for coding/rework agent completion (completed, blocked, needs_human)
+- reviewer-done main() for review agent completion (approved, changes_requested)
 
 The orchestrator handles all side effects (push, PR, comments, labels).
 """

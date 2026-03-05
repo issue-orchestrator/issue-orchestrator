@@ -387,7 +387,7 @@ class TestClaudeViaAdapterPath:
         worktree = tmp_path / "test-worktree"
         worktree.mkdir()
 
-        # Create the .issue-orchestrator directory (required for agent-done)
+        # Create the .issue-orchestrator directory (required for completion commands)
         io_dir = worktree / ".issue-orchestrator"
         io_dir.mkdir()
 
@@ -562,19 +562,19 @@ class TestClaudeViaAdapterPath:
 
 @pytest.mark.skipif(not is_claude_available(), reason="Claude CLI not installed")
 class TestAgentDoneInvocation:
-    """Integration tests for agent-done invocation from Claude.
+    """Integration tests for completion command invocation from Claude.
 
-    These tests verify the critical path: Claude can invoke agent-done
+    These tests verify the critical path: Claude can invoke coding-done/reviewer-done
     and write completion.json, which is how sessions signal completion.
     """
 
     def test_agent_done_invocable_from_claude(self, tmp_path):
-        """Verify Claude can invoke agent-done in worktree-like environment.
+        """Verify Claude can invoke completion commands in worktree-like environment.
 
         This tests the exact mechanism the orchestrator relies on:
         1. PATH includes scripts directory with agent-done wrapper
         2. Claude runs with -p flag (non-interactive)
-        3. Claude invokes agent-done via Bash
+        3. Claude invokes coding-done via Bash
         4. completion.json is written
 
         If this test fails, sessions will fail without completion.
@@ -582,7 +582,7 @@ class TestAgentDoneInvocation:
         import json
         from pathlib import Path
 
-        # Get the scripts directory (where agent-done wrapper lives)
+        # Get the scripts directory (where completion command wrappers live)
         repo_root = Path(__file__).parent.parent.parent
         scripts_dir = repo_root / "src" / "issue_orchestrator" / "scripts"
 
@@ -602,7 +602,7 @@ class TestAgentDoneInvocation:
         env["PATH"] = f"{scripts_dir}:{env.get('PATH', '')}"
         env[f"{ENV_PREFIX}COMPLETION_PATH"] = str(completion_dir / "completion.json")
 
-        # Run Claude with -p asking it to invoke agent-done
+        # Run Claude with -p asking it to invoke the completion command
         prompt = (
             "You are in a test. Run this exact bash command and nothing else:\n"
             "agent-done completed --implementation 'test' --problems 'none'\n"
@@ -646,10 +646,10 @@ class TestAgentDoneInvocation:
         )
 
     def test_agent_done_wrapper_resolves_correctly(self):
-        """Verify the agent-done wrapper script finds the real command.
+        """Verify the agent-done wrapper script finds the real completion command.
 
         This tests the wrapper at scripts/agent-done can locate
-        and execute the venv-installed agent-done.
+        and execute the venv-installed coding-done/reviewer-done.
         """
         import os
         from pathlib import Path
@@ -662,7 +662,7 @@ class TestAgentDoneInvocation:
         assert wrapper.exists(), f"Wrapper not found at {wrapper}"
         assert os.access(wrapper, os.X_OK), f"Wrapper not executable: {wrapper}"
 
-        # Venv agent-done should exist (if venv is set up)
+        # Venv completion commands should exist (if venv is set up)
         if venv_agent_done.exists():
             # Run wrapper with --help to verify it forwards correctly
             env = dict(os.environ)
@@ -693,7 +693,7 @@ class TestAgentDoneInvocation:
         The fix is that _setup_and_run must cd to working_dir FIRST.
         This test verifies that behavior end-to-end.
 
-        KEY: agent-done uses Path.cwd() to determine where to write.
+        KEY: coding-done uses Path.cwd() to determine where to write.
         Without cd to worktree, cwd is main repo, so completion goes there.
         With cd to worktree, cwd is worktree, so completion goes there.
         """
@@ -717,14 +717,14 @@ class TestAgentDoneInvocation:
         scripts_dir = repo_root / "src" / "issue_orchestrator" / "scripts"
 
         # Build environment like orchestrator does
-        # NOTE: We do NOT set ISSUE_ORCHESTRATOR_COMPLETION_PATH - agent-done uses cwd!
+        # NOTE: We do NOT set ISSUE_ORCHESTRATOR_COMPLETION_PATH - coding-done uses cwd!
         import os
         env = dict(os.environ)
         env["PATH"] = f"{scripts_dir}:{env.get('PATH', '')}"
         # Clear any existing path to test cwd behavior
         env.pop(f"{ENV_PREFIX}COMPLETION_PATH", None)
 
-        # The key test: we cd to worktree, then run agent-done
+        # The key test: we cd to worktree, then run the completion command
         # This simulates what _setup_and_run does with the cd fix
         cmd = f'cd "{worktree}" && agent-done completed --implementation "test" --problems "none"'
 
@@ -764,7 +764,7 @@ class TestAgentDoneInvocation:
         """Verify the BUG: without cd, completion.json goes to wrong place.
 
         This documents the bug behavior to ensure we don't regress.
-        Without the `cd` fix, agent-done would use cwd (main repo).
+        Without the `cd` fix, coding-done would use cwd (main repo).
         """
         import json
 
@@ -797,7 +797,7 @@ class TestAgentDoneInvocation:
             text=True,
             timeout=10,
             env=env,
-            # cwd is main_repo - this is where agent-done will write
+            # cwd is main_repo - this is where the completion command will write
             cwd=str(main_repo),
         )
 

@@ -39,7 +39,7 @@ class TestAISystemConfig:
             log_format="jsonl",
             console_tags=["claude", "Claude Code"],
             error_patterns=["error", "failed"],
-            completion_marker="agent-done",
+            completion_marker="coding-done",
         )
         assert config.name == "claude-code"
         assert config.description == "Claude Code CLI"
@@ -47,7 +47,7 @@ class TestAISystemConfig:
         assert config.log_format == "jsonl"
         assert config.console_tags == ["claude", "Claude Code"]
         assert config.error_patterns == ["error", "failed"]
-        assert config.completion_marker == "agent-done"
+        assert config.completion_marker == "coding-done"
 
     def test_log_format_defaults_to_text(self):
         """Test that log_format defaults to 'text'."""

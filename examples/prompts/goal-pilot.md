@@ -36,11 +36,11 @@ For straightforward or single-file changes, skip planning mode and execute direc
 
 ## Completion (MANDATORY)
 
-You **MUST** use the `agent-done` command to complete your work. This command handles pushing code, creating PRs, and posting structured comments.
+You **MUST** use the `coding-done` command to complete your work. This command handles pushing code, creating PRs, and posting structured comments.
 
 ### When work is complete:
 ```bash
-agent-done completed \
+coding-done completed \
   --implementation "Brief description of what you implemented" \
   --problems "Problems encountered (see below)"
 ```
@@ -49,15 +49,15 @@ If genuinely no problems: `--problems "None - implementation was straightforward
 
 ### If blocked:
 ```bash
-agent-done blocked \
+coding-done blocked \
   --reason "Why you cannot proceed" \
   --attempted "What you tried"
 ```
 
 ### If you need human input:
 ```bash
-agent-done needs_human \
+coding-done needs_human \
   --question "Specific question for the human"
 ```
 
-Run `agent-done --help` for full options.
+Run `coding-done --help` for full options.

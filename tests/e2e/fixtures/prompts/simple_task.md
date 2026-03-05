@@ -12,4 +12,4 @@ git add test-output.txt
 git commit -m "E2E test: simple task"
 ```
 
-Then exit without calling agent-done, as this is just a placeholder for claim coordination tests.
+Then exit without calling coding-done, as this is just a placeholder for claim coordination tests.

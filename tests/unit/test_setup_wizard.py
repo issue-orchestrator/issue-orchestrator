@@ -131,7 +131,7 @@ class TestCreateTriageReviewPrompt:
 
         # Check gh commands have correct labels
         assert 'gh pr list --label "my-review-label"' in content
-        # Orchestrator handles label updates via agent-done workflow
+        # Orchestrator handles label updates via completion command workflow
         assert "my-review-label" in content
         assert "my-reviewed-label" in content
 

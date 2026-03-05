@@ -345,10 +345,10 @@ except:
 
 
 class TestAgentDoneAvailability:
-    """Test that agent-done is available and working."""
+    """Test that completion commands (agent-done wrapper) are available and working."""
 
     def test_agent_done_is_available(self, isolated_env):
-        """Verify agent-done command is in PATH."""
+        """Verify agent-done wrapper command is in PATH."""
         result = run_in_isolation(isolated_env, "which agent-done")
 
         assert result.returncode == 0

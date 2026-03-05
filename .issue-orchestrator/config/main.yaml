@@ -30,7 +30,7 @@ agents:
     ai_system: claude-code
     timeout_minutes: 30
     permission_mode: bypassPermissions
-    initial_prompt: "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report your verdict."
+    initial_prompt: "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use reviewer-done to report your verdict."
   agent:triage:
     prompt: repo-specific/prompts/triage.md
     model: sonnet
@@ -38,7 +38,7 @@ agents:
     ai_system: claude-code
     timeout_minutes: 60
     permission_mode: bypassPermissions
-    initial_prompt: "Triage review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use agent-done to report completion."
+    initial_prompt: "Triage review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use coding-done to report completion."
   agent:goal-pilot:
     prompt: repo-specific/prompts/goal-pilot.md
     provider: codex

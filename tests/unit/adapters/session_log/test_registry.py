@@ -29,7 +29,7 @@ def mock_ai_system_config():
         log_format="text",
         console_tags=["test-tag"],
         error_patterns=["error", "failed", "exception"],
-        completion_marker="agent-done",
+        completion_marker="coding-done",
     )
 
 
@@ -45,7 +45,7 @@ def mock_systems_config(mock_ai_system_config):
                 log_format="jsonl",
                 console_tags=["claude"],
                 error_patterns=["error", "failed"],
-                completion_marker="agent-done",
+                completion_marker="coding-done",
             ),
             "gemini": AISystemConfig(
                 name="gemini",
@@ -92,7 +92,7 @@ def jsonl_log_file(temp_log_dir):
         {"type": "error", "message": "error: something failed", "severity": "high"},
         {"type": "event", "content": "Permission denied on /tmp"},
         {"type": "tool_result", "result": {"is_error": True, "content": "Access denied"}},
-        {"type": "event", "content": "agent-done completed"},
+        {"type": "event", "content": "coding-done completed"},
     ]
     content = "\n".join(json.dumps(entry) for entry in entries)
     log_path.write_text(content)
@@ -300,7 +300,7 @@ class TestGetFailureContext:
             name="test",
             log_format="jsonl",
             error_patterns=["error", "failed"],
-            completion_marker="agent-done",
+            completion_marker="coding-done",
         )
         provider = DataDrivenLogProvider(config, mock_systems_config)
         result = provider.get_failure_context(jsonl_log_file)
@@ -446,7 +446,7 @@ class TestLogExtractionMethods:
         config = AISystemConfig(
             name="test",
             log_format="jsonl",
-            completion_marker="agent-done",
+            completion_marker="coding-done",
         )
         provider = DataDrivenLogProvider(config, mock_systems_config)
         result = provider.get_failure_context(jsonl_log_file)
@@ -466,7 +466,7 @@ class TestLogExtractionMethods:
         config = AISystemConfig(
             name="test",
             log_format="jsonl",
-            completion_marker="agent-done",
+            completion_marker="coding-done",
         )
         provider = DataDrivenLogProvider(config, mock_systems_config)
         result = provider.get_failure_context(log_path)

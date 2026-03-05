@@ -332,15 +332,15 @@ class SessionLauncher:
     ) -> str:
         """Build the common env-export string for all session types.
 
-        Includes the orchestrator venv on PATH so ``agent-done`` is always
-        reachable — even when the target repo is a foreign (non-orchestrator)
-        repository with no ``.venv``.
+        Includes the orchestrator venv on PATH so ``coding-done``/``reviewer-done``
+        is always reachable — even when the target repo is a foreign
+        (non-orchestrator) repository with no ``.venv``.
 
         Also exports orchestrator ``src`` on ``PYTHONPATH`` so subprocess
         commands launched from arbitrary worktree directories can import
         ``issue_orchestrator`` without depending on editable installs.
 
-        NOTE: The selected orchestrator config name is exported so ``agent-done``
+        NOTE: The selected orchestrator config name is exported so ``coding-done``/``reviewer-done``
         resolves validation from the same config file used by the launcher.
         """
         orch_bin = Path(sys.executable).parent

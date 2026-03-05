@@ -80,7 +80,7 @@ Based on the `reason=` value, go to the appropriate section:
 
 | Reason | Meaning | Go to |
 |--------|---------|-------|
-| `no_completion_record` | Agent never called `agent-done` | Step 3A |
+| `no_completion_record` | Agent never called `coding-done`/`reviewer-done` | Step 3A |
 | `validation_failed` | Tests/lint/type-check failed | Step 3B |
 | `push_failed` | Git push failed | Step 3C |
 | `timeout` | Session exceeded time limit | Step 3D |
@@ -90,9 +90,9 @@ Based on the `reason=` value, go to the appropriate section:
 
 ## Step 3A: No Completion Record
 
-The agent session terminated without calling `agent-done`. Common causes:
+The agent session terminated without calling `coding-done`/`reviewer-done`. Common causes:
 - Agent died/crashed early
-- Agent forgot to call agent-done
+- Agent forgot to call `coding-done`/`reviewer-done`
 - Agent was rate-limited
 - Permission prompt blocked agent
 
@@ -131,14 +131,14 @@ wc -l $RUN_DIR/claude-session.jsonl
 - **20-100 lines**: Session started but failed early
 - **> 100 lines**: Session ran but didn't complete properly
 
-### Check for agent-done calls
+### Check for completion command calls
 
 ```bash
-# Did the agent ever call agent-done?
-grep "agent-done" $RUN_DIR/claude-session.jsonl
+# Did the agent ever call coding-done or reviewer-done?
+grep -E "coding-done|reviewer-done" $RUN_DIR/claude-session.jsonl
 
 # If found, check the result
-grep -A5 "agent-done" $RUN_DIR/claude-session.jsonl | grep "tool_result"
+grep -E -A5 "coding-done|reviewer-done" $RUN_DIR/claude-session.jsonl | grep "tool_result"
 ```
 
 ### Check for errors in session
@@ -152,15 +152,15 @@ grep -i "limit\|rate\|quota" $RUN_DIR/claude-session.jsonl
 ```
 
 **Common findings:**
-- No agent-done + short session = Agent crashed or was killed
-- agent-done called but validation failed = Go to Step 3B
+- No completion command + short session = Agent crashed or was killed
+- `coding-done`/`reviewer-done` called but validation failed = Go to Step 3B
 - Permission errors = Agent hit permission prompt (needs `bypassPermissions`)
 
 ---
 
 ## Step 3B: Validation Failed
 
-The agent called `agent-done completed` but validation (tests/lint) failed.
+The agent called `coding-done completed` but validation (tests/lint) failed.
 
 ### Check validation output
 
@@ -251,7 +251,7 @@ grep -E "runtime|duration|timeout" in trace output
 
 ## Step 3E: Agent Reported Blocked
 
-The agent successfully called `agent-done blocked`.
+The agent successfully called `coding-done blocked`.
 
 ### Check why agent blocked
 

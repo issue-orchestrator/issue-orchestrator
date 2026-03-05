@@ -259,7 +259,7 @@ class ValidationConfig:
     """Validation configuration - single command runs everywhere.
 
     The same validation command runs:
-    - On agent-done: gives agent immediate feedback to fix issues
+    - On coding-done/reviewer-done: gives agent immediate feedback to fix issues
     - On pre-push: cached by SHA, instant pass if already validated
 
     This ensures agents can't "pass" a quick check only to fail later.
@@ -1225,7 +1225,7 @@ class Config:
     # Client-repo-specific setup commands (run after worktree creation).
     # No default — users must configure these for their repo (e.g., npm install,
     # pip install -e '.[dev]'). The orchestrator's own setup (hooks, claude
-    # settings, agent-done availability) is handled automatically.
+    # settings, coding-done/reviewer-done availability) is handled automatically.
     setup_worktree: list[str] = field(default_factory=list)
     # Preflight a dry-run push when reusing worktrees to catch stale refs early.
     reuse_push_preflight: bool = True
@@ -1273,7 +1273,7 @@ class Config:
     # Dangerous options (use with caution)
     dangerous: DangerousConfig = field(default_factory=DangerousConfig)
 
-    # Validation configuration - single command runs on agent-done and pre-push
+    # Validation configuration - single command runs on coding-done/reviewer-done and pre-push
     validation: ValidationConfig = field(default_factory=ValidationConfig)
 
     # Retry configuration - validation retry with error injection
@@ -2262,7 +2262,7 @@ class Config:
         }
 
         # Valid variables for command (after initial_prompt is rendered)
-        # system_prompt includes agent-done instructions, built by get_command()
+        # system_prompt includes completion command instructions, built by get_command()
         VALID_COMMAND_VARS = VALID_INITIAL_PROMPT_VARS | {"initial_prompt", "system_prompt"}
 
         # Regex to find {variable_name} patterns (excluding {{ escaped braces }})
@@ -2347,8 +2347,8 @@ def load_validation_config(
 ) -> dict:
     """Load validation configuration from the config file.
 
-    This is a lightweight function for use by validation hooks (agent_done,
-    prepush_check) that need only the validation config, not the full Config.
+    This is a lightweight function for use by validation hooks (coding_done,
+    reviewer_done, prepush_check) that need only the validation config, not the full Config.
 
     Args:
         start_path: Starting path for config search (defaults to cwd)

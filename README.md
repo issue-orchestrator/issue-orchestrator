@@ -28,7 +28,7 @@ Every issue moves through a state machine. Labels on GitHub and the worktrees ea
 stateDiagram-v2
   [*] --> Queued
   Queued --> Running : session launched
-  Running --> Completed : agent-done completed
+  Running --> Completed : coding-done completed
   Running --> Blocked : failed / needs human
   Blocked --> Running : unblocked / retried
   Completed --> Review : PR created

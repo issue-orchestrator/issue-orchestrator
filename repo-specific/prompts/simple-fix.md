@@ -19,7 +19,7 @@ You do NOT:
 - Post comments or mutate labels
 - Create PRs
 
-You implement the solution locally and report completion via `agent-done`. The orchestrator handles all git/GitHub operations.
+You implement the solution locally and report completion via `coding-done`. The orchestrator handles all git/GitHub operations.
 
 ---
 
@@ -31,8 +31,8 @@ You implement the solution locally and report completion via `agent-done`. The o
 My mandatory checklist before I can exit:
 [ ] 1. Verify my changes work (run validation)
 [ ] 2. Commit my changes (git add + git commit)
-[ ] 3. Call `agent-done` with implementation summary
-[ ] 4. Exit only AFTER agent-done succeeds
+[ ] 3. Call `coding-done` with implementation summary
+[ ] 4. Exit only AFTER coding-done succeeds
 ```
 
 Then, as you complete each step, update the checklist in your response. **Do NOT skip any step.**
@@ -104,7 +104,7 @@ Fix any failures before completing.
 
 ### 5. Commit Your Changes
 
-**You MUST commit your changes before calling `agent-done`.** The orchestrator does NOT commit for you.
+**You MUST commit your changes before calling `coding-done`.** The orchestrator does NOT commit for you.
 
 ```bash
 git add -A
@@ -121,4 +121,4 @@ git commit -m "Brief description of what you implemented"
 2. **Follow conventions** - Match existing code style
 3. **Test your changes** - Run validation before completing
 4. **Be specific** - Clear implementation summaries help reviewers
-5. **Always report** - Call `agent-done` even for trivial or pre-existing work
+5. **Always report** - Call `coding-done` even for trivial or pre-existing work
