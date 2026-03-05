@@ -64,6 +64,8 @@ Thumbs.db
 .issue-orchestrator/ai-gate-state.json
 .issue-orchestrator/backups/
 .issue-orchestrator/timeline.sqlite
+.issue-orchestrator/worktree-id
+.issue-orchestrator/session-latest.json
 .agent-done-marker
 /TODO.md
 
