@@ -32,6 +32,7 @@ agents:
     timeout_minutes: 3
     command: "bash {prompt}"
     meta_agent: "claude-code"
+    ai_system: "claude-code"
     permission_mode: bypassPermissions
   "agent:script-review":
     prompt: "tests/e2e/fixtures/scripts/review-decider.sh"
@@ -39,6 +40,7 @@ agents:
     timeout_minutes: 3
     command: "PR_NUMBER={pr_number} bash {prompt}"
     meta_agent: "claude-code"
+    ai_system: "claude-code"
     permission_mode: bypassPermissions
   "agent:triage-investigator":
     prompt: "tests/e2e/fixtures/scripts/complete-immediately.sh"
@@ -46,6 +48,7 @@ agents:
     timeout_minutes: 3
     command: "bash {prompt}"
     meta_agent: "claude-code"
+    ai_system: "claude-code"
     permission_mode: bypassPermissions
 
 execution:

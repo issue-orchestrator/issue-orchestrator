@@ -47,7 +47,7 @@ def run_hook_test(
             input=test_input,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
             cwd=str(project_root) if project_root else None,
             env=_hook_env(env),
         )
@@ -81,7 +81,7 @@ def run_cursor_hook_test(
             input=test_input,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
             cwd=str(project_root) if project_root else None,
             env=_hook_env(env),
         )
@@ -125,7 +125,7 @@ def run_copilot_hook_test(
             input=test_input,
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
             cwd=str(project_root) if project_root else None,
             env=_hook_env(env),
         )

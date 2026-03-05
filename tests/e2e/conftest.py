@@ -397,6 +397,7 @@ def e2e_session_config(
             model="sonnet",
             command="bash {prompt}",
             meta_agent="claude-code",
+            ai_system="claude-code",
             permission_mode="bypassPermissions",
         ),
         "agent:script-completes": AgentConfig(
@@ -405,6 +406,7 @@ def e2e_session_config(
             model="sonnet",
             command="bash {prompt}",
             meta_agent="claude-code",
+            ai_system="claude-code",
             permission_mode="bypassPermissions",
         ),
         "agent:script-review": AgentConfig(
@@ -413,6 +415,7 @@ def e2e_session_config(
             model="sonnet",
             command="PR_NUMBER={pr_number} bash {prompt}",
             meta_agent="claude-code",
+            ai_system="claude-code",
             permission_mode="bypassPermissions",
         ),
         "agent:triage-investigator": AgentConfig(
@@ -421,6 +424,7 @@ def e2e_session_config(
             model="sonnet",
             command="bash {prompt}",
             meta_agent="claude-code",
+            ai_system="claude-code",
             permission_mode="bypassPermissions",
         ),
     }
@@ -702,6 +706,7 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mo
             model="sonnet",
             command="bash {prompt}",
             meta_agent="claude-code",
+            ai_system="claude-code",
         )
     }
 

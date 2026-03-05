@@ -67,6 +67,7 @@ def create_claim_enabled_config(
             model="sonnet",
             timeout_minutes=5,
             command="claude",
+            ai_system="claude-code",
             permission_mode="auto-edit",
         ),
     }
