@@ -5191,6 +5191,9 @@ function syntaxHighlightJson(obj) {
         .replace(/\b(-?\d+\.?\d*)\b/g, '<span class="json-number">$1</span>');
 }
 
+let liveLogPoller = null;
+let liveLogIssue = null;
+
 function stopLiveLogPoller() {
     if (liveLogPoller) {
         clearInterval(liveLogPoller);
