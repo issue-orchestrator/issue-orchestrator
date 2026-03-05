@@ -31,8 +31,10 @@ class OrchestratorStub:
     config: Config
     shutdown_requested: bool = False
 
+    provider_circuit_data: list[dict] | None = None
+
     def get_provider_circuit_status(self) -> list[dict]:
-        return []
+        return self.provider_circuit_data or []
 
 
 def make_config() -> Config:
@@ -302,3 +304,59 @@ def test_e2e_tab_and_panels_render(jinja_env):
     assert soup.select_one("#panel-e2e") is not None
     assert soup.select_one("#e2eHeaderBadge") is not None
     assert soup.select_one("#e2eControls") is not None
+
+
+def test_provider_circuit_status_section_renders_when_data_present(jinja_env):
+    config = make_config()
+    state = OrchestratorState(startup_status="complete")
+    circuit_data = [
+        {
+            "provider": "anthropic",
+            "open_until": None,
+            "consecutive_outages": 0,
+            "last_error_summary": None,
+            "updated_at": "2026-03-05T12:00:00Z",
+        },
+        {
+            "provider": "openai",
+            "open_until": "2026-03-05T12:05:00Z",
+            "consecutive_outages": 3,
+            "last_error_summary": "503 Service Unavailable",
+            "updated_at": "2026-03-05T12:01:00Z",
+        },
+    ]
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config, provider_circuit_data=circuit_data),
+        active_tab="flow",
+        e2e_status_provider=e2e_disabled,
+    )
+
+    soup = render_dashboard(jinja_env, vm)
+
+    section = soup.select_one("section.provider-circuit-status")
+    assert section is not None, "Provider circuit status section should render when data is present"
+    items = section.select(".circuit-status-item")
+    assert len(items) == 2
+    # First provider: closed circuit
+    assert "anthropic" in items[0].text
+    assert "Circuit Closed" in items[0].text
+    # Second provider: open circuit with error details
+    assert "openai" in items[1].text
+    assert "Circuit Open" in items[1].text
+    assert "3 consecutive outages" in items[1].text
+    assert "503 Service Unavailable" in items[1].text
+
+
+def test_provider_circuit_status_section_hidden_when_empty(jinja_env):
+    config = make_config()
+    state = OrchestratorState(startup_status="complete")
+    vm = build_dashboard_view_model(
+        OrchestratorStub(state=state, config=config),
+        active_tab="flow",
+        e2e_status_provider=e2e_disabled,
+    )
+
+    soup = render_dashboard(jinja_env, vm)
+
+    section = soup.select_one("section.provider-circuit-status")
+    assert section is None, "Provider circuit status section should not render when data is empty"

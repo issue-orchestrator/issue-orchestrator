@@ -93,13 +93,13 @@
             </div>
         </section>
 
-        {% if dashboard_data.provider_circuit_status and dashboard_data.provider_circuit_status|length > 0 %}
+        {% if provider_circuit_status and provider_circuit_status|length > 0 %}
         <section class="provider-circuit-status" aria-label="Provider circuit breaker status">
             <div class="circuit-status-header">
                 <h3>Provider Status</h3>
             </div>
             <div class="circuit-status-items">
-                {% for status in dashboard_data.provider_circuit_status %}
+                {% for status in provider_circuit_status %}
                 <div class="circuit-status-item {% if status.open_until %}open{% else %}closed{% endif %}" title="Last updated: {{ status.updated_at }}">
                     <div class="circuit-provider">{{ status.provider }}</div>
                     {% if status.open_until %}
