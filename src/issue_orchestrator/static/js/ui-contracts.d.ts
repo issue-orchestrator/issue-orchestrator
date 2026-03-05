@@ -56,7 +56,7 @@ export interface DashboardViewModelPayload {
   history_items: IssueItemPayload[];
   issues: IssueItemPayload[];
   paused: boolean;
-  provider_circuit_status: Record<string, any>[];
+  provider_circuit_status: ProviderCircuitStatusPayload[];
   queue_count: number;
   queue_items: IssueItemPayload[];
   queue_page: number;
@@ -149,6 +149,14 @@ export interface PhaseDialogPayload {
   phase: Record<string, any> | null;
   phases: Record<string, any>[];
   title: string;
+}
+
+export interface ProviderCircuitStatusPayload {
+  consecutive_outages: number;
+  last_error_summary?: string | null;
+  open_until?: string | null;
+  provider: string;
+  updated_at: string;
 }
 
 export interface SessionDiagnosticsActionPayload {

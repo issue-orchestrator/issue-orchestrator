@@ -18,14 +18,6 @@ class BlockedIssuePayload(BaseModel):
     model_config = ConfigDict(extra="allow")
     pass
 
-class ProviderCircuitStatusPayload(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    provider: str
-    open_until: str | None = None
-    consecutive_outages: int
-    last_error_summary: str | None = None
-    updated_at: str
-
 class BlockedIssuesDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     blocked_issues: list[BlockedIssuePayload]
@@ -167,6 +159,14 @@ class PhaseDialogPayload(BaseModel):
     phase: dict[str, Any] | None
     phases: list[dict[str, Any]]
     title: str
+
+class ProviderCircuitStatusPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    consecutive_outages: int
+    last_error_summary: str | None = None
+    open_until: str | None = None
+    provider: str
+    updated_at: str
 
 class SessionDiagnosticsActionPayload(BaseModel):
     model_config = ConfigDict(extra="allow")

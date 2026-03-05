@@ -31,6 +31,9 @@ class OrchestratorStub:
     config: Config
     shutdown_requested: bool = False
 
+    def get_provider_circuit_status(self) -> list[dict]:
+        return []
+
 
 def make_config() -> Config:
     config = Config()

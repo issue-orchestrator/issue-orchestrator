@@ -134,6 +134,7 @@ def create_mock_orchestrator():
     mock_orch.scheduler = MagicMock()
     mock_orch.scheduler.sort_by_priority.side_effect = lambda issues: issues
     mock_orch.scheduler.dependency_evaluator = None
+    mock_orch.get_provider_circuit_status.return_value = []
     mock_orch.repository_host = MagicMock()
     mock_orch.repository_host.get_issue.return_value = None
     mock_orch.repository_host.update_label_cache = MagicMock()
@@ -1646,6 +1647,9 @@ class TestIssueRowsEndpoint:
                 self.config.repo_root = Path("/tmp/repo")
                 self.shutdown_requested = False
 
+            def get_provider_circuit_status(self) -> list[dict]:
+                return []
+
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())
         try:
@@ -1675,6 +1679,9 @@ class TestIssueRowsEndpoint:
                 self.config.repo = "test/repo"
                 self.config.repo_root = Path("/tmp/repo")
                 self.shutdown_requested = False
+
+            def get_provider_circuit_status(self) -> list[dict]:
+                return []
 
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())
