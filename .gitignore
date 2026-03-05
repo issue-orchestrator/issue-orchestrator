@@ -71,5 +71,8 @@ Thumbs.db
 .validate/
 .venv
 
+# MCP server config (local to each developer)
+.mcp.json
+
 # Worktrees for development
 worktrees/
