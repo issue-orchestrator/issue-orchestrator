@@ -367,15 +367,8 @@ def write_completion_record(record: CompletionRecord) -> Path:
 
     Returns the path to the written file.
     """
-    # Find worktree root (handles being in subdirectory)
-    cwd = Path.cwd()
-    worktree_root = cwd
-
-    # Look for .git file/directory to find root
-    for path in [cwd, *cwd.parents]:
-        if (path / ".git").exists():
-            worktree_root = path
-            break
+    # Reuse find_worktree_root() so the WORKTREE guard is applied here too
+    worktree_root = find_worktree_root()
 
     # Orchestrator tells agent where to write via env var
     # This ensures each session type writes to a distinct file
@@ -421,13 +414,39 @@ def write_marker_file(status: str) -> None:
     )
 
 
+class WorktreeMismatchError(SystemExit):
+    """Raised when CWD does not match the expected worktree."""
+
+    def __init__(self, cwd_root: Path, expected: Path) -> None:
+        msg = (
+            f"WORKTREE MISMATCH: You are in '{cwd_root}' but the orchestrator "
+            f"expected '{expected}'.  cd back to the correct worktree and retry."
+        )
+        super().__init__(msg)
+
+
 def find_worktree_root() -> Path:
-    """Find the worktree root by looking for .git."""
+    """Find the worktree root, guarding against cross-worktree confusion.
+
+    If ``ISSUE_ORCHESTRATOR_WORKTREE`` is set (i.e. the session was launched
+    by the orchestrator), the discovered git root **must** match.  This
+    prevents agents that ``cd`` into stale worktrees from silently writing
+    completion records in the wrong place.
+    """
     cwd = Path.cwd()
+    cwd_root = cwd
     for path in [cwd, *cwd.parents]:
         if (path / ".git").exists():
-            return path
-    return cwd
+            cwd_root = path
+            break
+
+    expected_raw = get_env("WORKTREE")
+    if expected_raw:
+        expected = Path(expected_raw).resolve()
+        if cwd_root.resolve() != expected:
+            raise WorktreeMismatchError(cwd_root, expected)
+
+    return cwd_root
 
 
 def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int]:

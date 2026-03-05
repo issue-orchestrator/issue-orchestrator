@@ -24,7 +24,9 @@ from issue_orchestrator.entrypoints.cli_tools.agent_done import (
     REQUIRED_FIELDS,
     STATUS_TO_OUTCOME,
     STATUS_TO_ACTIONS,
+    WorktreeMismatchError,
     die,
+    find_worktree_root,
     get_issue_number,
     get_session_id,
     validate_fields,
@@ -1313,5 +1315,101 @@ validation:
             assert "Skipping validation for 'blocked' status" in captured.out
             # Should still write completion record
             assert "Completion record written to" in captured.out
+        finally:
+            os.chdir(original_cwd)
+
+
+class TestFindWorktreeRoot:
+    """Test find_worktree_root with ISSUE_ORCHESTRATOR_WORKTREE guard."""
+
+    def test_returns_git_root_when_no_env_var(self, tmp_path):
+        """Without env var, falls back to filesystem .git detection."""
+        (tmp_path / ".git").mkdir()
+        subdir = tmp_path / "src" / "app"
+        subdir.mkdir(parents=True)
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(subdir)
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(f"{ENV_PREFIX}WORKTREE", None)
+                result = find_worktree_root()
+            assert result == tmp_path
+        finally:
+            os.chdir(original_cwd)
+
+    def test_returns_cwd_when_no_git_and_no_env(self, tmp_path):
+        """Without .git and without env var, returns CWD."""
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+            with patch.dict(os.environ, {}, clear=False):
+                os.environ.pop(f"{ENV_PREFIX}WORKTREE", None)
+                result = find_worktree_root()
+            assert result == tmp_path
+        finally:
+            os.chdir(original_cwd)
+
+    def test_passes_when_cwd_matches_env_var(self, tmp_path):
+        """When CWD matches WORKTREE env var, returns normally."""
+        (tmp_path / ".git").mkdir()
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+            with patch.dict(os.environ, {f"{ENV_PREFIX}WORKTREE": str(tmp_path)}):
+                result = find_worktree_root()
+            assert result == tmp_path
+        finally:
+            os.chdir(original_cwd)
+
+    def test_raises_when_cwd_mismatches_env_var(self, tmp_path):
+        """When CWD is in a different worktree, raises WorktreeMismatchError."""
+        # Simulate two worktrees
+        correct_wt = tmp_path / "correct-worktree"
+        correct_wt.mkdir()
+        (correct_wt / ".git").mkdir()
+
+        wrong_wt = tmp_path / "wrong-worktree"
+        wrong_wt.mkdir()
+        (wrong_wt / ".git").mkdir()
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(wrong_wt)
+            with patch.dict(os.environ, {f"{ENV_PREFIX}WORKTREE": str(correct_wt)}):
+                with pytest.raises(WorktreeMismatchError, match="WORKTREE MISMATCH"):
+                    find_worktree_root()
+        finally:
+            os.chdir(original_cwd)
+
+    def test_raises_includes_both_paths_in_message(self, tmp_path):
+        """Error message includes both the actual and expected paths."""
+        correct_wt = tmp_path / "expected"
+        correct_wt.mkdir()
+        (correct_wt / ".git").mkdir()
+
+        wrong_wt = tmp_path / "actual"
+        wrong_wt.mkdir()
+        (wrong_wt / ".git").mkdir()
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(wrong_wt)
+            with patch.dict(os.environ, {f"{ENV_PREFIX}WORKTREE": str(correct_wt)}):
+                with pytest.raises(WorktreeMismatchError, match="actual.*expected"):
+                    find_worktree_root()
+        finally:
+            os.chdir(original_cwd)
+
+    def test_subdirectory_of_correct_worktree_passes(self, tmp_path):
+        """Agent in a subdirectory of the correct worktree should pass."""
+        (tmp_path / ".git").mkdir()
+        subdir = tmp_path / "src" / "deep" / "nested"
+        subdir.mkdir(parents=True)
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(subdir)
+            with patch.dict(os.environ, {f"{ENV_PREFIX}WORKTREE": str(tmp_path)}):
+                result = find_worktree_root()
+            assert result == tmp_path
         finally:
             os.chdir(original_cwd)

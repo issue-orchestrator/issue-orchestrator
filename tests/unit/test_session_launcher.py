@@ -742,6 +742,14 @@ class TestLaunchIssueSession:
         cmd = launcher_bundle.create_session_calls[0]["cmd"]
         assert "E2E_PR_LABELS" in cmd
 
+    def test_exports_worktree_path_env_var(self, launcher_bundle, sample_issue):
+        """Verify ISSUE_ORCHESTRATOR_WORKTREE is exported so coding-done can guard CWD."""
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is True
+        cmd = launcher_bundle.create_session_calls[0]["cmd"]
+        assert "ISSUE_ORCHESTRATOR_WORKTREE=" in cmd
+
     def test_checks_dependencies_before_launch(self, launcher_bundle):
         """Verify CAS dependency check (lines 235-254)."""
         # Create issue with body so dependency check is triggered
