@@ -53,9 +53,9 @@ Use this skill when you change any schema-backed payloads (UI view models, SSE p
 **Drift test:**
 - `tests/unit/test_settings_schema.py::TestDriftDetection::test_config_reference_not_stale`
 
-### 3. Completion Record Schema (Agent-Done)
+### 3. Completion Record Schema (coding-done / reviewer-done)
 
-**When to use:** Changing the `agent-done` JSON shape or validation rules.
+**When to use:** Changing the Completion Record JSON shape or validation rules.
 
 **Source of truth:**
 - `src/issue_orchestrator/domain/models.py` (`CompletionRecord`)

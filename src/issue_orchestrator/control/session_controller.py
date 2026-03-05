@@ -2,7 +2,7 @@
 
 This controller makes decisions about session outcomes based on:
 1. Observations (session running, terminated, timed out)
-2. Completion records (completion.json written by agent-done)
+2. Completion records (completion.json written by coding-done/reviewer-done)
 3. Validation gate (optional post-completion validation)
 
 Key principle: completion.json is the source of truth for agent intent.

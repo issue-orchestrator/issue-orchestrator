@@ -248,12 +248,12 @@ class TestWriteRetryPrompt:
         )
 
         content = path.read_text()
-        # Should use default template which contains agent-done instructions
+        # Should use default template which contains completion command instructions
         assert "coding-done completed" in content
         assert "coding-done blocked" in content
 
     def test_default_template_includes_blocked_option(self, tmp_path: Path):
-        """Default template includes agent-done blocked option."""
+        """Default template includes completion command blocked option."""
         worktree = tmp_path / "worktree"
         worktree.mkdir()
 

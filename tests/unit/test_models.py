@@ -156,7 +156,7 @@ class TestAgentConfig:
         assert config.timeout_minutes == 45
 
     def test_get_command_legacy_includes_system_prompt_variable(self, tmp_path):
-        """Test legacy command path includes {system_prompt} with agent-done docs."""
+        """Test legacy command path includes {system_prompt} with completion command docs."""
         prompt_file = tmp_path / "prompt.md"
         prompt_file.write_text("Task instructions")
 
@@ -167,14 +167,14 @@ class TestAgentConfig:
 
         cmd = config.get_command(123, "Test Issue", tmp_path)
 
-        # Should include agent-done docs
+        # Should include completion command docs
         assert "CRITICAL" in cmd
         assert "coding-done" in cmd
         # Should include instruction to read prompt file
         assert "prompt.md" in cmd
 
     def test_get_command_provider_always_injects_agent_done(self, tmp_path):
-        """Test provider path always injects agent-done docs (strict enforcement)."""
+        """Test provider path always injects completion command docs (strict enforcement)."""
         prompt_file = tmp_path / "prompt.md"
         prompt_file.write_text("Task instructions")
 
@@ -186,7 +186,7 @@ class TestAgentConfig:
 
         cmd = config.get_command(123, "Test Issue", tmp_path)
 
-        # Should include agent-done docs
+        # Should include completion command docs
         assert "CRITICAL" in cmd
         assert "coding-done" in cmd
         assert "prompt.md" in cmd
@@ -208,21 +208,21 @@ class TestAgentConfig:
 
         cmd = config.get_command(123, "Test Issue", tmp_path)
 
-        # Should include BOTH agent-done docs AND user content
-        assert "CRITICAL" in cmd  # Agent-done enforcement
+        # Should include BOTH completion command docs AND user content
+        assert "CRITICAL" in cmd  # Completion command enforcement
         assert "coding-done" in cmd
         assert "Custom user instructions here" in cmd  # User content appended
-        # Agent-done should come BEFORE user content in the command
+        # Completion command docs should come BEFORE user content in the command
         critical_pos = cmd.find("CRITICAL")
         user_pos = cmd.find("Custom user instructions")
-        assert critical_pos < user_pos, "Agent-done docs must come before user system_prompt"
+        assert critical_pos < user_pos, "Completion command docs must come before user system_prompt"
 
     def test_get_command_provider_user_system_prompt_cannot_replace(self, tmp_path):
-        """Test user cannot replace agent-done injection even with matching key."""
+        """Test user cannot replace completion command injection even with matching key."""
         prompt_file = tmp_path / "prompt.md"
         prompt_file.write_text("Task instructions")
 
-        # User tries to provide their own system_prompt that omits agent-done
+        # User tries to provide their own system_prompt that omits completion commands
         config = AgentConfig(
             prompt_path=prompt_file,
             prompt_relative="prompt.md",
@@ -232,14 +232,14 @@ class TestAgentConfig:
 
         cmd = config.get_command(123, "Test Issue", tmp_path)
 
-        # Agent-done MUST still be present (strict enforcement)
+        # Completion commands MUST still be present (strict enforcement)
         assert "CRITICAL" in cmd
         assert "coding-done" in cmd
         # User content is also present (extensibility)
         assert "My own instructions without agent-done" in cmd
 
     def test_get_command_codex_provider_injects_agent_done(self, tmp_path):
-        """Test Codex provider also gets agent-done injection (universal enforcement)."""
+        """Test Codex provider also gets completion command injection (universal enforcement)."""
         prompt_file = tmp_path / "prompt.md"
         prompt_file.write_text("Task instructions")
 
@@ -252,7 +252,7 @@ class TestAgentConfig:
 
         cmd = config.get_command(123, "Test Issue", tmp_path)
 
-        # Agent-done MUST be present even for non-Claude providers
+        # Completion commands MUST be present even for non-Claude providers
         assert "CRITICAL" in cmd
         assert "coding-done" in cmd
         assert "prompt.md" in cmd
@@ -260,7 +260,7 @@ class TestAgentConfig:
         assert "codex" in cmd
 
     def test_get_command_non_claude_provider_prepends_to_prompt(self, tmp_path):
-        """Test non-Claude providers get agent-done prepended to prompt."""
+        """Test non-Claude providers get completion command docs prepended to prompt."""
         prompt_file = tmp_path / "prompt.md"
         prompt_file.write_text("Task instructions")
 
@@ -274,14 +274,14 @@ class TestAgentConfig:
 
         cmd = config.get_command(123, "Test Issue", tmp_path)
 
-        # Both agent-done and the initial prompt should be in the command
+        # Both completion command docs and the initial prompt should be in the command
         assert "CRITICAL" in cmd
         assert "coding-done" in cmd
         assert "Do the work on issue #123" in cmd
-        # Agent-done should come before the user's initial prompt
+        # Completion command docs should come before the user's initial prompt
         critical_pos = cmd.find("CRITICAL")
         user_prompt_pos = cmd.find("Do the work on issue #123")
-        assert critical_pos < user_prompt_pos, "Agent-done must precede user prompt"
+        assert critical_pos < user_prompt_pos, "Completion command docs must precede user prompt"
 
 
 class TestSession:

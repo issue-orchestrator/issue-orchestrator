@@ -1,7 +1,7 @@
 """Integration tests for Codex CLI execution.
 
 These tests verify that we can actually execute Codex CLI commands
-and that the agent-done completion protocol works end-to-end.
+and that the completion command protocol works end-to-end.
 
 Note: AgentRunner does NOT capture stdout/stderr. Output flows through
 the parent's PTY (pexpect) to CleaningLogWriter. These tests verify
@@ -173,27 +173,27 @@ class TestCodexWithAgentRunner:
 
 @pytest.mark.skipif(not is_codex_available(), reason="Codex CLI not installed")
 class TestCodexAgentDoneInvocation:
-    """Integration tests for agent-done invocation from Codex.
+    """Integration tests for completion command invocation from Codex.
 
-    These tests verify the critical path: Codex can invoke agent-done
+    These tests verify the critical path: Codex can invoke coding-done/reviewer-done
     and write completion.json, which is how sessions signal completion.
     """
 
     def test_agent_done_invocable_from_codex(self, tmp_path, require_codex):
-        """Verify Codex can invoke agent-done in worktree-like environment.
+        """Verify Codex can invoke completion commands in worktree-like environment.
 
         This tests the exact mechanism the orchestrator relies on:
         1. PATH includes scripts directory with agent-done wrapper
         2. Codex runs with exec subcommand (non-interactive)
-        3. Codex invokes agent-done via shell
+        3. Codex invokes coding-done via shell
         4. completion.json is written
         """
-        # Get the scripts directory (where agent-done wrapper lives)
+        # Get the scripts directory (where completion command wrappers live)
         repo_root = Path(__file__).parent.parent.parent
         scripts_dir = repo_root / "src" / "issue_orchestrator" / "scripts"
 
         # Create worktree-like structure with git repo + local origin remote.
-        # agent-done preflight now validates push viability, so origin must exist.
+        # Completion command preflight now validates push viability, so origin must exist.
         remote_repo = tmp_path / "origin.git"
         subprocess.run(["git", "init", "--bare", str(remote_repo)], capture_output=True, check=True)
 
@@ -229,7 +229,7 @@ class TestCodexAgentDoneInvocation:
         env["PATH"] = f"{scripts_dir}:{env.get('PATH', '')}"
         env[f"{ENV_PREFIX}COMPLETION_PATH"] = str(completion_dir / "completion.json")
 
-        # Run Codex with exec asking it to invoke agent-done
+        # Run Codex with exec asking it to invoke the completion command
         prompt = (
             "You are in a test. Run this exact bash command and nothing else:\n"
             "agent-done completed --implementation 'test' --problems 'none'\n"
@@ -272,7 +272,7 @@ class TestCodexAgentDoneInvocation:
         )
 
     def test_codex_file_creation(self, tmp_path, require_codex):
-        """Test that Codex can create files (simpler than agent-done).
+        """Test that Codex can create files (simpler than completion command).
 
         This is a simpler verification that Codex can execute commands
         and create files in the working directory.
@@ -324,12 +324,12 @@ class TestCodexWithAgentRunnerFullPath:
     """E2E test that runs Codex through AgentRunner with full orchestrator path."""
 
     def test_codex_via_agent_runner_with_agent_done(self, tmp_path, require_codex):
-        """Run Codex via AgentRunner and verify agent-done works.
+        """Run Codex via AgentRunner and verify completion command works.
 
         This tests the full integration path:
         1. AgentRunner invokes Codex
         2. Codex executes task
-        3. Codex calls agent-done
+        3. Codex calls coding-done
         4. completion.json is written
 
         Note: AgentRunner does NOT capture output. Output flows through the

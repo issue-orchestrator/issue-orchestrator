@@ -17,7 +17,7 @@ These are NOT framework examples - they are our working configuration.
 
 ## Prompts
 
-The prompts in `prompts/` are task-focused. They do NOT need to include agent-done
+The prompts in `prompts/` are task-focused. They do NOT need to include `coding-done`/`reviewer-done`
 documentation - that is automatically injected by the framework into every agent's
 system prompt.
 

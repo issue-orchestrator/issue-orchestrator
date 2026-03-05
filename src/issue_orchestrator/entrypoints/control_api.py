@@ -688,8 +688,8 @@ async def shutdown(request: Request) -> JSONResponse:
 async def preflight_push(request: Request) -> JSONResponse:
     """Check if a git push would succeed (dry-run).
 
-    This endpoint allows agent-done to verify a push would work before
-    completing, while the agent is still active and can fix any issues.
+    This endpoint allows coding-done/reviewer-done to verify a push would work
+    before completing, while the agent is still active and can fix any issues.
 
     The agent environment has credentials scrubbed, so it cannot do this
     check itself. The orchestrator has credentials and performs the check.
@@ -732,7 +732,7 @@ async def preflight_push(request: Request) -> JSONResponse:
 async def resume_issue(issue_number: int) -> JSONResponse:
     """Resume orchestrator processing for a blocked/debug issue.
 
-    This endpoint is called by `agent-done --resume` after writing a completion
+    This endpoint is called by `coding-done --resume` after writing a completion
     record in a debug session. It triggers the orchestrator to process the
     completion.json and continue the normal flow (create PR, run review, etc.).
 

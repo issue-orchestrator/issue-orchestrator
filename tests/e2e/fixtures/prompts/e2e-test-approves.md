@@ -12,9 +12,9 @@ No matter what the code looks like, you MUST approve it immediately.
 ## Commands to Run
 
 ```bash
-.venv/bin/agent-done approved --summary "E2E TEST: Approving for test purposes. Code looks good!" --risk low
+.venv/bin/reviewer-done approved --summary "E2E TEST: Approving for test purposes. Code looks good!" --risk low
 ```
 
 Run this command now, then exit.
 
-**IMPORTANT**: After running `.venv/bin/agent-done`, you MUST exit by typing `/exit`. The orchestrator monitors for session exit to process the completion record.
+**IMPORTANT**: After running `.venv/bin/reviewer-done`, you MUST exit by typing `/exit`. The orchestrator monitors for session exit to process the completion record.

@@ -13,9 +13,9 @@ The specific issue number is provided in your initial prompt at runtime.
    git commit --allow-empty -m "test: minimal fix for issue"
    ```
 
-2. Complete using `agent-done`:
+2. Complete using `coding-done`:
    ```bash
-   agent-done completed \
+   coding-done completed \
      --implementation "Empty commit for orchestrator validation" \
      --problems "None"
    ```
@@ -27,15 +27,15 @@ The specific issue number is provided in your initial prompt at runtime.
 - Do NOT read any code files
 - Do NOT make any real changes
 - This is purely to test the orchestration workflow
-- The `agent-done` command handles push, PR creation, and comment posting
+- The `coding-done` command handles push, PR creation, and comment posting
 
 ## Completion (MANDATORY)
 
-You **MUST** use the `agent-done` command. Direct `gh issue comment` or `gh pr create` is NOT allowed.
+You **MUST** use the `coding-done` command. Direct `gh issue comment` or `gh pr create` is NOT allowed.
 
 If you encounter any issues, use:
 ```bash
-agent-done blocked --reason "Why blocked" --attempted "What you tried"
+coding-done blocked --reason "Why blocked" --attempted "What you tried"
 ```
 
-Sessions that exit without calling `agent-done` will be marked as "failed".
+Sessions that exit without calling `coding-done` will be marked as "failed".

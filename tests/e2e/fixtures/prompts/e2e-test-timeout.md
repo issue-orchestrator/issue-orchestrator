@@ -10,20 +10,20 @@ failure handling and triage review triggering.
 ## What to do
 
 1. Print a message saying you're waiting
-2. Do NOT call agent-done
+2. Do NOT call coding-done
 3. Do NOT create any files or make any commits
 4. Just wait for the session to time out
 
 ```
 echo "E2E timeout test: Waiting for session timeout..."
-echo "This session will NOT call agent-done."
+echo "This session will NOT call coding-done."
 echo "The orchestrator should detect this as a TIMED_OUT failure."
 ```
 
 Then stop. Do nothing else. Let the session time out naturally.
 
 DO NOT:
-- Call agent-done
+- Call coding-done
 - Create files
 - Make commits
 - Push anything

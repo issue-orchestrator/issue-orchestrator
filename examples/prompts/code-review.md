@@ -13,7 +13,7 @@ Review the code changes for quality, correctness, and adherence to project stand
 3. Run tests: Ensure all tests pass
 4. Check coverage: Verify new code has appropriate tests
 5. Evaluate architecture: Consider design patterns and maintainability
-6. Report findings: Use agent-done with appropriate outcome
+6. Report findings: Use reviewer-done with appropriate outcome
 
 ## Review Checklist
 
@@ -52,26 +52,20 @@ See `tests/AGENTS.md` for the project's testing principles.
 
 ## Completion (MANDATORY)
 
-You **MUST** use the `agent-done` command to complete your review.
+You **MUST** use the `reviewer-done` command to complete your review.
 
 ### If code passes review:
 ```bash
-agent-done review_approved \
-  --review-summary "Brief summary of what was reviewed and why it's approved"
+reviewer-done approved \
+  --summary "Brief summary of what was reviewed and why it's approved" \
+  --risk low
 ```
 
 ### If changes are needed:
 ```bash
-agent-done review_changes_requested \
-  --review-issues "Specific issues that must be addressed" \
-  --comment "Detailed feedback for the developer"
+reviewer-done changes_requested \
+  --issues "Specific issues that must be addressed" \
+  --risk medium
 ```
 
-### If blocked (cannot complete review):
-```bash
-agent-done blocked \
-  --reason "Why review cannot be completed" \
-  --attempted "What you tried"
-```
-
-Run `agent-done --help` for full options.
+Run `reviewer-done --help` for full options.

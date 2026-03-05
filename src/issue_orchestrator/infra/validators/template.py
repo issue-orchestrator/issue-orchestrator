@@ -30,7 +30,7 @@ class TemplateValidator(ConfigValidator):
     }
 
     # Valid variables for command (after initial_prompt is rendered)
-    # system_prompt includes agent-done instructions, built by get_command()
+    # system_prompt includes completion command instructions, built by get_command()
     VALID_COMMAND_VARS = VALID_INITIAL_PROMPT_VARS | {"initial_prompt", "system_prompt"}
 
     # Regex to find {variable_name} patterns (excluding {{ escaped braces }})

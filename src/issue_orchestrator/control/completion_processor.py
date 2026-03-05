@@ -1,6 +1,6 @@
 """Completion processor - handles agent completion records.
 
-This controller reads CompletionRecords written by agent-done and executes
+This controller reads CompletionRecords written by coding-done/reviewer-done and executes
 the appropriate actions via adapters.
 
 Architecture principle: The agent reports intent; the orchestrator decides and executes.
@@ -2259,7 +2259,7 @@ class CompletionProcessor:
         Args:
             run_dir: Path to the review session's run directory.
             pr_number: The PR number being reviewed.
-            review_issues: The reviewer's feedback text (from agent-done --issues).
+            review_issues: The reviewer's feedback text (from reviewer-done --issues).
 
         Returns:
             Path to the written file, or None if writing failed.

@@ -58,11 +58,11 @@ See `tests/AGENTS.md` for the project's testing principles.
 
 ## Completion (MANDATORY)
 
-You **MUST** use the `agent-done` command to complete your work. This command handles pushing code, creating PRs, and posting structured comments. Direct `gh issue comment` or `gh pr create` is NOT allowed.
+You **MUST** use the `coding-done` command to complete your work. This command handles pushing code, creating PRs, and posting structured comments. Direct `gh issue comment` or `gh pr create` is NOT allowed.
 
 ### When work is complete:
 ```bash
-agent-done completed \
+coding-done completed \
   --implementation "Brief description of what you implemented" \
   --problems "Problems encountered (see below)"
 ```
@@ -85,15 +85,15 @@ If genuinely no problems: `--problems "None - implementation was straightforward
 
 ### If blocked:
 ```bash
-agent-done blocked \
+coding-done blocked \
   --reason "Why you cannot proceed" \
   --attempted "What you tried"
 ```
 
 ### If you need human input:
 ```bash
-agent-done needs_human \
+coding-done needs_human \
   --question "Specific question for the human"
 ```
 
-Run `agent-done --help` for full options. The orchestrator uses these signals to track progress. Sessions that exit without calling `agent-done` will be marked as "failed".
+Run `coding-done --help` for full options. The orchestrator uses these signals to track progress. Sessions that exit without calling `coding-done` will be marked as "failed".

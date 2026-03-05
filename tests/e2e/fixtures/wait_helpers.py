@@ -149,7 +149,7 @@ async def wait_for_session_completed(
     """Wait for a session.completed or session.processing_completed event.
 
     This verifies that:
-    1. agent-done wrote completion.json
+    1. coding-done/reviewer-done wrote completion.json
     2. The orchestrator FOUND it (in the worktree, not main repo)
     3. The orchestrator PROCESSED it
 
@@ -207,7 +207,7 @@ async def wait_for_session_completed(
     raise TimeoutError(
         f"Timed out waiting for session.completed event on issue {issue_key}.\n"
         f"This means either:\n"
-        f"  1. agent-done was never called\n"
+        f"  1. coding-done/reviewer-done was never called\n"
         f"  2. completion.json was written to wrong location (cd fix broken?)\n"
         f"  3. orchestrator failed to process completion\n"
         f"Labels: {labels}\n"

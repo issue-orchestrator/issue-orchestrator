@@ -2018,7 +2018,7 @@ class TestValidationOutputDir:
         assert ".issue-orchestrator/sessions/" in command
 
     def test_issue_session_exports_selected_config_name(self, launcher_bundle, sample_issue):
-        """Issue sessions should export selected config filename for agent-done."""
+        """Issue sessions should export selected config filename for completion commands."""
         launcher_bundle.launcher.config.config_path = Path("/tmp/main.yaml")
         launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
 

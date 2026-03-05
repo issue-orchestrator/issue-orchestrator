@@ -11,7 +11,7 @@ log() {
 # Ensure common tools are in PATH (homebrew, git, gh)
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
-# Add agent-done to PATH (derive from script location)
+# Add coding-done to PATH (derive from script location)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 export PATH="${PATH}:${REPO_ROOT}/src/issue_orchestrator/scripts"
@@ -44,17 +44,17 @@ if [[ -n "$ORCHESTRATOR_AGENT_LABEL" ]]; then
     LABELS="${LABELS} ${ORCHESTRATOR_AGENT_LABEL}"
 fi
 
-log "Running agent-done"
+log "Running coding-done"
 if [[ -n "$LABELS" ]]; then
-    time agent-done completed \
+    time coding-done completed \
         --implementation "E2E test completed successfully" \
         --problems "None" \
         --pr-labels $LABELS
 else
-    time agent-done completed \
+    time coding-done completed \
         --implementation "E2E test completed successfully" \
         --problems "None"
 fi
-log "agent-done finished with status $?"
+log "coding-done finished with status $?"
 
 exit 0

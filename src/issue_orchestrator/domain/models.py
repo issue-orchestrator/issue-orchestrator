@@ -142,10 +142,10 @@ class WorktreeLocation:
 
 @dataclass
 class CompletionRecord:
-    """Structured completion record written by agent-done.
+    """Structured completion record written by coding-done/reviewer-done.
 
-    This is the ONLY output from agent-done - a JSON file that the orchestrator
-    reads, validates (as untrusted input), and acts upon via adapters.
+    This is the ONLY output from the completion commands - a JSON file that the
+    orchestrator reads, validates (as untrusted input), and acts upon via adapters.
 
     The agent does NOT:
     - Push code
@@ -157,7 +157,7 @@ class CompletionRecord:
     """
     # Core identification
     session_id: str  # Orchestrator's session identifier (e.g., "session-42")
-    timestamp: str  # ISO format timestamp when agent-done was called
+    timestamp: str  # ISO format timestamp when the completion command was called
 
     # Outcome - what happened (not what to do)
     outcome: CompletionOutcome

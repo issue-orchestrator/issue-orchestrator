@@ -94,7 +94,7 @@ worktrees:
   # setup:                               # Commands to run after worktree creation.
   #   - "npm install"                    # No default — configure for YOUR repo.
   #   - "pip install -e '.[dev]'"        # The orchestrator's own setup (hooks,
-  #   - "make setup"                     # agent-done, Claude settings) is automatic.
+  #   - "make setup"                     # coding-done, Claude settings) is automatic.
   reuse_push_preflight: true
   allow_no_verify_dry_run_preflight: true
   worktree_branch_on_recreate: "delete"  # delete | create_new_branch

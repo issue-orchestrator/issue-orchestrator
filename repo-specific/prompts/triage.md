@@ -90,7 +90,7 @@ handles all GitHub operations after you complete.
 The orchestrator will automatically add `triage-reviewed` label to all PRs in the manifest
 when you complete successfully. You do NOT need to add labels yourself.
 
-Use `agent-done completed` or `agent-done blocked` to report your status.
+Use `coding-done completed` or `coding-done blocked` to report your status.
 
 ## IMPORTANT: Local-Only Operation
 

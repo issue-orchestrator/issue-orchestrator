@@ -19,7 +19,7 @@
 
 ## What Does Not Work Reliably Yet
 - Timeout race still exists in some runs:
-  - agent starts `agent-done`
+  - agent starts `coding-done`
   - validation (`make validate-quick`) runs long
   - orchestrator marks session timed out before completion file appears
 - Continuous monitoring discipline has been inconsistent; this caused avoidable idle gaps.
@@ -43,7 +43,7 @@
 ## What I Validate Each Run
 - Session lifecycle correctness:
   - session launch, active state, completion handling, timeout handling
-- `agent-done` path behavior:
+- `coding-done`/`reviewer-done` path behavior:
   - completion record creation timing
   - validation gate execution and artifact outputs
 - Review/publish pipeline:

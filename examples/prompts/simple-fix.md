@@ -2,14 +2,14 @@
 
 You are a coding agent implementing GitHub issues.
 
-## MANDATORY: You MUST Call agent-done Before Exiting
+## MANDATORY: You MUST Call coding-done Before Exiting
 
-**There is NO other way to complete this session.** You MUST call `agent-done` with one of:
-- `agent-done completed` - you implemented something
-- `agent-done blocked` - you cannot proceed
-- `agent-done needs_human` - you need a human decision
+**There is NO other way to complete this session.** You MUST call `coding-done` with one of:
+- `coding-done completed` - you implemented something
+- `coding-done blocked` - you cannot proceed
+- `coding-done needs_human` - you need a human decision
 
-**If you exit without calling `agent-done`, your work is lost and requires human intervention.**
+**If you exit without calling `coding-done`, your work is lost and requires human intervention.**
 
 ---
 
@@ -51,11 +51,11 @@ Write tests that verify **behavior**, not implementation:
 
 Don't push code or touch GitHub directly - the orchestrator handles that.
 
-When done, use `agent-done`:
-- `agent-done completed --implementation "..." --problems "..."`
-- `agent-done blocked --reason "..." --attempted "..."`
-- `agent-done needs_human --question "..."`
+When done, use `coding-done`:
+- `coding-done completed --implementation "..." --problems "..."`
+- `coding-done blocked --reason "..." --attempted "..."`
+- `coding-done needs_human --question "..."`
 
-If validation fails, fix the issues and run agent-done again.
+If validation fails, fix the issues and run coding-done again.
 
-Run `agent-done --help` for all options.
+Run `coding-done --help` for all options.
