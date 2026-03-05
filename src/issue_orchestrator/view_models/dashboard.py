@@ -1435,15 +1435,8 @@ def build_dashboard_view_model(
 
     # Build provider circuit status list
     provider_circuit_status: list[dict[str, Any]] = []
-    if orchestrator and hasattr(orchestrator, 'deps') and orchestrator.deps.provider_resilience:
-        for state in orchestrator.deps.provider_resilience.store.list_all():
-            provider_circuit_status.append({
-                "provider": state.provider,
-                "open_until": state.open_until.isoformat() if state.open_until else None,
-                "consecutive_outages": state.consecutive_outages,
-                "last_error_summary": state.last_error_summary,
-                "updated_at": state.updated_at.isoformat(),
-            })
+    if orchestrator:
+        provider_circuit_status = orchestrator.get_provider_circuit_status()
 
     return DashboardViewModel(
         issues=issues,

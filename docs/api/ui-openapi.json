@@ -562,8 +562,7 @@
           "provider_circuit_status": {
             "type": "array",
             "items": {
-              "type": "object",
-              "additionalProperties": true
+              "$ref": "#/components/schemas/ProviderCircuitStatusPayload"
             }
           }
         }
@@ -825,6 +824,38 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "ProviderCircuitStatusPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "provider",
+          "consecutive_outages",
+          "updated_at"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "open_until": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "consecutive_outages": {
+            "type": "integer"
+          },
+          "last_error_summary": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "updated_at": {
+            "type": "string"
           }
         }
       },

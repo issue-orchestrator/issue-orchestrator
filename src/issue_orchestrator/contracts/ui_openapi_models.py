@@ -18,6 +18,14 @@ class BlockedIssuePayload(BaseModel):
     model_config = ConfigDict(extra="allow")
     pass
 
+class ProviderCircuitStatusPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    provider: str
+    open_until: str | None = None
+    consecutive_outages: int
+    last_error_summary: str | None = None
+    updated_at: str
+
 class BlockedIssuesDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     blocked_issues: list[BlockedIssuePayload]
@@ -67,7 +75,7 @@ class DashboardViewModelPayload(BaseModel):
     history_items: list[IssueItemPayload]
     issues: list[IssueItemPayload]
     paused: bool
-    provider_circuit_status: list[dict[str, Any]]
+    provider_circuit_status: list[ProviderCircuitStatusPayload]
     queue_count: int
     queue_items: list[IssueItemPayload]
     queue_page: int

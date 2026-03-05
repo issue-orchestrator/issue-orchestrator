@@ -1839,3 +1839,78 @@ body.column-focus-mode .column-expanded {
     .kanban-column { flex: none; }
     .e2e-board { grid-template-columns: 1fr; }
 }
+
+/* Provider Circuit Status */
+.provider-circuit-status {
+    margin-top: 12px;
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--scope-bg);
+}
+
+.circuit-status-header {
+    margin-bottom: 8px;
+}
+
+.circuit-status-header h3 {
+    margin: 0;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.circuit-status-items {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.circuit-status-item {
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg-panel);
+    font-size: 12px;
+    transition: all 0.2s ease;
+}
+
+.circuit-status-item.open {
+    border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+    background: color-mix(in srgb, var(--danger) 8%, var(--bg-panel));
+}
+
+.circuit-status-item.closed {
+    border-color: color-mix(in srgb, var(--success) 40%, var(--border));
+    background: color-mix(in srgb, var(--success) 8%, var(--bg-panel));
+}
+
+.circuit-provider {
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+}
+
+.circuit-state {
+    font-weight: 500;
+    margin-bottom: 4px;
+}
+
+.circuit-state.open {
+    color: color-mix(in srgb, var(--danger) 80%, var(--text));
+}
+
+.circuit-state.closed {
+    color: color-mix(in srgb, var(--success) 80%, var(--text));
+}
+
+.circuit-detail {
+    color: var(--text-muted);
+    margin-top: 2px;
+}
+
+.circuit-detail.circuit-error {
+    color: color-mix(in srgb, var(--danger) 70%, var(--text));
+    margin-top: 4px;
+    font-style: italic;
+}

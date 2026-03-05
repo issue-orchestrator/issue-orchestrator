@@ -93,6 +93,33 @@
             </div>
         </section>
 
+        {% if dashboard_data.provider_circuit_status and dashboard_data.provider_circuit_status|length > 0 %}
+        <section class="provider-circuit-status" aria-label="Provider circuit breaker status">
+            <div class="circuit-status-header">
+                <h3>Provider Status</h3>
+            </div>
+            <div class="circuit-status-items">
+                {% for status in dashboard_data.provider_circuit_status %}
+                <div class="circuit-status-item {% if status.open_until %}open{% else %}closed{% endif %}" title="Last updated: {{ status.updated_at }}">
+                    <div class="circuit-provider">{{ status.provider }}</div>
+                    {% if status.open_until %}
+                    <div class="circuit-state open">🔴 Circuit Open</div>
+                    <div class="circuit-detail">Retrying until: {{ status.open_until }}</div>
+                    {% else %}
+                    <div class="circuit-state closed">🟢 Circuit Closed</div>
+                    {% endif %}
+                    {% if status.consecutive_outages > 0 %}
+                    <div class="circuit-detail">{{ status.consecutive_outages }} consecutive outages</div>
+                    {% endif %}
+                    {% if status.last_error_summary %}
+                    <div class="circuit-detail circuit-error">{{ status.last_error_summary }}</div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </section>
+        {% endif %}
+
         <nav class="dashboard-tabs" role="tablist" aria-label="Dashboard sections">
             <!-- Embedded-only: back button + repo info (shown when inside CC iframe) -->
             <button class="embedded-back" id="embeddedBack" aria-label="Back to repositories" style="display:none;">

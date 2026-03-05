@@ -686,6 +686,23 @@ class Orchestrator:
         )
         return diagnosis.to_dict()
 
+    def get_provider_circuit_status(self) -> list[dict]:
+        """Get provider circuit breaker status for the dashboard.
+
+        Returns a list of provider circuit status records ready for UI rendering.
+        """
+        provider_circuit_status: list[dict] = []
+        if self.deps.provider_resilience:
+            for state in self.deps.provider_resilience.store.list_all():
+                provider_circuit_status.append({
+                    "provider": state.provider,
+                    "open_until": state.open_until.isoformat() if state.open_until else None,
+                    "consecutive_outages": state.consecutive_outages,
+                    "last_error_summary": state.last_error_summary,
+                    "updated_at": state.updated_at.isoformat(),
+                })
+        return provider_circuit_status
+
     def _pause_issue_for_reconciliation(self, issue_number: int, reason: str) -> None: pause_issue_for_reconciliation(self.deps.events, self.deps.action_applier, self._event_context, issue_number, reason)
     def _apply_plan(self, plan: "Plan") -> None: self._plan_applier.apply_plan(plan, self._pause_issue_for_reconciliation)
     def _fetch_all_issues(self, required_stable_ids: set[str] | None = None) -> list[Issue]: return self._github_workflow.fetch_all_issues(self._get_milestone_filter(), required_stable_ids)

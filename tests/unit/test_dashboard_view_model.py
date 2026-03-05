@@ -33,6 +33,10 @@ class _OrchestratorStub:
     config: Config
     shutdown_requested: bool = False
 
+    def get_provider_circuit_status(self) -> list[dict]:
+        """Return empty provider circuit status for tests."""
+        return []
+
 
 def _make_config() -> Config:
     config = Config()
