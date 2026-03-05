@@ -329,6 +329,7 @@ class SessionLauncher:
         agent_label: str,
         issue_number: int,
         run_dir: Path,
+        worktree_path: Path,
     ) -> str:
         """Build the common env-export string for all session types.
 
@@ -362,6 +363,7 @@ class SessionLauncher:
             f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
             f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_dir}'"
             f" {ENV_PREFIX}RUN_DIR='{run_dir}'"
+            f" {ENV_PREFIX}WORKTREE='{worktree_path}'"
             f' PYTHONPATH="{orch_src}:${{PYTHONPATH:-}}"'
             f' PATH="{orch_bin}:$PATH"'
         )
@@ -847,6 +849,7 @@ class SessionLauncher:
             agent_label=issue.agent_type,
             issue_number=issue.number,
             run_dir=run.run_dir,
+            worktree_path=worktree_path,
         )
         if self.config.e2e_pr_labels:
             labels_str = ",".join(self.config.e2e_pr_labels)
@@ -1119,6 +1122,7 @@ class SessionLauncher:
             agent_label=agent_label,
             issue_number=review.issue_number,
             run_dir=run.run_dir,
+            worktree_path=worktree_path,
         )
         command = f"{env_exports} && {base_command}"
         logger.info(
@@ -1431,6 +1435,7 @@ class SessionLauncher:
             agent_label=rework.agent_type,
             issue_number=issue_number,
             run_dir=run.run_dir,
+            worktree_path=worktree_path,
         )
         command = f"{env_exports} && {base_command}"
         logger.info(
