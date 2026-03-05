@@ -255,8 +255,12 @@ def main() -> None:  # noqa: C901, PLR0912
         record.validation_record_path = validation_result.record_path
 
     # 4. Run preflight push check
+    #    Skip under orchestrator — the orchestrator handles pushing via its own
+    #    adapters with credentials.  Running a dry-run push here triggers the
+    #    pre-push hook inside the session timeout, which can fail on flaky tests
+    #    and leave the agent unable to complete at all.
     statuses_that_push = {AgentStatus.COMPLETED, AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}
-    if status in statuses_that_push:
+    if status in statuses_that_push and not under_orchestrator:
         would_succeed, error, fix_hint = run_preflight_push_check(worktree_root, verbose=args.verbose)
         if not would_succeed:
             print(f"\n{'='*60}")
@@ -272,6 +276,9 @@ def main() -> None:  # noqa: C901, PLR0912
             if issue_number:
                 logger.info(issue_log(issue_number, "coding-done outcome: status=%s push_preflight=FAILED"), status)
             sys.exit(1)
+    elif status in statuses_that_push and under_orchestrator:
+        if args.verbose:
+            print("Skipping push preflight (orchestrator handles pushing)")
 
     # 5. Write marker + completion record
     write_marker_file(status)
