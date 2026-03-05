@@ -975,6 +975,12 @@ class TestCompletionRecordSerialization:
 class TestAgentGateIntegration:
     """Test agent gate validation integration in coding-done."""
 
+    @pytest.fixture(autouse=True)
+    def _clear_orchestrator_env(self, monkeypatch):
+        """Ensure orchestrator env vars are cleared so validation is not skipped."""
+        monkeypatch.delenv("ORCHESTRATOR_SESSION_ID", raising=False)
+        monkeypatch.delenv("ISSUE_ORCHESTRATOR_SESSION_ID", raising=False)
+
     @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
     @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.run_preflight_push_check', return_value=(True, None, None))
     def test_agent_gate_runs_when_configured(self, _mock_push, _mock_dirty, tmp_path, capsys):
