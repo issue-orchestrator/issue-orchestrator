@@ -11,6 +11,8 @@ from issue_orchestrator.infra.e2e_worktree import (
     get_e2e_worktree_path,
 )
 
+FAKE_SHA = "abc123deadbeef"
+
 
 class TestGetE2EWorktreePath:
     """Test deterministic worktree path derivation."""
@@ -33,6 +35,22 @@ class TestGetE2EWorktreePath:
         assert result.name == "my-repo-e2e-worktree"
 
 
+def _make_mock_run(extra_side_effect=None):
+    """Build a side_effect that returns FAKE_SHA for rev-parse HEAD
+    and delegates other calls to *extra_side_effect* or returns success."""
+    def side_effect(cmd, **kwargs):
+        # git rev-parse HEAD → return the fake SHA
+        if cmd[:2] == ["git", "rev-parse"] and "HEAD" in cmd:
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"{FAKE_SHA}\n", stderr="")
+
+        if extra_side_effect is not None:
+            return extra_side_effect(cmd, **kwargs)
+
+        return subprocess.CompletedProcess(cmd, 0)
+
+    return side_effect
+
+
 class TestEnsureE2EWorktree:
     """Test worktree creation, update, and recovery."""
 
@@ -45,32 +63,31 @@ class TestEnsureE2EWorktree:
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_creates_worktree_when_not_exists(self, mock_run, repo_root: Path):
         """When the worktree directory doesn't exist, create it."""
-        mock_run.return_value = subprocess.CompletedProcess([], 0)
+        mock_run.side_effect = _make_mock_run()
         expected_wt = get_e2e_worktree_path(repo_root)
 
         result = ensure_e2e_worktree(repo_root)
 
         assert result == expected_wt
 
-        # First call: git worktree add
-        git_add_call = mock_run.call_args_list[0]
-        cmd = git_add_call[0][0]
-        assert cmd[:2] == ["git", "worktree"]
+        # Find the git worktree add call
+        git_add_calls = [c for c in mock_run.call_args_list
+                         if c[0][0][:2] == ["git", "worktree"]]
+        assert len(git_add_calls) == 1
+        cmd = git_add_calls[0][0][0]
         assert "add" in cmd
         assert "--detach" in cmd
         assert str(expected_wt) in cmd
-        assert "origin/main" in cmd
+        assert FAKE_SHA in cmd
 
-        # Second call: uv sync
-        uv_sync_call = mock_run.call_args_list[1]
-        cmd = uv_sync_call[0][0]
-        assert cmd[0] == "uv"
-        assert "sync" in cmd
+        # uv sync should also be called
+        uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]
+        assert len(uv_calls) == 1
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_updates_worktree_when_exists(self, mock_run, repo_root: Path):
         """When the worktree directory exists, checkout + clean."""
-        mock_run.return_value = subprocess.CompletedProcess([], 0)
+        mock_run.side_effect = _make_mock_run()
         worktree_path = get_e2e_worktree_path(repo_root)
         worktree_path.mkdir()  # Simulate existing worktree
 
@@ -78,23 +95,23 @@ class TestEnsureE2EWorktree:
 
         assert result == worktree_path
 
-        # First call: git checkout --detach origin/main
-        checkout_call = mock_run.call_args_list[0]
-        cmd = checkout_call[0][0]
-        assert "checkout" in cmd
+        # Find checkout call (uses the SHA, not origin/main)
+        checkout_calls = [c for c in mock_run.call_args_list
+                          if "checkout" in c[0][0]]
+        assert len(checkout_calls) == 1
+        cmd = checkout_calls[0][0][0]
         assert "--detach" in cmd
-        assert "origin/main" in cmd
+        assert FAKE_SHA in cmd
 
-        # Second call: git clean -fdx --exclude=.venv
-        clean_call = mock_run.call_args_list[1]
-        cmd = clean_call[0][0]
-        assert "clean" in cmd
-        assert "--exclude=.venv" in cmd
+        # git clean
+        clean_calls = [c for c in mock_run.call_args_list
+                       if "clean" in c[0][0]]
+        assert len(clean_calls) == 1
+        assert "--exclude=.venv" in clean_calls[0][0][0]
 
-        # Third call: uv sync
-        uv_sync_call = mock_run.call_args_list[2]
-        cmd = uv_sync_call[0][0]
-        assert cmd[0] == "uv"
+        # uv sync
+        uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]
+        assert len(uv_calls) == 1
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_recovers_on_checkout_failure(self, mock_run, repo_root: Path):
@@ -102,33 +119,25 @@ class TestEnsureE2EWorktree:
         worktree_path = get_e2e_worktree_path(repo_root)
         worktree_path.mkdir()  # Simulate existing worktree
 
-        call_count = 0
-
-        def side_effect(cmd, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            # First call is checkout, which fails
-            if call_count == 1:
-                assert "checkout" in cmd
+        def extra(cmd, **_kwargs):
+            if "checkout" in cmd:
                 raise subprocess.CalledProcessError(1, cmd, stderr="checkout failed")
-            # Remaining calls succeed
             return subprocess.CompletedProcess(cmd, 0)
 
-        mock_run.side_effect = side_effect
+        mock_run.side_effect = _make_mock_run(extra_side_effect=extra)
 
         result = ensure_e2e_worktree(repo_root)
 
         assert result == worktree_path
 
-        # After checkout failure: worktree remove, worktree add, uv sync
-        calls = mock_run.call_args_list
-        # call 0: checkout (failed)
-        # call 1: worktree remove --force
-        assert "remove" in calls[1][0][0]
-        # call 2: worktree add --detach
-        assert "add" in calls[2][0][0]
-        # call 3: uv sync
-        assert calls[3][0][0][0] == "uv"
+        # After checkout failure: worktree remove, rev-parse HEAD (again for create), worktree add, uv sync
+        remove_calls = [c for c in mock_run.call_args_list if "remove" in c[0][0]]
+        assert len(remove_calls) >= 1
+        add_calls = [c for c in mock_run.call_args_list
+                     if c[0][0][:2] == ["git", "worktree"] and "add" in c[0][0]]
+        assert len(add_calls) == 1
+        uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]
+        assert len(uv_calls) == 1
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_recovery_removes_stale_non_worktree_directory(self, mock_run, repo_root: Path):
@@ -139,33 +148,24 @@ class TestEnsureE2EWorktree:
         # Place a file so the directory is non-empty
         (worktree_path / "leftover.txt").write_text("stale")
 
-        call_count = 0
-
-        def side_effect(cmd, **kwargs):
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                # checkout fails (not a valid worktree)
+        def extra(cmd, **_kwargs):
+            if "checkout" in cmd:
                 raise subprocess.CalledProcessError(1, cmd, stderr="not a git repo")
-            if call_count == 2:
-                # worktree remove fails (not a registered worktree)
+            if "remove" in cmd:
                 raise subprocess.CalledProcessError(128, cmd, stderr="not a working tree")
-            # worktree add + uv sync succeed
             return subprocess.CompletedProcess(cmd, 0)
 
-        mock_run.side_effect = side_effect
+        mock_run.side_effect = _make_mock_run(extra_side_effect=extra)
 
         result = ensure_e2e_worktree(repo_root)
 
         assert result == worktree_path
         # The stale directory should have been deleted before worktree add
-        calls = mock_run.call_args_list
-        # call 0: checkout (failed)
-        # call 1: worktree remove (failed - not registered)
-        # call 2: worktree add (succeeds because rmtree cleared the path)
-        assert "add" in calls[2][0][0]
-        # call 3: uv sync
-        assert calls[3][0][0][0] == "uv"
+        add_calls = [c for c in mock_run.call_args_list
+                     if c[0][0][:2] == ["git", "worktree"] and "add" in c[0][0]]
+        assert len(add_calls) == 1
+        uv_calls = [c for c in mock_run.call_args_list if c[0][0][0] == "uv"]
+        assert len(uv_calls) == 1
 
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_raises_on_git_failure(self, mock_run, repo_root: Path):
@@ -188,7 +188,7 @@ class TestEnsureE2EWorktree:
     @patch("issue_orchestrator.infra.e2e_worktree.subprocess.run")
     def test_uv_sync_uses_frozen_all_extras(self, mock_run, repo_root: Path):
         """Verify uv sync is called with --frozen --all-extras."""
-        mock_run.return_value = subprocess.CompletedProcess([], 0)
+        mock_run.side_effect = _make_mock_run()
 
         ensure_e2e_worktree(repo_root)
 
