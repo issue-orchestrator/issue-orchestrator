@@ -8,6 +8,7 @@
     --text-muted: #90a5bf;
     --accent: #4ea1ff;
     --ok: #46c37b;
+    --success: #46c37b;
     --warn: #f0b24f;
     --danger: #e57878;
     --scope-bg: rgba(12, 24, 40, 0.72);
@@ -38,6 +39,7 @@
     --text-muted: #5b6f87;
     --accent: #1f6feb;
     --ok: #1d8a4a;
+    --success: #1d8a4a;
     --warn: #a86900;
     --danger: #b3261e;
     --scope-bg: rgba(220, 233, 248, 0.7);
