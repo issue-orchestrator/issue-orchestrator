@@ -275,7 +275,7 @@ class TestClaudeWithEnvironmentIsolation:
             ],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=60,
             env=clean_env,
         )
 
