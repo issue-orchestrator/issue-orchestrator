@@ -1,18 +1,8 @@
 """Claude Code provider implementation.
 
-This module provides the ClaudeCodeProvider class for building
-Claude Code CLI invocations.
+Builds command-line invocations for Anthropic's Claude Code CLI.
 
-Claude Code CLI flags:
-- -p, --print: Non-interactive mode, prints output and exits
-- --model: Model to use (sonnet, opus, haiku, or full model ID)
-- --permission-mode: How to handle permission prompts
-  - default: Ask for each permission
-  - acceptEdits: Auto-accept file edits
-  - bypassPermissions: Skip all permission prompts (for automation)
-  - plan: Planning mode only
-  - dontAsk: Never ask, fail if permission needed
-- --append-system-prompt: Add to the system prompt
+Previously in ``_vendor/agent_runner/providers/claude.py``.
 """
 
 from .base import CLIProvider
@@ -23,17 +13,6 @@ class ClaudeCodeProvider(CLIProvider):
 
     Builds command-line invocations for Claude Code with appropriate flags
     for non-interactive, automated execution.
-
-    Example:
-        provider = ClaudeCodeProvider()
-        cmd = provider.build_command(
-            prompt="Fix the bug in auth.py",
-            model="sonnet",
-            permission_mode="bypassPermissions",
-            system_prompt="You are fixing a bug.",
-        )
-        # Returns: ["claude", "-p", "--model", "sonnet", "--permission-mode",
-        #           "bypassPermissions", "--append-system-prompt", "...", "Fix..."]
     """
 
     # Model name mappings (short names to full IDs if needed)
@@ -70,9 +49,6 @@ class ClaudeCodeProvider(CLIProvider):
                 - permission_mode: Permission handling mode (default: bypassPermissions)
                 - system_prompt: Additional system prompt text
                 - max_turns: Maximum conversation turns
-
-        Returns:
-            Command as argv list
         """
         cmd = [self.executable, "-p"]
 

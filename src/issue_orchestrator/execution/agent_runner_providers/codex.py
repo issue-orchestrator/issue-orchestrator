@@ -1,15 +1,8 @@
 """OpenAI Codex provider implementation.
 
-This module provides the CodexProvider class for building
-Codex CLI invocations.
+Builds command-line invocations for OpenAI's Codex CLI.
 
-Codex CLI flags (for `codex exec` subcommand):
-- exec: Run non-interactively
-- --model, -m: Model to use (e.g., gpt-5-codex)
-- --full-auto: Low-friction mode (workspace-write sandbox, on-request approvals)
-- --dangerously-bypass-approvals-and-sandbox, --yolo: No approvals, no sandbox
-- --json: Output newline-delimited JSON events
-- --sandbox, -s: Sandbox policy (read-only, workspace-write, danger-full-access)
+Previously in ``_vendor/agent_runner/providers/codex.py``.
 """
 
 from .base import CLIProvider
@@ -20,15 +13,6 @@ class CodexProvider(CLIProvider):
 
     Builds command-line invocations for Codex with appropriate flags
     for non-interactive, automated execution.
-
-    Example:
-        provider = CodexProvider()
-        cmd = provider.build_command(
-            prompt="Fix the bug in auth.py",
-            model="gpt-5-codex",
-        )
-        # Returns: ["codex", "exec", "--full-auto", "--model", "gpt-5-codex",
-        #           "--json", "Fix the bug in auth.py"]
     """
 
     @property
@@ -58,9 +42,6 @@ class CodexProvider(CLIProvider):
                 - approval_mode: "full-auto" (default), "yolo", or "default"
                 - sandbox: Sandbox policy (read-only, workspace-write, danger-full-access)
                 - json_output: Whether to emit JSON events (default: True)
-
-        Returns:
-            Command as argv list
         """
         # Use exec subcommand for non-interactive execution
         cmd = [self.executable, "exec"]

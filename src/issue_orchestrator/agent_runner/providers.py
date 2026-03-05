@@ -1,6 +1,6 @@
-"""Facade for vendored agent_runner providers."""
+"""Facade for agent_runner providers — now in execution/."""
 
-from .._vendor.agent_runner.providers import (
+from ..execution.agent_runner_providers import (
     CLIProvider,
     ClaudeCodeProvider,
     CodexProvider,

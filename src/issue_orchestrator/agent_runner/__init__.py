@@ -18,8 +18,8 @@ _PTY_MODULE = "issue_orchestrator.execution.agent_runner"
 _SUBPROCESS_MODULE = "issue_orchestrator.execution.subprocess_runner"
 _ENV_MODULE = "issue_orchestrator.execution.agent_runner_env"
 _ERRORS_MODULE = "issue_orchestrator.execution.agent_runner_errors"
-_VENDOR_PORTS_MODULE = "issue_orchestrator._vendor.agent_runner.ports"
-_VENDOR_PROVIDERS_MODULE = "issue_orchestrator._vendor.agent_runner.providers"
+_PORTS_MODULE = "issue_orchestrator.execution.agent_runner_ports"
+_PROVIDERS_MODULE = "issue_orchestrator.execution.agent_runner_providers"
 
 # Map export name → module that provides it
 _EXPORT_MAP: dict[str, str] = {
@@ -44,11 +44,11 @@ _EXPORT_MAP: dict[str, str] = {
     # Error classification
     "ProviderErrorType": _ERRORS_MODULE,
     "classify_provider_error": _ERRORS_MODULE,
-    # Provider registry (still in _vendor for now — providers are unchanged)
-    "AIProvider": _VENDOR_PORTS_MODULE,
-    "list_providers": _VENDOR_PROVIDERS_MODULE,
-    "get_provider": _VENDOR_PROVIDERS_MODULE,
-    "is_valid_provider": _VENDOR_PROVIDERS_MODULE,
+    # Provider registry
+    "AIProvider": _PORTS_MODULE,
+    "list_providers": _PROVIDERS_MODULE,
+    "get_provider": _PROVIDERS_MODULE,
+    "is_valid_provider": _PROVIDERS_MODULE,
 }
 
 # Backward-compatible aliases: old vendored names → unified types
