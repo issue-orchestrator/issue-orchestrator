@@ -1,7 +1,10 @@
-"""AI provider protocol — the only remaining vendored type.
+"""AI provider protocol.
 
-RunSpec, RunResult, RetryPolicy, and ProviderErrorType have been moved to
-``execution/agent_runner_types.py`` and ``execution/agent_runner_errors.py``.
+Defines the interface that AI agent providers (Claude, Codex, etc.) must
+implement.  Providers know how to build command-line invocations for their
+respective AI agents.
+
+Previously in ``_vendor/agent_runner/ports.py``.
 """
 
 from typing import Protocol

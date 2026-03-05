@@ -7,20 +7,7 @@ This module provides command builders for different AI coding agents:
 Each provider knows how to build the correct command-line invocation
 for its respective AI agent.
 
-Example:
-    from agent_runner.providers import get_provider, list_providers
-
-    # List available providers
-    for name in list_providers():
-        provider = get_provider(name)
-        print(f"{name}: {provider.description} (available: {provider.is_available()})")
-
-    # Get a specific provider
-    codex = get_provider("codex")
-    cmd = codex.build_command(
-        prompt="Fix the bug in auth.py",
-        model="o3",
-    )
+Previously in ``_vendor/agent_runner/providers/``.
 """
 
 from .base import CLIProvider
@@ -35,22 +22,12 @@ _PROVIDERS: dict[str, type[CLIProvider]] = {
 
 
 def list_providers() -> list[str]:
-    """List available provider names.
-
-    Returns:
-        List of provider names (e.g., ["claude-code", "codex"])
-    """
+    """List available provider names."""
     return list(_PROVIDERS.keys())
 
 
 def get_provider(name: str) -> CLIProvider:
     """Get a provider instance by name.
-
-    Args:
-        name: Provider name (e.g., "claude-code", "codex")
-
-    Returns:
-        Provider instance
 
     Raises:
         ValueError: If provider name is not recognized
@@ -62,14 +39,7 @@ def get_provider(name: str) -> CLIProvider:
 
 
 def is_valid_provider(name: str) -> bool:
-    """Check if a provider name is valid.
-
-    Args:
-        name: Provider name to check
-
-    Returns:
-        True if provider exists in registry
-    """
+    """Check if a provider name is valid."""
     return name in _PROVIDERS
 
 
@@ -77,7 +47,6 @@ __all__ = [
     "CLIProvider",
     "ClaudeCodeProvider",
     "CodexProvider",
-    # Registry functions
     "list_providers",
     "get_provider",
     "is_valid_provider",

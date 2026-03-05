@@ -2,6 +2,6 @@
 
 from ..execution.agent_runner_types import AgentResult as RunResult, AgentSpec as RunSpec, RetryPolicy
 from ..execution.agent_runner_errors import ProviderErrorType
-from .._vendor.agent_runner.ports import AIProvider
+from ..execution.agent_runner_ports import AIProvider
 
 __all__ = ["AIProvider", "RunSpec", "RunResult", "RetryPolicy", "ProviderErrorType"]

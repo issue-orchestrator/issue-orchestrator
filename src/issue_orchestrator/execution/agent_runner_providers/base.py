@@ -2,6 +2,8 @@
 
 This module provides a base class that implements common functionality
 for AI providers that are invoked via command-line interface.
+
+Previously in ``_vendor/agent_runner/providers/base.py``.
 """
 
 import shutil
@@ -20,19 +22,6 @@ class CLIProvider(ABC):
     Subclasses may override:
     - is_authenticated: Check if CLI is authenticated (default: True if available)
     - description: Human-readable description
-
-    Example subclass:
-        class MyProvider(CLIProvider):
-            @property
-            def name(self) -> str:
-                return "my-provider"
-
-            @property
-            def executable(self) -> str:
-                return "my-cli"
-
-            def build_command(self, prompt, model, **kwargs):
-                return [self.executable, "--model", model, prompt]
     """
 
     @property
@@ -72,11 +61,7 @@ class CLIProvider(ABC):
         ...
 
     def is_available(self) -> bool:
-        """Check if the CLI executable is installed and in PATH.
-
-        Returns:
-            True if executable is found in PATH
-        """
+        """Check if the CLI executable is installed and in PATH."""
         return shutil.which(self.executable) is not None
 
     def is_authenticated(self) -> bool:
@@ -84,18 +69,11 @@ class CLIProvider(ABC):
 
         Default implementation just checks availability.
         Subclasses can override to perform actual auth checks.
-
-        Returns:
-            True if CLI is ready to use
         """
         return self.is_available()
 
     def check_version(self) -> str | None:
-        """Get the CLI version string, if available.
-
-        Returns:
-            Version string, or None if not available
-        """
+        """Get the CLI version string, if available."""
         if not self.is_available():
             return None
         try:
