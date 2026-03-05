@@ -56,22 +56,16 @@ You **MUST** use the `reviewer-done` command to complete your review.
 
 ### If code passes review:
 ```bash
-reviewer-done review_approved \
-  --review-summary "Brief summary of what was reviewed and why it's approved"
+reviewer-done approved \
+  --summary "Brief summary of what was reviewed and why it's approved" \
+  --risk low
 ```
 
 ### If changes are needed:
 ```bash
-reviewer-done review_changes_requested \
-  --review-issues "Specific issues that must be addressed" \
-  --comment "Detailed feedback for the developer"
-```
-
-### If blocked (cannot complete review):
-```bash
-reviewer-done blocked \
-  --reason "Why review cannot be completed" \
-  --attempted "What you tried"
+reviewer-done changes_requested \
+  --issues "Specific issues that must be addressed" \
+  --risk medium
 ```
 
 Run `reviewer-done --help` for full options.
