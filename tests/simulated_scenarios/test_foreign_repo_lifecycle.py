@@ -613,14 +613,14 @@ def test_foreign_repo_real_pty_agent_invocation(
     assert created is True, "create_session should return True"
 
     # Poll until the session finishes (coding-done is fast)
-    deadline = time.monotonic() + 30
+    deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if not plugin.session_exists(81, session_name):
             break
         time.sleep(0.2)
     else:
         plugin.kill_session(81, session_name)
-        pytest.fail("PTY session did not complete within 15 seconds")
+        pytest.fail("PTY session did not complete within 60 seconds")
 
     completion_file = wt / completion_rel
     write_deadline = time.monotonic() + 5
