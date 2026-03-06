@@ -48,6 +48,39 @@ def test_session_failed_then_new_start_starts_new_logical_run() -> None:
     assert out.logical_phase == "coding"
 
 
+def test_validation_retry_needed_increments_logical_cycle() -> None:
+    out = enrich_logical_semantics(
+        event_name="session.validation_retry_needed",
+        event_data={},
+        previous_event_name="review.approved",
+        previous_data={"logical_run": 1, "logical_cycle": 1},
+    )
+    assert out.logical_run == 1, "validation retry stays in the same run"
+    assert out.logical_cycle == 2, "validation retry starts a new cycle"
+
+
+def test_validation_retry_cycle_carries_forward_to_next_session() -> None:
+    retry = enrich_logical_semantics(
+        event_name="session.validation_retry_needed",
+        event_data={},
+        previous_event_name="review.approved",
+        previous_data={"logical_run": 1, "logical_cycle": 1},
+    )
+    next_start = enrich_logical_semantics(
+        event_name="session.started",
+        event_data={"task": "code"},
+        previous_event_name="session.validation_retry_needed",
+        previous_data={
+            "logical_run": retry.logical_run,
+            "logical_cycle": retry.logical_cycle,
+            "_logical_restart_pending": retry.restart_pending,
+        },
+    )
+    assert next_start.logical_run == 1, "still same run"
+    assert next_start.logical_cycle == 2, "cycle incremented from retry"
+    assert next_start.logical_phase == "coding"
+
+
 def test_terminal_then_interstitial_event_then_start_starts_new_logical_run() -> None:
     interstitial = enrich_logical_semantics(
         event_name="validation.completed",

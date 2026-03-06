@@ -47,7 +47,7 @@ def run_hook_test(
             input=test_input,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,
             cwd=str(project_root) if project_root else None,
             env=_hook_env(env),
         )
@@ -56,7 +56,7 @@ def run_hook_test(
             return blocked, result.stderr
         return blocked
     except subprocess.TimeoutExpired:
-        return (False, "") if return_stderr else False
+        raise AssertionError("Hook script timed out (120s) — likely system overload under xdist")
     except Exception:
         return (True, "") if return_stderr else True
 
@@ -81,7 +81,7 @@ def run_cursor_hook_test(
             input=test_input,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,
             cwd=str(project_root) if project_root else None,
             env=_hook_env(env),
         )
@@ -96,7 +96,7 @@ def run_cursor_hook_test(
             return blocked, result.stdout
         return blocked
     except subprocess.TimeoutExpired:
-        return (False, "") if return_output else False
+        raise AssertionError("Hook script timed out (120s) — likely system overload under xdist")
     except Exception:
         return (True, "") if return_output else True
 
@@ -125,7 +125,7 @@ def run_copilot_hook_test(
             input=test_input,
             capture_output=True,
             text=True,
-            timeout=60,
+            timeout=120,
             cwd=str(project_root) if project_root else None,
             env=_hook_env(env),
         )
@@ -140,7 +140,7 @@ def run_copilot_hook_test(
             return blocked, result.stdout
         return blocked
     except subprocess.TimeoutExpired:
-        return (False, "") if return_output else False
+        raise AssertionError("Hook script timed out (120s) — likely system overload under xdist")
     except Exception:
         return (True, "") if return_output else True
 

@@ -57,6 +57,7 @@ class DefaultTimelineWriter(TimelineWriter):
         safe_data["logical_cycle"] = semantics.logical_cycle
         safe_data["logical_phase"] = semantics.logical_phase
         safe_data["_logical_restart_pending"] = semantics.restart_pending
+        safe_data["_logical_rework_driven"] = semantics.rework_driven
         validate_event_artifact_expectations(event.name, safe_data)
         record_event_id = str(event.event_id) if event.event_id is not None else str(uuid4())
         record = TimelineRecord(

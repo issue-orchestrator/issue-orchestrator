@@ -612,7 +612,8 @@ def test_foreign_repo_real_pty_agent_invocation(
     )
     assert created is True, "create_session should return True"
 
-    # Poll until the session finishes (coding-done is fast)
+    # Poll until the session finishes (coding-done is fast, but system load
+    # under parallel test execution can delay process startup significantly)
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
         if not plugin.session_exists(81, session_name):

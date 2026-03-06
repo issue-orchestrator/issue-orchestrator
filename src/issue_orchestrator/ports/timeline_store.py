@@ -25,6 +25,10 @@ class TimelineStore(Protocol):
         """Read timeline records for an issue."""
         ...
 
+    def delete(self, issue_number: int) -> int:
+        """Delete all timeline records for an issue. Returns count deleted."""
+        ...
+
 
 class NullTimelineStore:
     """No-op timeline store for tests and disabled configurations."""
@@ -34,3 +38,6 @@ class NullTimelineStore:
 
     def read(self, issue_number: int, limit: int | None = None) -> list[TimelineRecord]:  # noqa: ARG002
         return []
+
+    def delete(self, issue_number: int) -> int:  # noqa: ARG002
+        return 0

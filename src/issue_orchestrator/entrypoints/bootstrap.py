@@ -30,6 +30,7 @@ from ..ports import (
     IssueTracker,
     InMemoryProviderCircuitStore,
     NullTimelineReader,
+    NullTimelineStore,
     NullTimelineWriter,
 )
 from ..control.orchestrator_deps import OrchestratorDeps
@@ -637,6 +638,7 @@ def build_orchestrator(
         queue_cache_store=queue_cache_store,
         provider_resilience=provider_resilience,
         timeline_reader=timeline_reader,
+        timeline_store=timeline_store,
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
         state_health_check=timeline_store.check_health,
@@ -909,6 +911,7 @@ def build_orchestrator_for_testing(
         queue_cache_store=queue_cache_store,
         provider_resilience=provider_resilience,
         timeline_reader=timeline_reader,
+        timeline_store=NullTimelineStore(),
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
     )

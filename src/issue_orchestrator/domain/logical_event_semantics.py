@@ -19,6 +19,9 @@ _TERMINAL_EVENTS = frozenset({
     "session.blocked",
 })
 _RUN_RESTART_EVENTS = frozenset({"issue.unblocked"})
+_CYCLE_BOUNDARY_EVENTS = frozenset({
+    "session.validation_retry_needed",
+})
 _ITERATION_START_EVENTS = frozenset({
     "session.started",
     "rework.started",
@@ -36,6 +39,7 @@ class LogicalSemantics:
     event_intent: str
     review_oriented: bool
     restart_pending: bool
+    rework_driven: bool
 
 
 def enrich_logical_semantics(
@@ -65,15 +69,20 @@ def enrich_logical_semantics(
         logical_run = logical_run + 1
 
     signal_cycle = _cycle_from_signal(event_data.get("rework_cycle"))
+    rework_driven = False
     if logical_run != (prev_run or 1):
         logical_cycle = 1
     elif signal_cycle is not None:
         logical_cycle = signal_cycle
+        rework_driven = True
+    elif event_name in _CYCLE_BOUNDARY_EVENTS:
+        logical_cycle = (prev_cycle or 1) + 1
     else:
         logical_cycle = prev_cycle or 1
+        rework_driven = bool(previous_data and previous_data.get("_logical_rework_driven"))
 
     logical_phase = _phase_for_intent(intent)
-    if logical_cycle > 1 and logical_phase == "coding":
+    if rework_driven and logical_cycle > 1 and logical_phase == "coding":
         logical_phase = "rework"
 
     restart_pending = _compute_restart_pending(
@@ -89,6 +98,7 @@ def enrich_logical_semantics(
         event_intent=intent.value,
         review_oriented=(intent == EventIntent.REVIEW),
         restart_pending=restart_pending,
+        rework_driven=rework_driven,
     )
 
 

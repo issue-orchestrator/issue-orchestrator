@@ -698,3 +698,61 @@ class TestResetIssue:
         assert result.issue_number == 888
         assert result.error is not None
         assert "Unexpected error" in result.error
+
+    def test_reset_issue_clears_timeline_when_store_provided(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+        mock_label_manager,
+    ):
+        """Timeline data is cleared when timeline_store is passed (from-scratch reset)."""
+        from unittest.mock import MagicMock
+
+        timeline_store = MagicMock()
+        timeline_store.delete.return_value = 42
+
+        mock_working_copy.list_remote_branches.return_value = []
+
+        result = reset_issue(
+            issue_number=555,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            label_manager=mock_label_manager,
+            current_labels=[],
+            session_history=[],
+            completed_today=[],
+            timeline_store=timeline_store,
+        )
+
+        assert result.success is True
+        timeline_store.delete.assert_called_once_with(555)
+
+    def test_reset_issue_skips_timeline_when_store_is_none(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+        mock_label_manager,
+    ):
+        """Timeline data is NOT cleared for regular resets (timeline_store=None)."""
+        mock_working_copy.list_remote_branches.return_value = []
+
+        result = reset_issue(
+            issue_number=556,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            label_manager=mock_label_manager,
+            current_labels=[],
+            session_history=[],
+            completed_today=[],
+            timeline_store=None,
+        )
+
+        assert result.success is True

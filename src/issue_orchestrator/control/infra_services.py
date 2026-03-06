@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from ..ports.queue_cache_store import QueueCacheStore
     from ..ports.goal_pilot_store import GoalPilotStore
     from ..ports.timeline_reader import TimelineReader
+    from ..ports.timeline_store import TimelineStore
     from ..ports.timeline_writer import TimelineWriter
     from .label_manager import LabelManager
     from .provider_resilience import ProviderResilienceManager
@@ -39,6 +40,7 @@ class InfraServices:
     queue_cache_store: "QueueCacheStore"
     provider_resilience: "ProviderResilienceManager"
     timeline_reader: "TimelineReader"
+    timeline_store: "TimelineStore"
     timeline_writer: "TimelineWriter"
     goal_pilot_store: "GoalPilotStore"
     state_health_check: Callable[[], None] = field(default=_noop_health_check)

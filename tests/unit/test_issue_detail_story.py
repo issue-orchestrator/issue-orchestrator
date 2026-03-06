@@ -226,3 +226,67 @@ def test_latest_run_without_review_events_not_marked_completed() -> None:
     latest = payload["runs"][-1]
     assert "completed" not in str(latest["outcome"]).lower()
     assert "approved" not in str(latest["outcome"]).lower()
+
+
+def test_step_detail_excludes_artifact_resolution_errors() -> None:
+    """Artifact errors (run_dir missing) should not pollute step detail text."""
+    events = [
+        _evt(
+            "session.started",
+            timestamp="2026-02-16T10:00:00Z",
+            logical_run=1,
+            logical_cycle=1,
+            agent="agent:backend",
+        ),
+    ]
+    # Simulate what the web layer adds when run_dir is missing
+    events[0]["actions_error"] = "run_dir does not exist: /tmp/gone"
+    events[0]["actions"] = [
+        {
+            "type": "show_actions_error",
+            "label": "What is missing?",
+            "error_message": "run_dir does not exist: /tmp/gone",
+            "error_messages": ["run_dir does not exist: /tmp/gone"],
+        }
+    ]
+    steps = _build_journey_steps(events, "2026-02-16")
+    assert len(steps) == 1
+    assert "detail" not in steps[0], "artifact errors should not appear as step detail"
+
+
+def test_step_detail_preserves_event_own_detail() -> None:
+    """The event's own detail text should still appear."""
+    events = [
+        _evt(
+            "session.completed",
+            timestamp="2026-02-16T10:10:00Z",
+            logical_run=1,
+            logical_cycle=1,
+            status="completed",
+        ),
+    ]
+    events[0]["detail"] = "Agent completed successfully"
+    events[0]["actions_error"] = "run_dir does not exist: /tmp/gone"
+    steps = _build_journey_steps(events, "2026-02-16")
+    assert steps[0]["detail"] == "Agent completed successfully"
+    assert "run_dir" not in steps[0]["detail"]
+
+
+def test_validation_retry_creates_separate_cycles() -> None:
+    """Each validation-retry iteration should be its own cycle within the run."""
+    events = [
+        _evt("session.started", timestamp="2026-02-16T10:00:00Z", logical_run=1, logical_cycle=1, agent="agent:backend"),
+        _evt("session.completed", timestamp="2026-02-16T10:05:00Z", logical_run=1, logical_cycle=1, status="completed"),
+        _evt("review.started", timestamp="2026-02-16T10:06:00Z", logical_run=1, logical_cycle=1, task="review"),
+        _evt("review.approved", timestamp="2026-02-16T10:07:00Z", logical_run=1, logical_cycle=1, task="review", status="completed"),
+        # Validation fails → retry starts a new cycle
+        _evt("session.validation_retry_needed", timestamp="2026-02-16T10:08:00Z", logical_run=1, logical_cycle=2, status="failed"),
+        _evt("session.started", timestamp="2026-02-16T10:09:00Z", logical_run=1, logical_cycle=2, agent="agent:backend"),
+        _evt("session.completed", timestamp="2026-02-16T10:14:00Z", logical_run=1, logical_cycle=2, status="completed"),
+        _evt("review.started", timestamp="2026-02-16T10:15:00Z", logical_run=1, logical_cycle=2, task="review"),
+        _evt("review.approved", timestamp="2026-02-16T10:16:00Z", logical_run=1, logical_cycle=2, task="review", status="completed"),
+    ]
+    cycles = _build_journey_cycles(events, "2026-02-16")
+    assert len(cycles) == 2, f"Expected 2 cycles, got {len(cycles)}"
+    assert cycles[0]["iteration"] == 1
+    assert cycles[1]["iteration"] == 2

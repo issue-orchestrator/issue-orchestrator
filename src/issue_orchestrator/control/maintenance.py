@@ -16,6 +16,7 @@ if TYPE_CHECKING:
     from ..infra.config import Config
     from ..ports.worktree_manager import WorktreeManager
     from ..ports.working_copy import WorkingCopy
+    from ..ports.timeline_store import TimelineStore
     from ..domain.models import SessionHistoryEntry
     from .action_applier import ActionApplier
     from .label_manager import LabelManager
@@ -68,7 +69,7 @@ class ResetResult:
     error: str | None = None
 
 
-def reset_issue(  # noqa: C901 — multi-step cleanup coordination
+def reset_issue(  # noqa: C901, PLR0912 — multi-step cleanup coordination
     issue_number: int,
     config: "Config",
     worktree_manager: "WorktreeManager",
@@ -79,6 +80,7 @@ def reset_issue(  # noqa: C901 — multi-step cleanup coordination
     session_history: list["SessionHistoryEntry"],
     completed_today: list[int],
     label_store: "LabelStore | None" = None,
+    timeline_store: "TimelineStore | None" = None,
 ) -> ResetResult:
     """Reset an issue to pristine state for fresh retry.
 
@@ -161,6 +163,14 @@ def reset_issue(  # noqa: C901 — multi-step cleanup coordination
         ]
         if issue_number in completed_today:
             completed_today.remove(issue_number)
+
+        # 6. Clear timeline data
+        if timeline_store is not None:
+            try:
+                deleted_count = timeline_store.delete(issue_number)
+                logger.info("[reset] Cleared %d timeline events for issue #%d", deleted_count, issue_number)
+            except Exception as e:
+                logger.warning("[reset] Failed to clear timeline for #%d: %s", issue_number, e)
 
         logger.info(
             "[reset] Issue #%d reset complete: worktree=%s branch=%s labels=%s",

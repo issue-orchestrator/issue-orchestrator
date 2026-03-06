@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         ManifestDownloader,
     )
     from ..ports.timeline_reader import TimelineReader
+    from ..ports.timeline_store import TimelineStore
     from ..ports.timeline_writer import TimelineWriter
     from ..ports.e2e_issue_tracker import E2EIssueTracker
     from ..ports.goal_pilot_store import GoalPilotStore
@@ -140,6 +141,10 @@ class OrchestratorDeps:
     @property
     def timeline_reader(self) -> "TimelineReader":
         return self.services.timeline_reader
+
+    @property
+    def timeline_store(self) -> "TimelineStore":
+        return self.services.timeline_store
 
     @property
     def timeline_writer(self) -> "TimelineWriter":
