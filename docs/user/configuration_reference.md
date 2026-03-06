@@ -114,13 +114,12 @@ _Auto-generated from settings schema._
 | `observability.stale_escalation_ticks` | integer | `0` | Escalate after K consecutive stale ticks (0 = disabled) | `0`, `3`, `5` | Set to 0 to disable automatic escalation. |
 | `observability.session_output_retention_days` | integer | `7` | Retention window in days for session run artifacts | `0`, `7`, `30` | Set to 0 to expire immediately; cleanup policy may still defer deletion. |
 | `observability.session_output_retention_tier` | string | `hot` | Retention tier tag recorded in run manifests | `hot`, `cold` | Use hot for short-term troubleshooting and cold for longer forensic retention. |
-| `ui.web_port` | integer | `8080` | Port for the web dashboard (requires restart) | `8080`, `3000`, `9090` | Change if the default port is occupied. |
-| `ui.control_api_port` | integer | `19080` | 0 = disabled | `0`, `19080`, `19081` | Set to 0 to disable the control API listener. |
+| `ui.web_port` | integer | `0` | Port for the web dashboard. 0 = auto-assign free port (requires restart) | `0`, `8080`, `3000`, `9090` | 0 = auto-assign a free port. Use a fixed port for bookmarkable URLs. |
+| `ui.control_api_port` | integer | `0` | 0 = auto-assign free port | `0`, `19080`, `19081` | 0 = auto-assign a free port. Allows multiple instances to coexist. |
 | `ai_systems.allowed` | string | `` | Additional ai_system values allowed in config (comma-separated) | `codex, custom-system` | Use to allow new providers beyond ai_systems.yaml. |
 | `worktrees.base` | string | `../` | Directory where git worktrees are created | `../`, `../worktrees`, `/tmp/worktrees` | Relative paths are resolved from the repo root. |
 | `worktrees.base_branch_override` | string (optional) | `None` | Override the base branch for worktree creation (auto-detect if unset) | `main`, `master` | Use when your default branch is not auto-detected correctly. |
 | `worktrees.worktree_branch_on_recreate` | string | `delete` | What to do when recreating a worktree with existing branch | `delete`, `create_new_branch` | Use create_new_branch to keep the old branch intact. |
 | `worktrees.setup` | string | `` | Commands to run in each new worktree after creation (one per line) | `npm install`, `pip install -e '.[dev]'`, `make setup` | Each command runs in the worktree directory. Leave empty if no setup needed. The orchestrator's own setup (hooks, coding-done, reviewer-done, Claude settings) is automatic. |
-
 
 <!-- END AUTO-GENERATED CONFIG REFERENCE -->

@@ -83,8 +83,8 @@ class TestModelDefaults:
 
     def test_advanced_defaults(self):
         m = AdvancedSettings()
-        assert m.web_port == 8080
-        assert m.control_api_port == 19080
+        assert m.web_port == 0
+        assert m.control_api_port == 0
         assert m.worktree_branch_on_recreate == "delete"
         assert m.session_output_retention_days == 7
         assert m.session_output_retention_tier == "hot"
@@ -135,7 +135,7 @@ class TestValidation:
 
     def test_web_port_min(self):
         with pytest.raises(ValidationError):
-            AdvancedSettings(web_port=1023)
+            AdvancedSettings(web_port=-1)
 
     def test_web_port_max(self):
         with pytest.raises(ValidationError):
