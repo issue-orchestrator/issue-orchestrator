@@ -34,9 +34,19 @@ RETRY_PROMPT_FILE = "retry-prompt.md"
 #   {error_summary} - Truncated error output
 #   {retry_count} - Current attempt number (1-based)
 #   {max_retries} - Total allowed attempts
-DEFAULT_RETRY_TEMPLATE = """# Validation Retry (Attempt {retry_count}/{max_retries})
+#   {retries_remaining} - How many attempts are left after this one
+DEFAULT_RETRY_TEMPLATE = """# Validation Retry (Attempt {retry_count}/{max_retries}) — {retries_remaining} attempt(s) remaining after this
 
-The codebase was working before you started. After your changes, validation failed.
+Your changes broke validation. The codebase was working before you started.
+
+## Diagnosis Strategy
+
+Before making changes, understand what went wrong:
+
+1. **Read the errors below** — identify the root cause, not just the first symptom
+2. **Check your diff** — run `git diff HEAD~1` to see exactly what you changed
+3. **Trace the failure** — if a test fails, find the code path; if an import fails, check the dependency chain
+4. **Run validation locally** — `{validation_cmd}` — confirm your fix works before calling coding-done
 
 ## Original Task
 
@@ -45,29 +55,30 @@ The codebase was working before you started. After your changes, validation fail
 ## Validation Failure
 
 Command: `{validation_cmd}`
-
-The full error output is available at: `{error_file}`
-
-### Error Summary
+Full error output: `{error_file}`
 
 ```
 {error_summary}
 ```
 
-## Instructions
+## Common Root Causes
 
-Fix these validation errors. The failures may be:
-- Directly in code you changed
-- Transitively related (broken imports, renamed dependencies, violated guardrails)
+- **Renamed/moved** a function, class, or module but missed callers, tests, or re-exports
+- **Circular import** — a new import creates A→B→A
+- **Type mismatch** — changed a return type or parameter without updating all call sites
+- **Missing export** — added a new module but forgot `__init__.py` re-export
+- **Test fixture** — changed production code but a test fixture still uses the old shape
+
+## Completion
 
 When you've fixed the errors, run:
 ```
 coding-done completed --implementation "describe what you fixed" --problems "any remaining issues"
 ```
 
-If you cannot fix the problem (e.g., it requires human decision, external dependency, or unclear requirements), run:
+If you genuinely cannot fix the problem after careful investigation, run:
 ```
-coding-done blocked --reason "explain why you're blocked"
+coding-done blocked --reason "the specific error and why you cannot resolve it" --attempted "what you tried"
 ```
 """
 
@@ -292,13 +303,16 @@ def write_retry_prompt(
     # Render template with variables
     # Note: retry_count is 0-based internally, display as 1-based
     # Use _truncate_with_tail to preserve the end (pytest summary is at the end)
+    display_count = retry_count + 1
+    display_max = max_retries + 1
     content = template.format(
         original_task=original_prompt,
         validation_cmd=validation_cmd,
         error_file=str(errors_file),
         error_summary=_truncate_with_tail(validation_error),
-        retry_count=retry_count + 1,
-        max_retries=max_retries + 1,
+        retry_count=display_count,
+        max_retries=display_max,
+        retries_remaining=display_max - display_count,
     )
 
     retry_prompt_path.write_text(content)
