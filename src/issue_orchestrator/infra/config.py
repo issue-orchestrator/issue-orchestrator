@@ -1155,8 +1155,8 @@ class Config:
 
     # UI mode: "web" (default, browser dashboard)
     ui_mode: str = "web"
-    web_port: int = 8080  # Port for web dashboard
-    control_api_port: int = 19080  # Port for control API (always available, 0 = disabled)
+    web_port: int = 8080  # Port for web dashboard (0 = auto-assign free port)
+    control_api_port: int = 19080  # Port for control API (0 = auto-assign free port)
     queue_refresh_seconds: int = 600  # How often web UI refetches queue from GitHub (0 = manual only)
     # Fetch-layer optimization for queue refreshes
     fetch_layer_enabled: bool = True

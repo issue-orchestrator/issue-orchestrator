@@ -5603,9 +5603,17 @@ class ControlAPIServer:
 
     async def start(self) -> None:
         """Start the control API server."""
+        import socket
         import uvicorn
 
         set_orchestrator(self.orchestrator)
+
+        # Auto-assign a free port when port=0
+        if self.port == 0:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("127.0.0.1", 0))
+                self.port = s.getsockname()[1]
+            logger.info("Control API auto-assigned free port %d", self.port)
 
         config = uvicorn.Config(
             control_app,

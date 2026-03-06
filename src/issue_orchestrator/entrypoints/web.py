@@ -3684,6 +3684,13 @@ def ensure_port_available(port: int, host: str = "127.0.0.1", max_retries: int =
     )
 
 
+def _find_free_port(host: str = "127.0.0.1") -> int:
+    """Bind to port 0 and let the OS assign a free port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind((host, 0))
+        return s.getsockname()[1]
+
+
 async def run_web_dashboard(
     orchestrator: "Orchestrator",
     port: int = 8080,
@@ -3693,7 +3700,7 @@ async def run_web_dashboard(
 
     Args:
         orchestrator: The orchestrator instance
-        port: Port to run on (default 8080)
+        port: Port to run on (default 8080, 0 = auto-assign free port)
         open_browser: If True, auto-open browser (default True)
     """
     global _orchestrator, _server
@@ -3703,8 +3710,13 @@ async def run_web_dashboard(
     from .control_api import set_orchestrator as set_control_orchestrator
     set_control_orchestrator(orchestrator)
 
-    # Ensure port is available before starting
-    ensure_port_available(port)
+    # Auto-assign a free port when port=0
+    if port == 0:
+        port = _find_free_port()
+        logger.info("[web] Auto-assigned free port %d", port)
+    else:
+        # Ensure port is available before starting
+        ensure_port_available(port)
 
     import uvicorn
 
