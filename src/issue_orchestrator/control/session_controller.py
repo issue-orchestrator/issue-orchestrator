@@ -810,13 +810,16 @@ class SessionController:
 
         # Render template with variables
         # Note: retry_count is 0-based internally, display as 1-based
+        display_count = retry_count + 1
+        display_max = max_retries + 1
         return template.format(
             original_task=task_prompt,
             validation_cmd=self._validation_cmd or "",
             error_file=str(validation_error_file) if validation_error_file else "unknown",
             error_summary=_truncate_with_tail(validation_error),
-            retry_count=retry_count + 1,
-            max_retries=max_retries + 1,
+            retry_count=display_count,
+            max_retries=display_max,
+            retries_remaining=display_max - display_count,
         )
 
     def _emit_event(self, event_type: EventName, data: dict[str, Any]) -> None:

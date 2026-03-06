@@ -189,8 +189,10 @@ class TestWriteRetryPrompt:
         )
 
         content = path.read_text()
-        # Error should be truncated to 2000 chars
-        assert len(content) < 5000
+        # Error (5000 chars) is truncated by _truncate_with_tail to ~4000 chars,
+        # so total content must be well under 5000 + template chrome.
+        assert len(content) < len(long_error) + 2000
+        assert "truncated" in content
 
     def test_custom_template_from_file(self, tmp_path: Path):
         """Custom template loaded from file."""

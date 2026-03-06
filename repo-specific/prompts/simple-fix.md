@@ -96,11 +96,17 @@ See `tests/AGENTS.md` for the project's testing principles.
 
 ### 4. Validate Your Changes
 
+**This is the most critical step. Do NOT skip it.**
+
 ```bash
-make validate  # or project-specific validation
+make validate  # Runs tests, type checks, linting
 ```
 
-Fix any failures before completing.
+If validation fails:
+1. **Read the error output carefully** — identify the root cause, not just the first error
+2. **Check your diff** — `git diff` shows what you changed; the failure is in or caused by those changes
+3. **Fix and re-run** — iterate until `make validate` passes cleanly
+4. **Do NOT call coding-done until validation passes** — the orchestrator will reject it and you'll waste a retry
 
 ### 5. Commit Your Changes
 

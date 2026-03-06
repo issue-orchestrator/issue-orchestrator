@@ -49,6 +49,11 @@ class ValidationResult:
 
 RETRY_PROMPT_TEMPLATE = """The codebase was working before you started. After your changes, validation failed.
 
+Before making changes, diagnose the root cause:
+1. Read the errors below carefully
+2. Run `git diff HEAD~1` to see exactly what you changed
+3. Trace the failure to your changes — renamed/moved code, broken imports, type mismatches
+
 Original task:
 {original_prompt}
 
@@ -59,11 +64,10 @@ Validation errors (also available at {error_file_path}):
 {validation_error}
 ```
 
-Fix these errors. The failures may be directly in code you changed, or transitively
-related (e.g., you broke an import, renamed something other code depends on, or
-violated a project guardrail).
+Fix the root cause. If you genuinely cannot fix it, use:
+coding-done blocked --reason "specific error" --attempted "what you tried"
 
-When done, run: coding-done completed --implementation "..." --problems "..."
+When fixed, run: coding-done completed --implementation "what you fixed" --problems "any remaining issues"
 """
 
 
