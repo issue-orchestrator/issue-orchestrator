@@ -354,6 +354,16 @@ install-vscode-extensions:
 playwright-install:
 	playwright install chromium
 
+# Code-quality validation for orchestrator agent gate.
+# Excludes flaky integration/simulated tests that test infrastructure, not code.
+# Use this as the validation.cmd in orchestrator config.
+validate-code:
+	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-code-impl
+	@$(GMAKE) --output-sync=target test-vscode
+	@echo "✓ Code validation passed!"
+
+_validate-code-impl: typecheck lint-arch lint-complexity test-unit test-web
+
 # Quick validation for agent_gate (~45s)
 validate-quick: typecheck test-unit
 

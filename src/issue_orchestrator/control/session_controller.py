@@ -184,6 +184,45 @@ class SessionController:
         if recovered:
             self._log_timeout_recovery(issue_number, session_name, record)
 
+        # Map outcome to status early — needed to decide whether to run validation
+        status = self._map_outcome_to_status(record)
+        blocked_reason = record.blocked_reason if status == SessionStatus.BLOCKED else None
+
+        # Run validation BEFORE completion processing so the review exchange
+        # can access the validation-record.json (it requires it when
+        # require_validation=True). Previously, validation ran after the
+        # completion processor, creating a chicken-and-egg problem.
+        validation_passed, validation_error, validation_error_file = None, None, None
+        if status == SessionStatus.COMPLETED and self._validation_cmd and self._command_runner:
+            status, validation_passed, validation_error, validation_error_file = self._run_validation_gate(
+                worktree_path, validation_session_name, run_dir, issue_number, issue_title, record.outcome,
+                validation_retry_count, original_prompt, retry_prompt_template, repo_root,
+            )
+
+        # If validation failed (retry or exhausted), skip completion processing.
+        # Completion processing includes the review exchange, which requires
+        # validation-record.json to exist. If we reach this point, validation
+        # hasn't produced a passing record, so the review exchange would fail.
+        if status in (SessionStatus.NEEDS_VALIDATION_RETRY, SessionStatus.VALIDATION_FAILED):
+            self._enrich_manifest_from_completion(run_dir, record)
+            completion_detail = self._build_completion_detail(record)
+            logger.info(
+                issue_log(issue_number, "Validation %s — skipping completion processing: session=%s"),
+                status.value, session_name,
+            )
+            return SessionDecision(
+                status=status,
+                processing_result=None,
+                completion_processed=True,
+                recovered_from_timeout=recovered,
+                reason=f"Validation gate {status.value}: skipping completion processing",
+                validation_passed=validation_passed,
+                validation_error=validation_error,
+                validation_error_file=validation_error_file,
+                blocked_reason=blocked_reason,
+                completion_detail=completion_detail,
+            )
+
         pr_number = self._extract_pr_number_from_session_name(session_name)
         result = self.completion_processor.process(
             worktree_path,
@@ -193,18 +232,6 @@ class SessionController:
             completion_path=completion_path,
         )
         self._emit_processing_completed_event(worktree_path, issue_number, session_name, run_dir, result)
-
-        # Map outcome to status
-        status = self._map_outcome_to_status(record)
-        blocked_reason = record.blocked_reason if status == SessionStatus.BLOCKED else None
-
-        # Run validation if configured
-        validation_passed, validation_error, validation_error_file = None, None, None
-        if status == SessionStatus.COMPLETED and self._validation_cmd and self._command_runner:
-            status, validation_passed, validation_error, validation_error_file = self._run_validation_gate(
-                worktree_path, validation_session_name, run_dir, issue_number, issue_title, record.outcome,
-                validation_retry_count, original_prompt, retry_prompt_template, repo_root,
-            )
 
         # Enrich manifest with CompletionRecord detail
         self._enrich_manifest_from_completion(run_dir, record)
