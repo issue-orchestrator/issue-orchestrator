@@ -719,6 +719,7 @@ def build_test_orchestrator_deps(
     from issue_orchestrator.ports import (
         InMemoryProviderCircuitStore,
         NullTimelineReader,
+        NullTimelineStore,
         NullTimelineWriter,
     )
     provider_resilience = ProviderResilienceManager(
@@ -742,6 +743,7 @@ def build_test_orchestrator_deps(
         queue_cache_store=_build_null_queue_cache_store(),
         provider_resilience=provider_resilience,
         timeline_reader=timeline_reader,
+        timeline_store=NullTimelineStore(),
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
     )

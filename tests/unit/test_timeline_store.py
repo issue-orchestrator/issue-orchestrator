@@ -177,6 +177,21 @@ def test_sqlite_timeline_store_requires_run_dir_for_run_scoped_events(tmp_path: 
         )
 
 
+def test_sqlite_timeline_store_delete_removes_issue_events(tmp_path: Path) -> None:
+    store = SqliteTimelineStore(
+        tmp_path / "timeline.sqlite",
+        config=TimelineStoreConfig(max_records=100),
+    )
+    store.append(42, TimelineRecord(event_id="1", timestamp="t1", event="e1", data={}))
+    store.append(42, TimelineRecord(event_id="2", timestamp="t2", event="e2", data={}))
+    store.append(99, TimelineRecord(event_id="3", timestamp="t3", event="e3", data={}))
+
+    deleted = store.delete(42)
+    assert deleted == 2
+    assert store.read(42) == []
+    assert len(store.read(99)) == 1, "other issue's events are preserved"
+
+
 def test_sqlite_writer_covers_all_event_names(tmp_path: Path) -> None:
     issue_number = 4057
     sqlite_store = SqliteTimelineStore(

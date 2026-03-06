@@ -3108,6 +3108,7 @@ def _reset_and_retry_issue(  # noqa: PLR0913
             session_history=state.session_history,
             completed_today=state.completed_today,
             label_store=deps.label_store,
+            timeline_store=deps.timeline_store if from_scratch else None,
         )
         if not result.success:
             return None, _make_reset_failure(issue_number, result, result.error or "Unknown error")

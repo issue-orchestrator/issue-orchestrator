@@ -236,6 +236,16 @@ class SqliteTimelineStore(TimelineStore):
             )
         return records
 
+    def delete(self, issue_number: int) -> int:
+        with self._transaction() as tx:
+            tx.execute(
+                "DELETE FROM timeline_events WHERE issue_number = ?",
+                (issue_number,),
+            )
+            deleted = tx.execute("SELECT changes()").fetchone()[0]
+        logger.info("[TIMELINE] delete db=%s issue=%s deleted=%s", self._db_path, issue_number, deleted)
+        return int(deleted)
+
     def _trim_if_needed(self, conn: sqlite3.Connection, issue_number: int) -> None:
         max_records = self._config.max_records
         if max_records <= 0:
