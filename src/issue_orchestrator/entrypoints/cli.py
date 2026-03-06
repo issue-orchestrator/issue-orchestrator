@@ -405,7 +405,7 @@ async def _run_no_dashboard(orchestrator, api_port: int | None) -> None:
     from .control_api import ControlAPIServer
 
     control_api = None
-    if api_port:
+    if api_port is not None:
         control_api = ControlAPIServer(orchestrator, port=api_port)
         try:
             await control_api.start()
@@ -440,11 +440,14 @@ async def _run_web_dashboard(orchestrator, config: "Config", args: argparse.Name
     loop.add_signal_handler(signal.SIGTERM, handle_signal)
 
     control_api = None
-    if api_port:
-        console.print(f"[dim]Control API on http://127.0.0.1:{api_port}[/dim]")
+    if api_port is not None:
+        if api_port != 0:
+            console.print(f"[dim]Control API on http://127.0.0.1:{api_port}[/dim]")
         control_api = ControlAPIServer(orchestrator, port=api_port)
         try:
             await control_api.start()
+            if api_port == 0:
+                console.print(f"[dim]Control API on http://127.0.0.1:{control_api.port}[/dim]")
         except OSError as exc:
             logging.warning("Control API failed to start on port %s: %s", api_port, exc)
             control_api = None
@@ -463,7 +466,7 @@ async def _run_tui_dashboard(orchestrator, config: "Config", api_port: int | Non
     from .dashboard import run_with_dashboard
 
     control_api = None
-    if api_port:
+    if api_port is not None:
         control_api = ControlAPIServer(orchestrator, port=api_port)
         await control_api.start()
 
@@ -629,25 +632,27 @@ def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI ent
 
     orchestrator = build_orchestrator(config=config)
 
-    # Get control API port (CLI --api-port overrides config)
-    api_port = getattr(args, 'api_port', None) or config.control_api_port
+    # Get control API port (CLI --api-port overrides config; 0 = auto-assign)
+    cli_api_port = getattr(args, 'api_port', None)
+    api_port = cli_api_port if cli_api_port is not None else config.control_api_port
 
     try:
         if args.no_dashboard:
             # Run orchestrator without dashboard (useful for CI/debugging)
             console.print("[dim]Running without dashboard UI[/dim]")
-            if api_port:
+            if api_port and api_port != 0:
                 console.print(f"[dim]Control API on http://127.0.0.1:{api_port}[/dim]")
             asyncio.run(_run_no_dashboard(orchestrator, api_port))
         elif config.ui_mode == "web":
             # Run with web dashboard in browser
             port = args.port if args.port != 8080 else config.web_port
             console.print("[dim]Starting web dashboard...[/dim]")
-            console.print(f"[green]Dashboard will open at http://localhost:{port}[/green]")
+            if port != 0:
+                console.print(f"[green]Dashboard will open at http://localhost:{port}[/green]")
             asyncio.run(_run_web_dashboard(orchestrator, config, args, api_port))
         else:
             # Run with interactive TUI dashboard (tmux mode)
-            if api_port:
+            if api_port and api_port != 0:
                 console.print(f"[dim]Control API on http://127.0.0.1:{api_port}[/dim]")
             asyncio.run(_run_tui_dashboard(orchestrator, config, api_port))
     except KeyboardInterrupt:

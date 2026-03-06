@@ -684,12 +684,18 @@ class GitHubHttpClient:
             return payload.get("html_url", f"https://github.com/{self._config.repo}/issues/{issue_number}")
         return f"https://github.com/{self._config.repo}/issues/{issue_number}"
 
-    def get_issue_comments(self, issue_number: int) -> list[dict[str, Any]]:
+    def get_issue_comments(
+        self,
+        issue_number: int,
+        *,
+        use_cache: bool = True,
+    ) -> list[dict[str, Any]]:
         payload = self._request_json(
             "GET",
             f"/repos/{self._config.repo}/issues/{issue_number}/comments",
             params={"per_page": 100},
             caller="get_issue_comments",
+            use_cache=use_cache,
         )
         return payload if isinstance(payload, list) else []
 

@@ -141,6 +141,8 @@ worktree-setup: venv-fast
 	.venv/bin/playwright install chromium --with-deps 2>/dev/null || .venv/bin/playwright install chromium; \
 	t2=$$(date +%s); \
 	echo "worktree-setup pid=$$$$ ts=$$(date -Iseconds) pwd=$$(pwd) npm_vscode=$$((t1-t0))s playwright=$$((t2-t1))s total=$$((t2-t0))s" >> $(SETUP_LOG)
+	@# Generate .mcp.json with worktree-isolated Playwright user-data-dir
+	@scripts/generate-mcp-json.sh
 	@echo ""
 	@echo "Worktree setup complete! Activate with: source .venv/bin/activate"
 

@@ -152,7 +152,7 @@ class GitHubClaimAdapter(ClaimManager):
 
         while time.monotonic() < deadline and poll_count < max_polls:
             poll_count += 1
-            claims = self._fetch_all_claims(issue_number)
+            claims = self._fetch_all_claims(issue_number, use_cache=False)
             winner = self._determine_winner(claims)
 
             if winner and winner.lease_id == lease_id:
@@ -312,11 +312,16 @@ class GitHubClaimAdapter(ClaimManager):
         claims = self._fetch_all_claims(issue_number)
         return self._determine_winner(claims)
 
-    def _fetch_all_claims(self, issue_number: int) -> list[Claim]:
+    def _fetch_all_claims(
+        self, issue_number: int, *, use_cache: bool = True
+    ) -> list[Claim]:
         """Fetch and parse all claims from issue comments.
 
         Args:
             issue_number: The GitHub issue number.
+            use_cache: If True, allow ETag-based HTTP caching.
+                Set to False during convergence polling to avoid
+                stale 304 Not Modified responses.
 
         Returns:
             List of parsed Claim objects.
@@ -327,7 +332,9 @@ class GitHubClaimAdapter(ClaimManager):
                 issue_key=str(issue_number),
                 scope=gh_audit.AuditScope.UNKNOWN,
             ):
-                comments = self._client.get_issue_comments(issue_number)
+                comments = self._client.get_issue_comments(
+                    issue_number, use_cache=use_cache
+                )
             return extract_all_claims(comments, issue_number)
         except Exception as e:
             logger.error("Failed to fetch claims for issue #%d: %s", issue_number, e)

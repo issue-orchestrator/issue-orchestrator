@@ -5602,7 +5602,11 @@ class ControlAPIServer:
         self._task: Optional[asyncio.Task] = None
 
     async def start(self) -> None:
-        """Start the control API server."""
+        """Start the control API server.
+
+        When self.port is 0, uvicorn binds to an OS-assigned free port.
+        After startup, self.port is updated to the actual bound port.
+        """
         import uvicorn
 
         set_orchestrator(self.orchestrator)
@@ -5624,6 +5628,15 @@ class ControlAPIServer:
             if self._server.started:
                 break
             await asyncio.sleep(0.1)
+
+        # Read back the actual bound port (important when port=0)
+        if self.port == 0 and self._server.started:
+            for s in self._server.servers:
+                for sock in s.sockets:
+                    addr = sock.getsockname()
+                    if isinstance(addr, tuple) and len(addr) >= 2:
+                        self.port = addr[1]
+                        break
 
         logger.info(f"Control API started on http://127.0.0.1:{self.port}")
 

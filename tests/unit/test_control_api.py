@@ -781,6 +781,32 @@ class TestControlAPIServer:
                 set_orchestrator(None)
 
     @pytest.mark.asyncio
+    async def test_start_with_port_zero_reads_back_bound_port(self, mock_orchestrator):
+        """When port=0, start() reads back the OS-assigned port."""
+        from issue_orchestrator.entrypoints.control_api import ControlAPIServer
+        import uvicorn
+
+        api_server = ControlAPIServer(mock_orchestrator, port=0)
+
+        # Mock a uvicorn server whose socket reports port 54321
+        mock_socket = MagicMock()
+        mock_socket.getsockname.return_value = ("127.0.0.1", 54321)
+        mock_inner_server = MagicMock()
+        mock_inner_server.sockets = [mock_socket]
+
+        mock_server_instance = MagicMock()
+        mock_server_instance.started = True
+        mock_server_instance.serve = AsyncMock()
+        mock_server_instance.servers = [mock_inner_server]
+
+        with patch.object(uvicorn, "Config"):
+            with patch.object(uvicorn, "Server", return_value=mock_server_instance):
+                await api_server.start()
+
+        assert api_server.port == 54321
+        set_orchestrator(None)
+
+    @pytest.mark.asyncio
     async def test_stop_signals_server_exit(self, mock_orchestrator):
         """Stopping sets should_exit on the uvicorn server."""
         from issue_orchestrator.entrypoints.control_api import ControlAPIServer

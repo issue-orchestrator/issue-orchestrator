@@ -997,14 +997,14 @@ class AdvancedSettings(BaseModel):
         },
     )
     web_port: int = Field(
-        8080,
+        0,
         title="Web Dashboard Port",
-        description="Port for the web dashboard (requires restart)",
-        ge=1024,
+        description="Port for the web dashboard. 0 = auto-assign free port (requires restart)",
+        ge=0,
         le=65535,
         json_schema_extra={
-            "doc_examples": ["8080", "3000", "9090"],
-            "doc_notes": "Change if the default port is occupied.",
+            "doc_examples": ["0", "8080", "3000", "9090"],
+            "doc_notes": "0 = auto-assign a free port. Use a fixed port for bookmarkable URLs.",
             "section": "Ports",
             "restart_required": True,
             "config_attr": "web_port",
@@ -1018,14 +1018,14 @@ class AdvancedSettings(BaseModel):
         },
     )
     control_api_port: int = Field(
-        19080,
+        0,
         title="Control API Port",
-        description="0 = disabled",
+        description="0 = auto-assign free port",
         ge=0,
         le=65535,
         json_schema_extra={
             "doc_examples": ["0", "19080", "19081"],
-            "doc_notes": "Set to 0 to disable the control API listener.",
+            "doc_notes": "0 = auto-assign a free port. Allows multiple instances to coexist.",
             "section": "Ports",
             "restart_required": True,
             "config_attr": "control_api_port",
