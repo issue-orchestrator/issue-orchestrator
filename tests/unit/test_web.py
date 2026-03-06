@@ -4808,6 +4808,55 @@ class TestRunWebDashboard:
                         set_server(None)
 
 
+    @pytest.mark.asyncio
+    async def test_run_web_dashboard_port_zero_resolves_bound_port(self):
+        """When port=0, browser opens with the OS-assigned port."""
+        from issue_orchestrator.entrypoints.web import run_web_dashboard, _get_bound_port
+        import asyncio
+        from tests.unit.threading_helpers import wait_for_async_event
+
+        mock_orch = create_mock_orchestrator()
+
+        # Mock a socket that reports port 54321
+        mock_socket = MagicMock()
+        mock_socket.getsockname.return_value = ("127.0.0.1", 54321)
+        mock_inner_server = MagicMock()
+        mock_inner_server.sockets = [mock_socket]
+
+        mock_server = MagicMock()
+        mock_server.servers = [mock_inner_server]
+        mock_server.started = False
+        serve_started = asyncio.Event()
+        browser_opened = asyncio.Event()
+
+        async def serve():
+            mock_server.started = True
+            serve_started.set()
+            await asyncio.Event().wait()
+
+        mock_server.serve = AsyncMock(side_effect=serve)
+
+        with patch("uvicorn.Server", return_value=mock_server):
+            with patch("uvicorn.Config"):
+                with patch("issue_orchestrator.entrypoints.web.webbrowser.open") as mock_open:
+                    mock_open.side_effect = lambda url: browser_opened.set()
+                    task = asyncio.create_task(run_web_dashboard(mock_orch, port=0))
+
+                    await wait_for_async_event(serve_started, timeout=1.0, label="serve_started")
+                    await wait_for_async_event(browser_opened, timeout=1.0, label="browser_opened")
+
+                    mock_open.assert_called_once_with("http://127.0.0.1:54321")
+
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+
+                    set_orchestrator(None)
+                    set_server(None)
+
+
 class TestRunWithWebDashboard:
     """Test run_with_web_dashboard function."""
 
