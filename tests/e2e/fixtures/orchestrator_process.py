@@ -120,7 +120,6 @@ class OrchestratorProcess:
                     "command": cfg.command,
                     "meta_agent": cfg.meta_agent,
                     "ai_system": cfg.ai_system,
-                    "ai_system": cfg.ai_system,
                 }
                 for label, cfg in self.config.agents.items()
             },

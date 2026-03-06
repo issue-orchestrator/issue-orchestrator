@@ -480,24 +480,17 @@ def get_e2e_runner_manager() -> E2ERunnerManager:
 
 
 def _get_main_head(repo_root: Path) -> Optional[str]:
-    """Get the current HEAD commit SHA of the main branch.
+    """Get the current HEAD commit SHA of the orchestrator's repo.
+
+    Uses HEAD (not origin/main) so that e2e auto-trigger detects changes
+    when the orchestrator runs from a worktree or feature branch.
 
     Returns:
         Commit SHA string, or None if unable to determine.
     """
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "origin/main"],
-            cwd=repo_root,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-        # Try 'main' without origin
-        result = subprocess.run(
-            ["git", "rev-parse", "main"],
+            ["git", "rev-parse", "HEAD"],
             cwd=repo_root,
             capture_output=True,
             text=True,
@@ -506,7 +499,7 @@ def _get_main_head(repo_root: Path) -> Optional[str]:
         if result.returncode == 0:
             return result.stdout.strip()
     except Exception as e:
-        logger.warning("Failed to get main HEAD: %s", e)
+        logger.warning("Failed to get HEAD: %s", e)
     return None
 
 

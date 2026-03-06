@@ -29,6 +29,7 @@ agents:
     command: "exec bash {prompt}"
     prompt: "tests/e2e/fixtures/scripts/complete-immediately.sh"
     meta_agent: "claude-code"
+    ai_system: "claude-code"
     timeout_minutes: 1
 
   # Script that always requests changes (for testing rework cycles)
@@ -36,6 +37,7 @@ agents:
     command: "exec bash {prompt}"
     prompt: "tests/e2e/fixtures/scripts/always-reject.sh"
     meta_agent: "claude-code"
+    ai_system: "claude-code"
     timeout_minutes: 1
 
 execution:
