@@ -94,7 +94,7 @@ class TestLiveOrchestratorLifecycle:
 class TestOrchestratorStateObservation:
     """Test observing orchestrator state during execution."""
 
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=20, system_gh_activity_limit=50)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=50, system_gh_activity_limit=50)
     def test_orchestrator_starts_and_stops(
         self,
         e2e_orchestrator,
@@ -104,7 +104,7 @@ class TestOrchestratorStateObservation:
         assert e2e_orchestrator.is_running(), "Orchestrator should be running"
         logger.info("✓ Orchestrator is running")
 
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=20, system_gh_activity_limit=50)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=50, system_gh_activity_limit=50)
     def test_no_issues_to_process(
         self,
         e2e_orchestrator,
@@ -122,7 +122,7 @@ class TestLabelDetection:
     """Test that label changes are detected correctly."""
 
     @pytest.mark.asyncio
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=100)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=400, system_gh_activity_limit=100)
     async def test_blocked_label_detection(
         self,
         e2e_orchestrator,

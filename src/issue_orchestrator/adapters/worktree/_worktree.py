@@ -944,6 +944,34 @@ def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None
         shutil.rmtree(worktree_path, ignore_errors=True)
 
 
+def _commit_setup_artifacts(worktree_path: Path) -> None:
+    """Commit any dirty files left by worktree setup (hooks, cli_tools sync, settings).
+
+    sync_cli_tools copies the orchestrator's current cli_tools source into the
+    worktree.  When the orchestrator is running from a different version than
+    the worktree's checkout (common during development), those copied files
+    appear as modifications in ``git status``.  Committing them here keeps the
+    worktree clean so that ``coding-done``'s dirty-tree check only detects
+    files the agent actually changed.
+
+    Best-effort: failures are logged but do not block worktree creation.
+    """
+    try:
+        result = _git_run(worktree_path, ["status", "--porcelain"], check=False)
+        if result.returncode != 0 or not result.stdout.strip():
+            return  # Nothing dirty or git failed — nothing to do
+
+        _git_run(worktree_path, ["add", "-A"], check=False)
+        _git_run(
+            worktree_path,
+            ["commit", "-m", "chore: worktree setup artifacts", "--no-verify"],
+            check=False,
+        )
+        logger.debug("Committed setup artifacts in worktree %s", worktree_path)
+    except Exception:
+        logger.debug("Could not commit setup artifacts in %s (non-fatal)", worktree_path)
+
+
 def _finalize_worktree(
     worktree_path: Path,
     repo_root: Path,
@@ -958,6 +986,7 @@ def _finalize_worktree(
     _configure_no_verify_dry_run(worktree_path, allow_no_verify_dry_run_preflight)
     sync_cli_tools(worktree_path)
     _install_worktree_identity(worktree_path)
+    _commit_setup_artifacts(worktree_path)
 
 
 def _try_reuse_worktree(

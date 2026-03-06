@@ -360,7 +360,7 @@ class SessionLauncher:
             f" {ENV_PREFIX}AGENT_LABEL='{agent_label}'"
             f" {ENV_PREFIX}ISSUE_NUMBER='{issue_number}'"
             f"{config_exports}"
-            f" {ENV_PREFIX}API_PORT='{self.config.web_port}'"
+            f" {ENV_PREFIX}API_PORT='{self.config.control_api_port}'"
             f" {ENV_PREFIX}VALIDATION_OUTPUT_DIR='{run_dir}'"
             f" {ENV_PREFIX}RUN_DIR='{run_dir}'"
             f" {ENV_PREFIX}WORKTREE='{worktree_path}'"

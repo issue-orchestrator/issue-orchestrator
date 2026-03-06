@@ -1855,7 +1855,7 @@ class CompletionProcessor:
         max_rounds = self._config.review_exchange_max_rounds
         max_no_progress = self._config.review_exchange_max_no_progress
         require_validation = self._config.review_exchange_require_validation
-        web_port = self._config.web_port
+        web_port = self._config.control_api_port
 
         from .review_exchange_loop import run_review_exchange_loop
 

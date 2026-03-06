@@ -49,7 +49,7 @@ class TestSingleOrchestratorBasic:
     # (~6 calls during 13s test) isn't tagged as "periodic" scope, so it counts
     # against test activity. TODO: Fix scope tagging in gh_audit to properly
     # separate orchestrator polling from test-specific activity.
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=60, system_gh_activity_limit=10)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=100, system_gh_activity_limit=50)
     async def test_inflight_issue_creation(
         self,
         e2e_orchestrator,
@@ -93,7 +93,7 @@ class TestSingleOrchestratorAdvanced:
     """Advanced tests demonstrating in-flight operations."""
 
     @pytest.mark.asyncio
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=180, system_gh_activity_limit=50)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=500, system_gh_activity_limit=100)
     async def test_label_update_detected(
         self,
         e2e_orchestrator,

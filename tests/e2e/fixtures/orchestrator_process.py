@@ -137,6 +137,9 @@ class OrchestratorProcess:
                 "triage_reviewed_label": self.config.triage_reviewed_label,
                 "triage_review_threshold": self.config.triage_review_threshold,
                 "triage_review_on_failure": self.config.triage_review_on_failure,
+                "exchange": {
+                    "mode": self.config.review_exchange_mode,
+                },
             },
             "cleanup": {
                 "with_triage": {
