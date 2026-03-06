@@ -3684,11 +3684,14 @@ def ensure_port_available(port: int, host: str = "127.0.0.1", max_retries: int =
     )
 
 
-def _find_free_port(host: str = "127.0.0.1") -> int:
-    """Bind to port 0 and let the OS assign a free port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((host, 0))
-        return s.getsockname()[1]
+def _get_bound_port(server: object) -> int:
+    """Read the actual bound port from a started uvicorn server."""
+    for s in getattr(server, "servers", []):
+        for sock in getattr(s, "sockets", []):
+            addr = sock.getsockname()
+            if isinstance(addr, tuple) and len(addr) >= 2:
+                return addr[1]
+    raise RuntimeError("Could not determine bound port from uvicorn server")
 
 
 async def run_web_dashboard(
@@ -3710,17 +3713,11 @@ async def run_web_dashboard(
     from .control_api import set_orchestrator as set_control_orchestrator
     set_control_orchestrator(orchestrator)
 
-    # Auto-assign a free port when port=0
-    if port == 0:
-        port = _find_free_port()
-        logger.info("[web] Auto-assigned free port %d", port)
-    else:
-        # Ensure port is available before starting
+    if port != 0:
+        # Ensure fixed port is available before starting
         ensure_port_available(port)
 
     import uvicorn
-
-    logger.info("[web] Starting uvicorn server on 127.0.0.1:%d", port)
 
     config = uvicorn.Config(
         app,
@@ -3732,17 +3729,29 @@ async def run_web_dashboard(
     server = uvicorn.Server(config)
     _server = server  # Store for shutdown access
 
-    # Open browser after a very short delay (server needs to be ready)
+    # When using port=0, defer browser-open and logging until we know the actual port
     if open_browser:
         async def do_open_browser():
-            await asyncio.sleep(0.3)
-            url = f"http://127.0.0.1:{port}"
-            logger.info("[web] Opening browser to %s", url)
+            # Wait for server to be ready so we can read the bound port
+            while not server.started:
+                await asyncio.sleep(0.05)
+            actual_port = _get_bound_port(server) if port == 0 else port
+            url = f"http://127.0.0.1:{actual_port}"
+            logger.info("[web] Starting uvicorn server on %s", url)
             webbrowser.open(url)
 
         asyncio.create_task(do_open_browser())
+    elif port == 0:
+        async def log_bound_port():
+            while not server.started:
+                await asyncio.sleep(0.05)
+            actual_port = _get_bound_port(server)
+            logger.info("[web] Starting uvicorn server on 127.0.0.1:%d", actual_port)
 
-    logger.info("[web] Server starting...")
+        asyncio.create_task(log_bound_port())
+    else:
+        logger.info("[web] Starting uvicorn server on 127.0.0.1:%d", port)
+
     await server.serve()
     logger.info("[web] Server stopped")
 
