@@ -199,6 +199,14 @@ class SessionController:
                 validation_retry_count, original_prompt, retry_prompt_template, repo_root,
             )
 
+        # When the orchestrator runs validation (not the agent), the completion
+        # record's validation_record_path is None. Patch it so the review
+        # exchange can seed the record into its own run_dir.
+        if validation_passed and run_dir and not record.validation_record_path:
+            vr_path = run_dir / "validation-record.json"
+            if vr_path.exists():
+                record.validation_record_path = str(vr_path)
+
         # If validation failed (retry or exhausted), skip completion processing.
         # Completion processing includes the review exchange, which requires
         # validation-record.json to exist. If we reach this point, validation

@@ -589,3 +589,58 @@ class TestSessionControllerValidationCaching:
 
         # Command runner should NOT have been called
         assert len(command_runner.run_calls) == 0
+
+    def test_validation_pass_patches_record_validation_path(self, tmp_path):
+        """When orchestrator validation passes, record.validation_record_path is patched.
+
+        Under orchestrator mode, the agent's completion record has
+        validation_record_path=None because the agent skips validation.
+        After the orchestrator's validation gate passes, decide_outcome must
+        patch the path so the review exchange can seed it.
+        """
+        processor = MockCompletionProcessor()
+        record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+        assert record.validation_record_path is None  # Pre-condition
+        processor.completion_record = record
+
+        command_runner = MockCommandRunner(returncode=0)
+        working_copy = MockWorkingCopy(head_sha="deadbeef1234567890")
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=working_copy,
+            command_runner=command_runner,
+            validation_cmd="make test",
+            validation_timeout_seconds=60,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        # Create the run_dir and a validation-record.json in it
+        run_dir = worktree / ".issue-orchestrator" / "sessions" / "20260306-000000Z__issue-123"
+        run_dir.mkdir(parents=True)
+        vr_path = run_dir / "validation-record.json"
+        vr_path.write_text('{"passed": true}')
+
+        observation = SessionObservationResult.terminated(runtime_minutes=10.0)
+
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.COMPLETED
+        assert decision.validation_passed is True
+        # The record should now have the validation_record_path patched
+        assert record.validation_record_path is not None
+        assert "validation-record.json" in record.validation_record_path

@@ -558,6 +558,39 @@ class TestPublishGate:
         assert result2.allowed is True
         assert result2.cache_hit is True
 
+    def test_cache_hit_writes_validation_record_to_new_output_dir(self, temp_worktree, session_output_dir):
+        """Cache hit should write validation-record.json to session_output_dir.
+
+        When the orchestrator runs validation before the review exchange, a cache
+        hit must still produce validation-record.json in the session output dir so
+        the review exchange can seed it into its run dir.
+        """
+        gate = PublishGate(
+            temp_worktree,
+            command_runner=LocalCommandRunner(),
+            working_copy=GitWorkingCopy(),
+            command="echo 'ok'",
+            timeout_seconds=10,
+        )
+
+        # First call creates the cache entry
+        result1 = gate.check(session_output_dir=session_output_dir)
+        assert result1.allowed is True
+        assert result1.cache_hit is False
+        assert (session_output_dir / "validation-record.json").exists()
+
+        # Create a new session output dir under .issue-orchestrator/sessions/
+        # (must pass _is_session_run_dir check)
+        new_session_dir = temp_worktree / ".issue-orchestrator" / "sessions" / "new-run"
+        new_session_dir.mkdir(parents=True)
+
+        # Second call hits cache — should still write validation-record.json
+        result2 = gate.check(session_output_dir=new_session_dir)
+        assert result2.allowed is True
+        assert result2.cache_hit is True
+        record_path = new_session_dir / "validation-record.json"
+        assert record_path.exists(), "Cache hit must write validation-record.json to session_output_dir"
+
     def test_gate_fails_when_timeout(self, temp_worktree, session_output_dir):
         """Test gate fails when command times out."""
         class TimeoutRunner:

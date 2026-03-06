@@ -449,6 +449,13 @@ class PublishGate:
         cached = self.cache.lookup(head_sha, self.command)
         if cached is not None and cached.passed:
             logger.info("Publish gate: cache hit (passed) for %s", head_sha[:8])
+            # Write validation-record.json to session output dir so downstream
+            # consumers (e.g. review exchange) can find it, even on cache hits.
+            if session_output_dir is not None and _is_session_run_dir(session_output_dir, self.worktree):
+                record_path = session_output_dir / "validation-record.json"
+                if not record_path.exists():
+                    record_path.parent.mkdir(parents=True, exist_ok=True)
+                    record_path.write_text(json.dumps(cached.to_dict(), indent=2) + "\n")
             return PublishGateResult(
                 allowed=True,
                 reason=f"Cached validation passed for {head_sha[:8]}",
