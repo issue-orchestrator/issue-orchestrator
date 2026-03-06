@@ -1413,3 +1413,135 @@ class TestFindWorktreeRoot:
             assert result == tmp_path
         finally:
             os.chdir(original_cwd)
+
+
+class TestOrchestratorModeSkips:
+    """Test that coding-done skips validation and preflight push under orchestrator."""
+
+    def _setup_git_repo(self, tmp_path):
+        """Create a minimal git repo for coding-done tests."""
+        import subprocess
+        subprocess.run(["git", "init"], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.email", "test@test.com"], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, capture_output=True, check=True)
+        (tmp_path / "README.md").write_text("test")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True, check=True)
+        subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True, check=True)
+
+    def _setup_config_with_validation(self, tmp_path):
+        """Create config with a validation command that would fail if run."""
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(
+            "validation:\n  cmd: 'exit 1'\n  timeout_seconds: 10\n"
+        )
+        session_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
+        session_dir.mkdir(parents=True)
+
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_orchestrator_mode_skips_validation(self, _mock_dirty, tmp_path, capsys):
+        """Under orchestrator, validation is skipped even with a failing validation cmd."""
+        self._setup_git_repo(tmp_path)
+        self._setup_config_with_validation(tmp_path)
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+            with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "orch-session-1"}):
+                with patch('sys.argv', [
+                    'coding-done', 'completed',
+                    '--implementation', 'Added feature',
+                    '--problems', 'None',
+                    '--verbose',
+                ]):
+                    with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                        coding_done_main()
+
+            captured = capsys.readouterr()
+            assert "Skipping validation" in captured.out
+            assert "VALIDATION FAILED" not in captured.out
+        finally:
+            os.chdir(original_cwd)
+            os.environ.pop("ORCHESTRATOR_SESSION_ID", None)
+
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_orchestrator_mode_skips_preflight_push(self, _mock_dirty, tmp_path, capsys):
+        """Under orchestrator, preflight push check is skipped."""
+        self._setup_git_repo(tmp_path)
+        self._setup_config_with_validation(tmp_path)
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+            with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "orch-session-1"}):
+                with patch('sys.argv', [
+                    'coding-done', 'completed',
+                    '--implementation', 'Added feature',
+                    '--problems', 'None',
+                    '--verbose',
+                ]):
+                    with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                        with patch('issue_orchestrator.entrypoints.cli_tools.coding_done.run_preflight_push_check') as mock_push:
+                            coding_done_main()
+
+            captured = capsys.readouterr()
+            assert "Skipping push preflight" in captured.out
+            mock_push.assert_not_called()
+        finally:
+            os.chdir(original_cwd)
+            os.environ.pop("ORCHESTRATOR_SESSION_ID", None)
+
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_orchestrator_mode_still_writes_completion_record(self, _mock_dirty, tmp_path):
+        """Under orchestrator, completion record is still written even though validation is skipped."""
+        self._setup_git_repo(tmp_path)
+        self._setup_config_with_validation(tmp_path)
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+            with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "orch-session-1"}):
+                with patch('sys.argv', [
+                    'coding-done', 'completed',
+                    '--implementation', 'Added feature',
+                    '--problems', 'None',
+                ]):
+                    with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                        coding_done_main()
+
+            record_path = tmp_path / COMPLETION_RECORD_PATH
+            assert record_path.exists()
+
+            data = json.loads(record_path.read_text())
+            assert data["session_id"] == "test-123"
+            assert data["outcome"] == "completed"
+            assert data["implementation"] == "Added feature"
+        finally:
+            os.chdir(original_cwd)
+            os.environ.pop("ORCHESTRATOR_SESSION_ID", None)
+
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_prefixed_session_id_also_triggers_orchestrator_mode(self, _mock_dirty, tmp_path, capsys):
+        """ISSUE_ORCHESTRATOR_SESSION_ID (prefixed) also triggers orchestrator mode."""
+        self._setup_git_repo(tmp_path)
+        self._setup_config_with_validation(tmp_path)
+        prefixed = f"{ENV_PREFIX}SESSION_ID"
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+            with patch.dict(os.environ, {prefixed: "prefixed-session-1"}):
+                with patch('sys.argv', [
+                    'coding-done', 'completed',
+                    '--implementation', 'Added feature',
+                    '--problems', 'None',
+                    '--verbose',
+                ]):
+                    with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                        coding_done_main()
+
+            captured = capsys.readouterr()
+            assert "Skipping validation" in captured.out
+        finally:
+            os.chdir(original_cwd)
+            os.environ.pop(prefixed, None)

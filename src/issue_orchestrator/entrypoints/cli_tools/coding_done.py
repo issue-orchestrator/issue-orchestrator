@@ -10,6 +10,7 @@ Review agents use reviewer-done instead.
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import traceback
@@ -31,6 +32,7 @@ from .agent_done import (
     write_marker_file,
     record_validation_artifacts,
 )
+from ...infra.env import get_env
 from ...infra.logging_config import issue_log
 
 import logging
@@ -179,9 +181,14 @@ def main() -> None:  # noqa: C901, PLR0912
         sys.exit(1)
 
     # 3. Run validation if configured
+    #    When running under the orchestrator, skip validation here — the orchestrator
+    #    runs its own validation gate after the session completes, with retry logic.
+    #    Running validation inside coding-done is redundant and eats into the session
+    #    timeout, leaving no time for the agent to recover from failures.
     validation_result = None
+    under_orchestrator = bool(get_env("SESSION_ID") or os.environ.get("ORCHESTRATOR_SESSION_ID"))
     statuses_requiring_validation = {AgentStatus.COMPLETED}
-    if status in statuses_requiring_validation:
+    if status in statuses_requiring_validation and not under_orchestrator:
         validation_cmd, _ = load_validation_cmd(worktree_root)
         if validation_cmd:
             if not record.session_id:
@@ -195,58 +202,65 @@ def main() -> None:  # noqa: C901, PLR0912
                 logger.error("[coding-done] Validation requires session output dir but not found for %s", record.session_id)
                 sys.exit(1)
             validation_result = run_validation(worktree_root, session_output_dir=session_output_dir, verbose=args.verbose)
-
-        if validation_result and not validation_result.passed:
-            record_validation_artifacts(worktree_root, record.session_id, validation_result)
-            print(f"\n{'='*60}")
-            print("❌ VALIDATION FAILED — coding-done cannot complete")
-            print(f"{'='*60}")
-            print(f"\nReason: {validation_result.reason}")
-
-            if validation_result.record and validation_result.record.stderr_path:
-                stderr_path = Path(validation_result.record.stderr_path)
-                if stderr_path.exists():
-                    stderr_content = stderr_path.read_text()
-                    if stderr_content.strip():
-                        print(f"\n--- STDERR (what failed) ---")
-                        lines = stderr_content.strip().split('\n')
-                        if len(lines) > 50:
-                            print(f"... ({len(lines) - 50} lines truncated)")
-                            lines = lines[-50:]
-                        print('\n'.join(lines))
-                        print("--- END STDERR ---")
-
-            if validation_result.record and validation_result.record.stdout_path:
-                stdout_path = Path(validation_result.record.stdout_path)
-                if stdout_path.exists():
-                    stdout_content = stdout_path.read_text()
-                    if stdout_content.strip():
-                        print(f"\n--- STDOUT ---")
-                        lines = stdout_content.strip().split('\n')
-                        if len(lines) > 30:
-                            print(f"... ({len(lines) - 30} lines truncated)")
-                            lines = lines[-30:]
-                        print('\n'.join(lines))
-                        print("--- END STDOUT ---")
-
-            print(f"\n{'='*60}")
-            print("TO FIX: Read the errors above, fix them, then run coding-done again.")
-            print("If you CANNOT fix after 2-3 attempts, use:")
-            print('  coding-done blocked --reason "Validation failing: <error>" --attempted "..."')
-            print(f"{'='*60}")
-
-            if issue_number:
-                logger.info(issue_log(issue_number, "coding-done outcome: status=%s validation=FAILED"), status)
-            sys.exit(1)
+    elif status in statuses_requiring_validation and under_orchestrator:
+        if args.verbose:
+            print("Skipping validation (orchestrator will run validation gate after session)")
     elif status in {AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}:
         print(f"Note: Skipping validation for '{status}' status (agent is reporting a problem)")
+
+    if validation_result and not validation_result.passed:
+        record_validation_artifacts(worktree_root, record.session_id, validation_result)
+        print(f"\n{'='*60}")
+        print("❌ VALIDATION FAILED — coding-done cannot complete")
+        print(f"{'='*60}")
+        print(f"\nReason: {validation_result.reason}")
+
+        if validation_result.record and validation_result.record.stderr_path:
+            stderr_path = Path(validation_result.record.stderr_path)
+            if stderr_path.exists():
+                stderr_content = stderr_path.read_text()
+                if stderr_content.strip():
+                    print(f"\n--- STDERR (what failed) ---")
+                    lines = stderr_content.strip().split('\n')
+                    if len(lines) > 50:
+                        print(f"... ({len(lines) - 50} lines truncated)")
+                        lines = lines[-50:]
+                    print('\n'.join(lines))
+                    print("--- END STDERR ---")
+
+        if validation_result.record and validation_result.record.stdout_path:
+            stdout_path = Path(validation_result.record.stdout_path)
+            if stdout_path.exists():
+                stdout_content = stdout_path.read_text()
+                if stdout_content.strip():
+                    print(f"\n--- STDOUT ---")
+                    lines = stdout_content.strip().split('\n')
+                    if len(lines) > 30:
+                        print(f"... ({len(lines) - 30} lines truncated)")
+                        lines = lines[-30:]
+                    print('\n'.join(lines))
+                    print("--- END STDOUT ---")
+
+        print(f"\n{'='*60}")
+        print("TO FIX: Read the errors above, fix them, then run coding-done again.")
+        print("If you CANNOT fix after 2-3 attempts, use:")
+        print('  coding-done blocked --reason "Validation failing: <error>" --attempted "..."')
+        print(f"{'='*60}")
+
+        if issue_number:
+            logger.info(issue_log(issue_number, "coding-done outcome: status=%s validation=FAILED"), status)
+        sys.exit(1)
 
     if validation_result and validation_result.record_path:
         record.validation_record_path = validation_result.record_path
 
     # 4. Run preflight push check
+    #    Skip under orchestrator — the orchestrator handles pushing via its own
+    #    adapters with credentials.  Running a dry-run push here triggers the
+    #    pre-push hook inside the session timeout, which can fail on flaky tests
+    #    and leave the agent unable to complete at all.
     statuses_that_push = {AgentStatus.COMPLETED, AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}
-    if status in statuses_that_push:
+    if status in statuses_that_push and not under_orchestrator:
         would_succeed, error, fix_hint = run_preflight_push_check(worktree_root, verbose=args.verbose)
         if not would_succeed:
             print(f"\n{'='*60}")
@@ -262,6 +276,9 @@ def main() -> None:  # noqa: C901, PLR0912
             if issue_number:
                 logger.info(issue_log(issue_number, "coding-done outcome: status=%s push_preflight=FAILED"), status)
             sys.exit(1)
+    elif status in statuses_that_push and under_orchestrator:
+        if args.verbose:
+            print("Skipping push preflight (orchestrator handles pushing)")
 
     # 5. Write marker + completion record
     write_marker_file(status)
