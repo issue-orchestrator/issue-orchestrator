@@ -200,12 +200,13 @@ class SessionController:
             )
 
         # When the orchestrator runs validation (not the agent), the completion
-        # record's validation_record_path is None. Patch it so the review
+        # record's validation_record_path is None. Resolve it so the review
         # exchange can seed the record into its own run_dir.
-        if validation_passed and run_dir and not record.validation_record_path:
+        orchestrator_validation_record_path: Path | None = None
+        if validation_passed and run_dir:
             vr_path = run_dir / "validation-record.json"
             if vr_path.exists():
-                record.validation_record_path = str(vr_path)
+                orchestrator_validation_record_path = vr_path
 
         # If validation failed (retry or exhausted), skip completion processing.
         # Completion processing includes the review exchange, which requires
@@ -238,6 +239,7 @@ class SessionController:
             issue_title,
             pr_number=pr_number,
             completion_path=completion_path,
+            validation_record_path=orchestrator_validation_record_path,
         )
         self._emit_processing_completed_event(worktree_path, issue_number, session_name, run_dir, result)
 

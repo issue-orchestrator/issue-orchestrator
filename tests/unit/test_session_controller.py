@@ -69,11 +69,13 @@ class MockCompletionProcessor:
         self.process_result = MagicMock()
         self.process_result.success = True
         self.process_result.pr_url = "https://github.com/test/repo/pull/1"
+        self.last_process_kwargs: dict = {}
 
     def read_completion_record(self, worktree_path: Path, completion_path: str | None = None) -> CompletionRecord | None:
         return self.completion_record
 
-    def process(self, worktree_path: Path, issue_number: int, issue_title: str, pr_number: int | None = None, completion_path: str | None = None):
+    def process(self, worktree_path: Path, issue_number: int, issue_title: str, **kwargs):
+        self.last_process_kwargs = kwargs
         return self.process_result
 
 
@@ -590,13 +592,14 @@ class TestSessionControllerValidationCaching:
         # Command runner should NOT have been called
         assert len(command_runner.run_calls) == 0
 
-    def test_validation_pass_patches_record_validation_path(self, tmp_path):
-        """When orchestrator validation passes, record.validation_record_path is patched.
+    def test_validation_pass_passes_record_path_to_processor(self, tmp_path):
+        """When orchestrator validation passes, validation_record_path is passed to process().
 
         Under orchestrator mode, the agent's completion record has
         validation_record_path=None because the agent skips validation.
         After the orchestrator's validation gate passes, decide_outcome must
-        patch the path so the review exchange can seed it.
+        pass the path to completion_processor.process() so the review exchange
+        can seed the validation record.
         """
         processor = MockCompletionProcessor()
         record = make_record(
@@ -641,6 +644,6 @@ class TestSessionControllerValidationCaching:
 
         assert decision.status == SessionStatus.COMPLETED
         assert decision.validation_passed is True
-        # The record should now have the validation_record_path patched
-        assert record.validation_record_path is not None
-        assert "validation-record.json" in record.validation_record_path
+        # The processor should have received validation_record_path
+        assert processor.last_process_kwargs.get("validation_record_path") is not None
+        assert "validation-record.json" in str(processor.last_process_kwargs["validation_record_path"])

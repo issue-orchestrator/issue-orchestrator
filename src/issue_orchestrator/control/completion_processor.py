@@ -555,6 +555,7 @@ class CompletionProcessor:
         pr_number: int | None = None,
         completion_path: str | None = None,
         agent_label: str | None = None,
+        validation_record_path: Path | None = None,
     ) -> ProcessingResult:
         """Process a completion record and execute actions.
 
@@ -565,6 +566,10 @@ class CompletionProcessor:
             pr_number: Optional PR number for review sessions. When provided,
                 label operations will target the PR instead of the issue.
             completion_path: Relative path to completion file. If None, uses legacy path.
+            validation_record_path: Path to orchestrator-produced validation record.
+                Under orchestrator mode, agents skip validation so their completion
+                records lack this path. The session controller provides it after
+                running the validation gate.
 
         Returns:
             ProcessingResult with success status and details.
@@ -584,6 +589,10 @@ class CompletionProcessor:
         if error_result:
             return error_result
         assert record is not None  # Guaranteed if error_result is None
+
+        # Patch validation_record_path from orchestrator validation gate
+        if validation_record_path and not record.validation_record_path:
+            record.validation_record_path = str(validation_record_path)
 
         # Validate worktree state
         valid, reason = self.validate_worktree_state(worktree, record)
