@@ -526,7 +526,7 @@ def test_foreign_repo_coding_done_writes_completion(make_worktree) -> None:
     )
     subprocess.run(
         ["git", "-c", "user.name=Test", "-c", "user.email=test@test.com",
-         "commit", "-m", "worktree setup"], cwd=wt, capture_output=True, check=True,
+         "commit", "-m", "worktree setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
     exports = _build_session_exports(80, completion_rel)
@@ -591,7 +591,7 @@ def test_foreign_repo_real_pty_agent_invocation(
     )
     subprocess.run(
         ["git", "-c", "user.name=Test", "-c", "user.email=test@test.com",
-         "commit", "-m", "worktree setup"], cwd=wt, capture_output=True, check=True,
+         "commit", "-m", "worktree setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
     exports = _build_session_exports(81, completion_rel)
@@ -664,7 +664,7 @@ def test_foreign_repo_claude_code_agent_done(make_worktree) -> None:
     subprocess.run(["git", "add", "."], cwd=wt, capture_output=True, check=True)
     subprocess.run(
         ["git", "-c", "user.name=Test", "-c", "user.email=test@test.com",
-         "commit", "-m", "setup"], cwd=wt, capture_output=True, check=True,
+         "commit", "-m", "setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
     exports = _build_session_exports(90, completion_rel)
@@ -724,7 +724,7 @@ def test_foreign_repo_codex_agent_done(make_worktree) -> None:
     subprocess.run(["git", "add", "."], cwd=wt, capture_output=True, check=True)
     subprocess.run(
         ["git", "-c", "user.name=Test", "-c", "user.email=test@test.com",
-         "commit", "-m", "setup"], cwd=wt, capture_output=True, check=True,
+         "commit", "-m", "setup", "--allow-empty"], cwd=wt, capture_output=True, check=True,
     )
 
     exports = _build_session_exports(91, completion_rel)
