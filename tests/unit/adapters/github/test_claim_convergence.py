@@ -21,7 +21,7 @@ class MockHttpClient:
         self.comments.append({"body": body})
         return f"https://github.com/test/repo/issues/{issue_number}#comment"
 
-    def get_issue_comments(self, issue_number: int) -> list[dict]:
+    def get_issue_comments(self, issue_number: int, **_kwargs: object) -> list[dict]:
         return self.comments
 
 
@@ -158,7 +158,7 @@ priority: {higher_priority}
         original_fetch = adapter._fetch_all_claims  # noqa: SLF001
         fetch_count = [0]
 
-        def controlled_fetch(issue_number):
+        def controlled_fetch(issue_number, **_kwargs):
             fetch_count[0] += 1
 
             # On fetch #1, inject competing claim BEFORE returning

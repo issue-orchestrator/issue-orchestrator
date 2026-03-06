@@ -22,7 +22,7 @@ class MockHttpClient:
         self.comments.append({"body": body})
         return f"https://github.com/test/repo/issues/{issue_number}#comment"
 
-    def get_issue_comments(self, issue_number: int) -> list[dict]:
+    def get_issue_comments(self, issue_number: int, **_kwargs: object) -> list[dict]:
         return self.comments
 
 
