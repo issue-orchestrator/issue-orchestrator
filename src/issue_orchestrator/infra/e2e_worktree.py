@@ -34,19 +34,36 @@ def _run_git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     )
 
 
+def _resolve_e2e_ref(repo_root: Path) -> str:
+    """Determine which git ref the E2E worktree should check out.
+
+    When the orchestrator runs from a worktree or feature branch, e2e tests
+    should run against that code — not origin/main.  This lets developers
+    iterate on e2e fixes without merging to main first.
+    """
+    try:
+        result = _run_git(["rev-parse", "HEAD"], cwd=repo_root)
+        return result.stdout.strip()
+    except subprocess.CalledProcessError:
+        logger.warning("Could not resolve HEAD, falling back to origin/main")
+        return "origin/main"
+
+
 def _create_worktree(repo_root: Path, worktree_path: Path) -> None:
     """Create a new detached worktree at *worktree_path*."""
-    logger.info("Creating E2E worktree at %s", worktree_path)
+    ref = _resolve_e2e_ref(repo_root)
+    logger.info("Creating E2E worktree at %s (ref=%s)", worktree_path, ref[:12])
     _run_git(
-        ["worktree", "add", "--detach", str(worktree_path), "origin/main"],
+        ["worktree", "add", "--detach", str(worktree_path), ref],
         cwd=repo_root,
     )
 
 
-def _update_worktree(worktree_path: Path) -> None:
-    """Reset an existing worktree to origin/main, preserving .venv."""
-    logger.info("Updating E2E worktree at %s", worktree_path)
-    _run_git(["checkout", "--detach", "origin/main"], cwd=worktree_path)
+def _update_worktree(repo_root: Path, worktree_path: Path) -> None:
+    """Reset an existing worktree to the orchestrator's current commit, preserving .venv."""
+    ref = _resolve_e2e_ref(repo_root)
+    logger.info("Updating E2E worktree at %s (ref=%s)", worktree_path, ref[:12])
+    _run_git(["checkout", "--detach", ref], cwd=worktree_path)
     _run_git(
         ["clean", "-fdx", "--exclude=.venv"],
         cwd=worktree_path,
@@ -88,9 +105,10 @@ def _recover_worktree(repo_root: Path, worktree_path: Path) -> None:
 def ensure_e2e_worktree(repo_root: Path) -> Path:
     """Return a ready-to-use E2E worktree, creating or updating as needed.
 
-    The worktree is a sibling directory checked out at ``origin/main``
-    with a synced venv.  On failure a ``RuntimeError`` is raised
-    (fail-fast per codebase design).
+    The worktree is a sibling directory checked out at the orchestrator's
+    current HEAD commit (so e2e tests run against the code that's actually
+    running).  On failure a ``RuntimeError`` is raised (fail-fast per
+    codebase design).
 
     Returns:
         Resolved ``Path`` to the worktree root.
@@ -100,7 +118,7 @@ def ensure_e2e_worktree(repo_root: Path) -> Path:
     try:
         if worktree_path.exists():
             try:
-                _update_worktree(worktree_path)
+                _update_worktree(repo_root, worktree_path)
             except subprocess.CalledProcessError:
                 _recover_worktree(repo_root, worktree_path)
         else:
