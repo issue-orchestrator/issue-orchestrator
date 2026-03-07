@@ -332,7 +332,9 @@ def test_review_feedback_modal_resolves_requested_issue_detail() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "openReviewFeedback")
     assert "issueDetailData.issue_number === issueNumber" in body
-    assert "fetch(`/api/issue-detail/${issueNumber}?view=${timelineView}`)" in body
+    # Review feedback always fetches with ops view so review.comment_added
+    # events (ops-only) are included regardless of the user's current view.
+    assert "fetch(`/api/issue-detail/${issueNumber}?view=ops`)" in body
 
 
 def test_session_diagnostics_actions_use_primary_plus_more_menu() -> None:

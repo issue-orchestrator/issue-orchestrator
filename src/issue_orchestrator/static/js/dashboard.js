@@ -4157,7 +4157,9 @@ async function openReviewFeedback(issueNumber) {
         if (issueDetailData && issueDetailData.issue_number === issueNumber) {
             detailForIssue = issueDetailData;
         } else {
-            const detailRes = await fetch(`/api/issue-detail/${issueNumber}?view=${timelineView}`);
+            // Always fetch with ops view — review.comment_added is ops-only,
+            // so Story view would omit review comment evidence.
+            const detailRes = await fetch(`/api/issue-detail/${issueNumber}?view=ops`);
             if (detailRes.ok) {
                 detailForIssue = await detailRes.json();
             }
@@ -4202,7 +4204,7 @@ async function openReviewFeedback(issueNumber) {
             }
 
             // Link to PR if available
-            const prEvent = events.find(e => e.event === 'issue.pr_created');
+            const prEvent = events.find(e => (e.source_event || e.event) === 'issue.pr_created');
             const prArtifact = prEvent && (prEvent.artifacts || []).find(a => a.type === 'pull_request');
             if (prArtifact && prArtifact.value) {
                 html += `<div style="margin-top:8px;"><a href="${escapeHtml(prArtifact.value)}" target="_blank" rel="noopener noreferrer" class="issue-action-btn">View PR on GitHub ↗</a></div>`;

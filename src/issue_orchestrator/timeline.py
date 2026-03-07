@@ -144,12 +144,16 @@ def build_issue_timeline(issue_number: int, records: list[TimelineRecord]) -> di
 def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent:
     data = record.data or {}
     event_name = record.event
-    phase = _phase_for_event(event_name)
-    step = _step_for_event(event_name)
-    status = _status_for_event(event_name)
-    level = _level_for_event(event_name)
+    # Use the internal (source) event name for all derivation logic so that
+    # fan-out renames (e.g. session.failed → agent.failed) don't break
+    # phase/step/status/detail extraction.  Display uses event_name.
+    canonical_name = record.source_event or event_name
+    phase = _phase_for_event(canonical_name)
+    step = _step_for_event(canonical_name)
+    status = _status_for_event(canonical_name)
+    level = _level_for_event(canonical_name)
     summary = _summary_from_data(data)
-    detail = _detail_from_data(event_name, data, summary)
+    detail = _detail_from_data(canonical_name, data, summary)
     parent_key = _parent_key(issue_number, data)
     run_id = _run_id_from_data(data)
     run_dir = _run_dir_from_data(data)
@@ -175,15 +179,15 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
     if isinstance(review_oriented_raw, bool):
         review_oriented = review_oriented_raw
     else:
-        review_oriented = is_review_oriented_event(event_name=event_name, task=task)
+        review_oriented = is_review_oriented_event(event_name=canonical_name, task=task)
     intent_raw = data.get("event_intent")
     if isinstance(intent_raw, str):
         try:
             event_intent = EventIntent(intent_raw).value
         except ValueError:
-            event_intent = infer_event_intent(event_name=event_name, task=task).value
+            event_intent = infer_event_intent(event_name=canonical_name, task=task).value
     else:
-        event_intent = infer_event_intent(event_name=event_name, task=task).value
+        event_intent = infer_event_intent(event_name=canonical_name, task=task).value
     return TimelineEvent(
         event_id=record.event_id,
         timestamp=record.timestamp,

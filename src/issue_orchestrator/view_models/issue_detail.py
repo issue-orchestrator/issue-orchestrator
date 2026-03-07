@@ -173,7 +173,7 @@ def _blocked_explanation(ctx: IssueStoryContext, events: list[dict[str, Any]]) -
 
     # Find the most recent blocking event for detail
     blocking_event = _find_last_event(events, _BLOCKED_EVENT_NAMES)
-    event_name = str(blocking_event.get("event", "")) if blocking_event else ""
+    event_name = str(blocking_event.get("source_event") or blocking_event.get("event") or "") if blocking_event else ""
     event_summary = str(blocking_event.get("summary", "")) if blocking_event else ""
 
     # Rework limit exceeded
@@ -254,9 +254,14 @@ def _find_last_event(
     events: list[dict[str, Any]],
     names: frozenset[str],
 ) -> dict[str, Any] | None:
-    """Find the most recent event whose name is in *names*."""
+    """Find the most recent event whose name is in *names*.
+
+    Prefers ``source_event`` (internal canonical name) so fan-out renames
+    don't break outcome/blocked detection.
+    """
     for event in reversed(events):
-        if str(event.get("event", "")) in names:
+        canonical = str(event.get("source_event") or event.get("event") or "")
+        if canonical in names:
             return event
     return None
 
@@ -735,17 +740,18 @@ def _derive_cycle_outcome(
     context: IssueStoryContext | None,
 ) -> str:
     """Derive outcome label from the last significant event in the cycle."""
-    # Find the last outcome-relevant event
+    # Find the last outcome-relevant event (use source_event for canonical matching)
     last_outcome_event: dict[str, Any] | None = None
     for evt in reversed(events):
-        if str(evt.get("event") or "") in _OUTCOME_EVENTS:
+        canonical = str(evt.get("source_event") or evt.get("event") or "")
+        if canonical in _OUTCOME_EVENTS:
             last_outcome_event = evt
             break
 
     if last_outcome_event is None:
         return "In progress"
 
-    event_name = str(last_outcome_event.get("event") or "")
+    event_name = str(last_outcome_event.get("source_event") or last_outcome_event.get("event") or "")
     summary = str(last_outcome_event.get("summary") or "")
 
     label = _outcome_label(event_name, summary, context)
@@ -826,7 +832,7 @@ def _collect_cycle_artifacts(events: list[dict[str, Any]]) -> dict[str, Any]:  #
     has_review_feedback = False
 
     for evt in events:
-        event_name = str(evt.get("event") or "")
+        event_name = str(evt.get("source_event") or evt.get("event") or "")
 
         # PR from issue.pr_created
         if event_name == "issue.pr_created":
