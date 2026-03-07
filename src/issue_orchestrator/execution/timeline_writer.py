@@ -92,7 +92,11 @@ class DefaultTimelineWriter(TimelineWriter):
             if view_event.narrative:
                 record_data["narrative"] = view_event.narrative
             if view_event.phase:
-                record_data["logical_phase"] = view_event.phase
+                enriched_phase = record_data.get("logical_phase", "system")
+                # Don't override if enrichment already promoted the phase
+                # (e.g. coding→rework for session.started in a rework cycle).
+                if enriched_phase != "rework" or view_event.phase != "coding":
+                    record_data["logical_phase"] = view_event.phase
 
             record_id = base_event_id if i == 0 else f"{base_event_id}-{i}"
             record = TimelineRecord(

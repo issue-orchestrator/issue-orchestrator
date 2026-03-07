@@ -67,6 +67,8 @@ class TimelineEvent:
     logical_cycle: int | None = None
     logical_phase: str | None = None
     source_event: str | None = None
+    views: list[str] | None = None
+    narrative: str | None = None
 
     def to_dict(self) -> dict[str, Any]:  # noqa: C901
         d: dict[str, Any] = {
@@ -110,6 +112,10 @@ class TimelineEvent:
             d["logical_phase"] = self.logical_phase
         if self.source_event:
             d["source_event"] = self.source_event
+        if self.views is not None:
+            d["views"] = self.views
+        if self.narrative:
+            d["narrative"] = self.narrative
         return d
 
 
@@ -214,6 +220,8 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         logical_cycle=logical_cycle,
         logical_phase=logical_phase,
         source_event=record.source_event or None,
+        views=data.get("views") if isinstance(data.get("views"), list) else None,
+        narrative=data.get("narrative") if isinstance(data.get("narrative"), str) else None,
     )
 
 
