@@ -334,6 +334,16 @@ class StartupManager:
             if ORCHESTRATOR_PR_MARKER not in pr_body:
                 logger.debug(f"PR #{pr_number}: Not created by orchestrator (no marker)")
 
+            # Skip PRs whose linked issue doesn't match the filter label
+            if self.config.filtering.label:
+                issue = self.repository_host.get_issue(issue_number)
+                if issue is None or self.config.filtering.label not in issue.labels:
+                    logger.debug(
+                        "PR #%d linked to issue #%d without filter label '%s', skipping",
+                        pr_number, issue_number, self.config.filtering.label,
+                    )
+                    continue
+
             # Check if review is already in progress
             if not self._session_exists(f"review-{pr_number}"):
                 review = PendingReview(

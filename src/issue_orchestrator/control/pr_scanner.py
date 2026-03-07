@@ -133,6 +133,10 @@ class PRScanner:
             # Extract issue number from PR body
             issue_number = self._extract_issue_number(pr.body, pr.number)
 
+            # Skip PRs whose linked issue doesn't match the filter label
+            if not self._matches_filter_label(issue_number, pr.number):
+                continue
+
             review = PendingReview(
                 issue_key=self.repository.create_issue_key(issue_number),
                 pr_number=pr.number,
@@ -258,6 +262,17 @@ class PRScanner:
         active_issue_numbers: set[int],
     ) -> _ReworkScanDecision:
         issue_number = self._extract_issue_number_from_pr(pr)
+
+        # Skip PRs whose linked issue doesn't match the filter label
+        if not self._matches_filter_label(issue_number, pr.number):
+            return _ReworkScanDecision(
+                decision="skip",
+                issue_number=issue_number,
+                rework_cycle=0,
+                blocking_labels=[],
+                reason="filter_label_mismatch",
+            )
+
         if issue_number in queued_issue_ids:
             return _ReworkScanDecision(
                 decision="skip",
@@ -355,6 +370,32 @@ class PRScanner:
                 decision.rework_cycle,
                 self.config.max_rework_cycles,
             )
+
+    def _matches_filter_label(self, issue_number: int, pr_number: int) -> bool:
+        """Check if the linked issue has the configured filter label.
+
+        When filtering.label is set, only PRs linked to issues with that
+        label should be processed. This prevents the scanner from picking
+        up PRs for issues outside the configured scope.
+        """
+        filter_label = self.config.filtering.label
+        if not filter_label:
+            return True
+
+        issue = self.repository.get_issue(issue_number)
+        if issue is None:
+            logger.info(
+                "[SCANNER] PR #%d linked to issue #%d which doesn't exist, skipping (filter: %s)",
+                pr_number, issue_number, filter_label,
+            )
+            return False
+        if filter_label not in issue.labels:
+            logger.debug(
+                "[SCANNER] PR #%d linked to issue #%d without filter label '%s', skipping",
+                pr_number, issue_number, filter_label,
+            )
+            return False
+        return True
 
     def _extract_issue_number_from_pr(self, pr: PRInfo) -> int:
         """Extract issue number from PR, preferring branch name over body.

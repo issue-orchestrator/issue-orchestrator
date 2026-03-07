@@ -2285,6 +2285,7 @@ class TestDebugSessionEndpoint:
         mock_agent_config.get_command.return_value = "claude --model sonnet 'Work on issue'"
         mock_orch.config.agents = {"agent:claude": mock_agent_config}
         mock_orch.config.web_port = 8080
+        mock_orch.config.control_api_port = 8080
 
         # Session doesn't exist yet
         mock_orch.deps.runner.session_exists.return_value = False
@@ -2349,6 +2350,7 @@ class TestDebugSessionEndpoint:
         mock_agent_config.get_command.return_value = "claude 'Work on issue'"
         mock_orch.config.agents = {"agent:claude": mock_agent_config}
         mock_orch.config.web_port = 8080
+        mock_orch.config.control_api_port = 8080
 
         # Session doesn't exist yet
         mock_orch.deps.runner.session_exists.return_value = False
@@ -2389,6 +2391,7 @@ class TestDebugSessionEndpoint:
         mock_agent_config.get_command.return_value = "claude 'Work on issue'"
         mock_orch.config.agents = {"agent:claude": mock_agent_config}
         mock_orch.config.web_port = 8080
+        mock_orch.config.control_api_port = 8080
 
         mock_orch.deps.runner.session_exists.return_value = False
         mock_orch.deps.runner.create_session.return_value = True

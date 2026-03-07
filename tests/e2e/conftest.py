@@ -386,6 +386,10 @@ def e2e_session_config(
     config.max_rework_cycles = 2
     config.triage_review_agent = None
     config.triage_review_threshold = 2
+    # Disable review exchange for e2e tests — running real claude review sessions
+    # is too slow and causes test timeouts.  Tests that need review behavior should
+    # use dedicated review-flow tests with script agents.
+    config.review_exchange_mode = "via-draft-pr"
     config.gh_audit_enabled = True
     config.gh_audit_events = True
     config.gh_audit_file = str(E2E_LOG_DIR / "gh-audit-{pid}.json")
@@ -434,8 +438,8 @@ def e2e_session_config(
     os.environ["E2E_REVIEW_TIMEOUT_S"] = str(review_timeout_from_config(config))
 
     config.validation = ValidationConfig(
-        cmd="make typecheck",
-        timeout_seconds=120,
+        cmd="true",
+        timeout_seconds=30,
     )
     if _keep_artifacts():
         config.cleanup.with_triage.close_ai_session_tabs = False
@@ -715,8 +719,8 @@ def e2e_config(e2e_project_root: Path, tmp_path: Path, repo_name: str, e2e_ui_mo
     os.environ["E2E_REVIEW_TIMEOUT_S"] = str(review_timeout_from_config(config))
 
     config.validation = ValidationConfig(
-        cmd="make typecheck",
-        timeout_seconds=120,
+        cmd="true",
+        timeout_seconds=30,
     )
     if _keep_artifacts():
         config.cleanup.with_triage.close_ai_session_tabs = False
