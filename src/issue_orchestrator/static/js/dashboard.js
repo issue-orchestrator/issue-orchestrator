@@ -3675,6 +3675,7 @@ const issueDetailDrawer = document.getElementById('issueDetailDrawer');
 let issueDetailData = null;
 let lastIssueDetailTrigger = null;
 let journeyFilter = 'latest-run'; // 'latest-run' or 'all'
+let timelineView = 'user'; // 'user', 'ops', or 'debug'
 
 async function openTimelineModal(issueNumber) {
     if (!timelineModal) return;
@@ -3727,7 +3728,7 @@ async function openIssueDetail(issueNumber, triggerEl = null) {
     if (closeBtn) closeBtn.focus();
 
     try {
-        const res = await fetch(`/api/issue-detail/${issueNumber}`);
+        const res = await fetch(`/api/issue-detail/${issueNumber}?view=${timelineView}`);
         if (!res.ok) {
             document.getElementById('issueDetailStatus').textContent = 'Issue detail unavailable.';
             return;
@@ -3804,6 +3805,10 @@ function _renderJourneyRuns(container, allRuns) {
         <button class="journey-filter-btn ${isLatestRun ? 'active' : ''}" onclick="setJourneyFilter('latest-run')" title="Show the current run (all cycles in the latest lifecycle)">Latest run</button>
         <button class="journey-filter-btn ${isAll ? 'active' : ''}" onclick="setJourneyFilter('all')">All</button>
         <button class="journey-filter-btn journey-copy-btn" onclick="copyJourneyTimeline()" title="Copy timeline as text">Copy</button>
+        <span class="journey-filter-separator"></span>
+        <button class="journey-filter-btn ${timelineView === 'user' ? 'active' : ''}" onclick="setTimelineView('user')" title="Show key events: coding, review, outcome">Story</button>
+        <button class="journey-filter-btn ${timelineView === 'ops' ? 'active' : ''}" onclick="setTimelineView('ops')" title="Show operational events: validation, retries, exchanges">Ops</button>
+        <button class="journey-filter-btn ${timelineView === 'debug' ? 'active' : ''}" onclick="setTimelineView('debug')" title="Show all internal events">Debug</button>
     </div>`;
 
     if (runs.length === 0) {
@@ -4034,6 +4039,22 @@ function setJourneyFilter(filter) {
     }
 }
 
+async function setTimelineView(view) {
+    timelineView = view;
+    if (issueDetailData) {
+        const issueNumber = issueDetailData.issue_number;
+        try {
+            const res = await fetch(`/api/issue-detail/${issueNumber}?view=${view}`);
+            if (res.ok) {
+                issueDetailData = await res.json();
+                renderIssueDetail();
+            }
+        } catch (err) {
+            console.error('Failed to switch timeline view:', err);
+        }
+    }
+}
+
 function copyJourneyTimeline() {
     if (!issueDetailData) return;
 
@@ -4136,7 +4157,7 @@ async function openReviewFeedback(issueNumber) {
         if (issueDetailData && issueDetailData.issue_number === issueNumber) {
             detailForIssue = issueDetailData;
         } else {
-            const detailRes = await fetch(`/api/issue-detail/${issueNumber}`);
+            const detailRes = await fetch(`/api/issue-detail/${issueNumber}?view=${timelineView}`);
             if (detailRes.ok) {
                 detailForIssue = await detailRes.json();
             }

@@ -47,12 +47,14 @@ def build_issue_detail_view_model(
     phase_toc: list[dict[str, Any]],
     cycles: list[dict[str, Any]],
     context: IssueStoryContext | None = None,
+    view: str = "user",
 ) -> dict[str, Any]:
     """Build issue detail payload used by the dashboard drawer."""
     today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
-    timeline_steps = _build_journey_steps(events, today)
+    filtered = _filter_events_by_view(events, view)
+    timeline_steps = _build_journey_steps(filtered, today)
     previous_runs = _build_previous_cycles(cycles, today)
-    run_cycles = _build_journey_cycles(events, today, context)
+    run_cycles = _build_journey_cycles(filtered, today, context)
     runs = _build_runs(run_cycles)
 
     return {
@@ -61,22 +63,44 @@ def build_issue_detail_view_model(
         "issue_url": issue_url,
         "phase_toc": phase_toc,
         "cycles": cycles,
-        "events": events,
-        "summary": _summary(events),
+        "events": filtered,
+        "summary": _summary(filtered),
         "actions": [
             {"id": "focus", "label": "Focus"},
             {"id": "github", "label": "GitHub ↗", "url": issue_url},
         ],
         # Story fields
-        "status_explanation": _build_status_explanation(context, events),
+        "view": view,
+        "status_explanation": _build_status_explanation(context, filtered),
         "timeline_steps": timeline_steps,
         "runs": runs,
         "run_count": len(runs),
         "previous_runs": previous_runs,
         "previous_runs_count": len(previous_runs),
         "raw_events_count": len(events),
-        "blocked_detail": _build_blocked_detail(context, events),
+        "blocked_detail": _build_blocked_detail(context, filtered),
     }
+
+
+# ---------------------------------------------------------------------------
+# View filtering
+# ---------------------------------------------------------------------------
+
+def _filter_events_by_view(events: list[dict[str, Any]], view: str) -> list[dict[str, Any]]:
+    """Filter events to those visible in the requested view.
+
+    Events with a ``views`` tag are included only if ``view`` is in the list.
+    Events without a ``views`` tag (pre-registry data) are included in all views.
+    """
+    result: list[dict[str, Any]] = []
+    for evt in events:
+        views = evt.get("views")
+        if views is None:
+            # Legacy event without view tags — include everywhere
+            result.append(evt)
+        elif view in views:
+            result.append(evt)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +275,12 @@ _JOURNEY_SKIP_EVENTS = frozenset({
     "session.no_output",
 })
 
+def _should_skip_event(event_name: str) -> bool:
+    """Check if an event should be skipped (legacy path for untagged events)."""
+    if event_name in _JOURNEY_SKIP_EVENTS:
+        return True
+    return any(event_name.startswith(p) for p in _JOURNEY_SKIP_PREFIXES)
+
 # Event name → narrative template.  {summary} is replaced with event summary.
 _NARRATIVE_MAP: dict[str, str] = {
     "session.started": "Code session started",
@@ -294,10 +324,8 @@ def _build_journey_steps(
     for event in events:
         event_name = str(event.get("event") or "")
 
-        # Skip noise
-        if event_name in _JOURNEY_SKIP_EVENTS:
-            continue
-        if any(event_name.startswith(p) for p in _JOURNEY_SKIP_PREFIXES):
+        # Legacy events without view tags: apply old skip rules
+        if event.get("views") is None and _should_skip_event(event_name):
             continue
 
         narrative = _event_to_narrative(event)
@@ -327,6 +355,16 @@ def _event_to_narrative(event: dict[str, Any]) -> str:
     summary = str(event.get("summary") or "")
     agent = _format_agent(event)
 
+    # Prefer narrative from view registry (set at write time)
+    stored_narrative = event.get("narrative")
+    if isinstance(stored_narrative, str) and stored_narrative:
+        suffix = f": {summary}" if summary else ""
+        text = f"{stored_narrative}{suffix}"
+        if agent:
+            text = f"{text} ({agent})"
+        return text
+
+    # Fall back to static narrative map
     template = _NARRATIVE_MAP.get(event_name)
     if template:
         suffix = f": {summary}" if summary else ""
@@ -465,9 +503,8 @@ def _build_semantic_journey_cycles(
     grouped: dict[tuple[int, int], list[dict[str, Any]]] = {}
     for event in events:
         event_name = str(event.get("event") or "")
-        if event_name in _JOURNEY_SKIP_EVENTS:
-            continue
-        if any(event_name.startswith(p) for p in _JOURNEY_SKIP_PREFIXES):
+        # Legacy events without view tags: apply old skip rules
+        if event.get("views") is None and _should_skip_event(event_name):
             continue
         logical_run = _required_int(event, "logical_run")
         logical_cycle = _required_int(event, "logical_cycle")

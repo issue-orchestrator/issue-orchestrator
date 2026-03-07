@@ -1,0 +1,217 @@
+"""View registry — maps internal events to external timeline events.
+
+Each internal event (emitted by orchestrator code) fans out to one or more
+external events written to the timeline store.  Each external event carries
+view tags that control which UI views display it.
+
+Views (ordered by detail level):
+    user  — end-user / PM: the story (agent started, reviewed, outcome)
+    ops   — operator running the orchestrator: above + validation, retries
+    debug — full internal trace: everything
+
+The TimelineWriter consults this registry at write time.  The view model
+filters by the requested view before rendering.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class ViewEvent:
+    """One external event produced from an internal event."""
+
+    name: str
+    views: frozenset[str]
+    narrative: str | None = None
+    phase: str | None = None  # override logical_phase for display
+
+    def visible_in(self, view: str) -> bool:
+        return view in self.views
+
+
+# Shorthand constructors
+def _user(name: str, narrative: str, phase: str | None = None) -> ViewEvent:
+    """Event visible in user, ops, and debug views."""
+    return ViewEvent(name, frozenset({"user", "ops", "debug"}), narrative, phase)
+
+
+def _ops(name: str, narrative: str | None = None, phase: str | None = None) -> ViewEvent:
+    """Event visible in ops and debug views."""
+    return ViewEvent(name, frozenset({"ops", "debug"}), narrative, phase)
+
+
+def _debug(name: str | None = None) -> ViewEvent:
+    """Event visible only in debug view. Name defaults to internal name (filled by writer)."""
+    return ViewEvent(name or "", frozenset({"debug"}))
+
+
+# ---------------------------------------------------------------------------
+# Registry: internal event name -> list of external ViewEvents
+#
+# When an internal event has no entry here, a single debug-only record
+# is written using the internal event name.
+# ---------------------------------------------------------------------------
+
+VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
+    # -- Coding agent lifecycle --
+    "session.started": [
+        _user("agent.coding_started", "Coding agent started", "coding"),
+    ],
+    "observation.completion_detected": [
+        _user("agent.coding_completed", "Agent finished coding", "coding"),
+    ],
+    "session.completed": [
+        _user("agent.completed", "Issue completed", "orchestrator"),
+    ],
+    "session.failed": [
+        _user("agent.failed", "Agent session failed", "orchestrator"),
+    ],
+    "session.timeout": [
+        _user("agent.timed_out", "Agent timed out", "orchestrator"),
+    ],
+    "session.blocked": [
+        _user("agent.blocked", "Agent blocked", "orchestrator"),
+    ],
+
+    # -- Review lifecycle --
+    "review.started": [
+        _user("review.started", "Code review started", "review"),
+    ],
+    "review_exchange.started": [
+        _ops("review_exchange.started", "Review exchange started", "review"),
+    ],
+    "review_exchange.round_started": [
+        _ops("review_exchange.round_started", "Review round started", "review"),
+    ],
+    "review_exchange.round_completed": [
+        _ops("review_exchange.round_completed", "Review round completed", "review"),
+    ],
+    "review_exchange.completed": [
+        _ops("review_exchange.completed", "Review exchange completed", "review"),
+    ],
+    "review_exchange.failed": [
+        _ops("review_exchange.failed", "Review exchange failed", "review"),
+    ],
+    "review.approved": [
+        _user("review.approved", "Review approved", "review"),
+    ],
+    "review.changes_requested": [
+        _user("review.changes_requested", "Reviewer requested changes", "review"),
+    ],
+    "review.escalated": [
+        _user("review.escalated", "Escalated to human review", "review"),
+    ],
+    "review.merged": [
+        _user("review.merged", "PR merged", "review"),
+    ],
+    "review.comment_added": [
+        _ops("review.comment_added", "Review comment posted", "review"),
+    ],
+
+    # -- Rework lifecycle --
+    "rework.started": [
+        _user("agent.rework_started", "Rework agent started", "rework"),
+    ],
+    "rework.launching": [
+        _ops("rework.launching", "Rework session launching", "rework"),
+    ],
+
+    # -- Validation --
+    "session.validation_passed": [
+        _user("validation.passed", "Validation passed", "orchestrator"),
+    ],
+    "session.validation_failed": [
+        _user("validation.failed", "Validation failed", "orchestrator"),
+    ],
+    "session.validation_retry_needed": [
+        _ops("validation.retry", "Validation failed — retrying", "orchestrator"),
+    ],
+
+    # -- Issue state --
+    "issue.pr_created": [
+        _user("pr.created", "PR created", "orchestrator"),
+    ],
+    "issue.blocked": [
+        _user("issue.blocked", "Issue blocked", "orchestrator"),
+    ],
+    "issue.needs_human": [
+        _user("issue.needs_human", "Needs human input", "orchestrator"),
+    ],
+    "issue.completed": [
+        _user("issue.completed", "Issue completed", "orchestrator"),
+    ],
+    "issue.unblocked": [
+        _user("issue.unblocked", "Issue unblocked", "orchestrator"),
+    ],
+
+    # -- Triage --
+    "triage.launching": [
+        _ops("triage.launching", "Triage review launching"),
+    ],
+
+    # -- Ops-level events --
+    "session.processing_completed": [
+        _ops("session.processing_completed", phase="orchestrator"),
+    ],
+    "session.no_completion_record": [
+        _ops("session.no_completion_record", "No completion record found"),
+    ],
+    "worktree.reset": [
+        _ops("worktree.reset", "Worktree reset to main"),
+    ],
+    "completion.lookup": [
+        _ops("completion.lookup"),
+    ],
+    "validation.started": [
+        _ops("validation.started", "Validation started"),
+    ],
+    "validation.completed": [
+        _ops("validation.completed", "Validation completed"),
+    ],
+
+    # -- Pure debug (infrastructure noise) --
+    "claim.acquired": [_debug()],
+    "claim.renewed": [_debug()],
+    "claim.released": [_debug()],
+    "claim.contested": [_debug()],
+    "claim.converged": [_debug()],
+    "claim.lost": [_debug()],
+    "claim.expired": [_debug()],
+    "claim.stale_detected": [_debug()],
+    "observation.result": [_debug()],
+    "cleanup.completed": [_debug()],
+    "issue.labels_changed": [_debug()],
+    "issue.claimed": [_debug()],
+    "apply.step_applied": [_debug()],
+    "apply.started": [_debug()],
+    "apply.completed": [_debug()],
+    "apply.failed": [_debug()],
+    "pr.view_changed": [_debug()],
+    "stale.in_progress_detected": [_debug()],
+    "stale.in_progress_cleared": [_debug()],
+    "session.no_output": [_debug()],
+}
+
+
+def fan_out(internal_event_name: str) -> list[ViewEvent]:
+    """Return the external events for an internal event.
+
+    Unregistered events produce a single debug-only record
+    with the internal name preserved.
+    """
+    specs = VIEW_REGISTRY.get(internal_event_name)
+    if specs is not None:
+        # Fill in empty names (from _debug() shorthand) with internal name
+        return [
+            ViewEvent(s.name or internal_event_name, s.views, s.narrative, s.phase)
+            if not s.name else s
+            for s in specs
+        ]
+    # Default: single debug-only record with internal name
+    return [ViewEvent(internal_event_name, frozenset({"debug"}))]
+
+
+# All valid view names
+VIEWS = frozenset({"user", "ops", "debug"})

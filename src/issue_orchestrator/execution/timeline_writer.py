@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from ..domain.logical_event_semantics import enrich_logical_semantics
 from ..events.catalog import EVENT_SCHEMA_VERSION
+from ..events.view_registry import fan_out
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..timeline import TIMELINE_SCHEMA_VERSION
 from .timeline_artifact_expectations import validate_event_artifact_expectations
@@ -39,14 +40,20 @@ class DefaultTimelineWriter(TimelineWriter):
         safe_data = _normalize_json(event.data)
         if not isinstance(safe_data, dict):
             safe_data = {"raw_event_data": safe_data}
+
+        # Enrichment uses source_event from the previous record for cycle
+        # boundary detection, so fan-out doesn't break the state machine.
         previous_records = self._store.read(issue_number, limit=1)
         previous_record = previous_records[-1] if previous_records else None
-        previous_name = previous_record.event if previous_record else None
+        previous_source = (
+            (previous_record.source_event or previous_record.event)
+            if previous_record else None
+        )
         previous_data = previous_record.data if previous_record else None
         semantics = enrich_logical_semantics(
             event_name=event.name,
             event_data=safe_data,
-            previous_event_name=previous_name,
+            previous_event_name=previous_source,
             previous_data=previous_data if isinstance(previous_data, dict) else None,
         )
         safe_data["schema"] = EVENT_SCHEMA_VERSION
@@ -58,31 +65,44 @@ class DefaultTimelineWriter(TimelineWriter):
         safe_data["logical_phase"] = semantics.logical_phase
         safe_data["_logical_restart_pending"] = semantics.restart_pending
         validate_event_artifact_expectations(event.name, safe_data)
-        record_event_id = str(event.event_id) if event.event_id is not None else str(uuid4())
-        record = TimelineRecord(
-            event_id=record_event_id,
-            timestamp=timestamp.isoformat(),
-            event=event.name,
-            data=safe_data,
-        )
+
+        base_event_id = str(event.event_id) if event.event_id is not None else str(uuid4())
+        ts_iso = timestamp.isoformat()
+
         if is_timeline_trace_enabled():
             logger.info(
-                "[TIMELINE] writer.record issue=%s event=%s run_id=%s run_dir=%s schema=%s timeline_schema=%s "
-                "intent=%s review=%s phase=%s cycle=%s run=%s previous_event=%s",
+                "[TIMELINE] writer.record issue=%s event=%s run_id=%s run_dir=%s "
+                "intent=%s phase=%s cycle=%s run=%s previous_source=%s",
                 issue_number,
                 event.name,
                 safe_data.get("run_id"),
                 safe_data.get("run_dir"),
-                safe_data.get("schema"),
-                safe_data.get("timeline_schema_version"),
                 safe_data.get("event_intent"),
-                safe_data.get("review_oriented"),
                 safe_data.get("logical_phase"),
                 safe_data.get("logical_cycle"),
                 safe_data.get("logical_run"),
-                previous_name,
+                previous_source,
             )
-        self._store.append(issue_number, record)
+
+        # Fan out: one internal event -> N external timeline records
+        external_events = fan_out(event.name)
+        for i, view_event in enumerate(external_events):
+            record_data = dict(safe_data)
+            record_data["views"] = sorted(view_event.views)
+            if view_event.narrative:
+                record_data["narrative"] = view_event.narrative
+            if view_event.phase:
+                record_data["logical_phase"] = view_event.phase
+
+            record_id = base_event_id if i == 0 else f"{base_event_id}-{i}"
+            record = TimelineRecord(
+                event_id=record_id,
+                timestamp=ts_iso,
+                event=view_event.name,
+                data=record_data,
+                source_event=event.name,
+            )
+            self._store.append(issue_number, record)
 
 
 def _normalize_json(value: Any) -> Any:
