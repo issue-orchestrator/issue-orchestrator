@@ -66,6 +66,7 @@ class TimelineEvent:
     logical_run: int | None = None
     logical_cycle: int | None = None
     logical_phase: str | None = None
+    source_event: str | None = None
 
     def to_dict(self) -> dict[str, Any]:  # noqa: C901
         d: dict[str, Any] = {
@@ -107,6 +108,8 @@ class TimelineEvent:
             d["logical_cycle"] = self.logical_cycle
         if self.logical_phase:
             d["logical_phase"] = self.logical_phase
+        if self.source_event:
+            d["source_event"] = self.source_event
         return d
 
 
@@ -210,6 +213,7 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         logical_run=logical_run,
         logical_cycle=logical_cycle,
         logical_phase=logical_phase,
+        source_event=record.source_event or None,
     )
 
 

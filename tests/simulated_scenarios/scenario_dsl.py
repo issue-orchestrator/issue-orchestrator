@@ -199,7 +199,10 @@ class Scenario:
     def expect_timeline_event(self, name: EventName) -> Scenario:
         self._expected_timeline_events.add(name)
         def _assert(ctx: ScenarioContext) -> None:
-            assert any(e.event == name.value for e in ctx.timeline_since_baseline())
+            assert any(
+                (e.source_event or e.event) == name.value
+                for e in ctx.timeline_since_baseline()
+            )
         return self._add_expectation(_assert)
 
     def expect_latest_timeline_event(
@@ -216,6 +219,7 @@ class Scenario:
                 assert predicate(latest)
         return self._add_expectation(_assert)
 
+
     def expect_no_event(self, name: EventName) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
             assert all(e.name != name for e in ctx.events_since_baseline())
@@ -223,8 +227,10 @@ class Scenario:
 
     def expect_no_timeline_event(self, name: EventName) -> Scenario:
         def _assert(ctx: ScenarioContext) -> None:
-            assert all(e.event != name.value for e in ctx.timeline_since_baseline()), \
-                f"Unexpected timeline event {name.value} found"
+            assert all(
+                (e.source_event or e.event) != name.value
+                for e in ctx.timeline_since_baseline()
+            ), f"Unexpected timeline event {name.value} found"
         return self._add_expectation(_assert)
 
     def expect_latest_event(
@@ -462,7 +468,7 @@ class Scenario:
             if expected_timeline_events:
                 timeline_since = timeline_reader.read(self.issue_number).events[timeline_baseline:]
                 have_timeline = all(
-                    any(e.event == name.value for e in timeline_since)
+                    any((e.source_event or e.event) == name.value for e in timeline_since)
                     for name in expected_timeline_events
                 )
             else:
@@ -514,7 +520,7 @@ def _latest_event(events, names: set[EventName]):
 
 
 def _latest_timeline_event(events, names: set[str]):
-    matches = [e for e in events if e.event in names]
+    matches = [e for e in events if (e.source_event or e.event) in names]
     return matches[-1] if matches else None
 
 
