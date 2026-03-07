@@ -70,7 +70,7 @@ class TimelineEvent:
     views: list[str] | None = None
     narrative: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:  # noqa: C901
+    def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
             "event_id": self.event_id,
             "timestamp": self.timestamp,
@@ -86,36 +86,29 @@ class TimelineEvent:
             "run_id": self.run_id,
             "run_dir": self.run_dir,
             "artifacts": [a.to_dict() for a in self.artifacts],
+            "unsupported_schema": self.unsupported_schema,
+            "review_oriented": self.review_oriented,
+            "event_intent": self.event_intent,
         }
-        if self.agent:
-            d["agent"] = self.agent
-        if self.task:
-            d["task"] = self.task
-        if self.rework_cycle is not None:
-            d["rework_cycle"] = self.rework_cycle
-        if self.reviewer_agent:
-            d["reviewer_agent"] = self.reviewer_agent
-        if self.added is not None:
-            d["added"] = self.added
-        if self.removed is not None:
-            d["removed"] = self.removed
-        if self.timeline_schema_version is not None:
-            d["timeline_schema_version"] = self.timeline_schema_version
-        d["unsupported_schema"] = self.unsupported_schema
-        d["review_oriented"] = self.review_oriented
-        d["event_intent"] = self.event_intent
-        if self.logical_run is not None:
-            d["logical_run"] = self.logical_run
-        if self.logical_cycle is not None:
-            d["logical_cycle"] = self.logical_cycle
-        if self.logical_phase:
-            d["logical_phase"] = self.logical_phase
-        if self.source_event:
-            d["source_event"] = self.source_event
-        if self.views is not None:
-            d["views"] = self.views
-        if self.narrative:
-            d["narrative"] = self.narrative
+        # Optional fields: include when set
+        _optional: list[tuple[str, Any]] = [
+            ("agent", self.agent),
+            ("task", self.task),
+            ("rework_cycle", self.rework_cycle),
+            ("reviewer_agent", self.reviewer_agent),
+            ("added", self.added),
+            ("removed", self.removed),
+            ("timeline_schema_version", self.timeline_schema_version),
+            ("logical_run", self.logical_run),
+            ("logical_cycle", self.logical_cycle),
+            ("logical_phase", self.logical_phase),
+            ("source_event", self.source_event),
+            ("views", self.views),
+            ("narrative", self.narrative),
+        ]
+        for key, val in _optional:
+            if val is not None and val != "":
+                d[key] = val
         return d
 
 
