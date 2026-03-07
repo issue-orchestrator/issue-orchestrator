@@ -1,7 +1,8 @@
-"""Registry for runtime-managed artifact paths under .issue-orchestrator/.
+"""Registry for runtime-managed artifact paths.
 
-These paths are writable runtime metadata and should not be treated as
-user/source edits by dirty-tree guardrails.
+These paths are writable runtime metadata (under .issue-orchestrator/
+and .claude/) and should not be treated as user/source edits by
+dirty-tree guardrails.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ RUNTIME_DIRTY_IGNORE_EXACT: frozenset[str] = frozenset({
 
 RUNTIME_DIRTY_IGNORE_PREFIXES: tuple[str, ...] = (
     ".issue-orchestrator/backups/",
+    ".claude/",
 )
 
 
