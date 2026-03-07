@@ -945,23 +945,46 @@ def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None
 
 
 def _commit_setup_artifacts(worktree_path: Path) -> None:
-    """Commit any dirty files left by worktree setup (hooks, cli_tools sync, settings).
+    """Commit files written by worktree setup (cli_tools sync, settings, identity).
 
-    sync_cli_tools copies the orchestrator's current cli_tools source into the
-    worktree.  When the orchestrator is running from a different version than
-    the worktree's checkout (common during development), those copied files
-    appear as modifications in ``git status``.  Committing them here keeps the
-    worktree clean so that ``coding-done``'s dirty-tree check only detects
-    files the agent actually changed.
+    ``sync_cli_tools`` copies the orchestrator's current cli_tools source into
+    the worktree.  When the orchestrator runs from a different version than the
+    worktree's checkout (common during development), those copied files appear
+    as modifications in ``git status``.  Committing them here keeps the worktree
+    clean so ``coding-done``'s dirty-tree check only detects files the agent
+    actually changed.
+
+    Only stages the specific paths that setup writes — never ``git add -A`` —
+    so leftover agent work on a reused worktree is never silently committed.
 
     Best-effort: failures are logged but do not block worktree creation.
     """
-    try:
-        result = _git_run(worktree_path, ["status", "--porcelain"], check=False)
-        if result.returncode != 0 or not result.stdout.strip():
-            return  # Nothing dirty or git failed — nothing to do
+    # Paths written by _finalize_worktree helpers (relative to worktree root).
+    # .claude/ and .issue-orchestrator/ are already excluded from coding-done's
+    # dirty check, so only cli_tools needs to be committed here.
+    _SETUP_PATHS = [
+        "src/issue_orchestrator/entrypoints/cli_tools",
+    ]
 
-        _git_run(worktree_path, ["add", "-A"], check=False)
+    try:
+        staged_any = False
+        for rel_path in _SETUP_PATHS:
+            full = worktree_path / rel_path
+            if full.exists():
+                result = _git_run(
+                    worktree_path, ["add", "--", rel_path], check=False,
+                )
+                if result.returncode == 0:
+                    staged_any = True
+
+        if not staged_any:
+            return
+
+        # Only commit if there are actually staged changes
+        diff = _git_run(worktree_path, ["diff", "--cached", "--quiet"], check=False)
+        if diff.returncode == 0:
+            return  # Nothing staged
+
         _git_run(
             worktree_path,
             ["commit", "-m", "chore: worktree setup artifacts", "--no-verify"],
