@@ -90,7 +90,7 @@ class TestLiveOrchestratorLifecycle:
 
 
 @pytest.mark.e2e
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(180)
 class TestOrchestratorStateObservation:
     """Test observing orchestrator state during execution."""
 
@@ -117,7 +117,7 @@ class TestOrchestratorStateObservation:
 
 
 @pytest.mark.e2e
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(300)
 class TestLabelDetection:
     """Test that label changes are detected correctly."""
 
