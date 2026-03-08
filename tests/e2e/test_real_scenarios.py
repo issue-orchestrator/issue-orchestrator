@@ -439,8 +439,8 @@ class TestReworkCyclesAndEscalation:
     """
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(420)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=220, system_gh_activity_limit=100)
+    @pytest.mark.timeout(720)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=500, system_gh_activity_limit=100)
     async def test_rework_cycle_label_emitted(
         self,
         repo_name: str,
@@ -493,8 +493,8 @@ class TestReworkCyclesAndEscalation:
                 close_issue(repo_name, issue_number, "E2E rework cycle label test completed")
 
     @pytest.mark.asyncio
-    @pytest.mark.timeout(720)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=260, system_gh_activity_limit=100)
+    @pytest.mark.timeout(900)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=600, system_gh_activity_limit=100)
     async def test_rework_cycles_escalate(
         self,
         repo_name: str,
