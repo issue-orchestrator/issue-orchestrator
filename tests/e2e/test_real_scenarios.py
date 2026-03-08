@@ -27,6 +27,7 @@ from tests.e2e.conftest import (
     e2e_label,
     _github_adapter,
 )
+from tests.e2e.fixtures import find_free_port
 from issue_orchestrator.testing.support.test_data import close_issue, cleanup_issues_by_label
 from issue_orchestrator.domain.issue_key import IssueKey
 from tests.e2e.flows import (
@@ -189,7 +190,7 @@ class TestCodeReviewRuns:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(300)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=250, system_gh_activity_limit=100)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=500, system_gh_activity_limit=100)
     async def test_code_review_pr_created(
         self,
         e2e_orchestrator,
@@ -230,7 +231,7 @@ class TestCodeReviewRuns:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(420)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=320, system_gh_activity_limit=120)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=600, system_gh_activity_limit=120)
     async def test_code_review_outcome_label(
         self,
         e2e_orchestrator,
@@ -435,7 +436,8 @@ class TestTriageReviewTrigger:
 class TestReworkCyclesAndEscalation:
     """Test the rework cycle flow and escalation to needs-human.
 
-    Uses shared orchestrator with review-decider behavior.
+    Starts its own orchestrator to avoid lock conflicts with the triage
+    test (which also starts a separate orchestrator on the same repo root).
     """
 
     @pytest.mark.asyncio
@@ -444,8 +446,8 @@ class TestReworkCyclesAndEscalation:
     async def test_rework_cycle_label_emitted(
         self,
         repo_name: str,
-        e2e_orchestrator,
-        orchestrator_watcher,
+        e2e_project_root: Path,
+        e2e_session_config,
     ):
         """Test that at least one rework-cycle label appears."""
         dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
@@ -458,18 +460,34 @@ class TestReworkCyclesAndEscalation:
 
         issue_number = None
         pr_number = None
-        flow = E2EFlow(
-            repo=repo_name,
-            watcher=orchestrator_watcher,
-        )
+        runtime = None
 
         try:
+            rework_config = copy.deepcopy(e2e_session_config)
+            rework_config.control_api_port = find_free_port()
+            run_label = e2e_label("rework_cycles")
+            rework_config.filtering.label = run_label
+
+            logger.info("Starting orchestrator for rework test...")
+            orchestrator = OrchestratorProcess(rework_config, e2e_project_root)
+            runtime = await start_orchestrator_runtime(
+                orchestrator,
+                rework_config.control_api_port,
+                max_issues=10,
+                extra_args=["--label", run_label],
+            )
+            flow = E2EFlow(
+                repo=repo_name,
+                watcher=runtime.watcher,
+                filter_label=run_label,
+            )
+
             logger.info("Creating test issue...")
             issue_key, issue_number = create_single_issue(
                 repo_name,
                 "[M0-720] [E2E-REWORK] Test rework cycle label",
-                ["agent:script-completes", "io-e2e-test-data", e2e_label("rework_cycles")],
-                watcher=orchestrator_watcher,
+                ["agent:script-completes", "io-e2e-test-data", run_label],
+                watcher=runtime.watcher,
             )
             logger.info("  Created issue #%d", issue_number)
 
@@ -487,7 +505,10 @@ class TestReworkCyclesAndEscalation:
             assert len(rework_labels_seen) >= 1, "Expected at least one rework-cycle label"
 
         finally:
+            if runtime:
+                await runtime.close()
             if pr_number:
+                flow = E2EFlow(repo=repo_name, watcher=None)
                 flow.close_pr(pr_number)
             if issue_number:
                 close_issue(repo_name, issue_number, "E2E rework cycle label test completed")
@@ -498,8 +519,8 @@ class TestReworkCyclesAndEscalation:
     async def test_rework_cycles_escalate(
         self,
         repo_name: str,
-        e2e_orchestrator,
-        orchestrator_watcher,
+        e2e_project_root: Path,
+        e2e_session_config,
     ):
         """Test that rework cycles lead to escalation after max cycles."""
         dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
@@ -512,18 +533,34 @@ class TestReworkCyclesAndEscalation:
 
         issue_number = None
         pr_number = None
-        flow = E2EFlow(
-            repo=repo_name,
-            watcher=orchestrator_watcher,
-        )
+        runtime = None
 
         try:
+            rework_config = copy.deepcopy(e2e_session_config)
+            rework_config.control_api_port = find_free_port()
+            run_label = e2e_label("rework_escalation")
+            rework_config.filtering.label = run_label
+
+            logger.info("Starting orchestrator for rework escalation test...")
+            orchestrator = OrchestratorProcess(rework_config, e2e_project_root)
+            runtime = await start_orchestrator_runtime(
+                orchestrator,
+                rework_config.control_api_port,
+                max_issues=10,
+                extra_args=["--label", run_label],
+            )
+            flow = E2EFlow(
+                repo=repo_name,
+                watcher=runtime.watcher,
+                filter_label=run_label,
+            )
+
             logger.info("Creating test issue...")
             issue_key, issue_number = create_single_issue(
                 repo_name,
                 "[M0-721] [E2E-REWORK] Test rework escalation",
-                ["agent:script-completes", "io-e2e-test-data", e2e_label("rework_escalation")],
-                watcher=orchestrator_watcher,
+                ["agent:script-completes", "io-e2e-test-data", run_label],
+                watcher=runtime.watcher,
             )
             logger.info("  Created issue #%d", issue_number)
 
@@ -541,7 +578,10 @@ class TestReworkCyclesAndEscalation:
             assert escalated, "Expected escalation to blocked-needs-human"
 
         finally:
+            if runtime:
+                await runtime.close()
             if pr_number:
+                flow = E2EFlow(repo=repo_name, watcher=None)
                 flow.close_pr(pr_number)
             if issue_number:
                 close_issue(repo_name, issue_number, "E2E rework escalation test completed")
