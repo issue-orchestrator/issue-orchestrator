@@ -190,11 +190,13 @@ async def wait_for_rework_progress(
     while time.monotonic() < deadline:
         issue_view = watcher.view.issues.get(issue_key)
         if issue_view:
-            labels = issue_view.pr.labels
-            for label in labels:
+            # Check both issue and PR labels — rework-cycle-N may land on either
+            # depending on how the orchestrator resolves the PR number.
+            all_labels = set(issue_view.labels) | set(issue_view.pr.labels)
+            for label in all_labels:
                 if label.startswith("rework-cycle-"):
                     seen.add(label)
-            if "blocked-needs-human" in labels or "needs-human" in labels:
+            if "blocked-needs-human" in all_labels or "needs-human" in all_labels:
                 return True, seen
             if seen:
                 return False, seen
