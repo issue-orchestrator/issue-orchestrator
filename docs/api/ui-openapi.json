@@ -211,6 +211,12 @@
             "in": "path",
             "required": true,
             "schema": {"type": "integer"}
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "schema": {"type": "string", "enum": ["user", "ops", "debug"], "default": "user"}
           }
         ],
         "responses": {
@@ -406,7 +412,8 @@
           "previous_runs": {"type": "array", "items": {"type": "object", "additionalProperties": true}},
           "previous_runs_count": {"type": "integer"},
           "raw_events_count": {"type": "integer"},
-          "blocked_detail": {"type": ["object", "null"], "additionalProperties": true}
+          "blocked_detail": {"type": ["object", "null"], "additionalProperties": true},
+          "view": {"type": "string", "default": "user"}
         }
       },
       "DialogRowPayload": {

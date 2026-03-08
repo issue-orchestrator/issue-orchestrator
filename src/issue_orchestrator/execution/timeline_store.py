@@ -31,12 +31,13 @@ CREATE TABLE IF NOT EXISTS timeline_events (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     issue_number INTEGER NOT NULL,
     event_id TEXT NOT NULL,
+    source_event TEXT NOT NULL DEFAULT '',
     timestamp TEXT NOT NULL,
     event TEXT NOT NULL,
     run_dir TEXT NOT NULL DEFAULT '',
     data_json TEXT NOT NULL,
     CHECK (
-        event NOT IN ({run_scoped_events})
+        source_event NOT IN ({run_scoped_events})
         OR length(trim(run_dir)) > 0
     )
 );
@@ -46,9 +47,12 @@ CREATE INDEX IF NOT EXISTS idx_timeline_issue_sequence
 
 CREATE INDEX IF NOT EXISTS idx_timeline_issue_event_run_dir
     ON timeline_events(issue_number, event, run_dir);
+
+CREATE INDEX IF NOT EXISTS idx_timeline_issue_source_event
+    ON timeline_events(issue_number, source_event);
 """
 
-_SQLITE_SCHEMA_VERSION = 2
+_SQLITE_SCHEMA_VERSION = 3
 
 
 def _quoted_csv(values: Iterable[str]) -> str:
@@ -158,29 +162,32 @@ class SqliteTimelineStore(TimelineStore):
                 raise
 
     def append(self, issue_number: int, record: TimelineRecord) -> None:
+        source = record.source_event or record.event
         run_dir_value = record.data.get("run_dir")
         run_dir = run_dir_value.strip() if isinstance(run_dir_value, str) else ""
-        if event_requires_run_dir(record.event) and not run_dir:
+        if event_requires_run_dir(source) and not run_dir:
             raise RuntimeError(
-                f"timeline DB invariant failed: event={record.event} requires non-empty run_dir"
+                f"timeline DB invariant failed: event={source} requires non-empty run_dir"
             )
         payload = json.dumps(record.data, sort_keys=True, default=str)
         with self._transaction() as tx:
             tx.execute(
                 """
-                INSERT INTO timeline_events (issue_number, event_id, timestamp, event, run_dir, data_json)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO timeline_events
+                    (issue_number, event_id, source_event, timestamp, event, run_dir, data_json)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
-                (issue_number, record.event_id, record.timestamp, record.event, run_dir, payload),
+                (issue_number, record.event_id, source, record.timestamp, record.event, run_dir, payload),
             )
             self._trim_if_needed(tx, issue_number)
             self._trim_total_if_needed(tx)
         if _timeline_trace_enabled():
             logger.info(
-                "[TIMELINE] append db=%s issue=%s event=%s event_id=%s",
+                "[TIMELINE] append db=%s issue=%s event=%s source=%s event_id=%s",
                 self._db_path,
                 issue_number,
                 record.event,
+                source,
                 record.event_id,
             )
 
@@ -189,7 +196,7 @@ class SqliteTimelineStore(TimelineStore):
         if limit is not None and limit > 0:
             rows = conn.execute(
                 """
-                SELECT event_id, timestamp, event, data_json
+                SELECT event_id, source_event, timestamp, event, data_json
                 FROM timeline_events
                 WHERE issue_number = ?
                 ORDER BY sequence DESC
@@ -201,7 +208,7 @@ class SqliteTimelineStore(TimelineStore):
         else:
             rows = conn.execute(
                 """
-                SELECT event_id, timestamp, event, data_json
+                SELECT event_id, source_event, timestamp, event, data_json
                 FROM timeline_events
                 WHERE issue_number = ?
                 ORDER BY sequence ASC
@@ -224,6 +231,7 @@ class SqliteTimelineStore(TimelineStore):
                     timestamp=str(row["timestamp"]),
                     event=str(row["event"]),
                     data=data,
+                    source_event=str(row["source_event"] or ""),
                 )
             )
         if _timeline_trace_enabled():

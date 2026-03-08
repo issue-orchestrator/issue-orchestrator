@@ -175,7 +175,7 @@ def test_timeline_and_issue_detail_read_from_sqlite_store(sample_config, mock_re
         assert timeline_response.status_code == 200
         timeline_payload = timeline_response.json()
         assert len(timeline_payload["events"]) == 4
-        assert timeline_payload["events"][0]["event"] == "session.started"
+        assert timeline_payload["events"][0]["event"] == "agent.coding_started"
         assert timeline_payload["events"][-1]["event"] == "review.approved"
 
         issue_detail_response = client.get(f"/api/issue-detail/{issue_number}")
@@ -357,23 +357,25 @@ def test_issue_detail_4057_like_projection_stays_semantically_correct(sample_con
         assert _phase_group_labels(cycle) == [
             "Coding",
             "Orchestrator",
-            "Coding",
             "Review",
             "Orchestrator",
-            "Review",
         ]
         assert _step_events(cycle) == [
-            "session.started",
-            "session.validation_passed",
-            "session.completed",
+            "agent.coding_started",
+            "validation.passed",
+            "agent.completed",
             "review.started",
             "review.approved",
-            "issue.pr_created",
-            "review.comment_added",
+            "pr.created",
         ]
 
+        # review.comment_added is ops-only, check with ops view
+        ops_response = client.get(f"/api/issue-detail/{issue_number}?view=ops")
+        ops_payload = ops_response.json()
+        ops_run = _latest_run(ops_payload)
+        ops_cycle = _first_cycle(ops_run)
         review_comment_step = next(
-            step for step in cycle["steps"] if step.get("event") == "review.comment_added"
+            step for step in ops_cycle["steps"] if step.get("event") == "review.comment_added"
         )
         assert any(
             action.get("type") == "open_review_feedback"
@@ -599,7 +601,7 @@ def test_issue_detail_rework_review_exchange_without_signal_stays_in_single_cycl
     web.set_orchestrator(orch)
     try:
         client = TestClient(web.app)
-        response = client.get(f"/api/issue-detail/{issue_number}")
+        response = client.get(f"/api/issue-detail/{issue_number}?view=ops")
         assert response.status_code == 200
         payload = response.json()
         latest_run = _latest_run(payload)

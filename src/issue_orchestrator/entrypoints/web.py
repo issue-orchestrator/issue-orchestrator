@@ -1397,7 +1397,7 @@ async def get_issue_timeline(issue_number: int) -> JSONResponse:
 
 
 @app.get("/api/issue-detail/{issue_number}", response_model=IssueDetailPayload)
-async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONResponse:
+async def get_issue_detail(issue_number: int, view: str = "user") -> IssueDetailPayload | JSONResponse:
     """Get an issue-detail payload for drawer rendering."""
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -1421,6 +1421,9 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
     title = _issue_title_for(issue_number)
     issue_url = issue_url_for(_orchestrator.config, issue_number)
     context = _build_issue_story_context(issue_number)
+    valid_views = {"user", "ops", "debug"}
+    if view not in valid_views:
+        view = "user"
     payload = build_issue_detail_view_model(
         issue_number=issue_number,
         title=title,
@@ -1429,6 +1432,7 @@ async def get_issue_detail(issue_number: int) -> IssueDetailPayload | JSONRespon
         phase_toc=phase_toc,
         cycles=cycles,
         context=context,
+        view=view,
     )
     if is_timeline_trace_enabled():
         runs = payload.get("runs")

@@ -66,8 +66,11 @@ class TimelineEvent:
     logical_run: int | None = None
     logical_cycle: int | None = None
     logical_phase: str | None = None
+    source_event: str | None = None
+    views: list[str] | None = None
+    narrative: str | None = None
 
-    def to_dict(self) -> dict[str, Any]:  # noqa: C901
+    def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
             "event_id": self.event_id,
             "timestamp": self.timestamp,
@@ -83,30 +86,29 @@ class TimelineEvent:
             "run_id": self.run_id,
             "run_dir": self.run_dir,
             "artifacts": [a.to_dict() for a in self.artifacts],
+            "unsupported_schema": self.unsupported_schema,
+            "review_oriented": self.review_oriented,
+            "event_intent": self.event_intent,
         }
-        if self.agent:
-            d["agent"] = self.agent
-        if self.task:
-            d["task"] = self.task
-        if self.rework_cycle is not None:
-            d["rework_cycle"] = self.rework_cycle
-        if self.reviewer_agent:
-            d["reviewer_agent"] = self.reviewer_agent
-        if self.added is not None:
-            d["added"] = self.added
-        if self.removed is not None:
-            d["removed"] = self.removed
-        if self.timeline_schema_version is not None:
-            d["timeline_schema_version"] = self.timeline_schema_version
-        d["unsupported_schema"] = self.unsupported_schema
-        d["review_oriented"] = self.review_oriented
-        d["event_intent"] = self.event_intent
-        if self.logical_run is not None:
-            d["logical_run"] = self.logical_run
-        if self.logical_cycle is not None:
-            d["logical_cycle"] = self.logical_cycle
-        if self.logical_phase:
-            d["logical_phase"] = self.logical_phase
+        # Optional fields: include when set
+        _optional: list[tuple[str, Any]] = [
+            ("agent", self.agent),
+            ("task", self.task),
+            ("rework_cycle", self.rework_cycle),
+            ("reviewer_agent", self.reviewer_agent),
+            ("added", self.added),
+            ("removed", self.removed),
+            ("timeline_schema_version", self.timeline_schema_version),
+            ("logical_run", self.logical_run),
+            ("logical_cycle", self.logical_cycle),
+            ("logical_phase", self.logical_phase),
+            ("source_event", self.source_event),
+            ("views", self.views),
+            ("narrative", self.narrative),
+        ]
+        for key, val in _optional:
+            if val is not None and val != "":
+                d[key] = val
         return d
 
 
@@ -142,12 +144,16 @@ def build_issue_timeline(issue_number: int, records: list[TimelineRecord]) -> di
 def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent:
     data = record.data or {}
     event_name = record.event
-    phase = _phase_for_event(event_name)
-    step = _step_for_event(event_name)
-    status = _status_for_event(event_name)
-    level = _level_for_event(event_name)
+    # Use the internal (source) event name for all derivation logic so that
+    # fan-out renames (e.g. session.failed → agent.failed) don't break
+    # phase/step/status/detail extraction.  Display uses event_name.
+    canonical_name = record.source_event or event_name
+    phase = _phase_for_event(canonical_name)
+    step = _step_for_event(canonical_name)
+    status = _status_for_event(canonical_name)
+    level = _level_for_event(canonical_name)
     summary = _summary_from_data(data)
-    detail = _detail_from_data(event_name, data, summary)
+    detail = _detail_from_data(canonical_name, data, summary)
     parent_key = _parent_key(issue_number, data)
     run_id = _run_id_from_data(data)
     run_dir = _run_dir_from_data(data)
@@ -173,15 +179,15 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
     if isinstance(review_oriented_raw, bool):
         review_oriented = review_oriented_raw
     else:
-        review_oriented = is_review_oriented_event(event_name=event_name, task=task)
+        review_oriented = is_review_oriented_event(event_name=canonical_name, task=task)
     intent_raw = data.get("event_intent")
     if isinstance(intent_raw, str):
         try:
             event_intent = EventIntent(intent_raw).value
         except ValueError:
-            event_intent = infer_event_intent(event_name=event_name, task=task).value
+            event_intent = infer_event_intent(event_name=canonical_name, task=task).value
     else:
-        event_intent = infer_event_intent(event_name=event_name, task=task).value
+        event_intent = infer_event_intent(event_name=canonical_name, task=task).value
     return TimelineEvent(
         event_id=record.event_id,
         timestamp=record.timestamp,
@@ -210,6 +216,9 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         logical_run=logical_run,
         logical_cycle=logical_cycle,
         logical_phase=logical_phase,
+        source_event=record.source_event or None,
+        views=data.get("views") if isinstance(data.get("views"), list) else None,
+        narrative=data.get("narrative") if isinstance(data.get("narrative"), str) else None,
     )
 
 

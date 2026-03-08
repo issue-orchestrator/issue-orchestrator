@@ -119,6 +119,7 @@ export interface IssueDetailPayload {
   summary: Record<string, any>;
   timeline_steps: Record<string, any>[];
   title: string;
+  view?: string;
 }
 
 export interface IssueItemPayload {

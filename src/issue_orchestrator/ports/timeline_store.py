@@ -12,6 +12,7 @@ class TimelineRecord:
     timestamp: str
     event: str
     data: dict[str, Any]
+    source_event: str = ""  # internal event name before fan-out
 
 
 class TimelineStore(Protocol):

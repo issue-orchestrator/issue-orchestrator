@@ -130,6 +130,7 @@ class IssueDetailPayload(BaseModel):
     summary: dict[str, Any]
     timeline_steps: list[dict[str, Any]]
     title: str
+    view: str | None = None
 
 class IssueItemPayload(BaseModel):
     model_config = ConfigDict(extra="allow")

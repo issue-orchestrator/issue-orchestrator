@@ -363,3 +363,103 @@ def test_timeline_writer_requires_review_feedback_reference_for_review_comment_a
     )
     assert len(store.records) == 1
 
+
+# ---------------------------------------------------------------------------
+# source_event round-trip through SQLite
+# ---------------------------------------------------------------------------
+
+
+def test_sqlite_store_persists_source_event(tmp_path: Path) -> None:
+    store = SqliteTimelineStore(
+        tmp_path / "timeline.sqlite",
+        config=TimelineStoreConfig(max_records=10),
+    )
+    store.append(
+        42,
+        TimelineRecord(
+            event_id="fan-1",
+            timestamp="t1",
+            event="agent.coding_started",
+            data={"issue_number": 42, "run_dir": "/tmp/run-42"},
+            source_event="session.started",
+        ),
+    )
+
+    records = store.read(42)
+    assert len(records) == 1
+    assert records[0].event == "agent.coding_started"
+    assert records[0].source_event == "session.started"
+
+
+def test_sqlite_store_source_event_defaults_to_event_name(tmp_path: Path) -> None:
+    """When source_event is not set, it defaults to the event name."""
+    store = SqliteTimelineStore(
+        tmp_path / "timeline.sqlite",
+        config=TimelineStoreConfig(max_records=10),
+    )
+    store.append(
+        42,
+        TimelineRecord(event_id="no-source", timestamp="t1", event="e1", data={}),
+    )
+
+    records = store.read(42)
+    assert records[0].source_event == "e1"
+
+
+def test_sqlite_store_run_dir_check_uses_source_event(tmp_path: Path) -> None:
+    """The CHECK constraint should use source_event for run_dir validation."""
+    store = SqliteTimelineStore(
+        tmp_path / "timeline.sqlite",
+        config=TimelineStoreConfig(max_records=10),
+    )
+    # Fan-out event: external name is "agent.coding_started" but source is "session.started"
+    # which requires run_dir. Should fail without run_dir.
+    with pytest.raises(RuntimeError, match="requires non-empty run_dir"):
+        store.append(
+            42,
+            TimelineRecord(
+                event_id="bad",
+                timestamp="t1",
+                event="agent.coding_started",
+                data={"issue_number": 42},
+                source_event="session.started",
+            ),
+        )
+
+
+def test_writer_fan_out_records_have_views_tags(tmp_path: Path) -> None:
+    store = RecordingTimelineStore()
+    writer = DefaultTimelineWriter(store)
+    run_dir = tmp_path / "sessions" / "run1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "ui-session.log").write_text("log")
+    writer.record(
+        TraceEvent(
+            EventName.SESSION_STARTED,
+            {"issue_number": 42, "run_dir": str(run_dir), "task": "code"},
+        )
+    )
+
+    assert len(store.records) >= 1
+    for record in store.records:
+        assert "views" in record.data
+        assert isinstance(record.data["views"], list)
+        assert record.source_event == "session.started"
+
+
+def test_writer_fan_out_narrative_stored_in_data(tmp_path: Path) -> None:
+    store = RecordingTimelineStore()
+    writer = DefaultTimelineWriter(store)
+    run_dir = tmp_path / "sessions" / "run1"
+    run_dir.mkdir(parents=True)
+    (run_dir / "ui-session.log").write_text("log")
+    writer.record(
+        TraceEvent(
+            EventName.SESSION_STARTED,
+            {"issue_number": 42, "run_dir": str(run_dir), "task": "code"},
+        )
+    )
+
+    user_record = next(r for r in store.records if r.event == "agent.coding_started")
+    assert user_record.data["narrative"] == "Coding agent started"
+
