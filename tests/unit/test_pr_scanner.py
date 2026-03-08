@@ -1144,3 +1144,143 @@ class TestIssueCentricAgentLookup:
             2: "agent:backend",
             3: "agent:mobile",
         }
+
+
+# =============================================================================
+# Test: Issue scope filtering (exclude_labels, filtering.issue)
+# =============================================================================
+
+
+class TestIssueScopeFiltering:
+    """Tests that PRScanner respects exclude_labels and filtering.issue.
+
+    Regression tests for a bug where e2e test issues leaked into production
+    orchestrators because the PR scanner bypassed scope filters that the
+    issue queue correctly enforced.
+    """
+
+    def test_review_skips_excluded_label_issue(self, scanner, mock_repository, mock_config):
+        """Review scan skips PRs linked to issues with an excluded label."""
+        mock_config.filtering.exclude_labels = ["io-e2e-test-data"]
+
+        issue = (
+            IssueBuilder()
+            .with_number(42)
+            .with_title("E2E test issue")
+            .with_labels("agent:developer", "io-e2e-test-data")
+            .build()
+        )
+        mock_repository.issues.append(issue)
+
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        assert result == [], "PR linked to excluded-label issue should be skipped"
+
+    def test_rework_skips_excluded_label_issue(self, scanner, mock_repository, mock_config):
+        """Rework scan skips PRs linked to issues with an excluded label."""
+        mock_config.filtering.exclude_labels = ["io-e2e-test-data"]
+
+        issue = (
+            IssueBuilder()
+            .with_number(42)
+            .with_title("E2E test issue")
+            .with_agent("agent:developer")
+            .with_labels("agent:developer", "io-e2e-test-data")
+            .build()
+        )
+        mock_repository.issues.append(issue)
+
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-rework"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        result, escalations = scanner.scan_for_reworks(already_queued=[], active_sessions=[])
+        assert result == [], "PR linked to excluded-label issue should be skipped"
+        assert escalations == []
+
+    def test_review_skips_out_of_scope_issue_number(self, scanner, mock_repository, mock_config):
+        """Review scan skips PRs linked to issues outside single-issue scope."""
+        mock_config.filtering.issue = 100
+
+        pr = make_pr_info(200, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        assert result == [], "PR for issue #42 should be skipped when scope is issue #100"
+
+    def test_rework_skips_out_of_scope_issue_number(self, scanner, mock_repository, mock_config):
+        """Rework scan skips PRs linked to issues outside single-issue scope."""
+        mock_config.filtering.issue = 100
+
+        add_issue_with_agent(mock_repository, 42, "agent:developer")
+
+        pr = make_pr_info(200, branch="42-feature", body="Closes #42", labels=["needs-rework"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        result, escalations = scanner.scan_for_reworks(already_queued=[], active_sessions=[])
+        assert result == [], "PR for issue #42 should be skipped when scope is issue #100"
+        assert escalations == []
+
+    def test_review_passes_matching_issue_number(self, scanner, mock_repository, mock_config):
+        """Review scan includes PRs linked to the scoped issue number."""
+        mock_config.filtering.issue = 42
+
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        assert len(result) == 1
+        assert result[0].issue_number == 42
+
+    def test_review_passes_non_excluded_issue(self, scanner, mock_repository, mock_config):
+        """Review scan includes PRs linked to issues without excluded labels."""
+        mock_config.filtering.exclude_labels = ["io-e2e-test-data"]
+
+        issue = (
+            IssueBuilder()
+            .with_number(42)
+            .with_title("Real issue")
+            .with_labels("agent:developer")
+            .build()
+        )
+        mock_repository.issues.append(issue)
+
+        pr = make_pr_info(100, branch="42-feature", body="Closes #42", labels=["needs-code-review"])
+        mock_repository.prs["42-feature"] = [pr]
+
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        assert len(result) == 1
+
+    def test_mixed_excluded_and_non_excluded(self, scanner, mock_repository, mock_config):
+        """Only non-excluded issues pass through when both types are present."""
+        mock_config.filtering.exclude_labels = ["test-data"]
+
+        # Excluded issue
+        excluded = (
+            IssueBuilder()
+            .with_number(1)
+            .with_title("Test issue")
+            .with_labels("agent:developer", "test-data")
+            .build()
+        )
+        mock_repository.issues.append(excluded)
+
+        # Non-excluded issue
+        real = (
+            IssueBuilder()
+            .with_number(2)
+            .with_title("Real issue")
+            .with_labels("agent:developer")
+            .build()
+        )
+        mock_repository.issues.append(real)
+
+        pr1 = make_pr_info(100, branch="1-feature", body="Closes #1", labels=["needs-code-review"])
+        pr2 = make_pr_info(101, branch="2-feature", body="Closes #2", labels=["needs-code-review"])
+        mock_repository.prs["1-feature"] = [pr1]
+        mock_repository.prs["2-feature"] = [pr2]
+
+        result = scanner.scan_for_reviews(already_queued=[], active_sessions=[])
+        assert len(result) == 1
+        assert result[0].issue_number == 2

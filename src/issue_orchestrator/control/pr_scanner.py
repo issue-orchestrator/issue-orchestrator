@@ -133,8 +133,8 @@ class PRScanner:
             # Extract issue number from PR body
             issue_number = self._extract_issue_number(pr.body, pr.number)
 
-            # Skip PRs whose linked issue doesn't match the filter label
-            if not self._matches_filter_label(issue_number, pr.number):
+            # Skip PRs whose linked issue is outside configured scope
+            if not self._matches_issue_scope(issue_number, pr.number):
                 continue
 
             review = PendingReview(
@@ -263,14 +263,14 @@ class PRScanner:
     ) -> _ReworkScanDecision:
         issue_number = self._extract_issue_number_from_pr(pr)
 
-        # Skip PRs whose linked issue doesn't match the filter label
-        if not self._matches_filter_label(issue_number, pr.number):
+        # Skip PRs whose linked issue is outside configured scope
+        if not self._matches_issue_scope(issue_number, pr.number):
             return _ReworkScanDecision(
                 decision="skip",
                 issue_number=issue_number,
                 rework_cycle=0,
                 blocking_labels=[],
-                reason="filter_label_mismatch",
+                reason="out_of_scope",
             )
 
         if issue_number in queued_issue_ids:
@@ -371,30 +371,57 @@ class PRScanner:
                 self.config.max_rework_cycles,
             )
 
-    def _matches_filter_label(self, issue_number: int, pr_number: int) -> bool:
-        """Check if the linked issue has the configured filter label.
+    def _matches_issue_scope(self, issue_number: int, pr_number: int) -> bool:
+        """Check if the linked issue is within the configured scope.
 
-        When filtering.label is set, only PRs linked to issues with that
-        label should be processed. This prevents the scanner from picking
-        up PRs for issues outside the configured scope.
+        Enforces three scope checks:
+        1. filtering.issue — single-issue scope (no API call needed)
+        2. filtering.label — include filter (requires issue fetch)
+        3. exclude_labels — exclusion filter (requires issue fetch)
+
+        Without these checks, the PR scanner would pick up PRs for issues
+        outside the configured scope (e.g., e2e test issues leaking into
+        production orchestrators).
         """
+        # Single-issue scope: cheap check, no API call
+        if self.config.filtering.issue and issue_number != self.config.filtering.issue:
+            logger.debug(
+                "[SCANNER] PR #%d linked to issue #%d outside single-issue scope (%d), skipping",
+                pr_number, issue_number, self.config.filtering.issue,
+            )
+            return False
+
         filter_label = self.config.filtering.label
-        if not filter_label:
+        issue_filter = self.config.get_issue_filter()
+
+        # If neither include nor exclude filter is configured, pass
+        if not filter_label and issue_filter.is_empty():
             return True
 
         issue = self.repository.get_issue(issue_number)
         if issue is None:
             logger.info(
-                "[SCANNER] PR #%d linked to issue #%d which doesn't exist, skipping (filter: %s)",
-                pr_number, issue_number, filter_label,
+                "[SCANNER] PR #%d linked to issue #%d which doesn't exist, skipping",
+                pr_number, issue_number,
             )
             return False
-        if filter_label not in issue.labels:
+
+        # Include filter
+        if filter_label and filter_label not in issue.labels:
             logger.debug(
                 "[SCANNER] PR #%d linked to issue #%d without filter label '%s', skipping",
                 pr_number, issue_number, filter_label,
             )
             return False
+
+        # Exclude filter
+        if not issue_filter.apply([issue]):
+            logger.debug(
+                "[SCANNER] PR #%d linked to issue #%d excluded by label filter, skipping",
+                pr_number, issue_number,
+            )
+            return False
+
         return True
 
     def _extract_issue_number_from_pr(self, pr: PRInfo) -> int:
