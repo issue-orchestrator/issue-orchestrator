@@ -147,7 +147,7 @@ async def wait_for_any_pr_label(
         issue_view = watcher.view.issues.get(issue_key)
         if fail_on_blocked_failed and issue_view and "blocked-failed" in issue_view.labels:
             raise AssertionError(
-                f"Issue {issue_key} hit {"blocked-failed"} while waiting for PR labels"
+                f"Issue {issue_key} hit 'blocked-failed' while waiting for PR labels"
             )
         if issue_view and issue_view.pr and issue_view.pr.labels:
             if any(label in issue_view.pr.labels for label in labels):
@@ -402,7 +402,7 @@ class E2EFlow:
             issue_view = watcher.view.issues.get(issue_key)
             if self.fail_on_blocked_failed and issue_view and "blocked-failed" in issue_view.labels:
                 raise AssertionError(
-                    f"Issue {issue_key} hit {"blocked-failed"} while waiting for PR"
+                    f"Issue {issue_key} hit 'blocked-failed' while waiting for PR"
                 )
             if issue_view and issue_view.pr.number:
                 return issue_view.pr.number
