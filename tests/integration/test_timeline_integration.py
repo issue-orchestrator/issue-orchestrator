@@ -270,6 +270,7 @@ def test_issue_detail_4057_like_projection_stays_semantically_correct(sample_con
         task: str,
         agent: str,
         summary: str | None = None,
+        extra: dict[str, object] | None = None,
     ) -> None:
         payload: dict[str, object] = {
             "issue_number": issue_number,
@@ -283,6 +284,8 @@ def test_issue_detail_4057_like_projection_stays_semantically_correct(sample_con
             payload["summary"] = summary
         if event_name == EventName.SESSION_COMPLETED:
             payload["completion_path_absolute"] = str(Path(run_dir) / "completion-agent_backend.json")
+        if extra:
+            payload.update(extra)
         timeline_writer.record(TraceEvent(event_name, payload))
 
     record(
@@ -328,6 +331,7 @@ def test_issue_detail_4057_like_projection_stays_semantically_correct(sample_con
         task="code",
         agent="agent:backend",
         summary="PR #4124 created",
+        extra={"pr_url": "https://github.com/test/repo/pull/4124"},
     )
     record(
         EventName.REVIEW_COMMENT_ADDED,
@@ -368,6 +372,18 @@ def test_issue_detail_4057_like_projection_stays_semantically_correct(sample_con
             "review.approved",
             "pr.created",
         ]
+
+        # --- Artifact assertions (reviewer finding #2) ---
+        artifacts = cycle.get("artifacts")
+        assert isinstance(artifacts, dict), "cycle must carry artifacts dict"
+        assert artifacts.get("pr_url") is not None, "PR URL must be extracted from issue.pr_created"
+        assert artifacts.get("pr_number") is not None, "PR number must be extracted"
+        assert artifacts.get("has_review_feedback") is True, "review.approved → has_review_feedback"
+
+        # --- Narrative assertions (fan-out view registry) ---
+        steps = cycle.get("steps", [])
+        coding_started = next(s for s in steps if s["event"] == "agent.coding_started")
+        assert coding_started.get("narrative"), "fan-out narrative must flow to step"
 
         # review.comment_added is ops-only, check with ops view
         ops_response = client.get(f"/api/issue-detail/{issue_number}?view=ops")
@@ -612,6 +628,134 @@ def test_issue_detail_rework_review_exchange_without_signal_stays_in_single_cycl
         assert labels[:2] == ["Rework", "Review"]
         assert "Coding" not in labels
         assert "review_exchange.started" in _step_events(cycle)
+    finally:
+        web.set_orchestrator(None)
+
+
+def test_issue_detail_outcome_labels_correct_after_fan_out_renames(
+    sample_config,
+    mock_repository_host,
+):
+    """Outcome derivation must use source_event, not fan-out display names.
+
+    After fan-out: session.failed → agent.failed, session.timeout → agent.timed_out,
+    session.blocked → agent.blocked, session.completed → agent.completed.  The
+    outcome logic must still produce correct labels like 'Failed', 'Timed out', etc.
+    """
+    orch, timeline_writer = _build_orchestrator_with_sqlite_timeline(sample_config, mock_repository_host)
+
+    # --- Scenario A: session.failed should produce "Failed" outcome ---
+    issue_failed = 9001
+    run_dir_failed = _start_run_with_artifacts(
+        sample_config.repo_root, issue_number=issue_failed, session_name="issue-9001-code"
+    )
+    orch.state.cached_queue_issues = [
+        Issue(number=issue_failed, title="Failed outcome test", labels=["agent:backend"]),
+    ]
+    timeline_writer.record(TraceEvent(EventName.SESSION_STARTED, {
+        "issue_number": issue_failed,
+        "run_id": "run-9001-code",
+        "run_dir": run_dir_failed,
+        "task": "code",
+        "agent": "agent:backend",
+        "rework_cycle": 0,
+    }))
+    timeline_writer.record(TraceEvent(EventName.SESSION_FAILED, {
+        "issue_number": issue_failed,
+        "run_id": "run-9001-code",
+        "run_dir": run_dir_failed,
+        "task": "code",
+        "agent": "agent:backend",
+        "rework_cycle": 0,
+        "summary": "No completion record",
+    }))
+
+    # --- Scenario B: session.timeout should produce "Timed out" outcome ---
+    issue_timeout = 9002
+    run_dir_timeout = _start_run_with_artifacts(
+        sample_config.repo_root, issue_number=issue_timeout, session_name="issue-9002-code"
+    )
+    orch.state.cached_queue_issues.append(
+        Issue(number=issue_timeout, title="Timeout outcome test", labels=["agent:backend"]),
+    )
+    timeline_writer.record(TraceEvent(EventName.SESSION_STARTED, {
+        "issue_number": issue_timeout,
+        "run_id": "run-9002-code",
+        "run_dir": run_dir_timeout,
+        "task": "code",
+        "agent": "agent:backend",
+        "rework_cycle": 0,
+    }))
+    timeline_writer.record(TraceEvent(EventName.SESSION_TIMEOUT, {
+        "issue_number": issue_timeout,
+        "run_id": "run-9002-code",
+        "run_dir": run_dir_timeout,
+        "task": "code",
+        "agent": "agent:backend",
+        "rework_cycle": 0,
+        "summary": "Exceeded 45 min limit",
+    }))
+
+    # --- Scenario C: session.blocked should produce "Agent blocked" outcome ---
+    issue_blocked = 9003
+    run_dir_blocked = _start_run_with_artifacts(
+        sample_config.repo_root, issue_number=issue_blocked, session_name="issue-9003-code"
+    )
+    orch.state.cached_queue_issues.append(
+        Issue(number=issue_blocked, title="Blocked outcome test", labels=["agent:backend"]),
+    )
+    timeline_writer.record(TraceEvent(EventName.SESSION_STARTED, {
+        "issue_number": issue_blocked,
+        "run_id": "run-9003-code",
+        "run_dir": run_dir_blocked,
+        "task": "code",
+        "agent": "agent:backend",
+        "rework_cycle": 0,
+    }))
+    timeline_writer.record(TraceEvent(EventName.SESSION_BLOCKED, {
+        "issue_number": issue_blocked,
+        "run_id": "run-9003-code",
+        "run_dir": run_dir_blocked,
+        "task": "code",
+        "agent": "agent:backend",
+        "rework_cycle": 0,
+        "reason": "Missing API credentials",
+    }))
+
+    web.set_orchestrator(orch)
+    try:
+        client = TestClient(web.app)
+
+        # Scenario A: "Failed" outcome
+        resp_a = client.get(f"/api/issue-detail/{issue_failed}")
+        assert resp_a.status_code == 200
+        run_a = _latest_run(resp_a.json())
+        cycle_a = _first_cycle(run_a)
+        assert "Failed" in cycle_a["outcome"], (
+            f"session.failed → agent.failed must produce 'Failed' outcome, got: {cycle_a['outcome']}"
+        )
+        # The fan-out event name should be agent.failed
+        assert "agent.failed" in _step_events(cycle_a)
+
+        # Scenario B: "Timed out" outcome
+        resp_b = client.get(f"/api/issue-detail/{issue_timeout}")
+        assert resp_b.status_code == 200
+        run_b = _latest_run(resp_b.json())
+        cycle_b = _first_cycle(run_b)
+        assert "Timed out" in cycle_b["outcome"], (
+            f"session.timeout → agent.timed_out must produce 'Timed out' outcome, got: {cycle_b['outcome']}"
+        )
+        assert "agent.timed_out" in _step_events(cycle_b)
+
+        # Scenario C: "Agent blocked" outcome
+        resp_c = client.get(f"/api/issue-detail/{issue_blocked}")
+        assert resp_c.status_code == 200
+        run_c = _latest_run(resp_c.json())
+        cycle_c = _first_cycle(run_c)
+        assert "blocked" in cycle_c["outcome"].lower(), (
+            f"session.blocked → agent.blocked must produce 'blocked' outcome, got: {cycle_c['outcome']}"
+        )
+        assert "agent.blocked" in _step_events(cycle_c)
     finally:
         web.set_orchestrator(None)
 
