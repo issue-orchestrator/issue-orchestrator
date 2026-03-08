@@ -693,7 +693,7 @@ class Orchestrator:
         """
         provider_circuit_status: list[dict] = []
         if self.deps.provider_resilience:
-            for state in self.deps.provider_resilience.store.list_all():
+            for state in self.deps.provider_resilience.list_all():
                 provider_circuit_status.append({
                     "provider": state.provider,
                     "open_until": state.open_until.isoformat() if state.open_until else None,
