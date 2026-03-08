@@ -561,9 +561,12 @@ def _finalize_cycle_from_events(
             break
 
     # Retry count: number of session.started events minus 1 (first start is not a retry)
+    # Use source_event so fan-out renames don't break the count.
     session_starts = sum(
         1 for evt in raw_events
-        if str(evt.get("event") or "") in ("session.started", "rework.started", "rework.launching")
+        if str(evt.get("source_event") or evt.get("event") or "") in (
+            "session.started", "rework.started", "rework.launching",
+        )
     )
     retry_count = max(0, session_starts - 1)
 
@@ -683,7 +686,7 @@ def _phase_key_for_event(evt: dict[str, Any], iteration: int) -> str:
         intent_raw
         if isinstance(intent_raw, str) and intent_raw
         else infer_event_intent(
-            event_name=str(evt.get("event") or ""),
+            event_name=str(evt.get("source_event") or evt.get("event") or ""),
             task=str(evt.get("task") or ""),
         ).value
     )
