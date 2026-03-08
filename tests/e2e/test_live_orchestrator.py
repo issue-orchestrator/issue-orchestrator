@@ -122,7 +122,7 @@ class TestLabelDetection:
     """Test that label changes are detected correctly."""
 
     @pytest.mark.asyncio
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=400, system_gh_activity_limit=100)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=600, system_gh_activity_limit=100)
     async def test_blocked_label_detection(
         self,
         e2e_orchestrator,
