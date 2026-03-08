@@ -2,39 +2,24 @@
 
 Tests that verify specific behaviors not covered by basic lifecycle tests:
 1. Code review actually runs and produces outcome
-2. Triage review is triggered after threshold
-3. Session timeout is handled correctly (special config)
-4. Rework cycles lead to escalation (special config)
+2. Rework cycles lead to escalation
 
-Tests requiring special orchestrator configs (timeout, rework) start their own
-orchestrator. Other tests use the shared session-scoped orchestrator.
+All tests use the shared session-scoped orchestrator.
+
+Note: Triage review tests are in test_triage_review.py because they
+start their own orchestrator (which steals the repo-root lock from the
+shared orchestrator).
 """
 
-import asyncio
-import copy
 import logging
 import os
-import signal
-import subprocess
-import sys
-import time
-from pathlib import Path
 
 import pytest
 
-from tests.e2e.conftest import (
-    OrchestratorProcess,
-    e2e_label,
-    _github_adapter,
-)
-from tests.e2e.fixtures import find_free_port
-from issue_orchestrator.testing.support.test_data import close_issue, cleanup_issues_by_label
+from tests.e2e.conftest import e2e_label
+from issue_orchestrator.testing.support.test_data import close_issue
 from issue_orchestrator.domain.issue_key import IssueKey
-from tests.e2e.flows import (
-    E2EFlow,
-    start_orchestrator_runtime,
-    wait_for_issue_with_label,
-)
+from tests.e2e.flows import E2EFlow
 
 logger = logging.getLogger(__name__)
 
@@ -44,107 +29,11 @@ logger = logging.getLogger(__name__)
 
 TIMEOUT_SESSION_COMPLETE = 300
 TIMEOUT_CODE_REVIEW_COMPLETE = 240
-E2E_CONFIG_DIR = Path(__file__).parent / "configs"
 
 
 # ---------------------------------------------------------------------------
-# Helpers for special-config tests
+# Helpers
 # ---------------------------------------------------------------------------
-
-def cleanup_stale_orchestrators(config_path: Path, tmux_session: str = "orchestrator") -> None:
-    """Kill any stale orchestrator processes from previous test runs.
-
-    Args:
-        config_path: Path to the config file.
-        tmux_session: Name of the tmux session to kill. Defaults to "orchestrator".
-    """
-    config_name = config_path.name
-    result = subprocess.run(
-        ["pgrep", "-f", f"issue_orchestrator.*{config_name}"],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode == 0 and result.stdout.strip():
-        pids = result.stdout.strip().split("\n")
-        for pid in pids:
-            try:
-                os.kill(int(pid), signal.SIGTERM)
-            except (ProcessLookupError, ValueError):
-                pass
-        time.sleep(1)
-    # Kill tmux session if tmux is available
-    try:
-        subprocess.run(
-            ["tmux", "kill-session", "-t", tmux_session],
-            capture_output=True,
-        )
-    except FileNotFoundError:
-        pass
-
-
-def start_orchestrator_with_config(
-    config_path: Path,
-    max_issues: int = 1,
-    tmux_session: str = "orchestrator",
-) -> subprocess.Popen:
-    """Start orchestrator with a specific config file.
-
-    Args:
-        config_path: Path to the config file.
-        max_issues: Maximum number of issues to process.
-        tmux_session: Name of the tmux session. Defaults to "orchestrator".
-    """
-    cleanup_stale_orchestrators(config_path, tmux_session=tmux_session)
-    ui_mode = os.environ.get("E2E_UI_MODE", "tmux")
-
-    project_root = Path(__file__).parent.parent.parent
-    preferred_bin = project_root / ".venv" / "bin" / "issue-orchestrator"
-    if preferred_bin.exists():
-        cmd = [
-            str(preferred_bin),
-            "--config", str(config_path),
-            "start",
-            "--max-issues", str(max_issues),
-            "--ui-mode", ui_mode,
-        ]
-    else:
-        cmd = [
-            sys.executable, "-m", "issue_orchestrator.entrypoints.cli",
-            "--config", str(config_path),
-            "start",
-            "--max-issues", str(max_issues),
-            "--ui-mode", ui_mode,
-        ]
-
-    if ui_mode == "web":
-        port = os.environ.get("E2E_WEB_PORT", "8080")
-        cmd.extend(["--port", port])
-    else:
-        cmd.append("--no-dashboard")
-
-    # Set environment with tmux session name for isolation
-    env = os.environ.copy()
-    env["ORCHESTRATOR_TMUX_SESSION"] = tmux_session
-
-    proc = subprocess.Popen(
-        cmd,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env=env,
-    )
-    time.sleep(3)
-    return proc
-
-
-def stop_orchestrator(proc: subprocess.Popen) -> None:
-    """Stop orchestrator."""
-    proc.send_signal(signal.SIGTERM)
-    try:
-        proc.communicate(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()
-
 
 def create_single_issue(
     repo: str,
@@ -290,144 +179,7 @@ class TestCodeReviewRuns:
 
 
 # ---------------------------------------------------------------------------
-# Triage Review Test (uses shared orchestrator)
-# ---------------------------------------------------------------------------
-
-@pytest.mark.e2e
-@pytest.mark.live
-@pytest.mark.timeout(1800)  # 30 minutes
-class TestTriageReviewTrigger:
-    """Test that triage review is triggered after enough code reviews."""
-
-    @pytest.mark.asyncio
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=390, system_gh_activity_limit=100)
-    async def test_triage_triggered_after_threshold(
-        self,
-        repo_name: str,
-        e2e_project_root: Path,
-        e2e_session_config,
-    ):
-        """Test that triage review is triggered after code_reviewed PRs reach threshold.
-
-        Note: Requires real PRs and code reviews - skipped in dry-run mode.
-        """
-        dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
-        if dry_run:
-            pytest.skip("Triage test requires real PRs (not dry-run mode)")
-
-        logger.info("=" * 60)
-        logger.info("TRIAGE TEST: Verify Triage Triggered After Batch Threshold")
-        logger.info("=" * 60)
-
-        NUM_ISSUES = 2
-        issues = []
-        issue_numbers: list[int] = []
-        pr_numbers = []
-        runtime = None
-        flow: E2EFlow | None = None
-
-        try:
-            triage_config = copy.deepcopy(e2e_session_config)
-            triage_config.triage_review_agent = "agent:triage-investigator"
-            triage_config.triage_review_label = None
-            triage_config.triage_reviewed_label = "triage-reviewed"
-            triage_config.triage_review_threshold = 2
-            triage_config.triage_review_on_failure = False
-            triage_config.control_api_port = 19081
-            run_id = int(time.time())
-            run_label = e2e_label(f"triage_run_{run_id}")
-            review_label = e2e_label(f"triage_review_{run_id}")
-            reviewed_label = e2e_label(f"triage_reviewed_{run_id}")
-            triage_config.filtering.label = run_label
-            triage_config.e2e_pr_labels = [run_label]
-            triage_config.code_review_label = review_label
-            triage_config.code_reviewed_label = reviewed_label
-            flow = E2EFlow(repo=repo_name, watcher=None, filter_label=run_label)
-            flow.ensure_labels([review_label, reviewed_label])
-            cleanup_issues_by_label(repo_name, "agent:triage-investigator")
-
-            logger.info("Starting orchestrator with triage config...")
-            orchestrator = OrchestratorProcess(triage_config, e2e_project_root)
-            runtime = await start_orchestrator_runtime(
-                orchestrator,
-                triage_config.control_api_port,
-                max_issues=10,
-                extra_args=["--label", run_label],
-            )
-            flow = E2EFlow(
-                repo=repo_name,
-                watcher=runtime.watcher,
-                filter_label=run_label,
-            )
-
-            # Create multiple issues
-            logger.info("Creating %d test issues...", NUM_ISSUES)
-            for i in range(NUM_ISSUES):
-                issue, issue_num = flow.create_issue(
-                    f"[M0-{710+i:03d}] [E2E-TRIAGE-{i+1}] Test triage trigger issue {i+1}",
-                    ["agent:e2e-test", e2e_label(f"triage_{i}")],
-                )
-                issues.append(issue)
-                issue_numbers.append(issue_num)
-                logger.info("  Created issue #%d (%s)", issue_num, issue.stable_id())
-            # Wait for all PRs to be created
-            logger.info("Waiting for all PRs to be created...")
-            pr_numbers = await asyncio.gather(*[
-                flow.pr_created(issue, timeout_s=TIMEOUT_SESSION_COMPLETE)
-                for issue in issues
-            ])
-            for issue in issues:
-                logger.info("  ✓ PR created for issue #%s", issue.stable_id())
-
-            # Wait for code reviews to complete
-            logger.info("Waiting for all code reviews to complete...")
-            await asyncio.gather(*[
-                flow.pr_has_any_label(
-                    issue,
-                    labels=[reviewed_label],
-                    timeout_s=TIMEOUT_CODE_REVIEW_COMPLETE,
-                )
-                for issue in issues
-            ])
-            code_reviewed_count = len(pr_numbers)
-            logger.info("  Code-reviewed: %d/%d", code_reviewed_count, len(pr_numbers))
-
-            # Check for triage review issue
-            logger.info("Checking for triage review issue...")
-            triage_issue_key = await wait_for_issue_with_label(
-                runtime.watcher,
-                label="agent:triage-investigator",
-                timeout_s=600,
-            )
-            logger.info("  ✓ Triage review issue created: %s", triage_issue_key)
-
-            # Core assertions
-            assert len(pr_numbers) >= 1, "At least one PR should be created"
-            assert code_reviewed_count >= 1, "At least one code review should complete"
-
-        finally:
-            if runtime:
-                await runtime.close()
-            for pr_num in pr_numbers:
-                if flow:
-                    flow.close_pr(pr_num)
-                else:
-                    adapter = _github_adapter(repo_name)
-                    pr = adapter.get_pr(pr_num)
-                    branch = pr.branch if pr else None
-                    adapter.close_pr(pr_num)
-                    if branch:
-                        try:
-                            adapter.delete_branch(branch)
-                        except Exception:
-                            pass
-            # Always close issues to prevent accumulation
-            for issue_num in issue_numbers:
-                close_issue(repo_name, issue_num, "E2E triage test completed")
-
-
-# ---------------------------------------------------------------------------
-# Rework Cycles Test (needs special config)
+# Rework Cycles Test (uses shared orchestrator)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.e2e
@@ -436,8 +188,7 @@ class TestTriageReviewTrigger:
 class TestReworkCyclesAndEscalation:
     """Test the rework cycle flow and escalation to needs-human.
 
-    Starts its own orchestrator to avoid lock conflicts with the triage
-    test (which also starts a separate orchestrator on the same repo root).
+    Uses shared orchestrator with review-decider behavior.
     """
 
     @pytest.mark.asyncio
@@ -446,8 +197,8 @@ class TestReworkCyclesAndEscalation:
     async def test_rework_cycle_label_emitted(
         self,
         repo_name: str,
-        e2e_project_root: Path,
-        e2e_session_config,
+        e2e_orchestrator,
+        orchestrator_watcher,
     ):
         """Test that at least one rework-cycle label appears."""
         dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
@@ -460,34 +211,18 @@ class TestReworkCyclesAndEscalation:
 
         issue_number = None
         pr_number = None
-        runtime = None
+        flow = E2EFlow(
+            repo=repo_name,
+            watcher=orchestrator_watcher,
+        )
 
         try:
-            rework_config = copy.deepcopy(e2e_session_config)
-            rework_config.control_api_port = find_free_port()
-            run_label = e2e_label("rework_cycles")
-            rework_config.filtering.label = run_label
-
-            logger.info("Starting orchestrator for rework test...")
-            orchestrator = OrchestratorProcess(rework_config, e2e_project_root)
-            runtime = await start_orchestrator_runtime(
-                orchestrator,
-                rework_config.control_api_port,
-                max_issues=10,
-                extra_args=["--label", run_label],
-            )
-            flow = E2EFlow(
-                repo=repo_name,
-                watcher=runtime.watcher,
-                filter_label=run_label,
-            )
-
             logger.info("Creating test issue...")
             issue_key, issue_number = create_single_issue(
                 repo_name,
                 "[M0-720] [E2E-REWORK] Test rework cycle label",
-                ["agent:script-completes", "io-e2e-test-data", run_label],
-                watcher=runtime.watcher,
+                ["agent:script-completes", "io-e2e-test-data", e2e_label("rework_cycles")],
+                watcher=orchestrator_watcher,
             )
             logger.info("  Created issue #%d", issue_number)
 
@@ -505,10 +240,7 @@ class TestReworkCyclesAndEscalation:
             assert len(rework_labels_seen) >= 1, "Expected at least one rework-cycle label"
 
         finally:
-            if runtime:
-                await runtime.close()
             if pr_number:
-                flow = E2EFlow(repo=repo_name, watcher=None)
                 flow.close_pr(pr_number)
             if issue_number:
                 close_issue(repo_name, issue_number, "E2E rework cycle label test completed")
@@ -519,8 +251,8 @@ class TestReworkCyclesAndEscalation:
     async def test_rework_cycles_escalate(
         self,
         repo_name: str,
-        e2e_project_root: Path,
-        e2e_session_config,
+        e2e_orchestrator,
+        orchestrator_watcher,
     ):
         """Test that rework cycles lead to escalation after max cycles."""
         dry_run = os.environ.get("E2E_DRY_RUN_PUSH") == "1"
@@ -533,34 +265,18 @@ class TestReworkCyclesAndEscalation:
 
         issue_number = None
         pr_number = None
-        runtime = None
+        flow = E2EFlow(
+            repo=repo_name,
+            watcher=orchestrator_watcher,
+        )
 
         try:
-            rework_config = copy.deepcopy(e2e_session_config)
-            rework_config.control_api_port = find_free_port()
-            run_label = e2e_label("rework_escalation")
-            rework_config.filtering.label = run_label
-
-            logger.info("Starting orchestrator for rework escalation test...")
-            orchestrator = OrchestratorProcess(rework_config, e2e_project_root)
-            runtime = await start_orchestrator_runtime(
-                orchestrator,
-                rework_config.control_api_port,
-                max_issues=10,
-                extra_args=["--label", run_label],
-            )
-            flow = E2EFlow(
-                repo=repo_name,
-                watcher=runtime.watcher,
-                filter_label=run_label,
-            )
-
             logger.info("Creating test issue...")
             issue_key, issue_number = create_single_issue(
                 repo_name,
                 "[M0-721] [E2E-REWORK] Test rework escalation",
-                ["agent:script-completes", "io-e2e-test-data", run_label],
-                watcher=runtime.watcher,
+                ["agent:script-completes", "io-e2e-test-data", e2e_label("rework_escalation")],
+                watcher=orchestrator_watcher,
             )
             logger.info("  Created issue #%d", issue_number)
 
@@ -578,10 +294,7 @@ class TestReworkCyclesAndEscalation:
             assert escalated, "Expected escalation to blocked-needs-human"
 
         finally:
-            if runtime:
-                await runtime.close()
             if pr_number:
-                flow = E2EFlow(repo=repo_name, watcher=None)
                 flow.close_pr(pr_number)
             if issue_number:
                 close_issue(repo_name, issue_number, "E2E rework escalation test completed")
