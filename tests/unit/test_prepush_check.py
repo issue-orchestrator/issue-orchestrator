@@ -434,6 +434,38 @@ validation:
         finally:
             os.chdir(orig_cwd)
 
+    def test_allows_claude_settings_dirty_file(self, temp_worktree):
+        """Claude CLI .claude/settings.json should not block dirty-tree guard."""
+
+        config_dir = temp_worktree / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        config_path = config_dir / "default.yaml"
+        config_path.write_text("""
+validation:
+  cmd: "echo 'ok'"
+  pre_push_dirty_check: "tracked"
+""")
+
+        claude_file = temp_worktree / ".claude" / "settings.json"
+        claude_file.parent.mkdir(parents=True, exist_ok=True)
+        claude_file.write_text("{}\n")
+        subprocess.run(["git", "add", str(claude_file)], cwd=temp_worktree, check=True, capture_output=True)
+        subprocess.run(
+            ["git", "commit", "-m", "Track claude settings for test"],
+            cwd=temp_worktree,
+            check=True,
+            capture_output=True,
+        )
+        claude_file.write_text('{"key":"value"}\n')
+
+        orig_cwd = os.getcwd()
+        try:
+            os.chdir(temp_worktree)
+            result = run_prepush_check(verbose=False, dirty_only=True)
+            assert result == 0
+        finally:
+            os.chdir(orig_cwd)
+
     def test_verbose_output_lists_dirty_files(self, temp_worktree, capsys):
         """Verbose dirty guard output should include dirty file paths."""
 

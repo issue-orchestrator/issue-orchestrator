@@ -20,6 +20,7 @@ from typing import Optional
 
 from ...control.validation import PublishGate
 from ...execution import GitWorkingCopy, LocalCommandRunner
+from ...infra.runtime_artifacts import filter_runtime_managed_dirty_paths
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +36,6 @@ def find_worktree_root() -> Path:
 
 DIRTY_CHECK_MODES = {"tracked", "unstaged", "all", "off"}
 DIRTY_FILE_LIST_LIMIT = 20
-RUNTIME_DIRTY_GUARD_EXCLUDES = frozenset(
-    {
-        ".issue-orchestrator/session-latest.json",
-    }
-)
 
 
 def load_validation_cmd(worktree: Path) -> tuple[Optional[str], int, str]:
@@ -81,7 +77,7 @@ def _print_dirty_files(files: list[str]) -> None:
 
 def _filter_guard_excluded_files(files: list[str]) -> list[str]:
     """Filter out orchestrator runtime metadata from dirty-tree guard checks."""
-    return [path for path in files if path not in RUNTIME_DIRTY_GUARD_EXCLUDES]
+    return filter_runtime_managed_dirty_paths(files)
 
 
 def _run_dirty_guard(worktree: Path, mode: str, verbose: bool) -> Optional[int]:
