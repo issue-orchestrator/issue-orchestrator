@@ -193,7 +193,7 @@ class TestReworkCyclesAndEscalation:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(720)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=500, system_gh_activity_limit=100)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=700, system_gh_activity_limit=100)
     async def test_rework_cycle_label_emitted(
         self,
         repo_name: str,
@@ -234,6 +234,7 @@ class TestReworkCyclesAndEscalation:
             _escalated, rework_labels_seen = await flow.rework_progress(
                 issue_key,
                 timeout_s=300,
+                pr_number=pr_number,
             )
 
             logger.info("Rework cycle labels seen: %s", sorted(list(rework_labels_seen)))
@@ -247,7 +248,7 @@ class TestReworkCyclesAndEscalation:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(900)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=600, system_gh_activity_limit=100)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=900, system_gh_activity_limit=150)
     async def test_rework_cycles_escalate(
         self,
         repo_name: str,
@@ -288,6 +289,8 @@ class TestReworkCyclesAndEscalation:
             escalated, rework_labels_seen = await flow.rework_progress(
                 issue_key,
                 timeout_s=900,
+                wait_for_escalation=True,
+                pr_number=pr_number,
             )
 
             logger.info("Rework cycle labels seen: %s", sorted(list(rework_labels_seen)))

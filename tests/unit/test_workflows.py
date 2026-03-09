@@ -241,13 +241,20 @@ class TestReworkWorkflow:
         assert decision.should_launch
         assert len(decision.reworks_to_launch) == 2
 
-    def test_should_escalate_at_max_cycles(self, workflow):
-        """Test escalation at max cycles."""
-        decision = workflow.should_escalate(rework_cycle=3)
+    def test_should_escalate_above_max_cycles(self, workflow):
+        """Test escalation when cycle exceeds max."""
+        decision = workflow.should_escalate(rework_cycle=4)
 
         assert decision.should_escalate
-        assert decision.rework_cycle == 3
+        assert decision.rework_cycle == 4
         assert decision.max_cycles == 3
+
+    def test_should_not_escalate_at_max_cycles(self, workflow):
+        """Test no escalation at exactly max cycles (allow all configured cycles)."""
+        decision = workflow.should_escalate(rework_cycle=3)
+
+        assert not decision.should_escalate
+        assert decision.rework_cycle == 3
 
     def test_should_not_escalate_below_max(self, workflow):
         """Test no escalation below max cycles."""
@@ -300,30 +307,30 @@ class TestBoundedReworkEscalation:
         """CRITICAL: Rework loops must escalate after max_rework_cycles.
 
         This test proves the invariant that prevents infinite rework loops.
-        Given max_rework_cycles=2:
-        - cycle 0: work → review → changes_requested → rework (continues)
-        - cycle 1: rework → review → changes_requested → rework (continues)
-        - cycle 2: rework → review → changes_requested → ESCALATE (stops)
+        Given max_rework_cycles=2, the system allows 2 rework cycles (1-indexed):
+        - cycle 1: first rework → review → changes_requested → rework (continues)
+        - cycle 2: second rework → review → changes_requested → rework (continues)
+        - cycle 3: exceeds max → ESCALATE (stops)
         """
-        # Cycle 0 and 1: should NOT escalate
-        for cycle in [0, 1]:
+        # Cycles 0, 1, 2: should NOT escalate (up to max is allowed)
+        for cycle in [0, 1, 2]:
             decision = workflow.should_escalate(rework_cycle=cycle)
             assert not decision.should_escalate, f"Cycle {cycle} should not escalate"
 
-        # Cycle 2: MUST escalate
-        decision = workflow.should_escalate(rework_cycle=2)
-        assert decision.should_escalate, "Cycle 2 must escalate to prevent infinite loop"
+        # Cycle 3: MUST escalate (exceeds max_rework_cycles=2)
+        decision = workflow.should_escalate(rework_cycle=3)
+        assert decision.should_escalate, "Cycle 3 must escalate to prevent infinite loop"
         assert decision.reason is not None
         assert "exceeded" in decision.reason.lower() or "max" in decision.reason.lower()
 
     def test_escalation_emits_event_for_observability(self, workflow, events):
         """Escalation must be observable via events."""
-        workflow.should_escalate(rework_cycle=2)
+        workflow.should_escalate(rework_cycle=3)
 
         # Should have emitted an escalation event
         escalation_events = [e for e in events.events if "escalat" in e.name.lower()]
         assert len(escalation_events) == 1
-        assert escalation_events[0].data["rework_cycle"] == 2
+        assert escalation_events[0].data["rework_cycle"] == 3
 
     def test_different_max_cycles_respected(self):
         """Different max_rework_cycles configurations are respected."""
@@ -333,12 +340,12 @@ class TestBoundedReworkEscalation:
             config.max_rework_cycles = max_cycles
             workflow = ReworkWorkflow(config=config, events=CollectingEventSink())
 
-            # Just below max: should not escalate
-            decision = workflow.should_escalate(rework_cycle=max_cycles - 1)
+            # At max: should not escalate (allows exactly max cycles)
+            decision = workflow.should_escalate(rework_cycle=max_cycles)
             assert not decision.should_escalate
 
-            # At max: must escalate
-            decision = workflow.should_escalate(rework_cycle=max_cycles)
+            # Above max: must escalate
+            decision = workflow.should_escalate(rework_cycle=max_cycles + 1)
             assert decision.should_escalate
 
 

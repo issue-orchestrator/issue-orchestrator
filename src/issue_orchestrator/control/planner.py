@@ -1326,13 +1326,14 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
                     )
                     actions.append(EscalateToHumanAction(
                         issue_number=issue_num,
-                        pr_number=issue_num,  # PR resolved by adapter at execution time
+                        pr_number=rework.pr_number or issue_num,
                         escalation_reason=escalation.reason or "max rework cycles reached",
                         rework_cycles=rework.rework_cycle,
                         needs_human_label=self._lm.needs_human,
                         needs_rework_label=self._lm.needs_rework,
                         max_rework_cycles=self.config.max_rework_cycles,
-                        reason=f"escalating: cycle {rework.rework_cycle} >= max {escalation.max_cycles}",
+                        issue_key=rework.issue_key.stable_id(),
+                        reason=f"escalating: cycle {rework.rework_cycle} > max {escalation.max_cycles}",
                         expected=build_expected_for_mutation(),
                     ))
                 else:

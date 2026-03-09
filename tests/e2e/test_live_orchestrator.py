@@ -23,7 +23,7 @@ from issue_orchestrator.testing.support.test_data import cleanup_test_issues
 logger = logging.getLogger(__name__)
 
 @pytest.mark.e2e
-@pytest.mark.timeout(180)  # 3 minute timeout
+@pytest.mark.timeout(480)  # 8 minutes (reconciliation can take 150s + test needs 180s)
 class TestLiveOrchestratorLifecycle:
     """Test complete orchestrator lifecycle with real GitHub issues."""
 

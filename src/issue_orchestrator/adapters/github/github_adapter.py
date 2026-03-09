@@ -328,36 +328,19 @@ class GitHubAdapter:
         required_stable_ids: set[str],
         issues: "list[Issue]",
     ) -> "list[Issue]":
-        """Retry fetching issues until all required IDs are found or retries exhausted.
+        """Check for missing required IDs after a non-cached fetch.
 
-        GitHub has eventual consistency - this handles missing IDs with exponential backoff.
+        Does NOT block or sleep — the orchestrator tick loop handles retries
+        naturally via the inflight ID mechanism. Blocking here would freeze
+        the entire orchestrator (SSE serving, tick processing, everything).
         """
         found_ids = {i.key.stable_id() for i in issues}
         still_missing = required_stable_ids - found_ids
-        if not still_missing:
-            return issues
-
-        # Retry with exponential backoff (~63s total)
-        backoff_delays = [1.0, 2.0, 4.0, 8.0, 16.0, 32.0]
-        for delay in backoff_delays:
-            logger.info(
-                "[INFLIGHT] Waiting %.1fs for GitHub eventual consistency, missing: %s",
-                delay, sorted(still_missing)
+        if still_missing:
+            logger.warning(
+                "[INFLIGHT] Still missing %d required IDs after non-cached fetch: %s",
+                len(still_missing), sorted(still_missing)
             )
-            time.sleep(delay)
-            raw_issues = fetch_fn(use_cache=False)
-            issues = self._raw_issues_to_issues(raw_issues)
-            found_ids = {i.key.stable_id() for i in issues}
-            still_missing = required_stable_ids - found_ids
-            if not still_missing:
-                logger.info("[INFLIGHT] All required IDs discovered after retry")
-                return issues
-
-        # Log final result
-        logger.warning(
-            "[INFLIGHT] Still missing %d required IDs after retries: %s",
-            len(still_missing), sorted(still_missing)
-        )
         return issues
 
     def list_issues(

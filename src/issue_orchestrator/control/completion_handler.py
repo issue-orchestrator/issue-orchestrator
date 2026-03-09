@@ -788,10 +788,13 @@ class CompletionHandler:
         # 2. Update issue state machine
         self._update_issue_machine(session, status, pr_url)
 
-        # 3. Update review state machine (if this is a review session)
+        # 3. Update review state machine
         is_review = session.terminal_id.startswith("review-")
+        is_rework = session.terminal_id.startswith("rework-")
         if is_review and status == SessionStatus.COMPLETED:
             self._update_review_machine(session)
+        elif is_rework and status == SessionStatus.COMPLETED:
+            self._complete_rework_review_machine(session)
 
     def _update_session_machine(
         self,
@@ -883,6 +886,30 @@ class CompletionHandler:
                 "step_type": "review_outcome_check", "pr_number": pr_number_review,
                 "issue_number": session.issue.number, "error": str(e),
             }))
+
+    def _complete_rework_review_machine(self, session: Session) -> None:
+        """Advance the review state machine after a rework session completes.
+
+        Transitions: REWORK_PENDING → REWORK_IN_PROGRESS → IN_REVIEW
+        This allows the next review to transition from IN_REVIEW properly.
+        """
+        pr_number = session.pr_number
+        if not pr_number:
+            logger.debug("[STATE_MACHINE] Rework session %s has no pr_number, skipping review machine update", session.terminal_id)
+            return
+
+        review_machine = self._get_review_machine(pr_number)
+        if not review_machine:
+            logger.debug("[STATE_MACHINE] No review machine found for PR #%d (rework session %s)", pr_number, session.terminal_id)
+            return
+
+        # Transition through start_rework and complete_rework
+        if review_machine.can_transition("start_rework"):
+            logger.info("[STATE_MACHINE] PR #%d: REWORK_PENDING -> REWORK_IN_PROGRESS", pr_number)
+            review_machine.start_rework()  # type: ignore[attr-defined]
+        if review_machine.can_transition("complete_rework"):
+            logger.info("[STATE_MACHINE] PR #%d: REWORK_IN_PROGRESS -> IN_REVIEW", pr_number)
+            review_machine.complete_rework()  # type: ignore[attr-defined]
 
     def _publish_review_outcome(
         self,

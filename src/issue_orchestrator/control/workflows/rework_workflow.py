@@ -180,8 +180,8 @@ class ReworkWorkflow:
         """
         max_cycles = self.get_max_rework_cycles()
 
-        if rework_cycle >= max_cycles:
-            reason = f"Exceeded max rework cycles ({rework_cycle} >= {max_cycles})"
+        if rework_cycle > max_cycles:
+            reason = f"Exceeded max rework cycles ({rework_cycle} > {max_cycles})"
             self.events.publish(
                 make_trace_event(
                     EventName.REWORK_ESCALATING,

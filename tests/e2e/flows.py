@@ -184,21 +184,33 @@ async def wait_for_rework_progress(
     watcher: OrchestratorWatcher,
     issue_key: str,
     timeout_s: float,
+    *,
+    wait_for_escalation: bool = False,
+    pr_number: int | None = None,
 ) -> tuple[bool, set[str]]:
     deadline = time.monotonic() + timeout_s
     seen: set[str] = set()
+    last_labels_log = ""
     while time.monotonic() < deadline:
-        issue_view = watcher.view.issues.get(issue_key)
-        if issue_view:
-            # Check both issue and PR labels — rework-cycle-N may land on either
-            # depending on how the orchestrator resolves the PR number.
-            all_labels = set(issue_view.labels) | set(issue_view.pr.labels)
+        # Collect labels from ALL views matching this issue.
+        # The watcher may split an issue across multiple keys (e.g. 'M0-721' and '4790')
+        # due to key remapping during queue refreshes.  Merge them all.
+        all_labels: set[str] = set()
+        for iv in _iter_issue_views(watcher, issue_key, pr_number=pr_number):
+            all_labels |= set(iv.labels) | set(iv.pr.labels)
+
+        if all_labels:
+            labels_str = str(sorted(all_labels))
+            if labels_str != last_labels_log:
+                logger.info("[REWORK_WAIT] key=%s labels=%s", issue_key, labels_str)
+                last_labels_log = labels_str
             for label in all_labels:
                 if label.startswith("rework-cycle-"):
                     seen.add(label)
             if "blocked-needs-human" in all_labels or "needs-human" in all_labels:
                 return True, seen
-            if seen:
+            # In non-escalation mode, return as soon as any rework label is seen
+            if not wait_for_escalation and seen:
                 return False, seen
         try:
             # noqa: SLF001 - E2E test infrastructure uses _notify for event-driven waiting
@@ -207,6 +219,31 @@ async def wait_for_rework_progress(
             pass
         watcher._notify.clear()  # noqa: SLF001
     return False, seen
+
+
+def _iter_issue_views(
+    watcher: OrchestratorWatcher,
+    issue_key: str,
+    *,
+    pr_number: int | None = None,
+) -> list[IssueView]:
+    """Collect all IssueView entries that might represent this issue.
+
+    The watcher materializer can create multiple entries for the same logical
+    issue under different keys (stable_id like 'M0-721', issue number like '4790',
+    or even PR number like '4791') because queue.changed and label events may use
+    different key formats across ticks.
+
+    We gather all of them so callers can merge their labels.
+    """
+    # When we have a pr_number, return ALL views.
+    # The orchestrator test runs a single issue, and the materializer may split
+    # events across multiple keys.  Merging all views ensures we see every label.
+    if pr_number is not None:
+        return list(watcher.view.issues.values())
+    # Without pr_number, fall back to direct key match only.
+    iv = watcher.view.issues.get(issue_key)
+    return [iv] if iv is not None else []
 
 
 def check_issue_comment(
@@ -449,9 +486,16 @@ class E2EFlow:
         self,
         issue: IssueKey,
         timeout_s: float,
+        *,
+        wait_for_escalation: bool = False,
+        pr_number: int | None = None,
     ) -> tuple[bool, set[str]]:
         self._refresh_if_needed()
-        return await wait_for_rework_progress(self._watcher(), issue.stable_id(), timeout_s=timeout_s)
+        return await wait_for_rework_progress(
+            self._watcher(), issue.stable_id(), timeout_s=timeout_s,
+            wait_for_escalation=wait_for_escalation,
+            pr_number=pr_number,
+        )
 
     def close_pr(self, pr_number: int) -> None:
         close_pr(self.repo, pr_number)

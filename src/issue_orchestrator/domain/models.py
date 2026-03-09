@@ -791,6 +791,7 @@ class PendingRework:
     agent_type: str           # Cached to avoid lookup at launch time
     rework_cycle: int = 1     # Which rework iteration this is (1, 2, etc.)
     issue_number: int | None = None  # Backing store handle for GitHub rework flows
+    pr_number: int | None = None  # PR number that needs rework (from scanner)
 
     def resolve_issue_number(self) -> int | None:
         """Resolve issue number for GitHub workflows, if available."""

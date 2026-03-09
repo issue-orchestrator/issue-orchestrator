@@ -1068,6 +1068,8 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
         if issue_number is not None:
             payload["issue_number"] = issue_number
             payload["issue_key"] = issue_key or str(issue_number)
+        logger.info("[PR_VIEW] Emitting pr.view_changed: pr=%s issue_key=%s added=%s removed=%s",
+                     pr_number, payload.get("issue_key"), added, removed)
         self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, payload))
 
     @staticmethod
