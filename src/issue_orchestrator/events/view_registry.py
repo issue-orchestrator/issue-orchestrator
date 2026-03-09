@@ -83,10 +83,10 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
         _ops("review_exchange.started", "Review exchange started", "review"),
     ],
     "review_exchange.round_started": [
-        _ops("review_exchange.round_started", "Review round started", "review"),
+        _user("review_exchange.round_started", "Review round started", "review"),
     ],
     "review_exchange.round_completed": [
-        _ops("review_exchange.round_completed", "Review round completed", "review"),
+        _user("review_exchange.round_completed", "Review round completed", "review"),
     ],
     "review_exchange.completed": [
         _ops("review_exchange.completed", "Review exchange completed", "review"),

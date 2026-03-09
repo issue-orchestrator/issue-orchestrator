@@ -60,11 +60,11 @@ class TestFanOut:
         assert "ops" in s.views
         assert "debug" in s.views
 
-    def test_ops_events_exclude_user(self):
+    def test_review_round_events_visible_to_user(self):
         specs = fan_out("review_exchange.round_started")
         assert len(specs) == 1
         s = specs[0]
-        assert "user" not in s.views
+        assert "user" in s.views
         assert "ops" in s.views
         assert "debug" in s.views
 
@@ -94,7 +94,7 @@ class TestFilterEventsByView:
         events = [
             {"event": "agent.coding_started", "views": ["user", "ops", "debug"]},
             {"event": "claim.renewed", "views": ["debug"]},
-            {"event": "review_exchange.round_started", "views": ["ops", "debug"]},
+            {"event": "review_exchange.round_started", "views": ["user", "ops", "debug"]},
         ]
         result = _filter_events_by_view(events, "ops")
         assert len(result) == 2
@@ -247,7 +247,7 @@ class TestViewModelViewFiltering:
                 "logical_phase": "review",
                 "event_intent": "review",
                 "review_oriented": True,
-                "views": ["ops", "debug"],
+                "views": ["user", "ops", "debug"],
                 "narrative": "Review round started",
                 "timestamp": "2026-03-07T10:07:00Z",
             },
@@ -257,7 +257,7 @@ class TestViewModelViewFiltering:
                 "logical_phase": "review",
                 "event_intent": "review",
                 "review_oriented": True,
-                "views": ["ops", "debug"],
+                "views": ["user", "ops", "debug"],
                 "narrative": "Review round completed",
                 "timestamp": "2026-03-07T10:08:00Z",
             },
@@ -302,10 +302,10 @@ class TestViewModelViewFiltering:
             cycles=[],
             view="user",
         )
-        # User view should not include claim.renewed or review_exchange rounds
+        # User view should not include claim.renewed but should include review rounds
         step_events = [s["event"] for s in result["timeline_steps"]]
         assert "claim.renewed" not in step_events
-        assert "review_exchange.round_started" not in step_events
+        assert "review_exchange.round_started" in step_events
         assert "agent.coding_started" in step_events
         assert "review.approved" in step_events
         assert "pr.created" in step_events
