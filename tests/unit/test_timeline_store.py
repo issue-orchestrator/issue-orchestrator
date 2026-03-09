@@ -463,3 +463,128 @@ def test_writer_fan_out_narrative_stored_in_data(tmp_path: Path) -> None:
     user_record = next(r for r in store.records if r.event == "agent.coding_started")
     assert user_record.data["narrative"] == "Coding agent started"
 
+
+# ---------------------------------------------------------------------------
+# Narrative enrichment tests
+# ---------------------------------------------------------------------------
+
+
+class TestNarrativeEnrichment:
+    """Test that _enrich_narrative injects dynamic data into static narratives."""
+
+    def _write_and_get_narrative(self, event_name: EventName, data: dict) -> str:
+        store = RecordingTimelineStore()
+        writer = DefaultTimelineWriter(store)
+        data.setdefault("issue_number", 42)
+        writer.record(TraceEvent(event_name, data))
+        for r in store.records:
+            if r.data.get("narrative"):
+                return r.data["narrative"]
+        return ""
+
+    def test_round_started_includes_round_number(self) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_EXCHANGE_ROUND_STARTED,
+            {"round_index": 2},
+        )
+        assert narrative == "Review round 2 started"
+
+    def test_round_completed_includes_verdict(self) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_EXCHANGE_ROUND_COMPLETED,
+            {"round_index": 3, "reviewer_response_type": "changes_requested", "coder_response_type": "ok"},
+        )
+        assert narrative == "Review round 3 completed — changes_requested"
+
+    def test_round_completed_without_verdict(self) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_EXCHANGE_ROUND_COMPLETED,
+            {"round_index": 1},
+        )
+        assert narrative == "Review round 1 completed"
+
+    def test_review_approved_includes_round_count(self) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_APPROVED,
+            {"rounds": 4},
+        )
+        assert narrative == "Review approved after 4 rounds"
+
+    def test_review_approved_single_round_uses_default(self) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_APPROVED,
+            {"rounds": 1},
+        )
+        assert narrative == "Review approved"
+
+    def test_pr_created_includes_pr_number(self) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.ISSUE_PR_CREATED,
+            {"pr_number": 4623},
+        )
+        assert narrative == "PR #4623 created"
+
+    def test_exchange_completed_includes_round_count(self) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_EXCHANGE_COMPLETED,
+            {"rounds": 3},
+        )
+        assert narrative == "Review exchange completed (3 rounds)"
+
+    def test_changes_requested_includes_round(self) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_CHANGES_REQUESTED,
+            {"rounds": 2},
+        )
+        assert narrative == "Reviewer requested changes (round 2)"
+
+    def test_unhandled_event_keeps_static_narrative(self) -> None:
+        from issue_orchestrator.execution.timeline_writer import _enrich_narrative
+        result = _enrich_narrative("Code review started", "review.started", {"issue_number": 42})
+        assert result == "Code review started"
+
+
+class TestTrivialSummarySuppression:
+    """Test that trivial summary values like 'completed' are suppressed in narratives."""
+
+    def test_completed_suppressed(self) -> None:
+        from issue_orchestrator.view_models.issue_detail import _is_trivial_summary
+        assert _is_trivial_summary("completed")
+        assert _is_trivial_summary("Completed")
+
+    def test_ok_suppressed(self) -> None:
+        from issue_orchestrator.view_models.issue_detail import _is_trivial_summary
+        assert _is_trivial_summary("ok")
+        assert _is_trivial_summary("started")
+        assert _is_trivial_summary("passed")
+        assert _is_trivial_summary("failed")
+
+    def test_meaningful_summary_not_suppressed(self) -> None:
+        from issue_orchestrator.view_models.issue_detail import _is_trivial_summary
+        assert not _is_trivial_summary("Merge conflict in src/foo.py")
+        assert not _is_trivial_summary("reviewer_ok")
+        assert not _is_trivial_summary("Validation passed. Implementation is correct")
+
+    def test_narrative_rendering_suppresses_completed(self) -> None:
+        from issue_orchestrator.view_models.issue_detail import _event_to_narrative
+        event = {
+            "event": "agent.coding_completed",
+            "narrative": "Agent finished coding",
+            "summary": "completed",
+        }
+        result = _event_to_narrative(event)
+        assert result == "Agent finished coding"
+        assert ": completed" not in result
+
+    def test_narrative_rendering_keeps_meaningful_summary(self) -> None:
+        from issue_orchestrator.view_models.issue_detail import _event_to_narrative
+        event = {
+            "event": "review.approved",
+            "narrative": "Review approved after 4 rounds",
+            "summary": "Code looks good, all tests pass",
+            "agent": "agent:reviewer",
+        }
+        result = _event_to_narrative(event)
+        assert "Code looks good" in result
+        assert "(reviewer)" in result
+
