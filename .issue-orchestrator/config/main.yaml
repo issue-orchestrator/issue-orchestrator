@@ -7,19 +7,19 @@ worktrees:
 agents:
   agent:backend:
     prompt: repo-specific/prompts/simple-fix.md
-    model: haiku
+    model: sonnet
     provider: claude-code
     ai_system: claude-code
     permission_mode: bypassPermissions
   agent:frontend:
     prompt: repo-specific/prompts/simple-fix.md
-    model: haiku
+    model: sonnet
     provider: claude-code
     ai_system: claude-code
     permission_mode: bypassPermissions
   agent:mobile:
     prompt: repo-specific/prompts/simple-fix.md
-    model: haiku
+    model: sonnet
     provider: claude-code
     ai_system: claude-code
     permission_mode: bypassPermissions
