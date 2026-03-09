@@ -153,7 +153,7 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
 
     # -- Ops-level events --
     "session.processing_completed": [
-        _ops("session.processing_completed", phase="orchestrator"),
+        _ops("session.processing_completed", "Session processing completed", "orchestrator"),
     ],
     "session.no_completion_record": [
         _ops("session.no_completion_record", "No completion record found"),
@@ -162,7 +162,7 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
         _ops("worktree.reset", "Worktree reset to main"),
     ],
     "completion.lookup": [
-        _ops("completion.lookup"),
+        _ops("completion.lookup", "Completion record lookup"),
     ],
     "validation.started": [
         _ops("validation.started", "Validation started"),

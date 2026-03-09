@@ -7,7 +7,7 @@ from dataclasses import asdict, is_dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from ..domain.logical_event_semantics import enrich_logical_semantics
@@ -91,7 +91,9 @@ class DefaultTimelineWriter(TimelineWriter):
             record_data = dict(safe_data)
             record_data["views"] = sorted(view_event.views)
             if view_event.narrative:
-                record_data["narrative"] = view_event.narrative
+                record_data["narrative"] = _enrich_narrative(
+                    view_event.narrative, event.name, safe_data,
+                )
             if view_event.phase:
                 enriched_phase = record_data.get("logical_phase", "system")
                 # Don't override if enrichment already promoted the phase
@@ -108,6 +110,66 @@ class DefaultTimelineWriter(TimelineWriter):
                 source_event=event.name,
             )
             self._store.append(issue_number, record)
+
+
+def _enrich_narrative(
+    narrative: str,
+    internal_event: str,
+    data: dict[str, Any],
+) -> str:
+    """Enrich a static narrative with dynamic event data.
+
+    Injects round numbers, PR numbers, and review round counts into
+    the narrative at write time so the stored timeline is self-describing.
+    """
+    enricher = _NARRATIVE_ENRICHERS.get(internal_event)
+    if enricher is not None:
+        return enricher(data) or narrative
+    return narrative
+
+
+def _enrich_round_started(data: dict[str, Any]) -> str | None:
+    ri = data.get("round_index")
+    return f"Review round {ri} started" if isinstance(ri, int) else None
+
+
+def _enrich_round_completed(data: dict[str, Any]) -> str | None:
+    ri = data.get("round_index")
+    if not isinstance(ri, int):
+        return None
+    verdict = data.get("reviewer_response_type")
+    suffix = f" — {verdict}" if isinstance(verdict, str) and verdict else ""
+    return f"Review round {ri} completed{suffix}"
+
+
+def _enrich_review_approved(data: dict[str, Any]) -> str | None:
+    rounds = data.get("rounds")
+    return f"Review approved after {rounds} rounds" if isinstance(rounds, int) and rounds > 1 else None
+
+
+def _enrich_changes_requested(data: dict[str, Any]) -> str | None:
+    rounds = data.get("rounds")
+    return f"Reviewer requested changes (round {rounds})" if isinstance(rounds, int) else None
+
+
+def _enrich_pr_created(data: dict[str, Any]) -> str | None:
+    pr = data.get("pr_number")
+    return f"PR #{pr} created" if isinstance(pr, int) else None
+
+
+def _enrich_exchange_completed(data: dict[str, Any]) -> str | None:
+    rounds = data.get("rounds")
+    return f"Review exchange completed ({rounds} rounds)" if isinstance(rounds, int) else None
+
+
+_NARRATIVE_ENRICHERS: dict[str, Callable[[dict[str, Any]], str | None]] = {
+    "review_exchange.round_started": _enrich_round_started,
+    "review_exchange.round_completed": _enrich_round_completed,
+    "review.approved": _enrich_review_approved,
+    "review.changes_requested": _enrich_changes_requested,
+    "issue.pr_created": _enrich_pr_created,
+    "review_exchange.completed": _enrich_exchange_completed,
+}
 
 
 def _normalize_json(value: Any) -> Any:
