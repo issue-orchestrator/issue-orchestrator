@@ -3413,6 +3413,236 @@ class TestTimelineActionWiring:
         assert "actions_error" in payload
 
 
+class TestPerRoundLogActions:
+    """Test per-round reviewer/coder log actions for review exchange events."""
+
+    def _capture(self) -> tuple[list[dict], Callable]:
+        captured: list[dict] = []
+
+        def _add(action: dict, _dedupe: str) -> None:
+            captured.append(action)
+
+        return captured, _add
+
+    def test_round_started_produces_reviewer_and_coder_log_actions(self) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_recommended_actions
+
+        captured, add = self._capture()
+        _timeline_event_recommended_actions(
+            event={
+                "event": "review_exchange.round_started",
+                "round_index": 2,
+                "run_dir": "/tmp/sessions/run-1",
+            },
+            event_name="review_exchange.round_started",
+            issue_number=1,
+            add_action=add,
+        )
+        open_path_actions = [a for a in captured if a["type"] == "open_path"]
+        assert len(open_path_actions) == 2
+        labels = {a["label"] for a in open_path_actions}
+        assert "View Round 2 Reviewer Log" in labels
+        assert "View Round 2 Coder Log" in labels
+        paths = {a["path"] for a in open_path_actions}
+        assert "/tmp/sessions/run-1/review-exchange/round-002/reviewer/agent-output.log" in paths
+        assert "/tmp/sessions/run-1/review-exchange/round-002/coder/agent-output.log" in paths
+
+    def test_round_completed_produces_round_log_actions(self) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_recommended_actions
+
+        captured, add = self._capture()
+        _timeline_event_recommended_actions(
+            event={
+                "event": "review_exchange.round_completed",
+                "round_index": 1,
+                "run_dir": "/tmp/sessions/run-1",
+            },
+            event_name="review_exchange.round_completed",
+            issue_number=1,
+            add_action=add,
+        )
+        open_path_actions = [a for a in captured if a["type"] == "open_path"]
+        assert len(open_path_actions) == 2
+        paths = {a["path"] for a in open_path_actions}
+        assert "/tmp/sessions/run-1/review-exchange/round-001/reviewer/agent-output.log" in paths
+        assert "/tmp/sessions/run-1/review-exchange/round-001/coder/agent-output.log" in paths
+
+    def test_round_actions_skipped_when_round_index_missing(self) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_recommended_actions
+
+        captured, add = self._capture()
+        _timeline_event_recommended_actions(
+            event={
+                "event": "review_exchange.round_started",
+                "run_dir": "/tmp/sessions/run-1",
+            },
+            event_name="review_exchange.round_started",
+            issue_number=1,
+            add_action=add,
+        )
+        open_path_actions = [a for a in captured if a["type"] == "open_path"]
+        assert len(open_path_actions) == 0
+
+    def test_round_actions_skipped_when_run_dir_missing(self) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_recommended_actions
+
+        captured, add = self._capture()
+        _timeline_event_recommended_actions(
+            event={
+                "event": "review_exchange.round_started",
+                "round_index": 1,
+            },
+            event_name="review_exchange.round_started",
+            issue_number=1,
+            add_action=add,
+        )
+        open_path_actions = [a for a in captured if a["type"] == "open_path"]
+        assert len(open_path_actions) == 0
+
+    def test_non_round_events_do_not_produce_round_actions(self) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_recommended_actions
+
+        captured, add = self._capture()
+        _timeline_event_recommended_actions(
+            event={
+                "event": "review.approved",
+                "round_index": 3,
+                "run_dir": "/tmp/sessions/run-1",
+            },
+            event_name="review.approved",
+            issue_number=1,
+            add_action=add,
+        )
+        round_actions = [a for a in captured if "Round" in a.get("label", "")]
+        assert len(round_actions) == 0
+
+
+class TestIsAgentScopedEvent:
+    """Test _is_agent_scoped_event gating of session log buttons."""
+
+    def test_orchestrator_only_events_return_false(self) -> None:
+        from issue_orchestrator.entrypoints.web import _is_agent_scoped_event
+
+        for event_name in [
+            "validation.passed", "validation.failed", "pr.created",
+            "agent.completed", "issue.completed", "issue.blocked",
+        ]:
+            assert not _is_agent_scoped_event(
+                {"event_intent": "orchestrator"}, event_name
+            ), f"{event_name} should not be agent-scoped"
+
+    def test_coding_intent_returns_true(self) -> None:
+        from issue_orchestrator.entrypoints.web import _is_agent_scoped_event
+
+        assert _is_agent_scoped_event(
+            {"event_intent": "coding"}, "agent.coding_started"
+        )
+
+    def test_review_intent_returns_true(self) -> None:
+        from issue_orchestrator.entrypoints.web import _is_agent_scoped_event
+
+        assert _is_agent_scoped_event(
+            {"event_intent": "review"}, "review.started"
+        )
+
+    def test_rework_intent_returns_true(self) -> None:
+        from issue_orchestrator.entrypoints.web import _is_agent_scoped_event
+
+        assert _is_agent_scoped_event(
+            {"event_intent": "rework"}, "rework.started"
+        )
+
+    def test_review_event_name_without_intent_returns_true(self) -> None:
+        """Events without event_intent fall back to name pattern matching."""
+        from issue_orchestrator.entrypoints.web import _is_agent_scoped_event
+
+        assert _is_agent_scoped_event({}, "review.comment_added")
+
+    def test_review_exchange_event_without_intent_returns_true(self) -> None:
+        from issue_orchestrator.entrypoints.web import _is_agent_scoped_event
+
+        assert _is_agent_scoped_event({}, "review_exchange.round_started")
+
+    def test_rework_event_without_intent_returns_true(self) -> None:
+        from issue_orchestrator.entrypoints.web import _is_agent_scoped_event
+
+        assert _is_agent_scoped_event({}, "rework.started")
+
+    def test_agent_prefixed_event_without_intent_returns_true(self) -> None:
+        from issue_orchestrator.entrypoints.web import _is_agent_scoped_event
+
+        assert _is_agent_scoped_event({}, "agent.coding_started")
+
+    def test_unknown_event_without_intent_returns_false(self) -> None:
+        from issue_orchestrator.entrypoints.web import _is_agent_scoped_event
+
+        assert not _is_agent_scoped_event({}, "some.unknown.event")
+
+    def test_orchestrator_event_with_agent_intent_still_blocked(self) -> None:
+        """_ORCHESTRATOR_ONLY_EVENTS takes precedence over event_intent."""
+        from issue_orchestrator.entrypoints.web import _is_agent_scoped_event
+
+        assert not _is_agent_scoped_event(
+            {"event_intent": "coding"}, "validation.passed"
+        )
+
+    def test_gating_excludes_session_log_for_orchestrator_events(self, tmp_path: Path) -> None:
+        """Integration: orchestrator events with run_dir should NOT get agent log buttons."""
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-orch"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-1", issue_number=1)
+        (run.run_dir / "ui-session.log").write_text("log\n", encoding="utf-8")
+        run_dir = str(run.run_dir)
+
+        actions = _timeline_event_actions(
+            {
+                "event": "validation.passed",
+                "event_intent": "orchestrator",
+                "issue_number": 1,
+                "run_dir": run_dir,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            1,
+        )
+        action_types = {a["type"] for a in actions}
+        assert "open_orchestrator_log" in action_types
+        assert "open_agent_log" not in action_types
+        assert "view_claude_log" not in action_types
+
+    def test_gating_includes_session_log_for_agent_events(self, tmp_path: Path) -> None:
+        """Integration: agent events with run_dir SHOULD get agent log buttons."""
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-agent"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-1", issue_number=1)
+        (run.run_dir / "ui-session.log").write_text("log\n", encoding="utf-8")
+        claude_log = run.run_dir / "claude.jsonl"
+        claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
+        session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
+        run_dir = str(run.run_dir)
+
+        actions = _timeline_event_actions(
+            {
+                "event": "review.started",
+                "event_intent": "review",
+                "issue_number": 1,
+                "run_dir": run_dir,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            1,
+        )
+        action_types = {a["type"] for a in actions}
+        assert "open_agent_log" in action_types
+        assert "view_claude_log" in action_types
+
+
 class TestKillSessionEndpoint:
     """Test the POST /api/kill/{issue_number} endpoint."""
 
