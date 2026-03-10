@@ -684,8 +684,7 @@ def _is_interactive_provider(agent_config: AgentConfig) -> bool:
     provider_name = agent_config.provider or agent_config.ai_system
     if not provider_name:
         return False
-    from ..agent_runner import get_provider
-    from ..execution.agent_runner_providers import is_valid_provider
+    from ..agent_runner import get_provider, is_valid_provider
     if not is_valid_provider(provider_name):
         return False
     return get_provider(provider_name).interactive

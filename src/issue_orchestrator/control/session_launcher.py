@@ -1765,8 +1765,7 @@ class SessionLauncher:
         """Check if the agent uses an interactive provider (e.g. Claude Code TUI)."""
         if not agent_config.provider:
             return False
-        from issue_orchestrator.agent_runner import get_provider
-        from issue_orchestrator.execution.agent_runner_providers import is_valid_provider
+        from issue_orchestrator.agent_runner import get_provider, is_valid_provider
         if not is_valid_provider(agent_config.provider):
             return False
         return get_provider(agent_config.provider).interactive
