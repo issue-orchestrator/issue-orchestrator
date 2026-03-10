@@ -844,7 +844,10 @@ def _run_agent_round(
             f"stderr:\n{result.stderr or '(empty)'}"
         ),
     )
-    if not result.succeeded:
+    # For interactive providers, forced kill yields non-zero exit — that's expected.
+    # Success is determined by whether the response file was written and is parseable.
+    # For non-interactive providers, a non-zero exit with no response file is a real failure.
+    if not result.succeeded and not (interactive and response_text):
         stderr_snippet = result.stderr.strip().splitlines()
         stderr_preview = "\n".join(stderr_snippet[:6]) if stderr_snippet else "No stderr captured."
         return ReviewExchangeResponse(

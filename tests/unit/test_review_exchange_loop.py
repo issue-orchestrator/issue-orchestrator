@@ -646,3 +646,84 @@ class TestInteractiveRound:
         assert mock_session.sent == ["Review this code"]
         assert mock_session._killed
         assert response_file.exists()
+
+    def test_interactive_nonzero_exit_succeeds_when_response_file_present(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Killed interactive session returns non-zero exit, but response file is valid.
+
+        This is the normal case: the orchestrator kills the TUI after the agent
+        writes the response file, producing a non-zero exit code. The round
+        should succeed because the response file is present and parseable.
+        """
+        monkeypatch.setattr(
+            "issue_orchestrator.control.review_exchange_loop._is_interactive_provider",
+            lambda _config: True,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+        run_dir.mkdir(parents=True)
+        exchange_dir = run_dir / "review-exchange"
+        exchange_dir.mkdir()
+
+        response_file = run_dir / REVIEW_RESPONSE_FILENAME
+
+        class MockSession:
+            def __init__(self):
+                self.sent: list[str] = []
+
+            def send(self, text: str) -> bool:
+                self.sent.append(text)
+                # Agent writes response before being killed
+                response_file.write_text(
+                    '{"response_type":"ok","response_text":"approved"}',
+                    encoding="utf-8",
+                )
+                return True
+
+            def is_alive(self) -> bool:
+                return False  # Already exited after writing
+
+            def kill(self) -> None:
+                pass
+
+            def wait(self, timeout=None):
+                # Non-zero exit from kill — this is expected
+                return SimpleNamespace(
+                    exit_code=-9,
+                    timed_out=False,
+                    duration_seconds=2.0,
+                    stderr="",
+                    succeeded=False,
+                    command=["claude"],
+                )
+
+        class MockRunner:
+            def start(self, _spec):
+                return MockSession()
+
+        prompt_path = tmp_path / "prompt.md"
+        prompt_path.write_text("Prompt")
+        agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+
+        response = _run_agent_round(
+            runner=MockRunner(),
+            worktree_path=worktree,
+            run_dir=run_dir,
+            exchange_dir=exchange_dir,
+            round_index=1,
+            issue_number=1,
+            issue_title="Test",
+            session_name="review-exchange-1",
+            agent=agent,
+            role="reviewer",
+            agent_label="agent:reviewer",
+            prompt_text="Review prompt",
+            web_port=None,
+        )
+
+        # Should succeed despite non-zero exit code
+        assert response.response_type == "ok"
+        assert response.response_text == "approved"
