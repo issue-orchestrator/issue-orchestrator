@@ -83,10 +83,10 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
         _ops("review_exchange.started", "Review exchange started", "review"),
     ],
     "review_exchange.round_started": [
-        _ops("review_exchange.round_started", "Review round started", "review"),
+        _user("review_exchange.round_started", "Review round started", "review"),
     ],
     "review_exchange.round_completed": [
-        _ops("review_exchange.round_completed", "Review round completed", "review"),
+        _user("review_exchange.round_completed", "Review round completed", "review"),
     ],
     "review_exchange.completed": [
         _ops("review_exchange.completed", "Review exchange completed", "review"),
@@ -153,7 +153,7 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
 
     # -- Ops-level events --
     "session.processing_completed": [
-        _ops("session.processing_completed", phase="orchestrator"),
+        _ops("session.processing_completed", "Session processing completed", "orchestrator"),
     ],
     "session.no_completion_record": [
         _ops("session.no_completion_record", "No completion record found"),
@@ -162,7 +162,7 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
         _ops("worktree.reset", "Worktree reset to main"),
     ],
     "completion.lookup": [
-        _ops("completion.lookup"),
+        _ops("completion.lookup", "Completion record lookup"),
     ],
     "validation.started": [
         _ops("validation.started", "Validation started"),

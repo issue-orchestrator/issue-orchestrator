@@ -1882,6 +1882,21 @@ def _timeline_event_recommended_actions(
             {"type": "open_orchestrator_log", "label": "Open Orchestrator Log for This Issue ↗", "issue_number": issue_number},
             f"orchestrator:{issue_number}",
         )
+    # Per-round log actions for review exchange round events
+    if event_name in ("review_exchange.round_started", "review_exchange.round_completed"):
+        round_index = event.get("round_index")
+        run_dir = str(event.get("run_dir") or "")
+        if isinstance(round_index, int) and run_dir:
+            round_dir = f"{run_dir}/review-exchange/round-{round_index:03d}"
+            add_action(
+                {"type": "open_path", "label": f"View Round {round_index} Reviewer Log", "path": f"{round_dir}/reviewer/agent-output.log"},
+                f"round-reviewer:{round_index}",
+            )
+            add_action(
+                {"type": "open_path", "label": f"View Round {round_index} Coder Log", "path": f"{round_dir}/coder/agent-output.log"},
+                f"round-coder:{round_index}",
+            )
+
     if event_name in _TIMELINE_FAILURE_EVENTS:
         add_action(
             {
@@ -2103,10 +2118,13 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
         issue_number=issue_number,
         add_action=_add_action,
     )
+    # Only show session log buttons for agent events (coding/review/rework),
+    # not for orchestrator events like validation, PR creation, completion.
+    is_agent_event = _is_agent_scoped_event(event, event_name)
     _timeline_event_default_actions(
         issue_number=issue_number,
         agent_log_label=agent_log_label,
-        include_run_scoped=bool(event_run_dir),
+        include_run_scoped=bool(event_run_dir) and is_agent_event,
         add_action=_add_action,
     )
     if action_warnings:
@@ -2123,6 +2141,35 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
             f"missing:{issue_number}:{joined}",
         )
     return actions
+
+
+_ORCHESTRATOR_ONLY_EVENTS = frozenset({
+    "validation.passed", "validation.failed", "validation.retry",
+    "validation.started", "validation.completed",
+    "agent.completed", "pr.created", "issue.completed",
+    "issue.blocked", "issue.needs_human", "issue.unblocked",
+    "session.processing_completed", "completion.lookup",
+})
+
+
+def _is_agent_scoped_event(event: dict[str, Any], event_name: str) -> bool:
+    """Return True when an event represents agent work (not orchestrator bookkeeping).
+
+    Agent events get UI Session and Claude Log buttons. Orchestrator events
+    (validation, PR creation, completion) only get Orchestrator Log.
+    """
+    if event_name in _ORCHESTRATOR_ONLY_EVENTS:
+        return False
+    intent = str(event.get("event_intent") or "")
+    if intent in {"coding", "review", "rework"}:
+        return True
+    # Fall back to event name patterns for events without intent
+    return (
+        is_review_event_name(event_name)
+        or is_rework_event_name(event_name)
+        or event_name.startswith("agent.")
+        or event_name.startswith("review_exchange.")
+    )
 
 
 def _timeline_event_requires_run_dir(event: dict[str, Any]) -> bool:

@@ -363,7 +363,9 @@ def _event_to_narrative(event: dict[str, Any]) -> str:
     # Prefer narrative from view registry (set at write time)
     stored_narrative = event.get("narrative")
     if isinstance(stored_narrative, str) and stored_narrative:
-        suffix = f": {summary}" if summary else ""
+        # Suppress trivial summaries that the narrative already implies
+        useful_summary = summary if summary and not _is_trivial_summary(summary) else ""
+        suffix = f": {useful_summary}" if useful_summary else ""
         text = f"{stored_narrative}{suffix}"
         if agent:
             text = f"{text} ({agent})"
@@ -387,6 +389,16 @@ def _event_to_narrative(event: dict[str, Any]) -> str:
     if agent:
         parts.append(f"({agent})")
     return " ".join(parts)
+
+
+_TRIVIAL_SUMMARIES = frozenset({
+    "completed", "started", "ok", "passed", "failed",
+})
+
+
+def _is_trivial_summary(summary: str) -> bool:
+    """Return True for single-word status values that add no information."""
+    return summary.strip().lower() in _TRIVIAL_SUMMARIES
 
 
 def _format_agent(event: dict[str, Any]) -> str:
