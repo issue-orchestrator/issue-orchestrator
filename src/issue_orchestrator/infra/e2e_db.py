@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS e2e_runs (
     artifacts_dir TEXT,
     worker_pid INTEGER,
     total_tests INTEGER,
-    current_test TEXT
+    current_test TEXT,
+    orchestrator_instance_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS e2e_test_results (
@@ -155,6 +156,7 @@ class E2ERun:
     worker_pid: Optional[int]
     total_tests: Optional[int]
     current_test: Optional[str]
+    orchestrator_instance_id: str = ""
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "E2ERun":
@@ -178,6 +180,7 @@ class E2ERun:
             worker_pid=row["worker_pid"],
             total_tests=row["total_tests"],
             current_test=row["current_test"],
+            orchestrator_instance_id=row["orchestrator_instance_id"] if "orchestrator_instance_id" in row.keys() else "",
         )
 
     def to_dict(self) -> dict:
@@ -201,6 +204,7 @@ class E2ERun:
             "worker_pid": self.worker_pid,
             "total_tests": self.total_tests,
             "current_test": self.current_test,
+            "orchestrator_instance_id": self.orchestrator_instance_id,
         }
 
 
@@ -783,10 +787,16 @@ class E2EDB:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist, and migrate existing ones."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # Migrate: add orchestrator_instance_id if missing (pre-existing DBs)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(e2e_runs)")}
+            if "orchestrator_instance_id" not in columns:
+                conn.execute(
+                    "ALTER TABLE e2e_runs ADD COLUMN orchestrator_instance_id TEXT NOT NULL DEFAULT ''"
+                )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -819,6 +829,7 @@ class E2EDB:
         branch: Optional[str] = None,
         retry_of: Optional[int] = None,
         worker_pid: Optional[int] = None,
+        orchestrator_instance_id: str = "",
     ) -> int:
         """Start a new E2E run.
 
@@ -880,8 +891,8 @@ class E2EDB:
                 INSERT INTO e2e_runs (
                     repo_root, orchestrator_id, started_at, status,
                     pytest_args, commit_sha, branch, retry_of, is_retry_run,
-                    worker_pid
-                ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)
+                    worker_pid, orchestrator_instance_id
+                ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     repo_root,
@@ -893,6 +904,7 @@ class E2EDB:
                     retry_of,
                     1 if retry_of else 0,
                     worker_pid,
+                    orchestrator_instance_id,
                 ),
             )
             run_id = cursor.lastrowid

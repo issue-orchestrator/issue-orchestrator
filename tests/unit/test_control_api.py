@@ -73,6 +73,7 @@ def create_mock_orchestrator():
     # Mock deps for snapshot endpoint
     mock.deps = MagicMock()
     mock.deps.repository_host = MagicMock()
+    mock.deps.services.instance_id = "test-instance-id"
 
     # Configure label_manager to return real strings (not MagicMock)
     lm = mock.deps.label_manager

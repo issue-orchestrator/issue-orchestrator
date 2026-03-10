@@ -508,6 +508,7 @@ async def status() -> JSONResponse:
         "pending_reworks": len(state.pending_reworks),
         "completed_today": len(state.completed_today),
         "issues_in_queue": len(state.cached_queue_issues),
+        "instance_id": _orchestrator.deps.services.instance_id,
     })
 
 
@@ -4082,6 +4083,7 @@ async def e2e_start(request: Request) -> JSONResponse:
     runner = get_e2e_runner_manager()
 
     try:
+        instance_id = _orchestrator.deps.services.instance_id if _orchestrator else ""
         result = runner.start(
             repo_root=repo_root,
             orchestrator_id=orchestrator_id,
@@ -4089,6 +4091,7 @@ async def e2e_start(request: Request) -> JSONResponse:
             allow_retry_once=allow_retry,
             quarantine_file=config.e2e.quarantine_file,
             auto_quarantine=config.e2e.auto_quarantine,
+            orchestrator_instance_id=instance_id,
         )
 
         # Broadcast E2E started event for SSE subscribers
@@ -4366,16 +4369,15 @@ def _read_orchestrator_timeline_for_window(
     timeline_db_path: Path,
     started_at: str,
     finished_at: str | None,
+    orchestrator_instance_id: str = "",
 ) -> list[dict]:
     """Read orchestrator timeline events scoped to an E2E run.
 
-    Opens timeline.sqlite read-only.  First discovers which orchestrator
-    instance(s) were active during the run's time window via the
-    ``instance_id`` column, then returns only events from those instances.
-    This prevents unrelated orchestrator activity from bleeding in.
+    Opens timeline.sqlite read-only.  When ``orchestrator_instance_id`` is
+    provided, filters directly by that value — no guessing required.
 
-    Falls back to timestamp-only filtering for older timeline databases
-    that don't yet have the ``instance_id`` column (schema < v4).
+    Falls back to timestamp-only filtering when instance_id is not
+    available (older runs or pre-v4 timeline databases).
     """
     import json as _json
     import sqlite3 as _sqlite3
@@ -4391,34 +4393,21 @@ def _read_orchestrator_timeline_for_window(
         columns = {row[1] for row in conn.execute("PRAGMA table_info(timeline_events)")}
         has_instance_id = "instance_id" in columns
 
-        if has_instance_id:
-            # Discover instance_ids active during this window
-            instance_rows = conn.execute(
+        if has_instance_id and orchestrator_instance_id:
+            # Best path: filter by the exact instance_id stored in e2e_runs
+            rows = conn.execute(
                 """
-                SELECT DISTINCT instance_id FROM timeline_events
-                WHERE instance_id != ''
+                SELECT event_id, source_event, timestamp, event, data_json
+                FROM timeline_events
+                WHERE instance_id = ?
                   AND timestamp >= ? AND timestamp <= ?
+                ORDER BY sequence ASC
                 """,
-                (started_at, end_ts),
+                (orchestrator_instance_id, started_at, end_ts),
             ).fetchall()
-            instance_ids = [r[0] for r in instance_rows]
-
-            if instance_ids:
-                placeholders = ",".join("?" for _ in instance_ids)
-                rows = conn.execute(
-                    f"""
-                    SELECT event_id, source_event, timestamp, event, data_json
-                    FROM timeline_events
-                    WHERE instance_id IN ({placeholders})
-                      AND timestamp >= ? AND timestamp <= ?
-                    ORDER BY sequence ASC
-                    """,
-                    (*instance_ids, started_at, end_ts),
-                ).fetchall()
-            else:
-                rows = []
         else:
-            # Fallback for pre-v4 schemas: timestamp-only filtering
+            # Fallback for older runs without stored instance_id
+            # or pre-v4 timeline schemas: timestamp-only filtering
             rows = conn.execute(
                 """
                 SELECT event_id, source_event, timestamp, event, data_json
@@ -4509,6 +4498,7 @@ async def e2e_run_timeline_endpoint(
                 timeline_db_path,
                 started_at=run.started_at,
                 finished_at=run.finished_at,
+                orchestrator_instance_id=run.orchestrator_instance_id,
             )
 
         return JSONResponse(e2e_run_timeline(events, orchestrator_events=orchestrator_events))

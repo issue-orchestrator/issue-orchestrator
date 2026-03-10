@@ -253,6 +253,11 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
         default=[],
         help="Tests to deselect (skip) - passed to pytest",
     )
+    parser.add_argument(
+        "--orchestrator-instance-id",
+        default="",
+        help="Orchestrator process instance_id for run-scoped timeline queries",
+    )
 
     args = parser.parse_args()
 
@@ -311,6 +316,7 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                 commit_sha=commit_sha,
                 branch=branch,
                 worker_pid=os.getpid(),
+                orchestrator_instance_id=args.orchestrator_instance_id,
             )
         except AlreadyRunning as e:
             logger.error("Cannot start: %s", e)

@@ -647,6 +647,7 @@ def build_orchestrator(
         timeline_store=timeline_store,
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
+        instance_id=instance_id,
         state_health_check=timeline_store.check_health,
     )
 

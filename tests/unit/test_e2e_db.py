@@ -1136,3 +1136,92 @@ class TestE2ERunEvents:
         )
         d = event.to_timeline_dict()
         assert d["nodeid"] == "tests/e2e/test_foo.py::test_bar"
+
+
+class TestOrchestratorInstanceId:
+    """Tests for orchestrator_instance_id in e2e_runs."""
+
+    @pytest.fixture
+    def db(self, tmp_path: Path) -> E2EDB:
+        return E2EDB(tmp_path / "test_e2e.db")
+
+    def test_start_run_stores_instance_id(self, db: E2EDB):
+        """start_run persists the orchestrator_instance_id."""
+        run_id = db.start_run(
+            repo_root="/test/repo",
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+            orchestrator_instance_id="uuid-abc-123",
+        )
+        run = db.get_run(run_id)
+        assert run is not None
+        assert run.orchestrator_instance_id == "uuid-abc-123"
+
+    def test_start_run_defaults_instance_id_to_empty(self, db: E2EDB):
+        """Without orchestrator_instance_id, field defaults to empty string."""
+        run_id = db.start_run(
+            repo_root="/test/repo",
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+        run = db.get_run(run_id)
+        assert run is not None
+        assert run.orchestrator_instance_id == ""
+
+    def test_to_dict_includes_instance_id(self, db: E2EDB):
+        """to_dict exposes orchestrator_instance_id."""
+        run_id = db.start_run(
+            repo_root="/test/repo",
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+            orchestrator_instance_id="uuid-xyz",
+        )
+        run = db.get_run(run_id)
+        assert run is not None
+        d = run.to_dict()
+        assert d["orchestrator_instance_id"] == "uuid-xyz"
+
+    def test_schema_migration_adds_column(self, tmp_path: Path):
+        """Opening a pre-existing DB without the column auto-migrates."""
+        import sqlite3
+
+        db_path = tmp_path / "legacy.db"
+        # Create a minimal legacy schema without orchestrator_instance_id
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("""
+            CREATE TABLE e2e_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                repo_root TEXT NOT NULL,
+                orchestrator_id TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL,
+                exit_code INTEGER,
+                pytest_args TEXT NOT NULL,
+                commit_sha TEXT,
+                branch TEXT,
+                retry_of INTEGER,
+                is_retry_run INTEGER DEFAULT 0,
+                duration_seconds REAL,
+                note TEXT,
+                log_path TEXT,
+                artifacts_dir TEXT,
+                worker_pid INTEGER,
+                total_tests INTEGER,
+                current_test TEXT
+            )
+        """)
+        conn.commit()
+        conn.close()
+
+        # Opening with E2EDB should auto-migrate
+        db = E2EDB(db_path)
+        run_id = db.start_run(
+            repo_root="/test",
+            orchestrator_id="orch",
+            pytest_args=[],
+            orchestrator_instance_id="migrated-uuid",
+        )
+        run = db.get_run(run_id)
+        assert run is not None
+        assert run.orchestrator_instance_id == "migrated-uuid"
