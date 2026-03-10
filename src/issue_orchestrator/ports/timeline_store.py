@@ -13,6 +13,7 @@ class TimelineRecord:
     event: str
     data: dict[str, Any]
     source_event: str = ""  # internal event name before fan-out
+    instance_id: str = ""  # orchestrator instance UUID (restart boundary)
 
 
 class TimelineStore(Protocol):

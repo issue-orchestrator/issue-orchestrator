@@ -50,11 +50,16 @@ class DefaultTimelineWriter(TimelineWriter):
             if previous_record else None
         )
         previous_data = previous_record.data if previous_record else None
+        # Instance ID for restart boundary detection
+        current_instance_id = getattr(self._store, "instance_id", "")
+        previous_instance_id = previous_record.instance_id if previous_record else ""
         semantics = enrich_logical_semantics(
             event_name=event.name,
             event_data=safe_data,
             previous_event_name=previous_source,
             previous_data=previous_data if isinstance(previous_data, dict) else None,
+            current_instance_id=current_instance_id,
+            previous_instance_id=previous_instance_id,
         )
         safe_data["schema"] = EVENT_SCHEMA_VERSION
         safe_data["timeline_schema_version"] = TIMELINE_SCHEMA_VERSION

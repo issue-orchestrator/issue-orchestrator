@@ -190,7 +190,7 @@ class TestAgentConfig:
         assert "CRITICAL" in cmd
         assert "coding-done" in cmd
         assert "prompt.md" in cmd
-        # Interactive mode: no -p, no stream-json, no --verbose
+        # Interactive mode: no -p, no stream-json
         assert "-p" not in cmd.split()
         assert "--output-format" not in cmd
         assert "--include-partial-messages" not in cmd
@@ -283,6 +283,60 @@ class TestAgentConfig:
         critical_pos = cmd.find("CRITICAL")
         user_prompt_pos = cmd.find("Do the work on issue #123")
         assert critical_pos < user_prompt_pos, "Completion command docs must precede user prompt"
+
+
+    def test_get_command_extra_provider_args_verbose(self, tmp_path):
+        """extra_provider_args override merges onto provider_args."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Task instructions")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+            provider="claude-code",
+        )
+
+        cmd = config.get_command(
+            123, "Test Issue", tmp_path,
+            extra_provider_args={"verbose": "true"},
+        )
+        # Check --verbose appears as an actual CLI flag (shlex-joined token)
+        import shlex
+        tokens = shlex.split(cmd)
+        assert "--verbose" in tokens
+
+    def test_get_command_extra_provider_args_none_is_safe(self, tmp_path):
+        """extra_provider_args=None should work fine (default)."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Task instructions")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+            provider="claude-code",
+        )
+
+        cmd = config.get_command(123, "Test Issue", tmp_path)
+        import shlex
+        tokens = shlex.split(cmd)
+        assert "--verbose" not in tokens
+
+    def test_get_command_provider_args_verbose_from_agent_config(self, tmp_path):
+        """provider_args.verbose in agent config passes --verbose."""
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Task instructions")
+
+        config = AgentConfig(
+            prompt_path=prompt_file,
+            prompt_relative="prompt.md",
+            provider="claude-code",
+            provider_args={"verbose": "true"},
+        )
+
+        cmd = config.get_command(123, "Test Issue", tmp_path)
+        import shlex
+        tokens = shlex.split(cmd)
+        assert "--verbose" in tokens
 
 
 class TestSession:

@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, TYPE_CHECKING, Optional, Callable
+from typing import Any, TYPE_CHECKING, Optional, Callable, Sequence
 
 if TYPE_CHECKING:
     from ..domain.state_machines.issue_machine import IssueStateMachine
@@ -249,6 +249,18 @@ class SessionLauncher:
             options.disable_reuse = True
             options.worktree_branch_on_recreate = "create_new_branch"
         return options
+
+    @staticmethod
+    def _extra_provider_args_from_labels(labels: Sequence[str]) -> dict[str, str] | None:
+        """Build per-issue provider arg overrides from issue labels.
+
+        Currently supports:
+        - ``verbose`` label → ``{"verbose": "true"}``
+        """
+        args: dict[str, str] = {}
+        if "verbose" in labels:
+            args["verbose"] = "true"
+        return args or None
 
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
         """Apply mutations through the ActionApplier."""
@@ -830,12 +842,14 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
+        extra_args = self._extra_provider_args_from_labels(issue.labels)
         base_command = agent_config.get_command(
             issue_number=issue.number,
             issue_title=issue.title,
             worktree=worktree_path,
             existing_work=existing_work,
             task_kind=TaskKind.CODE.value,
+            extra_provider_args=extra_args,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(issue.agent_type, session_name=ctx.phase_name)

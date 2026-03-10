@@ -606,6 +606,19 @@ def test_sqlite_timeline_store_instance_id_persisted(tmp_path: Path) -> None:
     assert row["instance_id"] == "test-instance-abc"
 
 
+def test_sqlite_timeline_store_read_returns_instance_id(tmp_path: Path) -> None:
+    """read() should populate instance_id on returned TimelineRecords."""
+    store = SqliteTimelineStore(
+        tmp_path / "timeline.sqlite",
+        instance_id="test-instance-xyz",
+    )
+    store.append(42, TimelineRecord(event_id="e1", timestamp="t1", event="ev", data={}))
+
+    records = store.read(42)
+    assert len(records) == 1
+    assert records[0].instance_id == "test-instance-xyz"
+
+
 def test_sqlite_timeline_store_instance_id_defaults_to_empty(tmp_path: Path) -> None:
     """Without instance_id, the column defaults to empty string."""
     store = SqliteTimelineStore(tmp_path / "timeline.sqlite")

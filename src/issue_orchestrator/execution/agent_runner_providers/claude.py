@@ -80,6 +80,11 @@ class ClaudeCodeProvider(CLIProvider):
         if max_turns:
             cmd.extend(["--max-turns", str(max_turns)])
 
+        # Verbose mode (more detailed TUI output)
+        verbose = kwargs.get("verbose")
+        if verbose and str(verbose).lower() not in ("false", "0", "no", ""):
+            cmd.append("--verbose")
+
         # Initial prompt as positional argument — starts TUI working immediately
         # without -p flag, so full interactive output is preserved.
         if prompt:
