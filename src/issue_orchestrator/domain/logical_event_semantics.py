@@ -17,6 +17,7 @@ _TERMINAL_EVENTS = frozenset({
     "session.failed",
     "session.timeout",
     "session.blocked",
+    "cleanup.completed",
 })
 _RUN_RESTART_EVENTS = frozenset({"issue.unblocked"})
 _CYCLE_BOUNDARY_EVENTS = frozenset({

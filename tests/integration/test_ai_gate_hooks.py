@@ -24,17 +24,7 @@ pytestmark = [
     pytest.mark.xdist_group("hooks"),
 ]
 
-@pytest.fixture(autouse=True, scope="module")
-def _hook_pythonpath() -> None:
-    """Ensure hook scripts can import issue_orchestrator when running in temp repos."""
-    repo_root = Path(__file__).resolve().parents[2]
-    prior = os.environ.get("ORCHESTRATOR_HOOK_PYTHONPATH")
-    os.environ["ORCHESTRATOR_HOOK_PYTHONPATH"] = str(repo_root / "src")
-    yield
-    if prior is None:
-        os.environ.pop("ORCHESTRATOR_HOOK_PYTHONPATH", None)
-    else:
-        os.environ["ORCHESTRATOR_HOOK_PYTHONPATH"] = prior
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
@@ -44,14 +34,24 @@ def fixtures_path() -> Path:
 
 
 def _clean_git_env() -> dict[str, str]:
-    """Return environment with git variables cleared to prevent leaking to test repos.
+    """Return environment with git/orchestrator variables cleaned for test repos.
 
-    Without this, GIT_DIR/GIT_WORK_TREE from parent processes can cause
-    git commands in test repos to write config to the wrong repository.
+    Clears git internals (GIT_DIR etc.) that leak from parent processes,
+    orchestrator session vars that can pollute hook scripts, and sets
+    ORCHESTRATOR_HOOK_PYTHONPATH so hook scripts can import the package.
+
+    This is xdist-safe because it builds a fresh env per subprocess call
+    rather than relying on module-scope os.environ mutations.
     """
     env = os.environ.copy()
     for var in ["GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY"]:
         env.pop(var, None)
+    # Remove orchestrator session vars that leak into test subprocesses
+    for key in list(env):
+        if key.startswith("ISSUE_ORCHESTRATOR_"):
+            del env[key]
+    # Ensure hook scripts can import issue_orchestrator
+    env["ORCHESTRATOR_HOOK_PYTHONPATH"] = str(_REPO_ROOT / "src")
     return env
 
 

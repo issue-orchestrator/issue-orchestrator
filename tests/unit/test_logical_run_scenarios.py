@@ -186,6 +186,23 @@ SCENARIOS: list[LogicalRunScenario] = [
         expected_latest_session_run_ids=["code-2"],
     ),
     LogicalRunScenario(
+        name="cleanup_completed_then_new_start_creates_new_logical_run",
+        events=[
+            _evt("session.started", timestamp="2026-02-09T10:00:00Z", run_id="code-1", rework_cycle=0),
+            _evt("session.completed", timestamp="2026-02-09T10:15:00Z", status="completed", run_id="code-1", rework_cycle=0),
+            _evt("review.started", timestamp="2026-02-09T10:16:00Z", run_id="review-1", rework_cycle=0, task="review"),
+            _evt("review.approved", timestamp="2026-02-09T10:18:00Z", status="completed", run_id="review-1", rework_cycle=0),
+            _evt("cleanup.completed", timestamp="2026-02-09T10:19:00Z"),
+            _evt("claim.acquired", timestamp="2026-02-09T14:00:00Z"),
+            _evt("session.started", timestamp="2026-02-09T14:01:00Z", run_id="code-2", rework_cycle=0),
+            _evt("session.completed", timestamp="2026-02-09T14:20:00Z", status="completed", run_id="code-2", rework_cycle=0),
+        ],
+        expected_run_count=2,
+        expected_cycles_per_run=[1, 1],
+        expected_review_events_in_latest_run=0,
+        expected_latest_session_run_ids=["code-2"],
+    ),
+    LogicalRunScenario(
         name="mixed_missing_and_present_run_ids_stays_single_logical_run",
         events=[
             _evt("session.started", timestamp="2026-02-09T10:00:00Z", run_id="code-1", rework_cycle=0),
