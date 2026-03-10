@@ -235,6 +235,10 @@ def _iter_issue_views(
     different key formats across ticks.
 
     We gather all of them so callers can merge their labels.
+
+    Note: most pr.view_changed events now emit the stable issue_key, but
+    queue.changed and label events from the tracker may still use numeric keys.
+    Keep the merge-all fallback until all event sources are aligned.
     """
     # When we have a pr_number, return ALL views.
     # The orchestrator test runs a single issue, and the materializer may split

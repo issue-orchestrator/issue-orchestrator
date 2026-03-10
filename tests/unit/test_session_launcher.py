@@ -1115,6 +1115,31 @@ class TestLaunchReworkSession:
         actions = [call.args[0] for call in launcher_bundle.action_applier.apply.call_args_list]
         assert any(isinstance(a, RemoveLabelAction) and a.label == "needs-rework" for a in actions)
 
+    def test_rework_pr_view_changed_uses_stable_issue_key(self, launcher_bundle, mock_repo_host, mock_events):
+        """PR_VIEW_CHANGED event on rework start must use stable issue_key, not str(issue_number)."""
+        mock_repo_host.prs[123] = [
+            PRInfo(number=456, title="Fix", url="url", branch="123-fix", body="", state="open", labels=[])
+        ]
+        rework = PendingRework(
+            issue_key=GitHubIssueKey(repo="test/repo", external_id="M0-721"),
+            agent_type="agent:web",
+            rework_cycle=1,
+            issue_number=123,
+        )
+
+        result = launcher_bundle.launcher.launch_rework_session(rework, active_sessions=[])
+
+        assert result.success is True
+        pr_view_events = mock_events.get_events_by_name("pr.view_changed")
+        assert len(pr_view_events) >= 1
+        # The rework-start event removing needs-rework should use stable key
+        remove_event = next(
+            (e for e in pr_view_events if "needs-rework" in e.data.get("removed", [])),
+            None,
+        )
+        assert remove_event is not None, "Expected pr.view_changed with needs-rework removal"
+        assert remove_event.data["issue_key"] == "M0-721"
+
     def test_includes_reviewer_feedback_in_prompt(self, launcher_bundle, mock_repo_host):
         """Verify reviewer feedback is included in the agent prompt."""
         mock_repo_host.prs[123] = [

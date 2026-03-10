@@ -1511,7 +1511,7 @@ class SessionLauncher:
         self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, {
             "pr_number": pr_number,
             "issue_number": issue_number,
-            "issue_key": str(issue_number),
+            "issue_key": issue_key.stable_id(),
             "removed": [self._lm.needs_rework],
         }))
 
