@@ -41,6 +41,17 @@ class CLIProvider(ABC):
         """Human-readable description of this provider."""
         return f"{self.name} CLI"
 
+    @property
+    def interactive(self) -> bool:
+        """Whether this provider runs as an interactive TUI session.
+
+        Interactive providers:
+        - Are NOT wrapped in provider_runner (no retry/circuit wrapper)
+        - Do NOT include the prompt in their argv (prompt is sent via PTY stdin)
+        - Stay alive for follow-up prompts (review feedback, rework)
+        """
+        return False
+
     @abstractmethod
     def build_command(
         self,

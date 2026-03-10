@@ -123,7 +123,7 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
     _ensure_worktree_venv(worktree)
 
     monkeypatch.setenv(f"{ENV_PREFIX}REPO_ROOT", str(repo_root))
-    monkeypatch.setenv(f"{ENV_PREFIX}SUBPROCESS_ALLOW_STDIN", "1")
+    # stdin is enabled by default; no env var needed
 
     # Use file-based synchronization: touch completes synchronously before
     # shell proceeds to read, so file existence guarantees shell is waiting.

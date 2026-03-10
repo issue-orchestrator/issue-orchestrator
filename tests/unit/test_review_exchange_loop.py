@@ -7,15 +7,27 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from issue_orchestrator.control.review_exchange_loop import (
     REVIEW_RESPONSE_FILENAME,
     _parse_exchange_response,
     _run_agent_round,
+    _run_interactive_round,
     _resolve_provider,
     run_review_exchange_loop,
 )
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.env import ENV_PREFIX
+
+
+@pytest.fixture(autouse=True)
+def _force_non_interactive(monkeypatch):
+    """Existing tests use DummyRunner.run(). Force non-interactive path."""
+    monkeypatch.setattr(
+        "issue_orchestrator.control.review_exchange_loop._is_interactive_provider",
+        lambda _config: False,
+    )
 
 
 def _write_response_file(spec, json_text: str) -> None:
@@ -118,7 +130,9 @@ def test_run_agent_round_prefers_provider_mode_when_ai_system_is_provider(tmp_pa
     )
 
     assert response.response_type == "ok"
-    assert "-p" in seen_command
+    # Interactive mode: no -p flag, but claude executable and permission mode present
+    assert "claude" in seen_command
+    assert "--permission-mode" in seen_command
 
 
 def test_run_agent_round_writes_run_scoped_provider_runner_logs(tmp_path: Path) -> None:
@@ -559,3 +573,76 @@ def test_review_exchange_seeds_initial_validation_record(tmp_path: Path, monkeyp
     )
 
     assert outcome.status == "ok"
+
+
+class TestInteractiveRound:
+    """Tests for _run_interactive_round — the PTY-stdin prompt delivery path."""
+
+    @pytest.fixture(autouse=True)
+    def _no_sleep(self, monkeypatch):
+        monkeypatch.setattr("issue_orchestrator.control.review_exchange_loop.time.sleep", lambda _: None)
+
+    def test_interactive_round_writes_response(self, tmp_path: Path) -> None:
+        """Interactive round starts session, sends prompt, reads response file."""
+        from issue_orchestrator.execution.agent_runner_types import AgentSpec
+
+        round_dir = tmp_path / "round"
+        round_dir.mkdir()
+        response_file = tmp_path / "review-response.json"
+
+        spec = AgentSpec(
+            command=["claude"],
+            working_dir=tmp_path,
+            timeout_seconds=30,
+            log_path=round_dir / "agent.log",
+            output_dir=round_dir,
+        )
+
+        class MockSession:
+            def __init__(self):
+                self.sent: list[str] = []
+                self._alive = True
+                self._killed = False
+
+            def send(self, text: str) -> bool:
+                self.sent.append(text)
+                # Simulate agent writing response on receiving prompt
+                response_file.write_text(
+                    '{"response_type":"ok","response_text":"approved"}',
+                    encoding="utf-8",
+                )
+                return True
+
+            def is_alive(self) -> bool:
+                return self._alive
+
+            def kill(self) -> None:
+                self._alive = False
+                self._killed = True
+
+            def wait(self, timeout=None):
+                return SimpleNamespace(
+                    exit_code=0,
+                    timed_out=False,
+                    duration_seconds=1.0,
+                    stderr="",
+                    succeeded=True,
+                    command=["claude"],
+                )
+
+        mock_session = MockSession()
+
+        class MockRunner:
+            def start(self, _spec):
+                return mock_session
+
+        result = _run_interactive_round(
+            MockRunner(),
+            spec,
+            "Review this code",
+            response_file,
+        )
+
+        assert mock_session.sent == ["Review this code"]
+        assert mock_session._killed
+        assert response_file.exists()

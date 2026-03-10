@@ -4,16 +4,14 @@ from issue_orchestrator.execution.agent_runner_types import _format_command_for_
 def test_format_command_for_log_keeps_flags_visible() -> None:
     command = [
         "claude",
-        "-p",
-        "--verbose",
-        "--output-format",
-        "stream-json",
-        "--include-partial-messages",
-        "short prompt",
+        "--permission-mode",
+        "bypassPermissions",
+        "--append-system-prompt",
+        "some system prompt",
     ]
     rendered = _format_command_for_log(command)
-    assert "--output-format stream-json" in rendered
-    assert "--include-partial-messages" in rendered
+    assert "--permission-mode bypassPermissions" in rendered
+    assert "--append-system-prompt" in rendered
 
 
 def test_format_command_for_log_truncates_long_arguments() -> None:

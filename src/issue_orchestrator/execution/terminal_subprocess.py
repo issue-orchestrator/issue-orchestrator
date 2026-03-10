@@ -245,8 +245,8 @@ class SubprocessPlugin:
         self._registry = _SubprocessRegistry(repo_root)
         self._sessions: dict[str, AgentSession] = {}
         self._watcher_threads: dict[str, threading.Thread] = {}
-        allow_stdin_val = get_env("SUBPROCESS_ALLOW_STDIN") or ""
-        self._allow_stdin = allow_stdin_val.lower() in {"1", "true", "yes"}
+        deny_stdin_val = get_env("SUBPROCESS_DENY_STDIN") or ""
+        self._allow_stdin = deny_stdin_val.lower() not in {"1", "true", "yes"}
 
     def _session_log_path(self, working_dir: Path, session_name: str, command: str | None = None) -> Path:
         if command:

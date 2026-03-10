@@ -150,13 +150,11 @@ class _PtySession:
     def send_follow_up(self, prompt_file: Path) -> None:
         """Send a follow-up prompt by referencing a file.
 
-        NOTE: This does NOT work with Claude Code's TUI — the text appears
-        in the input area but is never submitted.  Kept for non-Claude
-        providers that read raw stdin.  For Claude Code, start a new
-        process per round instead.
+        Uses PTY stdin to deliver the prompt. Claude Code's interactive TUI
+        accepts follow-up messages via sendline().
         """
         msg = f"Read and follow your next instructions in {prompt_file}"
-        self.child.send(msg + "\r")
+        self.child.sendline(msg)
 
     @property
     def alive(self) -> bool:
