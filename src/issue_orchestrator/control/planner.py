@@ -786,15 +786,27 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
         if not snapshot.discovered_escalations:
             return actions
 
+        # Build issue-number → Issue lookup for stable key resolution
+        issues_by_number = {i.number: i for i in snapshot.issues}
+
         for escalation in snapshot.discovered_escalations:
+            # Resolve stable issue_key; fall back to str(issue_number)
+            issue = issues_by_number.get(escalation.issue_number)
+            issue_key = issue.key.stable_id() if issue else str(escalation.issue_number)
+
+            # rework_cycle is the "next cycle" from the scanner (e.g., 3 means
+            # label rework-cycle-2 was found).  Pass it directly — ActionApplier
+            # subtracts 1 to derive the completed-cycle count for display.
+            # This matches the normal-flow escalation in _plan_rework_launches.
             actions.append(EscalateToHumanAction(
                 issue_number=escalation.issue_number,
                 pr_number=escalation.pr_number,
                 escalation_reason="max rework cycles exceeded",
-                rework_cycles=escalation.rework_cycle - 1,  # Completed cycles, not current
+                rework_cycles=escalation.rework_cycle,
                 needs_human_label=self._lm.needs_human,
                 needs_rework_label=self._lm.needs_rework,
                 max_rework_cycles=self.config.max_rework_cycles,
+                issue_key=issue_key,
                 reason=f"PR #{escalation.pr_number} exceeded max rework cycles ({escalation.rework_cycle - 1})",
                 expected=build_expected_for_mutation(),
             ))
