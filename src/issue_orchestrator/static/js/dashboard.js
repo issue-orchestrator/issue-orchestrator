@@ -4355,6 +4355,9 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
             const time = evt.timestamp ? `<div class="timeline-time">${formatTimestamp(evt.timestamp)}</div>` : '';
             const artifacts = renderTimelineArtifacts(evt.artifacts || []);
             const actions = renderTimelineEventActions(evt.actions || []);
+            const children = (evt.children && evt.children.length > 0)
+                ? renderTimelineChildren(evt.children)
+                : '';
             return `
                 <div class="timeline-event ${evt.status || ''}">
                     <div class="timeline-event-header">
@@ -4365,6 +4368,7 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
                     ${time}
                     ${summary}
                     ${artifacts}
+                    ${children}
                 </div>
             `;
         }).join('');
@@ -4410,6 +4414,29 @@ function renderTimelineArtifacts(artifacts) {
         return `<button class="timeline-artifact" type="button" data-path="${escapeAttr(value)}">${label}</button>`;
     }).join('');
     return `<div class="timeline-artifacts">${items}</div>`;
+}
+
+function renderTimelineChildren(children) {
+    if (!children || children.length === 0) return '';
+    const items = children.map(child => {
+        const stepLabel = formatStepLabel(child.step);
+        const summary = child.summary ? `<span class="timeline-child-summary">${escapeHtml(child.summary)}</span>` : '';
+        const time = child.timestamp ? `<span class="timeline-child-time">${formatTimestamp(child.timestamp)}</span>` : '';
+        return `
+            <div class="timeline-child-event ${child.status || ''}">
+                <span class="timeline-child-step">${escapeHtml(stepLabel)}</span>
+                <span class="timeline-child-status">${formatStatus(child.status)}</span>
+                ${time}
+                ${summary}
+            </div>
+        `;
+    }).join('');
+    return `
+        <details class="timeline-children">
+            <summary class="timeline-children-toggle">${children.length} orchestrator event${children.length !== 1 ? 's' : ''}</summary>
+            <div class="timeline-children-list">${items}</div>
+        </details>
+    `;
 }
 
 function renderTimelineEventActions(actions) {

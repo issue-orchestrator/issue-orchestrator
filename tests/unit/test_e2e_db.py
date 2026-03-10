@@ -1007,3 +1007,68 @@ class TestE2ERunEvents:
                 event_name=event_name, source_event="", data={},
             )
             assert event.to_timeline_dict()["phase"] == expected_phase, f"{event_name} -> {expected_phase}"
+
+    def test_hierarchical_nesting_places_orch_events_under_tests(self):
+        """Orchestrator events are nested as children under their test's time window."""
+        events = [
+            E2ERunEvent(id=1, run_id=1, event_id="r1", timestamp="2026-01-01T00:00:00Z",
+                        event_name="e2e.run_started", source_event="", data={"branch": "main"}),
+            E2ERunEvent(id=2, run_id=1, event_id="t1s", timestamp="2026-01-01T00:00:10Z",
+                        event_name="e2e.test_started", source_event="", data={"nodeid": "test_a"}),
+            E2ERunEvent(id=3, run_id=1, event_id="t1e", timestamp="2026-01-01T00:00:30Z",
+                        event_name="e2e.test_completed", source_event="",
+                        data={"nodeid": "test_a", "outcome": "passed", "duration_seconds": 20}),
+            E2ERunEvent(id=4, run_id=1, event_id="fin", timestamp="2026-01-01T00:00:40Z",
+                        event_name="e2e.run_finished", source_event="",
+                        data={"status": "passed", "duration_seconds": 40}),
+        ]
+        orch_events = [
+            {"event_id": "o1", "timestamp": "2026-01-01T00:00:15Z", "event": "tick.started",
+             "step": "tick_started", "status": "active", "summary": "Tick 1", "phase": "observation"},
+            {"event_id": "o2", "timestamp": "2026-01-01T00:00:20Z", "event": "session.started",
+             "step": "session_started", "status": "active", "summary": "Session launched", "phase": "execution"},
+        ]
+
+        timeline = e2e_run_timeline(events, orchestrator_events=orch_events)
+
+        # Both orch events should be nested under test_started (test_a's window)
+        test_started_evt = timeline["events"][1]
+        assert test_started_evt["event"] == "e2e.test_started"
+        assert len(test_started_evt["children"]) == 2
+        assert test_started_evt["children"][0]["event_id"] == "o1"
+        assert test_started_evt["children"][1]["event_id"] == "o2"
+
+        # Other events should have empty children
+        assert timeline["events"][0]["children"] == []  # run_started
+        assert timeline["events"][2]["children"] == []  # test_completed
+        assert timeline["events"][3]["children"] == []  # run_finished
+
+    def test_hierarchical_nesting_unmatched_events_attach_to_nearest(self):
+        """Orchestrator events outside test windows attach to nearest preceding pytest event."""
+        events = [
+            E2ERunEvent(id=1, run_id=1, event_id="r1", timestamp="2026-01-01T00:00:00Z",
+                        event_name="e2e.run_started", source_event="", data={"branch": "main"}),
+            E2ERunEvent(id=2, run_id=1, event_id="fin", timestamp="2026-01-01T00:00:40Z",
+                        event_name="e2e.run_finished", source_event="",
+                        data={"status": "passed", "duration_seconds": 40}),
+        ]
+        orch_events = [
+            {"event_id": "o1", "timestamp": "2026-01-01T00:00:05Z", "event": "tick.started",
+             "step": "tick_started", "status": "active", "summary": "Tick 1", "phase": "observation"},
+        ]
+
+        timeline = e2e_run_timeline(events, orchestrator_events=orch_events)
+
+        # Should attach to run_started (nearest preceding)
+        assert len(timeline["events"][0]["children"]) == 1
+        assert timeline["events"][0]["children"][0]["event_id"] == "o1"
+
+    def test_hierarchical_nesting_no_orch_events_returns_flat(self):
+        """Without orchestrator events, timeline is flat with no children keys."""
+        events = [
+            E2ERunEvent(id=1, run_id=1, event_id="r1", timestamp="2026-01-01T00:00:00Z",
+                        event_name="e2e.run_started", source_event="", data={"branch": "main"}),
+        ]
+        timeline = e2e_run_timeline(events)
+        # No children key when no orchestrator events
+        assert "children" not in timeline["events"][0]

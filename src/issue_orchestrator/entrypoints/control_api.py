@@ -4362,6 +4362,73 @@ async def e2e_run_details(
         )
 
 
+def _read_orchestrator_timeline_for_window(
+    timeline_db_path: Path,
+    started_at: str,
+    finished_at: str | None,
+) -> list[dict]:
+    """Read orchestrator timeline events that fall within an E2E run's time window.
+
+    Opens the timeline.sqlite read-only and queries events whose timestamp
+    is between the run's started_at and finished_at.  Returns pre-converted
+    dicts in the main-UI timeline event shape.
+    """
+    import json as _json
+    import sqlite3 as _sqlite3
+
+    try:
+        # Open read-only to avoid interfering with the orchestrator's WAL
+        uri = f"file:{timeline_db_path}?mode=ro"
+        conn = _sqlite3.connect(uri, uri=True)
+        conn.row_factory = _sqlite3.Row
+
+        end_ts = finished_at or "9999-12-31T23:59:59Z"
+        rows = conn.execute(
+            """
+            SELECT event_id, source_event, timestamp, event, data_json
+            FROM timeline_events
+            WHERE timestamp >= ? AND timestamp <= ?
+            ORDER BY sequence ASC
+            """,
+            (started_at, end_ts),
+        ).fetchall()
+        conn.close()
+    except Exception:
+        logger.debug("Could not read orchestrator timeline from %s", timeline_db_path, exc_info=True)
+        return []
+
+    # Convert to the same dict shape as TimelineEvent.to_dict() — but simplified.
+    # We use the full TimelineStream conversion for fidelity.
+    from ..ports.timeline_store import TimelineRecord
+    from ..timeline import TimelineStream as _TimelineStream
+
+    records = []
+    for row in rows:
+        data_json = row["data_json"] or "{}"
+        try:
+            data = _json.loads(data_json)
+        except (ValueError, TypeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        records.append(
+            TimelineRecord(
+                event_id=str(row["event_id"]),
+                timestamp=str(row["timestamp"]),
+                event=str(row["event"]),
+                data=data,
+                source_event=str(row["source_event"] or ""),
+            )
+        )
+
+    if not records:
+        return []
+
+    # Use issue_number=0 since these are cross-issue; the UI treats them as nested children
+    stream = _TimelineStream.from_records(issue_number=0, records=records)
+    return [evt.to_dict() for evt in stream.events]
+
+
 @control_app.get("/control/e2e/run/{run_id}/timeline")
 async def e2e_run_timeline_endpoint(
     run_id: int,
@@ -4397,7 +4464,19 @@ async def e2e_run_timeline_endpoint(
     try:
         db = E2EDB(db_path)
         events = db.get_run_events(run_id)
-        return JSONResponse(e2e_run_timeline(events))
+
+        # Read orchestrator events from timeline.sqlite for the run's time window
+        orchestrator_events: list[dict] = []
+        run = db.get_run(run_id)
+        timeline_db_path = validated_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
+        if run and timeline_db_path.exists():
+            orchestrator_events = _read_orchestrator_timeline_for_window(
+                timeline_db_path,
+                started_at=run.started_at,
+                finished_at=run.finished_at,
+            )
+
+        return JSONResponse(e2e_run_timeline(events, orchestrator_events=orchestrator_events))
     except Exception as e:
         logger.exception("Failed to get E2E run timeline: %s", e)
         return JSONResponse(
