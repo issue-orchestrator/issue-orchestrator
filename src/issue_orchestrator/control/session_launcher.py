@@ -1766,6 +1766,9 @@ class SessionLauncher:
         if not agent_config.provider:
             return False
         from issue_orchestrator.agent_runner import get_provider
+        from issue_orchestrator.execution.agent_runner_providers import is_valid_provider
+        if not is_valid_provider(agent_config.provider):
+            return False
         return get_provider(agent_config.provider).interactive
 
     def _send_initial_prompt(self, session_name: str, prompt: str, agent_config: "AgentConfig") -> None:
