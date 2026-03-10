@@ -186,13 +186,14 @@ class TestAgentConfig:
 
         cmd = config.get_command(123, "Test Issue", tmp_path)
 
-        # Should include completion command docs
+        # Should include completion command docs in system prompt
         assert "CRITICAL" in cmd
         assert "coding-done" in cmd
         assert "prompt.md" in cmd
-        assert "--output-format stream-json" in cmd
-        assert "--include-partial-messages" in cmd
-        assert "--verbose" in cmd
+        # Interactive mode: no -p, no stream-json, no --verbose
+        assert "-p" not in cmd.split()
+        assert "--output-format" not in cmd
+        assert "--include-partial-messages" not in cmd
 
     def test_get_command_provider_appends_user_system_prompt(self, tmp_path):
         """Test user-provided system_prompt is appended, not replaced."""

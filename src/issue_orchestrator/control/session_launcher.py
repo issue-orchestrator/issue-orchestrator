@@ -204,6 +204,7 @@ class SessionLauncher:
         provider_resilience: Optional["ProviderResilienceManager"] = None,
         remove_session_machine: Callable[[str], None] | None = None,
         label_manager: Optional["LabelManager"] = None,
+        send_to_session_fn: Optional[Callable[[str, str], bool]] = None,
     ):
         self.config = config
         self.events = events
@@ -226,6 +227,7 @@ class SessionLauncher:
         self._provider_resilience = provider_resilience
         self._provider_policy = ProviderAvailabilityPolicy(config, provider_resilience) if provider_resilience else None
         self._remove_session_machine = remove_session_machine
+        self._send_to_session = send_to_session_fn
         if label_manager is None:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
@@ -890,6 +892,10 @@ class SessionLauncher:
             self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, "Failed to create terminal session")
 
+        # For interactive providers, deliver the prompt via PTY stdin
+        if session_created and self._is_interactive_provider(agent_config):
+            self._send_initial_prompt(session_name, rendered_prompt, agent_config)
+
         log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
 
         # Create session object with domain identity
@@ -1145,6 +1151,10 @@ class SessionLauncher:
             session_name,
             session_created,
         )
+
+        # For interactive providers, deliver the prompt via PTY stdin
+        if session_created and self._is_interactive_provider(agent_config):
+            self._send_initial_prompt(session_name, rendered_prompt, agent_config)
 
         # Create pseudo-issue for session tracking
         pseudo_issue = Issue(
@@ -1459,6 +1469,10 @@ class SessionLauncher:
             session_created,
         )
 
+        # For interactive providers, deliver the prompt via PTY stdin
+        if session_created and self._is_interactive_provider(agent_config):
+            self._send_initial_prompt(session_name, rendered_prompt, agent_config)
+
         # Create issue object for session tracking
         rework_issue = Issue(
             number=issue_number,
@@ -1747,8 +1761,33 @@ class SessionLauncher:
         prompt_path = self._session_output.write_session_prompt(run_dir, prompt_text)
         return str(prompt_path)
 
+    def _is_interactive_provider(self, agent_config: "AgentConfig") -> bool:
+        """Check if the agent uses an interactive provider (e.g. Claude Code TUI)."""
+        if not agent_config.provider:
+            return False
+        from issue_orchestrator.agent_runner import get_provider, is_valid_provider
+        if not is_valid_provider(agent_config.provider):
+            return False
+        return get_provider(agent_config.provider).interactive
+
+    def _send_initial_prompt(self, session_name: str, prompt: str, agent_config: "AgentConfig") -> None:
+        """Send the initial prompt to an interactive session via PTY stdin."""
+        if not self._send_to_session:
+            logger.warning("[launch] No send_to_session_fn configured; cannot deliver prompt to %s", session_name)
+            return
+        # Give the TUI time to initialize before sending the prompt.
+        time.sleep(3)
+        sent = self._send_to_session(session_name, prompt)
+        logger.info("[launch] Sent initial prompt to interactive session %s: success=%s", session_name, sent)
+
     def _wrap_provider_command(self, base_command: str, agent_config: "AgentConfig", run_dir: Path) -> str:
-        """Wrap provider command with retry/circuit reporting."""
+        """Wrap provider command with retry/circuit reporting.
+
+        Interactive providers are returned as-is — they manage their own
+        lifecycle and don't use the provider_runner subprocess wrapper.
+        """
+        if self._is_interactive_provider(agent_config):
+            return base_command
         retry_cfg = self.config.provider_resilience.short_retry
         provider = agent_config.provider or detect_ai_system_from_command(base_command)
         cmd = [

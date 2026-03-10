@@ -185,6 +185,7 @@ class Orchestrator:
             provider_resilience=self.deps.provider_resilience,
             remove_session_machine=self.deps.state_machine_manager.remove_session_machine,
             label_manager=self.deps.label_manager,
+            send_to_session_fn=lambda name, text: self.deps.session_manager.runner.send_to_session_by_name(name, text),
         )
 
     @cached_property

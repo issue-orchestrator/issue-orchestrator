@@ -7,15 +7,27 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from issue_orchestrator.control.review_exchange_loop import (
     REVIEW_RESPONSE_FILENAME,
     _parse_exchange_response,
     _run_agent_round,
+    _run_interactive_round,
     _resolve_provider,
     run_review_exchange_loop,
 )
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.env import ENV_PREFIX
+
+
+@pytest.fixture(autouse=True)
+def _force_non_interactive(monkeypatch):
+    """Existing tests use DummyRunner.run(). Force non-interactive path."""
+    monkeypatch.setattr(
+        "issue_orchestrator.control.review_exchange_loop._is_interactive_provider",
+        lambda _config: False,
+    )
 
 
 def _write_response_file(spec, json_text: str) -> None:
@@ -118,7 +130,9 @@ def test_run_agent_round_prefers_provider_mode_when_ai_system_is_provider(tmp_pa
     )
 
     assert response.response_type == "ok"
-    assert "-p" in seen_command
+    # Interactive mode: no -p flag, but claude executable and permission mode present
+    assert "claude" in seen_command
+    assert "--permission-mode" in seen_command
 
 
 def test_run_agent_round_writes_run_scoped_provider_runner_logs(tmp_path: Path) -> None:
@@ -559,3 +573,157 @@ def test_review_exchange_seeds_initial_validation_record(tmp_path: Path, monkeyp
     )
 
     assert outcome.status == "ok"
+
+
+class TestInteractiveRound:
+    """Tests for _run_interactive_round — the PTY-stdin prompt delivery path."""
+
+    @pytest.fixture(autouse=True)
+    def _no_sleep(self, monkeypatch):
+        monkeypatch.setattr("issue_orchestrator.control.review_exchange_loop.time.sleep", lambda _: None)
+
+    def test_interactive_round_writes_response(self, tmp_path: Path) -> None:
+        """Interactive round starts session, sends prompt, reads response file."""
+        from issue_orchestrator.execution.agent_runner_types import AgentSpec
+
+        round_dir = tmp_path / "round"
+        round_dir.mkdir()
+        response_file = tmp_path / "review-response.json"
+
+        spec = AgentSpec(
+            command=["claude"],
+            working_dir=tmp_path,
+            timeout_seconds=30,
+            log_path=round_dir / "agent.log",
+            output_dir=round_dir,
+        )
+
+        class MockSession:
+            def __init__(self):
+                self.sent: list[str] = []
+                self._alive = True
+                self._killed = False
+
+            def send(self, text: str) -> bool:
+                self.sent.append(text)
+                # Simulate agent writing response on receiving prompt
+                response_file.write_text(
+                    '{"response_type":"ok","response_text":"approved"}',
+                    encoding="utf-8",
+                )
+                return True
+
+            def is_alive(self) -> bool:
+                return self._alive
+
+            def kill(self) -> None:
+                self._alive = False
+                self._killed = True
+
+            def wait(self, timeout=None):
+                return SimpleNamespace(
+                    exit_code=0,
+                    timed_out=False,
+                    duration_seconds=1.0,
+                    stderr="",
+                    succeeded=True,
+                    command=["claude"],
+                )
+
+        mock_session = MockSession()
+
+        class MockRunner:
+            def start(self, _spec):
+                return mock_session
+
+        result = _run_interactive_round(
+            MockRunner(),
+            spec,
+            "Review this code",
+            response_file,
+        )
+
+        assert mock_session.sent == ["Review this code"]
+        assert mock_session._killed
+        assert response_file.exists()
+
+    def test_interactive_nonzero_exit_succeeds_when_response_file_present(
+        self, tmp_path: Path, monkeypatch
+    ) -> None:
+        """Killed interactive session returns non-zero exit, but response file is valid.
+
+        This is the normal case: the orchestrator kills the TUI after the agent
+        writes the response file, producing a non-zero exit code. The round
+        should succeed because the response file is present and parseable.
+        """
+        monkeypatch.setattr(
+            "issue_orchestrator.control.review_exchange_loop._is_interactive_provider",
+            lambda _config: True,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+        run_dir.mkdir(parents=True)
+        exchange_dir = run_dir / "review-exchange"
+        exchange_dir.mkdir()
+
+        response_file = run_dir / REVIEW_RESPONSE_FILENAME
+
+        class MockSession:
+            def __init__(self):
+                self.sent: list[str] = []
+
+            def send(self, text: str) -> bool:
+                self.sent.append(text)
+                # Agent writes response before being killed
+                response_file.write_text(
+                    '{"response_type":"ok","response_text":"approved"}',
+                    encoding="utf-8",
+                )
+                return True
+
+            def is_alive(self) -> bool:
+                return False  # Already exited after writing
+
+            def kill(self) -> None:
+                pass
+
+            def wait(self, timeout=None):
+                # Non-zero exit from kill — this is expected
+                return SimpleNamespace(
+                    exit_code=-9,
+                    timed_out=False,
+                    duration_seconds=2.0,
+                    stderr="",
+                    succeeded=False,
+                    command=["claude"],
+                )
+
+        class MockRunner:
+            def start(self, _spec):
+                return MockSession()
+
+        prompt_path = tmp_path / "prompt.md"
+        prompt_path.write_text("Prompt")
+        agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+
+        response = _run_agent_round(
+            runner=MockRunner(),
+            worktree_path=worktree,
+            run_dir=run_dir,
+            exchange_dir=exchange_dir,
+            round_index=1,
+            issue_number=1,
+            issue_title="Test",
+            session_name="review-exchange-1",
+            agent=agent,
+            role="reviewer",
+            agent_label="agent:reviewer",
+            prompt_text="Review prompt",
+            web_port=None,
+        )
+
+        # Should succeed despite non-zero exit code
+        assert response.response_type == "ok"
+        assert response.response_text == "approved"

@@ -11,7 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from ..agent_runner import AgentRunner, AgentSpec
+import time
+
+from ..agent_runner import AgentRunner, AgentResult, AgentSpec
 from ..domain.models import AgentConfig
 from ..infra.logging_config import get_repo_log_path
 from ..infra.env import ENV_PREFIX
@@ -677,6 +679,54 @@ def _run_coder_round_with_protocol_retries(
     return coder_response, protocol_error
 
 
+def _is_interactive_provider(agent_config: AgentConfig) -> bool:
+    """Check if the agent uses an interactive provider (e.g. Claude Code TUI)."""
+    provider_name = agent_config.provider or agent_config.ai_system
+    if not provider_name:
+        return False
+    from ..agent_runner import get_provider, is_valid_provider
+    if not is_valid_provider(provider_name):
+        return False
+    return get_provider(provider_name).interactive
+
+
+def _run_interactive_round(
+    runner: AgentRunner,
+    spec: AgentSpec,
+    prompt: str,
+    response_file: Path,
+) -> AgentResult:
+    """Run a single exchange round with an interactive provider.
+
+    Starts the TUI session, sends the prompt via PTY stdin, then polls
+    for the response file or process exit.
+    """
+    _TUI_INIT_SECONDS = 3
+    _POLL_INTERVAL = 2.0
+
+    session = runner.start(spec)
+    try:
+        time.sleep(_TUI_INIT_SECONDS)
+        if not session.send(prompt):
+            logger.warning("Failed to send prompt to interactive session")
+
+        deadline = time.monotonic() + spec.timeout_seconds
+        while time.monotonic() < deadline:
+            if response_file.exists():
+                logger.info("Interactive agent wrote response file")
+                break
+            if not session.is_alive():
+                logger.info("Interactive agent exited before writing response")
+                break
+            time.sleep(_POLL_INTERVAL)
+        else:
+            logger.warning("Interactive agent timed out after %ds", spec.timeout_seconds)
+    finally:
+        session.kill()
+    # Collect exit status. The process is already dead after kill().
+    return session.wait(timeout=5)
+
+
 def _run_agent_round(
     *,
     runner: AgentRunner,
@@ -752,7 +802,20 @@ def _run_agent_round(
         output_dir=round_dir,
         env_overrides=env_overrides,
     )
-    result = runner.run(spec)
+
+    # For interactive providers (e.g. Claude Code TUI), we start the session
+    # and deliver the prompt via PTY stdin, then wait for the response file.
+    # Non-interactive providers use the classic run-and-wait path.
+    interactive = _is_interactive_provider(agent_config)
+    if interactive:
+        rendered_prompt = agent_config.render_initial_prompt(
+            issue_number=issue_number,
+            issue_title=issue_title,
+            worktree=worktree_path,
+        )
+        result = _run_interactive_round(runner, spec, rendered_prompt, response_file)
+    else:
+        result = runner.run(spec)
 
     # Read structured response from file (agent writes here instead of stdout)
     response_text = ""
@@ -781,7 +844,10 @@ def _run_agent_round(
             f"stderr:\n{result.stderr or '(empty)'}"
         ),
     )
-    if not result.succeeded:
+    # For interactive providers, forced kill yields non-zero exit — that's expected.
+    # Success is determined by whether the response file was written and is parseable.
+    # For non-interactive providers, a non-zero exit with no response file is a real failure.
+    if not result.succeeded and not (interactive and response_text):
         stderr_snippet = result.stderr.strip().splitlines()
         stderr_preview = "\n".join(stderr_snippet[:6]) if stderr_snippet else "No stderr captured."
         return ReviewExchangeResponse(

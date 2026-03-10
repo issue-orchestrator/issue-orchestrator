@@ -11,8 +11,9 @@ from .base import CLIProvider
 class ClaudeCodeProvider(CLIProvider):
     """Provider for Anthropic's Claude Code CLI.
 
-    Builds command-line invocations for Claude Code with appropriate flags
-    for non-interactive, automated execution.
+    Runs Claude Code as an interactive TUI session. The initial prompt
+    (and any follow-up prompts) are delivered via PTY stdin after the
+    session starts, so the prompt is NOT included in the command argv.
     """
 
     # Model name mappings (short names to full IDs if needed)
@@ -34,23 +35,30 @@ class ClaudeCodeProvider(CLIProvider):
     def description(self) -> str:
         return "Anthropic Claude Code CLI"
 
+    @property
+    def interactive(self) -> bool:
+        return True
+
     def build_command(
         self,
         prompt: str,
         model: str | None = None,
         **kwargs: str,
     ) -> list[str]:
-        """Build a Claude Code CLI command.
+        """Build a Claude Code CLI command for interactive mode.
+
+        The prompt is NOT included in the command argv — it will be sent
+        via PTY stdin after the TUI initializes.
 
         Args:
-            prompt: The task to perform
+            prompt: The task to perform (stored but not added to argv)
             model: Model name (haiku, sonnet, opus, or full model ID). None for default.
             **kwargs: Additional options:
                 - permission_mode: Permission handling mode (default: bypassPermissions)
                 - system_prompt: Additional system prompt text
                 - max_turns: Maximum conversation turns
         """
-        cmd = [self.executable, "-p"]
+        cmd = [self.executable]
 
         # Model (optional - Claude will use default if not specified)
         if model:
@@ -60,10 +68,6 @@ class ClaudeCodeProvider(CLIProvider):
         # Permission mode (default to bypassPermissions for automation)
         permission_mode = kwargs.get("permission_mode", "bypassPermissions")
         cmd.extend(["--permission-mode", permission_mode])
-
-        # Stream JSON output so orchestrator can surface incremental transcript text.
-        # Claude requires --verbose when using --output-format stream-json with --print.
-        cmd.extend(["--verbose", "--output-format", "stream-json", "--include-partial-messages"])
 
         # Optional system prompt
         system_prompt = kwargs.get("system_prompt")
@@ -75,7 +79,7 @@ class ClaudeCodeProvider(CLIProvider):
         if max_turns:
             cmd.extend(["--max-turns", str(max_turns)])
 
-        # The prompt itself (must be last for -p mode)
-        cmd.append(prompt)
+        # Prompt is NOT added to argv — it will be sent via PTY stdin
+        # after the interactive TUI initializes.
 
         return cmd
