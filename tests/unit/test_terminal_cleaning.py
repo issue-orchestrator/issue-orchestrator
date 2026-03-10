@@ -105,8 +105,13 @@ class TestIsSpinnerFragment:
         assert is_spinner_fragment("ok") is False
         assert is_spinner_fragment("FAIL") is False
         assert is_spinner_fragment("done") is False
-        assert is_spinner_fragment("1234567") is False
         assert is_spinner_fragment("yes") is False
+
+    def test_filters_pure_digit_lines(self):
+        """Pure digit lines are cursor-positioned line numbers from TUI tool output."""
+        assert is_spinner_fragment("1234567") is True
+        assert is_spinner_fragment("42") is True
+        assert is_spinner_fragment("1") is True
 
     def test_filters_spinner_chars(self):
         assert is_spinner_fragment("*") is True

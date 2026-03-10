@@ -38,7 +38,7 @@ _ANSI_ESCAPE_PATTERN = re.compile(
 )
 
 # Spinner characters used by Claude Code (dots, stars, etc.)
-_SPINNER_CHARS = set("·✶✻✽✳✢*/-\\|●○◉◎◯◐◑◒◓⎿⏵")
+_SPINNER_CHARS = set("·✶✻✽✳✢*/-\\|●○◉◎◯◐◑◒◓⎿⏵⏺")
 
 
 # ---------------------------------------------------------------------------
@@ -98,10 +98,65 @@ def _is_ui_noise(lower: str) -> bool:
         return True
     if lower.startswith("esc to") or "ctrl+g" in lower:
         return True
+    # TUI hints: "ctrl+o to expand", "ctrl+c to interrupt", "…+151lines(ctrl+o..."
+    if "ctrl+o" in lower or "ctrl+c" in lower:
+        return True
     # Claude Code TUI banner/header lines
     if "claudecode" in lower.replace(" ", "") or "claude code" in lower:
         return True
     if "sonnet" in lower and ("claude" in lower or "max" in lower):
+        return True
+    return False
+
+
+_ANIMATION_SPINNERS = _SPINNER_CHARS - {"⎿", "⏺"}  # ⎿ and ⏺ are used for tool output
+
+_KEEP_SHORT = frozenset({
+    "ok", "yes", "no", "done", "fail", "pass", "true", "null",
+    "PASS", "FAIL", "OK", "YES", "NO", "DONE", "TRUE", "NULL",
+    "error", "Error", "ERROR",
+})
+
+_NOISE_SUFFIX_SOURCES = (
+    "interrupt", "fiddle-faddling", "thinking", "envisioning",
+    "planning", "analyzing", "reasoning", "clauding",
+)
+
+_BLOCK_CHARS = frozenset("▐▛▜▌▝▘█▀▄▁▂▃▅▆▇ ")
+
+
+def _is_short_fragment(stripped: str) -> bool:
+    """Return True when *stripped* is a short noise fragment."""
+    # Pure digit lines are cursor-positioned line numbers from tool output.
+    if stripped.isdigit():
+        return True
+    # Short fragments (≤5 chars, no spaces): keep only known meaningful words.
+    if len(stripped) <= 5 and " " not in stripped:
+        return stripped not in _KEEP_SHORT and stripped.rstrip("…") not in _KEEP_SHORT
+    # Partial word fragments from cursor-positioned TUI rendering:
+    # e.g. "terrupt" from "interrupt", "ding" from "fiddling"
+    stripped_lower = stripped.lower().rstrip("…↑↓")
+    if 3 <= len(stripped_lower) <= 10 and stripped_lower.isalpha() and " " not in stripped:
+        return any(kw.endswith(stripped_lower) and stripped_lower != kw for kw in _NOISE_SUFFIX_SOURCES)
+    return False
+
+
+def _is_tui_chrome(stripped: str) -> bool:
+    """Return True when *stripped* is TUI chrome (separators, banner, etc.)."""
+    if all(c in "─━═" for c in stripped):
+        return True
+    if stripped in ("❯", ">", "❯  ", "↓", "↑", "←", "→"):
+        return True
+    if all(c in _BLOCK_CHARS for c in stripped):
+        return True
+    # Lines starting with block chars (TUI banner decoration around cwd path)
+    if stripped[0] in _BLOCK_CHARS and any(c in _BLOCK_CHARS for c in stripped[:4]):
+        return True
+    # Collapsed tool output indicators: "…+151lines(ctrl+otoseeall)"
+    if stripped.startswith("…+") and "lines" in stripped:
+        return True
+    # Truncated terminal escape remnants (e.g. "]9;" from an OSC sequence)
+    if stripped.startswith("]") and len(stripped) <= 5:
         return True
     return False
 
@@ -117,28 +172,11 @@ def is_spinner_fragment(line: str) -> bool:
         return True
     # Lines starting with a spinner char that are short animation frames
     # (e.g. "✻Env", "✽Ei", "✻Envisioning…") but NOT tool output like "⎿ Read 221 lines"
-    _ANIMATION_SPINNERS = _SPINNER_CHARS - {"⎿"}  # ⎿ is used for tool output
     if stripped[0] in _ANIMATION_SPINNERS and len(stripped) <= 25:
         return True
-    # Short fragments (≤5 chars, no spaces) are partial TUI animation overwrites
-    # or line-number fragments from cursor-positioned tool output.
-    # Keep only known meaningful short words.
-    if len(stripped) <= 5 and " " not in stripped:
-        _KEEP_SHORT = {"ok", "yes", "no", "done", "fail", "pass", "true", "null",
-                        "PASS", "FAIL", "OK", "YES", "NO", "DONE", "TRUE", "NULL",
-                        "error", "Error", "ERROR"}
-        if stripped not in _KEEP_SHORT and stripped.rstrip("…") not in _KEEP_SHORT:
-            return True
-    # TUI chrome: horizontal rules, prompt indicators, arrows, block-char banner lines
-    if all(c in "─━═" for c in stripped):
+    if _is_short_fragment(stripped):
         return True
-    if stripped in ("❯", ">", "❯  ", "↓", "↑", "←", "→"):
-        return True
-    # Block characters from TUI banner (▐▛███▜▌ etc.)
-    _BLOCK_CHARS = set("▐▛▜▌▝▘█▀▄▁▂▃▅▆▇ ")
-    if all(c in _BLOCK_CHARS for c in stripped):
-        return True
-    return False
+    return _is_tui_chrome(stripped)
 
 
 def dedupe_consecutive_lines(lines: list[str]) -> list[str]:
