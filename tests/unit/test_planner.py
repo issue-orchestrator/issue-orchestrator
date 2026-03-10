@@ -996,7 +996,35 @@ class TestPlanDiscoveredEscalations:
         action = escalate_actions[0]
         assert action.issue_number == 42
         assert action.pr_number == 100
-        assert action.rework_cycles == 2  # rework_cycle - 1
+        assert action.rework_cycles == 3  # Passed through from scanner; ActionApplier subtracts 1 for display
+        assert action.issue_key == "42"  # Falls back to str(issue_number) when no Issue in snapshot
+
+    def test_discovered_escalation_uses_stable_issue_key(self):
+        """Planner resolves stable issue_key from snapshot issues for discovered escalations."""
+        from issue_orchestrator.domain.models import DiscoveredEscalation
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer", max_rework_cycles=2)
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        issue = make_issue(number=42, title="[M0-721] Fix the widget")
+        discovered = DiscoveredEscalation(
+            issue_number=42,
+            pr_number=100,
+            rework_cycle=3,
+        )
+
+        snapshot = make_snapshot(
+            issues=[issue],
+            discovered_escalations=(discovered,),
+        )
+
+        plan = planner.plan(snapshot)
+
+        escalate_actions = [a for a in plan.actions if a.action_type == ActionType.ESCALATE_TO_HUMAN]
+        assert len(escalate_actions) == 1
+        assert escalate_actions[0].issue_key == "M0-721"
 
     def test_no_escalate_actions_when_no_discovered_escalations(self):
         """Planner produces no escalate actions when no discovered escalations."""

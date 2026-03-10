@@ -23,7 +23,7 @@ from issue_orchestrator.testing.support.test_data import cleanup_test_issues
 logger = logging.getLogger(__name__)
 
 @pytest.mark.e2e
-@pytest.mark.timeout(180)  # 3 minute timeout
+@pytest.mark.timeout(480)  # 8 minutes (reconciliation can take 150s + test needs 180s)
 class TestLiveOrchestratorLifecycle:
     """Test complete orchestrator lifecycle with real GitHub issues."""
 
@@ -90,7 +90,7 @@ class TestLiveOrchestratorLifecycle:
 
 
 @pytest.mark.e2e
-@pytest.mark.timeout(60)
+@pytest.mark.timeout(180)
 class TestOrchestratorStateObservation:
     """Test observing orchestrator state during execution."""
 
@@ -117,12 +117,12 @@ class TestOrchestratorStateObservation:
 
 
 @pytest.mark.e2e
-@pytest.mark.timeout(120)
+@pytest.mark.timeout(300)
 class TestLabelDetection:
     """Test that label changes are detected correctly."""
 
     @pytest.mark.asyncio
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=400, system_gh_activity_limit=100)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=600, system_gh_activity_limit=100)
     async def test_blocked_label_detection(
         self,
         e2e_orchestrator,

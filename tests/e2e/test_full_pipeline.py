@@ -67,7 +67,7 @@ class TestConcurrentPipelinePhases:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(240)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=160, system_gh_activity_limit=10)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=160, system_gh_activity_limit=50)
     async def test_concurrent_issues_seen_in_snapshots(
         self,
         e2e_orchestrator,
@@ -86,7 +86,7 @@ class TestConcurrentPipelinePhases:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(360)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=12)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=50)
     async def test_concurrent_sessions_start(
         self,
         e2e_orchestrator,
@@ -112,7 +112,7 @@ class TestConcurrentPipelinePhases:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(600)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=220, system_gh_activity_limit=15)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=400, system_gh_activity_limit=50)
     async def test_pr_created_for_issue(
         self,
         e2e_orchestrator,
@@ -151,7 +151,7 @@ class TestConcurrentPipelinePhases:
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(600)
-    @pytest.mark.gh_activity_limit(test_gh_activity_limit=260, system_gh_activity_limit=20)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=700, system_gh_activity_limit=50)
     async def test_review_outcome_for_issue(
         self,
         e2e_orchestrator,

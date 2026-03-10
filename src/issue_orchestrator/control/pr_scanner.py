@@ -221,6 +221,7 @@ class PRScanner:
                     agent_type=agent_type,
                     rework_cycle=decision.rework_cycle,
                     issue_number=decision.issue_number,
+                    pr_number=pr.number,
                 )
             )
             logger.info("[SCANNER] Found PR #%d for rework (cycle %d)", pr.number, decision.rework_cycle)

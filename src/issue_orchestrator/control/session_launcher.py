@@ -47,6 +47,7 @@ from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import issue_log, log_context
 from ..events import EventName
 from ..domain.models import Issue, Session, SessionStatus, PendingReview, PendingRework, PendingTriageReview, get_completion_path, SessionKey, TaskKind, AgentConfig
+from ..domain.issue_key import IssueKey
 from .worktree import WorktreePreparationError
 from .worktree_context import WorktreeContext
 from ..domain.triage_manifest import TriageManifest
@@ -1239,7 +1240,7 @@ class SessionLauncher:
         if result := self._check_provider_circuit(agent_config.provider, issue_number):
             return result
 
-        pr_number, branch_name = self._resolve_rework_pr_details(issue_number)
+        pr_number, branch_name = self._resolve_rework_pr(rework, issue_number)
 
         # Check for conflicts
         session_name = f"rework-{issue_number}"
@@ -1497,7 +1498,7 @@ class SessionLauncher:
         }))
 
         # Update rework cycle label
-        self._update_rework_cycle_label(pr_number, issue_number, rework.rework_cycle)
+        self._update_rework_cycle_label(pr_number, issue_number, issue_key, rework.rework_cycle)
 
         # Remove needs-rework label
         self._apply_actions([
@@ -1510,7 +1511,7 @@ class SessionLauncher:
         self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, {
             "pr_number": pr_number,
             "issue_number": issue_number,
-            "issue_key": str(issue_number),
+            "issue_key": issue_key.stable_id(),
             "removed": [self._lm.needs_rework],
         }))
 
@@ -1804,6 +1805,18 @@ class SessionLauncher:
             return LaunchResult(None, False, "Terminal session already running", keep_queued=True)
         return None
 
+    def _resolve_rework_pr(self, rework: PendingRework, issue_number: int) -> tuple[int, str]:
+        """Resolve PR number and branch for a rework session.
+
+        Uses the scanner-provided pr_number when available, falling back
+        to searching for PRs by issue number.
+        """
+        if rework.pr_number:
+            pr_info = self.repository_host.get_pr(rework.pr_number)
+            if pr_info:
+                return pr_info.number, pr_info.branch or f"{issue_number}-rework"
+        return self._resolve_rework_pr_details(issue_number)
+
     def _resolve_rework_pr_details(self, issue_number: int) -> tuple[int, str]:
         prs = self.repository_host.get_prs_for_issue(issue_number)
         if not prs:
@@ -1856,7 +1869,9 @@ class SessionLauncher:
             logger.debug(f"[STATE_MACHINE] PR #{pr_number}: PENDING -> IN_REVIEW")
             review_machine.start_review()
 
-    def _update_rework_cycle_label(self, pr_number: int, issue_number: int, cycle: int) -> None:
+    def _update_rework_cycle_label(
+        self, pr_number: int, issue_number: int, issue_key: IssueKey, cycle: int,
+    ) -> None:
         """Update the rework cycle label on a PR."""
         actions: list[Action] = []
         removed: list[str] = []
@@ -1878,7 +1893,7 @@ class SessionLauncher:
         self.events.publish(make_trace_event(EventName.PR_VIEW_CHANGED, {
             "pr_number": pr_number,
             "issue_number": issue_number,
-            "issue_key": str(issue_number),
+            "issue_key": issue_key.stable_id(),
             "added": [added_label],
             "removed": removed,
         }))

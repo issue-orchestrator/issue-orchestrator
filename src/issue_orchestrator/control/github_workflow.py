@@ -147,7 +147,7 @@ class GitHubWorkflow:
             state.discovered_reworks.append(
                 DiscoveredRework(
                     issue_number,
-                    0,
+                    r.pr_number or 0,
                     "",
                     r.agent_type,
                     r.rework_cycle,

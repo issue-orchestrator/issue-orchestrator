@@ -32,7 +32,10 @@ logger = logging.getLogger(__name__)
 DISCOVERY_TIMEOUT = 30
 
 
+@pytest.mark.e2e
+@pytest.mark.asyncio
 @pytest.mark.timeout(120)
+@pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=100)
 async def test_inflight_refresh_discovers_issue(
     e2e_orchestrator,
     e2e_session_config,

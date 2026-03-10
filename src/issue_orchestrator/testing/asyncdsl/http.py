@@ -123,19 +123,32 @@ class SSEEventStream:
     def _run(self) -> None:
         if self._loop is None:
             return
+        consecutive_failures = 0
         try:
             while not self._stop.is_set():
                 try:
                     logger.info("[SSE] Connecting to %s", self.url)
                     with urllib.request.urlopen(self.url, timeout=self.timeout_s) as resp:
                         self._process_stream(resp)
+                    consecutive_failures = 0
                     self._emit_reconnect("closed")
                     logger.warning("[SSE] Stream closed, reconnecting")
+                    # Brief pause before reconnecting after clean close
+                    time.sleep(0.5)
                 except TimeoutError:
                     if self._handle_connection_error(None, "timeout"):
                         break
+                    consecutive_failures += 1
                 except Exception:
                     if self._handle_connection_error(None, "error"):
+                        break
+                    consecutive_failures += 1
+                # Exponential backoff on consecutive failures (cap at 30s)
+                if consecutive_failures > 0:
+                    backoff = min(0.5 * (2 ** (consecutive_failures - 1)), 30.0)
+                    logger.info("[SSE] Backoff %.1fs before reconnect (failures=%d)", backoff, consecutive_failures)
+                    # Use stop event for interruptible sleep
+                    if self._stop.wait(backoff):
                         break
         finally:
             self._emit_close()

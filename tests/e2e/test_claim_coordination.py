@@ -186,11 +186,14 @@ def claim_test_issue(repo_name: str, claim_test_label: str) -> Generator[int, No
     cleanup_issues_by_label(repo_name, claim_test_label)
 
 
+@pytest.mark.e2e
+@pytest.mark.live
 class TestClaimCoordination:
     """Tests for multi-orchestrator claim coordination."""
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=100)
     async def test_only_one_orchestrator_claims_issue(
         self,
         dual_orchestrators: tuple[OrchestratorProcess, OrchestratorProcess],
@@ -228,11 +231,14 @@ class TestClaimCoordination:
         print(f"\n[CLAIM E2E] Test passed: only one orchestrator claimed issue #{claim_test_issue}")
 
 
+@pytest.mark.e2e
+@pytest.mark.live
 class TestClaimTakeover:
     """Tests for claim takeover when orchestrator stops."""
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(180)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=300, system_gh_activity_limit=150)
     async def test_second_orchestrator_claims_after_first_crashes(
         self,
         dual_orchestrator_configs: tuple[Config, Config],
@@ -288,11 +294,14 @@ class TestClaimTakeover:
         proc_b.stop()
 
 
+@pytest.mark.e2e
+@pytest.mark.live
 class TestNoDuplicateSessions:
     """Tests for preventing duplicate sessions via claims."""
 
     @pytest.mark.asyncio
     @pytest.mark.timeout(120)
+    @pytest.mark.gh_activity_limit(test_gh_activity_limit=200, system_gh_activity_limit=100)
     async def test_claim_prevents_duplicate_sessions(
         self,
         dual_orchestrators: tuple[OrchestratorProcess, OrchestratorProcess],
