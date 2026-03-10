@@ -1072,3 +1072,67 @@ class TestE2ERunEvents:
         timeline = e2e_run_timeline(events)
         # No children key when no orchestrator events
         assert "children" not in timeline["events"][0]
+
+    def test_nodeid_with_colons_pairs_correctly(self):
+        """Parametrized tests with colons in nodeid pair correctly via data.nodeid."""
+        nodeid = "tests/e2e/test_foo.py::TestClass::test_method[param:value]"
+        events = [
+            E2ERunEvent(id=1, run_id=1, event_id="t1s", timestamp="2026-01-01T00:00:10Z",
+                        event_name="e2e.test_started", source_event="", data={"nodeid": nodeid}),
+            E2ERunEvent(id=2, run_id=1, event_id="t1e", timestamp="2026-01-01T00:00:30Z",
+                        event_name="e2e.test_completed", source_event="",
+                        data={"nodeid": nodeid, "outcome": "passed", "duration_seconds": 20}),
+        ]
+        orch_events = [
+            {"event_id": "o1", "timestamp": "2026-01-01T00:00:15Z", "event": "tick.started",
+             "step": "tick_started", "status": "active", "summary": "Tick 1", "phase": "observation"},
+        ]
+        timeline = e2e_run_timeline(events, orchestrator_events=orch_events)
+
+        # Orch event should be nested under test_started, not misattributed
+        assert len(timeline["events"][0]["children"]) == 1
+        assert timeline["events"][0]["children"][0]["event_id"] == "o1"
+
+    def test_failed_test_status_is_error(self):
+        """test_completed with outcome='failed' has status 'error', not 'completed'."""
+        event = E2ERunEvent(
+            id=1, run_id=1, event_id="x",
+            timestamp="2026-01-01T00:00:00Z",
+            event_name="e2e.test_completed", source_event="",
+            data={"nodeid": "test_a", "outcome": "failed", "duration_seconds": 1.0},
+        )
+        d = event.to_timeline_dict()
+        assert d["status"] == "error"
+
+    def test_passed_test_status_is_completed(self):
+        """test_completed with outcome='passed' has status 'completed'."""
+        event = E2ERunEvent(
+            id=1, run_id=1, event_id="x",
+            timestamp="2026-01-01T00:00:00Z",
+            event_name="e2e.test_completed", source_event="",
+            data={"nodeid": "test_a", "outcome": "passed", "duration_seconds": 1.0},
+        )
+        d = event.to_timeline_dict()
+        assert d["status"] == "completed"
+
+    def test_skipped_test_status_is_skipped(self):
+        """test_completed with outcome='skipped' has status 'skipped'."""
+        event = E2ERunEvent(
+            id=1, run_id=1, event_id="x",
+            timestamp="2026-01-01T00:00:00Z",
+            event_name="e2e.test_completed", source_event="",
+            data={"nodeid": "test_a", "outcome": "skipped"},
+        )
+        d = event.to_timeline_dict()
+        assert d["status"] == "skipped"
+
+    def test_to_timeline_dict_includes_nodeid(self):
+        """to_timeline_dict includes nodeid field for test events."""
+        event = E2ERunEvent(
+            id=1, run_id=1, event_id="x",
+            timestamp="2026-01-01T00:00:00Z",
+            event_name="e2e.test_started", source_event="",
+            data={"nodeid": "tests/e2e/test_foo.py::test_bar"},
+        )
+        d = event.to_timeline_dict()
+        assert d["nodeid"] == "tests/e2e/test_foo.py::test_bar"

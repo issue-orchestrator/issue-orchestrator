@@ -356,11 +356,11 @@ class E2ERunEvent:
         frontend components can render both issue timelines and E2E run timelines.
         """
         phase = _e2e_event_phase(self.event_name)
-        status = _e2e_event_status(self.event_name)
+        status = _e2e_event_status(self.event_name, self.data)
         level = _e2e_event_level(self.event_name)
         summary = _e2e_event_summary(self.event_name, self.data)
 
-        return {
+        d: dict = {
             "event_id": self.event_id,
             "timestamp": self.timestamp,
             "event": self.event_name,
@@ -379,6 +379,11 @@ class E2ERunEvent:
             "event_intent": "system",
             "source_event": self.source_event or None,
         }
+        # Expose nodeid for reliable correlation in _build_test_windows
+        nodeid = self.data.get("nodeid")
+        if isinstance(nodeid, str):
+            d["nodeid"] = nodeid
+        return d
 
 
 def _e2e_event_phase(event_name: str) -> str:
@@ -392,9 +397,16 @@ def _e2e_event_phase(event_name: str) -> str:
     return "teardown"  # run_finished, run_canceled, run_error
 
 
-def _e2e_event_status(event_name: str) -> str:
+def _e2e_event_status(event_name: str, data: dict | None = None) -> str:
     if event_name in ("e2e.run_error", "e2e.run_canceled"):
         return "error"
+    if event_name == "e2e.test_completed" and data:
+        outcome = data.get("outcome", "")
+        if outcome in ("failed", "error"):
+            return "error"
+        if outcome == "skipped":
+            return "skipped"
+        return "completed"
     if event_name == "e2e.test_completed":
         return "completed"
     if event_name == "e2e.run_finished":
@@ -479,12 +491,12 @@ def _build_test_windows(
         evt.setdefault("children", [])
         name = evt.get("event", "")
         if name == "e2e.test_started":
-            nodeid = (evt.get("summary") or "").strip()
-            started_map[nodeid] = (evt["timestamp"], evt)
+            nodeid = (evt.get("nodeid") or "").strip()
+            if nodeid:
+                started_map[nodeid] = (evt["timestamp"], evt)
         elif name == "e2e.test_completed":
-            summary = evt.get("summary") or ""
-            nodeid = summary.split(":")[0].strip() if ":" in summary else summary.strip()
-            if nodeid in started_map:
+            nodeid = (evt.get("nodeid") or "").strip()
+            if nodeid and nodeid in started_map:
                 start_ts, started_dict = started_map.pop(nodeid)
                 windows.append((start_ts, evt["timestamp"], started_dict))
     return windows
