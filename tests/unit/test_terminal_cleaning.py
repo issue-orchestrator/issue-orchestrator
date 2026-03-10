@@ -129,12 +129,12 @@ class TestIsSpinnerFragment:
         assert is_spinner_fragment("On branch main") is False
         assert is_spinner_fragment("./src/issue_orchestrator/infra/hooks/hooks.py") is False
 
-    def test_keeps_separator_lines(self):
-        assert is_spinner_fragment("────────────") is False
-        assert is_spinner_fragment("━━━━━━━━━━━━") is False
-
-    def test_keeps_prompts(self):
-        assert is_spinner_fragment("❯") is False
+    def test_filters_tui_chrome(self):
+        """TUI separator lines and prompt indicators are filtered as chrome."""
+        assert is_spinner_fragment("────────────") is True
+        assert is_spinner_fragment("━━━━━━━━━━━━") is True
+        assert is_spinner_fragment("❯") is True
+        assert is_spinner_fragment("❯  ") is True
 
 
 # ---------------------------------------------------------------------------

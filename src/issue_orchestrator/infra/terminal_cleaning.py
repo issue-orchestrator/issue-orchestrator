@@ -38,7 +38,7 @@ _ANSI_ESCAPE_PATTERN = re.compile(
 )
 
 # Spinner characters used by Claude Code (dots, stars, etc.)
-_SPINNER_CHARS = set("·✶✻✽✳✢*/-\\|●○◉◎◯◐◑◒◓⎿")
+_SPINNER_CHARS = set("·✶✻✽✳✢*/-\\|●○◉◎◯◐◑◒◓⎿⏵")
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +80,28 @@ def clean_terminal_line(line: str) -> str:
 
 def _is_ui_noise(lower: str) -> bool:
     """Return True when *lower* (lowercased) is repetitive UI noise."""
-    if "fiddle-faddling" in lower or "thinking" in lower or "running…" in lower:
-        return True
+    _NOISE_KEYWORDS = (
+        "fiddle-faddling", "thinking", "running…",
+        "envisioning", "planning", "analyzing", "reasoning",
+        "researching", "processing", "generating", "working",
+        "clauding", "interrupt",
+    )
+    for kw in _NOISE_KEYWORDS:
+        if kw in lower:
+            return True
     if lower.endswith("s)") and ("ought for" in lower or "hought for" in lower):
         return True
-    if "bypass permissions" in lower or "shift+tab to cycle" in lower:
+    if "bypasspermission" in lower or "bypass permissions" in lower or "shift+tab" in lower:
+        return True
+    # TUI status bar and chrome fragments
+    if "medium" in lower and "/eff" in lower:
+        return True
+    if lower.startswith("esc to") or "ctrl+g" in lower:
+        return True
+    # Claude Code TUI banner/header lines
+    if "claudecode" in lower.replace(" ", "") or "claude code" in lower:
+        return True
+    if "sonnet" in lower and ("claude" in lower or "max" in lower):
         return True
     return False
 
@@ -97,6 +114,28 @@ def is_spinner_fragment(line: str) -> bool:
     if all(c in _SPINNER_CHARS for c in stripped):
         return True
     if _is_ui_noise(stripped.lower()):
+        return True
+    # Lines starting with a spinner char that are short animation frames
+    # (e.g. "✻Env", "✽Ei", "✻Envisioning…") but NOT tool output like "⎿ Read 221 lines"
+    _ANIMATION_SPINNERS = _SPINNER_CHARS - {"⎿"}  # ⎿ is used for tool output
+    if stripped[0] in _ANIMATION_SPINNERS and len(stripped) <= 25:
+        return True
+    # Short fragments (≤4 chars, no spaces) are partial TUI animation overwrites
+    # (e.g. "n", "v", "Cu", "i…", "nvsi") but NOT meaningful words
+    _text = stripped.rstrip("…")  # strip trailing ellipsis
+    if len(stripped) <= 4 and " " not in stripped:
+        _KEEP_SHORT = {"ok", "yes", "no", "done", "fail", "pass", "true", "null",
+                        "PASS", "FAIL", "OK", "YES", "NO", "DONE", "TRUE", "NULL"}
+        if stripped not in _KEEP_SHORT and _text not in _KEEP_SHORT:
+            return True
+    # TUI chrome: horizontal rules, prompt indicators, block-char banner lines
+    if all(c in "─━═" for c in stripped):
+        return True
+    if stripped in ("❯", ">", "❯  "):
+        return True
+    # Block characters from TUI banner (▐▛███▜▌ etc.)
+    _BLOCK_CHARS = set("▐▛▜▌▝▘█▀▄▁▂▃▅▆▇ ")
+    if all(c in _BLOCK_CHARS for c in stripped):
         return True
     return False
 

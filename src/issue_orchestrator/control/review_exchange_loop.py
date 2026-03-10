@@ -693,13 +693,13 @@ def _is_interactive_provider(agent_config: AgentConfig) -> bool:
 def _run_interactive_round(
     runner: AgentRunner,
     spec: AgentSpec,
-    prompt: str,
+    prompt_path: Path,
     response_file: Path,
 ) -> AgentResult:
     """Run a single exchange round with an interactive provider.
 
-    Starts the TUI session, sends the prompt via PTY stdin, then polls
-    for the response file or process exit.
+    Starts the TUI session, sends a file-reference instruction via PTY stdin,
+    then polls for the response file or process exit.
     """
     _TUI_INIT_SECONDS = 3
     _POLL_INTERVAL = 2.0
@@ -707,7 +707,8 @@ def _run_interactive_round(
     session = runner.start(spec)
     try:
         time.sleep(_TUI_INIT_SECONDS)
-        if not session.send(prompt):
+        msg = f"Read and follow your instructions in {prompt_path}"
+        if not session.send(msg):
             logger.warning("Failed to send prompt to interactive session")
 
         deadline = time.monotonic() + spec.timeout_seconds
@@ -808,12 +809,7 @@ def _run_agent_round(
     # Non-interactive providers use the classic run-and-wait path.
     interactive = _is_interactive_provider(agent_config)
     if interactive:
-        rendered_prompt = agent_config.render_initial_prompt(
-            issue_number=issue_number,
-            issue_title=issue_title,
-            worktree=worktree_path,
-        )
-        result = _run_interactive_round(runner, spec, rendered_prompt, response_file)
+        result = _run_interactive_round(runner, spec, prompt_path, response_file)
     else:
         result = runner.run(spec)
 

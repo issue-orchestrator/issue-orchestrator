@@ -636,14 +636,17 @@ class TestInteractiveRound:
             def start(self, _spec):
                 return mock_session
 
+        prompt_file = tmp_path / "prompt.md"
+        prompt_file.write_text("Review this code")
+
         result = _run_interactive_round(
             MockRunner(),
             spec,
-            "Review this code",
+            prompt_file,
             response_file,
         )
 
-        assert mock_session.sent == ["Review this code"]
+        assert mock_session.sent == [f"Read and follow your instructions in {prompt_file}"]
         assert mock_session._killed
         assert response_file.exists()
 

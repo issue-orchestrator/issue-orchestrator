@@ -12,8 +12,9 @@ class ClaudeCodeProvider(CLIProvider):
     """Provider for Anthropic's Claude Code CLI.
 
     Runs Claude Code as an interactive TUI session. The initial prompt
-    (and any follow-up prompts) are delivered via PTY stdin after the
-    session starts, so the prompt is NOT included in the command argv.
+    is passed as a positional argument (not ``-p``), which starts the TUI
+    and immediately begins working while still showing the full interactive
+    output. Follow-up prompts can be delivered via PTY stdin.
     """
 
     # Model name mappings (short names to full IDs if needed)
@@ -47,11 +48,11 @@ class ClaudeCodeProvider(CLIProvider):
     ) -> list[str]:
         """Build a Claude Code CLI command for interactive mode.
 
-        The prompt is NOT included in the command argv — it will be sent
-        via PTY stdin after the TUI initializes.
+        The prompt is passed as a positional argument (without ``-p``),
+        which starts the interactive TUI and immediately begins working.
 
         Args:
-            prompt: The task to perform (stored but not added to argv)
+            prompt: The task to perform (passed as positional arg)
             model: Model name (haiku, sonnet, opus, or full model ID). None for default.
             **kwargs: Additional options:
                 - permission_mode: Permission handling mode (default: bypassPermissions)
@@ -79,7 +80,9 @@ class ClaudeCodeProvider(CLIProvider):
         if max_turns:
             cmd.extend(["--max-turns", str(max_turns)])
 
-        # Prompt is NOT added to argv — it will be sent via PTY stdin
-        # after the interactive TUI initializes.
+        # Initial prompt as positional argument — starts TUI working immediately
+        # without -p flag, so full interactive output is preserved.
+        if prompt:
+            cmd.append(prompt)
 
         return cmd
