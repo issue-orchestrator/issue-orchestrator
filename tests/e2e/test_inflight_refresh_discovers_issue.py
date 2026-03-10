@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 
 
 # Max time to wait for issue discovery - with inflight mechanism, should be fast
-DISCOVERY_TIMEOUT = 30
+# but GitHub eventual consistency can take 30-45s in the worst case
+DISCOVERY_TIMEOUT = 60
 
 
 @pytest.mark.e2e

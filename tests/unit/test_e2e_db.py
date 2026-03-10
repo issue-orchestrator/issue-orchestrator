@@ -9,9 +9,11 @@ from issue_orchestrator.infra.e2e_db import (
     E2EDB,
     AlreadyRunning,
     E2ERun,
+    E2ERunEvent,
     TestStability,
     _categorize_test,
     _compute_stability,
+    e2e_run_timeline,
     load_quarantine_list,
     save_quarantine_list,
 )
@@ -867,3 +869,141 @@ class TestQuarantineListFunctions:
         loaded = load_quarantine_list(quarantine_file)
 
         assert loaded == original
+
+
+class TestE2ERunEvents:
+    """Test E2E run event capture and timeline conversion."""
+
+    @pytest.fixture
+    def db(self, tmp_path: Path) -> E2EDB:
+        db_path = tmp_path / "test_e2e.db"
+        return E2EDB(db_path)
+
+    @pytest.fixture
+    def run_id(self, db: E2EDB) -> int:
+        return db.start_run(
+            repo_root="/test/repo",
+            orchestrator_id="test-orch",
+            pytest_args=["tests/e2e"],
+        )
+
+    def test_append_and_get_events(self, db: E2EDB, run_id: int):
+        """Events are stored and retrievable in insertion order."""
+        db.append_run_event(
+            run_id=run_id,
+            event_id="evt1",
+            timestamp="2026-01-01T00:00:00Z",
+            event_name="e2e.run_started",
+            data={"branch": "main"},
+        )
+        db.append_run_event(
+            run_id=run_id,
+            event_id="evt2",
+            timestamp="2026-01-01T00:00:01Z",
+            event_name="e2e.test_started",
+            data={"nodeid": "test_foo.py::test_bar"},
+        )
+
+        events = db.get_run_events(run_id)
+        assert len(events) == 2
+        assert events[0].event_id == "evt1"
+        assert events[0].event_name == "e2e.run_started"
+        assert events[0].data == {"branch": "main"}
+        assert events[1].event_id == "evt2"
+
+    def test_delete_events(self, db: E2EDB, run_id: int):
+        """Events can be deleted for a run."""
+        db.append_run_event(
+            run_id=run_id,
+            event_id="evt1",
+            timestamp="2026-01-01T00:00:00Z",
+            event_name="e2e.run_started",
+            data={},
+        )
+        assert len(db.get_run_events(run_id)) == 1
+        db.delete_run_events(run_id)
+        assert len(db.get_run_events(run_id)) == 0
+
+    def test_event_source_event_stored(self, db: E2EDB, run_id: int):
+        """Source event field is stored and returned."""
+        db.append_run_event(
+            run_id=run_id,
+            event_id="evt1",
+            timestamp="2026-01-01T00:00:00Z",
+            event_name="e2e.test_completed",
+            data={"nodeid": "test.py::t", "outcome": "passed"},
+            source_event="e2e.test_started",
+        )
+        events = db.get_run_events(run_id)
+        assert events[0].source_event == "e2e.test_started"
+
+    def test_to_timeline_dict_shape(self):
+        """Timeline dict has all required fields for UI rendering."""
+        event = E2ERunEvent(
+            id=1,
+            run_id=42,
+            event_id="abc123",
+            timestamp="2026-01-01T00:00:00Z",
+            event_name="e2e.test_completed",
+            source_event="e2e.test_started",
+            data={"nodeid": "test.py::test_foo", "outcome": "passed", "duration_seconds": 1.5},
+        )
+        d = event.to_timeline_dict()
+
+        # Required fields for main UI timeline compatibility
+        assert d["event_id"] == "abc123"
+        assert d["timestamp"] == "2026-01-01T00:00:00Z"
+        assert d["event"] == "e2e.test_completed"
+        assert d["phase"] == "execution"
+        assert d["status"] == "completed"
+        assert d["level"] == "detail"
+        assert "test.py::test_foo: passed (1.5s)" in d["summary"]
+        assert d["parent_key"] == "e2e-run-42"
+        assert d["source_event"] == "e2e.test_started"
+        assert isinstance(d["artifacts"], list)
+
+    def test_e2e_run_timeline_builds_from_events(self, db: E2EDB, run_id: int):
+        """e2e_run_timeline builds timeline dict from stored events."""
+        db.append_run_event(
+            run_id=run_id,
+            event_id="evt1",
+            timestamp="2026-01-01T00:00:00Z",
+            event_name="e2e.run_started",
+            data={"branch": "main"},
+        )
+        db.append_run_event(
+            run_id=run_id,
+            event_id="evt2",
+            timestamp="2026-01-01T00:00:05Z",
+            event_name="e2e.run_finished",
+            data={"status": "passed", "duration_seconds": 5.0},
+            source_event="e2e.run_started",
+        )
+
+        events = db.get_run_events(run_id)
+        timeline = e2e_run_timeline(events)
+
+        assert "events" in timeline
+        assert len(timeline["events"]) == 2
+        assert timeline["events"][0]["phase"] == "setup"
+        assert timeline["events"][1]["phase"] == "teardown"
+
+    def test_phase_mapping(self):
+        """E2E event names map to correct timeline phases."""
+        cases = [
+            ("e2e.run_started", "setup"),
+            ("e2e.tests_collected", "setup"),
+            ("e2e.test_started", "execution"),
+            ("e2e.test_completed", "execution"),
+            ("e2e.retry_started", "retry"),
+            ("e2e.run_finished", "teardown"),
+            ("e2e.run_canceled", "teardown"),
+            ("e2e.run_error", "teardown"),
+        ]
+        for event_name, expected_phase in cases:
+            event = E2ERunEvent(
+                id=1, run_id=1, event_id="x",
+                timestamp="2026-01-01T00:00:00Z",
+                event_name=event_name, source_event="", data={},
+            )
+            assert event.to_timeline_dict()["phase"] == expected_phase, f"{event_name} -> {expected_phase}"

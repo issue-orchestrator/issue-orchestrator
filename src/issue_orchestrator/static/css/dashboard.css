@@ -1836,6 +1836,31 @@ body.column-focus-mode .column-expanded {
     .kanban-column { flex: 1 1 45%; min-width: 200px; }
 }
 
+/* E2E run detail tab switcher */
+.e2e-run-tabs {
+    display: flex;
+    gap: 4px;
+    margin-top: 8px;
+}
+.e2e-run-tab {
+    padding: 4px 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    cursor: pointer;
+}
+.e2e-run-tab:hover {
+    background: var(--bg-panel);
+    color: var(--text);
+}
+.e2e-run-tab.active {
+    background: var(--accent);
+    color: var(--bg);
+    border-color: var(--accent);
+}
+
 @media (max-width: 700px) {
     .container { padding: 12px; }
     header { flex-direction: column; align-items: flex-start; }

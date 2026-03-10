@@ -755,6 +755,9 @@ class GitHubAdapter:
     def get_prs_with_label(self, label: str, state: str = "open") -> list[PRInfo]:
         """Get all pull requests with a specific label.
 
+        Uses GraphQL to fetch PRs with head branch info in a single request,
+        avoiding the N+1 individual get_pr() calls that the search API requires.
+
         Args:
             label: The label name to filter by.
             state: Filter by PR state ("open", "closed", "merged", or "all").
@@ -762,6 +765,12 @@ class GitHubAdapter:
         Returns:
             List of PRInfo objects. Returns empty list on error.
         """
+        try:
+            output = self._client.get_prs_with_label_graphql(label, state=state)
+            return [pr for item in output if (pr := self._pr_info_from_api(item)) is not None]
+        except Exception:
+            logger.debug("GraphQL get_prs_with_label failed, falling back to search API", exc_info=True)
+        # Fallback: search API + individual get_pr() calls
         try:
             output = self._client.get_prs_with_label(label, state=state)
             prs: list[PRInfo] = []

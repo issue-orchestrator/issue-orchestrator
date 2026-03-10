@@ -11,6 +11,8 @@ import os
 import subprocess
 import sys
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -51,6 +53,25 @@ def _get_git_info(repo_root: Path) -> tuple[Optional[str], Optional[str]]:
     return sha, branch
 
 
+def _emit_run_event(
+    db: "E2EDB",
+    run_id: int,
+    event_name: str,
+    data: dict,
+    *,
+    source_event: str = "",
+) -> None:
+    """Emit a timeline event for this E2E run."""
+    db.append_run_event(
+        run_id=run_id,
+        event_id=uuid.uuid4().hex[:12],
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        event_name=event_name,
+        data=data,
+        source_event=source_event,
+    )
+
+
 class ResultPlugin:
     """Pytest plugin that captures test results incrementally to the database."""
 
@@ -70,10 +91,17 @@ class ResultPlugin:
         total = len(session.items)
         logger.info("Collected %d tests", total)
         self.db.update_progress(self.run_id, total_tests=total)
+        _emit_run_event(self.db, self.run_id, "e2e.tests_collected", {
+            "total": total,
+            "nodeids": [item.nodeid for item in session.items],
+        })
 
     def pytest_runtest_logstart(self, nodeid: str, location) -> None:
         """Called when a test starts - update current test."""
         self.db.update_progress(self.run_id, current_test=nodeid)
+        _emit_run_event(self.db, self.run_id, "e2e.test_started", {
+            "nodeid": nodeid,
+        })
 
     def pytest_runtest_logreport(self, report) -> None:
         """Called for each test phase (setup, call, teardown)."""
@@ -104,6 +132,13 @@ class ResultPlugin:
 
         # Clear current_test after completion
         self.db.update_progress(self.run_id, current_test=None)
+
+        _emit_run_event(self.db, self.run_id, "e2e.test_completed", {
+            "nodeid": nodeid,
+            "outcome": outcome,
+            "duration_seconds": duration,
+            "is_quarantined": is_quarantined,
+        }, source_event="e2e.test_started")
 
         # Track non-quarantined failures for potential retry
         if outcome == "failed" and not is_quarantined:
@@ -291,6 +326,14 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
     # Determine log path for DB record
     log_path_for_db = args.log_file
 
+    _emit_run_event(db, run_id, "e2e.run_started", {
+        "pytest_args": pytest_args,
+        "commit_sha": commit_sha,
+        "branch": branch,
+        "quarantined_count": len(quarantine),
+        "is_resume": bool(args.resume_run_id),
+    })
+
     try:
         # Run pytest
         logger.info("Running pytest with args: %s", pytest_args)
@@ -298,6 +341,10 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
 
         # Retry logic
         if args.allow_retry_once and failed_tests:
+            _emit_run_event(db, run_id, "e2e.retry_started", {
+                "failed_count": len(failed_tests),
+                "nodeids": failed_tests,
+            })
             passed_on_retry = _run_retry(failed_tests, db, run_id)
 
             # Update exit code if all retries passed
@@ -349,6 +396,12 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
                 else:
                     logger.info("Auto-quarantine: no new tests added")
 
+        _emit_run_event(db, run_id, "e2e.run_finished", {
+            "status": status,
+            "exit_code": exit_code,
+            "duration_seconds": round(duration, 1),
+        }, source_event="e2e.run_started")
+
         logger.info(
             "Finished run %d: status=%s, exit_code=%d, duration=%.1fs",
             run_id,
@@ -361,6 +414,10 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
 
     except KeyboardInterrupt:
         logger.warning("Interrupted, canceling run")
+        _emit_run_event(db, run_id, "e2e.run_canceled", {
+            "reason": "interrupted",
+            "duration_seconds": round(time.time() - start_time, 1),
+        }, source_event="e2e.run_started")
         db.finish_run(
             run_id=run_id,
             status="canceled",
@@ -371,6 +428,10 @@ def main() -> int:  # noqa: C901, PLR0912 - CLI with argument parsing, test exec
 
     except Exception as e:
         logger.exception("Error running tests: %s", e)
+        _emit_run_event(db, run_id, "e2e.run_error", {
+            "error": str(e)[:500],
+            "duration_seconds": round(time.time() - start_time, 1),
+        }, source_event="e2e.run_started")
         db.finish_run(
             run_id=run_id,
             status="error",

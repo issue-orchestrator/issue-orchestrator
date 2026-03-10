@@ -38,6 +38,7 @@ E2E Test Runner API endpoints:
 - GET /control/e2e/status - Get E2E runner status
 - GET /control/e2e/runs - List recent E2E runs
 - GET /control/e2e/run/{run_id} - Get run details with test results
+- GET /control/e2e/run/{run_id}/timeline - Get timeline events for shared rendering
 - GET /control/e2e/logs/{run_id} - Get run logs
 - GET /control/e2e/failed/{run_id} - Get failed tests from a run
 """
@@ -4355,6 +4356,50 @@ async def e2e_run_details(
         return JSONResponse(details)
     except Exception as e:
         logger.exception("Failed to get E2E run details: %s", e)
+        return JSONResponse(
+            {"error": "db_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
+@control_app.get("/control/e2e/run/{run_id}/timeline")
+async def e2e_run_timeline_endpoint(
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Get timeline events for a specific E2E run.
+
+    Returns events in the same shape as the main issue timeline,
+    enabling shared timeline rendering between E2E and issue views.
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+    """
+    from ..infra.e2e_db import E2EDB, e2e_run_timeline
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        db = E2EDB(db_path)
+        events = db.get_run_events(run_id)
+        return JSONResponse(e2e_run_timeline(events))
+    except Exception as e:
+        logger.exception("Failed to get E2E run timeline: %s", e)
         return JSONResponse(
             {"error": "db_error", "detail": str(e)},
             status_code=500,

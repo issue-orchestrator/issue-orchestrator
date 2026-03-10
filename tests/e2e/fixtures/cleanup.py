@@ -94,8 +94,8 @@ def verify_cleanup_items(
 def cleanup_remote_branches(repo: str) -> int:
     """Clean up remote branches from PRs with io-e2e-test-data label.
 
-    Uses explicit label matching - no branch pattern matching to avoid
-    accidentally deleting legitimate branches.
+    Uses the branch info already present in PRInfo from get_prs_with_label
+    to avoid N+1 individual get_pr() calls.
     """
     branches_deleted = 0
     branches_attempted: list[str] = []
@@ -103,25 +103,22 @@ def cleanup_remote_branches(repo: str) -> int:
 
     adapter = _github_adapter(repo)
 
-    # Delete branches for PRs with io-e2e-test-data label (all states)
     try:
+        # get_prs_with_label returns PRInfo with branch already populated
         items = adapter.get_prs_with_label(DEFAULT_E2E_FILTER_LABEL, state="all")
         for item in items:
             if time.monotonic() > deadline:
                 logger.warning("[E2E CLEANUP] Branch cleanup time budget exceeded; stopping early")
                 return branches_deleted
-            pr = adapter.get_pr(item.number)
-            if not pr:
-                continue
-            branch = pr.branch or ""
+            branch = item.branch or ""
             if branch:
                 try:
                     adapter.delete_branch(branch)
                     branches_attempted.append(branch)
-                    logger.info("[E2E CLEANUP] Deleted branch for PR #%d: %s", pr.number, branch)
+                    logger.info("[E2E CLEANUP] Deleted branch for PR #%d: %s", item.number, branch)
                     branches_deleted += 1
                 except Exception:
-                    logger.warning("[E2E CLEANUP] Failed deleting branch for PR #%s: %s", pr.number, branch)
+                    logger.warning("[E2E CLEANUP] Failed deleting branch for PR #%s: %s", item.number, branch)
     except Exception as exc:
         logger.warning("[E2E CLEANUP] Failed to list PRs for branch cleanup: %s", exc)
 
@@ -144,59 +141,41 @@ def cleanup_remote_branches(repo: str) -> int:
 def cleanup_prs(repo: str) -> int:
     """Clean up PRs with io-e2e-test-data label only.
 
-    Uses explicit label matching - no branch pattern matching to avoid
-    accidentally closing legitimate PRs.
+    Fetches all PRs (open + closed) in a single query. Closes open ones
+    and deletes branches for all of them.
     """
     closed_pr_nums: set[int] = set()
     branches_attempted: list[str] = []
 
     adapter = _github_adapter(repo)
 
-    # Clean up OPEN PRs with io-e2e-test-data label only
-    try:
-        items = adapter.get_prs_with_label(DEFAULT_E2E_FILTER_LABEL, state="open")
-        for item in items:
-            pr_num = item.number
-            if not pr_num or pr_num in closed_pr_nums:
-                continue
-            pr = adapter.get_pr(pr_num)
-            if not pr:
-                continue
-            logger.info("[E2E CLEANUP] Closing PR #%d: %s (label: %s)", pr_num, pr.title, DEFAULT_E2E_FILTER_LABEL)
-            adapter.close_pr(pr_num)
-            branch = pr.branch or ""
-            if branch:
-                try:
-                    adapter.delete_branch(branch)
-                except Exception:
-                    pass
-                branches_attempted.append(branch)
-            closed_pr_nums.add(pr_num)
-    except Exception as exc:
-        logger.warning("[E2E CLEANUP] Failed listing PRs for label '%s': %s", DEFAULT_E2E_FILTER_LABEL, exc)
-
-    # Clean up branches from CLOSED/MERGED PRs that had io-e2e-test-data label
+    # Single query for all states — avoids two separate API calls
     try:
         items = adapter.get_prs_with_label(DEFAULT_E2E_FILTER_LABEL, state="all")
         for item in items:
-            pr = adapter.get_pr(item.number)
-            if not pr:
+            pr_num = item.number
+            if not pr_num:
                 continue
-            if pr.state.lower() in ("closed", "merged"):
-                branch = pr.branch or ""
-                if branch:
-                    try:
-                        adapter.delete_branch(branch)
-                        branches_attempted.append(branch)
-                        logger.info(
-                            "[E2E CLEANUP] Deleted branch: %s (from closed PR #%d)",
-                            branch,
-                            pr.number,
-                        )
-                    except Exception:
-                        pass
+            # Close open PRs
+            if item.state.lower() == "open":
+                logger.info("[E2E CLEANUP] Closing PR #%d: %s (label: %s)", pr_num, item.title, DEFAULT_E2E_FILTER_LABEL)
+                try:
+                    adapter.close_pr(pr_num)
+                    closed_pr_nums.add(pr_num)
+                except Exception:
+                    logger.warning("[E2E CLEANUP] Failed closing PR #%d", pr_num)
+            # Delete branch for all PRs (open, closed, merged)
+            branch = item.branch or ""
+            if branch:
+                try:
+                    adapter.delete_branch(branch)
+                    branches_attempted.append(branch)
+                    if item.state.lower() != "open":
+                        logger.info("[E2E CLEANUP] Deleted branch: %s (from %s PR #%d)", branch, item.state, pr_num)
+                except Exception:
+                    pass
     except Exception as exc:
-        logger.warning("[E2E CLEANUP] Failed to list PRs for branch cleanup: %s", exc)
+        logger.warning("[E2E CLEANUP] Failed listing PRs for label '%s': %s", DEFAULT_E2E_FILTER_LABEL, exc)
 
     pr_numbers = list(closed_pr_nums)
 
