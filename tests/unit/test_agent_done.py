@@ -1416,7 +1416,7 @@ class TestFindWorktreeRoot:
 
 
 class TestOrchestratorModeSkips:
-    """Test that coding-done skips validation and preflight push under orchestrator."""
+    """Test coding-done behavior under orchestrator: validation runs, preflight push skipped."""
 
     def _setup_git_repo(self, tmp_path):
         """Create a minimal git repo for coding-done tests."""
@@ -1428,8 +1428,8 @@ class TestOrchestratorModeSkips:
         subprocess.run(["git", "add", "."], cwd=tmp_path, capture_output=True, check=True)
         subprocess.run(["git", "commit", "-m", "Initial"], cwd=tmp_path, capture_output=True, check=True)
 
-    def _setup_config_with_validation(self, tmp_path):
-        """Create config with a validation command that would fail if run."""
+    def _setup_config_with_failing_validation(self, tmp_path):
+        """Create config with a validation command that fails."""
         config_dir = tmp_path / ".issue-orchestrator" / "config"
         config_dir.mkdir(parents=True)
         (config_dir / "default.yaml").write_text(
@@ -1438,11 +1438,21 @@ class TestOrchestratorModeSkips:
         session_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
         session_dir.mkdir(parents=True)
 
+    def _setup_config_with_passing_validation(self, tmp_path):
+        """Create config with a validation command that passes."""
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text(
+            "validation:\n  cmd: 'exit 0'\n  timeout_seconds: 10\n"
+        )
+        session_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
+        session_dir.mkdir(parents=True)
+
     @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
-    def test_orchestrator_mode_skips_validation(self, _mock_dirty, tmp_path, capsys):
-        """Under orchestrator, validation is skipped even with a failing validation cmd."""
+    def test_orchestrator_mode_runs_validation(self, _mock_dirty, tmp_path, capsys):
+        """Under orchestrator, validation runs for fast agent feedback."""
         self._setup_git_repo(tmp_path)
-        self._setup_config_with_validation(tmp_path)
+        self._setup_config_with_failing_validation(tmp_path)
 
         original_cwd = Path.cwd()
         try:
@@ -1455,11 +1465,13 @@ class TestOrchestratorModeSkips:
                     '--verbose',
                 ]):
                     with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
-                        coding_done_main()
+                        with pytest.raises(SystemExit) as exc_info:
+                            coding_done_main()
+                        assert exc_info.value.code == 1
 
             captured = capsys.readouterr()
-            assert "Skipping validation" in captured.out
-            assert "VALIDATION FAILED" not in captured.out
+            assert "VALIDATION FAILED" in captured.out
+            assert "Skipping validation" not in captured.out
         finally:
             os.chdir(original_cwd)
             os.environ.pop("ORCHESTRATOR_SESSION_ID", None)
@@ -1468,7 +1480,7 @@ class TestOrchestratorModeSkips:
     def test_orchestrator_mode_skips_preflight_push(self, _mock_dirty, tmp_path, capsys):
         """Under orchestrator, preflight push check is skipped."""
         self._setup_git_repo(tmp_path)
-        self._setup_config_with_validation(tmp_path)
+        self._setup_config_with_passing_validation(tmp_path)
 
         original_cwd = Path.cwd()
         try:
@@ -1493,9 +1505,9 @@ class TestOrchestratorModeSkips:
 
     @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
     def test_orchestrator_mode_still_writes_completion_record(self, _mock_dirty, tmp_path):
-        """Under orchestrator, completion record is still written even though validation is skipped."""
+        """Under orchestrator, completion record is written after validation passes."""
         self._setup_git_repo(tmp_path)
-        self._setup_config_with_validation(tmp_path)
+        self._setup_config_with_passing_validation(tmp_path)
 
         original_cwd = Path.cwd()
         try:
@@ -1522,9 +1534,9 @@ class TestOrchestratorModeSkips:
 
     @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
     def test_prefixed_session_id_also_triggers_orchestrator_mode(self, _mock_dirty, tmp_path, capsys):
-        """ISSUE_ORCHESTRATOR_SESSION_ID (prefixed) also triggers orchestrator mode."""
+        """ISSUE_ORCHESTRATOR_SESSION_ID (prefixed) also triggers orchestrator mode for push skip."""
         self._setup_git_repo(tmp_path)
-        self._setup_config_with_validation(tmp_path)
+        self._setup_config_with_passing_validation(tmp_path)
         prefixed = f"{ENV_PREFIX}SESSION_ID"
 
         original_cwd = Path.cwd()
@@ -1541,7 +1553,45 @@ class TestOrchestratorModeSkips:
                         coding_done_main()
 
             captured = capsys.readouterr()
-            assert "Skipping validation" in captured.out
+            assert "Skipping push preflight" in captured.out
+            assert "Skipping validation" not in captured.out
         finally:
             os.chdir(original_cwd)
             os.environ.pop(prefixed, None)
+
+    @patch('issue_orchestrator.entrypoints.cli_tools.coding_done.check_dirty_files', return_value=[])
+    def test_orchestrator_mode_produces_validation_record(self, _mock_dirty, tmp_path):
+        """Under orchestrator, validation-record.json is produced for review exchange.
+
+        This is the critical integration point: the review exchange loop checks
+        for validation-record.json in the coder's run directory. If coding-done
+        skips validation under orchestrator, the review exchange fails with
+        coder_protocol_violation.
+        """
+        self._setup_git_repo(tmp_path)
+        self._setup_config_with_passing_validation(tmp_path)
+
+        original_cwd = Path.cwd()
+        try:
+            os.chdir(tmp_path)
+            with patch.dict(os.environ, {"ORCHESTRATOR_SESSION_ID": "orch-session-1"}):
+                with patch('sys.argv', [
+                    'coding-done', 'completed',
+                    '--implementation', 'Added feature',
+                    '--problems', 'None',
+                ]):
+                    with patch('issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id', return_value='test-123'):
+                        coding_done_main()
+
+            # Verify validation-record.json was written to the session output dir
+            session_dir = tmp_path / ".issue-orchestrator" / "sessions" / "test-123"
+            validation_record = session_dir / "validation-record.json"
+            assert validation_record.exists(), (
+                "validation-record.json must be produced under orchestrator mode "
+                "so the review exchange loop can verify the coder ran validation"
+            )
+            data = json.loads(validation_record.read_text())
+            assert data["passed"] is True
+        finally:
+            os.chdir(original_cwd)
+            os.environ.pop("ORCHESTRATOR_SESSION_ID", None)

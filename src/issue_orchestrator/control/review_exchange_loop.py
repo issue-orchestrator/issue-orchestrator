@@ -655,8 +655,9 @@ def _run_coder_round_with_protocol_retries(
             f"{reviewer_response.response_text}\n\n"
             "Protocol error from orchestrator:\n"
             f"{protocol_error}\n"
-            "You must run `coding-done completed --implementation ... --problems ...` "
-            "in this run so completion artifacts are written."
+            "You must: (1) run `coding-done completed --implementation '...' --problems '...'` "
+            "to create completion/validation artifacts, then (2) write your JSON response to "
+            "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE."
         )
         coder_response = _run_coder_round(
             runner=runner,
@@ -726,7 +727,7 @@ def _run_agent_round(
         issue_number=issue_number,
         issue_title=issue_title,
         worktree=worktree_path,
-        task_kind="review",
+        task_kind=f"review_exchange_{role}",
     )
     command = shlex.split(command_str)
 
@@ -892,7 +893,7 @@ def _build_reviewer_prompt(
         validation_note = (
             "Validation is required. Only respond ok if validation-record.json exists "
             f"and passed in {run_dir}. If missing or failed, respond changes_requested "
-            "asking the coder to run make validate via coding-done."
+            "asking the coder to run validation and fix any failures."
         )
     prior = ""
     if last_coder_text:
@@ -910,10 +911,10 @@ def _build_reviewer_prompt(
         "C) any applicable .claude/skills guidance\n"
         "D) docs/ if needed for intended behavior\n"
         f"{prior}\n"
-        "Respond with exactly one line of JSON:\n"
-        "{\"response_type\":\"ok|changes_requested|disagree\","
-        "\"getting_closer\":true|false,"
-        "\"response_text\":\"...\"}\n"
+        "Write exactly one line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE:\n"
+        '  {"response_type":"ok","getting_closer":true,"response_text":"Looks good."}\n'
+        '  {"response_type":"changes_requested","getting_closer":true,"response_text":"Fix X."}\n'
+        '  {"response_type":"disagree","getting_closer":false,"response_text":"Wrong approach."}\n'
     )
 
 
@@ -929,17 +930,20 @@ def _build_coder_prompt(
         f"You are the coder in a review exchange for issue #{issue_number}: {issue_title}.\n"
         f"Round {round_index}.\n"
         "Review the feedback below and update the worktree accordingly.\n"
-        "If you disagree, set response_type=disagree and explain why.\n"
-        "Otherwise apply fixes and run validation. Then run "
-        "`coding-done completed --implementation ... --problems ...`.\n"
-        "Before responding, ensure these files exist under Session output dir:\n"
-        "- completion-coder.json\n"
-        "- validation-record.json\n"
-        "If either file is missing, do not respond yet; fix it first.\n"
+        "\n"
+        "Steps:\n"
+        "1. Make the requested changes (or prepare a disagreement).\n"
+        "2. Commit all changes (clean working tree required).\n"
+        "3. Run `coding-done completed --implementation '...' --problems '...'`\n"
+        "4. Write one line of JSON to $ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE\n"
+        "\n"
         f"Session output dir: {run_dir}\n"
-        f"Reviewer feedback:\n{reviewer_feedback}\n"
-        "Respond with exactly one line of JSON:\n"
-        "{\"response_type\":\"ok|disagree\",\"response_text\":\"...\"}\n"
+        f"\nReviewer feedback:\n{reviewer_feedback}\n"
+        "\n"
+        "After coding-done succeeds, write your JSON response to "
+        "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE:\n"
+        '  {"response_type":"ok","response_text":"Applied fixes..."}\n'
+        '  {"response_type":"disagree","response_text":"This is wrong because..."}\n'
     )
 
 
