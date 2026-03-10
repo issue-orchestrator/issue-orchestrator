@@ -103,6 +103,9 @@ def _init_foreign_repo(tmp_path: Path) -> Path:
         cwd=str(clone),
         check=True,
         capture_output=True,
+        # Allow push to local bare repo even when running inside an orchestrator
+        # session (which puts a git wrapper in PATH that blocks direct pushes).
+        env={**os.environ, "ORCHESTRATOR_GH_AUTH": "agent-done-authorized"},
     )
 
     return clone
