@@ -18,6 +18,7 @@ Principle: "No Nulls in Orchestrator"
 import logging
 import os
 from typing import TYPE_CHECKING
+from uuid import uuid4
 
 from ..infra.config import Config
 from ..infra.env import ENV_PREFIX
@@ -488,9 +489,14 @@ def build_orchestrator(
     runner = PluggySessionRunner(pm)
 
     # Timeline store + reader/writer + event sink
+    # instance_id uniquely identifies this orchestrator process lifetime.
+    # Used to scope timeline queries (e.g. E2E run detail views).
+    instance_id = str(uuid4())
+    logger.info("Orchestrator instance_id=%s", instance_id)
     timeline_store = SqliteTimelineStore(
         state_dir(config.repo_root) / "timeline.sqlite",
         TimelineStoreConfig(max_records=config.timeline.max_records),
+        instance_id=instance_id,
     )
     timeline_reader = DefaultTimelineReader(timeline_store)
     timeline_writer = DefaultTimelineWriter(timeline_store)
@@ -641,6 +647,7 @@ def build_orchestrator(
         timeline_store=timeline_store,
         timeline_writer=timeline_writer,
         goal_pilot_store=goal_pilot_store,
+        instance_id=instance_id,
         state_health_check=timeline_store.check_health,
     )
 

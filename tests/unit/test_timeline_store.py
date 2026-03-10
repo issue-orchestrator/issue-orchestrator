@@ -588,3 +588,55 @@ class TestTrivialSummarySuppression:
         assert "Code looks good" in result
         assert "(reviewer)" in result
 
+
+def test_sqlite_timeline_store_instance_id_persisted(tmp_path: Path) -> None:
+    """Events carry the instance_id that was set at store construction."""
+    store = SqliteTimelineStore(
+        tmp_path / "timeline.sqlite",
+        instance_id="test-instance-abc",
+    )
+    store.append(42, TimelineRecord(event_id="e1", timestamp="t1", event="ev", data={}))
+
+    # Read back via raw SQL to verify the column value
+    import sqlite3
+    conn = sqlite3.connect(store.db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT instance_id FROM timeline_events WHERE event_id = 'e1'").fetchone()
+    conn.close()
+    assert row["instance_id"] == "test-instance-abc"
+
+
+def test_sqlite_timeline_store_instance_id_defaults_to_empty(tmp_path: Path) -> None:
+    """Without instance_id, the column defaults to empty string."""
+    store = SqliteTimelineStore(tmp_path / "timeline.sqlite")
+    store.append(42, TimelineRecord(event_id="e1", timestamp="t1", event="ev", data={}))
+
+    import sqlite3
+    conn = sqlite3.connect(store.db_path)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT instance_id FROM timeline_events WHERE event_id = 'e1'").fetchone()
+    conn.close()
+    assert row["instance_id"] == ""
+
+
+def test_sqlite_timeline_store_instance_id_filters_correctly(tmp_path: Path) -> None:
+    """Different instance_ids write to the same DB but can be queried separately."""
+    db_path = tmp_path / "timeline.sqlite"
+    store_a = SqliteTimelineStore(db_path, instance_id="instance-a")
+    store_b = SqliteTimelineStore(db_path, instance_id="instance-b")
+
+    store_a.append(1, TimelineRecord(event_id="a1", timestamp="2026-01-01T00:00:01Z", event="ev", data={}))
+    store_b.append(1, TimelineRecord(event_id="b1", timestamp="2026-01-01T00:00:02Z", event="ev", data={}))
+    store_a.append(1, TimelineRecord(event_id="a2", timestamp="2026-01-01T00:00:03Z", event="ev", data={}))
+
+    # Query for instance-a only
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        "SELECT event_id FROM timeline_events WHERE instance_id = ? ORDER BY sequence",
+        ("instance-a",),
+    ).fetchall()
+    conn.close()
+    assert [r["event_id"] for r in rows] == ["a1", "a2"]
+

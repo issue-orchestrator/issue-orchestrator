@@ -697,8 +697,32 @@ class TestPROperations:
         assert len(prs) == 1
         assert prs[0].number == 10
 
+    def test_get_prs_with_label_graphql(self, adapter, mock_http_client):
+        """Test getting PRs with a specific label via GraphQL (primary path)."""
+        mock_http_client.get_prs_with_label_graphql.return_value = [
+            {
+                "number": 10,
+                "title": "Test PR",
+                "html_url": "https://github.com/owner/repo/pull/10",
+                "head": {"ref": "feature"},
+                "body": "",
+                "state": "open",
+                "labels": [{"name": "bug"}],
+            },
+        ]
+
+        prs = adapter.get_prs_with_label("bug")
+
+        assert len(prs) == 1
+        assert "bug" in prs[0].labels
+        mock_http_client.get_prs_with_label_graphql.assert_called_once_with("bug", state="open")
+        # REST fallback should NOT be called
+        mock_http_client.get_prs_with_label.assert_not_called()
+
     def test_get_prs_with_label(self, adapter, mock_http_client):
-        """Test getting PRs with a specific label."""
+        """Test getting PRs with a specific label via REST fallback."""
+        # GraphQL fails, triggering REST fallback
+        mock_http_client.get_prs_with_label_graphql.side_effect = Exception("GraphQL unavailable")
         mock_http_client.get_prs_with_label.return_value = [
             {
                 "number": 10,
@@ -1339,6 +1363,8 @@ class TestEdgeCases:
 
     def test_get_prs_with_label_handles_invalid_search_results(self, adapter, mock_http_client):
         """Test get_prs_with_label handles invalid search result items."""
+        # GraphQL fails, triggering REST fallback
+        mock_http_client.get_prs_with_label_graphql.side_effect = Exception("GraphQL unavailable")
         # Return mix of valid and invalid items
         mock_http_client.get_prs_with_label.return_value = [
             "not-a-dict",  # Invalid - not a dict
@@ -1364,6 +1390,8 @@ class TestEdgeCases:
 
     def test_get_prs_with_label_handles_fetch_failure(self, adapter, mock_http_client):
         """Test get_prs_with_label handles failure when fetching full PR data."""
+        # GraphQL fails, triggering REST fallback
+        mock_http_client.get_prs_with_label_graphql.side_effect = Exception("GraphQL unavailable")
         mock_http_client.get_prs_with_label.return_value = [{"number": 10}]
         mock_http_client.get_pr.return_value = None  # Full fetch fails
 

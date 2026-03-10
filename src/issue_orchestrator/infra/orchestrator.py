@@ -278,6 +278,7 @@ class Orchestrator:
             repo_root=self.config.repo_root,
             orchestrator_id=self.config.orchestrator_id,
             instance_id=instance_id,
+            orchestrator_instance_id=self.deps.services.instance_id,
         )
         if triggered:
             self.deps.events.publish(TraceEvent(

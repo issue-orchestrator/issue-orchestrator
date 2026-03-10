@@ -856,6 +856,99 @@ class GitHubHttpClient:
         )
         return self._valid_pr_search_items(payload, label=label, state=state)
 
+    def get_prs_with_label_graphql(
+        self,
+        label: str,
+        *,
+        state: str = "open",
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Fetch PRs with a label using GraphQL (single request, includes head branch).
+
+        Unlike get_prs_with_label (search API + N individual get_pr calls),
+        this returns full PR info including head.ref in 1-2 GraphQL requests.
+
+        Returns dicts with keys matching the REST PR API shape (number, title,
+        html_url, head.ref, body, state, labels, draft) so _pr_info_from_api
+        can parse them directly.
+        """
+        # Map state filter to GraphQL enum values
+        states: list[str]
+        if state == "all":
+            states = ["OPEN", "CLOSED", "MERGED"]
+        elif state == "closed":
+            states = ["CLOSED", "MERGED"]
+        else:
+            states = [state.upper()]
+
+        owner, repo_name = self._config.repo.split("/", 1)
+
+        query = """
+        query($owner: String!, $repo: String!, $label: String!, $states: [PullRequestState!], $first: Int!, $after: String) {
+          repository(owner: $owner, name: $repo) {
+            pullRequests(labels: [$label], states: $states, first: $first, after: $after) {
+              pageInfo { hasNextPage endCursor }
+              nodes {
+                number
+                title
+                url
+                headRefName
+                body
+                state
+                isDraft
+                labels(first: 20) {
+                  nodes { name }
+                }
+              }
+            }
+          }
+        }
+        """
+        all_prs: list[dict[str, Any]] = []
+        cursor: str | None = None
+        remaining = limit
+
+        while remaining > 0:
+            batch = min(remaining, 100)
+            variables: dict[str, Any] = {
+                "owner": owner,
+                "repo": repo_name,
+                "label": label,
+                "states": states,
+                "first": batch,
+            }
+            if cursor:
+                variables["after"] = cursor
+
+            result = self._graphql(query, variables, caller="get_prs_with_label_graphql")
+            data = result.get("data", {})
+            repo_data = data.get("repository", {})
+            prs_data = repo_data.get("pullRequests", {})
+            nodes = prs_data.get("nodes", [])
+
+            for node in nodes:
+                # Reshape to match REST API format for _pr_info_from_api
+                labels = [{"name": l["name"]} for l in (node.get("labels", {}).get("nodes", []))]
+                pr_dict: dict[str, Any] = {
+                    "number": node["number"],
+                    "title": node.get("title", ""),
+                    "html_url": node.get("url", ""),
+                    "head": {"ref": node.get("headRefName", "")},
+                    "body": node.get("body", "") or "",
+                    "state": node.get("state", "OPEN").lower(),
+                    "labels": labels,
+                    "draft": node.get("isDraft"),
+                }
+                all_prs.append(pr_dict)
+
+            page_info = prs_data.get("pageInfo", {})
+            if not page_info.get("hasNextPage"):
+                break
+            cursor = page_info.get("endCursor")
+            remaining -= len(nodes)
+
+        return all_prs
+
     def get_prs_for_issue(self, issue_number: int) -> list[dict[str, Any]]:
         query = f"repo:{self._config.repo} head:{issue_number} OR #{issue_number}"
         payload = self._request_json(

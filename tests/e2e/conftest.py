@@ -268,7 +268,7 @@ def e2e_reconciliation_at_session_start(e2e_worktree_base: Path):
         ensure_required_pr_labels(repo)
     else:
         prs_closed = run_cleanup_step("PR cleanup", lambda: cleanup_prs(repo), timeout_s=120)
-        branches_deleted = run_cleanup_step("Branch cleanup", lambda: cleanup_remote_branches(repo), timeout_s=120)
+        branches_deleted = 0  # cleanup_prs already deletes branches for all PRs
         issues_closed = run_cleanup_step("Issue cleanup", lambda: cleanup_issues(repo), timeout_s=120)
         labels_deleted = run_cleanup_step("Label cleanup", lambda: cleanup_e2e_labels(repo, E2E_LABEL_CLEANUP_PREFIXES), timeout_s=60)
         ensure_required_pr_labels(repo)

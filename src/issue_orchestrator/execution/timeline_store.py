@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS timeline_events (
     event TEXT NOT NULL,
     run_dir TEXT NOT NULL DEFAULT '',
     data_json TEXT NOT NULL,
+    instance_id TEXT NOT NULL DEFAULT '',
     CHECK (
         source_event NOT IN ({run_scoped_events})
         OR length(trim(run_dir)) > 0
@@ -50,9 +51,12 @@ CREATE INDEX IF NOT EXISTS idx_timeline_issue_event_run_dir
 
 CREATE INDEX IF NOT EXISTS idx_timeline_issue_source_event
     ON timeline_events(issue_number, source_event);
+
+CREATE INDEX IF NOT EXISTS idx_timeline_instance_id
+    ON timeline_events(instance_id);
 """
 
-_SQLITE_SCHEMA_VERSION = 3
+_SQLITE_SCHEMA_VERSION = 4
 
 
 def _quoted_csv(values: Iterable[str]) -> str:
@@ -66,9 +70,15 @@ def _sqlite_schema_sql() -> str:
 class SqliteTimelineStore(TimelineStore):
     """SQLite-backed timeline store."""
 
-    def __init__(self, db_path: Path, config: TimelineStoreConfig | None = None) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        config: TimelineStoreConfig | None = None,
+        instance_id: str = "",
+    ) -> None:
         self._db_path = db_path
         self._config = config or TimelineStoreConfig()
+        self._instance_id = instance_id
         self._local = threading.local()
         self._write_lock = threading.Lock()
         self._db_inode: int | None = None
@@ -77,6 +87,10 @@ class SqliteTimelineStore(TimelineStore):
     @property
     def db_path(self) -> Path:
         return self._db_path
+
+    @property
+    def instance_id(self) -> str:
+        return self._instance_id
 
     def initialize(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -174,10 +188,10 @@ class SqliteTimelineStore(TimelineStore):
             tx.execute(
                 """
                 INSERT INTO timeline_events
-                    (issue_number, event_id, source_event, timestamp, event, run_dir, data_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (issue_number, event_id, source_event, timestamp, event, run_dir, data_json, instance_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (issue_number, record.event_id, source, record.timestamp, record.event, run_dir, payload),
+                (issue_number, record.event_id, source, record.timestamp, record.event, run_dir, payload, self._instance_id),
             )
             self._trim_if_needed(tx, issue_number)
             self._trim_total_if_needed(tx)

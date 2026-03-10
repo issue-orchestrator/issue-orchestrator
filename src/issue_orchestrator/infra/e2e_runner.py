@@ -94,6 +94,7 @@ class E2ERunnerManager:
         quarantine_file: str = "tests/e2e/quarantine.txt",
         stop_on_first_failure: bool = False,
         auto_quarantine: bool = False,
+        orchestrator_instance_id: str = "",
     ) -> dict:
         """Start an E2E worker subprocess.
 
@@ -162,6 +163,8 @@ class E2ERunnerManager:
             cmd.append("--allow-retry-once")
         if auto_quarantine:
             cmd.append("--auto-quarantine")
+        if orchestrator_instance_id:
+            cmd.extend(["--orchestrator-instance-id", orchestrator_instance_id])
 
         logger.info(
             "Starting E2E worker for %s: %s",
@@ -208,6 +211,7 @@ class E2ERunnerManager:
         quarantine_file: str = "tests/e2e/quarantine.txt",
         stop_on_first_failure: bool = False,
         auto_quarantine: bool = False,
+        orchestrator_instance_id: str = "",
     ) -> dict:
         """Start a new E2E run, or resume an interrupted one.
 
@@ -275,6 +279,7 @@ class E2ERunnerManager:
             quarantine_file=quarantine_file,
             stop_on_first_failure=stop_on_first_failure,
             auto_quarantine=auto_quarantine,
+            orchestrator_instance_id=orchestrator_instance_id,
         )
         result["resumed"] = False
         result["run_id"] = None
@@ -565,6 +570,7 @@ def maybe_trigger_e2e(
     repo_root: Path,
     orchestrator_id: str,
     instance_id: str | None = None,
+    orchestrator_instance_id: str = "",
 ) -> bool:
     """Check if E2E tests should be auto-triggered and start if appropriate."""
     if _should_skip_e2e_trigger(config, repo_root, orchestrator_id, instance_id):
@@ -589,6 +595,7 @@ def maybe_trigger_e2e(
             quarantine_file=config.e2e.quarantine_file,
             stop_on_first_failure=config.e2e.stop_on_first_failure,
             auto_quarantine=config.e2e.auto_quarantine,
+            orchestrator_instance_id=orchestrator_instance_id,
         )
         if result.get("resumed"):
             logger.info(

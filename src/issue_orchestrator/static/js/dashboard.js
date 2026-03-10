@@ -4355,6 +4355,9 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
             const time = evt.timestamp ? `<div class="timeline-time">${formatTimestamp(evt.timestamp)}</div>` : '';
             const artifacts = renderTimelineArtifacts(evt.artifacts || []);
             const actions = renderTimelineEventActions(evt.actions || []);
+            const children = (evt.children && evt.children.length > 0)
+                ? renderTimelineChildren(evt.children)
+                : '';
             return `
                 <div class="timeline-event ${evt.status || ''}">
                     <div class="timeline-event-header">
@@ -4365,6 +4368,7 @@ function renderTimeline(container, events, phaseToc = [], cycles = []) {
                     ${time}
                     ${summary}
                     ${artifacts}
+                    ${children}
                 </div>
             `;
         }).join('');
@@ -4410,6 +4414,29 @@ function renderTimelineArtifacts(artifacts) {
         return `<button class="timeline-artifact" type="button" data-path="${escapeAttr(value)}">${label}</button>`;
     }).join('');
     return `<div class="timeline-artifacts">${items}</div>`;
+}
+
+function renderTimelineChildren(children) {
+    if (!children || children.length === 0) return '';
+    const items = children.map(child => {
+        const stepLabel = formatStepLabel(child.step);
+        const summary = child.summary ? `<span class="timeline-child-summary">${escapeHtml(child.summary)}</span>` : '';
+        const time = child.timestamp ? `<span class="timeline-child-time">${formatTimestamp(child.timestamp)}</span>` : '';
+        return `
+            <div class="timeline-child-event ${child.status || ''}">
+                <span class="timeline-child-step">${escapeHtml(stepLabel)}</span>
+                <span class="timeline-child-status">${formatStatus(child.status)}</span>
+                ${time}
+                ${summary}
+            </div>
+        `;
+    }).join('');
+    return `
+        <details class="timeline-children">
+            <summary class="timeline-children-toggle">${children.length} orchestrator event${children.length !== 1 ? 's' : ''}</summary>
+            <div class="timeline-children-list">${items}</div>
+        </details>
+    `;
 }
 
 function renderTimelineEventActions(actions) {
@@ -7273,16 +7300,21 @@ async function showUnifiedRunView(runId) {
     modal.classList.add('visible');
 
     try {
-        // Fetch enhanced run details with categories and history
-        const res = await fetch(`/control/e2e/run/${runId}?repo_root=${encodeURIComponent(REPO_ROOT)}&enhanced=true`);
-        const data = await res.json();
+        // Fetch run details and timeline in parallel
+        const [detailsRes, timelineRes] = await Promise.all([
+            fetch(`/control/e2e/run/${runId}?repo_root=${encodeURIComponent(REPO_ROOT)}&enhanced=true`),
+            fetch(`/control/e2e/run/${runId}/timeline?repo_root=${encodeURIComponent(REPO_ROOT)}`),
+        ]);
+        const data = await detailsRes.json();
+        const timelineData = timelineRes.ok ? await timelineRes.json() : null;
 
-        if (!res.ok) {
+        if (!detailsRes.ok) {
             content.innerHTML = `<div style="color: var(--danger); padding: 20px;">Error: ${escapeHtml(data.error || data.detail || 'Failed to load run details')}</div>`;
             return;
         }
 
         unifiedRunData = data;
+        unifiedRunData._timeline = timelineData;
         renderUnifiedRunView(data, runId);
     } catch (err) {
         content.innerHTML = `<div style="color: var(--danger); padding: 20px;">Failed to load run details: ${escapeHtml(err.message)}</div>`;
@@ -7303,7 +7335,9 @@ function renderUnifiedRunView(data, runId) {
     const runDate = run.started_at ? new Date(run.started_at).toLocaleString() : 'Unknown';
     modalTitle.textContent = `Run #${run.id} - ${runDate}`;
 
-    // Build header with run info and summary
+    const hasTimeline = data._timeline && data._timeline.events && data._timeline.events.length > 0;
+
+    // Build header with run info, summary, and tab switcher
     let html = `
         <div class="unified-run-view">
         <div class="unified-run-header">
@@ -7313,8 +7347,16 @@ function renderUnifiedRunView(data, runId) {
                 ${summary.passed > 0 ? `<span class="stat passed">${summary.passed} passed</span>` : ''}
                 ${summary.untriaged + summary.has_issue > 0 ? `<span class="stat failed">${summary.untriaged + summary.has_issue} failed</span>` : ''}
             </div>
+            ${hasTimeline ? `
+            <div class="e2e-run-tabs">
+                <button class="e2e-run-tab active" onclick="switchE2ERunTab('tests', this)" data-tab="tests">Tests</button>
+                <button class="e2e-run-tab" onclick="switchE2ERunTab('timeline', this)" data-tab="timeline">Timeline</button>
+            </div>` : ''}
         </div>
     `;
+
+    // Tests tab panel
+    html += '<div id="e2eRunTestsTab" class="e2e-run-tab-panel">';
 
     // Render each category section
     html += renderCategorySection('untriaged', 'UNTRIAGED', tests.untriaged,
@@ -7367,10 +7409,24 @@ function renderUnifiedRunView(data, runId) {
         `;
     }
 
+    // Close tests tab panel
+    html += '</div>';
+
+    // Timeline tab panel (hidden by default, populated on tab switch)
+    if (hasTimeline) {
+        html += '<div id="e2eRunTimelineTab" class="e2e-run-tab-panel" style="display: none;"></div>';
+    }
+
     // Close the unified-run-view wrapper
     html += '</div>';
 
     content.innerHTML = html;
+
+    // Pre-render timeline if available
+    if (hasTimeline) {
+        const timelineContainer = document.getElementById('e2eRunTimelineTab');
+        renderTimeline(timelineContainer, data._timeline.events);
+    }
 }
 
 /**
@@ -7503,6 +7559,22 @@ function renderTestRow(test, category) {
 /**
  * Toggle a category section's visibility.
  */
+/**
+ * Switch between Tests and Timeline tabs in the E2E run detail view.
+ */
+function switchE2ERunTab(tabName, btn) {
+    // Update tab buttons
+    const tabs = document.querySelectorAll('.e2e-run-tab');
+    tabs.forEach(t => t.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+
+    // Toggle panels
+    const testsPanel = document.getElementById('e2eRunTestsTab');
+    const timelinePanel = document.getElementById('e2eRunTimelineTab');
+    if (testsPanel) testsPanel.style.display = tabName === 'tests' ? '' : 'none';
+    if (timelinePanel) timelinePanel.style.display = tabName === 'timeline' ? '' : 'none';
+}
+
 function toggleCategorySection(categoryKey) {
     const testsDiv = document.getElementById(`tests-${categoryKey}`);
     const toggleSpan = document.getElementById(`toggle-${categoryKey}`);

@@ -43,4 +43,5 @@ class InfraServices:
     timeline_store: "TimelineStore"
     timeline_writer: "TimelineWriter"
     goal_pilot_store: "GoalPilotStore"
+    instance_id: str = ""
     state_health_check: Callable[[], None] = field(default=_noop_health_check)

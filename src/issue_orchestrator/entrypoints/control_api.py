@@ -38,6 +38,7 @@ E2E Test Runner API endpoints:
 - GET /control/e2e/status - Get E2E runner status
 - GET /control/e2e/runs - List recent E2E runs
 - GET /control/e2e/run/{run_id} - Get run details with test results
+- GET /control/e2e/run/{run_id}/timeline - Get timeline events for shared rendering
 - GET /control/e2e/logs/{run_id} - Get run logs
 - GET /control/e2e/failed/{run_id} - Get failed tests from a run
 """
@@ -507,6 +508,7 @@ async def status() -> JSONResponse:
         "pending_reworks": len(state.pending_reworks),
         "completed_today": len(state.completed_today),
         "issues_in_queue": len(state.cached_queue_issues),
+        "instance_id": _orchestrator.deps.services.instance_id,
     })
 
 
@@ -4081,6 +4083,7 @@ async def e2e_start(request: Request) -> JSONResponse:
     runner = get_e2e_runner_manager()
 
     try:
+        instance_id = _orchestrator.deps.services.instance_id if _orchestrator else ""
         result = runner.start(
             repo_root=repo_root,
             orchestrator_id=orchestrator_id,
@@ -4088,6 +4091,7 @@ async def e2e_start(request: Request) -> JSONResponse:
             allow_retry_once=allow_retry,
             quarantine_file=config.e2e.quarantine_file,
             auto_quarantine=config.e2e.auto_quarantine,
+            orchestrator_instance_id=instance_id,
         )
 
         # Broadcast E2E started event for SSE subscribers
@@ -4355,6 +4359,151 @@ async def e2e_run_details(
         return JSONResponse(details)
     except Exception as e:
         logger.exception("Failed to get E2E run details: %s", e)
+        return JSONResponse(
+            {"error": "db_error", "detail": str(e)},
+            status_code=500,
+        )
+
+
+def _read_orchestrator_timeline_for_window(
+    timeline_db_path: Path,
+    started_at: str,
+    finished_at: str | None,
+    orchestrator_instance_id: str = "",
+) -> list[dict]:
+    """Read orchestrator timeline events scoped to an E2E run.
+
+    Opens timeline.sqlite read-only.  When ``orchestrator_instance_id`` is
+    provided, filters directly by that value — no guessing required.
+
+    Falls back to timestamp-only filtering when instance_id is not
+    available (older runs or pre-v4 timeline databases).
+    """
+    import json as _json
+    import sqlite3 as _sqlite3
+
+    try:
+        uri = f"file:{timeline_db_path}?mode=ro"
+        conn = _sqlite3.connect(uri, uri=True)
+        conn.row_factory = _sqlite3.Row
+
+        end_ts = finished_at or "9999-12-31T23:59:59Z"
+
+        # Check if instance_id column exists (schema v4+)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(timeline_events)")}
+        has_instance_id = "instance_id" in columns
+
+        if has_instance_id and orchestrator_instance_id:
+            # Best path: filter by the exact instance_id stored in e2e_runs
+            rows = conn.execute(
+                """
+                SELECT event_id, source_event, timestamp, event, data_json
+                FROM timeline_events
+                WHERE instance_id = ?
+                  AND timestamp >= ? AND timestamp <= ?
+                ORDER BY sequence ASC
+                """,
+                (orchestrator_instance_id, started_at, end_ts),
+            ).fetchall()
+        else:
+            # Fallback for older runs without stored instance_id
+            # or pre-v4 timeline schemas: timestamp-only filtering
+            rows = conn.execute(
+                """
+                SELECT event_id, source_event, timestamp, event, data_json
+                FROM timeline_events
+                WHERE timestamp >= ? AND timestamp <= ?
+                ORDER BY sequence ASC
+                """,
+                (started_at, end_ts),
+            ).fetchall()
+
+        conn.close()
+    except Exception:
+        logger.debug("Could not read orchestrator timeline from %s", timeline_db_path, exc_info=True)
+        return []
+
+    from ..ports.timeline_store import TimelineRecord
+    from ..timeline import TimelineStream as _TimelineStream
+
+    records = []
+    for row in rows:
+        data_json = row["data_json"] or "{}"
+        try:
+            data = _json.loads(data_json)
+        except (ValueError, TypeError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        records.append(
+            TimelineRecord(
+                event_id=str(row["event_id"]),
+                timestamp=str(row["timestamp"]),
+                event=str(row["event"]),
+                data=data,
+                source_event=str(row["source_event"] or ""),
+            )
+        )
+
+    if not records:
+        return []
+
+    stream = _TimelineStream.from_records(issue_number=0, records=records)
+    return [evt.to_dict() for evt in stream.events]
+
+
+@control_app.get("/control/e2e/run/{run_id}/timeline")
+async def e2e_run_timeline_endpoint(
+    run_id: int,
+    repo_root: str = Query(...),
+) -> JSONResponse:
+    """Get timeline events for a specific E2E run.
+
+    Returns events in the same shape as the main issue timeline,
+    enabling shared timeline rendering between E2E and issue views.
+
+    Path params:
+        run_id: int - Run ID
+
+    Query params:
+        repo_root: str - Repository root path
+    """
+    from ..infra.e2e_db import E2EDB, e2e_run_timeline
+
+    validated_root = _validate_repo_root(repo_root)
+    if validated_root is None:
+        return JSONResponse(
+            {"error": "Invalid repo_root"},
+            status_code=400,
+        )
+
+    db_path = validated_root / ".issue-orchestrator" / "e2e.db"
+    if not db_path.exists():
+        return JSONResponse(
+            {"error": "not_found", "detail": "E2E database not found"},
+            status_code=404,
+        )
+
+    try:
+        db = E2EDB(db_path)
+        events = db.get_run_events(run_id)
+
+        # Read orchestrator events from timeline.sqlite, scoped by instance_id
+        # (written per-event since schema v4) and the run's time window.
+        orchestrator_events: list[dict] = []
+        run = db.get_run(run_id)
+        timeline_db_path = validated_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
+        if run and timeline_db_path.exists():
+            orchestrator_events = _read_orchestrator_timeline_for_window(
+                timeline_db_path,
+                started_at=run.started_at,
+                finished_at=run.finished_at,
+                orchestrator_instance_id=run.orchestrator_instance_id,
+            )
+
+        return JSONResponse(e2e_run_timeline(events, orchestrator_events=orchestrator_events))
+    except Exception as e:
+        logger.exception("Failed to get E2E run timeline: %s", e)
         return JSONResponse(
             {"error": "db_error", "detail": str(e)},
             status_code=500,

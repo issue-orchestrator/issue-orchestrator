@@ -39,7 +39,8 @@ CREATE TABLE IF NOT EXISTS e2e_runs (
     artifacts_dir TEXT,
     worker_pid INTEGER,
     total_tests INTEGER,
-    current_test TEXT
+    current_test TEXT,
+    orchestrator_instance_id TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS e2e_test_results (
@@ -113,6 +114,22 @@ CREATE INDEX IF NOT EXISTS idx_e2e_flake_history_nodeid
 
 CREATE INDEX IF NOT EXISTS idx_e2e_test_results_nodeid
     ON e2e_test_results(nodeid);
+
+-- E2E Run Events: Captures SSE events from the orchestrator during each run.
+-- Enables timeline rendering using the same model as the main UI's issue detail.
+CREATE TABLE IF NOT EXISTS e2e_run_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    event_id TEXT NOT NULL,
+    timestamp TEXT NOT NULL,
+    event_name TEXT NOT NULL,
+    source_event TEXT NOT NULL DEFAULT '',
+    data_json TEXT NOT NULL,
+    FOREIGN KEY(run_id) REFERENCES e2e_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_e2e_run_events_run_id
+    ON e2e_run_events(run_id, id);
 """
 
 
@@ -139,6 +156,7 @@ class E2ERun:
     worker_pid: Optional[int]
     total_tests: Optional[int]
     current_test: Optional[str]
+    orchestrator_instance_id: str = ""
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "E2ERun":
@@ -162,6 +180,7 @@ class E2ERun:
             worker_pid=row["worker_pid"],
             total_tests=row["total_tests"],
             current_test=row["current_test"],
+            orchestrator_instance_id=row["orchestrator_instance_id"] if "orchestrator_instance_id" in row.keys() else "",
         )
 
     def to_dict(self) -> dict:
@@ -185,6 +204,7 @@ class E2ERun:
             "worker_pid": self.worker_pid,
             "total_tests": self.total_tests,
             "current_test": self.current_test,
+            "orchestrator_instance_id": self.orchestrator_instance_id,
         }
 
 
@@ -303,6 +323,231 @@ class E2ERunIssue:
             "created_at": self.created_at,
             "closed_at": self.closed_at,
         }
+
+
+@dataclass
+class E2ERunEvent:
+    """An SSE event captured during an E2E test run.
+
+    Enables timeline rendering for E2E runs using the same model as the main
+    UI's issue detail view.
+    """
+
+    id: int
+    run_id: int
+    event_id: str
+    timestamp: str
+    event_name: str
+    source_event: str
+    data: dict
+
+    @classmethod
+    def from_row(cls, row: sqlite3.Row) -> "E2ERunEvent":
+        return cls(
+            id=row["id"],
+            run_id=row["run_id"],
+            event_id=row["event_id"],
+            timestamp=row["timestamp"],
+            event_name=row["event_name"],
+            source_event=row["source_event"],
+            data=json.loads(row["data_json"]),
+        )
+
+    def to_timeline_dict(self) -> dict:
+        """Convert to a dict compatible with the main UI's timeline rendering.
+
+        Maps E2E run events to the TimelineEvent shape so the same
+        frontend components can render both issue timelines and E2E run timelines.
+        """
+        phase = _e2e_event_phase(self.event_name)
+        status = _e2e_event_status(self.event_name, self.data)
+        level = _e2e_event_level(self.event_name)
+        summary = _e2e_event_summary(self.event_name, self.data)
+
+        d: dict = {
+            "event_id": self.event_id,
+            "timestamp": self.timestamp,
+            "event": self.event_name,
+            "issue_number": 0,
+            "phase": phase,
+            "step": self.event_name.split(".")[-1] if "." in self.event_name else self.event_name,
+            "status": status,
+            "level": level,
+            "summary": summary,
+            "parent_key": f"e2e-run-{self.run_id}",
+            "detail": None,
+            "run_id": str(self.run_id),
+            "artifacts": [],
+            "unsupported_schema": False,
+            "review_oriented": False,
+            "event_intent": "system",
+            "source_event": self.source_event or None,
+        }
+        # Expose nodeid for reliable correlation in _build_test_windows
+        nodeid = self.data.get("nodeid")
+        if isinstance(nodeid, str):
+            d["nodeid"] = nodeid
+        return d
+
+
+def _e2e_event_phase(event_name: str) -> str:
+    """Map E2E event names to timeline phases."""
+    if event_name in ("e2e.run_started", "e2e.tests_collected"):
+        return "setup"
+    if event_name.startswith("e2e.test_"):
+        return "execution"
+    if event_name == "e2e.retry_started":
+        return "retry"
+    return "teardown"  # run_finished, run_canceled, run_error
+
+
+def _e2e_event_status(event_name: str, data: dict | None = None) -> str:
+    if event_name in ("e2e.run_error", "e2e.run_canceled"):
+        return "error"
+    if event_name == "e2e.test_completed" and data:
+        outcome = data.get("outcome", "")
+        if outcome in ("failed", "error"):
+            return "error"
+        if outcome == "skipped":
+            return "skipped"
+        return "completed"
+    if event_name == "e2e.test_completed":
+        return "completed"
+    if event_name == "e2e.run_finished":
+        return "completed"
+    return "active"
+
+
+def _e2e_event_level(event_name: str) -> str:
+    if event_name in ("e2e.run_error",):
+        return "error"
+    if event_name in ("e2e.run_canceled",):
+        return "warning"
+    if "test_completed" in event_name:
+        return "detail"
+    return "info"
+
+
+def _e2e_event_summary(event_name: str, data: dict) -> str:
+    if event_name == "e2e.run_started":
+        branch = data.get("branch", "unknown")
+        return f"E2E run started on {branch}"
+    if event_name == "e2e.tests_collected":
+        return f"Collected {data.get('total', '?')} tests"
+    if event_name == "e2e.test_started":
+        return data.get("nodeid", "")
+    if event_name == "e2e.test_completed":
+        outcome = data.get("outcome", "?")
+        nodeid = data.get("nodeid", "")
+        dur = data.get("duration_seconds")
+        dur_str = f" ({dur:.1f}s)" if dur else ""
+        return f"{nodeid}: {outcome}{dur_str}"
+    if event_name == "e2e.retry_started":
+        return f"Retrying {data.get('failed_count', '?')} failed tests"
+    if event_name == "e2e.run_finished":
+        return f"Run {data.get('status', '?')} in {data.get('duration_seconds', '?')}s"
+    if event_name == "e2e.run_canceled":
+        return "Run canceled"
+    if event_name == "e2e.run_error":
+        return f"Run error: {data.get('error', 'unknown')[:100]}"
+    return event_name
+
+
+def e2e_run_timeline(
+    events: list[E2ERunEvent],
+    orchestrator_events: list[dict] | None = None,
+) -> dict:
+    """Build a hierarchical timeline for an E2E run.
+
+    Pytest-level events (test_started, test_completed, run_started, etc.) form the
+    top layer.  Orchestrator events from timeline.sqlite are nested as ``children``
+    under whichever test was active when they occurred (matched by timestamp window
+    between test_started and test_completed).
+
+    Orchestrator events that fall outside any test window (e.g. during setup/teardown)
+    are attached as children of the nearest preceding pytest event.
+
+    Args:
+        events: Pytest-level E2E run events from e2e.db.
+        orchestrator_events: Pre-converted timeline event dicts read from
+            timeline.sqlite.  Each dict should already be in the main-UI timeline
+            event shape (as produced by ``TimelineEvent.to_dict()``).
+    """
+    pytest_dicts = [e.to_timeline_dict() for e in events]
+
+    if not orchestrator_events:
+        return {"events": pytest_dicts}
+
+    # Build timestamp windows for test events (test_started → test_completed pairs)
+    _nest_orchestrator_events(pytest_dicts, orchestrator_events)
+
+    return {"events": pytest_dicts}
+
+
+def _build_test_windows(
+    pytest_events: list[dict],
+) -> list[tuple[str, str, dict]]:
+    """Pair test_started/test_completed into (start_ts, end_ts, parent_dict) windows."""
+    windows: list[tuple[str, str, dict]] = []
+    started_map: dict[str, tuple[str, dict]] = {}
+
+    for evt in pytest_events:
+        evt.setdefault("children", [])
+        name = evt.get("event", "")
+        if name == "e2e.test_started":
+            nodeid = (evt.get("nodeid") or "").strip()
+            if nodeid:
+                started_map[nodeid] = (evt["timestamp"], evt)
+        elif name == "e2e.test_completed":
+            nodeid = (evt.get("nodeid") or "").strip()
+            if nodeid and nodeid in started_map:
+                start_ts, started_dict = started_map.pop(nodeid)
+                windows.append((start_ts, evt["timestamp"], started_dict))
+    return windows
+
+
+def _find_nearest_preceding(pytest_events: list[dict], ts: str) -> dict | None:
+    """Return the nearest pytest event whose timestamp <= ts, or None."""
+    best = None
+    for p_evt in pytest_events:
+        if p_evt.get("timestamp", "") <= ts:
+            best = p_evt
+        else:
+            break  # pytest_events are in chronological order
+    return best
+
+
+def _nest_orchestrator_events(
+    pytest_events: list[dict],
+    orch_events: list[dict],
+) -> None:
+    """Mutate *pytest_events* in-place, adding ``children`` lists.
+
+    Strategy:
+    1. Pair test_started / test_completed into windows keyed by nodeid.
+    2. For each orchestrator event, find the window whose start <= ts <= end.
+    3. If no window matches, attach to the nearest preceding pytest event.
+    """
+    windows = _build_test_windows(pytest_events)
+    sorted_orch = sorted(orch_events, key=lambda e: e.get("timestamp", ""))
+
+    for orch_evt in sorted_orch:
+        ts = orch_evt.get("timestamp", "")
+        parent = _find_window_parent(windows, ts) or _find_nearest_preceding(pytest_events, ts)
+        if parent is not None:
+            parent["children"].append(orch_evt)
+        elif pytest_events:
+            pytest_events[0]["children"].append(orch_evt)
+
+
+def _find_window_parent(
+    windows: list[tuple[str, str, dict]], ts: str,
+) -> dict | None:
+    """Return the parent dict for the window containing ts, or None."""
+    for start_ts, end_ts, parent_evt in windows:
+        if start_ts <= ts <= end_ts:
+            return parent_evt
+    return None
 
 
 @dataclass
@@ -542,10 +787,16 @@ class E2EDB:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        """Create tables if they don't exist."""
+        """Create tables if they don't exist, and migrate existing ones."""
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
             conn.executescript(_SCHEMA)
+            # Migrate: add orchestrator_instance_id if missing (pre-existing DBs)
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(e2e_runs)")}
+            if "orchestrator_instance_id" not in columns:
+                conn.execute(
+                    "ALTER TABLE e2e_runs ADD COLUMN orchestrator_instance_id TEXT NOT NULL DEFAULT ''"
+                )
 
     @contextmanager
     def _connect(self) -> Iterator[sqlite3.Connection]:
@@ -578,6 +829,7 @@ class E2EDB:
         branch: Optional[str] = None,
         retry_of: Optional[int] = None,
         worker_pid: Optional[int] = None,
+        orchestrator_instance_id: str = "",
     ) -> int:
         """Start a new E2E run.
 
@@ -639,8 +891,8 @@ class E2EDB:
                 INSERT INTO e2e_runs (
                     repo_root, orchestrator_id, started_at, status,
                     pytest_args, commit_sha, branch, retry_of, is_retry_run,
-                    worker_pid
-                ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?)
+                    worker_pid, orchestrator_instance_id
+                ) VALUES (?, ?, ?, 'running', ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     repo_root,
@@ -652,6 +904,7 @@ class E2EDB:
                     retry_of,
                     1 if retry_of else 0,
                     worker_pid,
+                    orchestrator_instance_id,
                 ),
             )
             run_id = cursor.lastrowid
@@ -1679,6 +1932,52 @@ class E2EDB:
         # Sort by flip_rate descending for most-flaky-first ordering
         results.sort(key=lambda s: s.flip_rate, reverse=True)
         return results
+
+
+    # -------------------------------------------------------------------------
+    # Run events (timeline)
+    # -------------------------------------------------------------------------
+
+    def append_run_event(
+        self,
+        run_id: int,
+        event_id: str,
+        timestamp: str,
+        event_name: str,
+        data: dict,
+        *,
+        source_event: str = "",
+    ) -> None:
+        """Capture an SSE event from the orchestrator during an E2E run.
+
+        These events enable timeline rendering per-run using the same model
+        as the main UI's issue detail view.
+        """
+        with self._connect() as conn:
+            conn.execute(
+                """INSERT INTO e2e_run_events
+                   (run_id, event_id, timestamp, event_name, source_event, data_json)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (run_id, event_id, timestamp, event_name, source_event, json.dumps(data)),
+            )
+
+    def get_run_events(self, run_id: int) -> list[E2ERunEvent]:
+        """Get all captured SSE events for a run, ordered by insertion."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT * FROM e2e_run_events WHERE run_id = ? ORDER BY id",
+                (run_id,),
+            )
+            return [E2ERunEvent.from_row(row) for row in cursor.fetchall()]
+
+    def delete_run_events(self, run_id: int) -> int:
+        """Delete all captured events for a run. Returns count deleted."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "DELETE FROM e2e_run_events WHERE run_id = ?",
+                (run_id,),
+            )
+            return cursor.rowcount
 
 
 # -------------------------------------------------------------------------
