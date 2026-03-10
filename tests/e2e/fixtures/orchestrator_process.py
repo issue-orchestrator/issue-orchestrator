@@ -295,6 +295,9 @@ class OrchestratorProcess:
         env["ORCHESTRATOR_LOG_FILE"] = str(orchestrator_log_file)
         env["PYTHONUNBUFFERED"] = "1"
         env["ORCHESTRATOR_LOG_TO_STDERR"] = "1"
+        # Skip doctor checks in E2E — they create test worktrees using a fixed
+        # branch name which conflicts when multiple orchestrators share a repo.
+        env["ISSUE_ORCHESTRATOR_SKIP_DOCTOR"] = "1"
         env["PYTHONPATH"] = f"{self.project_root / 'src'}:{env.get('PYTHONPATH', '')}"
         env["ORCHESTRATOR_NO_BROWSER"] = "1"
         if os.environ.get("E2E_CLAUDE_ARGS"):

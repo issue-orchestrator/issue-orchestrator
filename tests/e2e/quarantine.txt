@@ -1,4 +1,2 @@
 # Known flaky tests - excluded from required E2E runs
 # These tests still run but failures don't block the overall E2E status
-
-tests/e2e/test_claim_coordination.py::TestClaimCoordination::test_only_one_orchestrator_claims_issue

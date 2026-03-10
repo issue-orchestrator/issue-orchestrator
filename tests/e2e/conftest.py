@@ -111,7 +111,12 @@ def e2e_label(logical: str) -> str:
 def pytest_configure(config):
     """Configure pytest for e2e tests - fail fast by default."""
     if any("e2e" in str(arg) for arg in config.args):
-        if config.option.maxfail == 0:
+        # Only set maxfail if not explicitly passed on the command line
+        explicit_maxfail = any(
+            arg.startswith("--maxfail") or arg.startswith("-x")
+            for arg in config.invocation_params.args
+        )
+        if not explicit_maxfail:
             config.option.maxfail = 1
             logger.info("[E2E] Fail-fast enabled (maxfail=1)")
 

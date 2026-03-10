@@ -76,7 +76,7 @@ class TestReviewAgentExecution:
         issue_number, pr_number = await self._create_issue_and_wait_for_pr(
             flow,
             orchestrator_watcher,
-            "[E2E] Review agent test - dev PR created",
+            "[M0-801] [E2E] Review agent test - dev PR created",
         )
 
         await poll_issue_label(flow.repo, issue_number, "pr-pending", backoff=(1, 2, 4, 8))
@@ -101,7 +101,7 @@ class TestReviewAgentExecution:
         issue_number, pr_number = await self._create_issue_and_wait_for_pr(
             flow,
             orchestrator_watcher,
-            "[E2E] Review agent test - review approval",
+            "[M0-802] [E2E] Review agent test - review approval",
         )
 
         await poll_issue_label(
