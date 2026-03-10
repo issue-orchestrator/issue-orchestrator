@@ -84,7 +84,7 @@ def _is_ui_noise(lower: str) -> bool:
         "fiddle-faddling", "thinking", "running…",
         "envisioning", "planning", "analyzing", "reasoning",
         "researching", "processing", "generating", "working",
-        "clauding", "interrupt",
+        "clauding", "claing", "interrupt", "timeout",
     )
     for kw in _NOISE_KEYWORDS:
         if kw in lower:
@@ -120,18 +120,19 @@ def is_spinner_fragment(line: str) -> bool:
     _ANIMATION_SPINNERS = _SPINNER_CHARS - {"⎿"}  # ⎿ is used for tool output
     if stripped[0] in _ANIMATION_SPINNERS and len(stripped) <= 25:
         return True
-    # Short fragments (≤4 chars, no spaces) are partial TUI animation overwrites
-    # (e.g. "n", "v", "Cu", "i…", "nvsi") but NOT meaningful words
-    _text = stripped.rstrip("…")  # strip trailing ellipsis
-    if len(stripped) <= 4 and " " not in stripped:
+    # Short fragments (≤5 chars, no spaces) are partial TUI animation overwrites
+    # or line-number fragments from cursor-positioned tool output.
+    # Keep only known meaningful short words.
+    if len(stripped) <= 5 and " " not in stripped:
         _KEEP_SHORT = {"ok", "yes", "no", "done", "fail", "pass", "true", "null",
-                        "PASS", "FAIL", "OK", "YES", "NO", "DONE", "TRUE", "NULL"}
-        if stripped not in _KEEP_SHORT and _text not in _KEEP_SHORT:
+                        "PASS", "FAIL", "OK", "YES", "NO", "DONE", "TRUE", "NULL",
+                        "error", "Error", "ERROR"}
+        if stripped not in _KEEP_SHORT and stripped.rstrip("…") not in _KEEP_SHORT:
             return True
-    # TUI chrome: horizontal rules, prompt indicators, block-char banner lines
+    # TUI chrome: horizontal rules, prompt indicators, arrows, block-char banner lines
     if all(c in "─━═" for c in stripped):
         return True
-    if stripped in ("❯", ">", "❯  "):
+    if stripped in ("❯", ">", "❯  ", "↓", "↑", "←", "→"):
         return True
     # Block characters from TUI banner (▐▛███▜▌ etc.)
     _BLOCK_CHARS = set("▐▛▜▌▝▘█▀▄▁▂▃▅▆▇ ")
