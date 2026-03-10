@@ -4366,18 +4366,16 @@ def _read_orchestrator_timeline_for_window(
     timeline_db_path: Path,
     started_at: str,
     finished_at: str | None,
-    issue_numbers: list[int] | None = None,
 ) -> list[dict]:
     """Read orchestrator timeline events scoped to an E2E run.
 
-    Opens timeline.sqlite read-only and queries events whose timestamp falls
-    within the run's [started_at, finished_at] window.  When ``issue_numbers``
-    is provided, only events for those issues are returned — this prevents
-    unrelated orchestrator activity on the same repo from bleeding in.
+    Opens timeline.sqlite read-only.  First discovers which orchestrator
+    instance(s) were active during the run's time window via the
+    ``instance_id`` column, then returns only events from those instances.
+    This prevents unrelated orchestrator activity from bleeding in.
 
-    Note: timeline.sqlite does not carry an orchestrator_id column, so we
-    cannot filter by the E2E run's orchestrator_id directly.  The combination
-    of timestamp window + issue_number scoping is the tightest filter available.
+    Falls back to timestamp-only filtering for older timeline databases
+    that don't yet have the ``instance_id`` column (schema < v4).
     """
     import json as _json
     import sqlite3 as _sqlite3
@@ -4389,26 +4387,48 @@ def _read_orchestrator_timeline_for_window(
 
         end_ts = finished_at or "9999-12-31T23:59:59Z"
 
-        if issue_numbers:
-            placeholders = ",".join("?" for _ in issue_numbers)
-            query = f"""
-                SELECT event_id, source_event, timestamp, event, data_json
-                FROM timeline_events
-                WHERE timestamp >= ? AND timestamp <= ?
-                  AND issue_number IN ({placeholders})
-                ORDER BY sequence ASC
-            """
-            params: tuple = (started_at, end_ts, *issue_numbers)
-        else:
-            query = """
-                SELECT event_id, source_event, timestamp, event, data_json
-                FROM timeline_events
-                WHERE timestamp >= ? AND timestamp <= ?
-                ORDER BY sequence ASC
-            """
-            params = (started_at, end_ts)
+        # Check if instance_id column exists (schema v4+)
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(timeline_events)")}
+        has_instance_id = "instance_id" in columns
 
-        rows = conn.execute(query, params).fetchall()
+        if has_instance_id:
+            # Discover instance_ids active during this window
+            instance_rows = conn.execute(
+                """
+                SELECT DISTINCT instance_id FROM timeline_events
+                WHERE instance_id != ''
+                  AND timestamp >= ? AND timestamp <= ?
+                """,
+                (started_at, end_ts),
+            ).fetchall()
+            instance_ids = [r[0] for r in instance_rows]
+
+            if instance_ids:
+                placeholders = ",".join("?" for _ in instance_ids)
+                rows = conn.execute(
+                    f"""
+                    SELECT event_id, source_event, timestamp, event, data_json
+                    FROM timeline_events
+                    WHERE instance_id IN ({placeholders})
+                      AND timestamp >= ? AND timestamp <= ?
+                    ORDER BY sequence ASC
+                    """,
+                    (*instance_ids, started_at, end_ts),
+                ).fetchall()
+            else:
+                rows = []
+        else:
+            # Fallback for pre-v4 schemas: timestamp-only filtering
+            rows = conn.execute(
+                """
+                SELECT event_id, source_event, timestamp, event, data_json
+                FROM timeline_events
+                WHERE timestamp >= ? AND timestamp <= ?
+                ORDER BY sequence ASC
+                """,
+                (started_at, end_ts),
+            ).fetchall()
+
         conn.close()
     except Exception:
         logger.debug("Could not read orchestrator timeline from %s", timeline_db_path, exc_info=True)
@@ -4479,12 +4499,8 @@ async def e2e_run_timeline_endpoint(
         db = E2EDB(db_path)
         events = db.get_run_events(run_id)
 
-        # Read orchestrator events from timeline.sqlite for the run's time window.
-        # Limitation: timeline.sqlite carries no orchestrator_id, so we scope by
-        # timestamp window only.  E2E runs one orchestrator per repo, so overlap
-        # with unrelated activity within the same wall-clock window is minimal.
-        # If multi-orchestrator support is needed later, adding an orchestrator_id
-        # column to timeline_events would be the correct fix.
+        # Read orchestrator events from timeline.sqlite, scoped by instance_id
+        # (written per-event since schema v4) and the run's time window.
         orchestrator_events: list[dict] = []
         run = db.get_run(run_id)
         timeline_db_path = validated_root / ".issue-orchestrator" / "state" / "timeline.sqlite"
