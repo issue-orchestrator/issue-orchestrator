@@ -1,6 +1,7 @@
 import type { McpStatusPayload, Snapshot, StartResponse, DoctorReport } from "./types.js";
 
 export interface OrchestratorClient {
+  isConnected(): boolean;
   start(): Promise<void>;
   stop(): Promise<void>;
   getSnapshot(): Promise<Snapshot>;

@@ -36,8 +36,7 @@ class TestReviewAgentExecution:
         orchestrator_watcher,
         issue_title: str,
     ) -> tuple[int, int]:
-        issue = flow.create_issue(issue_title, ["agent:e2e-test"])[0]
-        issue_number = int(issue.stable_id())
+        issue, issue_number = flow.create_issue(issue_title, ["agent:e2e-test"])
         logger.info("Created issue #%d for review agent test", issue_number)
 
         await flow.issue_seen(issue, timeout_s=60)

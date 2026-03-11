@@ -68,11 +68,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let client: OrchestratorClient;
   const { McpClient } = await import("./mcpClient.js");
   client = new McpClient(context, output);
-  try {
-    await client.start();
-  } catch (err) {
-    output.appendLine(`Failed to start MCP client: ${String(err)}`);
-    vscode.window.showErrorMessage("Issue Orchestrator MCP client failed to start. Check output for details.");
+
+  // In E2E mode, defer MCP client start until the test triggers it.
+  // The extension.test.ts suite activates the extension before the E2E test
+  // has set VS Code settings (configPath, repoRoot), so starting eagerly
+  // would fail with "Config file not found".
+  if (!isE2E) {
+    try {
+      await client.start();
+    } catch (err) {
+      output.appendLine(`Failed to start MCP client: ${String(err)}`);
+      vscode.window.showErrorMessage("Issue Orchestrator MCP client failed to start. Check output for details.");
+    }
   }
 
   const provider = new OrchestratorTreeDataProvider(client, output, statusBar, (snapshot) => {
@@ -83,6 +90,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   if (isE2E) {
     context.subscriptions.push(
       vscode.commands.registerCommand("issueOrchestrator._e2eSnapshot", async () => {
+        // Start client on first E2E call (settings are now configured by the test)
+        if (!client.isConnected()) {
+          await client.start();
+        }
         return client.getSnapshot();
       })
     );

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Awaitable
@@ -114,6 +115,10 @@ class McpApp:
         self._client.close()
         # FastMCP does not expose a shutdown hook; best-effort cleanup.
         return None
+
+    def override_port(self, port: int) -> None:
+        """Bypass supervisor detection and use a fixed port."""
+        self._client.update_port(port)
 
     async def _safe(
         self,
@@ -358,15 +363,22 @@ class McpApp:
         return await self._api.shutdown(force=force)
 
     async def snapshot(self) -> dict[str, Any]:
+        async def _safe_call(name: str, coro: Any) -> dict[str, Any]:
+            try:
+                return await coro
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("snapshot sub-call %s failed: %s", name, exc)
+                return {"error": str(exc)}
+
         return {
-            "status": await self._api.status(),
-            "info": await self._api.info(),
-            "blocked": await self._api.blocked_issues(),
-            "stale": await self._api.stale_issues(),
-            "dependency_problems": await self._api.dependency_problems(),
-            "excluded": await self._api.excluded_issues(),
-            "publish_jobs": await self._api.publish_jobs(),
-            "history": await self._api.history(),
+            "status": await _safe_call("status", self._api.status()),
+            "info": await _safe_call("info", self._api.info()),
+            "blocked": await _safe_call("blocked", self._api.blocked_issues()),
+            "stale": await _safe_call("stale", self._api.stale_issues()),
+            "dependency_problems": await _safe_call("dependency_problems", self._api.dependency_problems()),
+            "excluded": await _safe_call("excluded", self._api.excluded_issues()),
+            "publish_jobs": await _safe_call("publish_jobs", self._api.publish_jobs()),
+            "history": await _safe_call("history", self._api.history()),
         }
 
     async def session_worktree(self, issue_number: int) -> dict[str, Any]:
@@ -419,9 +431,10 @@ mcp = FastMCP("Issue Orchestrator", json_response=True)
 
 
 def _resolve_settings(args: argparse.Namespace) -> McpSettings:
-    repo_root = Path(args.repo_root or Path.cwd())
-    if args.config_path:
-        config_path = Path(args.config_path)
+    repo_root = Path(args.repo_root or os.environ.get("IO_E2E_REPO_ROOT", "") or Path.cwd())
+    config_path_str = args.config_path or os.environ.get("IO_E2E_CONFIG_PATH", "")
+    if config_path_str:
+        config_path = Path(config_path_str)
     else:
         config_path = get_config_path(repo_root, args.config_name)
     if not config_path.exists():
@@ -450,6 +463,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--instance-id", help="Instance ID for multi-orchestrator setups")
     parser.add_argument("--host", default="127.0.0.1", help="Host for web API calls")
     parser.add_argument("--auto-start", action="store_true", help="Start orchestrator if not running")
+    parser.add_argument("--api-port", type=int, help="Control API port (bypasses supervisor detection)")
     return parser
 
 
@@ -464,6 +478,10 @@ def main() -> None:
 
     settings = _resolve_settings(args)
     app = McpApp(settings)
+    # If --api-port is given, bypass supervisor detection
+    api_port = args.api_port or int(os.environ.get("IO_E2E_API_PORT", "0")) or None
+    if api_port:
+        app.override_port(api_port)
     app.register(mcp)
 
     try:

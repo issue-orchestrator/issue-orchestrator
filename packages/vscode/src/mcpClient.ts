@@ -19,6 +19,10 @@ export class McpClient implements OrchestratorClient {
     private readonly output: vscode.OutputChannel
   ) {}
 
+  isConnected(): boolean {
+    return this.client !== null;
+  }
+
   async start(): Promise<void> {
     if (this.client) {
       return;
@@ -45,9 +49,18 @@ export class McpClient implements OrchestratorClient {
       args.push("--auto-start");
     }
 
+    // The MCP SDK's StdioClientTransport only inherits a small set of
+    // env vars by default (HOME, PATH, etc.).  In E2E mode we need the
+    // full process environment so IO_E2E_API_PORT and friends reach the
+    // MCP subprocess.
+    const isE2E = process.env.IO_VSCODE_E2E === "1";
+
     this.transport = new StdioClientTransport({
       command,
       args,
+      ...(isE2E ? { env: Object.fromEntries(
+        Object.entries(process.env).filter((e): e is [string, string] => e[1] !== undefined)
+      ) } : {}),
     });
 
     this.client = new Client(

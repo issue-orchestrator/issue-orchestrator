@@ -11,6 +11,7 @@ but we know an issue was just created, we retry without the ETag
 cache to ensure we discover it.
 """
 
+import asyncio
 import logging
 import time
 
@@ -18,7 +19,6 @@ import pytest
 
 from tests.e2e.conftest import (
     e2e_label,
-    ensure_inflight_refresh,
 )
 from tests.e2e.flows import (
     E2EFlow,
@@ -86,19 +86,35 @@ async def test_inflight_refresh_discovers_issue(
 
         # Trigger refresh with inflight IDs - this is the key mechanism
         # The refresh will include the inflight_stable_ids, causing the orchestrator
-        # to retry without cache if the issue isn't found
-        ensure_inflight_refresh(control_api_port)
-        logger.info("Triggered refresh with inflight IDs")
-
-        # Wait for issue to be seen - should be fast with inflight mechanism
+        # to retry without cache if the issue isn't found.
+        # GitHub eventual consistency may require multiple refresh attempts,
+        # so we retry every REFRESH_INTERVAL seconds until the issue appears.
+        REFRESH_INTERVAL = 15
+        stable_id = issue_key.stable_id()
         start = time.monotonic()
-        try:
-            await flow.issue_seen(issue_key, timeout_s=DISCOVERY_TIMEOUT)
-            elapsed = time.monotonic() - start
-            logger.info("Issue discovered in %.1f seconds", elapsed)
-        except TimeoutError:
+        deadline = start + DISCOVERY_TIMEOUT
+        last_refresh = 0.0
+
+        while time.monotonic() < deadline:
+            # Trigger (or re-trigger) inflight refresh periodically
+            now = time.monotonic()
+            if now - last_refresh >= REFRESH_INTERVAL:
+                from tests.e2e.fixtures.inflight_tracker import trigger_refresh as _trigger
+                _trigger(port=control_api_port, inflight_stable_ids={stable_id})
+                last_refresh = now
+                logger.info("Triggered inflight refresh for %s", stable_id)
+
+            # Check if issue appeared
+            issue_view = watcher.view.issues.get(stable_id)
+            if issue_view:
+                elapsed = time.monotonic() - start
+                logger.info("Issue discovered in %.1f seconds", elapsed)
+                break
+
+            await asyncio.sleep(1.0)
+        else:
             pytest.fail(
-                f"Issue {issue_key.stable_id()} not discovered within {DISCOVERY_TIMEOUT}s. "
+                f"Issue {stable_id} not discovered within {DISCOVERY_TIMEOUT}s. "
                 "This suggests the inflight refresh mechanism is not working correctly."
             )
 

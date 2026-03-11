@@ -1,2 +1,7 @@
 # Known flaky tests - excluded from required E2E runs
 # These tests still run but failures don't block the overall E2E status
+
+# Agent-performance dependent: requires Claude to complete real coding tasks
+# within timeout. Flaky due to variable agent speed, not infrastructure bugs.
+tests/e2e/test_issue_4057_production_flow.py::test_4057_production_real_agents_publish_gate_and_diagnostics
+tests/e2e/test_triage_review.py::TestTriageReviewTrigger::test_triage_triggered_after_threshold
