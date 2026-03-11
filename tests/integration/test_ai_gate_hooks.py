@@ -52,6 +52,9 @@ def _clean_git_env() -> dict[str, str]:
             del env[key]
     # Ensure hook scripts can import issue_orchestrator
     env["ORCHESTRATOR_HOOK_PYTHONPATH"] = str(_REPO_ROOT / "src")
+    # Allow git push to local bare repos when running inside an orchestrator
+    # session (the orchestrator's git wrapper blocks pushes by default).
+    env["ORCHESTRATOR_GH_AUTH"] = "agent-done-authorized"
     return env
 
 
