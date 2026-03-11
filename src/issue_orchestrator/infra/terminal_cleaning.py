@@ -78,35 +78,45 @@ def clean_terminal_line(line: str) -> str:
     return line
 
 
-def _is_ui_noise(lower: str) -> bool:
-    """Return True when *lower* (lowercased) is repetitive UI noise."""
-    _NOISE_KEYWORDS = (
-        "fiddle-faddling", "thinking", "running…",
-        "envisioning", "planning", "analyzing", "reasoning",
-        "researching", "processing", "generating", "working",
-        "clauding", "claing", "interrupt", "timeout",
-    )
-    for kw in _NOISE_KEYWORDS:
-        if kw in lower:
-            return True
-    if lower.endswith("s)") and ("ought for" in lower or "hought for" in lower):
-        return True
+_NOISE_KEYWORDS = (
+    "fiddle-faddling", "thinking", "running…",
+    "envisioning", "planning", "analyzing", "reasoning",
+    "researching", "processing", "generating", "working",
+    "clauding", "claing", "interrupt", "timeout",
+    "hullaballooing", "beboppin", "perusing",
+)
+
+
+def _is_tui_status_noise(lower: str) -> bool:
+    """Return True for TUI status bar, key hints, and banner lines."""
     if "bypasspermission" in lower or "bypass permissions" in lower or "shift+tab" in lower:
         return True
-    # TUI status bar and chrome fragments
     if "medium" in lower and "/eff" in lower:
         return True
     if lower.startswith("esc to") or "ctrl+g" in lower:
         return True
-    # TUI hints: "ctrl+o to expand", "ctrl+c to interrupt", "…+151lines(ctrl+o..."
     if "ctrl+o" in lower or "ctrl+c" in lower:
         return True
-    # Claude Code TUI banner/header lines
     if "claudecode" in lower.replace(" ", "") or "claude code" in lower:
         return True
     if "sonnet" in lower and ("claude" in lower or "max" in lower):
         return True
     return False
+
+
+def _is_ui_noise(lower: str) -> bool:
+    """Return True when *lower* (lowercased) is repetitive UI noise."""
+    if any(kw in lower for kw in _NOISE_KEYWORDS):
+        return True
+    if lower.endswith("s)") and ("ought for" in lower or "hought for" in lower):
+        return True
+    # TUI token/timing status lines: "(45s · ↓ 1.4k tokens)", "↓ 16.2k tokens"
+    if "tokens" in lower and ("↓" in lower or "↑" in lower):
+        return True
+    # Voice mode announcement
+    if "voice" in lower and "mode" in lower and "available" in lower:
+        return True
+    return _is_tui_status_noise(lower)
 
 
 _ANIMATION_SPINNERS = _SPINNER_CHARS - {"⎿", "⏺"}  # ⎿ and ⏺ are used for tool output
@@ -120,6 +130,7 @@ _KEEP_SHORT = frozenset({
 _NOISE_SUFFIX_SOURCES = (
     "interrupt", "fiddle-faddling", "thinking", "envisioning",
     "planning", "analyzing", "reasoning", "clauding",
+    "hullaballooing", "beboppin'", "perusing",
 )
 
 _BLOCK_CHARS = frozenset("▐▛▜▌▝▘█▀▄▁▂▃▅▆▇ ")
