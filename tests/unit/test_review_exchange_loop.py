@@ -581,7 +581,7 @@ class TestInteractiveRound:
 
     @pytest.fixture(autouse=True)
     def _no_sleep(self, monkeypatch):
-        monkeypatch.setattr("issue_orchestrator.control.review_exchange_loop.time.sleep", lambda _: None)
+        monkeypatch.setattr("issue_orchestrator.execution.interactive_round.time.sleep", lambda _: None)
 
     def test_interactive_round_polls_response_file(self, tmp_path: Path, monkeypatch) -> None:
         """Interactive round starts subprocess, polls for response file, kills."""
@@ -620,13 +620,18 @@ class TestInteractiveRound:
 
         fake_proc = FakeProc()
         monkeypatch.setattr(
-            "subprocess.Popen",
+            "issue_orchestrator.execution.interactive_round.subprocess.Popen",
             lambda *a, **kw: fake_proc,
         )
-        monkeypatch.setattr("os.getpgid", lambda pid: pid)
-        monkeypatch.setattr("os.killpg", lambda pgid, sig: None)
+        monkeypatch.setattr("issue_orchestrator.execution.interactive_round.os.getpgid", lambda pid: pid)
+        monkeypatch.setattr("issue_orchestrator.execution.interactive_round.os.killpg", lambda pgid, sig: None)
 
-        result = _run_interactive_round(MagicMock(), spec, response_file)
+        # _run_interactive_round delegates to runner.run_interactive
+        runner = MagicMock()
+        from issue_orchestrator.execution.interactive_round import run_interactive_round
+        runner.run_interactive.side_effect = lambda s, rf: run_interactive_round(s, rf)
+
+        result = _run_interactive_round(runner, spec, response_file)
 
         assert response_file.exists()
         assert result.exit_code == -9
@@ -669,8 +674,9 @@ class TestInteractiveRound:
             def wait(self, timeout=None):
                 pass
 
+        from issue_orchestrator.execution.interactive_round import run_interactive_round
         monkeypatch.setattr(
-            "subprocess.Popen",
+            "issue_orchestrator.execution.interactive_round.subprocess.Popen",
             lambda *a, **kw: FakeProc(),
         )
 
@@ -678,8 +684,11 @@ class TestInteractiveRound:
         prompt_path.write_text("Prompt")
         agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
 
+        runner = MagicMock()
+        runner.run_interactive.side_effect = lambda s, rf: run_interactive_round(s, rf)
+
         response = _run_agent_round(
-            runner=MagicMock(),
+            runner=runner,
             worktree_path=worktree,
             run_dir=run_dir,
             exchange_dir=exchange_dir,
