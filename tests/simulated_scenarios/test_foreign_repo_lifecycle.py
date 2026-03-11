@@ -98,11 +98,13 @@ def _init_foreign_repo(tmp_path: Path) -> Path:
         check=True,
         capture_output=True,
     )
+    push_env = {**os.environ, "ORCHESTRATOR_GH_AUTH": "agent-done-authorized"}
     subprocess.run(
         ["git", "push", "-u", "origin", "main"],
         cwd=str(clone),
         check=True,
         capture_output=True,
+        env=push_env,
     )
 
     return clone
