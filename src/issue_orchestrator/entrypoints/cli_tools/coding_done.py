@@ -189,13 +189,14 @@ def main() -> None:  # noqa: C901, PLR0912
         sys.exit(1)
 
     # 3. Run validation if configured
-    #    Always run validation so the agent gets immediate feedback on failures.
-    #    The orchestrator's validation gate serves as a safety net but is not
-    #    the primary feedback mechanism.
+    #    When running under the orchestrator, skip validation here — the orchestrator
+    #    runs its own validation gate after the session completes, with retry logic.
+    #    Running validation inside coding-done is redundant and eats into the session
+    #    timeout, leaving no time for the agent to recover from failures.
     validation_result = None
     under_orchestrator = bool(get_env("SESSION_ID") or os.environ.get("ORCHESTRATOR_SESSION_ID"))
     statuses_requiring_validation = {AgentStatus.COMPLETED}
-    if status in statuses_requiring_validation:
+    if status in statuses_requiring_validation and not under_orchestrator:
         validation_cmd, _ = load_validation_cmd(worktree_root)
         if validation_cmd:
             if not record.session_id:
@@ -209,6 +210,9 @@ def main() -> None:  # noqa: C901, PLR0912
                 logger.error("[coding-done] Validation requires session output dir but not found for %s", record.session_id)
                 sys.exit(1)
             validation_result = run_validation(worktree_root, session_output_dir=session_output_dir, verbose=args.verbose)
+    elif status in statuses_requiring_validation and under_orchestrator:
+        if args.verbose:
+            print("Skipping validation (orchestrator will run validation gate after session)")
     elif status in {AgentStatus.BLOCKED, AgentStatus.NEEDS_HUMAN}:
         print(f"Note: Skipping validation for '{status}' status (agent is reporting a problem)")
 
