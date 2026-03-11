@@ -80,6 +80,10 @@ class ClaudeCodeProvider(CLIProvider):
         if max_turns:
             cmd.extend(["--max-turns", str(max_turns)])
 
+        # Disable MCP servers — worktree .mcp.json can contain configs
+        # (e.g. Playwright) that hang in automated/headless contexts.
+        cmd.extend(["--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config"])
+
         # Verbose mode (more detailed TUI output)
         verbose = kwargs.get("verbose")
         if verbose and str(verbose).lower() not in ("false", "0", "no", ""):
