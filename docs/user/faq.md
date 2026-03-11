@@ -42,43 +42,46 @@ filtering:
 **Q7: What are the guardrails, and which ones do I need to set up?**
 A: The guardrails are the repo's safety hooks that prevent unsafe operations (for example, bypassing validation or pushing without completing). Set up the worktree hooks once per machine, then keep `security.enforce_hooks` enabled. For details, see [Guardrails & Safety Model](../../docs/design/guardrails.md) and [Hook Enforcement](../architecture/hooks.md).
 
+**Q8: Do I need the `[M1-010]` prefix in issue titles?**
+A: No. The `[M?-nnn]` prefix (e.g., `[M1-010]`) gives an issue a stable, human-readable identity key used in session tracking, dependency resolution, and logs. If your title has no prefix, the orchestrator automatically falls back to the GitHub issue number (e.g., `42`) as the identity. Everything works either way — sessions, the dashboard, dependencies, and filtering all function normally. Use the prefix when you want milestone-scoped naming or cross-references like `Depends-on: M1-010`; skip it if you're referencing dependencies by issue number (`Depends-on: #42`) or just getting started. See the [Creating Issues for Agents](tutorial.md#issue-identity-keys) section for details.
+
 ## Everyday Configuration
 
-**Q8: How do I cap concurrency or change timeouts?**
+**Q9: How do I cap concurrency or change timeouts?**
 A: Use `execution.concurrency.max_concurrent_sessions` and `execution.concurrency.session_timeout_minutes`.
 
-**Q9: How do I enable code review and set a default reviewer?**
+**Q10: How do I enable code review and set a default reviewer?**
 A: Set `review.enabled: true`, then `review.default` to the reviewer agent label (for example, `agent:reviewer`). Make sure that agent is defined under `agents`.
 
-**Q10: Can I reference environment variables in config?**
+**Q11: Can I reference environment variables in config?**
 A: Yes. Any string can use `${VAR}` substitution. If the variable is missing, config loading fails with a clear error pointing to the field.
 
-**Q11: Why does validation fail because the worktree is "dirty," and can I relax it?**
+**Q12: Why does validation fail because the worktree is "dirty," and can I relax it?**
 A: The guard prevents a mismatch between what you validated and what you push. Adjust `validation.pre_push_dirty_check` to `unstaged` or `off` if you intentionally want to allow that risk.
 
 ## Using the System
 
-**Q12: Can I access this from VS Code (or derivatives like Cursor)?**
+**Q13: Can I access this from VS Code (or derivatives like Cursor)?**
 A: Yes. See [VS Code Integration](vscode.md). VS Code derivatives that support extensions generally work the same way, as long as they can run the extension and have the `issue-orchestrator-mcp` entrypoint on your PATH.
 
-**Q13: An issue failed. Now what?**
+**Q14: An issue failed. Now what?**
 A: Start with the Control Center: open the issue, check the last agent message, and look for the `blocked`/`validation-failed`/`needs-human` labels. Use the Doctor panel to validate config and environment. If the failure is due to validation, re-run the validation command in the worktree, fix the errors, and re-run `coding-done`. For deeper troubleshooting, see [Troubleshooting](../development/TROUBLESHOOTING.md).
 
-**Q14: My issue ran but was blocked. Now what?**
+**Q15: My issue ran but was blocked. Now what?**
 A: Read the agent's last comment and the `blocked` label reason. Provide the missing input, then re-queue the issue by removing the `blocked` label and re-applying the agent label.
 
-**Q15: Why isn't my issue showing up?**
+**Q16: Why isn't my issue showing up?**
 A: Check the Control Center's **Excluded** tab first. Issues can be excluded by filters (`filtering.label`, `filtering.milestone(s)`, `filtering.issue`, `filtering.exclude_labels`), missing agent labels, or missing milestones. If it's excluded, the UI explains why.
 
 ## Advanced / Later-Stage Usage
 
-**Q16: How do I control triage issue labels and priority?**
+**Q17: How do I control triage issue labels and priority?**
 A: Use `triage.explicit_labels` to always apply labels, `triage.inherit_labels` to copy labels from linked issues/PRs, and `triage.priority` to add a specific priority label (for example, `priority:high`).
 
-**Q17: How is the triage milestone chosen, and can I override it?**
+**Q18: How is the triage milestone chosen, and can I override it?**
 A: `triage.milestone_strategy.inherit_from_issues` pulls from linked issues by default. Set `triage.milestone_strategy.explicit` to force a specific milestone.
 
-**Q18: I run multiple orchestrators. How do I avoid collisions?**
+**Q19: I run multiple orchestrators. How do I avoid collisions?**
 A: Think in three cases:
 
 **Case A: Two repos, two orchestrators (same machine).**
@@ -90,21 +93,40 @@ Only do this with the claims system enabled. Each machine must set a unique `cla
 **Case C: Multiple orchestrators for the same repo on one machine (advanced).**
 This is mainly for development/testing. Use `ui.instances` with `claims.enabled: true` so each instance has a unique claimant ID. Don't do it without claims.
 
-**Q19: How do I tune the review + rework loop?**
+**Q20: How do I tune the review + rework loop?**
 A: Use `review.max_rework_cycles` to cap rework (default: 10). When review is enabled, a coder agent produces changes, then a reviewer agent evaluates them. If the reviewer requests changes, the orchestrator opens a rework cycle. This repeats until the reviewer approves or the max is reached, at which point the issue is escalated.
 
-**Q20: How do I manage issue dependencies, and what restrictions apply?**
-A: Put dependency lines in the issue body using `Depends-on:`. An issue is runnable only when **all** dependencies are closed. Restrictions:
+**Q21: How do I manage issue dependencies, and what restrictions apply?**
+A: Put dependency lines in the issue body using `Depends-on:`. An issue is runnable only when **all** dependencies are closed.
 
-- Dependencies must be in the **same milestone**, or in the **foundation milestone** (configured via `milestones.foundation`, default `M0`).
-- Missing or cross-milestone dependencies block the issue until fixed.
+There are two ways to reference a dependency:
+
+| Syntax | How it resolves | Example |
+|---|---|---|
+| `Depends-on: #123` | Direct GitHub issue number lookup | Any issue by number |
+| `Depends-on: M2-010` | External ID lookup — finds the issue with `[M2-010]` in its title | Milestone-scoped key |
+
+Both formats are subject to the **same milestone restriction**: the dependency must be in the **same milestone** as the depending issue, or in the **foundation milestone** (configured via `milestones.foundation`, default `M0`). The `#` vs bare ID difference is only about how the issue is *located*, not which milestones are allowed. Cross-milestone dependencies are flagged `CROSS_MILESTONE` and block the issue.
+
+**Identity key uniqueness**: The full external ID string is the key. `M1-010` and `M2-010` are different identities — the sequence number (`010`) is scoped to its milestone prefix, not globally unique.
 
 Examples:
 
 ```text
-Depends-on: #123                    # Same-milestone dependency
+Depends-on: #123                    # GitHub issue #123 (same milestone or M0)
 Depends-on: org/other-repo#456      # Cross-repo dependency
-Depends-on: #12                     # Foundation dependency (issue in M0)
+Depends-on: M2-010                  # Issue with [M2-010] in its title
 ```
 
 If a dependency violates the milestone rule, the issue is marked blocked with a dependency reason in the UI.
+
+**Q22: What are common dependency syntax mistakes?**
+A: Watch out for these:
+
+| What you wrote | What happens | Fix |
+|---|---|---|
+| `Depends-on: [M2-010]` | **Silently ignored** — brackets are not part of the dependency syntax | `Depends-on: M2-010` (no brackets) |
+| `Depends-on: #010` | Resolves to GitHub issue **#10** (leading zeros stripped) — probably not what you meant if you were thinking of external ID `M?-010` | Use `Depends-on: M1-010` for external IDs, `Depends-on: #10` for issue numbers |
+| `Depends-on: 123` | **Silently ignored** — bare numbers without `#` or `M` prefix don't match | `Depends-on: #123` |
+
+The brackets `[...]` are only used in the **title prefix** (e.g., `[M2-010] Fix bug`). In `Depends-on:` lines, always write the external ID bare: `Depends-on: M2-010`.

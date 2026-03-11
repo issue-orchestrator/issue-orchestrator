@@ -339,8 +339,32 @@ For an issue to be picked up:
 2. **Should have a clear description** so the agent understands the task
 
 Optional:
+- **Title identity key** `[M1-010]` for stable cross-reference identity (see below)
 - **Title priority prefix** `[P1-010]` for scheduling order
 - **Priority label** (`priority:high|medium|low`) for display/metadata
+
+### Issue Identity Keys
+
+Each issue needs a stable identity for session tracking, dependency resolution, and the dashboard. The orchestrator derives this from the issue title:
+
+| Title format | Identity used | Example |
+|---|---|---|
+| `[M1-010] Add profile endpoint` | `M1-010` (from prefix) | Milestone-based key |
+| `Add profile endpoint` | `42` (GitHub issue number) | Automatic fallback |
+
+**The prefix is optional.** If your title has no `[M?-nnn]` prefix, the orchestrator automatically falls back to the native GitHub issue number as the identity. Everything works the same — sessions, the dashboard, filtering, and logs all use whichever identity is available.
+
+**When to use the prefix:**
+- You're organizing issues into milestones and want human-readable cross-references (e.g., `Depends-on: M1-010`)
+- You want stable IDs that don't change if issues are transferred or renumbered
+- **You're batch-creating issues** (from a planning agent, script, or import tool) — GitHub issue numbers aren't known until after creation, so you can't wire up `Depends-on: #123` dependencies in advance. Self-assigned keys like `[M1-010]` let you define the full dependency graph before any issues exist on GitHub.
+
+**When you can skip it:**
+- You reference dependencies by issue number (`Depends-on: #42`) and issues already exist
+- You don't need milestone-scoped naming
+- You're just getting started and want to keep things simple
+
+The prefix format is `[M<digits>-<3 digits>]` — for example `[M1-010]`, `[M2-005]`, `[M10-999]`. It must appear at the very start of the title.
 
 ### Example Issue
 
