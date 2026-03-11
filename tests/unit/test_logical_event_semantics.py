@@ -101,3 +101,43 @@ def test_terminal_then_interstitial_event_then_start_starts_new_logical_run() ->
     assert out.logical_run == 2
     assert out.logical_cycle == 1
     assert out.logical_phase == "coding"
+
+
+def test_instance_id_change_starts_new_logical_run() -> None:
+    """Orchestrator restart (different instance_id) triggers a new logical run."""
+    out = enrich_logical_semantics(
+        event_name="session.started",
+        event_data={"task": "code"},
+        previous_event_name="session.started",
+        previous_data={"logical_run": 1, "logical_cycle": 1},
+        current_instance_id="instance-B",
+        previous_instance_id="instance-A",
+    )
+    assert out.logical_run == 2
+    assert out.logical_cycle == 1
+
+
+def test_same_instance_id_does_not_bump_run() -> None:
+    """Same instance_id should not trigger a run boundary."""
+    out = enrich_logical_semantics(
+        event_name="validation.completed",
+        event_data={},
+        previous_event_name="session.started",
+        previous_data={"logical_run": 1, "logical_cycle": 1},
+        current_instance_id="instance-A",
+        previous_instance_id="instance-A",
+    )
+    assert out.logical_run == 1
+
+
+def test_empty_instance_ids_do_not_trigger_restart() -> None:
+    """Missing instance IDs (legacy data) should not trigger restart."""
+    out = enrich_logical_semantics(
+        event_name="session.started",
+        event_data={"task": "code"},
+        previous_event_name="session.started",
+        previous_data={"logical_run": 1, "logical_cycle": 1},
+        current_instance_id="",
+        previous_instance_id="",
+    )
+    assert out.logical_run == 1

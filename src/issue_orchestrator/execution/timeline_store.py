@@ -210,7 +210,7 @@ class SqliteTimelineStore(TimelineStore):
         if limit is not None and limit > 0:
             rows = conn.execute(
                 """
-                SELECT event_id, source_event, timestamp, event, data_json
+                SELECT event_id, source_event, timestamp, event, data_json, instance_id
                 FROM timeline_events
                 WHERE issue_number = ?
                 ORDER BY sequence DESC
@@ -222,7 +222,7 @@ class SqliteTimelineStore(TimelineStore):
         else:
             rows = conn.execute(
                 """
-                SELECT event_id, source_event, timestamp, event, data_json
+                SELECT event_id, source_event, timestamp, event, data_json, instance_id
                 FROM timeline_events
                 WHERE issue_number = ?
                 ORDER BY sequence ASC
@@ -246,6 +246,7 @@ class SqliteTimelineStore(TimelineStore):
                     event=str(row["event"]),
                     data=data,
                     source_event=str(row["source_event"] or ""),
+                    instance_id=str(row["instance_id"] or ""),
                 )
             )
         if _timeline_trace_enabled():

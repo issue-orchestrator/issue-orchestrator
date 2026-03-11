@@ -2058,3 +2058,19 @@ class TestValidationOutputDir:
         assert len(launcher_bundle.create_session_calls) == 1
         command = launcher_bundle.create_session_calls[0]["cmd"]
         assert "ISSUE_ORCHESTRATOR_CONFIG_NAME='main.yaml'" in command
+
+
+class TestExtraProviderArgsFromLabels:
+    """Test _extra_provider_args_from_labels static helper."""
+
+    def test_verbose_label_produces_verbose_arg(self):
+        result = SessionLauncher._extra_provider_args_from_labels(["verbose", "priority:high"])
+        assert result == {"verbose": "true"}
+
+    def test_no_verbose_label_returns_none(self):
+        result = SessionLauncher._extra_provider_args_from_labels(["priority:high", "agent:web"])
+        assert result is None
+
+    def test_empty_labels_returns_none(self):
+        result = SessionLauncher._extra_provider_args_from_labels([])
+        assert result is None

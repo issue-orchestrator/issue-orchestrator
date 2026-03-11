@@ -38,7 +38,7 @@ _ANSI_ESCAPE_PATTERN = re.compile(
 )
 
 # Spinner characters used by Claude Code (dots, stars, etc.)
-_SPINNER_CHARS = set("·✶✻✽✳✢*/-\\|●○◉◎◯◐◑◒◓⎿")
+_SPINNER_CHARS = set("·✶✻✽✳✢*/-\\|●○◉◎◯◐◑◒◓⎿⏵⏺")
 
 
 # ---------------------------------------------------------------------------
@@ -78,13 +78,96 @@ def clean_terminal_line(line: str) -> str:
     return line
 
 
+_NOISE_KEYWORDS = (
+    "fiddle-faddling", "thinking", "running…",
+    "envisioning", "planning", "analyzing", "reasoning",
+    "researching", "processing", "generating", "working",
+    "clauding", "claing", "interrupt", "timeout",
+    "hullaballooing", "beboppin", "perusing",
+)
+
+
+def _is_tui_status_noise(lower: str) -> bool:
+    """Return True for TUI status bar, key hints, and banner lines."""
+    if "bypasspermission" in lower or "bypass permissions" in lower or "shift+tab" in lower:
+        return True
+    if "medium" in lower and "/eff" in lower:
+        return True
+    if lower.startswith("esc to") or "ctrl+g" in lower:
+        return True
+    if "ctrl+o" in lower or "ctrl+c" in lower:
+        return True
+    if "claudecode" in lower.replace(" ", "") or "claude code" in lower:
+        return True
+    if "sonnet" in lower and ("claude" in lower or "max" in lower):
+        return True
+    return False
+
+
 def _is_ui_noise(lower: str) -> bool:
     """Return True when *lower* (lowercased) is repetitive UI noise."""
-    if "fiddle-faddling" in lower or "thinking" in lower or "running…" in lower:
+    if any(kw in lower for kw in _NOISE_KEYWORDS):
         return True
     if lower.endswith("s)") and ("ought for" in lower or "hought for" in lower):
         return True
-    if "bypass permissions" in lower or "shift+tab to cycle" in lower:
+    # TUI token/timing status lines: "(45s · ↓ 1.4k tokens)", "↓ 16.2k tokens"
+    if "tokens" in lower and ("↓" in lower or "↑" in lower):
+        return True
+    # Voice mode announcement
+    if "voice" in lower and "mode" in lower and "available" in lower:
+        return True
+    return _is_tui_status_noise(lower)
+
+
+_ANIMATION_SPINNERS = _SPINNER_CHARS - {"⎿", "⏺"}  # ⎿ and ⏺ are used for tool output
+
+_KEEP_SHORT = frozenset({
+    "ok", "yes", "no", "done", "fail", "pass", "true", "null",
+    "PASS", "FAIL", "OK", "YES", "NO", "DONE", "TRUE", "NULL",
+    "error", "Error", "ERROR",
+})
+
+_NOISE_SUFFIX_SOURCES = (
+    "interrupt", "fiddle-faddling", "thinking", "envisioning",
+    "planning", "analyzing", "reasoning", "clauding",
+    "hullaballooing", "beboppin'", "perusing",
+)
+
+_BLOCK_CHARS = frozenset("▐▛▜▌▝▘█▀▄▁▂▃▅▆▇ ")
+
+
+def _is_short_fragment(stripped: str) -> bool:
+    """Return True when *stripped* is a short noise fragment."""
+    # Pure digit lines are cursor-positioned line numbers from tool output.
+    if stripped.isdigit():
+        return True
+    # Short fragments (≤5 chars, no spaces): keep only known meaningful words.
+    if len(stripped) <= 5 and " " not in stripped:
+        return stripped not in _KEEP_SHORT and stripped.rstrip("…") not in _KEEP_SHORT
+    # Partial word fragments from cursor-positioned TUI rendering:
+    # e.g. "terrupt" from "interrupt", "ding" from "fiddling"
+    stripped_lower = stripped.lower().rstrip("…↑↓")
+    if 3 <= len(stripped_lower) <= 10 and stripped_lower.isalpha() and " " not in stripped:
+        return any(kw.endswith(stripped_lower) and stripped_lower != kw for kw in _NOISE_SUFFIX_SOURCES)
+    return False
+
+
+def _is_tui_chrome(stripped: str) -> bool:
+    """Return True when *stripped* is TUI chrome (separators, banner, etc.)."""
+    if all(c in "─━═" for c in stripped):
+        return True
+    if stripped in ("❯", ">", "❯  ", "↓", "↑", "←", "→"):
+        return True
+    if all(c in _BLOCK_CHARS for c in stripped):
+        return True
+    # Lines starting with block chars (TUI banner decoration around cwd path)
+    if stripped[0] in _BLOCK_CHARS and any(c in _BLOCK_CHARS for c in stripped[:4]):
+        return True
+    # Collapsed tool output indicators: "…+151lines(ctrl+otoseeall)"
+    if stripped.startswith("…+") and "lines" in stripped:
+        return True
+    # Truncated terminal escape remnants (e.g. "]9;" from an OSC sequence)
+    if stripped.startswith("]") and len(stripped) <= 5:
         return True
     return False
 
@@ -98,7 +181,13 @@ def is_spinner_fragment(line: str) -> bool:
         return True
     if _is_ui_noise(stripped.lower()):
         return True
-    return False
+    # Lines starting with a spinner char that are short animation frames
+    # (e.g. "✻Env", "✽Ei", "✻Envisioning…") but NOT tool output like "⎿ Read 221 lines"
+    if stripped[0] in _ANIMATION_SPINNERS and len(stripped) <= 25:
+        return True
+    if _is_short_fragment(stripped):
+        return True
+    return _is_tui_chrome(stripped)
 
 
 def dedupe_consecutive_lines(lines: list[str]) -> list[str]:

@@ -49,6 +49,8 @@ def enrich_logical_semantics(
     event_data: dict[str, Any],
     previous_event_name: str | None,
     previous_data: dict[str, Any] | None,
+    current_instance_id: str = "",
+    previous_instance_id: str = "",
 ) -> LogicalSemantics:
     """Compute canonical logical fields for one timeline event."""
     task = event_data.get("task")
@@ -66,7 +68,13 @@ def enrich_logical_semantics(
         and event_name in _ITERATION_START_EVENTS
     )
     restart_due_to_event = event_name in _RUN_RESTART_EVENTS
-    if restart_due_to_label_change or restart_due_to_transition or restart_due_to_event:
+    # Orchestrator restart: instance_id changed between consecutive events
+    restart_due_to_instance = bool(
+        current_instance_id
+        and previous_instance_id
+        and current_instance_id != previous_instance_id
+    )
+    if restart_due_to_label_change or restart_due_to_transition or restart_due_to_event or restart_due_to_instance:
         logical_run = logical_run + 1
 
     signal_cycle = _cycle_from_signal(event_data.get("rework_cycle"))

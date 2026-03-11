@@ -452,6 +452,7 @@ class AgentConfig:
         pr_number: Optional[int] = None,
         existing_work: Optional[str] = None,
         task_kind: str = "code",
+        extra_provider_args: Optional[dict[str, Any]] = None,
     ) -> str:
         """Render the command template with actual values, including initial prompt.
 
@@ -480,7 +481,7 @@ class AgentConfig:
 
         # If provider is set, use provider-based command building
         if self.provider:
-            return self._build_provider_command(rendered_prompt, prompt_for_command, task_kind)
+            return self._build_provider_command(rendered_prompt, prompt_for_command, task_kind, extra_provider_args)
 
         # Legacy template-based command building
         from issue_orchestrator.resources import get_completion_instructions
@@ -525,13 +526,21 @@ class AgentConfig:
 
         return self.command.format(**format_kwargs)
 
-    def _build_provider_command(self, prompt: str, prompt_file: str, task_kind: str) -> str:
+    def _build_provider_command(
+        self,
+        prompt: str,
+        prompt_file: str,
+        task_kind: str,
+        extra_provider_args: dict[str, Any] | None = None,
+    ) -> str:
         """Build command using the configured provider.
 
         Args:
             prompt: The fully rendered prompt to send to the agent
             prompt_file: Path to the prompt/instructions file (for system prompt)
             task_kind: The task kind value (e.g., "code", "rework", "review", "triage").
+            extra_provider_args: Per-issue overrides (e.g., from labels) merged on top
+                of the agent's ``provider_args``.
 
         Returns:
             Shell-safe command string
@@ -543,8 +552,10 @@ class AgentConfig:
         assert self.provider is not None
         provider = get_provider(self.provider)
 
-        # Build provider-specific kwargs from provider_args
+        # Build provider-specific kwargs from provider_args, with per-issue overrides
         kwargs = dict(self.provider_args)
+        if extra_provider_args:
+            kwargs.update(extra_provider_args)
 
         # STRICT ENFORCEMENT: Completion instructions are ALWAYS injected for ALL providers.
         # - For Claude: inject via system_prompt (--append-system-prompt)

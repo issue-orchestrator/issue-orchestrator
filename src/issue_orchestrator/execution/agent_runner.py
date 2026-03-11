@@ -18,6 +18,7 @@ import os
 import shlex
 import signal
 import time
+from pathlib import Path
 
 import pexpect
 
@@ -257,6 +258,17 @@ class AgentRunner(BaseAgentRunner):
         )
 
         return AgentSession(child, log_writer, spec, time.monotonic())
+
+    def run_interactive(self, spec: AgentSpec, response_file: Path) -> AgentResult:
+        """Run an interactive agent round without PTY/fork.
+
+        Unlike :meth:`start` which uses pexpect (fork-based), this delegates
+        to a Popen-based runner that is safe from multi-threaded processes
+        (uvicorn + SSE threads).  Used by the review exchange loop.
+        """
+        from .interactive_round import run_interactive_round
+
+        return run_interactive_round(spec, response_file)
 
     def _execute_once(self, spec: AgentSpec, *, attempt: int) -> AgentResult:
         """Execute a single attempt via pexpect PTY."""

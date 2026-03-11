@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, TYPE_CHECKING, Optional, Callable
+from typing import Any, TYPE_CHECKING, Optional, Callable, Sequence
 
 if TYPE_CHECKING:
     from ..domain.state_machines.issue_machine import IssueStateMachine
@@ -249,6 +249,18 @@ class SessionLauncher:
             options.disable_reuse = True
             options.worktree_branch_on_recreate = "create_new_branch"
         return options
+
+    @staticmethod
+    def _extra_provider_args_from_labels(labels: Sequence[str]) -> dict[str, str] | None:
+        """Build per-issue provider arg overrides from issue labels.
+
+        Currently supports:
+        - ``verbose`` label → ``{"verbose": "true"}``
+        """
+        args: dict[str, str] = {}
+        if "verbose" in labels:
+            args["verbose"] = "true"
+        return args or None
 
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
         """Apply mutations through the ActionApplier."""
@@ -830,12 +842,14 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
+        extra_args = self._extra_provider_args_from_labels(issue.labels)
         base_command = agent_config.get_command(
             issue_number=issue.number,
             issue_title=issue.title,
             worktree=worktree_path,
             existing_work=existing_work,
             task_kind=TaskKind.CODE.value,
+            extra_provider_args=extra_args,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
         completion_path = get_completion_path(issue.agent_type, session_name=ctx.phase_name)
@@ -892,9 +906,6 @@ class SessionLauncher:
             self._release_claim_if_held(issue.number, claim)
             return LaunchResult(None, False, "Failed to create terminal session")
 
-        # For interactive providers, deliver the prompt via PTY stdin
-        if session_created and self._is_interactive_provider(agent_config):
-            self._send_initial_prompt(session_name, rendered_prompt, agent_config)
 
         log_transition("issue", issue.number, "LAUNCHING", "ACTIVE", "session launched", {"agent": issue.agent_type})
 
@@ -1152,9 +1163,6 @@ class SessionLauncher:
             session_created,
         )
 
-        # For interactive providers, deliver the prompt via PTY stdin
-        if session_created and self._is_interactive_provider(agent_config):
-            self._send_initial_prompt(session_name, rendered_prompt, agent_config)
 
         # Create pseudo-issue for session tracking
         pseudo_issue = Issue(
@@ -1469,9 +1477,6 @@ class SessionLauncher:
             session_created,
         )
 
-        # For interactive providers, deliver the prompt via PTY stdin
-        if session_created and self._is_interactive_provider(agent_config):
-            self._send_initial_prompt(session_name, rendered_prompt, agent_config)
 
         # Create issue object for session tracking
         rework_issue = Issue(
@@ -1770,14 +1775,20 @@ class SessionLauncher:
             return False
         return get_provider(agent_config.provider).interactive
 
-    def _send_initial_prompt(self, session_name: str, prompt: str, agent_config: "AgentConfig") -> None:
-        """Send the initial prompt to an interactive session via PTY stdin."""
+    def _send_initial_prompt(self, session_name: str, prompt_path: Path, agent_config: "AgentConfig") -> None:
+        """Send the initial prompt to an interactive session via PTY stdin.
+
+        Instead of typing the full prompt text (which garbles in the TUI),
+        we send a short file-reference instruction. The agent reads the file
+        to get the full prompt content.
+        """
         if not self._send_to_session:
             logger.warning("[launch] No send_to_session_fn configured; cannot deliver prompt to %s", session_name)
             return
         # Give the TUI time to initialize before sending the prompt.
         time.sleep(3)
-        sent = self._send_to_session(session_name, prompt)
+        msg = f"Read and follow your instructions in {prompt_path}"
+        sent = self._send_to_session(session_name, msg)
         logger.info("[launch] Sent initial prompt to interactive session %s: success=%s", session_name, sent)
 
     def _wrap_provider_command(self, base_command: str, agent_config: "AgentConfig", run_dir: Path) -> str:

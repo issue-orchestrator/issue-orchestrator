@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-import time
+
 
 from ..agent_runner import AgentRunner, AgentResult, AgentSpec
 from ..domain.models import AgentConfig
@@ -693,38 +693,15 @@ def _is_interactive_provider(agent_config: AgentConfig) -> bool:
 def _run_interactive_round(
     runner: AgentRunner,
     spec: AgentSpec,
-    prompt: str,
     response_file: Path,
 ) -> AgentResult:
-    """Run a single exchange round with an interactive provider.
+    """Delegate to the runner's interactive method (subprocess-based).
 
-    Starts the TUI session, sends the prompt via PTY stdin, then polls
-    for the response file or process exit.
+    Uses ``subprocess.Popen`` instead of the pexpect-based ``runner.start()``
+    to avoid forking from a multi-threaded process (uvicorn + SSE threads),
+    which crashes on macOS with "multi-threaded process forked".
     """
-    _TUI_INIT_SECONDS = 3
-    _POLL_INTERVAL = 2.0
-
-    session = runner.start(spec)
-    try:
-        time.sleep(_TUI_INIT_SECONDS)
-        if not session.send(prompt):
-            logger.warning("Failed to send prompt to interactive session")
-
-        deadline = time.monotonic() + spec.timeout_seconds
-        while time.monotonic() < deadline:
-            if response_file.exists():
-                logger.info("Interactive agent wrote response file")
-                break
-            if not session.is_alive():
-                logger.info("Interactive agent exited before writing response")
-                break
-            time.sleep(_POLL_INTERVAL)
-        else:
-            logger.warning("Interactive agent timed out after %ds", spec.timeout_seconds)
-    finally:
-        session.kill()
-    # Collect exit status. The process is already dead after kill().
-    return session.wait(timeout=5)
+    return runner.run_interactive(spec, response_file)
 
 
 def _run_agent_round(
@@ -803,17 +780,13 @@ def _run_agent_round(
         env_overrides=env_overrides,
     )
 
-    # For interactive providers (e.g. Claude Code TUI), we start the session
-    # and deliver the prompt via PTY stdin, then wait for the response file.
-    # Non-interactive providers use the classic run-and-wait path.
+    # For interactive providers (e.g. Claude Code TUI), the prompt is already
+    # in the command as a positional arg.  We start the TUI, poll for the
+    # response file, then kill the process.  Non-interactive providers use
+    # the classic run-and-wait path (they include -p and exit on their own).
     interactive = _is_interactive_provider(agent_config)
     if interactive:
-        rendered_prompt = agent_config.render_initial_prompt(
-            issue_number=issue_number,
-            issue_title=issue_title,
-            worktree=worktree_path,
-        )
-        result = _run_interactive_round(runner, spec, rendered_prompt, response_file)
+        result = _run_interactive_round(runner, spec, response_file)
     else:
         result = runner.run(spec)
 

@@ -11,10 +11,11 @@ import pytest
 
 from issue_orchestrator.control.review_exchange_loop import (
     REVIEW_RESPONSE_FILENAME,
+    _is_interactive_provider,
     _parse_exchange_response,
+    _resolve_provider,
     _run_agent_round,
     _run_interactive_round,
-    _resolve_provider,
     run_review_exchange_loop,
 )
 from issue_orchestrator.domain.models import AgentConfig
@@ -87,7 +88,7 @@ def test_resolve_provider_uses_ai_system_when_provider_missing(tmp_path: Path) -
     assert _resolve_provider(agent) == "claude-code"
 
 
-def test_run_agent_round_prefers_provider_mode_when_ai_system_is_provider(tmp_path: Path) -> None:
+def test_run_agent_round_uses_provider_mode_when_ai_system_is_provider(tmp_path: Path) -> None:
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Prompt")
 
@@ -130,7 +131,7 @@ def test_run_agent_round_prefers_provider_mode_when_ai_system_is_provider(tmp_pa
     )
 
     assert response.response_type == "ok"
-    # Interactive mode: no -p flag, but claude executable and permission mode present
+    # Provider mode: no -p flag, but claude executable and permission mode present
     assert "claude" in seen_command
     assert "--permission-mode" in seen_command
 
@@ -576,14 +577,14 @@ def test_review_exchange_seeds_initial_validation_record(tmp_path: Path, monkeyp
 
 
 class TestInteractiveRound:
-    """Tests for _run_interactive_round — the PTY-stdin prompt delivery path."""
+    """Tests for _run_interactive_round — subprocess-based poll-and-kill path."""
 
     @pytest.fixture(autouse=True)
     def _no_sleep(self, monkeypatch):
-        monkeypatch.setattr("issue_orchestrator.control.review_exchange_loop.time.sleep", lambda _: None)
+        monkeypatch.setattr("issue_orchestrator.execution.interactive_round.time.sleep", lambda _: None)
 
-    def test_interactive_round_writes_response(self, tmp_path: Path) -> None:
-        """Interactive round starts session, sends prompt, reads response file."""
+    def test_interactive_round_polls_response_file(self, tmp_path: Path, monkeypatch) -> None:
+        """Interactive round starts subprocess, polls for response file, kills."""
         from issue_orchestrator.execution.agent_runner_types import AgentSpec
 
         round_dir = tmp_path / "round"
@@ -591,70 +592,58 @@ class TestInteractiveRound:
         response_file = tmp_path / "review-response.json"
 
         spec = AgentSpec(
-            command=["claude"],
+            command=["claude", "do stuff"],
             working_dir=tmp_path,
             timeout_seconds=30,
             log_path=round_dir / "agent.log",
             output_dir=round_dir,
         )
 
-        class MockSession:
-            def __init__(self):
-                self.sent: list[str] = []
-                self._alive = True
-                self._killed = False
+        poll_count = 0
 
-            def send(self, text: str) -> bool:
-                self.sent.append(text)
-                # Simulate agent writing response on receiving prompt
-                response_file.write_text(
-                    '{"response_type":"ok","response_text":"approved"}',
-                    encoding="utf-8",
-                )
-                return True
+        class FakeProc:
+            pid = 12345
+            returncode = -9
 
-            def is_alive(self) -> bool:
-                return self._alive
-
-            def kill(self) -> None:
-                self._alive = False
-                self._killed = True
+            def poll(self):
+                nonlocal poll_count
+                poll_count += 1
+                if poll_count >= 2:
+                    response_file.write_text(
+                        '{"response_type":"ok","response_text":"approved"}',
+                        encoding="utf-8",
+                    )
+                return None  # still running
 
             def wait(self, timeout=None):
-                return SimpleNamespace(
-                    exit_code=0,
-                    timed_out=False,
-                    duration_seconds=1.0,
-                    stderr="",
-                    succeeded=True,
-                    command=["claude"],
-                )
+                pass
 
-        mock_session = MockSession()
-
-        class MockRunner:
-            def start(self, _spec):
-                return mock_session
-
-        result = _run_interactive_round(
-            MockRunner(),
-            spec,
-            "Review this code",
-            response_file,
+        fake_proc = FakeProc()
+        monkeypatch.setattr(
+            "issue_orchestrator.execution.interactive_round.subprocess.Popen",
+            lambda *a, **kw: fake_proc,
         )
+        monkeypatch.setattr("issue_orchestrator.execution.interactive_round.os.getpgid", lambda pid: pid)
+        monkeypatch.setattr("issue_orchestrator.execution.interactive_round.os.killpg", lambda pgid, sig: None)
 
-        assert mock_session.sent == ["Review this code"]
-        assert mock_session._killed
+        # _run_interactive_round delegates to runner.run_interactive
+        runner = MagicMock()
+        from issue_orchestrator.execution.interactive_round import run_interactive_round
+        runner.run_interactive.side_effect = lambda s, rf: run_interactive_round(s, rf)
+
+        result = _run_interactive_round(runner, spec, response_file)
+
         assert response_file.exists()
+        assert result.exit_code == -9
 
     def test_interactive_nonzero_exit_succeeds_when_response_file_present(
-        self, tmp_path: Path, monkeypatch
+        self, tmp_path: Path, monkeypatch,
     ) -> None:
         """Killed interactive session returns non-zero exit, but response file is valid.
 
-        This is the normal case: the orchestrator kills the TUI after the agent
-        writes the response file, producing a non-zero exit code. The round
-        should succeed because the response file is present and parseable.
+        The orchestrator kills the TUI after the response file appears,
+        producing a non-zero exit code.  The round should succeed because
+        the response file is present and parseable.
         """
         monkeypatch.setattr(
             "issue_orchestrator.control.review_exchange_loop._is_interactive_provider",
@@ -670,46 +659,36 @@ class TestInteractiveRound:
 
         response_file = run_dir / REVIEW_RESPONSE_FILENAME
 
-        class MockSession:
-            def __init__(self):
-                self.sent: list[str] = []
+        class FakeProc:
+            pid = 12345
+            returncode = -9
 
-            def send(self, text: str) -> bool:
-                self.sent.append(text)
-                # Agent writes response before being killed
+            def poll(self):
+                # Write response and report process exited
                 response_file.write_text(
                     '{"response_type":"ok","response_text":"approved"}',
                     encoding="utf-8",
                 )
-                return True
-
-            def is_alive(self) -> bool:
-                return False  # Already exited after writing
-
-            def kill(self) -> None:
-                pass
+                return -9
 
             def wait(self, timeout=None):
-                # Non-zero exit from kill — this is expected
-                return SimpleNamespace(
-                    exit_code=-9,
-                    timed_out=False,
-                    duration_seconds=2.0,
-                    stderr="",
-                    succeeded=False,
-                    command=["claude"],
-                )
+                pass
 
-        class MockRunner:
-            def start(self, _spec):
-                return MockSession()
+        from issue_orchestrator.execution.interactive_round import run_interactive_round
+        monkeypatch.setattr(
+            "issue_orchestrator.execution.interactive_round.subprocess.Popen",
+            lambda *a, **kw: FakeProc(),
+        )
 
         prompt_path = tmp_path / "prompt.md"
         prompt_path.write_text("Prompt")
         agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
 
+        runner = MagicMock()
+        runner.run_interactive.side_effect = lambda s, rf: run_interactive_round(s, rf)
+
         response = _run_agent_round(
-            runner=MockRunner(),
+            runner=runner,
             worktree_path=worktree,
             run_dir=run_dir,
             exchange_dir=exchange_dir,
