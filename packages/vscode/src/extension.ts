@@ -102,10 +102,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   context.subscriptions.push(
     vscode.window.registerTreeDataProvider("issueOrchestrator.explorer", provider)
   );
-  await provider.refresh();
-  provider.startPolling();
-  await connectEventStream(client, provider, output);
-  await warnIfConfigMissing();
+
+  // In E2E mode the MCP client is not started yet (deferred until _e2eSnapshot),
+  // so skip all operations that require a connected client.
+  if (!isE2E) {
+    await provider.refresh();
+    provider.startPolling();
+    await connectEventStream(client, provider, output);
+    await warnIfConfigMissing();
+  }
 
   context.subscriptions.push({
     dispose: () => {

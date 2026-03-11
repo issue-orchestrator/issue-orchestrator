@@ -363,22 +363,15 @@ class McpApp:
         return await self._api.shutdown(force=force)
 
     async def snapshot(self) -> dict[str, Any]:
-        async def _safe_call(name: str, coro: Any) -> dict[str, Any]:
-            try:
-                return await coro
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("snapshot sub-call %s failed: %s", name, exc)
-                return {"error": str(exc)}
-
         return {
-            "status": await _safe_call("status", self._api.status()),
-            "info": await _safe_call("info", self._api.info()),
-            "blocked": await _safe_call("blocked", self._api.blocked_issues()),
-            "stale": await _safe_call("stale", self._api.stale_issues()),
-            "dependency_problems": await _safe_call("dependency_problems", self._api.dependency_problems()),
-            "excluded": await _safe_call("excluded", self._api.excluded_issues()),
-            "publish_jobs": await _safe_call("publish_jobs", self._api.publish_jobs()),
-            "history": await _safe_call("history", self._api.history()),
+            "status": await self._api.status(),
+            "info": await self._api.info(),
+            "blocked": await self._api.blocked_issues(),
+            "stale": await self._api.stale_issues(),
+            "dependency_problems": await self._api.dependency_problems(),
+            "excluded": await self._api.excluded_issues(),
+            "publish_jobs": await self._api.publish_jobs(),
+            "history": await self._api.history(),
         }
 
     async def session_worktree(self, issue_number: int) -> dict[str, Any]:
