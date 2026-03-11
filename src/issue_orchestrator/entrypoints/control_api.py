@@ -126,6 +126,15 @@ def _get_e2e_config(repo_root: Path | None = None) -> E2EConfig:
     return _DEFAULT_E2E_CONFIG
 
 
+def _load_config_by_name(repo_root: Path, config_name: str) -> "Config":
+    """Load orchestrator config by repo root and config file name.
+
+    Raises FileNotFoundError if the config file does not exist.
+    """
+    from ..infra.config import Config
+    return Config.find_and_load(repo_root, config_name=config_name)
+
+
 # Create minimal control API app
 control_app = FastAPI(title="Issue Orchestrator Control API")
 
@@ -4039,6 +4048,7 @@ async def e2e_start(request: Request) -> JSONResponse:
 
     JSON body:
         repo_root: str - Repository root path
+        config_name: str - Config file name (e.g., "main.yaml")
         pytest_args: list[str] (optional) - Override pytest arguments
         allow_retry_once: bool (optional) - Retry failed tests once (default: True)
 
@@ -4046,7 +4056,6 @@ async def e2e_start(request: Request) -> JSONResponse:
         {status: "started", pid: int, log_path: str}
     """
     from ..infra.e2e_runner import get_e2e_runner_manager, E2EAlreadyRunning
-    from ..infra.config import Config
 
     try:
         body = await request.json()
@@ -4060,12 +4069,19 @@ async def e2e_start(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    config_name = body.get("config_name")
+    if not config_name or not isinstance(config_name, str):
+        return JSONResponse(
+            {"error": "Missing or invalid config_name"},
+            status_code=400,
+        )
+
     # Load config to get e2e settings and orchestrator_id
     try:
-        config = Config.find_and_load(repo_root)
+        config = _load_config_by_name(repo_root, config_name)
     except FileNotFoundError:
         return JSONResponse(
-            {"error": "Config not found", "detail": "No .issue-orchestrator/config found"},
+            {"error": "Config not found", "detail": f"Config file not found: {config_name}"},
             status_code=404,
         )
 
@@ -4128,9 +4144,9 @@ async def e2e_stop(request: Request) -> JSONResponse:
 
     JSON body:
         repo_root: str - Repository root path
+        config_name: str - Config file name (e.g., "main.yaml")
     """
     from ..infra.e2e_runner import get_e2e_runner_manager
-    from ..infra.config import Config
 
     try:
         body = await request.json()
@@ -4144,12 +4160,19 @@ async def e2e_stop(request: Request) -> JSONResponse:
             status_code=400,
         )
 
+    config_name = body.get("config_name")
+    if not config_name or not isinstance(config_name, str):
+        return JSONResponse(
+            {"error": "Missing or invalid config_name"},
+            status_code=400,
+        )
+
     # Get orchestrator_id from config - fail fast if not configured
     try:
-        config = Config.find_and_load(repo_root)
+        config = _load_config_by_name(repo_root, config_name)
     except FileNotFoundError:
         return JSONResponse(
-            {"error": "config_not_found", "detail": "No orchestrator config found"},
+            {"error": "config_not_found", "detail": f"Config file not found: {config_name}"},
             status_code=400,
         )
 
@@ -4172,18 +4195,21 @@ async def e2e_stop(request: Request) -> JSONResponse:
 
 
 @control_app.get("/control/e2e/status")
-async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
+async def e2e_status(
+    repo_root: str = Query(...),
+    config_name: str = Query(...),
+) -> JSONResponse:
     """Get E2E test runner status.
 
     Query params:
         repo_root: str - Repository root path
+        config_name: str - Config file name (e.g., "main.yaml")
 
     Returns:
         {running: bool, pid: int | null, last_run: {...} | null, signal_score: {...}}
     """
     from ..infra.e2e_runner import get_e2e_runner_manager, get_next_run_info
     from ..infra.e2e_db import E2EDB
-    from ..infra.config import Config
 
     validated_root = _validate_repo_root(repo_root)
     if validated_root is None:
@@ -4194,10 +4220,10 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
 
     # Get orchestrator_id from config - fail fast if not configured
     try:
-        config = Config.find_and_load(validated_root)
+        config = _load_config_by_name(validated_root, config_name)
     except FileNotFoundError:
         return JSONResponse(
-            {"error": "config_not_found", "detail": "No orchestrator config found"},
+            {"error": "config_not_found", "detail": f"Config file not found: {config_name}"},
             status_code=400,
         )
 
@@ -4253,16 +4279,17 @@ async def e2e_status(repo_root: str = Query(...)) -> JSONResponse:
 @control_app.get("/control/e2e/runs")
 async def e2e_runs(
     repo_root: str = Query(...),
+    config_name: str = Query(...),
     limit: int = Query(20, ge=1, le=100),
 ) -> JSONResponse:
     """List recent E2E runs.
 
     Query params:
         repo_root: str - Repository root path
+        config_name: str - Config file name (e.g., "main.yaml")
         limit: int - Max runs to return (default: 20)
     """
     from ..infra.e2e_db import E2EDB
-    from ..infra.config import Config
 
     validated_root = _validate_repo_root(repo_root)
     if validated_root is None:
@@ -4273,10 +4300,10 @@ async def e2e_runs(
 
     # Get orchestrator_id from config - fail fast if not configured
     try:
-        config = Config.find_and_load(validated_root)
+        config = _load_config_by_name(validated_root, config_name)
     except FileNotFoundError:
         return JSONResponse(
-            {"error": "config_not_found", "detail": "No orchestrator config found"},
+            {"error": "config_not_found", "detail": f"Config file not found: {config_name}"},
             status_code=400,
         )
 
@@ -4738,11 +4765,15 @@ async def e2e_quarantine_modify(
 
 
 @control_app.get("/control/e2e/stats")
-async def e2e_stats(repo_root: str = Query(...)) -> JSONResponse:
+async def e2e_stats(
+    repo_root: str = Query(...),
+    config_name: str = Query(...),
+) -> JSONResponse:
     """Get E2E statistics for the stats modal.
 
     Query params:
         repo_root: str - Repository root path
+        config_name: str - Config file name (e.g., "main.yaml")
 
     Returns:
         {
@@ -4758,7 +4789,6 @@ async def e2e_stats(repo_root: str = Query(...)) -> JSONResponse:
     """
     from ..infra.e2e_runner import get_next_run_info
     from ..infra.e2e_db import E2EDB, load_quarantine_list
-    from ..infra.config import Config
 
     validated_root = _validate_repo_root(repo_root)
     if validated_root is None:
@@ -4766,10 +4796,10 @@ async def e2e_stats(repo_root: str = Query(...)) -> JSONResponse:
 
     # Load config
     try:
-        config = Config.find_and_load(validated_root)
+        config = _load_config_by_name(validated_root, config_name)
     except FileNotFoundError:
         return JSONResponse(
-            {"error": "config_not_found", "detail": "No orchestrator config found"},
+            {"error": "config_not_found", "detail": f"Config file not found: {config_name}"},
             status_code=400,
         )
 

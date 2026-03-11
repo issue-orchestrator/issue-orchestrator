@@ -65,6 +65,7 @@ class DashboardViewModel:
 
     repo: str
     repo_root: str
+    config_name: str
     github_owner: str
     github_repo: str
 
@@ -130,6 +131,7 @@ class DashboardViewModel:
             "queueRefreshSeconds": self.queue_refresh_seconds,
             "repo": self.repo,
             "repoRoot": self.repo_root,
+            "configName": self.config_name,
             "githubOwner": self.github_owner,
             "githubRepo": self.github_repo,
             "e2eLastRun": self.e2e_status.get("last_run"),
@@ -1367,6 +1369,7 @@ def build_dashboard_view_model(
 
     repo = config.repo if config else ""
     repo_root = str(config.repo_root) if config and config.repo_root else ""
+    config_name = config.config_path.name if config and config.config_path else ""
     github_owner = repo.split("/")[0] if repo and "/" in repo else ""
     github_repo = repo.split("/")[1] if repo and "/" in repo else ""
 
@@ -1454,6 +1457,7 @@ def build_dashboard_view_model(
         startup_message=state.startup_message if state else "",
         repo=repo,
         repo_root=repo_root,
+        config_name=config_name,
         github_owner=github_owner,
         github_repo=github_repo,
         queue_page=queue_page,

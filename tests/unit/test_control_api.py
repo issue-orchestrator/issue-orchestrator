@@ -3401,7 +3401,7 @@ e2e:
 
         response = e2e_client.get(
             "/control/e2e/status",
-            params={"repo_root": str(tmp_path)}
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml"}
         )
         assert response.status_code == 200
         data = response.json()
@@ -3458,7 +3458,7 @@ e2e:
 
         response = e2e_client.get(
             "/control/e2e/status",
-            params={"repo_root": str(tmp_path)}
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml"}
         )
         assert response.status_code == 200
         data = response.json()
@@ -3505,7 +3505,7 @@ e2e:
 
         response = e2e_client.get(
             "/control/e2e/status",
-            params={"repo_root": str(tmp_path)}
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml"}
         )
         assert response.status_code == 200
         data = response.json()
