@@ -92,8 +92,6 @@ _PREFERRED_REPO_ROOT_ENV = "ISSUE_ORCHESTRATOR_CC_REPO_ROOT"
 _EXPECTED_IDENTITY_ENV = "ISSUE_ORCHESTRATOR_EXPECTED_IDENTITY"
 
 # Default E2E config (used when orchestrator not available)
-from ..infra.config import E2EConfig
-_DEFAULT_E2E_CONFIG = E2EConfig()
 
 
 def _build_repo_identity(repo_root: Path) -> RepoIdentity:
@@ -111,19 +109,6 @@ def _build_repo_identity(repo_root: Path) -> RepoIdentity:
 
     return build_repo_identity_with_status(repo_root, status_resolver=_resolve_repo_status)
 
-
-def _get_e2e_config(repo_root: Path | None = None) -> E2EConfig:
-    """Get E2E config from orchestrator, falling back to defaults.
-
-    Args:
-        repo_root: Optional repo root path (currently unused but kept for API compat)
-
-    Returns:
-        E2EConfig instance (from orchestrator or defaults)
-    """
-    if _orchestrator is not None:
-        return _orchestrator.config.e2e
-    return _DEFAULT_E2E_CONFIG
 
 
 def _load_config_by_name(repo_root: Path, config_name: str) -> "Config":
@@ -4329,6 +4314,7 @@ async def e2e_runs(
 async def e2e_run_details(
     run_id: int,
     repo_root: str = Query(...),
+    config_name: str = Query(...),
     enhanced: bool = Query(False, description="Use enhanced response with categories and history"),
 ) -> JSONResponse:
     """Get details of a specific E2E run.
@@ -4369,7 +4355,7 @@ async def e2e_run_details(
         db = E2EDB(db_path)
         if enhanced:
             # Get E2E config for flake threshold
-            e2e_config = _get_e2e_config(validated_root)
+            e2e_config = _load_config_by_name(validated_root, config_name).e2e
             details = db.run_details_enhanced(
                 run_id,
                 history_limit=5,
@@ -4654,7 +4640,10 @@ async def e2e_failed_tests(
 
 
 @control_app.get("/control/e2e/quarantine")
-async def e2e_quarantine_list(repo_root: str = Query(...)) -> JSONResponse:
+async def e2e_quarantine_list(
+    repo_root: str = Query(...),
+    config_name: str = Query(...),
+) -> JSONResponse:
     """Get the quarantine list for a repository.
 
     Query params:
@@ -4672,11 +4661,8 @@ async def e2e_quarantine_list(repo_root: str = Query(...)) -> JSONResponse:
             status_code=400,
         )
 
-    # Require orchestrator to be running for config access
-    if _orchestrator is None:
-        return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
-
-    quarantine_file = _orchestrator.config.e2e.quarantine_file
+    e2e_config = _load_config_by_name(validated_root, config_name).e2e
+    quarantine_file = e2e_config.quarantine_file
     quarantine_path = validated_root / quarantine_file
     tests = load_quarantine_list(quarantine_path)
 
@@ -4708,6 +4694,7 @@ def _apply_quarantine_changes(action: str, nodeids: list, current_tests: set) ->
 async def e2e_quarantine_modify(
     request: Request,
     repo_root: str = Query(...),
+    config_name: str = Query(...),
 ) -> JSONResponse:
     """Add or remove tests from the quarantine list.
 
@@ -4740,11 +4727,8 @@ async def e2e_quarantine_modify(
     if not nodeids:
         return JSONResponse({"error": "nodeids is required"}, status_code=400)
 
-    # Require orchestrator to be running for config access
-    if _orchestrator is None:
-        return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
-
-    quarantine_file = _orchestrator.config.e2e.quarantine_file
+    e2e_config = _load_config_by_name(validated_root, config_name).e2e
+    quarantine_file = e2e_config.quarantine_file
     quarantine_path = validated_root / quarantine_file
     current_tests = load_quarantine_list(quarantine_path)
 
@@ -4864,6 +4848,7 @@ async def e2e_stats(
 @control_app.get("/control/e2e/flaky-tests")
 async def e2e_flaky_tests(
     repo_root: str = Query(...),
+    config_name: str = Query(...),
     threshold: int = Query(default=20),
     window: int = Query(default=10),
 ) -> JSONResponse:
@@ -4887,11 +4872,8 @@ async def e2e_flaky_tests(
     if not db_path.exists():
         return JSONResponse({"error": "not_found", "detail": "E2E database not found"}, status_code=404)
 
-    # Require orchestrator to be running for config access
-    if _orchestrator is None:
-        return JSONResponse({"error": "Orchestrator not initialized"}, status_code=503)
-
-    quarantine_file = _orchestrator.config.e2e.quarantine_file
+    e2e_config = _load_config_by_name(validated_root, config_name).e2e
+    quarantine_file = e2e_config.quarantine_file
     quarantine_path = validated_root / quarantine_file
     quarantined = load_quarantine_list(quarantine_path)
 
@@ -5179,6 +5161,7 @@ def _build_issue_status(run_issue: Any, db: Any) -> dict:
 async def e2e_triage_data(
     run_id: int,
     repo_root: str = Query(...),
+    config_name: str = Query(...),
 ) -> JSONResponse:
     """Get triage data for an E2E run - failures with issue/flakiness metadata.
 
@@ -5243,8 +5226,8 @@ async def e2e_triage_data(
         # Check if this run already has a parent issue
         run_issue = db.get_run_issue(run_id)
 
-        # Get flake thresholds from config, or use defaults
-        e2e_config = _orchestrator.config.e2e if _orchestrator else _DEFAULT_E2E_CONFIG
+        # Get flake thresholds from config
+        e2e_config = _load_config_by_name(validated_root, config_name).e2e
         flake_threshold = e2e_config.flake_threshold
         flake_window = e2e_config.flake_window_runs
 
@@ -5355,6 +5338,7 @@ async def e2e_test_detail(
     run_id: int,
     nodeid: str = Query(...),
     repo_root: str = Query(...),
+    config_name: str = Query(...),
 ) -> JSONResponse:
     """Get detailed information for a single test failure."""
     from ..infra.e2e_db import E2EDB
@@ -5387,7 +5371,7 @@ async def e2e_test_detail(
             )
 
         # Get flip-rate stability info
-        e2e_config = _orchestrator.config.e2e if _orchestrator else _DEFAULT_E2E_CONFIG
+        e2e_config = _load_config_by_name(validated_root, config_name).e2e
         stability = db.get_test_stability(
             nodeid,
             window_runs=e2e_config.flake_window_runs,

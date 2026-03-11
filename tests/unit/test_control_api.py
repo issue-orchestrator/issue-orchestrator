@@ -2734,7 +2734,7 @@ class TestE2ETriageEndpoint:
         """Invalid repo_root should return 400."""
         response = e2e_client.get(
             "/control/e2e/triage/1",
-            params={"repo_root": "../invalid/path"}
+            params={"repo_root": "../invalid/path", "config_name": "default.yaml"}
         )
         assert response.status_code == 400
         assert response.json()["error"] == "Invalid repo_root"
@@ -2743,7 +2743,7 @@ class TestE2ETriageEndpoint:
         """Missing E2E database should return 404."""
         response = e2e_client.get(
             "/control/e2e/triage/1",
-            params={"repo_root": str(tmp_path)}
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml"}
         )
         assert response.status_code == 404
         assert response.json()["error"] == "not_found"
@@ -2752,8 +2752,12 @@ class TestE2ETriageEndpoint:
         """Triage should return failures with flake counts and existing issue info."""
         from issue_orchestrator.infra.e2e_db import E2EDB
 
+        # Create config file for _load_config_by_name
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("repo:\n  name: test/repo\ne2e:\n  enabled: true\n  pytest_paths: ['tests/e2e']\n")
+
         db_dir = tmp_path / ".issue-orchestrator"
-        db_dir.mkdir()
         db_path = db_dir / "e2e.db"
 
         # Create DB using E2EDB to get proper schema
@@ -2785,7 +2789,7 @@ class TestE2ETriageEndpoint:
 
         response = e2e_client.get(
             f"/control/e2e/triage/{run_id}",
-            params={"repo_root": str(tmp_path)}
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml"}
         )
         assert response.status_code == 200
         data = response.json()
@@ -2823,8 +2827,12 @@ class TestE2ETriageEndpoint:
         """Triage should return issue URLs and sub-issue details when issues exist."""
         from issue_orchestrator.infra.e2e_db import E2EDB
 
+        # Create config file for _load_config_by_name
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True)
+        (config_dir / "default.yaml").write_text("repo:\n  name: test/repo\ne2e:\n  enabled: true\n  pytest_paths: ['tests/e2e']\n")
+
         db_dir = tmp_path / ".issue-orchestrator"
-        db_dir.mkdir()
         db_path = db_dir / "e2e.db"
 
         # Create DB and add test data
@@ -2872,7 +2880,7 @@ class TestE2ETriageEndpoint:
             client = TestClient(control_app)
             response = client.get(
                 f"/control/e2e/triage/{run_id}",
-                params={"repo_root": str(tmp_path)}
+                params={"repo_root": str(tmp_path), "config_name": "default.yaml"}
             )
             assert response.status_code == 200
             data = response.json()
@@ -3062,19 +3070,24 @@ class TestE2EQuarantineModifyEndpoint:
 
     @pytest.fixture
     def quarantine_client(self):
-        """Create a test client with mock orchestrator for quarantine endpoint."""
-        mock = create_mock_orchestrator()
-        # Set up e2e config with default quarantine file path
-        mock.config.e2e.quarantine_file = "tests/e2e/quarantine.txt"
-        set_orchestrator(mock)
-        yield TestClient(control_app)
-        set_orchestrator(None)
+        """Create a test client for quarantine endpoint (no orchestrator needed)."""
+        return TestClient(control_app)
+
+    @staticmethod
+    def _write_config(tmp_path: Path) -> None:
+        """Write a minimal config with quarantine_file set."""
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "default.yaml").write_text(
+            "repo:\n  name: test/repo\ne2e:\n  enabled: true\n"
+            "  pytest_paths: ['tests/e2e']\n  quarantine_file: tests/e2e/quarantine.txt\n"
+        )
 
     def test_quarantine_modify_returns_400_for_invalid_repo_root(self, quarantine_client):
         """Invalid repo_root should return 400."""
         response = quarantine_client.post(
             "/control/e2e/quarantine",
-            params={"repo_root": "../invalid/path"},
+            params={"repo_root": "../invalid/path", "config_name": "default.yaml"},
             json={"action": "add", "nodeids": ["test::foo"]}
         )
         assert response.status_code == 400
@@ -3084,7 +3097,7 @@ class TestE2EQuarantineModifyEndpoint:
         """Missing action should return 400."""
         response = quarantine_client.post(
             "/control/e2e/quarantine",
-            params={"repo_root": str(tmp_path)},
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml"},
             json={"nodeids": ["test::foo"]}
         )
         assert response.status_code == 400
@@ -3094,7 +3107,7 @@ class TestE2EQuarantineModifyEndpoint:
         """Empty nodeids should return 400."""
         response = quarantine_client.post(
             "/control/e2e/quarantine",
-            params={"repo_root": str(tmp_path)},
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml"},
             json={"action": "add", "nodeids": []}
         )
         assert response.status_code == 400
@@ -3102,6 +3115,7 @@ class TestE2EQuarantineModifyEndpoint:
 
     def test_quarantine_add_tests(self, quarantine_client, tmp_path):
         """Should add tests to quarantine file."""
+        self._write_config(tmp_path)
         # Create empty quarantine file
         quarantine_dir = tmp_path / "tests" / "e2e"
         quarantine_dir.mkdir(parents=True)
@@ -3110,7 +3124,7 @@ class TestE2EQuarantineModifyEndpoint:
 
         response = quarantine_client.post(
             "/control/e2e/quarantine",
-            params={"repo_root": str(tmp_path)},
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml"},
             json={"action": "add", "nodeids": ["test::foo", "test::bar"]}
         )
         assert response.status_code == 200
@@ -3128,6 +3142,7 @@ class TestE2EQuarantineModifyEndpoint:
 
     def test_quarantine_remove_tests(self, quarantine_client, tmp_path):
         """Should remove tests from quarantine file."""
+        self._write_config(tmp_path)
         # Create quarantine file with tests
         quarantine_dir = tmp_path / "tests" / "e2e"
         quarantine_dir.mkdir(parents=True)
@@ -3136,7 +3151,7 @@ class TestE2EQuarantineModifyEndpoint:
 
         response = quarantine_client.post(
             "/control/e2e/quarantine",
-            params={"repo_root": str(tmp_path)},
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml"},
             json={"action": "remove", "nodeids": ["test::foo", "test::bar"]}
         )
         assert response.status_code == 200
@@ -3154,19 +3169,24 @@ class TestE2EFlakyTestsEndpoint:
 
     @pytest.fixture
     def flaky_client(self):
-        """Create a test client with mock orchestrator for flaky tests endpoint."""
-        mock = create_mock_orchestrator()
-        # Set up e2e config with default quarantine file path
-        mock.config.e2e.quarantine_file = "tests/e2e/quarantine.txt"
-        set_orchestrator(mock)
-        yield TestClient(control_app)
-        set_orchestrator(None)
+        """Create a test client for flaky tests endpoint (no orchestrator needed)."""
+        return TestClient(control_app)
+
+    @staticmethod
+    def _write_config(tmp_path: Path) -> None:
+        """Write a minimal config with quarantine_file set."""
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "default.yaml").write_text(
+            "repo:\n  name: test/repo\ne2e:\n  enabled: true\n"
+            "  pytest_paths: ['tests/e2e']\n  quarantine_file: tests/e2e/quarantine.txt\n"
+        )
 
     def test_flaky_returns_400_for_invalid_repo_root(self, flaky_client):
         """Invalid repo_root should return 400."""
         response = flaky_client.get(
             "/control/e2e/flaky-tests",
-            params={"repo_root": "../invalid/path"}
+            params={"repo_root": "../invalid/path", "config_name": "default.yaml"}
         )
         assert response.status_code == 400
         assert response.json()["error"] == "Invalid repo_root"
@@ -3175,7 +3195,7 @@ class TestE2EFlakyTestsEndpoint:
         """Missing E2E database should return 404."""
         response = flaky_client.get(
             "/control/e2e/flaky-tests",
-            params={"repo_root": str(tmp_path)}
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml"}
         )
         assert response.status_code == 404
         assert response.json()["error"] == "not_found"
@@ -3184,13 +3204,13 @@ class TestE2EFlakyTestsEndpoint:
         """Should return empty list when no flaky tests."""
         from issue_orchestrator.infra.e2e_db import E2EDB
 
+        self._write_config(tmp_path)
         db_dir = tmp_path / ".issue-orchestrator"
-        db_dir.mkdir()
         E2EDB(db_dir / "e2e.db")
 
         response = flaky_client.get(
             "/control/e2e/flaky-tests",
-            params={"repo_root": str(tmp_path)}
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml"}
         )
         assert response.status_code == 200
         data = response.json()
@@ -3203,8 +3223,8 @@ class TestE2EFlakyTestsEndpoint:
         """Should return tests that exceed flip-rate threshold."""
         from issue_orchestrator.infra.e2e_db import E2EDB
 
+        self._write_config(tmp_path)
         db_dir = tmp_path / ".issue-orchestrator"
-        db_dir.mkdir()
         db = E2EDB(db_dir / "e2e.db")
 
         # Create alternating pass/fail runs for flaky_one (100% flip rate)
@@ -3219,7 +3239,7 @@ class TestE2EFlakyTestsEndpoint:
 
         response = flaky_client.get(
             "/control/e2e/flaky-tests",
-            params={"repo_root": str(tmp_path), "threshold": 20}
+            params={"repo_root": str(tmp_path), "config_name": "default.yaml", "threshold": 20}
         )
         assert response.status_code == 200
         data = response.json()
@@ -3256,7 +3276,7 @@ class TestE2ETestDetailEndpoint:
         """Invalid repo_root should return 400."""
         response = e2e_client.get(
             "/control/e2e/test/1",
-            params={"repo_root": "../invalid/path", "nodeid": "test::foo"}
+            params={"repo_root": "../invalid/path", "nodeid": "test::foo", "config_name": "default.yaml"}
         )
         assert response.status_code == 400
         assert response.json()["error"] == "Invalid repo_root"
@@ -3265,7 +3285,7 @@ class TestE2ETestDetailEndpoint:
         """Missing E2E database should return 404."""
         response = e2e_client.get(
             "/control/e2e/test/1",
-            params={"repo_root": str(tmp_path), "nodeid": "test::foo"}
+            params={"repo_root": str(tmp_path), "nodeid": "test::foo", "config_name": "default.yaml"}
         )
         assert response.status_code == 404
 
@@ -3274,7 +3294,7 @@ class TestE2ETestDetailEndpoint:
         from issue_orchestrator.infra.e2e_db import E2EDB
 
         db_dir = tmp_path / ".issue-orchestrator"
-        db_dir.mkdir()
+        db_dir.mkdir(exist_ok=True)
         db_path = db_dir / "e2e.db"
         db = E2EDB(db_path)
 
@@ -3287,7 +3307,7 @@ class TestE2ETestDetailEndpoint:
 
         response = e2e_client.get(
             f"/control/e2e/test/{run_id}",
-            params={"repo_root": str(tmp_path), "nodeid": "test::nonexistent"}
+            params={"repo_root": str(tmp_path), "nodeid": "test::nonexistent", "config_name": "default.yaml"}
         )
         assert response.status_code == 404
         assert response.json()["error"] == "not_found"
@@ -3296,8 +3316,12 @@ class TestE2ETestDetailEndpoint:
         """Should return test details including history."""
         from issue_orchestrator.infra.e2e_db import E2EDB
 
+        # Create config file for _load_config_by_name
+        config_dir = tmp_path / ".issue-orchestrator" / "config"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "default.yaml").write_text("repo:\n  name: test/repo\ne2e:\n  enabled: true\n  pytest_paths: ['tests/e2e']\n")
+
         db_dir = tmp_path / ".issue-orchestrator"
-        db_dir.mkdir()
         db_path = db_dir / "e2e.db"
         db = E2EDB(db_path)
 
@@ -3333,7 +3357,7 @@ class TestE2ETestDetailEndpoint:
         # Query the first run's failure
         response = e2e_client.get(
             f"/control/e2e/test/{run1_id}",
-            params={"repo_root": str(tmp_path), "nodeid": "test_foo.py::test_bar"}
+            params={"repo_root": str(tmp_path), "nodeid": "test_foo.py::test_bar", "config_name": "default.yaml"}
         )
         assert response.status_code == 200
         data = response.json()
