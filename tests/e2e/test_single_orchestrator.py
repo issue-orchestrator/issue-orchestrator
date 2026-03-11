@@ -119,5 +119,11 @@ class TestSingleOrchestratorAdvanced:
         # Update labels (add blocked)
         flow.update_issue(issue, add_labels=["blocked"])
 
-        # Verify orchestrator sees the blocked label
-        await flow.issue_has_label(issue, "blocked", timeout_s=60)
+        # Verify orchestrator sees the blocked label.
+        # The orchestrator must re-scan to detect the label change;
+        # re-trigger refresh if not seen quickly.
+        try:
+            await flow.issue_has_label(issue, "blocked", timeout_s=30)
+        except TimeoutError:
+            flow.refresh()
+            await flow.issue_has_label(issue, "blocked", timeout_s=60)

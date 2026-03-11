@@ -36,8 +36,7 @@ class TestReviewAgentExecution:
         orchestrator_watcher,
         issue_title: str,
     ) -> tuple[int, int]:
-        issue = flow.create_issue(issue_title, ["agent:e2e-test"])[0]
-        issue_number = int(issue.stable_id())
+        issue, issue_number = flow.create_issue(issue_title, ["agent:e2e-test"])
         logger.info("Created issue #%d for review agent test", issue_number)
 
         await flow.issue_seen(issue, timeout_s=60)
@@ -76,7 +75,7 @@ class TestReviewAgentExecution:
         issue_number, pr_number = await self._create_issue_and_wait_for_pr(
             flow,
             orchestrator_watcher,
-            "[E2E] Review agent test - dev PR created",
+            "[M0-801] [E2E] Review agent test - dev PR created",
         )
 
         await poll_issue_label(flow.repo, issue_number, "pr-pending", backoff=(1, 2, 4, 8))
@@ -101,7 +100,7 @@ class TestReviewAgentExecution:
         issue_number, pr_number = await self._create_issue_and_wait_for_pr(
             flow,
             orchestrator_watcher,
-            "[E2E] Review agent test - review approval",
+            "[M0-802] [E2E] Review agent test - review approval",
         )
 
         await poll_issue_label(

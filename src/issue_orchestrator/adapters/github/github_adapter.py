@@ -1154,7 +1154,14 @@ class GitHubAdapter:
 
             def _check() -> bool:
                 nonlocal last_labels
-                last_labels = self._get_issue_labels_fresh(issue_number)
+                try:
+                    last_labels = self._get_issue_labels_fresh(issue_number)
+                except GitHubHttpError as exc:
+                    # A 404 on a freshly created issue is GitHub eventual consistency,
+                    # not a permanent failure.  Return False so the verify loop retries.
+                    if "404" in str(exc) or "not found" in str(exc).lower():
+                        return False
+                    raise
                 return all(label in last_labels for label in labels)
 
             self._verify_write(

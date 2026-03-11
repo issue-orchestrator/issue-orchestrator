@@ -3865,6 +3865,11 @@ async def run_with_web_dashboard(
             await orchestrator.run_loop()
         except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.exception("[web] Orchestrator task crashed — triggering shutdown")
+            orchestrator.shutdown_requested = True
+            shutdown_manager.request_shutdown(reason="orchestrator task crashed")
+            shutdown_manager.exit()
 
     import os
 
