@@ -577,14 +577,14 @@ def test_review_exchange_seeds_initial_validation_record(tmp_path: Path, monkeyp
 
 
 class TestInteractiveRound:
-    """Tests for _run_interactive_round — the poll-and-kill path."""
+    """Tests for _run_interactive_round — subprocess-based poll-and-kill path."""
 
     @pytest.fixture(autouse=True)
     def _no_sleep(self, monkeypatch):
         monkeypatch.setattr("issue_orchestrator.control.review_exchange_loop.time.sleep", lambda _: None)
 
-    def test_interactive_round_polls_response_file(self, tmp_path: Path) -> None:
-        """Interactive round starts session, polls for response file, kills."""
+    def test_interactive_round_polls_response_file(self, tmp_path: Path, monkeypatch) -> None:
+        """Interactive round starts subprocess, polls for response file, kills."""
         from issue_orchestrator.execution.agent_runner_types import AgentSpec
 
         round_dir = tmp_path / "round"
@@ -599,46 +599,37 @@ class TestInteractiveRound:
             output_dir=round_dir,
         )
 
-        class MockSession:
-            def __init__(self):
-                self._alive = True
-                self._killed = False
-                self._poll_count = 0
+        poll_count = 0
 
-            def is_alive(self) -> bool:
-                # Simulate agent writing response on second poll
-                self._poll_count += 1
-                if self._poll_count >= 2:
+        class FakeProc:
+            pid = 12345
+            returncode = -9
+
+            def poll(self):
+                nonlocal poll_count
+                poll_count += 1
+                if poll_count >= 2:
                     response_file.write_text(
                         '{"response_type":"ok","response_text":"approved"}',
                         encoding="utf-8",
                     )
-                return self._alive
-
-            def kill(self) -> None:
-                self._alive = False
-                self._killed = True
+                return None  # still running
 
             def wait(self, timeout=None):
-                return SimpleNamespace(
-                    exit_code=-9,
-                    timed_out=False,
-                    duration_seconds=1.0,
-                    stderr="",
-                    succeeded=False,
-                    command=["claude"],
-                )
+                pass
 
-        mock_session = MockSession()
+        fake_proc = FakeProc()
+        monkeypatch.setattr(
+            "subprocess.Popen",
+            lambda *a, **kw: fake_proc,
+        )
+        monkeypatch.setattr("os.getpgid", lambda pid: pid)
+        monkeypatch.setattr("os.killpg", lambda pgid, sig: None)
 
-        class MockRunner:
-            def start(self, _spec):
-                return mock_session
+        result = _run_interactive_round(MagicMock(), spec, response_file)
 
-        result = _run_interactive_round(MockRunner(), spec, response_file)
-
-        assert mock_session._killed
         assert response_file.exists()
+        assert result.exit_code == -9
 
     def test_interactive_nonzero_exit_succeeds_when_response_file_present(
         self, tmp_path: Path, monkeypatch,
@@ -663,38 +654,32 @@ class TestInteractiveRound:
 
         response_file = run_dir / REVIEW_RESPONSE_FILENAME
 
-        class MockSession:
-            def is_alive(self) -> bool:
-                # Write response immediately
+        class FakeProc:
+            pid = 12345
+            returncode = -9
+
+            def poll(self):
+                # Write response and report process exited
                 response_file.write_text(
                     '{"response_type":"ok","response_text":"approved"}',
                     encoding="utf-8",
                 )
-                return False
-
-            def kill(self) -> None:
-                pass
+                return -9
 
             def wait(self, timeout=None):
-                return SimpleNamespace(
-                    exit_code=-9,
-                    timed_out=False,
-                    duration_seconds=2.0,
-                    stderr="",
-                    succeeded=False,
-                    command=["claude"],
-                )
+                pass
 
-        class MockRunner:
-            def start(self, _spec):
-                return MockSession()
+        monkeypatch.setattr(
+            "subprocess.Popen",
+            lambda *a, **kw: FakeProc(),
+        )
 
         prompt_path = tmp_path / "prompt.md"
         prompt_path.write_text("Prompt")
         agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
 
         response = _run_agent_round(
-            runner=MockRunner(),
+            runner=MagicMock(),
             worktree_path=worktree,
             run_dir=run_dir,
             exchange_dir=exchange_dir,
