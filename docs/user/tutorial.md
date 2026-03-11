@@ -357,9 +357,10 @@ Each issue needs a stable identity for session tracking, dependency resolution, 
 **When to use the prefix:**
 - You're organizing issues into milestones and want human-readable cross-references (e.g., `Depends-on: M1-010`)
 - You want stable IDs that don't change if issues are transferred or renumbered
+- **You're batch-creating issues** (from a planning agent, script, or import tool) — GitHub issue numbers aren't known until after creation, so you can't wire up `Depends-on: #123` dependencies in advance. Self-assigned keys like `[M1-010]` let you define the full dependency graph before any issues exist on GitHub.
 
 **When you can skip it:**
-- You reference dependencies by issue number (`Depends-on: #42`)
+- You reference dependencies by issue number (`Depends-on: #42`) and issues already exist
 - You don't need milestone-scoped naming
 - You're just getting started and want to keep things simple
 
