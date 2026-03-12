@@ -2187,6 +2187,7 @@ async function loadExpandedColumn(columnId, options = {}) {
                         ${columnId === 'blocked' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingle(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n}">Reset & Retry</button>` : ''}
                         ${columnId === 'blocked' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingleFromScratch(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n} from a fresh branch based on main">Reset & Retry From Scratch</button>` : ''}
                         ${columnId === 'running' ? `<button class="card-action-btn card-action-reset" onclick="killExpandedSingle(${n}, this);event.stopPropagation();" title="Terminate issue #${n} and place on hold">Cancel</button>` : ''}
+                        ${columnId === 'queued' ? `<button class="card-action-btn card-action-reset" onclick="cancelQueuedSingle(${n}, this);event.stopPropagation();" title="Place queued issue #${n} on hold">Cancel</button>` : ''}
                         ${columnId === 'awaiting-merge' ? `<button class="card-action-btn card-action-unblock" onclick="retryExpandedSingle(${n}, 'awaiting-merge', this);event.stopPropagation();" title="Remove pr-pending and requeue issue #${n}">Retry</button>` : ''}
                         ${columnId === 'awaiting-merge' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingle(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n}">Reset & Retry</button>` : ''}
                         ${columnId === 'awaiting-merge' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingleFromScratch(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n} from a fresh branch based on main">Reset & Retry From Scratch</button>` : ''}
@@ -2355,6 +2356,32 @@ async function bulkKillAllRunning() {
     } catch (e) {
         console.error('Cancel all failed:', e);
         showToast('Cancel all failed: network error', true);
+    }
+}
+
+async function cancelQueuedSingle(issueNumber, btn) {
+    const confirmMsg = `Cancel queued issue #${issueNumber}?\n\nThis will place the issue on hold before it launches.\nIt will not run again until you explicitly retry/unblock it.`;
+    if (!await showConfirm(confirmMsg, btn)) return;
+    if (btn) btn.disabled = true;
+    try {
+        const req = uiActionContract.buildBulkCancelQueuedRequest([issueNumber]);
+        const res = await fetch(req.endpoint, {
+            method: req.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && Array.isArray(data.cancelled) && data.cancelled.includes(issueNumber)) {
+            showToast(`Cancelled queued issue #${issueNumber}`);
+            await refreshViewModel();
+            return;
+        }
+        showToast(data.error || `Queue cancel failed (${res.status})`, true);
+        if (btn) btn.disabled = false;
+    } catch (e) {
+        console.error('Queue cancel failed:', e);
+        showToast('Queue cancel failed: network error', true);
+        if (btn) btn.disabled = false;
     }
 }
 
@@ -2721,6 +2748,34 @@ async function bulkDeprioritize() {
         }
     } catch (e) {
         console.error('Bulk deprioritize failed:', e);
+    }
+}
+
+async function bulkCancelQueued() {
+    const numbers = getSelectedIssueNumbers('queued');
+    if (!numbers.length) return;
+    const confirmMsg = `Cancel ${numbers.length} queued issue(s)?\n\nThis will place them on hold before launch.\nThey will not run again until explicitly retried/unblocked.`;
+    if (!await showConfirm(confirmMsg)) return;
+    try {
+        const req = uiActionContract.buildBulkCancelQueuedRequest(numbers);
+        const res = await fetch(req.endpoint, {
+            method: req.method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(req.body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+            const cancelled = Array.isArray(data.cancelled) ? data.cancelled.length : 0;
+            const failed = Array.isArray(data.failed) ? data.failed.length : 0;
+            if (cancelled > 0) showToast(`Cancelled ${cancelled} queued issue(s)`);
+            if (failed > 0) showToast(`Failed to cancel ${failed} queued issue(s)`, true);
+            await refreshViewModel();
+            return;
+        }
+        showToast(data.error || `Queued cancel failed (${res.status})`, true);
+    } catch (e) {
+        console.error('Queued cancel failed:', e);
+        showToast('Queued cancel failed: network error', true);
     }
 }
 

@@ -42,6 +42,8 @@ def test_unblock_paths_use_unblock_api() -> None:
     assert "issues" in contract_js
     assert "/api/bulk-retry" in contract_js
     assert "buildBulkRetryRequest" in contract_js
+    assert "/api/bulk-cancel-queued" in contract_js
+    assert "buildBulkCancelQueuedRequest" in contract_js
 
 
 def test_blocked_bulk_buttons_default_disabled_in_template() -> None:
@@ -157,6 +159,14 @@ def test_deprioritize_handler_uses_ui_action_contract() -> None:
     body = _function_body(js, "bulkDeprioritize")
     assert "uiActionContract.buildBulkDeprioritizeRequest" in body
     assert "/api/bulk-deprioritize" not in body
+
+
+def test_cancel_queued_handlers_use_ui_action_contract() -> None:
+    js = _read(DASHBOARD_JS)
+    for fn in ("cancelQueuedSingle", "bulkCancelQueued"):
+        body = _function_body(js, fn)
+        assert "uiActionContract.buildBulkCancelQueuedRequest" in body
+        assert "/api/bulk-cancel-queued" not in body
 
 
 def test_bulk_retry_completed_handler_uses_ui_action_contract() -> None:

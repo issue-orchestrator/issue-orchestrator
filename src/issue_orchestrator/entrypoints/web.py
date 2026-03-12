@@ -11,6 +11,7 @@ import subprocess
 import time
 import webbrowser
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, Any, Callable
@@ -919,6 +920,78 @@ def _append_operator_termination_history(
             completed_at=now,
         )
     )
+
+
+def _queue_related_pr_numbers(state: Any, issue_number: int) -> list[int]:
+    pr_numbers = {
+        int(review.pr_number)
+        for review in state.pending_reviews
+        if review.issue_number == issue_number
+    }
+    pr_numbers.update(
+        int(rework.pr_number)
+        for rework in state.pending_reworks
+        if rework.resolve_issue_number() == issue_number and rework.pr_number is not None
+    )
+    return sorted(pr_numbers)
+
+
+def _hold_queued_issue(issue_number: int) -> dict[str, Any]:
+    """Place a queued issue on hold and remove it from launchable runtime state."""
+    assert _orchestrator is not None
+    from ..control.queue_cache import QueueCache
+    from ..domain.models import SessionHistoryEntry
+
+    state = _orchestrator.state
+    repo = _orchestrator.repository_host
+    lm = _orchestrator.deps.label_manager
+
+    issue = next((candidate for candidate in state.cached_queue_issues if candidate.number == issue_number), None)
+    if issue is None:
+        raise LookupError(f"Issue #{issue_number} not found in queued state")
+
+    pr_numbers = _queue_related_pr_numbers(state, issue_number)
+    label_ops: list[LabelOperation] = [
+        LabelOperation("add", issue_number, lm.blocked_failed),
+        LabelOperation("remove", issue_number, lm.in_progress),
+        LabelOperation("remove", issue_number, lm.pr_pending),
+    ]
+    for pr_number in pr_numbers:
+        label_ops.extend(
+            [
+                LabelOperation("add", pr_number, lm.blocked_failed),
+                LabelOperation("remove", pr_number, lm.code_review),
+                LabelOperation("remove", pr_number, lm.needs_rework),
+            ]
+        )
+    apply_label_operations(
+        repo,
+        label_ops,
+        logger=logger,
+        log_prefix="[cancel-queued]",
+    )
+
+    QueueCache(_orchestrator.config, state).remove_issue(issue_number)
+    _prune_issue_runtime_state(state=state, issue_number=issue_number)
+    state.session_history.append(
+        SessionHistoryEntry(
+            issue_number=issue_number,
+            title=issue.title,
+            agent_type=issue.agent_type or "agent:unknown",
+            status="blocked",
+            runtime_minutes=0,
+            status_reason="Cancelled from queue by operator",
+            worktree_path=None,
+            completed_at=datetime.now(),
+        )
+    )
+    state.failed_this_cycle.add(issue_number)
+    return {
+        "issue_number": issue_number,
+        "title": issue.title,
+        "hold_label": lm.blocked_failed,
+        "linked_pr_numbers": pr_numbers,
+    }
 
 
 @app.post("/api/kill/{issue_number}")
@@ -2851,6 +2924,39 @@ async def bulk_kill(request: Request) -> JSONResponse:
                 {"issue_number": num, "error": "Failed to terminate", "details": result["errors"]}
             )
     return JSONResponse({"terminated": terminated, "failed": failed})
+
+
+@app.post("/api/bulk-cancel-queued")
+async def bulk_cancel_queued(request: Request) -> JSONResponse:
+    """Place queued issues on hold so they are not launched automatically."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    body = await request.json()
+    issue_numbers = body.get("issue_numbers", [])
+    if not isinstance(issue_numbers, list):
+        return JSONResponse({"error": "issue_numbers must be a list"}, status_code=400)
+
+    cancelled: list[int] = []
+    failed: list[dict[str, Any]] = []
+    for raw_number in issue_numbers:
+        try:
+            issue_number = int(raw_number)
+        except (TypeError, ValueError):
+            failed.append({"issue_number": raw_number, "error": "Invalid issue number"})
+            continue
+
+        try:
+            result = _hold_queued_issue(issue_number)
+        except LookupError:
+            failed.append({"issue_number": issue_number, "error": "Issue not found in queue"})
+            continue
+        except Exception as exc:
+            failed.append({"issue_number": issue_number, "error": str(exc)})
+            continue
+        cancelled.append(result["issue_number"])
+
+    return JSONResponse({"cancelled": cancelled, "failed": failed})
 
 
 @app.post("/api/bulk-deprioritize")

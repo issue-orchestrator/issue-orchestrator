@@ -3804,6 +3804,45 @@ class TestKillSessionEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_bulk_cancel_queued_places_issue_on_hold(self):
+        """Queued cancel should hold the issue and prune launchable queue state."""
+        mock_orch = create_mock_orchestrator()
+        lm = LabelManager(mock_orch.config)
+        mock_orch.deps.label_manager = lm
+        issue = create_issue(4057, "Queued Issue", labels=["agent:web"])
+        mock_orch.state.cached_queue_issues = [issue]
+        mock_orch.state.pending_reviews = [
+            PendingReview(
+                issue_key=FakeIssueKey(name="4057"),
+                pr_number=4124,
+                pr_url="https://example/pr/4124",
+                branch_name="feature/4057",
+                _issue_number=4057,
+            )
+        ]
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.post("/api/bulk-cancel-queued", json={"issue_numbers": [4057]})
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["cancelled"] == [4057]
+            assert payload["failed"] == []
+            assert mock_orch.state.cached_queue_issues == []
+            assert mock_orch.state.pending_reviews == []
+            assert 4057 in mock_orch.state.failed_this_cycle
+            history_entry = mock_orch.state.session_history[-1]
+            assert history_entry.issue_number == 4057
+            assert history_entry.status == "blocked"
+            assert history_entry.status_reason == "Cancelled from queue by operator"
+            mock_orch.repository_host.add_label.assert_any_call(4057, lm.blocked_failed)
+            mock_orch.repository_host.add_label.assert_any_call(4124, lm.blocked_failed)
+            mock_orch.repository_host.remove_label.assert_any_call(4124, lm.code_review)
+            mock_orch.repository_host.remove_label.assert_any_call(4124, lm.needs_rework)
+        finally:
+            set_orchestrator(None)
+
 
 class TestGetSessionLogEndpoint:
     """Test the GET /api/log/{issue_number} endpoint."""

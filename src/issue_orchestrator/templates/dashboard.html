@@ -248,6 +248,7 @@
                             <button class="issue-action-btn" data-requires-selection="false" onclick="bulkKillAllRunning()" title="Terminate all running issues and place them on hold">Cancel All Running</button>
                             <button class="issue-action-btn" onclick="bulkRefreshRunning()" disabled title="Refresh selected running issues from GitHub">Refresh Selected</button>
                             {% elif column.id == 'queued' %}
+                            <button class="issue-action-btn" onclick="bulkCancelQueued()" disabled title="Place selected queued issues on hold before launch">Cancel Selected</button>
                             <button class="issue-action-btn" onclick="bulkDeprioritize()" disabled>Deprioritize</button>
                             {% endif %}
                         </div>
