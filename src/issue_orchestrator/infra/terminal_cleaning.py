@@ -138,7 +138,9 @@ _KEEP_SHORT = frozenset({
     "ok", "yes", "no", "done", "fail", "pass", "true", "null",
     "PASS", "FAIL", "OK", "YES", "NO", "DONE", "TRUE", "NULL",
     "error", "Error", "ERROR",
+    "login", "Login", "input", "class", "print", "debug",
 })
+_KEEP_SHORT_LOWER = frozenset(k.lower() for k in _KEEP_SHORT)
 
 _NOISE_SUFFIX_SOURCES = (
     "interrupt", "fiddle-faddling", "thinking", "envisioning",
@@ -154,9 +156,12 @@ def _is_short_fragment(stripped: str) -> bool:
     # Pure digit lines are cursor-positioned line numbers from tool output.
     if stripped.isdigit():
         return True
+    # Strip trailing TUI arrow artifacts before length check so that
+    # e.g. "Lolyg↑" (6 chars) is treated as "Lolyg" (5 chars).
+    core = stripped.rstrip("…↑↓")
     # Short fragments (≤5 chars, no spaces): keep only known meaningful words.
-    if len(stripped) <= 5 and " " not in stripped:
-        return stripped not in _KEEP_SHORT and stripped.rstrip("…") not in _KEEP_SHORT
+    if len(core) <= 5 and " " not in core:
+        return core not in _KEEP_SHORT and core.lower() not in _KEEP_SHORT_LOWER
     # Partial word fragments from cursor-positioned TUI rendering:
     # e.g. "terrupt" from "interrupt", "ding" from "fiddling"
     stripped_lower = stripped.lower().rstrip("…↑↓")
@@ -184,6 +189,10 @@ def _is_garbled_subsequence(fragment: str, keyword: str) -> bool:
     where cursor repositioning corrupted the rendering.
     """
     if len(fragment) < 4:
+        return False
+    # Fragment must cover a meaningful portion of the keyword to avoid
+    # false positives on short common words (e.g. "login" vs "lollygagging").
+    if len(fragment) < len(keyword) * 0.5:
         return False
     matched = 0
     ki = 0
