@@ -3838,6 +3838,8 @@ class TestKillSessionEndpoint:
             assert history_entry.status_reason == "Cancelled from queue by operator"
             mock_orch.repository_host.add_label.assert_any_call(4057, lm.blocked_failed)
             mock_orch.repository_host.add_label.assert_any_call(4124, lm.blocked_failed)
+            mock_orch.repository_host.remove_label.assert_any_call(4124, lm.code_review)
+            mock_orch.repository_host.remove_label.assert_any_call(4124, lm.needs_rework)
         finally:
             set_orchestrator(None)
 

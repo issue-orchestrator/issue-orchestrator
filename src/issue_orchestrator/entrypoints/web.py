@@ -880,10 +880,6 @@ def _terminate_sessions(*, sessions: list[Any], killed_sessions: list[str]) -> l
 
 def _prune_issue_runtime_state(*, state: Any, issue_number: int) -> None:
     state.active_sessions = [s for s in state.active_sessions if s.issue.number != issue_number]
-    if _orchestrator is not None:
-        from ..control.queue_cache import QueueCache
-
-        QueueCache(_orchestrator.config, state).remove_issue(issue_number)
     state.pending_reviews = [r for r in state.pending_reviews if r.issue_number != issue_number]
     state.pending_reworks = [r for r in state.pending_reworks if r.resolve_issue_number() != issue_number]
     state.pending_triage_reviews = [r for r in state.pending_triage_reviews if r.issue_number != issue_number]
@@ -930,12 +926,12 @@ def _queue_related_pr_numbers(state: Any, issue_number: int) -> list[int]:
     pr_numbers = {
         int(review.pr_number)
         for review in state.pending_reviews
-        if review.issue_number == issue_number and getattr(review, "pr_number", None) is not None
+        if review.issue_number == issue_number
     }
     pr_numbers.update(
         int(rework.pr_number)
         for rework in state.pending_reworks
-        if rework.resolve_issue_number() == issue_number and getattr(rework, "pr_number", None) is not None
+        if rework.resolve_issue_number() == issue_number and rework.pr_number is not None
     )
     return sorted(pr_numbers)
 
@@ -943,6 +939,7 @@ def _queue_related_pr_numbers(state: Any, issue_number: int) -> list[int]:
 def _hold_queued_issue(issue_number: int) -> dict[str, Any]:
     """Place a queued issue on hold and remove it from launchable runtime state."""
     assert _orchestrator is not None
+    from ..control.queue_cache import QueueCache
     from ..domain.models import SessionHistoryEntry
 
     state = _orchestrator.state
@@ -963,6 +960,7 @@ def _hold_queued_issue(issue_number: int) -> dict[str, Any]:
         label_ops.extend(
             [
                 LabelOperation("add", pr_number, lm.blocked_failed),
+                LabelOperation("remove", pr_number, lm.code_review),
                 LabelOperation("remove", pr_number, lm.needs_rework),
             ]
         )
@@ -973,6 +971,7 @@ def _hold_queued_issue(issue_number: int) -> dict[str, Any]:
         log_prefix="[cancel-queued]",
     )
 
+    QueueCache(_orchestrator.config, state).remove_issue(issue_number)
     _prune_issue_runtime_state(state=state, issue_number=issue_number)
     state.session_history.append(
         SessionHistoryEntry(
