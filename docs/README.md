@@ -20,21 +20,21 @@ Getting started with Issue Orchestrator:
 Contributing to or extending Issue Orchestrator:
 
 - [Testing Guide](development/TESTING.md)
-- [Debugging Events](development/DEBUGGING.md)
+- [Debugging Events](development/debugging.md)
 - [Troubleshooting](development/TROUBLESHOOTING.md)
 - [Review Workflow](development/REVIEW_WORKFLOW.md)
 - [GitHub Token Setup](development/GITHUB_TOKEN_SETUP.md) - Token resolution internals
 - [Caching & ETags](development/CACHING_ETAGS.md)
 - [Worktree Hook Setup](development/WORKTREE_HOOK_SETUP.md) - Dev environment hook enforcement
 - [Creating Guardrails](development/CREATE_GUARDRAILS.md) - Guide for setting up guardrails on any codebase
-- [Control Center Lifecycle Checklist](development/CONTROL_CENTER_LIFECYCLE_CHECKLIST.md)
+- [Control Center Lifecycle Checklist](development/control_center_lifecycle_checklist.md)
 
 ## For AI Agents
 
 If you're an AI agent working on this codebase:
 
 - Review [`AGENT_PROTOCOL.md`](../AGENT_PROTOCOL.md) for completion contracts
-- Check `CLAUDE.md` files in `src/` and `tests/` for context-specific guidance
+- Check `AGENTS.md` files in `src/` and `tests/` for context-specific guidance
 
 ## Architecture
 
@@ -52,6 +52,6 @@ System design and decision records:
 - [Goal Pilot Design](design/goal-pilot.md) - Goal Pilot architecture and design
 - [Blocked Issues UX Ideas](design/blocked-issues-ux-ideas.md) - UX improvement brainstorm
 
-## Planning
+## Archive
 
-- [Abstraction Improvements](planning/abstraction-improvements.md) - Proposed refactorings
+- [Archive Index](archive/README.md) - Historical planning notes and incident playbooks

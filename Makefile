@@ -189,6 +189,7 @@ lint-arch:
 	$(LINT_IMPORTS)
 	$(PYTHON) tools/check_arch_guardrails.py src
 	scripts/check_agents_md.sh
+	$(PYTHON) scripts/check_docs_md.py
 
 # Ruff guardrails - blocks on violations (C901 complexity, PLR0912 branches, SLF001 private access)
 lint-complexity:

@@ -84,7 +84,7 @@ See [Installation](docs/user/installation.md) and [Quickstart Guide](docs/user/q
 This project is under **active development**. Core orchestration, guardrails, and workflow enforcement are stable. APIs and internals may change as the system is refined.
 
 The repository is public to support discussion, review, and hiring conversations.
-For guidance on where to focus, see [REVIEWER_README.md](REVIEWER_README.md).
+For guidance on what is stable and where to read next, see [Evaluating the System](docs/journeys/evaluating.md).
 
 ## Documentation
 

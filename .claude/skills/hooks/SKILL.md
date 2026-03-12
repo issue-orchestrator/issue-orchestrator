@@ -18,7 +18,7 @@ This skill provides context for working with the multi-layer hook enforcement sy
 ## Key Resources
 
 Read these for full context:
-- [docs/architecture/hooks.md](docs/architecture/hooks.md) - Complete hook architecture documentation
+- [Hook Architecture](../../../docs/architecture/hooks.md) - Complete hook architecture documentation
 - `hooks/` - Local git hook templates (pre-commit, pre-push)
 - `.claude/hooks/` - AI meta-agent hooks (block-no-verify.sh)
 - `src/issue_orchestrator/infra/hooks.py` - Hook installation logic

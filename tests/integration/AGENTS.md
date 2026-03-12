@@ -4,7 +4,7 @@ Tests that verify wiring between components with real (not mocked) adapters.
 
 ## What These Test
 
-- Component wiring via bootstrap.py
+- Component wiring via `entrypoints/bootstrap.py`
 - Real adapter implementations (not mocks)
 - Plugin registration and hook dispatch
 - Claude CLI execution (if available)

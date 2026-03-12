@@ -353,7 +353,7 @@ goal_pilot_skills (
 
 2) **Ports + Adapters**
    - Add `GoalPilot` port and SQLite store.
-   - Wire in `bootstrap.py`.
+   - Wire in `entrypoints/bootstrap.py`.
 
 3) **Entry Points**
    - Add thin CLI adapter.

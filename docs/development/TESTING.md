@@ -4,7 +4,7 @@
 
 ```bash
 source .venv/bin/activate
-pytest tests/unit/              # Run unit tests (~4000 tests)
+pytest tests/unit/              # Run unit tests
 pytest tests/unit/ -v           # Verbose
 pytest tests/unit/ --cov        # With coverage (90%+)
 pytest tests/integration/       # Integration tests (requires Claude CLI)
@@ -107,7 +107,7 @@ def sample_issues():
 ```python
 def test_cmd_start(self):
     with patch('issue_orchestrator.config.Config.find_and_load') as mock_find:
-        with patch('issue_orchestrator.bootstrap.build_orchestrator') as mock_build:
+        with patch('issue_orchestrator.entrypoints.bootstrap.build_orchestrator') as mock_build:
             mock_config = Mock()
             mock_config.validate.return_value = []  # Pass validation
             mock_find.return_value = mock_config

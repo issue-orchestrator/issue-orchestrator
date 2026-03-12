@@ -18,7 +18,7 @@ This skill provides context for the multi-stage review pipeline.
 ## Key Resources
 
 Read this file for context:
-- [docs/development/REVIEW_WORKFLOW.md](docs/development/REVIEW_WORKFLOW.md) - Full workflow documentation
+- [Review Workflow](../../../docs/development/REVIEW_WORKFLOW.md) - Full workflow documentation
 
 ## Review Checklist: Cross-Cutting Policy
 
@@ -93,18 +93,17 @@ Session FAILED/BLOCKED/TIMEOUT
   - Helps identify patterns in failures
 ```
 
-## Key Methods (orchestrator.py)
+## Key Runtime Touchpoints
 
 | Method | Purpose |
 |--------|---------|
-| `queue_code_review()` | Queue PR for review |
 | `launch_review_session()` | Launch review agent |
-| `process_pending_reviews()` | Process queue each loop |
 | `scan_needs_rework_prs()` | Find PRs needing rework |
 | `launch_rework_session()` | Re-launch work agent |
-| `check_triage_review_trigger()` | Check batch threshold |
 | `_queue_triage_failure_review()` | Queue triage to investigate failures |
-| `process_pending_triage_reviews()` | Process triage queue |
+| `control/github_workflow.py` | Review/rework discovery and queueing logic |
+| `control/session_launcher.py` | Review and rework session launch paths |
+| `infra/orchestrator.py` | Runtime facade that delegates to the review workflow helpers |
 
 ## Configuration
 

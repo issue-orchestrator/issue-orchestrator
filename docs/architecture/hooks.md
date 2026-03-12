@@ -6,7 +6,7 @@ This document describes the multi-layer hook system that ensures agents cannot b
 
 ## Why Hooks Matter
 
-Policy documents (CLAUDE.md, prompts) are suggestions. Agents can forget, ignore, or creatively work around them. Hooks are **enforcement** - technical barriers that block unsafe actions before they execute.
+Policy documents (`AGENTS.md`, prompts, checklists) are suggestions. Agents can forget, ignore, or creatively work around them. Hooks are **enforcement** - technical barriers that block unsafe actions before they execute.
 
 Without hooks, agents will find ways around conventions and the system breaks.
 
@@ -71,7 +71,7 @@ These must be set up in the target project. The orchestrator helps install them 
 | beforeShellExecution (Cursor) | Cursor | `.cursor/hooks.json` | Blocks `git push --no-verify` at AI level | **YES** |
 | Pre-push | Git | `.githooks/pre-push` | Runs project tests/linters before push | **YES** |
 | Execpolicy rules (Codex) | Codex CLI | `.codex/rules/orchestrator.rules` | Blocks dangerous commands outside sandbox | **YES** |
-| CLAUDE.md | Policy | `CLAUDE.md` | Documents prohibited actions | Advisory |
+| AGENTS.md / CLAUDE.md | Policy | `AGENTS.md` (`CLAUDE.md` symlink for compatibility) | Documents prohibited actions | Advisory |
 
 ## AI Agent Support Matrix
 

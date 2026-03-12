@@ -46,7 +46,7 @@ For UI-facing changes, follow `.claude/skills/frontend-design/SKILL.md`; task is
 
 1. **Hexagonal (Ports & Adapters)** - Core defines Protocol interfaces (ports), adapters implement them. External systems are abstracted behind ports.
 
-2. **Dependency Injection** - Orchestrator receives dependencies via constructor, not globals. `bootstrap.py` is the composition root that wires everything.
+2. **Dependency Injection** - Orchestrator receives dependencies via constructor, not globals. `entrypoints/bootstrap.py` is the composition root that wires everything.
 
 3. **Layered Separation**:
    - **Observation** (`observation/`) - Gathers facts, no decisions
@@ -71,8 +71,8 @@ These are the foundational ports. See `ports/` for the full set (~26 protocols i
 ## Composition Root
 
 ```python
-# bootstrap.py - the ONLY place that wires dependencies
-from .bootstrap import build_orchestrator
+# entrypoints/bootstrap.py - the ONLY place that wires dependencies
+from .entrypoints.bootstrap import build_orchestrator
 
 orchestrator = build_orchestrator(config)  # Production
 orchestrator = build_orchestrator_for_testing(config, events=mock, runner=mock)  # Tests
@@ -82,14 +82,15 @@ orchestrator = build_orchestrator_for_testing(config, events=mock, runner=mock) 
 
 | File | Purpose |
 |------|---------|
-| `bootstrap.py` | Composition root - wires all dependencies |
-| `orchestrator.py` | Main loop, session lifecycle, delegates to ports |
-| `cli.py` | CLI commands, calls `build_orchestrator()` |
-| `agent_done.py` | Shared completion core (used by `coding-done` and `reviewer-done`) |
-| `coding_done.py` | `coding-done` CLI - coding/rework agent completion |
-| `reviewer_done.py` | `reviewer-done` CLI - review agent completion |
-| `ports/` | Protocol definitions (EventSink, SessionRunner, etc.) |
-| `execution/` | Adapters (GitHub, terminal plugins, stores) |
+| `src/issue_orchestrator/entrypoints/bootstrap.py` | Composition root - wires all dependencies |
+| `src/issue_orchestrator/infra/orchestrator.py` | Main facade, session lifecycle, delegates to control/services |
+| `src/issue_orchestrator/entrypoints/cli.py` | CLI commands, calls `build_orchestrator()` |
+| `src/issue_orchestrator/entrypoints/cli_tools/agent_done.py` | Shared completion core (used by `coding-done` and `reviewer-done`) |
+| `src/issue_orchestrator/entrypoints/cli_tools/coding_done.py` | `coding-done` CLI - coding/rework agent completion |
+| `src/issue_orchestrator/entrypoints/cli_tools/reviewer_done.py` | `reviewer-done` CLI - review agent completion |
+| `src/issue_orchestrator/ports/` | Protocol definitions (EventSink, SessionRunner, etc.) |
+| `src/issue_orchestrator/adapters/` | Concrete external-system adapters |
+| `src/issue_orchestrator/execution/` | Runtime services, provider factories, and orchestration support code |
 
 ## Completion Commands
 
@@ -126,12 +127,12 @@ Skills in `.claude/skills/` are automatically invoked when working on relevant a
 | `review-workflow` | Code review pipeline, triage, rework |
 | `schema-updates` | Updating UI contracts, SSE payloads, or config schemas |
 
-## Directory Context (CLAUDE.md)
+## Directory Context (AGENTS.md)
 
-Test directories have local `CLAUDE.md` files auto-read when working there:
-- `tests/unit/CLAUDE.md` - Unit test patterns, fixtures, mocking
-- `tests/e2e/CLAUDE.md` - E2E setup, gh auth, test-data isolation
-- `tests/integration/CLAUDE.md` - Integration test patterns
+Test and source directories have local `AGENTS.md` files auto-read when working there. `CLAUDE.md` remains as a compatibility symlink to the same content.
+- `tests/unit/AGENTS.md` - Unit test patterns, fixtures, mocking
+- `tests/e2e/AGENTS.md` - E2E setup, gh auth, test-data isolation
+- `tests/integration/AGENTS.md` - Integration test patterns
 
 ## Quick Reference
 
@@ -203,7 +204,7 @@ def get_session(self, id: str) -> Session:
 
 ## Conventions
 
-- Ports in `ports/`, adapters in `execution/`
+- Ports in `ports/`, concrete integrations in `adapters/`, runtime composition/support in `execution/`
 - Tests mock at port boundaries, not internal functions
 - Events via `self.events.publish(TraceEvent(...))`, never direct pluggy
 - Session ops via `self.runner.*`, never direct plugin manager

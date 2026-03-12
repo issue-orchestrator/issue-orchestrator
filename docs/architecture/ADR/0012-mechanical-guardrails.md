@@ -6,12 +6,12 @@
 ## Context
 
 AI agents are untrusted. They can and will:
-- Forget instructions in CLAUDE.md
+- Forget instructions in `AGENTS.md` / `CLAUDE.md`
 - Creatively work around conventions
 - Use `--no-verify` to skip hooks
 - Attempt direct merges or credential access
 
-Policy documents (CLAUDE.md, prompts) are suggestions. Relying on "agent good behavior" is insufficient for safety-critical invariants.
+Policy documents (`AGENTS.md`, `CLAUDE.md`, prompts) are suggestions. Relying on "agent good behavior" is insufficient for safety-critical invariants.
 
 ## Decision
 

@@ -1,180 +1,120 @@
 # Debugging the Issue Orchestrator
 
-## Event System Architecture (DON'T FORGET THIS)
+This page is the quick reference for tracing the current runtime. For issue-level failure analysis, prefer the `session-debugging` skill or `issue-orchestrator trace`.
 
-Events flow through pluggy hooks:
+## Event Flow
+
+Events still flow through the `EventSink` and pluggy-backed adapters:
+
+```text
+TraceEvent(EventName.X, data)
+  -> PluggyEventSink.publish()
+  -> registered plugins
+     -> lifecycle logging
+     -> SSE broadcast
+     -> any test hooks
 ```
-TraceEvent(name, data) --> PluggyEventSink --> on_trace_event hook
-                                                    |
-                    +-------------------------------+-------------------------------+
-                    |                               |                               |
-             LifecycleIPCPlugin           LifecycleSSEPlugin           LifecycleLoggingPlugin
-             (UNUSED - unit tests only)            |                               |
-                                                   v                               v
-                                           Web UI /api/events              Python logger
-                                                                     (~/.issue-orchestrator.log)
-```
 
-**IMPORTANT**: LifecycleIPCPlugin is registered but nothing connects to it.
-The web UI uses SSE (LifecycleSSEPlugin), not IPC.
+Key files:
+- `src/issue_orchestrator/events/catalog.py`
+- `src/issue_orchestrator/ports/event_sink.py`
+- `src/issue_orchestrator/execution/event_sink_adapter.py`
+- `src/issue_orchestrator/execution/lifecycle_logging.py`
+- `src/issue_orchestrator/entrypoints/bootstrap.py`
 
-**Key files:**
-- `bootstrap.py` - Registers LifecycleLoggingPlugin (line ~100)
-- `execution/lifecycle_logging.py` - Logs events to `issue_orchestrator.events` logger
-- `execution/event_sink_adapter.py` - PluggyEventSink.publish() broadcasts events
-- `ports/event_sink.py` - TraceEvent dataclass
+Use `EventName` constants, never raw strings:
 
-**How to emit events:**
 ```python
-from ..events import EventName
-from ..ports import TraceEvent
+from issue_orchestrator.events import EventName
+from issue_orchestrator.ports import TraceEvent
 
 self.events.publish(TraceEvent(EventName.SESSION_STARTED, {"issue_number": 123}))
 ```
 
-All events must use `EventName` constants from `events/catalog.py`. Raw strings are not accepted.
+## First Places To Look
 
-**How events appear in logs:**
-```
-[EVENT] session.started: issue_number=123, session_id=issue-123
-```
+### 1. Trace output
 
-**Enable stderr logging for e2e tests:**
 ```bash
-export ORCHESTRATOR_LOG_TO_STDERR=1
+issue-orchestrator trace <ISSUE_NUMBER>
 ```
-This is already set in `conftest.py` line 522.
 
-## Quick Reference: Where to Look
+Start here when one issue failed or stalled. It gives you the classified reason (`no_completion_record`, `validation_failed`, `push_failed`, `timeout`, `blocked`) before you start digging through files.
 
-### 0. Start Control Center (dev helper)
+### 2. Orchestrator log
+
 ```bash
+LOG=".issue-orchestrator/state/logs/orchestrator.log"
+tail -f "$LOG"
+grep "\[EVENT\]" "$LOG" | tail -100
+grep -E "\[EVENT\]|\[STATE_MACHINE\]|Launched|Queued|review" "$LOG" | tail -100
+```
+
+The runtime log now lives under repo state, not a fixed home-directory path.
+
+### 3. Session run directories
+
+```bash
+WORKTREE="/path/to/worktree"
+ls -la "$WORKTREE/.issue-orchestrator/sessions"
+RUN_DIR=$(ls -td "$WORKTREE/.issue-orchestrator/sessions/"*__* | head -1)
+cat "$RUN_DIR/manifest.json" | jq
+tail -100 "$RUN_DIR/session.log"
+```
+
+Current sessions are recorded in per-run directories such as:
+
+```text
+<worktree>/.issue-orchestrator/sessions/<run_id>__<session_name>/
+```
+
+Useful files in a run directory:
+- `manifest.json`
+- `session.log`
+- `orchestrator-tail.log`
+- `claude-session.jsonl`
+- `validation-record.json`
+- `validation-stdout.log`
+- `validation-stderr.log`
+
+## Flow Checklist
+
+When tracing a normal issue -> PR -> review cycle, verify these stages:
+
+1. Issue is eligible and claimed.
+2. Session launches and writes a run directory.
+3. Agent calls `coding-done`.
+4. Validation artifacts are written.
+5. Orchestrator processes completion and creates or updates the PR.
+6. Review session launches.
+7. Reviewer calls `reviewer-done`.
+8. Final labels and review state match the verdict.
+
+## Useful Commands
+
+```bash
+# Start the local control center helper
 scripts/start_control_center.sh
-```
-Optional port override:
-```bash
-CC_PORT=19080 scripts/start_control_center.sh
-```
 
-### 1. Orchestrator Log
-```bash
-tail -f ~/.issue-orchestrator.log
-```
-- Shows loop iterations, session starts/stops
-- **Problem**: Currently only shows `[LOOP] Iteration N - active=X, pending_reviews=Y`
-- **Need**: More detailed event logging
+# Follow orchestrator events
+LOG=".issue-orchestrator/state/logs/orchestrator.log"
+grep "\[EVENT\]" "$LOG" | tail -100
 
-### 2. Session Worktrees
-```bash
-ls -la /tmp/e2e-worktrees/
-```
-- Named `issue-orchestrator-{issue_number}` for issue sessions
-- Named `review-{pr_number}` for review sessions (TODO: verify naming)
+# Inspect the latest run for an issue session
+WORKTREE="/path/to/worktree"
+ls -td "$WORKTREE/.issue-orchestrator/sessions/"*__issue-* | head -1
 
-### 3. Completion Records
-```bash
-cat /tmp/e2e-worktrees/issue-orchestrator-{N}/.issue-orchestrator/completion.json
-```
-- Shows outcome: `completed`, `review_approved`, `changes_requested`, etc.
-- Shows `requested_actions`: labels to add/remove, comments to post
+# Find validation failures in the latest run
+RUN_DIR=$(ls -td "$WORKTREE/.issue-orchestrator/sessions/"*__* | head -1)
+cat "$RUN_DIR/validation-errors.txt"
 
-### 4. Session Logs (Claude CLI output)
-```bash
-cat /tmp/e2e-worktrees/issue-orchestrator-{N}/.issue-orchestrator/sessions/issue-{N}/session.log
-```
-- Raw terminal output from Claude session
-- Shows what commands were run
-- Shows any errors
-
-## Understanding the Flow
-
-### Issue → PR → Review Flow
-1. Issue created with `agent:X` label
-2. Orchestrator creates worktree, launches Claude with agent prompt
-3. Agent runs `coding-done completed` → creates completion.json
-4. Orchestrator processes completion: pushes branch, creates PR
-5. PR gets `needs-code-review` label
-6. Orchestrator launches review session with `code_review_agent`
-7. Review agent runs `reviewer-done approved` or `reviewer-done changes_requested`
-8. Orchestrator processes: adds `code-reviewed` or `needs-rework`, removes `needs-code-review`
-
-### Key Config Settings
-```yaml
-# .issue-orchestrator/config/default.yaml
-agents:
-  "agent:e2e-test":
-    prompt: "tests/e2e/fixtures/prompts/e2e-test.md"  # Issue work prompt
-  "agent:e2e-test-approves":
-    prompt: "tests/e2e/fixtures/prompts/e2e-test-approves.md"  # Review prompt
-
-review:
-  code_review_agent: "agent:e2e-test-approves"  # Which agent does reviews
-  code_review_label: "needs-code-review"
-  code_reviewed_label: "code-reviewed"
-```
-
-## Common Issues
-
-### Issue: Review not running
-**Symptoms**: PR has `needs-code-review` but never gets `code-reviewed`
-**Check**:
-1. Is `code_review_agent` configured in yaml?
-2. Is the review agent defined in `agents:` section?
-3. Check orchestrator log for review session start
-
-### Issue: Wrong labels applied
-**Symptoms**: Labels applied to wrong issue/PR
-**Check**:
-1. Look at completion.json - what's the `label_target`?
-2. For reviews, labels should target PR number, not issue number
-
-### Issue: Session stuck
-**Symptoms**: Session doesn't complete
-**Check**:
-1. `tmux list-sessions` - is session still running?
-2. Check session.log for errors
-3. Check if coding-done/reviewer-done was called
-
-## Debugging Commands
-
-```bash
-# Find recent completions
-find /tmp/e2e-worktrees -name "completion.json" -mmin -60
-
-# Check GitHub for PR labels
-gh pr view {PR_NUMBER} --json labels
-
-# Check issue state
-gh issue view {ISSUE_NUMBER} --json labels,state
-
-# See ONLY events (filter out loop spam)
-grep "\[EVENT\]" ~/.issue-orchestrator.log | tail -100
-
-# See events + key transitions
-grep -E "\[EVENT\]|\[STATE_MACHINE\]|Launched|Queued|review" ~/.issue-orchestrator.log | tail -100
-
-# Find what orchestrator is doing (exclude loop iterations)
-grep -v "LOOP.*Iteration" ~/.issue-orchestrator.log | tail -100
-
-# Kill stuck orchestrators
-pkill -f "issue-orchestrator.*start"
-
-# Run single e2e test
+# Run one e2e test locally
 make test-e2e-one TEST=test_code_review_produces_review_comment
 ```
 
-## Events That Should Be Emitted
+## Common Failure Angles
 
-Check these events are being logged during a test run:
-
-| Event | When | Key Data |
-|-------|------|----------|
-| `session.started` | Issue session launched | issue_number, session_id |
-| `session.completed` | Session finished | issue_number, outcome, actions_taken |
-| `pr.created` | PR created | issue_number, pr_url |
-| `review.queued` | PR queued for review | pr_number, issue_number |
-| `review.started` | Review session launched | pr_number |
-| `review.approved` | Review approved | pr_number |
-| `review.changes_requested` | Review rejected | pr_number |
-
-If you don't see these events, the orchestrator isn't reaching those code paths.
+- Review never starts: verify review config, labels, and review queue events.
+- Session exits without completion: inspect `claude-session.jsonl` for missing `coding-done` / `reviewer-done`.
+- Validation failed: inspect `validation-record.json` and the stderr/stdout logs in the run directory.
+- Labels look wrong: inspect the completion record and downstream action application, not just the UI.
