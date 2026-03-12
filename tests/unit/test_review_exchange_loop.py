@@ -809,6 +809,31 @@ def test_review_exchange_validation_failure_includes_stderr(tmp_path: Path, monk
     assert "unused import" in error
 
 
+def test_review_exchange_validation_malformed_stderr_path_no_crash(tmp_path: Path) -> None:
+    """Malformed stderr_path (e.g. directory) must not crash — returns error string."""
+    from issue_orchestrator.control.review_exchange_loop import _validate_coder_protocol
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "completion-coder.json").write_text("{}", encoding="utf-8")
+    # Point stderr_path at a directory instead of a file
+    bad_dir = run_dir / "not-a-file"
+    bad_dir.mkdir()
+    (run_dir / "validation-record.json").write_text(
+        json.dumps({
+            "passed": False,
+            "exit_code": 1,
+            "stderr_path": str(bad_dir),
+        }),
+        encoding="utf-8",
+    )
+
+    # Must return error string, not raise
+    error = _validate_coder_protocol(run_dir, require_validation=True)
+    assert error is not None
+    assert "validation failed" in error
+
+
 def test_review_exchange_validation_passed_returns_none(tmp_path: Path) -> None:
     """When validation passes, _validate_coder_protocol should return None."""
     from issue_orchestrator.control.review_exchange_loop import _validate_coder_protocol

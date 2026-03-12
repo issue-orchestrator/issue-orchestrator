@@ -1175,8 +1175,11 @@ def _check_validation_record(run_dir: Path) -> str | None:
         stderr_path = vdata.get("stderr_path")
         if stderr_path:
             sp = Path(stderr_path) if Path(stderr_path).is_absolute() else run_dir / stderr_path
-            if sp.exists():
-                msg += f"\nValidation output:\n{sp.read_text(encoding='utf-8', errors='replace')[:2000]}"
+            try:
+                if sp.is_file():
+                    msg += f"\nValidation output:\n{sp.read_text(encoding='utf-8', errors='replace')[:2000]}"
+            except OSError:
+                pass
         return msg
     return None
 
