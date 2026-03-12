@@ -1298,17 +1298,16 @@ def build_dashboard_view_model(
 
     if orchestrator and hasattr(orchestrator, "deps") and hasattr(orchestrator.deps, "provider_resilience"):
         _now = datetime.now(timezone.utc)
-        for _cs in orchestrator.deps.provider_resilience.store.list_all():
-            if _cs.open_until and _cs.open_until > _now:
-                _cooldown = max(0, int((_cs.open_until - _now).total_seconds()))
-                open_provider_circuits.append({
-                    "provider": _cs.provider,
-                    "open_until": _cs.open_until.isoformat(),
-                    "cooldown_remaining_seconds": _cooldown,
-                    "consecutive_outages": _cs.consecutive_outages,
-                    "last_error_summary": _cs.last_error_summary or "",
-                })
-                open_provider_names.add(_cs.provider)
+        for _cs in orchestrator.deps.provider_resilience.list_open(_now):
+            _cooldown = max(0, int((_cs.open_until - _now).total_seconds()))  # type: ignore[operator]
+            open_provider_circuits.append({
+                "provider": _cs.provider,
+                "open_until": _cs.open_until.isoformat(),  # type: ignore[union-attr]
+                "cooldown_remaining_seconds": _cooldown,
+                "consecutive_outages": _cs.consecutive_outages,
+                "last_error_summary": _cs.last_error_summary or "",
+            })
+            open_provider_names.add(_cs.provider)
 
     if state and config:
         lm = LabelManager(config)

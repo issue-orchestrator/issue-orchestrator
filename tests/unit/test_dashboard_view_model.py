@@ -687,13 +687,13 @@ def test_view_model_matches_public_contract():
 
 
 @dataclass
-class _ProviderCircuitStoreFake:
+class _ProviderResilienceFake:
     circuits: list
 
-
-@dataclass
-class _ProviderResilienceFake:
-    store: _ProviderCircuitStoreFake
+    def list_open(self, now: object = None) -> list:
+        from datetime import timezone
+        _now = now or datetime.now(timezone.utc)
+        return [c for c in self.circuits if c.open_until is not None and c.open_until > _now]
 
 
 @dataclass
@@ -734,10 +734,7 @@ def test_open_provider_circuits_appear_in_view_model():
     config.agents = {"agent:web": agent_config}
 
     circuit = _make_open_circuit("claude-code", cooldown_seconds=300)
-    store = _ProviderCircuitStoreFake(circuits=[circuit])
-    deps = _DepsFake(provider_resilience=_ProviderResilienceFake(store=store))
-    # Make store have list_all method
-    store.list_all = lambda: store.circuits  # type: ignore[attr-defined]
+    deps = _DepsFake(provider_resilience=_ProviderResilienceFake(circuits=[circuit]))
 
     state = OrchestratorState(startup_status="complete")
     orchestrator = _OrchestratorWithDeps(state=state, config=config, deps=deps)
@@ -769,9 +766,7 @@ def test_queued_issue_shows_provider_unavailable_wait_reason():
     queued_issue = Issue(number=7, title="Waiting on provider", labels=["agent:web"])
 
     circuit = _make_open_circuit("claude-code", cooldown_seconds=120)
-    store = _ProviderCircuitStoreFake(circuits=[circuit])
-    store.list_all = lambda: store.circuits  # type: ignore[attr-defined]
-    deps = _DepsFake(provider_resilience=_ProviderResilienceFake(store=store))
+    deps = _DepsFake(provider_resilience=_ProviderResilienceFake(circuits=[circuit]))
 
     state = OrchestratorState(
         startup_status="complete",
