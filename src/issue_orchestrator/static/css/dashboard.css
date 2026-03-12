@@ -98,6 +98,25 @@ body {
     font-weight: 600;
 }
 
+.provider-outage-banner {
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--status-paused-border);
+    background: var(--status-paused-bg);
+    color: var(--status-paused-text);
+    font-size: 13px;
+}
+
+.provider-outage-banner strong {
+    font-weight: 700;
+    margin-right: 4px;
+}
+
+.provider-outage-item {
+    font-weight: 600;
+}
+
 body.column-focus-mode {
     height: 100vh;
     overflow: hidden;

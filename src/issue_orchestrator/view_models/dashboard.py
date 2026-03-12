@@ -81,6 +81,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    open_provider_circuits: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -119,6 +120,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "open_provider_circuits": self.open_provider_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -180,6 +182,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "open_provider_circuits": self.open_provider_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -247,7 +250,10 @@ def _queue_wait_reason(
     issue_number: int,
     dep_problem: Any | None,
     queue_position: int,
+    open_provider: str | None = None,
 ) -> str:
+    if open_provider:
+        return f"Waiting: {open_provider} unavailable"
     if state.paused:
         return "Waiting: orchestrator paused"
 
@@ -491,6 +497,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
     pending_numbers: dict[str, set[int]],
     *,
     lm: LabelManager,
+    open_providers: set[str] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int, set[int]]:
     queue_items: list[dict[str, Any]] = []
     blocked_items: list[dict[str, Any]] = []
@@ -558,6 +565,15 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             queued_position += 1
         flow_steps = flow_steps_for(flow_stage)
         flow_stage_label_value = flow_stage_label(flow_steps, flow_stage)
+        issue_provider = (
+            (config.agents.get(issue.agent_type) or config.agents.get(f"agent:{agent_label}") if config and config.agents else None)
+        )
+        issue_provider_name = issue_provider.provider if issue_provider else None
+        open_provider = (
+            issue_provider_name
+            if issue_provider_name and open_providers and issue_provider_name in open_providers
+            else None
+        )
         queue_reason = (
             _queue_wait_reason(
                 state=state,
@@ -565,6 +581,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
                 issue_number=issue.number,
                 dep_problem=dep_problem,
                 queue_position=queued_position,
+                open_provider=open_provider,
             )
             if flow_stage == "queued"
             else None
@@ -1276,6 +1293,22 @@ def build_dashboard_view_model(
     seen_issues: set[int] = set()
 
     queue_total = 0
+    open_provider_circuits: list[dict[str, Any]] = []
+    open_provider_names: set[str] = set()
+
+    if orchestrator and hasattr(orchestrator, "deps") and hasattr(orchestrator.deps, "provider_resilience"):
+        _now = datetime.now(timezone.utc)
+        for _cs in orchestrator.deps.provider_resilience.store.list_all():
+            if _cs.open_until and _cs.open_until > _now:
+                _cooldown = max(0, int((_cs.open_until - _now).total_seconds()))
+                open_provider_circuits.append({
+                    "provider": _cs.provider,
+                    "open_until": _cs.open_until.isoformat(),
+                    "cooldown_remaining_seconds": _cooldown,
+                    "consecutive_outages": _cs.consecutive_outages,
+                    "last_error_summary": _cs.last_error_summary or "",
+                })
+                open_provider_names.add(_cs.provider)
 
     if state and config:
         lm = LabelManager(config)
@@ -1286,6 +1319,7 @@ def build_dashboard_view_model(
         active_items, seen_issues = _build_active_items(state, config, queue_page, seen_issues, lm=lm)
         queue_items, queue_blocked, queue_total, seen_issues = _build_queue_items(
             state, config, queue_page, seen_issues, pending_numbers, lm=lm,
+            open_providers=open_provider_names,
         )
         backlog_items = _build_backlog_items(state, config, lm=lm)
         blocked_items.extend(queue_blocked)
@@ -1470,4 +1504,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        open_provider_circuits=open_provider_circuits,
     )

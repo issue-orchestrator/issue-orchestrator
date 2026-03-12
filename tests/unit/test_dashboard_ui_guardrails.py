@@ -419,3 +419,17 @@ def test_expanded_column_state_handles_running_column() -> None:
     ).read_text(encoding="utf-8")
     assert "columnId === 'running'" in js
     assert "active_items" in js
+
+
+def test_provider_outage_banner_present_in_template() -> None:
+    """dashboard.html must render a provider outage banner from open_provider_circuits."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert "providerOutageBanner" in html
+    assert "open_provider_circuits" in html
+    assert "provider-outage-banner" in html
+
+
+def test_provider_outage_banner_css_defined() -> None:
+    """dashboard.css must define .provider-outage-banner style."""
+    css = _read(DASHBOARD_CSS)
+    assert ".provider-outage-banner" in css

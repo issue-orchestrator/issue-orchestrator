@@ -681,3 +681,130 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# --- Provider circuit breaker UI tests ---
+
+
+@dataclass
+class _ProviderCircuitStoreFake:
+    circuits: list
+
+
+@dataclass
+class _ProviderResilienceFake:
+    store: _ProviderCircuitStoreFake
+
+
+@dataclass
+class _DepsFake:
+    provider_resilience: _ProviderResilienceFake
+
+
+@dataclass
+class _OrchestratorWithDeps:
+    state: OrchestratorState
+    config: Config
+    deps: _DepsFake
+    shutdown_requested: bool = False
+
+
+def _make_open_circuit(provider: str, cooldown_seconds: int = 120) -> object:
+    from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
+    from datetime import timezone
+    now = datetime.now(timezone.utc)
+    return ProviderCircuitState(
+        provider=provider,
+        open_until=now + timedelta(seconds=cooldown_seconds),
+        consecutive_outages=1,
+        last_error_summary="timeout",
+        updated_at=now,
+    )
+
+
+def test_open_provider_circuits_appear_in_view_model():
+    config = _make_config()
+    agent_config = _make_agent_config()
+    agent_config = AgentConfig(
+        prompt_path=Path("/tmp/prompt.txt"),
+        model="sonnet",
+        timeout_minutes=45,
+        provider="claude-code",
+    )
+    config.agents = {"agent:web": agent_config}
+
+    circuit = _make_open_circuit("claude-code", cooldown_seconds=300)
+    store = _ProviderCircuitStoreFake(circuits=[circuit])
+    deps = _DepsFake(provider_resilience=_ProviderResilienceFake(store=store))
+    # Make store have list_all method
+    store.list_all = lambda: store.circuits  # type: ignore[attr-defined]
+
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorWithDeps(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.open_provider_circuits) == 1
+    assert view_model.open_provider_circuits[0]["provider"] == "claude-code"
+    assert view_model.open_provider_circuits[0]["cooldown_remaining_seconds"] >= 1
+    assert view_model.open_provider_circuits[0]["last_error_summary"] == "timeout"
+
+
+def test_queued_issue_shows_provider_unavailable_wait_reason():
+    config = _make_config()
+    agent_config = AgentConfig(
+        prompt_path=Path("/tmp/prompt.txt"),
+        model="sonnet",
+        timeout_minutes=45,
+        provider="claude-code",
+    )
+    config.agents = {"agent:web": agent_config}
+
+    queued_issue = Issue(number=7, title="Waiting on provider", labels=["agent:web"])
+
+    circuit = _make_open_circuit("claude-code", cooldown_seconds=120)
+    store = _ProviderCircuitStoreFake(circuits=[circuit])
+    store.list_all = lambda: store.circuits  # type: ignore[attr-defined]
+    deps = _DepsFake(provider_resilience=_ProviderResilienceFake(store=store))
+
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[queued_issue],
+    )
+    orchestrator = _OrchestratorWithDeps(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queue_items = view_model.queue_items
+    assert any(
+        item["queue_wait_reason"] and "claude-code unavailable" in item["queue_wait_reason"]
+        for item in queue_items
+    ), f"Expected provider unavailable in queue_wait_reason, got: {[i.get('queue_wait_reason') for i in queue_items]}"
+
+
+def test_no_open_circuits_means_empty_provider_list():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.open_provider_circuits == []

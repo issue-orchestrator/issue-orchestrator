@@ -66,6 +66,7 @@ class DashboardViewModelPayload(BaseModel):
     github_repo: str
     history_items: list[IssueItemPayload]
     issues: list[IssueItemPayload]
+    open_provider_circuits: list[dict[str, Any]]
     paused: bool
     queue_count: int
     queue_items: list[IssueItemPayload]
