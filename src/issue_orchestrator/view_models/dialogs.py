@@ -48,6 +48,14 @@ class SessionDiagnosticsContext:
     diagnostic_path: str
     validation_path: str
     validation_output_path: str
+    branch: str
+    task: str
+    claude_args: str
+    claude_prompt_mode: str
+    provider: str
+    model: str
+    permission_mode: str
+    extra_provider_args: str
 
     @classmethod
     def from_payload(
@@ -56,6 +64,7 @@ class SessionDiagnosticsContext:
         manifest_payload: dict[str, Any],
     ) -> "SessionDiagnosticsContext":
         manifest = manifest_payload.get("manifest") or {}
+        session_identity = manifest_payload.get("session_identity") or {}
         worktree = str(manifest.get("worktree") or "")
         session_name = str(manifest.get("session_name") or manifest_payload.get("session_name") or "")
         diagnostic_path = _join_worktree_path(worktree, manifest.get("diagnostic_path"))
@@ -83,6 +92,14 @@ class SessionDiagnosticsContext:
             diagnostic_path=diagnostic_path,
             validation_path=validation_path,
             validation_output_path=validation_output_path,
+            branch=str(session_identity.get("branch") or ""),
+            task=str(session_identity.get("task") or ""),
+            claude_args=str(session_identity.get("claude_args") or ""),
+            claude_prompt_mode=str(session_identity.get("claude_prompt_mode") or ""),
+            provider=str(session_identity.get("provider") or ""),
+            model=str(session_identity.get("model") or ""),
+            permission_mode=str(session_identity.get("permission_mode") or ""),
+            extra_provider_args=_format_extra_provider_args(session_identity.get("extra_provider_args")),
         )
 
 
@@ -111,6 +128,14 @@ def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[Dial
         DialogRow("Run ID", ctx.run_id or "-"),
         DialogRow("Backend", ctx.backend or "-"),
         DialogRow("Agent", ctx.agent_label or "-"),
+        DialogRow("Task", ctx.task or "-"),
+        DialogRow("Branch", ctx.branch or "-"),
+        DialogRow("Provider", ctx.provider or "-"),
+        DialogRow("Model", ctx.model or "-"),
+        DialogRow("Permission Mode", ctx.permission_mode or "-"),
+        DialogRow("Provider Args", ctx.extra_provider_args or "-"),
+        DialogRow("Launch Args", ctx.claude_args or "-"),
+        DialogRow("Prompt Mode", ctx.claude_prompt_mode or "-"),
         DialogRow("Claude Session", ctx.claude_session_id or "-"),
         DialogRow("Retention Tier", ctx.retention_tier or "-"),
         DialogRow("Retention Expires", ctx.retention_expires_at or "-"),
@@ -187,6 +212,13 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
             "path": ctx.validation_output_path,
         })
     return actions
+
+
+def _format_extra_provider_args(raw: Any) -> str:
+    if not isinstance(raw, dict) or not raw:
+        return ""
+    parts = [f"{key}={value}" for key, value in sorted(raw.items())]
+    return ", ".join(parts)
 
 
 def build_info_dialog(info: dict[str, Any]) -> dict[str, Any]:

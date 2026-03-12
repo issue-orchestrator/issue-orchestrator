@@ -1097,7 +1097,7 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
     accessor = ManifestAccessor(run_identity)
     stream_observation = _build_ui_log_stream_observation(run_identity.run_dir, resolved_log_path=None)
     try:
-        artifact = accessor.get_agent_log(allow_empty=True)
+        artifact = accessor.get_ui_log(allow_empty=True)
     except ArtifactNotFoundError as e:
         return JSONResponse({
             "error": "No agent UI log found",
@@ -1119,7 +1119,7 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
         all_lines = stream_json_lines if stream_json_lines is not None else raw_lines
 
         # The file is already cleaned at write-time by CleaningLogWriter
-        # (ANSI stripped, spinners filtered, deduped).  Just filter blanks.
+        # (ANSI stripped, spinners filtered, deduped). Just filter blanks.
         all_lines = [line for line in all_lines if line.strip()]
         total_lines = len(all_lines)
 
@@ -1215,6 +1215,12 @@ def _manifest_response(
         "session_name": session_name,
         "manifest": manifest.to_dict(),
     }
+    session_identity_path = run_dir / "session-identity.json"
+    if session_identity_path.exists():
+        try:
+            result["session_identity"] = json.loads(session_identity_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.debug("Failed to read session identity: %s", session_identity_path, exc_info=True)
 
     analysis = load_analysis(run_dir)
     if analysis:
@@ -2022,7 +2028,7 @@ def _validated_run_scoped_artifact(
         )
     accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(event_run_dir)))
     if action_type == "open_agent_log":
-        artifact = accessor.get_agent_log(allow_empty=True)
+        artifact = accessor.get_ui_log(allow_empty=True)
         if not _agent_log_is_usable(artifact.path, event_name=event_name):
             raise RuntimeError(
                 f"run-scoped agent log is empty/unusable: issue={issue_number} event={event_name} run_dir={event_run_dir}"

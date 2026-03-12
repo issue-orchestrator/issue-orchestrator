@@ -368,8 +368,8 @@ def test_session_diagnostics_actions_use_primary_plus_more_menu() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderGroupedDialogActions")
     assert "primaryTypes" in body
-    assert "More ▾" in body
-    assert "diag-more-menu" in body
+    assert "Artifacts & Logs ▾" in body
+    assert "diag-more-disclosure" in body
     assert "Issue-Scoped Orchestrator Log" in js
     assert "openSessionManifest(action.issue_number, action.run_dir || null)" in js
 

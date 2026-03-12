@@ -130,6 +130,9 @@ class TestIsSpinnerFragment:
         assert is_spinner_fragment("thinking)") is True
         assert is_spinner_fragment("ought for 2s)") is True
         assert is_spinner_fragment("thought for 5s)") is True
+        assert is_spinner_fragment("Transfiguring…") is True
+        assert is_spinner_fragment("Recentactivity") is True
+        assert is_spinner_fragment("What'snew") is True
 
     def test_keeps_meaningful_content(self):
         assert is_spinner_fragment("⏺Read(.issue-orchestrator/prompts/simple-fix.md)") is False

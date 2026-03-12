@@ -645,6 +645,7 @@ async function openAgentLog(issueNumber, logLabel = 'UI Session', runDir = null,
         reportActionError('Session log requires run context. Open from a timeline entry.', errorSurface);
         return;
     }
+    modalOverlay.querySelector('.modal').classList.remove('diagnostics-modal');
     clearDiagnosticsActionMessage();
     logIssue = issueNumber;
     logRunDir = runDir;
@@ -742,9 +743,11 @@ async function openSessionManifest(issueNumber, runDir = null) {
     const suffix = params.toString() ? `?${params.toString()}` : '';
     const res = await fetch(`/api/dialog/session-diagnostics/${issueNumber}${suffix}`);
     const data = await res.json();
+    const modalEl = modalOverlay.querySelector('.modal');
     if (data.error) {
         document.getElementById('modalTitle').textContent = `Session Diagnostics #${issueNumber}`;
         document.getElementById('modalBody').innerHTML = `<div class="diag-action-message" style="display:block;">${escapeHtml(data.error)}</div>`;
+        modalEl.classList.add('diagnostics-modal');
         document.getElementById('modalOverlay').classList.add('visible');
         return;
     }
@@ -775,8 +778,22 @@ async function openSessionManifest(issueNumber, runDir = null) {
         'retention expires',
         'retention pinned',
     ]);
+    const launchKeys = new Set([
+        'task',
+        'branch',
+        'provider',
+        'model',
+        'permission mode',
+        'provider args',
+        'launch args',
+        'prompt mode',
+    ]);
     const overviewRows = rows.filter(row => overviewKeys.has(String(row.label || '').toLowerCase()));
-    const pathRows = rows.filter(row => !overviewKeys.has(String(row.label || '').toLowerCase()));
+    const launchRows = rows.filter(row => launchKeys.has(String(row.label || '').toLowerCase()));
+    const pathRows = rows.filter(row => {
+        const key = String(row.label || '').toLowerCase();
+        return !overviewKeys.has(key) && !launchKeys.has(key);
+    });
 
     const hasActions = actions.length > 0;
 
@@ -791,6 +808,10 @@ async function openSessionManifest(issueNumber, runDir = null) {
     html += '<section class="diag-section">';
     html += '<div class="diag-section-title">Session Overview</div>';
     html += renderDialogRows(overviewRows);
+    html += '</section>';
+    html += '<section class="diag-section">';
+    html += '<div class="diag-section-title">Launch</div>';
+    html += renderDialogRows(launchRows, { monospace: true });
     html += '</section>';
     html += '<section class="diag-section">';
     html += '<div class="diag-section-title">Paths</div>';
@@ -809,6 +830,7 @@ async function openSessionManifest(issueNumber, runDir = null) {
     html += '<div class="diag-footnote">Tip: this view is for deep troubleshooting and artifact access.</div>';
     html += '</div>';
 
+    modalEl.classList.add('diagnostics-modal');
     openModal(data.title || `Session Diagnostics #${issueNumber}`, html);
 }
 
@@ -868,13 +890,13 @@ function renderGroupedDialogActions(actions) {
         html += renderDialogActionWithLabel(item.action, item.label);
     }
     if (secondary.length > 0) {
-        html += '<div class="diag-more-wrap">';
-        html += '<button class="btn-secondary diag-more-btn" type="button" onclick="toggleDiagMoreMenu(event, this)">More ▾</button>';
-        html += '<div class="diag-more-menu">';
+        html += '<details class="diag-more-disclosure">';
+        html += '<summary class="btn-secondary diag-more-btn">Artifacts & Logs ▾</summary>';
+        html += '<div class="diag-more-list">';
         for (const item of secondary) {
             html += renderDialogActionMenuItem(item.action, item.label);
         }
-        html += '</div></div>';
+        html += '</div></details>';
     }
     html += '</div></section>';
     return html;
@@ -933,27 +955,6 @@ function _renderDialogActionButton(action, labelOverride, cssClass) {
         return `<button class="${cssClass}" onclick="openSessionManifest(${action.issue_number}${runDirArg})">${label}</button>`;
     }
     return '';
-}
-
-function toggleDiagMoreMenu(event, button) {
-    event.stopPropagation();
-    const wrap = button.closest('.diag-more-wrap');
-    if (!wrap) return;
-    const menu = wrap.querySelector('.diag-more-menu');
-    if (!menu) return;
-
-    const currentlyVisible = menu.classList.contains('visible');
-    closeDiagMoreMenus();
-    if (!currentlyVisible) {
-        menu.classList.add('visible');
-        document.addEventListener('click', closeDiagMoreMenus, { once: true });
-    }
-}
-
-function closeDiagMoreMenus() {
-    document.querySelectorAll('.diag-more-menu.visible').forEach(menu => {
-        menu.classList.remove('visible');
-    });
 }
 
 async function sendAgentInput(issueNumber) {
@@ -3554,7 +3555,7 @@ function closeModal(e) {
         modalOverlay.classList.remove('visible');
         // Reset modal classes for viewers
         const modalEl = modalOverlay.querySelector('.modal');
-        modalEl.classList.remove('log-viewer-modal', 'live-log-modal');
+        modalEl.classList.remove('diagnostics-modal', 'log-viewer-modal', 'live-log-modal');
         if (logPoller) {
             clearInterval(logPoller);
             logPoller = null;
