@@ -6,6 +6,7 @@ from pathlib import Path
 
 from issue_orchestrator.infra.terminal_cleaning import (
     CleaningLogWriter,
+    _is_garbled_subsequence,
     clean_terminal_line,
     dedupe_consecutive_lines,
     extract_stream_json_text,
@@ -106,6 +107,10 @@ class TestIsSpinnerFragment:
         assert is_spinner_fragment("FAIL") is False
         assert is_spinner_fragment("done") is False
         assert is_spinner_fragment("yes") is False
+        assert is_spinner_fragment("login") is False
+        assert is_spinner_fragment("input") is False
+        assert is_spinner_fragment("class") is False
+        assert is_spinner_fragment("debug") is False
 
     def test_filters_pure_digit_lines(self):
         """Pure digit lines are cursor-positioned line numbers from TUI tool output."""
@@ -140,6 +145,53 @@ class TestIsSpinnerFragment:
         assert is_spinner_fragment("━━━━━━━━━━━━") is True
         assert is_spinner_fragment("❯") is True
         assert is_spinner_fragment("❯  ") is True
+
+
+# ---------------------------------------------------------------------------
+# _is_garbled_subsequence
+# ---------------------------------------------------------------------------
+
+
+class TestIsGarbledSubsequence:
+    """Regression tests for the garbled-subsequence heuristic."""
+
+    def test_rejects_short_fragments(self):
+        assert _is_garbled_subsequence("abc", "lollygagging") is False
+
+    def test_rejects_when_fragment_too_short_relative_to_keyword(self):
+        # "login" is 5 chars, "lollygagging" is 12 chars → 5/12 = 0.42 < 0.5
+        assert _is_garbled_subsequence("login", "lollygagging") is False
+
+    def test_accepts_garbled_fragment_covering_enough_of_keyword(self):
+        # "ollggin" is 7 chars, "lollygagging" is 12 chars → 7/12 = 0.58 >= 0.5
+        # and chars o,l,l,g,g,i,n all appear in order → 7/7 = 100% >= 70%
+        assert _is_garbled_subsequence("ollggin", "lollygagging") is True
+
+    def test_accepts_long_garbled_fragment(self):
+        # "ollygging" covers most of "lollygagging"
+        assert _is_garbled_subsequence("ollygging", "lollygagging") is True
+
+    def test_rejects_unrelated_word(self):
+        assert _is_garbled_subsequence("python", "lollygagging") is False
+
+    def test_rejects_common_words_against_all_noise_keywords(self):
+        """Words like 'login', 'input', 'class' must not match any noise keyword.
+
+        Note: 'print' is excluded because it legitimately matches 'perusing'
+        at the raw subsequence level (p,r,i,n match in order with 80% >= 70%).
+        Pipeline-level protection via _KEEP_SHORT prevents false positives.
+        """
+        common_words = ["login", "input", "class", "debug", "error"]
+        noise_keywords = [
+            "interrupt", "fiddle-faddling", "thinking", "envisioning",
+            "planning", "analyzing", "reasoning", "clauding",
+            "hullaballooing", "beboppin'", "perusing", "lollygagging",
+        ]
+        for word in common_words:
+            for kw in noise_keywords:
+                assert _is_garbled_subsequence(word, kw) is False, (
+                    f"False positive: '{word}' matched '{kw}'"
+                )
 
 
 # ---------------------------------------------------------------------------
