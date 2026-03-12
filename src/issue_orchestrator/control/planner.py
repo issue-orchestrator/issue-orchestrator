@@ -759,6 +759,12 @@ Flip labels from `{facts.watch_label}` to `{self.config.triage_reviewed_label}` 
 
         for rework in snapshot.discovered_reworks:
             if rework.issue_number not in queued_issue_ids:
+                # Remove pr-pending so scheduler considers issue available again
+                actions.append(RemoveLabelAction(
+                    issue_number=rework.issue_number,
+                    label=self._lm.pr_pending,
+                    reason=f"rework needed for PR #{rework.pr_number} (cycle {rework.rework_cycle})",
+                ))
                 actions.append(QueueReworkAction(
                     issue_number=rework.issue_number,
                     pr_number=rework.pr_number,

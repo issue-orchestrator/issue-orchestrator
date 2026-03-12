@@ -925,6 +925,38 @@ class TestPlanDiscoveredReworks:
         assert action.issue_number == 42
         assert action.rework_cycle == 2
 
+    def test_removes_pr_pending_label_when_queueing_rework(self):
+        """Planner removes pr-pending label so scheduler considers issue available."""
+        from issue_orchestrator.domain.models import DiscoveredRework
+        from issue_orchestrator.control.actions import ActionType
+
+        config = make_config(code_review_agent="agent:reviewer")
+        scheduler = Scheduler(config)
+        planner = Planner(config=config, scheduler=scheduler)
+
+        discovered = DiscoveredRework(
+            issue_number=42,
+            pr_number=100,
+            branch_name="feature/issue-42",
+            agent_type="agent:developer",
+            rework_cycle=2,
+        )
+
+        snapshot = make_snapshot(
+            discovered_reworks=(discovered,),
+            pending_reworks=(),
+        )
+
+        plan = planner.plan(snapshot)
+
+        # Should have RemoveLabelAction for pr-pending BEFORE QueueReworkAction
+        remove_actions = [a for a in plan.actions if a.action_type == ActionType.REMOVE_LABEL and a.label == "pr-pending"]
+        assert len(remove_actions) == 1
+        assert remove_actions[0].issue_number == 42
+
+        queue_actions = [a for a in plan.actions if a.action_type == ActionType.QUEUE_REWORK]
+        assert len(queue_actions) == 1
+
     def test_skips_already_queued_reworks(self):
         """Planner skips discovered reworks that are already in pending_reworks."""
         from issue_orchestrator.domain.models import DiscoveredRework
