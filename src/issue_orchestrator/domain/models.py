@@ -38,7 +38,7 @@ def _is_blocking_label(label: str) -> bool:
     base = _base_of(label)
     if base == "blocked" or base.startswith("blocked-") or base.startswith("blocked:"):
         return True
-    return base in ("needs-human", "failed")
+    return base in ("needs-human", "failed", "publish-failed")
 
 # Path for completion records relative to worktree root
 # Each session writes to a distinct file based on agent name to avoid

@@ -12,6 +12,7 @@
         RESET_RETRY: '/api/reset-retry',
         BULK_RETRY: '/api/bulk-retry',
         BULK_DEPRIORITIZE: '/api/bulk-deprioritize',
+        BULK_CANCEL_QUEUED: '/api/bulk-cancel-queued',
     };
 
     function normalizeIssueNumbers(issueNumbers) {
@@ -49,6 +50,15 @@
         };
     }
 
+    function buildBulkCancelQueuedRequest(issueNumbers) {
+        const issue_numbers = normalizeIssueNumbers(issueNumbers);
+        return {
+            endpoint: ENDPOINTS.BULK_CANCEL_QUEUED,
+            method: 'POST',
+            body: { issue_numbers },
+        };
+    }
+
     function buildBulkRetryRequest(issueNumbers) {
         const issue_numbers = normalizeIssueNumbers(issueNumbers);
         return {
@@ -74,6 +84,7 @@
         buildResetRetryRequest,
         buildBulkRetryRequest,
         buildBulkDeprioritizeRequest,
+        buildBulkCancelQueuedRequest,
         buildIssueRetryRequest,
     };
 });
