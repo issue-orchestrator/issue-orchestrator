@@ -706,3 +706,120 @@ class TestInteractiveRound:
         # Should succeed despite non-zero exit code
         assert response.response_type == "ok"
         assert response.response_text == "approved"
+
+
+def test_review_exchange_retries_when_validation_failed(tmp_path: Path, monkeypatch) -> None:
+    """Coder round should retry when validation-record.json exists but passed=false."""
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Prompt")
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-exchange"
+    run_dir.mkdir(parents=True)
+
+    session_output = MagicMock()
+    session_output.start_run.return_value = SimpleNamespace(run_dir=run_dir, run_id="run-exchange")
+
+    class DummyRunner:
+        def __init__(self) -> None:
+            self.coder_calls = 0
+
+        def run(self, spec):
+            role = Path(spec.output_dir).name
+            if role == "reviewer":
+                _write_response_file(spec, '{"response_type":"changes_requested","getting_closer":true,"response_text":"fix"}')
+                return SimpleNamespace(
+                    succeeded=True,
+                    exit_code=0,
+                    timed_out=False,
+                    stderr="",
+                )
+            self.coder_calls += 1
+            (run_dir / "completion-coder.json").write_text("{}", encoding="utf-8")
+            if self.coder_calls <= 1:
+                # First pass: validation exists but failed
+                (run_dir / "validation-record.json").write_text(
+                    json.dumps({"passed": False, "exit_code": 1}),
+                    encoding="utf-8",
+                )
+            else:
+                # Second pass: validation passes
+                (run_dir / "validation-record.json").write_text(
+                    json.dumps({"passed": True, "exit_code": 0}),
+                    encoding="utf-8",
+                )
+            return SimpleNamespace(
+                succeeded=True,
+                exit_code=0,
+                timed_out=False,
+                stderr="",
+            )
+
+    runner = DummyRunner()
+    monkeypatch.setattr(
+        "issue_orchestrator.control.review_exchange_loop.AgentRunner", lambda: runner
+    )
+
+    coder_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+    reviewer_agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+
+    outcome = run_review_exchange_loop(
+        session_output=session_output,
+        worktree_path=worktree,
+        issue_number=4057,
+        issue_title="Test",
+        coder_label="agent:backend",
+        reviewer_label="agent:reviewer",
+        coder_agent=coder_agent,
+        reviewer_agent=reviewer_agent,
+        max_rounds=1,
+        max_no_progress=1,
+        require_validation=True,
+        web_port=None,
+    )
+
+    # Coder was called twice: first with failed validation, then retried
+    assert runner.coder_calls == 2
+    assert outcome.status == "stopped"
+    assert outcome.reason == "max_rounds_exceeded"
+
+
+def test_review_exchange_validation_failure_includes_stderr(tmp_path: Path, monkeypatch) -> None:
+    """When validation fails, the retry feedback should include stderr output."""
+    from issue_orchestrator.control.review_exchange_loop import _validate_coder_protocol
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "completion-coder.json").write_text("{}", encoding="utf-8")
+    stderr_path = run_dir / "validation-stderr.log"
+    stderr_path.write_text("error: unused import 'os'\n", encoding="utf-8")
+    (run_dir / "validation-record.json").write_text(
+        json.dumps({
+            "passed": False,
+            "exit_code": 1,
+            "stderr_path": str(stderr_path),
+        }),
+        encoding="utf-8",
+    )
+
+    error = _validate_coder_protocol(run_dir, require_validation=True)
+    assert error is not None
+    assert "validation failed" in error
+    assert "exit_code=1" in error
+    assert "unused import" in error
+
+
+def test_review_exchange_validation_passed_returns_none(tmp_path: Path) -> None:
+    """When validation passes, _validate_coder_protocol should return None."""
+    from issue_orchestrator.control.review_exchange_loop import _validate_coder_protocol
+
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "completion-coder.json").write_text("{}", encoding="utf-8")
+    (run_dir / "validation-record.json").write_text(
+        json.dumps({"passed": True, "exit_code": 0}),
+        encoding="utf-8",
+    )
+
+    error = _validate_coder_protocol(run_dir, require_validation=True)
+    assert error is None
