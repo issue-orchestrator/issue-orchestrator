@@ -277,7 +277,9 @@ class TestCreateWorktree:
         mock_run.side_effect = mock_subprocess
 
         # Execute - should reuse existing worktree instead of raising error
-        path, branch, *_ = create_worktree(repo_root, 123, "Test", worktree_base)
+        with patch.dict(os.environ, {}, clear=False) as env:
+            env.pop("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", None)
+            path, branch, *_ = create_worktree(repo_root, 123, "Test", worktree_base)
 
         # Verify it returned the existing worktree
         assert path == existing_worktree
@@ -1287,6 +1289,15 @@ class TestInstallClaudeSettings:
 
 class TestCreateWorktreeReuse:
     """Test reuse flow via create_worktree (public API)."""
+
+    def setup_method(self):
+        """Ensure worktree reuse is enabled for all reuse tests."""
+        self._env_patcher = patch.dict(os.environ, {}, clear=False)
+        env = self._env_patcher.start()
+        env.pop("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", None)
+
+    def teardown_method(self):
+        self._env_patcher.stop()
 
     def _policy(self):
         from issue_orchestrator.ports.worktree_policy import ValidationResult, SyncResult

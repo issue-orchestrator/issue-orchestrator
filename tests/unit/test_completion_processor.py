@@ -1220,6 +1220,7 @@ class TestCompletionProcessorGitActions:
         self, processor, mock_git_adapter, worktree_with_completion
     ):
         """PUSH_BRANCH action should push via adapter."""
+        import os
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH],
@@ -1227,7 +1228,9 @@ class TestCompletionProcessorGitActions:
         )
         worktree = worktree_with_completion(record)
 
-        result = processor.process(worktree, issue_number=123, issue_title="Test")
+        with patch.dict(os.environ, {}, clear=False) as env:
+            env.pop("E2E_SKIP_PUSH_HOOKS", None)
+            result = processor.process(worktree, issue_number=123, issue_title="Test")
 
         assert result.success
         mock_git_adapter.push.assert_called_once_with(worktree, skip_hooks=False)
