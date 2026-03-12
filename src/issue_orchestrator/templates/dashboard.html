@@ -46,6 +46,18 @@
                         </div>
                     </section>
                 </div>
+                <div class="provider-circuit-wrap" id="providerCircuitWrap" style="display:none;">
+                    <button class="provider-circuit-pill is-open" id="providerCircuitPill" onclick="toggleProviderCircuitPanel()" aria-expanded="false" aria-controls="providerCircuitPanel">
+                        <span class="provider-circuit-label">Provider</span>
+                        <span class="provider-circuit-summary" id="providerCircuitSummary">outage</span>
+                    </button>
+                    <section class="provider-circuit-panel" id="providerCircuitPanel" aria-label="Provider circuit breaker status">
+                        <div id="providerCircuitList"></div>
+                        <div class="gh-usage-actions">
+                            <button class="issue-action-btn" onclick="toggleProviderCircuitPanel()">Close</button>
+                        </div>
+                    </section>
+                </div>
             </div>
         </header>
 

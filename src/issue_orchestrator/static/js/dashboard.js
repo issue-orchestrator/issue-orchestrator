@@ -371,6 +371,7 @@ async function refreshViewModel({ reloadOnListChange = true } = {}) {
         updateRefreshStatusFromViewModel(viewModel);
         applyNetworkSyncScheduler();
         renderGitHubUsage();
+        initProviderCircuits();
 
         // Post status to parent CC when embedded
         if (isEmbedded && viewModel) {
@@ -453,6 +454,7 @@ document.addEventListener('DOMContentLoaded', () => {
     initFlowLazyVisibleRefresh();
     applyGitHubUsagePrefs();
     renderGitHubUsage();
+    initProviderCircuits();
     applyNetworkSyncScheduler();
     refreshViewModel({ reloadOnListChange: false });
     initVisibilityObserver();
@@ -1312,6 +1314,55 @@ function renderGitHubUsage() {
     if (resetEl) {
         resetEl.textContent = formatResetLabel(Number(rate.reset || 0));
     }
+}
+
+// Provider circuit breaker state (populated from initial dashboard_data and SSE updates)
+let providerCircuits = {};
+
+function toggleProviderCircuitPanel() {
+    const panel = document.getElementById('providerCircuitPanel');
+    const pill = document.getElementById('providerCircuitPill');
+    if (!panel || !pill) return;
+    const isVisible = panel.classList.toggle('visible');
+    pill.setAttribute('aria-expanded', isVisible ? 'true' : 'false');
+}
+
+function renderProviderCircuits() {
+    const wrap = document.getElementById('providerCircuitWrap');
+    const list = document.getElementById('providerCircuitList');
+    const summary = document.getElementById('providerCircuitSummary');
+    if (!wrap || !list || !summary) return;
+
+    const openCircuits = Object.values(providerCircuits).filter(c => c.is_open);
+    wrap.style.display = openCircuits.length > 0 ? '' : 'none';
+
+    if (openCircuits.length === 0) {
+        list.innerHTML = '';
+        return;
+    }
+
+    summary.textContent = openCircuits.length === 1
+        ? `${openCircuits[0].provider} outage`
+        : `${openCircuits.length} providers down`;
+
+    list.innerHTML = openCircuits.map(c => {
+        const detail = c.last_error_summary ? ` · ${c.last_error_summary}` : '';
+        const outages = c.consecutive_outages > 1 ? ` (${c.consecutive_outages}x)` : '';
+        return `<div class="provider-circuit-row">
+            <span class="provider-name">${c.provider}${outages}</span>
+            <span class="provider-detail">Circuit open${detail}</span>
+        </div>`;
+    }).join('');
+}
+
+function initProviderCircuits() {
+    const cb = window.dashboardData?.providerCircuitBreaker;
+    if (!cb) return;
+    providerCircuits = {};
+    for (const c of (cb.circuits || [])) {
+        providerCircuits[c.provider] = c;
+    }
+    renderProviderCircuits();
 }
 
 function updateRefreshStatusFromViewModel(vm) {
@@ -3061,6 +3112,38 @@ async function toggleExcluded() {
                 updateStaleWarning(data.issue_number, staleIssues[data.issue_number]);
             } catch (err) {
                 console.error('[SSE] Failed to parse stale.persistent_detected:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_entered', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage entered:', data);
+                providerCircuits[data.provider] = {
+                    provider: data.provider,
+                    is_open: true,
+                    open_until: data.open_until,
+                    consecutive_outages: data.consecutive_outages,
+                    last_error_summary: data.error_summary || null,
+                };
+                renderProviderCircuits();
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_entered:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_exited', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage exited:', data);
+                if (providerCircuits[data.provider]) {
+                    providerCircuits[data.provider] = Object.assign(
+                        {}, providerCircuits[data.provider], { is_open: false }
+                    );
+                }
+                renderProviderCircuits();
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_exited:', err);
             }
         });
 

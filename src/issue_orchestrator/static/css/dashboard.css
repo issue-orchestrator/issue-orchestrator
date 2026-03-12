@@ -313,6 +313,61 @@ h1 {
     justify-content: flex-end;
 }
 
+.provider-circuit-wrap {
+    position: relative;
+}
+.provider-circuit-pill {
+    border: 1px solid var(--danger);
+    background: var(--bg-panel);
+    color: var(--danger);
+    border-radius: 999px;
+    font-size: 11px;
+    padding: 6px 10px;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+}
+.provider-circuit-pill:hover {
+    background: var(--bg-hover);
+}
+.provider-circuit-label {
+    font-weight: 700;
+}
+.provider-circuit-panel {
+    display: none;
+    position: absolute;
+    right: 0;
+    top: calc(100% + 6px);
+    min-width: 260px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-panel);
+    padding: 8px;
+    z-index: 25;
+}
+.provider-circuit-panel.visible {
+    display: block;
+}
+.provider-circuit-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 12px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+}
+.provider-circuit-row:last-child {
+    border-bottom: none;
+}
+.provider-circuit-row .provider-name {
+    font-weight: 700;
+    color: var(--danger);
+}
+.provider-circuit-row .provider-detail {
+    color: var(--text-muted);
+}
+
 .scope-summary {
     margin-top: 12px;
     padding: 10px 12px;

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -18,6 +18,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
 from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
@@ -681,3 +682,112 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_provider_circuit_breaker_status_no_deps():
+    """When orchestrator has no deps, circuit breaker status defaults to empty."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    cb = view_model.provider_circuit_breaker
+    assert cb["circuits"] == []
+    assert cb["any_open"] is False
+
+
+@dataclass
+class _ProviderResilienceStub:
+    store: InMemoryProviderCircuitStore
+
+
+@dataclass
+class _DepsStub:
+    provider_resilience: _ProviderResilienceStub
+
+
+@dataclass
+class _OrchestratorStubWithDeps:
+    state: OrchestratorState
+    config: Config
+    deps: _DepsStub
+    shutdown_requested: bool = False
+
+
+def test_provider_circuit_breaker_status_open_circuit():
+    """Circuit breaker status reflects open circuits from the store."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    store.save(ProviderCircuitState(
+        provider="claude",
+        open_until=now + timedelta(minutes=5),
+        consecutive_outages=2,
+        last_error_summary="rate limit",
+        updated_at=now,
+    ))
+
+    deps = _DepsStub(provider_resilience=_ProviderResilienceStub(store=store))
+    orchestrator = _OrchestratorStubWithDeps(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    cb = view_model.provider_circuit_breaker
+    assert cb["any_open"] is True
+    assert len(cb["circuits"]) == 1
+    circuit = cb["circuits"][0]
+    assert circuit["provider"] == "claude"
+    assert circuit["is_open"] is True
+    assert circuit["consecutive_outages"] == 2
+    assert circuit["last_error_summary"] == "rate limit"
+
+    # Surfaced in dashboard_data for JavaScript consumption
+    dashboard_cb = view_model.dashboard_data()["providerCircuitBreaker"]
+    assert dashboard_cb["any_open"] is True
+    assert dashboard_cb["circuits"][0]["provider"] == "claude"
+
+
+def test_provider_circuit_breaker_status_closed_circuit():
+    """Expired open_until means circuit is closed."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    store.save(ProviderCircuitState(
+        provider="claude",
+        open_until=now - timedelta(minutes=1),  # expired
+        consecutive_outages=1,
+        last_error_summary="transient",
+        updated_at=now,
+    ))
+
+    deps = _DepsStub(provider_resilience=_ProviderResilienceStub(store=store))
+    orchestrator = _OrchestratorStubWithDeps(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    cb = view_model.provider_circuit_breaker
+    assert cb["any_open"] is False
+    assert cb["circuits"][0]["is_open"] is False
