@@ -4179,8 +4179,30 @@ async function openReviewFeedback(issueNumber) {
                 e.event === 'review.approved' ||
                 e.event === 'review.comment_added'
             );
+            // Review exchange round events carry per-round reviewer feedback
+            const exchangeRoundEvents = events.filter(e =>
+                e.event === 'review_exchange.round_completed' &&
+                e.reviewer_response_text
+            );
+            if (exchangeRoundEvents.length > 0) {
+                html += '<div style="margin-bottom:8px;font-size:12px;color:var(--text-muted);">Review exchange rounds:</div>';
+                for (const evt of exchangeRoundEvents) {
+                    const roundNum = evt.round_index || '?';
+                    const respType = evt.reviewer_response_type || 'unknown';
+                    const label = respType === 'ok' ? 'Approved' : respType === 'changes_requested' ? 'Changes Requested' : respType;
+                    const time = evt.timestamp ? new Date(evt.timestamp).toLocaleString() : '';
+                    html += `<div style="margin-bottom:10px;padding:8px;background:var(--bg);border-radius:4px;">
+                        <div style="font-weight:600;font-size:12px;">Round ${escapeHtml(String(roundNum))}: ${escapeHtml(label)} ${time ? `<span style="font-weight:400;color:var(--text-muted);">${escapeHtml(time)}</span>` : ''}</div>
+                        <pre style="font-size:11px;white-space:pre-wrap;background:var(--surface);padding:8px;border-radius:4px;margin:4px 0 0;max-height:200px;overflow:auto;">${escapeHtml(evt.reviewer_response_text)}</pre>
+                    </div>`;
+                }
+            }
             if (reviewEvents.length > 0) {
-                html += '<div style="margin-bottom:8px;font-size:12px;color:var(--text-muted);">From timeline events:</div>';
+                if (exchangeRoundEvents.length > 0) {
+                    html += '<div style="margin:12px 0 8px;font-size:12px;color:var(--text-muted);">PR review events:</div>';
+                } else {
+                    html += '<div style="margin-bottom:8px;font-size:12px;color:var(--text-muted);">From timeline events:</div>';
+                }
                 for (const evt of reviewEvents) {
                     const label =
                         evt.event === 'review.approved' ? 'Approved'

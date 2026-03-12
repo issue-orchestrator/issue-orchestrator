@@ -363,6 +363,7 @@ def _process_exchange_round(  # noqa: PLR0913
         "session_name": session_name,
         "round_index": round_index,
         "reviewer_response_type": reviewer_response.response_type,
+        "reviewer_response_text": reviewer_response.response_text,
         "coder_response_type": coder_response.response_type,
     })
     last_coder_text = coder_response.response_text
@@ -447,6 +448,7 @@ def _complete_with_reviewer_ok(
         "session_name": session_name,
         "round_index": round_index,
         "reviewer_response_type": reviewer_response.response_type,
+        "reviewer_response_text": reviewer_response.response_text,
         "coder_response_type": None,
     })
     emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
@@ -481,6 +483,7 @@ def _stop_for_no_progress(
         "session_name": session_name,
         "round_index": round_index,
         "reviewer_response_type": reviewer_response.response_type,
+        "reviewer_response_text": reviewer_response.response_text,
         "coder_response_type": None,
     })
     emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
