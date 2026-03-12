@@ -64,6 +64,17 @@ class ManifestAccessor:
 
     run_identity: RunIdentity
 
+    def get_ui_log(self, *, allow_empty: bool = False) -> ArtifactStream:
+        """Return the run-scoped UI session log without falling back to provider logs."""
+        run_dir = self.run_identity.run_dir
+        self._require_run_dir_exists(run_dir)
+        path = run_dir / "ui-session.log"
+        if path.exists() and (allow_empty or path.stat().st_size > 0):
+            return self._artifact_stream("ui_log", path)
+        if path.exists():
+            raise ArtifactNotFoundError(f"ui session log is empty: {path}")
+        raise ArtifactNotFoundError(f"ui session log not found in run-scoped path: {path}")
+
     def get_agent_log(self, *, allow_empty: bool = False) -> ArtifactStream:
         """Return the run-scoped agent session log stream."""
         run_dir = self.run_identity.run_dir

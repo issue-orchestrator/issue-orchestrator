@@ -84,7 +84,7 @@ _NOISE_KEYWORDS = (
     "researching", "processing", "generating", "working",
     "clauding", "claing", "interrupt", "timeout",
     "hullaballooing", "beboppin", "perusing",
-    "lollygagging",
+    "lollygagging", "transfiguring",
 )
 
 
@@ -93,6 +93,8 @@ _TUI_STATUS_SUBSTRINGS = (
     "ctrl+g", "ctrl+o", "ctrl+c",
     "claude code", "auto-compact",
     "waiting for your input", "current work",
+    "recentactivity", "what'snew", "welcomeback",
+    "/resumeformore", "/release-notesformore",
 )
 
 

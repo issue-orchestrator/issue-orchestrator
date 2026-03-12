@@ -4033,6 +4033,38 @@ class TestIssueLogEndpointsUseLatestHistory:
         finally:
             set_orchestrator(None)
 
+    def test_agent_ui_log_never_falls_back_to_claude_jsonl(self, tmp_path: Path):
+        """GET /api/log/local should stay on ui-session.log even when Claude JSONL exists."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-no-claude-fallback"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        run.log_path.write_text("", encoding="utf-8")
+        claude_log = run.run_dir / "claude.jsonl"
+        claude_log.write_text(
+            "\n".join([
+                '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Should"}}}',
+                '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" not appear"}}}',
+            ]) + "\n",
+            encoding="utf-8",
+        )
+        session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/log/local/123?run_dir={run.run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["lines"] == []
+            assert payload["total_lines"] == 0
+            assert payload["log_path"].endswith("/ui-session.log")
+        finally:
+            set_orchestrator(None)
+
     def test_claude_log_requires_run_dir(self, tmp_path: Path):
         """GET /api/session/claude-log should fail fast when run_dir is missing."""
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput

@@ -262,6 +262,21 @@ class SessionLauncher:
             args["verbose"] = "true"
         return args or None
 
+    @staticmethod
+    def _session_identity_launch_metadata(
+        agent_config: "AgentConfig",
+        *,
+        extra_provider_args: dict[str, str] | None,
+    ) -> dict[str, object]:
+        provider_args = dict(agent_config.provider_args)
+        permission_mode = str(provider_args.get("permission_mode") or agent_config.permission_mode or "")
+        return {
+            "provider": str(agent_config.provider or ""),
+            "model": str(agent_config.model or ""),
+            "permission_mode": permission_mode,
+            "extra_provider_args": dict(extra_provider_args or {}),
+        }
+
     def _apply_actions(self, actions: list[Action], *, context: str) -> bool:
         """Apply mutations through the ActionApplier."""
         all_ok = True
@@ -719,6 +734,7 @@ class SessionLauncher:
         worktree_info = ctx.worktree_info
         run = ctx.run
         claude_project_dir = ctx.claude_project_dir
+        extra_args = self._extra_provider_args_from_labels(issue.labels)
 
         # Write session metadata
         ctx.write_worktree_note()
@@ -727,6 +743,10 @@ class SessionLauncher:
             "issue_key": issue_key.stable_id(),
             "session_key": session_key.stable_id(),
             "agent": issue.agent_type,
+            **self._session_identity_launch_metadata(
+                agent_config,
+                extra_provider_args=extra_args,
+            ),
         })
 
         # For triage sessions, prepare manifest with PRs to review
@@ -842,7 +862,6 @@ class SessionLauncher:
             existing_work=existing_work,
         )
         prompt_path = self._persist_session_prompt(run.run_dir, rendered_prompt)
-        extra_args = self._extra_provider_args_from_labels(issue.labels)
         base_command = agent_config.get_command(
             issue_number=issue.number,
             issue_title=issue.title,
@@ -1069,6 +1088,10 @@ class SessionLauncher:
             "pr_number": review.pr_number,
             "session_key": session_key.stable_id(),
             "agent": agent_label,
+            **self._session_identity_launch_metadata(
+                agent_config,
+                extra_provider_args=None,
+            ),
         })
         # New review attempt starts now; clear interrupted retry guard.
         self._clear_interrupted_retry_guard_label(
@@ -1352,6 +1375,10 @@ class SessionLauncher:
             "session_key": session_key.stable_id(),
             "agent": rework.agent_type,
             "rework_cycle": rework.rework_cycle,
+            **self._session_identity_launch_metadata(
+                agent_config,
+                extra_provider_args=None,
+            ),
         })
         # Rework is a coding retry attempt; clear interrupted retry guard.
         self._clear_interrupted_retry_guard_label(

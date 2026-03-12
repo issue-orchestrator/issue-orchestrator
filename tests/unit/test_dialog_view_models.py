@@ -152,6 +152,16 @@ def test_build_session_diagnostics_dialog_actions():
                 "validation_record_path": "validate.json",
                 "validation_stdout": "validation-output.log",
             },
+            "session_identity": {
+                "task": "code",
+                "branch": "4057-scratch",
+                "provider": "claude-code",
+                "model": "sonnet",
+                "permission_mode": "bypassPermissions",
+                "extra_provider_args": {"verbose": "true"},
+                "claude_args": "",
+                "claude_prompt_mode": "arg",
+            },
             "run_dir": "/run/dir",
             "session_name": "fallback",
         },
@@ -160,6 +170,11 @@ def test_build_session_diagnostics_dialog_actions():
     rows = _rows_to_map(dialog["rows"])
     assert rows["Session"] == "sess-1"
     assert rows["Worktree"] == "/wt"
+    assert rows["Provider"] == "claude-code"
+    assert rows["Model"] == "sonnet"
+    assert rows["Permission Mode"] == "bypassPermissions"
+    assert rows["Provider Args"] == "verbose=true"
+    assert rows["Prompt Mode"] == "arg"
 
     action_types = [action["type"] for action in dialog["actions"]]
     assert "open_path" in action_types

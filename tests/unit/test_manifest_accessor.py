@@ -32,6 +32,25 @@ def test_get_agent_log_returns_run_scoped_log(tmp_path: Path) -> None:
     assert artifact.descriptor.length_bytes is not None
 
 
+def test_get_ui_log_returns_run_scoped_ui_session_log(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    (run_dir / "ui-session.log").write_text("hello\n", encoding="utf-8")
+
+    artifact = accessor.get_ui_log()
+    assert artifact.descriptor.artifact_type == "ui_log"
+    assert artifact.path == run_dir / "ui-session.log"
+
+
+def test_get_ui_log_does_not_fallback_to_claude_log_when_ui_session_empty(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    (run_dir / "ui-session.log").write_text("", encoding="utf-8")
+    claude = run_dir / "claude.jsonl"
+    claude.write_text('{"type":"assistant","message":{"content":[]}}\n', encoding="utf-8")
+
+    with pytest.raises(ArtifactNotFoundError, match="ui session log is empty"):
+        accessor.get_ui_log()
+
+
 def test_get_agent_log_falls_back_to_claude_stream_when_ui_session_log_empty(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
     (run_dir / "ui-session.log").write_text("", encoding="utf-8")
