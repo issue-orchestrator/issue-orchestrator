@@ -1,0 +1,623 @@
+Updateavailable!Run:brewup…
+Lollygagging…
+Updateavailable!Run:brewup…
+Lollygagging…
+Updateavailable!Run:brewup…
+Lollygagging…
+Updateavailable!Run:brewup…
+Lollygagging…
+Search(pattern:"circuit_breaker|circuitbreaker",path:"src")
+Lollygagging…
+Lollygagging…8
+Lollygagging…
+Lollygagging…40
+Lollygagging…5
+Lollygagging…9
+Lollygagging…
+Lollygagging…1
+Lollygagging…3
+Lollygagging…8
+Lollygagging…5
+Lollygagging…8
+Lollygagging…
+✢Lollygagging…1.0k tokens)
+Lollygagging…
+Lollygagging…1
+Lollygagging…
+   current work                                                           
+Lollygagging…9
+Lollygagging…↑
+ollgin↓
+     current work                                                               
+Lollygagging…↑
+…licy|bild_dashbord_view_model|def build_card|DashboardViewModelBuilder"
+Lolyg↑
+sc/sse_orchestrator/view_models/dshboard.py                           
+ollgin↑
+Lollygagging…
+Lollygagging…↑
+provider_plicy|ProviderAvalabilityPolicy"
+sc/ssue_orchestrato/contol/orhestrator*.py"              
+Lollygagging…50
+Lollygagging…↑
+ochestator\.|build_dashboard|_orchestrator|self\._orchestrator"
+s/isue_chestrator/entrypoints/orchesrator*.py"             
+control/run_loop*.py"        
+Lollygagging…↑
+class.*Orchestraor|self\.des|self\.state|self\.config"
+…Orchestrator\b|self\.deps\.provider_resilience|deps\.provider_resilience"
+Lollygagging…
+Lollygagging…↑
+     current work                                                               
+Lollygagging…
+Lollygagging…↑
+llygag↑
+"config\.agents\[|agents\.get\(|agnt_config = .*agents|\.provider"
+Lollygagging…
+lass AgentConfig|provider: str|provider ="                       
+Lollygagging…
+statccss/dashboard.css
+ollng…↑
+Lollygagging…↑
+Lollygagging…
+   current work                                                           
+    86      def template_context(self) -> dict[str, Any]:                  
+ 87 return {
+ 120 "e2e_page":self.e2e_page,
+ 121 "e2e_total_pages":self.e2e_total_pages,
+ 122 "e2e_total":self.e2e_total,
+ 123 +            "open_provider_circuits": self.open_provider_circu
+ 124 "dashboard_data":self.dashboard_data(),
+ 125 }
+currentwork
+LSP for pyright-lsp failed · /p…
+Updateavailable!Run:brewup…
+ 128          github_usage = gh_audit.get_live_usage_snapshot()          
+ 129 return {
+ 130 "startupComplete":self.startup_status== "complet
+currentwork
+Updateavailable!Run:brewup…
+aggng…↓
+Updateavailable!Run:brewup…
+ 130              "startupComplete": self.startup_status == "complet     
+currentwork
+Updateavailable!Run:brewup…
+currentwork
+    255 +    if open_provider:                                             
+ 256 +        return f"Waiting: {open_provider} unavailable"        
+ 257 if state.paused:
+ 258 return "Waiting:orchestratorpaused"
+currentwork
+         t[int]]:                                                         
+ 502 queue_items:list[dict[str,Any]]= []
+ 503 blocked_items:list[dict[str,Any]]= []
+currentwork
+        +nts.get(f"agent:{agent_label}") if config and config.agents el    
+     +se None)                                                      
+ 570 +        )                                                     
+ 571 +        issue_provider_name = issue_provider.provider if issue
+     +_provider else None                                           
+ 572 +        open_provider = (                                     
+ 573 +            issue_provider_name                               
+ 574 +            if issue_provider_name and open_providers and issu
+     +e_provider_name in open_providers                             
+ 575 +            else None                                         
+ 576 +        )                                                     
+ 577 queue_reason= (
+ 578 _queue_wait_reason(
+ 579 state=state,
+ 581 issue_number=issue.number,
+ 582 dep_problem=dep_problem,
+ 583 queue_position=queued_position,
+ 584 +                open_provider=open_provider,                  
+ 585 )
+ 586 if flow_stage== "queued"
+ 587 else None
+currentwork
+     current work                                                               
+ollgin↑
+    1299 +    if orchestrator and hasattr(orchestrator, "deps") and has    
+      +attr(orchestrator.deps, "provider_resilience"):              
+ 1300 +        _now = datetime.now(timezone.utc)                    
+ 1301 +        for _cs in orchestrator.deps.provider_resilience.stor
+      +e.list_all():                                                
+ 1302 +            if _cs.open_until and _cs.open_until > _now:     
+ 1303 +                _cooldown = max(0, int((_cs.open_until - _now
+      +).total_seconds()))                                          
+ 1304 +                open_provider_circuits.append({              
+ 1305 +                    "provider": _cs.provider,                
+ 1306 +                    "open_until": _cs.open_until.isoformat(),
+ 1307 +                    "cooldown_remaining_seconds": _cooldown, 
+ 1308 +                    "consecutive_outages": _cs.consecutive_ou
+      +tages,                                                       
+ 1309 +                    "last_error_summary": _cs.last_error_summ
+      +ary or "",                                                   
+ 1310 +                })                                           
+ 1311 +                open_provider_names.add(_cs.provider)        
+ 1312 +                                                             
+ 1313 if stateand config:
+ 1314 lm= LabelManager(config)
+ 1315 active_numbers= {s.issue.numberfor sin state.activ
+  e_sessions}
+ 1319 active_items,seen_issues= _build_active_items(state
+  ,config,queue_page,seen_issues,lm=lm)
+ 1320 queue_items,queue_blocked,queue_total,seen_issues
+  = _build_queue_items(
+ 1321 state,config,queue_page,seen_issues,pending_n
+  umbers,lm=lm,
+ 1322 +            open_providers=open_provider_names,              
+ 1323 )
+ 1324 backlog_items= _build_backlog_items(state,config,l
+ 1325 blocked_items.extend(queue_blocked)
+currentwork
+Lollygagging…↑
+      1508      )                                                               
+currentwork
+ 15 +        {% if open_provider_circuits %}                        
+ 16 +        <div id="providerOutageBanner" class="provider-outage-b
+    +anner" role="alert" aria-live="polite">                        
+ 17 +            <strong>Provider outage:</strong>                  
+ 18 +            {% for circuit in open_provider_circuits %}        
+ 19 +            <span class="provider-outage-item">{{ circuit.provi
+    +der }} unavailable — retry in {{ circuit.cooldown_remaining_sec
+    +onds }}s{% if circuit.last_error_summary %} ({{ circuit.last_er
+    +ror_summary }}){% endif %}</span>{% if not loop.last %}, {% end
+    +if %}                                                          
+ 20 +            {% endfor %}                                       
+ 21 +        </div>                                                 
+ 22 +        {% endif %}                                            
+ 23 <header>
+ 24 <div class="header-left">
+ 25 <h1>IssueOrchestrator</h1>
+currentwork
+    103 +    padding: 10px 12px;                                           
+ 104 +    border-radius: 10px;                                      
+ 105 +    border: 1px solid var(--status-paused-border);            
+ 106 +    background: var(--status-paused-bg);                      
+ 107 +    color: var(--status-paused-text);                         
+ 108 +    font-size: 13px;                                          
+ 109 +}                                                             
+ 110 +                                                              
+ 111 +.provider-outage-banner strong {                              
+ 112 +    font-weight: 700;                                         
+ 113 +    margin-right: 4px;                                        
+ 114 +}                                                             
+ 115 +                                                              
+ 116 +.provider-outage-item {                                       
+ 117 +    font-weight: 600;                                         
+ 118 +}                                                             
+ 119 +                                                              
+ 120 body.column-focus-mode{
+ 121 height:100vh;
+ 122 overflow:hidden;
+currentwork
+   current work                                                           
+Lollygagging…
+Lollygagging…↑
+    685 +                                                                  
+ 686 +# --- Provider circuit breaker UI tests ---                   
+ 687 +                                                              
+ 688 +                                                              
+ 689 +@dataclass                                                    
+ 690 +class _ProviderCircuitStoreFake:                              
+ 691 +    circuits: list                                            
+ 692 +                                                              
+ 693 +                                                              
+ 694 +@dataclass                                                    
+ 695 +class _ProviderResilienceFake:                                
+ 696 +    store: _ProviderCircuitStoreFake                          
+ 697 +                                                              
+ 698 +                                                              
+ 699 +@dataclass                                                    
+ 700 +class _DepsFake:                                              
+ 701 +    provider_resilience: _ProviderResilienceFake              
+ 702 +                                                              
+ 703 +                                                              
+ 704 +@dataclass                                                    
+ 705 +class _OrchestratorWithDeps:                                  
+ 706 +    state: OrchestratorState                                  
+ 707 +    config: Config                                            
+ 708 +    deps: _DepsFake                                           
+ 709 +    shutdown_requested: bool = False                          
+ 710 +                                                              
+ 711 +                                                              
+ 712 +def _make_open_circuit(provider: str, cooldown_seconds: int = 
+     +120) -> object:                                               
+ 713 +    from issue_orchestrator.ports.provider_resilience import P
+     +roviderCircuitState                                           
+ 714 +    from datetime import timezone                             
+ 715 +    now = datetime.now(timezone.utc)                          
+ 716 +    return ProviderCircuitState(                              
+ 717 +        provider=provider,                                    
+ 718 +        open_until=now + timedelta(seconds=cooldown_seconds), 
+ 719 +        consecutive_outages=1,                                
+ 721 +        updated_at=now,                                       
+ 722 +    )                                                         
+ 723 +                                                              
+ 724 +                                                              
+ 725 +def test_open_provider_circuits_appear_in_view_model():       
+ 726 +    config = _make_config()                                   
+ 727 +    agent_config = _make_agent_config()                       
+ 728 +    agent_config = AgentConfig(                               
+ 729 +        prompt_path=Path("/tmp/prompt.txt"),                  
+ 730 +        model="sonnet",                                       
+ 732 +        provider="claude-code",                               
+ 733 +    )                                                         
+ 734 +    config.agents = {"agent:web": agent_config}               
+ 735 +                                                              
+ 736 +    circuit = _make_open_circuit("claude-code", cooldown_secon
+     +ds=300)                                                       
+ 737 +    store = _ProviderCircuitStoreFake(circuits=[circuit])     
+ 738 +    deps = _DepsFake(provider_resilience=_ProviderResilienceFa
+     +ke(store=store))                                              
+ 739 +    # Make store have list_all method                         
+ 740 +    store.list_all = lambda: store.circuits  # type: ignore[at
+     +tr-defined]                                                   
+ 741 +                                                              
+ 742 +    state = OrchestratorState(startup_status="complete")      
+ 743 +    orchestrator = _OrchestratorWithDeps(state=state, config=c
+     +onfig, deps=deps)                                             
+ 744 +                                                              
+ 745 +    view_model = build_dashboard_view_model(                  
+ 746 +        orchestrator,                                         
+ 747 +        queue_page=1,                                         
+ 748 +        active_tab="flow",                                    
+ 749 +        e2e_page=1,                                           
+ 750 +        e2e_status_provider=lambda _: {"enabled": False, "runn
+     +ing": False},                                                 
+ 751 +    )                                                         
+ 752 +                                                              
+ 753 +    assert len(view_model.open_provider_circuits) == 1        
+ 754 +    assert view_model.open_provider_circuits[0]["provider"] ==
+     + "claude-code"                                                
+ 755 +    assert view_model.open_provider_circuits[0]["cooldown_rema
+     +ining_seconds"] >= 1                                          
+ 756 +    assert view_model.open_provider_circuits[0]["last_error_su
+ 757 +                                                              
+ 758 +                                                              
+ 759 +def test_queued_issue_shows_provider_unavailable_wait_reason()
+ 760 +    config = _make_config()                                   
+ 761 +    agent_config = AgentConfig(                               
+ 762 +        prompt_path=Path("/tmp/prompt.txt"),                  
+ 763 +        model="sonnet",                                       
+ 765 +        provider="claude-code",                               
+ 766 +    )                                                         
+ 767 +    config.agents = {"agent:web": agent_config}               
+ 768 +                                                              
+ 769 +    queued_issue = Issue(number=7, title="Waiting on provider"
+     +, labels=["agent:web"])                                       
+ 770 +                                                              
+ 771 +    circuit = _make_open_circuit("claude-code", cooldown_secon
+     +ds=120)                                                       
+ 772 +    store = _ProviderCircuitStoreFake(circuits=[circuit])     
+ 773 +    store.list_all = lambda: store.circuits  # type: ignore[at
+     +tr-defined]                                                   
+ 774 +    deps = _DepsFake(provider_resilience=_ProviderResilienceFa
+     +ke(store=store))                                              
+ 775 +                                                              
+ 776 +    state = OrchestratorState(                                
+ 777 +        startup_status="complete",                            
+ 778 +        cached_queue_issues=[queued_issue],                   
+ 779 +    )                                                         
+ 780 +    orchestrator = _OrchestratorWithDeps(state=state, config=c
+     +onfig, deps=deps)                                             
+ 781 +                                                              
+ 782 +    view_model = build_dashboard_view_model(                  
+ 783 +        orchestrator,                                         
+ 784 +        queue_page=1,                                         
+ 785 +        active_tab="flow",                                    
+ 786 +        e2e_page=1,                                           
+ 787 +        e2e_status_provider=lambda _: {"enabled": False, "runn
+     +ing": False},                                                 
+ 788 +    )                                                         
+ 789 +                                                              
+ 790 +    queue_items = view_model.queue_items                      
+ 791 +    assert any(                                               
+ 792 +        item["queue_wait_reason"] and "claude-code unavailable
+     +" in item["queue_wait_reason"]                                
+ 793 +        for item in queue_items                               
+ 794 +    ), f"Expected provider unavailable in queue_wait_reason, g
+     +ot: {[i.get('queue_wait_reason') for i in queue_items]}"      
+ 795 +                                                              
+ 796 +                                                              
+ 797 +def test_no_open_circuits_means_empty_provider_list():        
+ 798 +    config = _make_config()                                   
+ 799 +    state = OrchestratorState(startup_status="complete")      
+ 800 +    orchestrator = _OrchestratorStub(state=state, config=confi
+ 801 +                                                              
+ 802 +    view_model = build_dashboard_view_model(                  
+ 803 +        orchestrator,                                         
+ 804 +        queue_page=1,                                         
+ 805 +        active_tab="flow",                                    
+ 806 +        e2e_page=1,                                           
+ 807 +        e2e_status_provider=lambda _: {"enabled": False, "runn
+     +ing": False},                                                 
+ 808 +    )                                                         
+ 809 +                                                              
+ 810 +    assert view_model.open_provider_circuits == []            
+currentwork
+Lollygagging…
+wc -l /Users/brucegordon/dev/issue-orchestrator-4057/test…
+Lollygagging…↑
+tests/unit/test_dashboard_ui_guardrails.py                
+        +m open_provider_circuits."""                                      
+ 426 +    html = _read(DASHBOARD_TEMPLATE)                          
+ 427 +    assert "providerOutageBanner" in html                     
+ 428 +    assert "open_provider_circuits" in html                   
+ 429 +    assert "provider-outage-banner" in html                   
+ 430 +                                                              
+ 431 +                                                              
+ 432 +def test_provider_outage_banner_css_defined() -> None:        
+ 433 +    """dashboard.css must define .provider-outage-banner style
+ 434 +    css = _read(DASHBOARD_CSS)                                
+ 435 +    assert ".provider-outage-banner" in css                   
+currentwork
+Lollygagging…
+     current work                                                               
+Lollygagging…↑
+(eval):1:nosuchfileordirectory:.venv/bin/pytest
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+     current work                                                               
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+     current work                                                               
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+   current work                                                           
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+   current work                                                           
+Lollygagging…
+     current work                                                               
+Lollygagging…
+Lollygagging…↑
+Updated ui-openapi.json
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+     current work                                                               
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…1
+Lollygagging…
+Lollygagging…8
+Lollygagging…
+   current work                                                           
+Lollygagging…
+Lollygagging…8
+currentwork
+Lollygagging…
+   current work                                                           
+Lollygagging…↑
+Lollygagging…
+   current work                                                           
+Lollygagging…
+Lollygagging…↑
+     current work                                                               
+Lollygagging…
+Lollygagging…↑
+     current work                                                               
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+All checkspassed!
+Lollygagging…
+Lollygagging…4
+Lollygagging…
+Lollygagging…9
+Lollygagging…
+Lollygagging…1
+Lollygagging…
+     current work                                                               
+layer. No policy is scattered across call sites. No abstraction issues found.
+Nowlet'scommitandcallcoding-done:
+currentwork
+Lollygagging…
+Lollygagging…↑
+Lollygagging…4
+currentwork
+Lollygagging…
+Lollygagging…↑
+(No output)
+     current work                                                               
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+   current work                                                           
+Lollygagging…7
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+   current work                                                           
+Lollygagging…
+Lollygagging…↑
+Error: Exit code 1
+Lollygagging…
+   current work                                                           
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+  [ ] 4. Exit only AFTER coding-done succeeds                                   
+currentwork
+Lollygagging…
+   current work                                                           
+Lollygagging…
+Lollygagging…↑
+   /bin/h: .venv/bin/python: No such file or directory                    
+currentwork
+Lollygagging…
+Lollygagging…↑
+ISSUE_ORCHESTRATOR_SESSION_ID=coding-1
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+   current work                                                           
+Lollygagging…↑
+Lollygagging…
+ollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+     current work                                                               
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+ollygagging…↑
+Lollygagging…
+/Users/bucegordon/evissue-orchestrato-4057/.venv/b… 
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…6
+Lollygagging…
+Lollygagging…7
+Lollygagging…
+Lollygagging…1
+Lollygagging…
+Lollygagging…7
+Lollygagging…
+Lollygagging…9
+Lollygagging…
+     current work                                                               
+Lollygagging…
+Lollygagging…6
+Lollygagging…
+Lollygagging…2
+Lollygagging…
+Lollygagging…1
+Lollygagging…
+Lollygagging…4
+Lollygagging…
+Lollygagging…9
+Lollygagging…
+Lollygagging…8
+Lollygagging…
+     current work                                                               
+Lollygagging…
+Lollygagging…6
+Lollygagging…
+Lollygagging…2
+Lollygagging…
+Lollygagging…7
+Lollygagging…
+Lollygagging…9
+Lollygagging…
+Lollygagging…4
+Lollygagging…
+   current work                                                           
+Lollygagging…
+Lollygagging…5
+Lollygagging…
+Lollygagging…4
+Lollygagging…
+Lollygagging…4
+Lollygagging…
+Lollygagging…7
+Lollygagging…
+Lollygagging…8
+Lollygagging…
+Lollygagging…1
+Lollygagging…
+Lollygagging…2
+Lollygagging…
+Lollygagging…4
+Lollygagging…
+Lollygagging…4
+Lollygagging…
+Lollygagging…3
+Lollygagging…
+Lollygagging…7
+Lollygagging…
+     current work                                                               
+Lollygagging…
+     current work                                                               
+Lollygagging…
+Lollygagging…↑
+til -5 tmp/vlidate_outpu.txt                          
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑8
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+Lollygagging…↑
+Lollygagging…
+     current work                                                               
+Lollygagging…
+   current work                                                           
+Lollygagging…
+     current work                                                               
+Lollygagging…
+Lollygagging…↑60
+Lollygagging…
+Lollygagging…↑
+     current work                                                               
+Lollygagging…5
+   current work                                                           
+Lollygagging…
+12% until auto-compact · /mode…
+Updateavailable!Run:brewup…
+Lollygagging…↑
+Updateavailable!Run:brewup…
+Implementation complete. Here's a summary of what was built for issue #4057:
+ProviderCircuitBreakerUIvisibility:
+1.Globalbanner—whenanyprovidercircuitisopen,abannerappearsatthe
+topofthedashboardshowingprovidername,cooldownremaining(seconds),and
+lasterrorsummary
+2.Queuewaitreason—queuedissueswhoserequiredproviderhasanopen
+circuitshow"Waiting:{provider}unavailable"insteadofthenormalqueue
+positionmessage
+3.Viewmodel—DashboardViewModelnowincludesopen_provider_circuits:
+list[dict]computedfromtheorchestrator'sproviderresiliencestore
+4.Contract—DashboardViewModelPayloadintheOpenAPIcontractandgenerated
+ui_openapi_models.pyincludethenewfield
+5.CSS—.provider-outage-bannerstyledconsistentlywithexistingsystem
+banners
+6.Tests—3newunittestsfortheviewmodel+2UIguardrailtests
+currentwork
+Updateavailable!Run:brewup…
+Claude is waiting for your input
+

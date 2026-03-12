@@ -84,22 +84,35 @@ _NOISE_KEYWORDS = (
     "researching", "processing", "generating", "working",
     "clauding", "claing", "interrupt", "timeout",
     "hullaballooing", "beboppin", "perusing",
+    "lollygagging",
+)
+
+
+_TUI_STATUS_SUBSTRINGS = (
+    "bypasspermission", "bypass permissions", "shift+tab",
+    "ctrl+g", "ctrl+o", "ctrl+c",
+    "claude code", "auto-compact",
+    "waiting for your input", "current work",
 )
 
 
 def _is_tui_status_noise(lower: str) -> bool:
     """Return True for TUI status bar, key hints, and banner lines."""
-    if "bypasspermission" in lower or "bypass permissions" in lower or "shift+tab" in lower:
+    if any(kw in lower for kw in _TUI_STATUS_SUBSTRINGS):
+        return True
+    if lower.startswith("esc to"):
+        return True
+    if "claudecode" in lower.replace(" ", "") or "currentwork" in lower.replace(" ", ""):
         return True
     if "medium" in lower and "/eff" in lower:
         return True
-    if lower.startswith("esc to") or "ctrl+g" in lower:
-        return True
-    if "ctrl+o" in lower or "ctrl+c" in lower:
-        return True
-    if "claudecode" in lower.replace(" ", "") or "claude code" in lower:
-        return True
     if "sonnet" in lower and ("claude" in lower or "max" in lower):
+        return True
+    if "update" in lower and "available" in lower and ("brew" in lower or "run:" in lower):
+        return True
+    if "lsp for" in lower and "failed" in lower:
+        return True
+    if lower in ("(no output)", "(nooutput)"):
         return True
     return False
 
@@ -130,7 +143,7 @@ _KEEP_SHORT = frozenset({
 _NOISE_SUFFIX_SOURCES = (
     "interrupt", "fiddle-faddling", "thinking", "envisioning",
     "planning", "analyzing", "reasoning", "clauding",
-    "hullaballooing", "beboppin'", "perusing",
+    "hullaballooing", "beboppin'", "perusing", "lollygagging",
 )
 
 _BLOCK_CHARS = frozenset("▐▛▜▌▝▘█▀▄▁▂▃▅▆▇ ")
@@ -147,9 +160,44 @@ def _is_short_fragment(stripped: str) -> bool:
     # Partial word fragments from cursor-positioned TUI rendering:
     # e.g. "terrupt" from "interrupt", "ding" from "fiddling"
     stripped_lower = stripped.lower().rstrip("…↑↓")
-    if 3 <= len(stripped_lower) <= 10 and stripped_lower.isalpha() and " " not in stripped:
-        return any(kw.endswith(stripped_lower) and stripped_lower != kw for kw in _NOISE_SUFFIX_SOURCES)
+    if 3 <= len(stripped_lower) <= 12 and " " not in stripped:
+        alpha_only = "".join(c for c in stripped_lower if c.isalpha())
+        if len(alpha_only) >= 3:
+            for kw in _NOISE_SUFFIX_SOURCES:
+                # Suffix match (e.g. "gagging" from "lollygagging")
+                if kw.endswith(alpha_only) and alpha_only != kw:
+                    return True
+                # Substring match (e.g. "ollyg" from "lollygagging")
+                if alpha_only in kw and alpha_only != kw:
+                    return True
+                # Garbled substring: check if chars appear in order in keyword
+                # e.g. "ollgin" → "l-o-l-l-y-g-a-g-g-i-n-g" contains o,l,l,g,i,n
+                if len(alpha_only) >= 4 and _is_garbled_subsequence(alpha_only, kw):
+                    return True
     return False
+
+
+def _is_garbled_subsequence(fragment: str, keyword: str) -> bool:
+    """Check if fragment chars appear mostly in order within keyword.
+
+    Catches garbled terminal fragments like 'ollgin' from 'lollygagging'
+    where cursor repositioning corrupted the rendering.
+    """
+    if len(fragment) < 4:
+        return False
+    matched = 0
+    ki = 0
+    for fc in fragment:
+        while ki < len(keyword):
+            if keyword[ki] == fc:
+                matched += 1
+                ki += 1
+                break
+            ki += 1
+        else:
+            break
+    # At least 70% of fragment chars found in order in keyword
+    return matched >= len(fragment) * 0.7
 
 
 def _is_tui_chrome(stripped: str) -> bool:
