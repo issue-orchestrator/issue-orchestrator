@@ -57,6 +57,13 @@ def test_completed_and_awaiting_merge_bulk_buttons_default_disabled_in_template(
     html = _read(DASHBOARD_TEMPLATE)
     assert re.search(r'onclick="bulkRetryAwaitingMerge\(\)"\s+disabled', html)
     assert re.search(r'onclick="bulkRetryCompleted\(\)"\s+disabled', html)
+    # awaiting-merge column also has reset & retry buttons
+    # Find the awaiting-merge section and verify buttons exist there
+    am_start = html.find("column.id == 'awaiting-merge'")
+    am_end = html.find("column.id == 'completed'", am_start)
+    am_section = html[am_start:am_end]
+    assert "bulkResetRetry()" in am_section
+    assert "bulkResetRetryFromScratch()" in am_section
 
 
 def test_issue_detail_uses_timeline_label_not_journey() -> None:
@@ -166,6 +173,16 @@ def test_bulk_retry_awaiting_merge_handler_uses_ui_action_contract() -> None:
     assert "/api/unblock-retry" not in body
 
 
+def test_bulk_reset_retry_reads_from_blocked_and_awaiting_merge() -> None:
+    """Both bulk reset handlers must collect issues from blocked AND awaiting-merge."""
+    js = _read(DASHBOARD_JS)
+    for fn_name in ("bulkResetRetry", "bulkResetRetryFromScratch"):
+        body = _function_body(js, fn_name)
+        assert "getSelectedIssueNumbers('blocked')" in body, f"{fn_name} missing blocked selection"
+        assert "getSelectedIssueNumbers('awaiting-merge')" in body, f"{fn_name} missing awaiting-merge selection"
+        assert "'awaiting-merge'" in body, f"{fn_name} missing awaiting-merge in optimistic requeue"
+
+
 def test_retry_handler_uses_ui_action_contract() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "retryIssue")
@@ -233,8 +250,9 @@ def test_compact_card_context_menu_action_mapping_is_column_consistent() -> None
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "showContextMenu")
     assert "const isBlockedHistory = effectiveHistoryStatus === 'blocked' || effectiveHistoryStatus === 'needs-human';" in body
-    assert "const otherRetryStatuses = new Set(['failed', 'completed', 'timed-out', 'awaiting-merge']);" in body
-    assert "menuUnblock.style.display = '';" in body
+    assert "const resetRetryStatuses = new Set(['blocked', 'awaiting-merge']);" in body
+    assert "const otherRetryStatuses = new Set(['failed', 'completed', 'timed-out']);" in body
+    assert "menuUnblock.style.display = isBlockedHistory ? '' : 'none';" in body
     assert "menuResetRetry.style.display = '';" in body
     assert "menuResetRetryScratch.style.display = '';" in body
     assert "menuRetry.style.display = '';" in body

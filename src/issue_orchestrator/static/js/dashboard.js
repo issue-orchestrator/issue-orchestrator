@@ -2187,6 +2187,8 @@ async function loadExpandedColumn(columnId, options = {}) {
                         ${columnId === 'blocked' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingleFromScratch(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n} from a fresh branch based on main">Reset & Retry From Scratch</button>` : ''}
                         ${columnId === 'running' ? `<button class="card-action-btn card-action-reset" onclick="killExpandedSingle(${n}, this);event.stopPropagation();" title="Terminate issue #${n} and place on hold">Cancel</button>` : ''}
                         ${columnId === 'awaiting-merge' ? `<button class="card-action-btn card-action-unblock" onclick="retryExpandedSingle(${n}, 'awaiting-merge', this);event.stopPropagation();" title="Remove pr-pending and requeue issue #${n}">Retry</button>` : ''}
+                        ${columnId === 'awaiting-merge' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingle(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n}">Reset & Retry</button>` : ''}
+                        ${columnId === 'awaiting-merge' ? `<button class="card-action-btn card-action-reset" onclick="resetRetrySingleFromScratch(${n}, this);event.stopPropagation();" title="Full reset and requeue issue #${n} from a fresh branch based on main">Reset & Retry From Scratch</button>` : ''}
                         ${columnId === 'completed' ? `<button class="card-action-btn card-action-unblock" onclick="retryExpandedSingle(${n}, 'completed', this);event.stopPropagation();" title="Requeue issue #${n} for another run">Retry</button>` : ''}
                     ${item.issue_url ? `<a class="card-gh" href="${item.issue_url}" target="_blank" rel="noopener noreferrer" title="Open in GitHub">↗</a>` : ''}
                         ${item.pr_url ? `<a class="card-action-btn" href="${item.pr_url}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation();">PR</a>` : ''}
@@ -2440,7 +2442,7 @@ async function bulkUnblock() {
 }
 
 async function bulkResetRetry() {
-    const numbers = getSelectedIssueNumbers('blocked');
+    const numbers = getSelectedIssueNumbers('blocked').concat(getSelectedIssueNumbers('awaiting-merge'));
     if (!numbers.length) return;
     const confirmMsg = `Full reset and requeue ${numbers.length} issue(s)?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Orchestrator labels\n\nAfter reset, the issues will be requeued for a fresh retry.`;
     if (!await showConfirm(confirmMsg)) return;
@@ -2453,7 +2455,7 @@ async function bulkResetRetry() {
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.reset && data.reset.length > 0) {
-            applyOptimisticRequeue(data.reset, ['blocked']);
+            applyOptimisticRequeue(data.reset, ['blocked', 'awaiting-merge']);
             showToast(`Reset ${data.reset.length} issue(s) → Queued`);
             await refreshViewModel();
         } else if (res.ok && data.failed && data.failed.length > 0) {
@@ -2468,7 +2470,7 @@ async function bulkResetRetry() {
 }
 
 async function bulkResetRetryFromScratch() {
-    const numbers = getSelectedIssueNumbers('blocked');
+    const numbers = getSelectedIssueNumbers('blocked').concat(getSelectedIssueNumbers('awaiting-merge'));
     if (!numbers.length) return;
     const confirmMsg = `Full reset and requeue ${numbers.length} issue(s) from scratch?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Orchestrator labels\n\nNext launch will force NEW branches from base (main), not prior issue branch history.`;
     if (!await showConfirm(confirmMsg)) return;
@@ -2481,7 +2483,7 @@ async function bulkResetRetryFromScratch() {
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.reset && data.reset.length > 0) {
-            applyOptimisticRequeue(data.reset, ['blocked']);
+            applyOptimisticRequeue(data.reset, ['blocked', 'awaiting-merge']);
             showToast(`Reset ${data.reset.length} issue(s) from scratch → Queued`);
             await refreshViewModel();
         } else if (res.ok && data.failed && data.failed.length > 0) {
@@ -3275,15 +3277,18 @@ function showContextMenu(e, row) {
         menuKill,
     ].some((el) => el && el.style.display !== 'none');
 
-    // History actions by status: blocked => Unblock + Reset & Retry (+ Scratch); others => Retry
-    const otherRetryStatuses = new Set(['failed', 'completed', 'timed-out', 'awaiting-merge']);
+    // History actions by status:
+    // blocked/awaiting-merge => Retry + Reset & Retry + Reset & Retry From Scratch
+    // blocked also gets Unblock; others => Retry only
+    const resetRetryStatuses = new Set(['blocked', 'awaiting-merge']);
+    const otherRetryStatuses = new Set(['failed', 'completed', 'timed-out']);
     if (menuHistoryDivider && menuRetry && menuUnblock && menuResetRetry && menuResetRetryScratch) {
-        if (isBlockedHistory) {
+        if (resetRetryStatuses.has(effectiveHistoryStatus) || isBlockedHistory) {
             menuHistoryDivider.style.display = hasPrimaryActionsAboveHistory ? 'block' : 'none';
-            menuUnblock.style.display = '';
+            menuUnblock.style.display = isBlockedHistory ? '' : 'none';
             menuResetRetry.style.display = '';
             menuResetRetryScratch.style.display = '';
-            menuRetry.style.display = 'none';
+            menuRetry.style.display = '';
         } else if (otherRetryStatuses.has(effectiveHistoryStatus)) {
             menuHistoryDivider.style.display = hasPrimaryActionsAboveHistory ? 'block' : 'none';
             menuUnblock.style.display = 'none';
