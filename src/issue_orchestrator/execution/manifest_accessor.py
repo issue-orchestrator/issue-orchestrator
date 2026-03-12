@@ -65,7 +65,12 @@ class ManifestAccessor:
     run_identity: RunIdentity
 
     def get_ui_log(self, *, allow_empty: bool = False) -> ArtifactStream:
-        """Return the run-scoped UI session log without falling back to provider logs."""
+        """Return the run-scoped UI session log without falling back to provider logs.
+
+        This intentionally keeps the UI Session viewer bound to ``ui-session.log``
+        even when other run artifacts such as Claude JSONL exist. An empty UI log
+        should remain empty in the viewer rather than silently changing artifacts.
+        """
         run_dir = self.run_identity.run_dir
         self._require_run_dir_exists(run_dir)
         path = run_dir / "ui-session.log"

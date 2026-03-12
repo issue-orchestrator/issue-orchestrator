@@ -214,10 +214,10 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     return actions
 
 
-def _format_extra_provider_args(value: Any) -> str:
-    if not isinstance(value, dict) or not value:
+def _format_extra_provider_args(raw: Any) -> str:
+    if not isinstance(raw, dict) or not raw:
         return ""
-    parts = [f"{key}={value[key]}" for key in sorted(value)]
+    parts = [f"{key}={value}" for key, value in sorted(raw.items())]
     return ", ".join(parts)
 
 
