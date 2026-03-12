@@ -499,23 +499,26 @@ class TestSetupLogging:
 
     def test_setup_logging_default(self):
         """Verify logging setup with default settings."""
-        with patch('logging.getLogger') as mock_get_logger:
-            with patch('logging.FileHandler') as mock_file_handler:
-                with patch('issue_orchestrator.infra.logging_config.TimedRotatingFileHandler', create=True) as mock_rotating:
-                    with patch('logging.info'):
-                        mock_logger = Mock()
-                        mock_logger.handlers = []
-                        mock_get_logger.return_value = mock_logger
+        import os
+        with patch.dict(os.environ, {}, clear=False) as env:
+            env.pop("ORCHESTRATOR_LOG_TO_STDERR", None)
+            with patch('logging.getLogger') as mock_get_logger:
+                with patch('logging.FileHandler') as mock_file_handler:
+                    with patch('issue_orchestrator.infra.logging_config.TimedRotatingFileHandler', create=True) as mock_rotating:
+                        with patch('logging.info'):
+                            mock_logger = Mock()
+                            mock_logger.handlers = []
+                            mock_get_logger.return_value = mock_logger
 
-                        mock_handler = Mock()
-                        mock_file_handler.return_value = mock_handler
-                        mock_rotating.return_value = mock_handler
+                            mock_handler = Mock()
+                            mock_file_handler.return_value = mock_handler
+                            mock_rotating.return_value = mock_handler
 
-                        setup_logging(repo_root="/tmp/test-repo", level="INFO")
+                            setup_logging(repo_root="/tmp/test-repo", level="INFO")
 
-                        mock_logger.setLevel.assert_called_once()
-                        assert mock_file_handler.called or mock_rotating.called
-                        mock_logger.addHandler.assert_called_once_with(mock_handler)
+                            mock_logger.setLevel.assert_called_once()
+                            assert mock_file_handler.called or mock_rotating.called
+                            mock_logger.addHandler.assert_called_once_with(mock_handler)
 
     def test_setup_logging_debug_mode(self):
         """Verify logging setup with debug mode enabled."""
