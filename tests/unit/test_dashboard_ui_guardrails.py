@@ -428,3 +428,49 @@ def test_expanded_column_state_handles_running_column() -> None:
     ).read_text(encoding="utf-8")
     assert "columnId === 'running'" in js
     assert "active_items" in js
+
+
+def test_provider_circuit_pill_in_header_template() -> None:
+    """Provider circuit breaker pill must be present in the header controls."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert "providerCircuitWrap" in html
+    assert "providerCircuitPill" in html
+    assert "providerCircuitPanel" in html
+    assert "provider.outage" in html or "providerCircuit" in html
+
+
+def test_provider_circuit_pill_hidden_by_default() -> None:
+    """Provider circuit breaker pill must be hidden when no outage is active."""
+    html = _read(DASHBOARD_TEMPLATE)
+    # The pill wrapper starts hidden (style="display:none;")
+    assert 'id="providerCircuitWrap" style="display:none;"' in html
+
+
+def test_provider_circuit_css_has_pill_and_panel_styles() -> None:
+    """Provider circuit pill and panel must have dedicated CSS rules."""
+    css = _read(DASHBOARD_CSS)
+    assert ".provider-circuit-pill" in css
+    assert ".provider-circuit-panel" in css
+    assert ".provider-circuit-panel.visible" in css
+
+
+def test_provider_circuit_js_handles_sse_outage_entered() -> None:
+    """JS must handle provider.outage_entered SSE events."""
+    js = _read(DASHBOARD_JS)
+    assert "provider.outage_entered" in js
+    assert "providerCircuits[data.provider]" in js
+    assert "renderProviderCircuits()" in js
+
+
+def test_provider_circuit_js_handles_sse_outage_exited() -> None:
+    """JS must handle provider.outage_exited SSE events."""
+    js = _read(DASHBOARD_JS)
+    assert "provider.outage_exited" in js
+
+
+def test_provider_circuit_js_initializes_from_dashboard_data() -> None:
+    """Provider circuit state must be initialized from window.dashboardData on load."""
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "initProviderCircuits")
+    assert "providerCircuitBreaker" in body
+    assert "renderProviderCircuits" in body
