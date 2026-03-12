@@ -363,6 +363,7 @@ def _process_exchange_round(  # noqa: PLR0913
         "session_name": session_name,
         "round_index": round_index,
         "reviewer_response_type": reviewer_response.response_type,
+        "reviewer_response_text": reviewer_response.response_text,
         "coder_response_type": coder_response.response_type,
     })
     last_coder_text = coder_response.response_text
@@ -447,6 +448,7 @@ def _complete_with_reviewer_ok(
         "session_name": session_name,
         "round_index": round_index,
         "reviewer_response_type": reviewer_response.response_type,
+        "reviewer_response_text": reviewer_response.response_text,
         "coder_response_type": None,
     })
     emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
@@ -481,6 +483,7 @@ def _stop_for_no_progress(
         "session_name": session_name,
         "round_index": round_index,
         "reviewer_response_type": reviewer_response.response_type,
+        "reviewer_response_text": reviewer_response.response_text,
         "coder_response_type": None,
     })
     emit(EventName.REVIEW_EXCHANGE_COMPLETED, {
@@ -1153,6 +1156,34 @@ def _seed_validation_record(
     session_output.update_manifest(run_dir, {"validation_record_path": str(target)})
 
 
+def _check_validation_record(run_dir: Path) -> str | None:
+    """Check that validation-record.json exists, is valid, and passed."""
+    validation_path = run_dir / "validation-record.json"
+    if not validation_path.exists():
+        return f"missing validation artifact: {validation_path}"
+    if validation_path.stat().st_size <= 0:
+        return f"validation artifact is empty: {validation_path}"
+    try:
+        vdata = json.loads(validation_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return f"validation artifact is not valid JSON: {validation_path}"
+    if not vdata.get("passed"):
+        msg = (
+            f"validation failed (exit_code={vdata.get('exit_code', '?')}). "
+            "Fix the failures and re-run coding-done."
+        )
+        stderr_path = vdata.get("stderr_path")
+        if stderr_path:
+            sp = Path(stderr_path) if Path(stderr_path).is_absolute() else run_dir / stderr_path
+            try:
+                if sp.is_file():
+                    msg += f"\nValidation output:\n{sp.read_text(encoding='utf-8', errors='replace')[:2000]}"
+            except OSError:
+                pass
+        return msg
+    return None
+
+
 def _validate_coder_protocol(run_dir: Path, *, require_validation: bool) -> str | None:
     completion_path = run_dir / "completion-coder.json"
     if not completion_path.exists():
@@ -1166,11 +1197,7 @@ def _validate_coder_protocol(run_dir: Path, *, require_validation: bool) -> str 
     if not isinstance(payload, dict):
         return f"completion artifact must be a JSON object: {completion_path}"
     if require_validation:
-        validation_path = run_dir / "validation-record.json"
-        if not validation_path.exists():
-            return f"missing validation artifact: {validation_path}"
-        if validation_path.stat().st_size <= 0:
-            return f"validation artifact is empty: {validation_path}"
+        return _check_validation_record(run_dir)
     return None
 
 

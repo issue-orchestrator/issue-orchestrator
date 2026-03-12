@@ -337,6 +337,15 @@ def test_review_feedback_modal_resolves_requested_issue_detail() -> None:
     assert "fetch(`/api/issue-detail/${issueNumber}?view=ops`)" in body
 
 
+def test_review_feedback_modal_includes_exchange_round_events() -> None:
+    """Review exchange round feedback must be rendered in the feedback modal."""
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "openReviewFeedback")
+    assert "review_exchange.round_completed" in body
+    assert "reviewer_response_text" in body
+    assert "Review exchange rounds" in body
+
+
 def test_session_diagnostics_actions_use_primary_plus_more_menu() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderGroupedDialogActions")
