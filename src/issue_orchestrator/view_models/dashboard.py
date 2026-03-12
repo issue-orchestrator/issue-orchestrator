@@ -182,6 +182,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_breaker": self.provider_circuit_breaker,
             "dashboard_data": self.dashboard_data(),
         }
 
