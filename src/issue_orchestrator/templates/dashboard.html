@@ -239,6 +239,8 @@
                             {% elif column.id == 'awaiting-merge' %}
                             <button class="issue-action-btn" onclick="bulkOpenPRs()" disabled>Open PRs</button>
                             <button class="issue-action-btn" onclick="bulkRetryAwaitingMerge()" disabled title="Remove pr-pending and requeue selected issues for another run">Retry</button>
+                            <button class="issue-action-btn" onclick="bulkResetRetry()" disabled title="Delete local worktree and remote branch, clear orchestrator labels, then requeue selected issues">Reset &amp; Retry</button>
+                            <button class="issue-action-btn" onclick="bulkResetRetryFromScratch()" disabled title="Delete local worktree and remote branch, clear orchestrator labels, then requeue selected issues from a fresh branch based on main">Reset &amp; Retry From Scratch</button>
                             {% elif column.id == 'completed' %}
                             <button class="issue-action-btn" onclick="bulkRetryCompleted()" disabled title="Requeue selected completed issues for another run">Retry</button>
                             {% elif column.id == 'running' %}
