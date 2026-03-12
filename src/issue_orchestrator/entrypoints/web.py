@@ -880,7 +880,10 @@ def _terminate_sessions(*, sessions: list[Any], killed_sessions: list[str]) -> l
 
 def _prune_issue_runtime_state(*, state: Any, issue_number: int) -> None:
     state.active_sessions = [s for s in state.active_sessions if s.issue.number != issue_number]
-    state.cached_queue_issues = [issue for issue in state.cached_queue_issues if issue.number != issue_number]
+    if _orchestrator is not None:
+        from ..control.queue_cache import QueueCache
+
+        QueueCache(_orchestrator.config, state).remove_issue(issue_number)
     state.pending_reviews = [r for r in state.pending_reviews if r.issue_number != issue_number]
     state.pending_reworks = [r for r in state.pending_reworks if r.resolve_issue_number() != issue_number]
     state.pending_triage_reviews = [r for r in state.pending_triage_reviews if r.issue_number != issue_number]
