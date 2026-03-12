@@ -173,6 +173,16 @@ def test_bulk_retry_awaiting_merge_handler_uses_ui_action_contract() -> None:
     assert "/api/unblock-retry" not in body
 
 
+def test_bulk_reset_retry_reads_from_blocked_and_awaiting_merge() -> None:
+    """Both bulk reset handlers must collect issues from blocked AND awaiting-merge."""
+    js = _read(DASHBOARD_JS)
+    for fn_name in ("bulkResetRetry", "bulkResetRetryFromScratch"):
+        body = _function_body(js, fn_name)
+        assert "getSelectedIssueNumbers('blocked')" in body, f"{fn_name} missing blocked selection"
+        assert "getSelectedIssueNumbers('awaiting-merge')" in body, f"{fn_name} missing awaiting-merge selection"
+        assert "'awaiting-merge'" in body, f"{fn_name} missing awaiting-merge in optimistic requeue"
+
+
 def test_retry_handler_uses_ui_action_contract() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "retryIssue")

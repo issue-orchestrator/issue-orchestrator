@@ -2442,7 +2442,7 @@ async function bulkUnblock() {
 }
 
 async function bulkResetRetry() {
-    const numbers = getSelectedIssueNumbers('blocked');
+    const numbers = getSelectedIssueNumbers('blocked').concat(getSelectedIssueNumbers('awaiting-merge'));
     if (!numbers.length) return;
     const confirmMsg = `Full reset and requeue ${numbers.length} issue(s)?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Orchestrator labels\n\nAfter reset, the issues will be requeued for a fresh retry.`;
     if (!await showConfirm(confirmMsg)) return;
@@ -2455,7 +2455,7 @@ async function bulkResetRetry() {
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.reset && data.reset.length > 0) {
-            applyOptimisticRequeue(data.reset, ['blocked']);
+            applyOptimisticRequeue(data.reset, ['blocked', 'awaiting-merge']);
             showToast(`Reset ${data.reset.length} issue(s) → Queued`);
             await refreshViewModel();
         } else if (res.ok && data.failed && data.failed.length > 0) {
@@ -2470,7 +2470,7 @@ async function bulkResetRetry() {
 }
 
 async function bulkResetRetryFromScratch() {
-    const numbers = getSelectedIssueNumbers('blocked');
+    const numbers = getSelectedIssueNumbers('blocked').concat(getSelectedIssueNumbers('awaiting-merge'));
     if (!numbers.length) return;
     const confirmMsg = `Full reset and requeue ${numbers.length} issue(s) from scratch?\n\nThis will DELETE:\n• Local worktrees\n• Remote branches\n• Orchestrator labels\n\nNext launch will force NEW branches from base (main), not prior issue branch history.`;
     if (!await showConfirm(confirmMsg)) return;
@@ -2483,7 +2483,7 @@ async function bulkResetRetryFromScratch() {
         });
         const data = await res.json().catch(() => ({}));
         if (res.ok && data.reset && data.reset.length > 0) {
-            applyOptimisticRequeue(data.reset, ['blocked']);
+            applyOptimisticRequeue(data.reset, ['blocked', 'awaiting-merge']);
             showToast(`Reset ${data.reset.length} issue(s) from scratch → Queued`);
             await refreshViewModel();
         } else if (res.ok && data.failed && data.failed.length > 0) {
