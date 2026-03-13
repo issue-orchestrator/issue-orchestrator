@@ -21,6 +21,8 @@ execution:
     mode: "standard"   # or "hardened"
 ```
 
+`make validate` is the fast local publish gate. CI layers additional required coverage on top of it by running the agent-backed simulated and integration slices separately.
+
 ## Record Format
 
 Location: `.issue-orchestrator/validation/<suite>/<HEAD_SHA>.json`
