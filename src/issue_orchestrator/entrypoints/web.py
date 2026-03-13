@@ -5,6 +5,7 @@ import contextlib
 import json
 import logging
 import os
+import platform
 import signal
 import socket
 import subprocess
@@ -61,6 +62,7 @@ from ..execution.manifest_accessor import (
     ManifestAccessor,
     RunIdentity,
 )
+from ..execution.client_host import ClientHost, detect_client_host
 from ..execution.label_ops import LabelOperation, apply_label_operations
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..domain.event_taxonomy import (
@@ -132,6 +134,7 @@ if os.environ.get("IO_DEV"):
 _orchestrator: "Orchestrator | None" = None
 # Global reference to uvicorn server (for shutdown)
 _server: "Any" = None
+_client_host: ClientHost = detect_client_host()
 
 # Import shutdown manager for centralized exit handling
 from ..control.shutdown_manager import shutdown_manager
@@ -226,6 +229,12 @@ def set_orchestrator(orchestrator) -> None:
     """Set the orchestrator instance. Used by tests and application startup."""
     global _orchestrator
     _orchestrator = orchestrator
+
+
+def set_client_host(client_host: ClientHost) -> None:
+    """Set the client-host adapter. Used by tests."""
+    global _client_host
+    _client_host = client_host
 
 
 def trigger_server_shutdown():
@@ -1046,9 +1055,7 @@ async def focus_session(issue_number: int) -> JSONResponse:
 
 @app.post("/api/finder/{issue_number}")
 async def open_in_finder(issue_number: int) -> JSONResponse:
-    """Open the worktree folder in Finder for a specific session."""
-    import subprocess
-    import os
+    """Reveal the worktree path in the current client host for a specific session."""
 
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
@@ -1067,12 +1074,15 @@ async def open_in_finder(issue_number: int) -> JSONResponse:
     if not worktree_path.exists():
         return JSONResponse({"error": f"Worktree not found: {worktree_path}"}, status_code=404)
 
-    # Open in Finder (macOS only)
-    if os.uname().sysname == "Darwin":
-        subprocess.run(["open", str(worktree_path)])
-        return JSONResponse({"status": "opened", "path": str(worktree_path)})
-    else:
-        return JSONResponse({"error": "Finder is only available on macOS"}, status_code=400)
+    try:
+        result = _client_host.reveal_worktree(worktree_path)
+    except subprocess.CalledProcessError as e:
+        return JSONResponse({"error": f"Failed to open worktree: {e}"}, status_code=500)
+    except Exception as e:
+        return JSONResponse({"error": str(e)}, status_code=500)
+
+    status_code = 200 if result.action == "opened" else 409
+    return JSONResponse({"issue_number": issue_number, **result.to_dict()}, status_code=status_code)
 
 
 @app.get("/api/log/{issue_number}")
@@ -2700,6 +2710,7 @@ async def get_info() -> JSONResponse:
     from ..infra.repo_identity import build_repo_identity
     repo_identity = build_repo_identity(config.repo_root)
     commit_sha = repo_identity.commit_sha
+    client_capabilities = _client_host.capabilities()
 
     return JSONResponse({
         "version": "0.1.0",  # TODO: get from package
@@ -2707,6 +2718,13 @@ async def get_info() -> JSONResponse:
         "repo_root": str(config.repo_root) if config.repo_root else None,
         "ui_mode": config.ui_mode,
         "terminal_backend": config.terminal_adapter or "subprocess",
+        "client_capabilities": {
+            "focus_session": (config.terminal_adapter or "subprocess") != "subprocess",
+            "open_path": client_capabilities.open_path,
+            "reveal_worktree": client_capabilities.reveal_worktree,
+            "local_server_paths_only": client_capabilities.local_only,
+            "host_platform": platform.system().lower(),
+        },
         "commit_sha": commit_sha,
         "commit_short": commit_sha[:7] if commit_sha else None,
         "repo_identity": repo_identity.to_dict(),
@@ -3050,9 +3068,8 @@ async def get_failure_diagnosis(issue_number: int) -> JSONResponse:
     return JSONResponse(diagnosis)
 
 
-@app.post("/api/open-file")
-async def open_file(request: Request) -> JSONResponse:
-    """Open a file in the default system application.
+async def _open_host_path(request: Request) -> JSONResponse:
+    """Open a file via the current client-host integration.
 
     JSON body:
         path: str - Path to the file to open
@@ -3079,13 +3096,25 @@ async def open_file(request: Request) -> JSONResponse:
         return JSONResponse({"error": "File not found"}, status_code=404)
 
     try:
-        # Use macOS 'open' command to open in default app
-        subprocess.run(["open", file_path], check=True)
-        return JSONResponse({"status": "opened", "path": file_path})
+        result = _client_host.open_path(Path(file_path))
+        status_code = 200 if result.action == "opened" else 409
+        return JSONResponse(result.to_dict(), status_code=status_code)
     except subprocess.CalledProcessError as e:
         return JSONResponse({"error": f"Failed to open file: {e}"}, status_code=500)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
+
+
+@app.post("/api/host/open-path")
+async def open_host_path(request: Request) -> JSONResponse:
+    """Open a path via the current client-host integration."""
+    return await _open_host_path(request)
+
+
+@app.post("/api/open-file")
+async def open_file(request: Request) -> JSONResponse:
+    """Deprecated alias for opening a path via the current client-host integration."""
+    return await _open_host_path(request)
 
 
 @app.post("/api/unblock-retry")

@@ -42,6 +42,13 @@ export interface InfoPayload {
   repo_root: string | null;
   ui_mode: string | null;
   terminal_backend: string | null;
+  client_capabilities?: {
+    focus_session: boolean;
+    open_path: boolean;
+    reveal_worktree: boolean;
+    local_server_paths_only: boolean;
+    host_platform: string;
+  };
   commit_sha: string | null;
   commit_short: string | null;
   max_sessions: number;
