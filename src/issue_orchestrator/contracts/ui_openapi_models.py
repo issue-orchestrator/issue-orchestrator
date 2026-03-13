@@ -167,8 +167,15 @@ class SessionDiagnosticsActionPayload(BaseModel):
     path: str | None = None
     type: str
 
+class SessionDiagnosticsAnalysisPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    detail: str | None = None
+    headline: str
+    suggestions: list[str] | None = None
+
 class SessionDiagnosticsDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actions: list[SessionDiagnosticsActionPayload]
+    analysis: SessionDiagnosticsAnalysisPayload | None | None = None
     rows: list[DialogRowPayload]
     title: str

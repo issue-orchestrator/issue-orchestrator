@@ -151,6 +151,9 @@ def test_build_session_diagnostics_dialog_actions():
                 "orchestrator_log": "/logs/orch.log",
                 "validation_record_path": "validate.json",
                 "validation_stdout": "validation-output.log",
+                "validation_stderr": "validation-stderr.log",
+                "validation_status": "failed",
+                "validation_reason": "Missing packages/vscode/node_modules",
             },
             "session_identity": {
                 "task": "code",
@@ -162,6 +165,11 @@ def test_build_session_diagnostics_dialog_actions():
                 "extra_provider_args": {"verbose": "true"},
                 "claude_args": "",
                 "claude_prompt_mode": "arg",
+            },
+            "analysis": {
+                "headline": "Validation failed: Missing packages/vscode/node_modules",
+                "detail": "Install the worktree dependencies before running make validate.",
+                "suggestions": ["Run make worktree-setup"],
             },
             "run_dir": "/run/dir",
             "session_name": "fallback",
@@ -177,10 +185,14 @@ def test_build_session_diagnostics_dialog_actions():
     assert rows["Timeout"] == "60m"
     assert rows["Provider Args"] == "verbose=true"
     assert rows["Prompt Mode"] == "arg"
+    assert rows["Validation Status"] == "failed"
+    assert rows["Validation Reason"] == "Missing packages/vscode/node_modules"
+    assert dialog["analysis"]["headline"] == "Validation failed: Missing packages/vscode/node_modules"
 
     action_types = [action["type"] for action in dialog["actions"]]
     assert "open_path" in action_types
     assert "open_agent_log" in action_types
+    assert "copy_agent_log" in action_types
     assert "view_claude_log" in action_types
     assert "open_orchestrator_log" in action_types
     agent_log_action = next(action for action in dialog["actions"] if action["type"] == "open_agent_log")
@@ -199,6 +211,7 @@ def test_build_session_diagnostics_dialog_actions():
     assert "/wt/diag/diagnostic.json" in paths
     assert "/wt/validate.json" in paths
     assert "/wt/validation-output.log" in paths
+    assert "/wt/validation-stderr.log" in paths
 
 
 def test_build_session_diagnostics_dialog_fallbacks_without_worktree():
@@ -262,6 +275,24 @@ def test_build_session_diagnostics_dialog_keeps_absolute_validation_output_path(
 
     paths = {action.get("path") for action in dialog["actions"] if "path" in action}
     assert "/wt/.issue-orchestrator/sessions/r1/validation-output.log" in paths
+
+
+def test_build_session_diagnostics_dialog_drops_malformed_analysis():
+    dialog = build_session_diagnostics_dialog(
+        11,
+        {
+            "manifest": {
+                "session_name": "sess-bad-analysis",
+            },
+            "run_dir": "/run/r1",
+            "analysis": {
+                "detail": "Missing the required headline should drop this payload.",
+                "unexpected": True,
+            },
+        },
+    )
+
+    assert dialog["analysis"] is None
 
 
 def test_build_blocked_issues_dialog():

@@ -1626,26 +1626,11 @@ body.column-focus-mode .column-expanded {
 .diagnostics-modal .modal-body {
     overflow: visible;
 }
-.diag-more-btn {
-    white-space: nowrap;
-    list-style: none;
-}
-.diag-more-btn::-webkit-details-marker {
-    display: none;
-}
-.diag-more-disclosure {
+.diag-secondary-actions {
     display: grid;
     gap: 6px;
-}
-.diag-more-disclosure[open] .diag-more-btn {
-    background: color-mix(in srgb, var(--bg-hover) 72%, transparent);
-}
-.diag-more-list {
-    display: grid;
-    gap: 6px;
-    min-width: 240px;
-    max-height: min(40vh, 320px);
-    overflow: auto;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    margin-top: 8px;
     background: color-mix(in srgb, var(--bg-panel-soft) 80%, transparent);
     border: 1px solid var(--border);
     border-radius: 8px;
@@ -1673,6 +1658,27 @@ body.column-focus-mode .column-expanded {
     font-size: 11px;
     color: var(--text-muted);
     margin-top: -2px;
+}
+.diag-analysis {
+    margin-top: 10px;
+}
+.diag-analysis-headline {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+}
+.diag-analysis-detail {
+    margin-top: 6px;
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+}
+.diag-analysis-suggestions {
+    margin: 8px 0 0;
+    padding-left: 18px;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
 }
 
 /* Confirm popover */

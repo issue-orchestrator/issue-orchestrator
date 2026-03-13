@@ -709,6 +709,44 @@ function openAgentLogAction(issueNumber, runDir = null, logLabel = 'UI Session',
     return openAgentLog(issueNumber, logLabel, runDir, errorSurface);
 }
 
+async function copyAgentLogAction(issueNumber, runDir = null) {
+    if (!runDir) {
+        showToast('No run-scoped UI session is available to copy', true);
+        return;
+    }
+    try {
+        const params = new URLSearchParams();
+        params.set('run_dir', runDir);
+        params.set('limit', '0');
+        const res = await fetch(`/api/log/local/${issueNumber}?${params.toString()}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+            throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        const text = Array.isArray(data.lines) ? data.lines.join('\n') : '';
+        if (!text.trim()) {
+            showToast('UI session is empty', true);
+            return;
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(text);
+            showToast('UI session copied');
+            return;
+        }
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        textarea.style.position = 'fixed';
+        textarea.style.opacity = '0';
+        document.body.appendChild(textarea);
+        textarea.select();
+        const ok = document.execCommand('copy');
+        document.body.removeChild(textarea);
+        showToast(ok ? 'UI session copied' : 'Failed to copy', !ok);
+    } catch (err) {
+        showToast(`Failed to copy UI session: ${err instanceof Error ? err.message : String(err)}`, true);
+    }
+}
+
 function formatLogStreamObservation(obs) {
     if (!obs || typeof obs !== 'object') return '';
     const fmt = (fileObs) => {
@@ -810,6 +848,7 @@ async function openSessionManifest(issueNumber, runDir = null) {
         const key = String(row.label || '').toLowerCase();
         return !overviewKeys.has(key) && !launchKeys.has(key);
     });
+    const analysis = data.analysis && typeof data.analysis === 'object' ? data.analysis : null;
 
     const hasActions = actions.length > 0;
 
@@ -834,6 +873,23 @@ async function openSessionManifest(issueNumber, runDir = null) {
     html += renderDialogRows(pathRows, { monospace: true });
     html += '</section>';
     html += '</div>';
+
+    if (analysis && analysis.headline) {
+        html += '<section class="diag-section diag-analysis">';
+        html += '<div class="diag-section-title">Current Diagnosis</div>';
+        html += `<div class="diag-analysis-headline">${escapeHtml(String(analysis.headline || ''))}</div>`;
+        if (analysis.detail) {
+            html += `<div class="diag-analysis-detail">${escapeHtml(String(analysis.detail))}</div>`;
+        }
+        if (Array.isArray(analysis.suggestions) && analysis.suggestions.length > 0) {
+            html += '<ul class="diag-analysis-suggestions">';
+            for (const suggestion of analysis.suggestions) {
+                html += `<li>${escapeHtml(String(suggestion))}</li>`;
+            }
+            html += '</ul>';
+        }
+        html += '</section>';
+    }
 
     if (hasActions) {
         html += '<div class="diag-actions">';
@@ -905,16 +961,15 @@ function renderGroupedDialogActions(actions) {
     for (const item of primary) {
         html += renderDialogActionWithLabel(item.action, item.label);
     }
+    html += '</div>';
     if (secondary.length > 0) {
-        html += '<details class="diag-more-disclosure">';
-        html += '<summary class="btn-secondary diag-more-btn">Artifacts & Logs ▾</summary>';
-        html += '<div class="diag-more-list">';
+        html += '<div class="diag-secondary-actions">';
         for (const item of secondary) {
             html += renderDialogActionMenuItem(item.action, item.label);
         }
-        html += '</div></details>';
+        html += '</div>';
     }
-    html += '</div></section>';
+    html += '</section>';
     return html;
 }
 
@@ -923,6 +978,7 @@ function _dialogActionShortLabel(action) {
     const type = String(action.type || '');
     const label = String(action.label || '');
     if (type === 'open_agent_log') return 'UI Session';
+    if (type === 'copy_agent_log') return 'Copy UI Session';
     if (type === 'view_claude_log') return 'Claude Log';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
     if (type === 'open_review_feedback') return 'Review Feedback';
@@ -956,6 +1012,10 @@ function _renderDialogActionButton(action, labelOverride, cssClass) {
         if (!fallbackRunDir) return '';
         const runDirFirstArg = `${JSON.stringify(String(fallbackRunDir))}, `;
         return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'UI Session', 'inline')">${label}</button>`;
+    }
+    if (action.type === 'copy_agent_log') {
+        if (!fallbackRunDir) return '';
+        return `<button class="${cssClass}" onclick="copyAgentLogAction(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))})">${label}</button>`;
     }
     if (action.type === 'view_claude_log') {
         if (!fallbackRunDir) return '';
@@ -4634,6 +4694,10 @@ function runTimelineEventAction(action) {
     if (action.type === 'open_agent_log' && action.issue_number) {
         const label = action.label ? String(action.label).replace(/^View\s+/, '') : 'UI Session';
         openAgentLogAction(action.issue_number, action.run_dir || null, label);
+        return;
+    }
+    if (action.type === 'copy_agent_log' && action.issue_number) {
+        copyAgentLogAction(action.issue_number, action.run_dir || null);
         return;
     }
     if (action.type === 'view_claude_log' && action.issue_number) {
