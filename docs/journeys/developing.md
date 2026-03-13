@@ -9,7 +9,7 @@ git clone https://github.com/BruceBGordon/issue-orchestrator.git
 cd issue-orchestrator
 make venv
 source .venv/bin/activate
-pytest tests/unit/ -x -q    # Verify everything works (~4000 tests)
+pytest tests/unit/ -x -q    # Verify the unit suite passes
 ```
 
 If you're working on a feature branch, use a git worktree to keep the base repo clean:
@@ -24,7 +24,7 @@ make worktree-setup
 
 **[Architecture diagram](../architecture/README.md)** — The hex diagram shows how everything connects: entry points, control plane, ports, adapters, external systems.
 
-**[CLAUDE.md](../../CLAUDE.md)** — This is the single source of truth for conventions. It's written for AI agents (so the tone is directive), but the rules apply to all contributors. The key sections:
+**[AGENTS.md](../../AGENTS.md)** — This is the primary conventions guide for contributors. It's written to be directly actionable for coding agents, but the architecture rules and workflow constraints apply equally to humans. The key sections:
 
 | Section | What you'll learn |
 |---------|-------------------|
@@ -42,11 +42,12 @@ The codebase follows strict layered separation:
 |-------|-----------|----------------|
 | **Control** | `control/` | Decisions, policy, state advancement. Pure logic, no I/O. |
 | **Observation** | `observation/` | Gather facts. No decisions, no mutations. |
-| **Execution** | `execution/` | Talk to external systems. No policy. |
+| **Adapters** | `adapters/` | Concrete external-system integrations. |
+| **Execution** | `execution/` | Runtime services, provider factories, and orchestration support code. |
 | **Ports** | `ports/` | Protocol interfaces. Contracts between layers. |
 | **Domain** | `domain/` | Models, state machines, events. |
 
-If you're adding a new external integration, you'll add a Protocol in `ports/` and an adapter in `execution/`. If you're changing decision logic, that's `control/`. The orchestrator (`orchestrator.py`) delegates to control — it shouldn't contain policy itself.
+If you're adding a new external integration, you'll add a Protocol in `ports/` and a concrete adapter in `adapters/`, then wire it through the composition root and execution/provider layer as needed. If you're changing decision logic, that's `control/`. The runtime facade lives in `infra/orchestrator.py` and should keep delegating rather than owning policy.
 
 ## Testing
 
@@ -64,11 +65,11 @@ pytest tests/e2e/ -v               # E2E tests (requires gh auth)
 
 | Topic | Doc | When you need it |
 |-------|-----|------------------|
-| How agents complete work | `coding_done.py`/`reviewer_done.py` + CLAUDE.md "Agent Intent, Orchestrator Authority" | Modifying completion processing |
+| How agents complete work | `entrypoints/cli_tools/coding_done.py` / `entrypoints/cli_tools/reviewer_done.py` + AGENTS "Agent Intent, Orchestrator Authority" | Modifying completion processing |
 | Code review loop | [Review Workflow](../development/REVIEW_WORKFLOW.md) | Modifying review, rework, or triage |
 | Hook enforcement | [Hooks Architecture](../architecture/hooks.md) | Modifying safety guardrails |
 | State machines | `domain/state_machines/` | Changing issue or review lifecycle |
-| Events and observability | CLAUDE.md "Events vs Logs" | Adding new observable behavior |
+| Events and observability | AGENTS "Events vs Logs" | Adding new observable behavior |
 
 ## Submitting changes
 
@@ -85,6 +86,6 @@ These docs in `docs/development/` cover specific topics in depth:
 | [Testing Guide](../development/TESTING.md) | Test patterns, fixtures, mocking |
 | [Troubleshooting](../development/TROUBLESHOOTING.md) | Debugging sessions, hooks, common issues |
 | [Review Workflow](../development/REVIEW_WORKFLOW.md) | Code review pipeline, exchange mechanisms |
-| [Debugging](../development/DEBUGGING.md) | Event system debugging |
+| [Debugging](../development/debugging.md) | Event system debugging |
 | [Caching & ETags](../development/CACHING_ETAGS.md) | GitHub API caching implementation |
 | [GitHub Token Setup (Dev)](../development/GITHUB_TOKEN_SETUP.md) | Token resolution chain internals |

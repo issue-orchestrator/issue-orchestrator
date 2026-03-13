@@ -1,6 +1,6 @@
 # Architecture
 
-For architecture principles, coding conventions, dependency injection patterns, event vs logging rules, testing philosophy, and port/adapter guidelines, see [CLAUDE.md](../../CLAUDE.md). That file is the single source of truth for how to work in this codebase — it's written for AI agents but applies equally to human developers.
+For engineering conventions, dependency-injection rules, event vs log guidance, and package-level boundaries, see [AGENTS.md](../../AGENTS.md). Directory-specific `AGENTS.md` files under `src/` and `tests/` refine those rules for each area.
 
 ## System Overview
 
@@ -35,12 +35,16 @@ graph TB
         PT_STORE[SessionStore]
     end
 
-    subgraph "Adapters (Execution)"
+    subgraph "Adapters"
         GH[GitHubAdapter]
-        TERM[TerminalAdapter<br/>subprocess]
-        SSE[SSE Plugin]
-        WT[WorktreeAdapter]
+        TERM[Terminal Adapter]
+        WT[Worktree Adapter]
         STORE[JsonSessionStore]
+    end
+
+    subgraph "Execution Support"
+        SSE[SSE Plugin]
+        PROV[Provider Factories]
     end
 
     subgraph "External Systems"
@@ -79,6 +83,8 @@ graph TB
     GH --> GHAPI
     TERM --> TERMS
     SSE --> BROWSER
+    PROV --> GH
+    PROV --> TERM
     WT --> FS
     STORE --> FS
 

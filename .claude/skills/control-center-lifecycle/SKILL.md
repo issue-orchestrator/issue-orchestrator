@@ -10,7 +10,7 @@ Use this skill when changing Control Center UI structure, lifecycle actions, or 
 ## Source of Truth
 
 1. `docs/architecture/control_center_lifecycle_model.md`
-2. `docs/development/CONTROL_CENTER_LIFECYCLE_CHECKLIST.md`
+2. `docs/development/control_center_lifecycle_checklist.md`
 
 ## Required Rules
 

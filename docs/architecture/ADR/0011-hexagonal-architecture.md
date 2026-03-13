@@ -17,17 +17,17 @@ Adopt hexagonal (ports and adapters) architecture:
    - `IssueTracker`, `PullRequestTracker`, `LabelSet` - GitHub operations
    - `WorkingCopy` - local git operations
 
-2. **Adapters** (`execution/`) - Concrete implementations of ports
+2. **Adapters** (`adapters/` with runtime support in `execution/`) - Concrete implementations of ports
    - `GitHubAdapter` - implements GitHub-related ports
    - `PluggySessionRunner` - delegates to terminal plugins
    - `GitWorkingCopy` - implements local git operations
 
-3. **Core** (`control/`, `orchestrator.py`) - Business logic using only ports
-   - No imports from `execution/`
+3. **Core** (`control/`, `infra/orchestrator.py`) - Business logic using only ports
+   - No imports from `adapters/`
    - No knowledge of concrete implementations
    - Receives dependencies via constructor injection
 
-4. **Composition Root** (`bootstrap.py`) - Single place that wires dependencies
+4. **Composition Root** (`entrypoints/bootstrap.py`) - Single place that wires dependencies
    - Only place that imports both ports and adapters
    - Creates concrete adapters and injects into orchestrator
 

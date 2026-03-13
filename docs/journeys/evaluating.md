@@ -6,13 +6,13 @@ You're assessing Issue Orchestrator's design — whether the architecture is sou
 
 **[README](../../README.md)** — The pitch and how-it-works diagram. Takes 2 minutes. Notice the agent-reviewer loop with cycle limits — that's the core quality enforcement mechanism.
 
-**[REVIEWER_README](../../REVIEWER_README.md)** — Written for you. Explains what's stable (orchestration core, guardrails, workflow enforcement, resilience) versus what's experimental (planning, UI polish, some adapters). Focus your time on the stable areas.
+**[Project Status](../../README.md#project-status)** — Start here for the current maturity statement. It is the maintained summary of what is stable versus still evolving.
 
 ## Architecture
 
 **[Architecture diagram](../architecture/README.md)** — The hexagonal (ports and adapters) system diagram. Everything flows through Protocol interfaces — the core has no knowledge of GitHub, terminals, or storage implementations.
 
-**[CLAUDE.md](../../CLAUDE.md)** — This is the project's conventions document. It's addressed to AI agents (the tone reflects that), but the architecture principles, fail-fast philosophy, event vs logging rules, and abstraction heuristics are the real engineering standards. Start at "Architecture Principles" and read through "Conventions."
+**[AGENTS.md](../../AGENTS.md)** — This is the maintained contributor guide. It captures the engineering rules that shape the codebase: fail-fast design, event vs log boundaries, DI, and abstraction heuristics.
 
 ## Guardrails — the key differentiator
 
@@ -38,16 +38,16 @@ There are 24 [ADRs](../architecture/ADR/README.md). These five capture the core 
 
 | Area | Entry point | What to look for |
 |------|-------------|------------------|
-| Orchestrator core | `src/issue_orchestrator/orchestrator.py` | Main facade, delegates to control/ |
+| Orchestrator core | `src/issue_orchestrator/infra/orchestrator.py` | Main facade, delegates to control/services |
 | Decision logic | `src/issue_orchestrator/control/` | Scheduler, planner, action applier — all pure logic, no I/O |
 | Port interfaces | `src/issue_orchestrator/ports/` | ~26 Protocol definitions — the abstraction layer |
 | State machines | `src/issue_orchestrator/domain/state_machines/` | Issue and review lifecycle |
-| Composition root | `src/issue_orchestrator/bootstrap.py` | Where dependencies are wired |
+| Composition root | `src/issue_orchestrator/entrypoints/bootstrap.py` | Where dependencies are wired |
 
 ## Quality signals
 
-- **~4000 unit tests** with import-linter enforcing architecture boundaries
+- **Large automated test suite** with import-linter enforcing architecture boundaries
 - **Strict Pyright** on core modules, standard mode elsewhere
-- **Fail-fast by default** — fallbacks are explicitly discouraged (see CLAUDE.md "Fail-Fast Design")
+- **Fail-fast by default** — fallbacks are explicitly discouraged (see AGENTS "Fail-Fast Design")
 - **Events over logging** — structured trace events drive the UI, tests assert on events not log text
-- **24 ADRs** documenting non-obvious decisions
+- **Architecture decision records** documenting non-obvious decisions
