@@ -207,6 +207,9 @@ UNIT_PARALLEL ?= $(PARALLEL)
 SIMULATED_PARALLEL ?= $(PARALLEL)
 INTEGRATION_PARALLEL ?= $(PARALLEL)
 INTEGRATION_AGENT_FILES := tests/integration/test_claude_execution.py tests/integration/test_codex_execution.py tests/integration/test_live_agent_chain.py
+# Keep this list in sync with the -k exclusion in test-simulated-core.
+# New agent-backed tests added to test_foreign_repo_lifecycle.py must be listed here
+# so they move to test-simulated-agent instead of staying in the fast local slice.
 SIMULATED_AGENT_FILES := tests/simulated_scenarios/test_foreign_repo_lifecycle.py::test_foreign_repo_claude_code_agent_done tests/simulated_scenarios/test_foreign_repo_lifecycle.py::test_foreign_repo_codex_agent_done
 
 # Python interpreter for dependency checks
