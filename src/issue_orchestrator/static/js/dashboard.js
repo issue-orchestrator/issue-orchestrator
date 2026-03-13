@@ -3239,7 +3239,7 @@ function normalizeToClientPoint(point) {
 // Context menu
 const contextMenu = document.getElementById('contextMenu');
 const menuFocus = document.getElementById('menuFocus');
-const menuFinder = document.getElementById('menuFinder');
+const menuRevealWorktree = document.getElementById('menuRevealWorktree');
 const menuLog = document.getElementById('menuLog');
 const menuAgentLog = document.getElementById('menuAgentLog');
 const menuPrompt = document.getElementById('menuPrompt');
@@ -3259,7 +3259,7 @@ const contextMenuEnabled = Boolean(contextMenu);
 
 // Add keyboard support to all context menu items
 if (contextMenuEnabled) {
-    [menuFocus, menuFinder, menuLog, menuAgentLog, menuPrompt, menuKill, menuPR, menuUnblock, menuResetRetry, menuResetRetryScratch, menuRetry]
+    [menuFocus, menuRevealWorktree, menuLog, menuAgentLog, menuPrompt, menuKill, menuPR, menuUnblock, menuResetRetry, menuResetRetryScratch, menuRetry]
         .filter(Boolean)
         .forEach(addKeyboardSupport);
 }
@@ -3297,7 +3297,7 @@ function showContextMenu(e, row) {
     const canFocusSession = action === 'focus' && clientCapabilities.focus_session;
     const canRevealWorktree = action === 'focus' && clientCapabilities.reveal_worktree;
     setMenuVisible(menuFocus, canFocusSession);
-    setMenuVisible(menuFinder, canRevealWorktree);
+    setMenuVisible(menuRevealWorktree, canRevealWorktree);
 
     setMenuVisible(menuPR, Boolean(prUrl || row.dataset.issueUrl));
     if (menuPR) {
@@ -3348,7 +3348,7 @@ function showContextMenu(e, row) {
 
     const hasPrimaryActionsAboveHistory = [
         menuFocus,
-        menuFinder,
+        menuRevealWorktree,
         menuLog,
         menuAgentLog,
         menuPrompt,
@@ -3477,11 +3477,12 @@ if (contextMenuEnabled) {
         }
     });
 
-    menuFinder?.addEventListener('click', async (e) => {
+    menuRevealWorktree?.addEventListener('click', async (e) => {
         e.stopPropagation();
         contextMenu.classList.remove('visible');
-        if (currentRow && !menuFinder.classList.contains('disabled')) {
-            const res = await fetch(`/api/finder/${currentRow.dataset.issue}`, { method: 'POST' });
+        if (currentRow && !menuRevealWorktree.classList.contains('disabled')) {
+            const req = uiActionContract.buildRevealWorktreeRequest(currentRow.dataset.issue);
+            const res = await fetch(req.endpoint, { method: req.method });
             const data = await res.json();
             handleHostActionResponse(data, 'worktree');
         }
@@ -5180,10 +5181,11 @@ function handleHostActionResponse(data, label = 'path') {
 }
 
 function openLogFile(path) {
-    fetch('/api/host/open-path', {
-        method: 'POST',
+    const req = uiActionContract.buildHostOpenPathRequest(path);
+    fetch(req.endpoint, {
+        method: req.method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: path }),
+        body: JSON.stringify(req.body),
     }).then(res => res.json()).then(data => {
         handleHostActionResponse(data, 'file');
     }).catch(err => {

@@ -13,6 +13,7 @@
         BULK_RETRY: '/api/bulk-retry',
         BULK_DEPRIORITIZE: '/api/bulk-deprioritize',
         BULK_CANCEL_QUEUED: '/api/bulk-cancel-queued',
+        HOST_OPEN_PATH: '/api/host/open-path',
     };
 
     function normalizeIssueNumbers(issueNumbers) {
@@ -77,6 +78,23 @@
         };
     }
 
+    function buildHostOpenPathRequest(path) {
+        return {
+            endpoint: ENDPOINTS.HOST_OPEN_PATH,
+            method: 'POST',
+            body: { path: String(path || '') },
+        };
+    }
+
+    function buildRevealWorktreeRequest(issueNumber) {
+        const normalized = normalizeIssueNumbers([issueNumber]);
+        return {
+            endpoint: `/api/host/reveal-worktree/${normalized[0] || 0}`,
+            method: 'POST',
+            body: {},
+        };
+    }
+
     return {
         ENDPOINTS,
         normalizeIssueNumbers,
@@ -86,5 +104,7 @@
         buildBulkDeprioritizeRequest,
         buildBulkCancelQueuedRequest,
         buildIssueRetryRequest,
+        buildHostOpenPathRequest,
+        buildRevealWorktreeRequest,
     };
 });
