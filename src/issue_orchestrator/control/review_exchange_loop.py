@@ -1164,6 +1164,9 @@ def _escape_raw_newlines_inside_json_strings(text: str) -> str:
             if ch == "\r":
                 chars.append("\\r")
                 continue
+            if ch == "\t":
+                chars.append("\\t")
+                continue
             chars.append(ch)
             continue
 

@@ -575,6 +575,7 @@ def test_timeline_event_preserves_review_exchange_round_fields() -> None:
     assert event["reviewer_response_type"] == "changes_requested"
     assert event["reviewer_response_text"] == "Three issues to fix before approval."
     assert event["coder_response_type"] == "ok"
+    assert "Round 1" in event["detail"]
     assert "Three issues to fix before approval." in event["detail"]
     assert "Coder response: ok" in event["detail"]
 

@@ -444,6 +444,9 @@ def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail
         _add_if_new(parts, data.get("comment_excerpt"), summary_str)
 
     elif event_name == "review_exchange.round_completed":
+        round_index = data.get("round_index")
+        if isinstance(round_index, int):
+            parts.append(f"Round {round_index}")
         _add_if_new(parts, data.get("reviewer_response_text"), summary_str)
         coder_response_type = data.get("coder_response_type")
         if isinstance(coder_response_type, str) and coder_response_type:

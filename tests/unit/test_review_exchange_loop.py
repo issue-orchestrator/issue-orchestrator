@@ -593,6 +593,19 @@ def test_parse_exchange_response_repairs_multiline_response_text() -> None:
     assert "Add the missing UI rendering." in response.response_text
 
 
+def test_parse_exchange_response_repairs_tab_characters_inside_response_text() -> None:
+    stdout = (
+        '{"response_type":"changes_requested","getting_closer":true,'
+        '"response_text":"Checklist:\n\t1. Add the UI.\n\t2. Tighten the contract."}\n'
+    )
+
+    response = _parse_exchange_response(stdout)
+
+    assert response is not None
+    assert response.response_type == "changes_requested"
+    assert "\t1. Add the UI." in response.response_text
+
+
 def test_review_exchange_seeds_initial_validation_record(tmp_path: Path, monkeypatch) -> None:
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Prompt")
