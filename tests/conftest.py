@@ -739,6 +739,10 @@ def build_test_orchestrator_deps(
     label_store = LabelStore(config.repo_root / ".issue-orchestrator" / "label_store.sqlite")
 
     _action_applier.claim_gate = claim_gate
+    # build_test_orchestrator_deps() returns deps without a live Orchestrator state.
+    # Use an explicit no-op lease lookup so claim verification behavior is predictable
+    # for tests that consume deps directly instead of relying on runtime wiring.
+    _action_applier.lease_id_lookup = lambda _issue_number: None
 
     infra_services = InfraServices(
         label_manager=label_manager,

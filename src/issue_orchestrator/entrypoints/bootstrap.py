@@ -77,7 +77,7 @@ from ..control.claim_gate import ClaimGate
 from ..control.lease_renewer import LeaseRenewer
 from ..infra import gh_audit
 from ..infra.repo_identity import state_dir
-from ..ports.claim_manager import NullClaimManager
+from ..ports.claim_manager import ClaimManager, NullClaimManager
 from ..domain.lease_config import LeaseConfig
 
 if TYPE_CHECKING:
@@ -718,7 +718,7 @@ def build_orchestrator_for_testing(
     session_manager: SessionManager | None = None,
     action_applier: ActionApplier | None = None,
     fact_gatherer: FactGatherer | None = None,
-    claim_manager: NullClaimManager | GitHubClaimAdapter | None = None,
+    claim_manager: ClaimManager | None = None,
 ) -> "Orchestrator":
     """Build an orchestrator for testing with mock dependencies.
 
