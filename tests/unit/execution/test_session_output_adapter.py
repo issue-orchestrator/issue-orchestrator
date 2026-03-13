@@ -368,9 +368,45 @@ class TestSessionLogCleaning:
         session_output.append_cleaned_session_log(
             run.run_dir,
             "Line one\n\n✶ Thinking…\nLine two\nRecentactivity\n",
+            header="[2026-03-12T12:00:00Z] round=1 role=reviewer section=prompt\n",
         )
 
-        assert run.log_path.read_text(encoding="utf-8").splitlines() == [
-            "Line one",
-            "Line two",
-        ]
+        assert run.log_path.read_text(encoding="utf-8") == (
+            "[2026-03-12T12:00:00Z] round=1 role=reviewer section=prompt\n"
+            "Line one\n"
+            "Line two\n\n"
+        )
+
+    def test_append_cleaned_session_log_skips_orphan_header_when_body_is_only_noise(
+        self, tmp_path
+    ):
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_path, "issue-123", issue_number=123)
+
+        session_output.append_cleaned_session_log(
+            run.run_dir,
+            "✶ Thinking…\nRecentactivity\n",
+            header="[2026-03-12T12:00:00Z] round=1 role=reviewer section=prompt\n",
+        )
+
+        assert run.log_path.read_text(encoding="utf-8") == ""
+
+    def test_append_review_exchange_session_log_entry_preserves_header_outside_filter(
+        self, tmp_path
+    ):
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_path, "issue-123", issue_number=123)
+
+        session_output.append_review_exchange_session_log_entry(
+            run.run_dir,
+            round_index=3,
+            role="reviewer",
+            section="feedback",
+            content="Line one\n✶ Thinking…\nLine two\n",
+        )
+
+        content = run.log_path.read_text(encoding="utf-8")
+        assert "round=3 role=reviewer section=feedback" in content
+        assert "Line one" in content
+        assert "Line two" in content
+        assert "Thinking" not in content

@@ -738,6 +738,8 @@ Timestamp: {self._now_iso()}
         self,
         run_dir: Path,
         content: str,
+        *,
+        header: str | None = None,
     ) -> None:
         """Append cleaned display-safe content to the canonical UI session log."""
         cleaned_lines: list[str] = []
@@ -750,8 +752,29 @@ Timestamp: {self._now_iso()}
         log_path = run_dir / SESSION_LOG_NAME
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as handle:
+            if header:
+                handle.write(header.rstrip())
+                handle.write("\n")
             handle.write("\n".join(cleaned_lines).rstrip())
-            handle.write("\n")
+            handle.write("\n\n")
+
+    def append_review_exchange_session_log_entry(
+        self,
+        run_dir: Path,
+        *,
+        round_index: int,
+        role: str,
+        section: str,
+        content: str,
+    ) -> None:
+        """Append one review-exchange transcript entry to the canonical UI log."""
+        timestamp = datetime.now(timezone.utc).isoformat()
+        header = f"[{timestamp}] round={round_index} role={role} section={section}"
+        self.append_cleaned_session_log(
+            run_dir,
+            content.rstrip(),
+            header=header,
+        )
 
     # -------------------------------------------------------------------------
     # Log Access

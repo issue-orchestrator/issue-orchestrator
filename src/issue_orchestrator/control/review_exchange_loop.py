@@ -899,9 +899,13 @@ def _append_session_log(
     content: str,
 ) -> None:
     """Append review-exchange transcript content to the canonical UI session log."""
-    timestamp = datetime.now(timezone.utc).isoformat()
-    header = f"[{timestamp}] round={round_index} role={role} section={section}\n"
-    session_output.append_cleaned_session_log(run_dir, f"{header}{content.rstrip()}\n")
+    session_output.append_review_exchange_session_log_entry(
+        run_dir,
+        round_index=round_index,
+        role=role,
+        section=section,
+        content=content,
+    )
 
 
 def _build_env_overrides(
