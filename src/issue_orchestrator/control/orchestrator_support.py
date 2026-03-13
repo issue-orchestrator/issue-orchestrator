@@ -54,6 +54,17 @@ def init_orchestrator_components(orch: "Orchestrator", dep_eval: "DependencyEval
 
     # Wire up action_applier's session_launcher callback
     orch.deps.action_applier.session_launcher = orch.session_launcher_callback
+    orch.deps.action_applier.claim_gate = orch.deps.claim_gate
+    orch.deps.action_applier.lease_id_lookup = (
+        lambda issue_number: next(
+            (
+                session.lease_id
+                for session in orch.state.active_sessions
+                if session.issue.number == issue_number
+            ),
+            None,
+        )
+    )
 
     # Create observer (still created here as it depends on runtime orchestrator state)
     orch.observer = SessionObserver(

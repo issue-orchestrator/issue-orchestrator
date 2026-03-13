@@ -718,6 +718,7 @@ def build_orchestrator_for_testing(
     session_manager: SessionManager | None = None,
     action_applier: ActionApplier | None = None,
     fact_gatherer: FactGatherer | None = None,
+    claim_manager: NullClaimManager | GitHubClaimAdapter | None = None,
 ) -> "Orchestrator":
     """Build an orchestrator for testing with mock dependencies.
 
@@ -878,9 +879,9 @@ def build_orchestrator_for_testing(
     timeline_reader = NullTimelineReader()
     timeline_writer = NullTimelineWriter()
 
-    # Create claim components for testing (always use NullClaimManager)
+    # Create claim components for testing (NullClaimManager by default).
     lease_config = LeaseConfig()
-    claim_manager = NullClaimManager()
+    claim_manager = claim_manager or NullClaimManager()
     claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
     lease_renewer = LeaseRenewer(
         claim_manager=claim_manager,

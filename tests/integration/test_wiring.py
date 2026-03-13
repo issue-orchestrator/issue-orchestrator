@@ -80,6 +80,36 @@ class TestOrchestratorWiring:
         # Verify list_issues was called via the adapter
         assert len(mock_repository_host.list_issues_calls) > 0
 
+    def test_orchestrator_wires_action_applier_claim_guard(
+        self,
+        config,
+        mock_repository_host,
+        patch_plugin_manager,
+    ):
+        """Orchestrator initialization should connect claim enforcement to ActionApplier."""
+        from issue_orchestrator.infra.orchestrator import Orchestrator
+        from tests.conftest import build_test_orchestrator_deps, MockEventSink
+
+        events = MockEventSink()
+        claim_manager = MagicMock()
+        deps = build_test_orchestrator_deps(
+            config,
+            mock_repository_host,
+            events,
+            patch_plugin_manager,
+            MagicMock(),
+            claim_manager=claim_manager,
+        )
+
+        orchestrator = Orchestrator(config=config, deps=deps)
+        session = MagicMock()
+        session.issue.number = 456
+        session.lease_id = "lease-456"
+        orchestrator.state.active_sessions.append(session)
+
+        assert orchestrator.deps.action_applier.claim_gate is orchestrator.deps.claim_gate
+        assert orchestrator.deps.action_applier.lease_id_lookup(456) == "lease-456"
+
     def test_launch_session_creates_worktree_and_window(
         self,
         config,
