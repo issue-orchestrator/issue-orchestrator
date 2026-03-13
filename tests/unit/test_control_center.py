@@ -171,10 +171,23 @@ def test_start_buttons_are_disabled_while_start_is_pending() -> None:
     ).read_text(encoding="utf-8")
 
     assert "const pendingRepoStarts = new Set();" in template
+    assert "const REPO_START_POLL_INTERVAL_MS = 250;" in template
+    assert "const REPO_START_TIMEOUT_MS = 15000;" in template
+    assert "function getSelectedRepoConfig(repo, preferredConfig = null)" in template
+    assert "function requiresExplicitRepoConfigSelection(repo, selectedConfig)" in template
     assert "if (pendingRepoStarts.has(path))" in template
     assert "pendingRepoStarts.add(path);" in template
     assert "pendingRepoStarts.delete(path);" in template
+    assert "async function waitForRepoToBeReady(path)" in template
+    assert "await waitForRepoToBeReady(path);" in template
+    assert "config = getValidRepoConfig(repo, config);" in template
+    assert "throw new Error('Select a valid config before starting this repository engine');" in template
+    assert "Choose config..." in template
+    assert "Saved config is unavailable:" in template
+    assert "Select a valid config before starting this repository engine." in template
     assert "Starting..." in template
+    assert "Starting repository engine..." in template
+    assert "Waiting for engine to become ready." in template
     assert 'id="repoStopModal"' in template
     assert 'id="confirmRepoStop"' in template
     assert 'id="repoStopModeGraceful"' in template
