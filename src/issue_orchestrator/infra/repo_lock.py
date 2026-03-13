@@ -293,3 +293,22 @@ def touch_lock(
     existing.last_heartbeat_at = datetime.now(timezone.utc).isoformat()
     _write_lock(lock_path, existing)
     return True
+
+
+def set_lock_http_port(
+    repo_root: Path | str,
+    port: int,
+    pid: int | None = None,
+    instance_id: str | None = None,
+) -> bool:
+    """Update the lock's HTTP port for the owning process."""
+    repo_root = normalize_repo_root(repo_root)
+    lock_path = lock_file(repo_root, instance_id)
+    expected_pid = pid or os.getpid()
+    existing = _read_lock(lock_path)
+    if existing is None or existing.pid != expected_pid:
+        return False
+    existing.http_port = port
+    existing.last_heartbeat_at = datetime.now(timezone.utc).isoformat()
+    _write_lock(lock_path, existing)
+    return True

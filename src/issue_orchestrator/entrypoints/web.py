@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from fastapi import Depends, FastAPI, Query, Request
 from fastapi.staticfiles import StaticFiles
@@ -3890,6 +3890,7 @@ async def run_web_dashboard(
     orchestrator: "Orchestrator",
     port: int = 8080,
     open_browser: bool = True,
+    on_server_started: Callable[[int], Awaitable[None] | None] | None = None,
 ) -> None:
     """Run the web dashboard server.
 
@@ -3921,28 +3922,22 @@ async def run_web_dashboard(
     server = uvicorn.Server(config)
     _server = server  # Store for shutdown access
 
-    # When using port=0, defer browser-open and logging until we know the actual port
-    if open_browser:
-        async def do_open_browser():
-            # Wait for server to be ready so we can read the bound port
-            while not server.started:
-                await asyncio.sleep(0.05)
-            actual_port = _get_bound_port(server) if port == 0 else port
+    async def after_server_started() -> None:
+        while not server.started:
+            await asyncio.sleep(0.05)
+        actual_port = _get_bound_port(server) if port == 0 else port
+        if on_server_started is not None:
+            result = on_server_started(actual_port)
+            if asyncio.iscoroutine(result):
+                await result
+        if open_browser:
             url = f"http://127.0.0.1:{actual_port}"
             logger.info("[web] Starting uvicorn server on %s", url)
             webbrowser.open(url)
+            return
+        logger.info("[web] Starting uvicorn server on 127.0.0.1:%d", actual_port)
 
-        asyncio.create_task(do_open_browser())
-    elif port == 0:
-        async def log_bound_port():
-            while not server.started:
-                await asyncio.sleep(0.05)
-            actual_port = _get_bound_port(server)
-            logger.info("[web] Starting uvicorn server on 127.0.0.1:%d", actual_port)
-
-        asyncio.create_task(log_bound_port())
-    else:
-        logger.info("[web] Starting uvicorn server on 127.0.0.1:%d", port)
+    asyncio.create_task(after_server_started())
 
     await server.serve()
     logger.info("[web] Server stopped")
@@ -3952,6 +3947,7 @@ async def run_with_web_dashboard(
     orchestrator: "Orchestrator",
     port: int = 8080,
     open_browser: bool = True,
+    on_server_started: Callable[[int], Awaitable[None] | None] | None = None,
 ) -> None:
     """Run orchestrator with web dashboard.
 
@@ -4021,7 +4017,12 @@ async def run_with_web_dashboard(
 
     try:
         # Run web server in foreground (available immediately)
-        await run_web_dashboard(orchestrator, port, open_browser=open_browser)
+        await run_web_dashboard(
+            orchestrator,
+            port,
+            open_browser=open_browser,
+            on_server_started=on_server_started,
+        )
     finally:
         # When web server stops, stop orchestrator
         logger.info("[web] Shutting down orchestrator...")

@@ -151,7 +151,7 @@ async def run(
     """
     from ..entrypoints.bootstrap import build_orchestrator
     from ..entrypoints.web import run_with_web_dashboard
-    from ..infra.repo_lock import acquire_lock, release_lock, touch_lock
+    from ..infra.repo_lock import acquire_lock, release_lock, set_lock_http_port, touch_lock
 
     _assert_expected_identity(repo_root)
 
@@ -172,6 +172,11 @@ async def run(
         while True:
             touch_lock(repo_root, instance_id=instance_id)
             await asyncio.sleep(5.0)
+
+    def _record_bound_port(actual_port: int) -> None:
+        if actual_port != port:
+            set_lock_http_port(repo_root, actual_port, instance_id=instance_id)
+            logger.info("Updated lock with actual bound port %d", actual_port)
 
     config = _load_config_for_instance(repo_root, config_path, instance_id)
 
@@ -196,7 +201,12 @@ async def run(
     logger.info("Starting orchestrator on port %d", port)
     heartbeat_task = asyncio.create_task(_heartbeat_loop(), name="repo-lock-heartbeat")
     try:
-        await run_with_web_dashboard(orchestrator, port, open_browser=not no_browser)
+        await run_with_web_dashboard(
+            orchestrator,
+            port,
+            open_browser=not no_browser,
+            on_server_started=_record_bound_port,
+        )
     finally:
         heartbeat_task.cancel()
         try:

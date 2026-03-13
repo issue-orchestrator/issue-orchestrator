@@ -1609,7 +1609,12 @@ class TestSSEFunctionality:
                 captured["data"] = data or {}
                 startup_event.set()
 
-        async def fake_run_web_dashboard(orchestrator, port: int, open_browser: bool = True) -> None:
+        async def fake_run_web_dashboard(
+            orchestrator,
+            port: int,
+            open_browser: bool = True,
+            on_server_started=None,
+        ) -> None:
             await startup_event.wait()
 
         async def fast_sleep(_seconds: float) -> None:
@@ -5213,7 +5218,7 @@ class TestRunWebDashboard:
     @pytest.mark.asyncio
     async def test_run_web_dashboard_port_zero_resolves_bound_port(self):
         """When port=0, browser opens with the OS-assigned port."""
-        from issue_orchestrator.entrypoints.web import run_web_dashboard, _get_bound_port
+        from issue_orchestrator.entrypoints.web import run_web_dashboard
         import asyncio
         from tests.unit.threading_helpers import wait_for_async_event
 
@@ -5257,6 +5262,63 @@ class TestRunWebDashboard:
 
                     set_orchestrator(None)
                     set_server(None)
+
+    @pytest.mark.asyncio
+    async def test_run_web_dashboard_port_zero_reports_bound_port_to_callback(self):
+        """When port=0, startup callback receives the OS-assigned port."""
+        from issue_orchestrator.entrypoints.web import run_web_dashboard
+        import asyncio
+        from tests.unit.threading_helpers import wait_for_async_event
+
+        mock_orch = create_mock_orchestrator()
+
+        mock_socket = MagicMock()
+        mock_socket.getsockname.return_value = ("127.0.0.1", 54321)
+        mock_inner_server = MagicMock()
+        mock_inner_server.sockets = [mock_socket]
+
+        mock_server = MagicMock()
+        mock_server.servers = [mock_inner_server]
+        mock_server.started = False
+        serve_started = asyncio.Event()
+        callback_seen = asyncio.Event()
+        captured: dict[str, int] = {}
+
+        async def serve():
+            mock_server.started = True
+            serve_started.set()
+            await asyncio.Event().wait()
+
+        def on_server_started(actual_port: int) -> None:
+            captured["port"] = actual_port
+            callback_seen.set()
+
+        mock_server.serve = AsyncMock(side_effect=serve)
+
+        with patch("uvicorn.Server", return_value=mock_server):
+            with patch("uvicorn.Config"):
+                task = asyncio.create_task(
+                    run_web_dashboard(
+                        mock_orch,
+                        port=0,
+                        open_browser=False,
+                        on_server_started=on_server_started,
+                    )
+                )
+
+                await wait_for_async_event(serve_started, timeout=1.0, label="serve_started")
+                await wait_for_async_event(callback_seen, timeout=1.0, label="callback_seen")
+
+                assert captured["port"] == 54321
+
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+
+                set_orchestrator(None)
+                set_server(None)
 
 
 class TestRunWithWebDashboard:
