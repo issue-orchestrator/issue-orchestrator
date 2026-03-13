@@ -27,6 +27,7 @@ import uvicorn
 
 from .control_api import control_app
 from ..execution.process_control import ManagedProcess, list_processes_matching, spawn_tray_helper
+from ..infra.client_urls import resolve_client_dashboard_url
 from ..observation.instance_detector import write_dashboard_pid, clear_dashboard_pid
 
 logger = logging.getLogger(__name__)
@@ -206,7 +207,7 @@ def main() -> int:
     if stale_count > 0:
         logger.info("Cleaned up %d stale repo(s) from registry", stale_count)
 
-    url = f"http://{args.host}:{args.port}/"
+    url = resolve_client_dashboard_url(args.port, local_host=args.host)
     print(f"Starting Issue Orchestrator Dashboard on {url}")
     print("Press Ctrl+C to stop")
 

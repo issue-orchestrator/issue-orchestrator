@@ -3662,11 +3662,21 @@
         }
 
         function buildDashboardUrl(port, options = {}) {
-            const params = new URLSearchParams();
-            if (options.embedded) params.set('embedded', '1');
-            if (options.theme) params.set('theme', options.theme);
-            const query = params.toString();
-            return `http://127.0.0.1:${port}/${query ? `?${query}` : ''}`;
+            if (!port) return null;
+            return buildDashboardUrlFromBase(`http://127.0.0.1:${port}/`, options);
+        }
+
+        function buildDashboardUrlFromBase(baseUrl, options = {}) {
+            if (!baseUrl) return null;
+            const url = new URL(baseUrl);
+            if (options.embedded) url.searchParams.set('embedded', '1');
+            if (options.theme) url.searchParams.set('theme', options.theme);
+            return url.toString();
+        }
+
+        function getRepoDashboardUrl(repo, options = {}) {
+            return buildDashboardUrlFromBase(repo.dashboard_url, options)
+                || buildDashboardUrl(getRepoPort(repo), options);
         }
 
         function needsSetup(repo) {
@@ -4039,7 +4049,7 @@
                 const iframeTheme = state.theme === 'system'
                     ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
                     : state.theme;
-                iframe.src = buildDashboardUrl(port, { embedded: true, theme: iframeTheme });
+                iframe.src = getRepoDashboardUrl(repo, { embedded: true, theme: iframeTheme });
             } else {
                 const pendingStart = isRepoStartPending(repo.path);
                 loading.innerHTML = `

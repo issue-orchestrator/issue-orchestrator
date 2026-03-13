@@ -1577,6 +1577,16 @@ def _load_config_port(repo_root: Path, config_name: str) -> int | None:
     return config.web_port
 
 
+def _client_dashboard_url(port: int | None) -> str | None:
+    """Resolve the browser-facing dashboard URL for a repo engine port."""
+    if not port:
+        return None
+
+    from ..infra.client_urls import resolve_client_dashboard_url
+
+    return resolve_client_dashboard_url(port)
+
+
 def _detect_orchestrator_by_port(
     repo_root: Path,
     config_name: str,
@@ -2647,7 +2657,9 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
                         pass
 
                 enriched_instance = _enrich_runtime_health(path, inst_data, instance_id=inst_data.get("instance_id"))
-                repo_data["instances"].append(enriched_instance or inst_data)
+                instance_data = enriched_instance or inst_data
+                instance_data["dashboard_url"] = _client_dashboard_url(instance_data.get("port"))
+                repo_data["instances"].append(instance_data)
 
             # Compute aggregate status for the repo
             running_count = sum(1 for i in multi_status.instances if i.state == "running")
@@ -2699,6 +2711,8 @@ def _build_repos_status() -> list[dict[str, Any]]:  # noqa: C901, PLR0912 - mult
                         repo_data["status"]["e2e_role"] = internal.get("e2e_role")
                 except Exception:
                     pass  # Keep supervisor status only
+
+        repo_data["dashboard_url"] = _client_dashboard_url((repo_data.get("status") or {}).get("port"))
 
         # Include cached health status if available
         if repo.health:
