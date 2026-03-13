@@ -316,6 +316,15 @@ class TestCleaningLogWriter:
         assert "Add list_circuits() to ProviderResilienceManager" in content
         assert content.strip() != "store access"
 
+    def test_carriage_return_keeps_final_terminal_state(self, tmp_path: Path):
+        """Normal CR overwrites should keep the final visible content."""
+        log = tmp_path / "ui-session.log"
+        writer = CleaningLogWriter(log)
+        writer.write(b"Downloading packages... 87%\rInstall complete\n")
+        writer.close()
+
+        assert log.read_text().strip() == "Install complete"
+
     def test_spinner_filtering(self, tmp_path: Path):
         log = tmp_path / "ui-session.log"
         writer = CleaningLogWriter(log)

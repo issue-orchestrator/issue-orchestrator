@@ -237,6 +237,7 @@ class TestValidateRunner:
         stdout_lines = result.stdout.splitlines()
         assert "line one" not in stdout_lines
         assert "line two" not in stdout_lines
+        assert "[orchestrated] full output -> file; terminal shows lifecycle markers only" in result.stdout
         assert "[validate_runner] child_started pid=" in result.stdout
         assert "[validate_runner] stdout_eof pid=" in result.stdout
         assert "[validate_runner] child_exited pid=" in result.stdout

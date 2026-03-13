@@ -60,24 +60,37 @@ def clean_terminal_line(line: str) -> str:
     - Control characters
     """
     # Handle carriage returns: terminal overwrites from start of line.
-    # Prefer the richest visible segment rather than blindly taking the last
-    # segment. Some PTY/TUI redraws leave a trailing suffix after a carriage
-    # return (for example, a wrapped line ending in just "store access").
-    # Choosing the longest visible segment preserves the meaningful content
-    # while still dropping transient spinner frames.
+    # Prefer normal terminal semantics (the last non-empty segment), but detect
+    # the specific wrapped-redraw failure mode seen in #4057 where the final
+    # segment is only a trailing suffix of the richer visible line
+    # (for example, "store access" after a wrapped redraw of
+    # "Add ... encapsulate store access").
     if "\r" in line:
         segments = line.split("\r")
-        best_segment = ""
-        best_score = -1
+        last_non_empty_segment = ""
+        last_non_empty_text = ""
+        longest_segment = ""
+        longest_text = ""
         for segment in segments:
             stripped = strip_ansi_codes(segment).strip()
             if not stripped:
                 continue
-            score = len(stripped)
-            if score >= best_score:
-                best_score = score
-                best_segment = segment
-        line = best_segment if best_segment else (segments[-1] if segments else "")
+            last_non_empty_segment = segment
+            last_non_empty_text = stripped
+            if len(stripped) >= len(longest_text):
+                longest_segment = segment
+                longest_text = stripped
+
+        if (
+            last_non_empty_text
+            and longest_text
+            and last_non_empty_text != longest_text
+            and len(last_non_empty_text) < len(longest_text)
+            and longest_text.endswith(last_non_empty_text)
+        ):
+            line = longest_segment
+        else:
+            line = last_non_empty_segment if last_non_empty_segment else (segments[-1] if segments else "")
 
     line = strip_ansi_codes(line)
 

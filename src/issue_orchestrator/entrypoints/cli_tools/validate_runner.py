@@ -82,14 +82,14 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / "validation-output.log"
-    concise_stdout = get_env("VALIDATION_OUTPUT_DIR") is not None
+    is_orchestrated_run = get_env("VALIDATION_OUTPUT_DIR") is not None
     line_count = 0
     byte_count = 0
 
     print(f"Running: {command}")
     print(f"Output will be saved to: {output_file}")
-    if concise_stdout:
-        print("Streaming full validation output to file; terminal output is summarized for orchestrated runs.")
+    if is_orchestrated_run:
+        print("[orchestrated] full output -> file; terminal shows lifecycle markers only")
     print()
 
     start = time.monotonic()
@@ -120,7 +120,7 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
         for line in process.stdout:
             line_count += 1
             byte_count += len(line.encode("utf-8", errors="replace"))
-            if not concise_stdout:
+            if not is_orchestrated_run:
                 sys.stdout.write(line)
                 sys.stdout.flush()
             f.write(line)
@@ -155,6 +155,8 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
         f"[validate_runner] child_exited pid={child_pid} exit_code={exit_code} "
         f"elapsed={duration:.1f}s lines={line_count} bytes={byte_count}\n"
     )
+    # The exit marker is computed only after the child has fully exited and the
+    # main streaming file handle is closed, so append it in a short final write.
     with open(output_file, "a", encoding="utf-8") as f:
         f.write(exit_marker)
     sys.stdout.write(exit_marker)
