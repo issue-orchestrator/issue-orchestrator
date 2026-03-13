@@ -5,6 +5,13 @@ function hideSettingsMenu() {
 }
 
 let terminalBackend = 'tmux';
+let clientCapabilities = {
+    focus_session: false,
+    open_path: false,
+    reveal_worktree: false,
+    local_server_paths_only: true,
+    host_platform: 'unknown',
+};
 let currentCommitSha = null;
 let viewModel = null;
 const issueRefreshInFlight = new Set();
@@ -136,6 +143,12 @@ fetch('/api/info')
         if (data.terminal_backend) {
             terminalBackend = data.terminal_backend;
         }
+        if (data.client_capabilities) {
+            clientCapabilities = {
+                ...clientCapabilities,
+                ...data.client_capabilities,
+            };
+        }
         if (data.commit_short) {
             currentCommitSha = data.commit_sha;
             const commitEl = document.getElementById('menuCommitSha');
@@ -154,9 +167,9 @@ function updateActionHints() {
         const issueAction = row.querySelector('.issue-action');
         let hint = '';
         if (action === 'focus') {
-            hint = terminalBackend === 'subprocess'
-                ? 'View agent log'
-                : 'Focus terminal session';
+            hint = clientCapabilities.focus_session
+                ? 'Focus terminal session'
+                : 'View agent log';
         } else if (row.dataset.url) {
             hint = 'Open issue on GitHub';
         }
@@ -1001,7 +1014,7 @@ async function handleClick(row) {
     }
 
     if (action === 'focus') {
-        if (terminalBackend === 'subprocess') {
+        if (!clientCapabilities.focus_session) {
             try {
                 await openSessionManifest(issueNumber);
             } catch (err) {
@@ -3272,9 +3285,10 @@ function showContextMenu(e, row) {
     };
 
     // Show only applicable actions; hide the rest.
-    const canFocusWorktree = action === 'focus' && terminalBackend !== 'subprocess';
-    setMenuVisible(menuFocus, canFocusWorktree);
-    setMenuVisible(menuFinder, canFocusWorktree);
+    const canFocusSession = action === 'focus' && clientCapabilities.focus_session;
+    const canRevealWorktree = action === 'focus' && clientCapabilities.reveal_worktree;
+    setMenuVisible(menuFocus, canFocusSession);
+    setMenuVisible(menuFinder, canRevealWorktree);
 
     setMenuVisible(menuPR, Boolean(prUrl || row.dataset.issueUrl));
     if (menuPR) {
@@ -3460,7 +3474,7 @@ if (contextMenuEnabled) {
         if (currentRow && !menuFinder.classList.contains('disabled')) {
             const res = await fetch(`/api/finder/${currentRow.dataset.issue}`, { method: 'POST' });
             const data = await res.json();
-            console.log('Finder response:', data);
+            handleHostActionResponse(data, 'worktree');
         }
     });
 
@@ -5131,18 +5145,38 @@ function renderDiagnosis(issueNumber, data) {
     panel.innerHTML = html;
 }
 
+function copyPathToClipboard(path, successMessage = 'Path copied') {
+    return navigator.clipboard.writeText(path)
+        .then(() => showToast(successMessage))
+        .catch(() => showToast('Failed to copy path', 'error'));
+}
+
+function handleHostActionResponse(data, label = 'path') {
+    if (data.error) {
+        showToast(`Could not open ${label}: ${data.error}`, 'error');
+        return;
+    }
+    if (data.status === 'opened') {
+        showToast(`Opening ${label}...`);
+        return;
+    }
+    if (data.action === 'copy_path' && data.path) {
+        copyPathToClipboard(data.path, `${label[0].toUpperCase()}${label.slice(1)} copied`);
+        if (data.message) {
+            showToast(data.message);
+        }
+        return;
+    }
+    showToast(`Could not open ${label}`, 'error');
+}
+
 function openLogFile(path) {
-    // Use macOS 'open' command via a simple API call
-    fetch('/api/open-file', {
+    fetch('/api/host/open-path', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ path: path }),
     }).then(res => res.json()).then(data => {
-        if (data.error) {
-            showToast(`Could not open file: ${data.error}`, 'error');
-        } else {
-            showToast('Opening log file...');
-        }
+        handleHostActionResponse(data, 'file');
     }).catch(err => {
         showToast(`Failed to open file: ${err.message}`, 'error');
     });

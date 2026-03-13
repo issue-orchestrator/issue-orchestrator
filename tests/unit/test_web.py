@@ -8,9 +8,20 @@ from typing import Any
 from unittest.mock import MagicMock, patch, Mock, AsyncMock
 from fastapi.testclient import TestClient
 
-from issue_orchestrator.entrypoints.web import app, get_orchestrator, set_orchestrator, set_server
+from issue_orchestrator.entrypoints.web import (
+    app,
+    get_orchestrator,
+    set_client_host,
+    set_orchestrator,
+    set_server,
+)
 from issue_orchestrator.contracts.public import ShutdownRequestedPayload, StartupCompletePayload
 from issue_orchestrator.control.label_manager import LabelManager
+from issue_orchestrator.execution.client_host import (
+    ClientHostActionResult,
+    ClientHostCapabilities,
+    UnsupportedClientHost,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -23,6 +34,14 @@ def prevent_os_exit():
     """
     with patch("issue_orchestrator.entrypoints.web.shutdown_manager.exit"):
         yield
+
+
+@pytest.fixture(autouse=True)
+def reset_client_host():
+    """Reset client host between tests to avoid cross-test leakage."""
+    set_client_host(UnsupportedClientHost())
+    yield
+    set_client_host(UnsupportedClientHost())
 
 
 from issue_orchestrator.domain.models import (
@@ -53,6 +72,49 @@ from issue_orchestrator.timeline import (
 from issue_orchestrator.events import EventName
 
 _TEST_RUN_DIR_BY_ISSUE: dict[int, str] = {}
+
+
+class _StubClientHost:
+    def __init__(
+        self,
+        *,
+        open_path_result: ClientHostActionResult | None = None,
+        reveal_worktree_result: ClientHostActionResult | None = None,
+        capabilities: ClientHostCapabilities | None = None,
+    ) -> None:
+        self._open_path_result = open_path_result or ClientHostActionResult(
+            status="opened",
+            path="/tmp/path",
+            action="opened",
+        )
+        self._reveal_worktree_result = reveal_worktree_result or ClientHostActionResult(
+            status="opened",
+            path="/tmp/worktree",
+            action="opened",
+        )
+        self._capabilities = capabilities or ClientHostCapabilities(
+            open_path=True,
+            reveal_worktree=True,
+        )
+
+    def capabilities(self) -> ClientHostCapabilities:
+        return self._capabilities
+
+    def open_path(self, path: Path) -> ClientHostActionResult:
+        return ClientHostActionResult(
+            status=self._open_path_result.status,
+            path=str(path),
+            action=self._open_path_result.action,
+            message=self._open_path_result.message,
+        )
+
+    def reveal_worktree(self, path: Path) -> ClientHostActionResult:
+        return ClientHostActionResult(
+            status=self._reveal_worktree_result.status,
+            path=str(path),
+            action=self._reveal_worktree_result.action,
+            message=self._reveal_worktree_result.message,
+        )
 
 
 def _ensure_test_run_dir(issue_number: int) -> str:
@@ -574,7 +636,7 @@ class TestFinderEndpoint:
     """Test the POST /api/finder/{issue_number} endpoint."""
 
     def test_open_in_finder_success(self):
-        """Test successful Finder open on macOS."""
+        """Test successful worktree reveal via client host."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
@@ -584,23 +646,19 @@ class TestFinderEndpoint:
         mock_orch.state.active_sessions = [session]
 
         set_orchestrator(mock_orch)
+        set_client_host(_StubClientHost())
 
-        with patch("os.uname") as mock_uname:
-            with patch("subprocess.run") as mock_run:
-                mock_uname.return_value = Mock(sysname="Darwin")
-                # Mock the path exists check on the session's worktree_path
-                session.worktree_path = MagicMock()
-                session.worktree_path.exists.return_value = True
-                session.worktree_path.__str__.return_value = str(worktree_path)
+        session.worktree_path = MagicMock()
+        session.worktree_path.exists.return_value = True
+        session.worktree_path.__str__.return_value = str(worktree_path)
 
-                client = TestClient(app)
-                response = client.post("/api/finder/1")
+        client = TestClient(app)
+        response = client.post("/api/finder/1")
 
-                assert response.status_code == 200
-                data = response.json()
-                assert data["status"] == "opened"
-                assert data["path"] == str(worktree_path)
-                mock_run.assert_called_once()
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "opened"
+        assert data["path"] == str(worktree_path)
 
     def test_open_in_finder_session_not_found(self):
         """Test Finder open returns 404 when session not found."""
@@ -635,8 +693,8 @@ class TestFinderEndpoint:
         assert response.status_code == 404
         assert "error" in response.json()
 
-    def test_open_in_finder_not_macos(self):
-        """Test Finder open returns 400 when not on macOS."""
+    def test_open_in_finder_unsupported_host(self):
+        """Test worktree reveal returns copy-path fallback when unsupported."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
@@ -645,18 +703,50 @@ class TestFinderEndpoint:
         mock_orch.state.active_sessions = [session]
 
         set_orchestrator(mock_orch)
+        set_client_host(UnsupportedClientHost())
 
-        with patch("os.uname") as mock_uname:
-            mock_uname.return_value = Mock(sysname="Linux")
-            # Mock the path exists check
-            session.worktree_path = MagicMock()
-            session.worktree_path.exists.return_value = True
+        session.worktree_path = MagicMock()
+        session.worktree_path.exists.return_value = True
+        session.worktree_path.__str__.return_value = "/tmp/worktree-1"
 
+        client = TestClient(app)
+        response = client.post("/api/finder/1")
+
+        assert response.status_code == 409
+        data = response.json()
+        assert data["status"] == "unsupported"
+        assert data["action"] == "copy_path"
+        assert data["path"] == "/tmp/worktree-1"
+
+
+class TestHostOpenPathEndpoint:
+    """Test the host path opening endpoints."""
+
+    def test_open_host_path_success(self):
+        set_client_host(_StubClientHost())
+
+        with patch("issue_orchestrator.entrypoints.web.Path.exists") as mock_exists:
+            mock_exists.return_value = True
             client = TestClient(app)
-            response = client.post("/api/finder/1")
+            response = client.post("/api/host/open-path", json={"path": "/tmp/ui-session.log"})
 
-            assert response.status_code == 400
-            assert "error" in response.json()
+        assert response.status_code == 200
+        assert response.json()["status"] == "opened"
+        assert response.json()["path"] == "/tmp/ui-session.log"
+
+    def test_open_host_path_unsupported_returns_copy_hint(self):
+        set_client_host(UnsupportedClientHost())
+
+        with patch("issue_orchestrator.entrypoints.web.Path.exists") as mock_exists:
+            mock_exists.return_value = True
+            client = TestClient(app)
+            response = client.post("/api/host/open-path", json={"path": "/tmp/ui-session.log"})
+
+        assert response.status_code == 409
+        data = response.json()
+        assert data["status"] == "unsupported"
+        assert data["action"] == "copy_path"
+        assert data["path"] == "/tmp/ui-session.log"
 
 
 class TestPromptEndpoint:
@@ -774,6 +864,14 @@ class TestInfoEndpoint:
         """Test successful info retrieval."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
+        set_client_host(
+            _StubClientHost(
+                capabilities=ClientHostCapabilities(
+                    open_path=True,
+                    reveal_worktree=True,
+                )
+            )
+        )
 
         # Add some active sessions
         issue = create_issue(1)
@@ -793,6 +891,9 @@ class TestInfoEndpoint:
         assert data["max_sessions"] == 3
         assert data["active_sessions"] == 1
         assert data["completed_today"] == 3
+        assert data["client_capabilities"]["open_path"] is True
+        assert data["client_capabilities"]["reveal_worktree"] is True
+        assert data["client_capabilities"]["focus_session"] is False
         assert "repo_identity" in data
 
     def test_get_info_when_orchestrator_not_running(self):
@@ -2870,7 +2971,7 @@ class TestTimelineActionWiring:
 
     # Complete registry: action type → API route pattern (or None for client-only)
     _ACTION_ENDPOINT_MAP: dict[str, str | None] = {
-        "open_path": "/api/open-file",
+        "open_path": "/api/host/open-path",
         "open_url": None,  # client-side window.open, no HTTP call
         "open_review_feedback": None,  # in-app modal from existing issue detail payload
         "open_agent_log": "/api/log/local/{issue_number}",
