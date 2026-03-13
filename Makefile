@@ -252,6 +252,9 @@ ifeq ($(SIMULATED_PARALLEL),0)
 	$(PYTEST) tests/simulated_scenarios -x -q --tb=short \
 		--ignore=tests/simulated_scenarios/test_foreign_repo_lifecycle.py \
 		$(PYTEST_TIMINGS)
+	$(PYTEST) tests/simulated_scenarios/test_foreign_repo_lifecycle.py -x -q --tb=short \
+		-k "not test_foreign_repo_claude_code_agent_done and not test_foreign_repo_codex_agent_done" \
+		$(PYTEST_TIMINGS)
 else
 	$(PYTEST) tests/simulated_scenarios -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup \
 		--ignore=tests/simulated_scenarios/test_foreign_repo_lifecycle.py \
