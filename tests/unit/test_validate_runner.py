@@ -212,3 +212,40 @@ class TestValidateRunner:
         # And also be captured to file
         output_file = output_dir / "validation-output.log"
         assert "visible output" in output_file.read_text()
+
+    def test_orchestrated_runs_emit_concise_lifecycle_markers(self, fake_git_repo: Path, tmp_path: Path):
+        """Orchestrated validation should summarize stdout but keep full file output."""
+        output_dir = tmp_path / "session-output"
+        output_dir.mkdir()
+
+        result = subprocess.run(
+            [
+                sys.executable, "-m",
+                "issue_orchestrator.entrypoints.cli_tools.validate_runner",
+                "--command", "printf 'line one\\nline two\\n'"
+            ],
+            cwd=fake_git_repo,
+            capture_output=True,
+            text=True,
+            env=_with_repo_on_pythonpath({
+                **os.environ,
+                "ISSUE_ORCHESTRATOR_VALIDATION_OUTPUT_DIR": str(output_dir),
+            }),
+        )
+
+        assert result.returncode == 0
+        stdout_lines = result.stdout.splitlines()
+        assert "line one" not in stdout_lines
+        assert "line two" not in stdout_lines
+        assert "[orchestrated] full output -> file; terminal shows lifecycle markers only" in result.stdout
+        assert "[validate_runner] child_started pid=" in result.stdout
+        assert "[validate_runner] stdout_eof pid=" in result.stdout
+        assert "[validate_runner] child_exited pid=" in result.stdout
+        assert "Full output saved to:" in result.stdout
+
+        output_file = output_dir / "validation-output.log"
+        content = output_file.read_text()
+        assert "line one" in content
+        assert "line two" in content
+        assert "[validate_runner] child_started pid=" in content
+        assert "[validate_runner] child_exited pid=" in content

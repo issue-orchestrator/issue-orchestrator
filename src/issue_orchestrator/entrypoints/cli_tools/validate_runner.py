@@ -17,6 +17,7 @@ Exit codes:
     Same as the underlying validation command
 """
 
+import os
 import subprocess
 import sys
 import time
@@ -81,9 +82,14 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     output_file = output_dir / "validation-output.log"
+    is_orchestrated_run = get_env("VALIDATION_OUTPUT_DIR") is not None
+    line_count = 0
+    byte_count = 0
 
     print(f"Running: {command}")
     print(f"Output will be saved to: {output_file}")
+    if is_orchestrated_run:
+        print("[orchestrated] full output -> file; terminal shows lifecycle markers only")
     print()
 
     start = time.monotonic()
@@ -91,6 +97,8 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
     # Run command, capturing output while also displaying it
     # Use line buffering (buffering=1) to ensure output is written immediately
     with open(output_file, "w", buffering=1) as f:
+        f.write(f"[validate_runner] start pid={os.getpid()} cwd={worktree} command={command}\n")
+        f.flush()
         process = subprocess.Popen(
             command,
             shell=True,
@@ -100,23 +108,64 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
             text=True,
             bufsize=1,  # Line buffered
         )
+        child_pid = process.pid
+        start_marker = f"[validate_runner] child_started pid={child_pid}\n"
+        sys.stdout.write(start_marker)
+        sys.stdout.flush()
+        f.write(start_marker)
+        f.flush()
 
         # Stream output to both file and terminal
         assert process.stdout is not None  # For type checker
         for line in process.stdout:
-            sys.stdout.write(line)
-            sys.stdout.flush()
+            line_count += 1
+            byte_count += len(line.encode("utf-8", errors="replace"))
+            if not is_orchestrated_run:
+                sys.stdout.write(line)
+                sys.stdout.flush()
             f.write(line)
             f.flush()  # Ensure output is written even if process crashes
 
-        process.wait()
+        eof_marker = (
+            f"[validate_runner] stdout_eof pid={child_pid} "
+            f"lines={line_count} bytes={byte_count} elapsed={time.monotonic() - start:.1f}s\n"
+        )
+        sys.stdout.write(eof_marker)
+        sys.stdout.flush()
+        f.write(eof_marker)
+        f.flush()
+
+        while True:
+            try:
+                process.wait(timeout=1)
+                break
+            except subprocess.TimeoutExpired:
+                wait_marker = (
+                    f"[validate_runner] waiting_for_exit pid={child_pid} "
+                    f"elapsed={time.monotonic() - start:.1f}s after_stdout_eof\n"
+                )
+                sys.stdout.write(wait_marker)
+                sys.stdout.flush()
+                f.write(wait_marker)
+                f.flush()
 
     duration = time.monotonic() - start
     exit_code = process.returncode
+    exit_marker = (
+        f"[validate_runner] child_exited pid={child_pid} exit_code={exit_code} "
+        f"elapsed={duration:.1f}s lines={line_count} bytes={byte_count}\n"
+    )
+    # The exit marker is computed only after the child has fully exited and the
+    # main streaming file handle is closed, so append it in a short final write.
+    with open(output_file, "a", encoding="utf-8") as f:
+        f.write(exit_marker)
+    sys.stdout.write(exit_marker)
+    sys.stdout.flush()
 
     print()
     if exit_code == 0:
         print(f"Validation PASSED (exit code 0) in {duration:.1f}s")
+        print(f"Full output saved to: {output_file}")
     else:
         print("=" * 60)
         print(f"Validation FAILED (exit code {exit_code}) in {duration:.1f}s")

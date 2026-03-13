@@ -60,16 +60,37 @@ def clean_terminal_line(line: str) -> str:
     - Control characters
     """
     # Handle carriage returns: terminal overwrites from start of line.
-    # Take only the content after the last carriage return.
+    # Prefer normal terminal semantics (the last non-empty segment), but detect
+    # the specific wrapped-redraw failure mode seen in #4057 where the final
+    # segment is only a trailing suffix of the richer visible line
+    # (for example, "store access" after a wrapped redraw of
+    # "Add ... encapsulate store access").
     if "\r" in line:
         segments = line.split("\r")
-        for segment in reversed(segments):
+        last_non_empty_segment = ""
+        last_non_empty_text = ""
+        longest_segment = ""
+        longest_text = ""
+        for segment in segments:
             stripped = strip_ansi_codes(segment).strip()
-            if stripped:
-                line = segment
-                break
+            if not stripped:
+                continue
+            last_non_empty_segment = segment
+            last_non_empty_text = stripped
+            if len(stripped) >= len(longest_text):
+                longest_segment = segment
+                longest_text = stripped
+
+        if (
+            last_non_empty_text
+            and longest_text
+            and last_non_empty_text != longest_text
+            and len(last_non_empty_text) < len(longest_text)
+            and longest_text.endswith(last_non_empty_text)
+        ):
+            line = longest_segment
         else:
-            line = segments[-1] if segments else ""
+            line = last_non_empty_segment if last_non_empty_segment else (segments[-1] if segments else "")
 
     line = strip_ansi_codes(line)
 
