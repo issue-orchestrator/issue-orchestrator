@@ -1579,7 +1579,7 @@ def _load_config_port(repo_root: Path, config_name: str) -> int | None:
 
 def _client_dashboard_url(port: int | None) -> str | None:
     """Resolve the browser-facing dashboard URL for a repo engine port."""
-    if not port:
+    if port is None:
         return None
 
     from ..infra.client_urls import resolve_client_dashboard_url
