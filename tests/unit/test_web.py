@@ -2525,6 +2525,49 @@ class TestApiTimelineEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_issue_detail_prefers_validation_failure_over_timeline_missing(self, tmp_path: Path):
+        """Current-run validation failure should remain the primary explanation when both diagnostics apply."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-run-diagnostic-priority"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "coding-1", issue_number=123)
+        session_output.update_manifest(
+            run.run_dir,
+            {
+                "validation_status": "failed",
+                "validation_reason": ".venv/bin/python missing",
+            },
+        )
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+                worktree_path=worktree,
+            ),
+        ]
+        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+            issue_number=123,
+            events=[],
+        )
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/issue-detail/123")
+            assert response.status_code == 200
+            payload = response.json()
+            assert "Current run failed validation" in payload["status_explanation"]
+            assert "Timeline data missing" not in payload["status_explanation"]
+            assert payload["summary"]["timeline_diagnostic"]["state"] == "expected_history_missing"
+            assert payload["summary"]["run_diagnostic"]["state"] == "validation_failed"
+        finally:
+            set_orchestrator(None)
+
     def test_issue_detail_survives_action_decoration_failure(self):
         """A single bad event artifact must not break issue-detail rendering."""
         mock_orch = create_mock_orchestrator()

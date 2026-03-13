@@ -159,9 +159,15 @@ export interface SessionDiagnosticsActionPayload {
   [key: string]: any;
 }
 
+export interface SessionDiagnosticsAnalysisPayload {
+  detail?: string | null;
+  headline: string;
+  suggestions?: string[];
+}
+
 export interface SessionDiagnosticsDialogPayload {
   actions: SessionDiagnosticsActionPayload[];
-  analysis?: Record<string, any> | null;
+  analysis?: SessionDiagnosticsAnalysisPayload | null;
   rows: DialogRowPayload[];
   title: string;
 }

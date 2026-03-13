@@ -1804,15 +1804,15 @@ class SessionLauncher:
                 shell=True,
                 cwd=worktree_path,
             )
+            if result.timed_out:
+                logger.error("[launch] Setup command timed out: %s", cmd)
+                raise RuntimeError(f"setup command timed out: {cmd}")
             if result.returncode != 0:
                 stderr = result.stderr.strip() or "no stderr captured"
                 logger.error("Setup command failed: %s\n%s", cmd, stderr)
                 raise RuntimeError(
                     f"setup command failed: {cmd} (exit_code={result.returncode}): {stderr}"
                 )
-            if result.timed_out:
-                logger.error("[launch] Setup command timed out: %s", cmd)
-                raise RuntimeError(f"setup command timed out: {cmd}")
         setup_time = time.time() - step_start
         logger.info("[launch] Setup completed in %.1fs", setup_time)
 

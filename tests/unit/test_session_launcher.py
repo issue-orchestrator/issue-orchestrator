@@ -731,6 +731,24 @@ class TestLaunchIssueSession:
         assert launcher_bundle.create_session_calls == []
         assert mock_worktree_manager.remove_calls, "failed setup should clean up the worktree"
 
+    def test_fails_launch_when_setup_command_times_out(
+        self,
+        launcher_bundle,
+        sample_issue,
+        mock_command_runner,
+    ):
+        """Timeouts should surface as timeouts even if the runner also reports a nonzero exit."""
+        launcher_bundle.launcher.config.setup_worktree = ["make worktree-setup"]
+        mock_command_runner.results = [
+            CommandResult(returncode=137, stdout="", stderr="killed", timed_out=True),
+        ]
+
+        result = launcher_bundle.launcher.launch_issue_session(sample_issue, active_sessions=[])
+
+        assert result.success is False
+        assert "timed out" in result.reason
+        assert "exit_code=137" not in result.reason
+
     def test_includes_existing_work_context(self, launcher_bundle, sample_issue, mock_working_copy):
         """Verify existing work is detected and included in command."""
         mock_working_copy.commits_ahead = [

@@ -119,6 +119,42 @@ class SessionDiagnosticsContext:
         )
 
 
+@dataclass(frozen=True)
+class SessionDiagnosticAnalysis:
+    """Human-oriented diagnostic summary for the current run."""
+
+    headline: str
+    detail: str | None = None
+    suggestions: tuple[str, ...] = ()
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any] | None) -> "SessionDiagnosticAnalysis | None":
+        if not isinstance(payload, dict):
+            return None
+        headline = payload.get("headline")
+        if not isinstance(headline, str) or not headline.strip():
+            return None
+        detail = payload.get("detail")
+        suggestions_raw = payload.get("suggestions")
+        suggestions = tuple(
+            item for item in suggestions_raw
+            if isinstance(item, str) and item.strip()
+        ) if isinstance(suggestions_raw, list) else ()
+        return cls(
+            headline=headline,
+            detail=detail if isinstance(detail, str) and detail.strip() else None,
+            suggestions=suggestions,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"headline": self.headline}
+        if self.detail is not None:
+            payload["detail"] = self.detail
+        if self.suggestions:
+            payload["suggestions"] = list(self.suggestions)
+        return payload
+
+
 def _join_worktree_path(worktree: str, rel_path: Any) -> str:
     """Resolve manifest path to an openable filesystem path.
 
@@ -314,6 +350,7 @@ def build_session_diagnostics_dialog(
     manifest_payload: dict[str, Any],
 ) -> dict[str, Any]:
     ctx = SessionDiagnosticsContext.from_payload(issue_number, manifest_payload)
+    analysis = SessionDiagnosticAnalysis.from_payload(manifest_payload.get("analysis"))
     rows = _build_session_diagnostics_rows(ctx)
     actions = _build_session_diagnostics_actions(ctx)
 
@@ -321,7 +358,7 @@ def build_session_diagnostics_dialog(
         "title": f"Session Diagnostics #{issue_number}",
         "rows": [row.to_dict() for row in rows],
         "actions": actions,
-        "analysis": manifest_payload.get("analysis"),
+        "analysis": analysis.to_dict() if analysis else None,
     }
 
 

@@ -499,7 +499,22 @@
           "title": {"type": "string"},
           "rows": {"type": "array", "items": {"$ref": "#/components/schemas/DialogRowPayload"}},
           "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}},
-          "analysis": {"type": ["object", "null"], "additionalProperties": true}
+          "analysis": {
+            "oneOf": [
+              {"$ref": "#/components/schemas/SessionDiagnosticsAnalysisPayload"},
+              {"type": "null"}
+            ]
+          }
+        }
+      },
+      "SessionDiagnosticsAnalysisPayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["headline"],
+        "properties": {
+          "headline": {"type": "string"},
+          "detail": {"type": ["string", "null"]},
+          "suggestions": {"type": "array", "items": {"type": "string"}}
         }
       },
       "BlockedIssuePayload": {

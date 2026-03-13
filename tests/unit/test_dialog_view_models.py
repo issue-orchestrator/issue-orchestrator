@@ -277,6 +277,24 @@ def test_build_session_diagnostics_dialog_keeps_absolute_validation_output_path(
     assert "/wt/.issue-orchestrator/sessions/r1/validation-output.log" in paths
 
 
+def test_build_session_diagnostics_dialog_drops_malformed_analysis():
+    dialog = build_session_diagnostics_dialog(
+        11,
+        {
+            "manifest": {
+                "session_name": "sess-bad-analysis",
+            },
+            "run_dir": "/run/r1",
+            "analysis": {
+                "detail": "Missing the required headline should drop this payload.",
+                "unexpected": True,
+            },
+        },
+    )
+
+    assert dialog["analysis"] is None
+
+
 def test_build_blocked_issues_dialog():
     dialog = build_blocked_issues_dialog({"blocked_issues": ["M1-1"]})
 

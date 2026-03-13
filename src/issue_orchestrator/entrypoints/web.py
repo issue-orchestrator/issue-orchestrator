@@ -1332,6 +1332,7 @@ def _current_run_validation_diagnostic(issue_number: int) -> dict[str, Any] | No
     if run_dir is None:
         return None
 
+    # Keep this local to avoid pulling manifest-loading dependencies into module import.
     from ..domain.run_manifest import RunManifest
 
     try:
@@ -1598,9 +1599,10 @@ async def get_issue_detail(issue_number: int, view: str = "user") -> IssueDetail
         summary = payload.get("summary")
         if isinstance(summary, dict):
             summary["timeline_diagnostic"] = diagnostic
-        payload["status_explanation"] = (
-            f"Timeline data missing ({', '.join(diagnostic.get('signals', []))})"
-        )
+        if run_diagnostic is None:
+            payload["status_explanation"] = (
+                f"Timeline data missing ({', '.join(diagnostic.get('signals', []))})"
+            )
     return IssueDetailPayload.model_validate(payload)
 
 
