@@ -459,6 +459,52 @@ class TestRefreshEndpoint:
         mock_orch.request_refresh.assert_called_once_with(inflight_stable_ids=set())
 
 
+class TestControlReposDashboardUrl:
+    def test_control_repos_exposes_codespaces_dashboard_url(
+        self,
+        supervisor_client: TestClient,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_supervisor: MagicMock,
+    ) -> None:
+        from issue_orchestrator.entrypoints import control_api
+        from issue_orchestrator.infra import repo_registry
+
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        monkeypatch.setattr(
+            repo_registry,
+            "list_repos",
+            lambda: [
+                SimpleNamespace(
+                    path=str(repo),
+                    name=repo.name,
+                    added_at="2026-01-01T00:00:00+00:00",
+                    selected_config="main.yaml",
+                    health=None,
+                )
+            ],
+        )
+        monkeypatch.setattr(repo_registry, "add_repo", lambda path: None)
+        monkeypatch.setattr(control_api, "_preferred_repo_root", lambda: None)
+        monkeypatch.setenv("CODESPACE_NAME", "octo-space")
+        monkeypatch.setenv("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN", "app.github.dev")
+        monkeypatch.setattr("httpx.get", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no probe")))  # type: ignore[arg-type]
+
+        mock_supervisor.status.return_value = SupervisorStatus(
+            state="running",
+            pid=123,
+            port=55543,
+        )
+
+        response = supervisor_client.get("/control/repos")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["repos"][0]["dashboard_url"] == "https://octo-space-55543.app.github.dev/"
+
+
 # --- Test: Status Endpoint ---
 
 
