@@ -17,7 +17,6 @@ from ..agent_runner import AgentRunner, AgentResult, AgentSpec
 from ..domain.models import AgentConfig
 from ..infra.logging_config import get_repo_log_path
 from ..infra.env import ENV_PREFIX
-from ..infra.terminal_cleaning import clean_terminal_line, is_spinner_fragment
 from ..ports.session_output import SessionOutput
 from ..ports import EventSink,  make_trace_event
 from ..events import EventName, EventContext
@@ -149,6 +148,7 @@ def run_review_exchange_loop(
     current_round = 0
     try:
         early_outcome, current_round = _execute_review_exchange_rounds(
+            session_output=session_output,
             runner=runner,
             worktree_path=worktree_path,
             run_dir=run_dir,
@@ -201,6 +201,7 @@ def run_review_exchange_loop(
 
 def _execute_review_exchange_rounds(  # noqa: PLR0913
     *,
+    session_output: SessionOutput,
     runner: AgentRunner,
     worktree_path: Path,
     run_dir: Path,
@@ -231,6 +232,7 @@ def _execute_review_exchange_rounds(  # noqa: PLR0913
             "round_index": round_index,
         })
         reviewer_response = _run_reviewer_round(
+            session_output=session_output,
             runner=runner,
             worktree_path=worktree_path,
             run_dir=run_dir,
@@ -247,6 +249,7 @@ def _execute_review_exchange_rounds(  # noqa: PLR0913
             agent_label=reviewer_label,
         )
         outcome, no_progress_count, last_reviewer_text, last_coder_text = _process_exchange_round(
+            session_output=session_output,
             runner=runner,
             reviewer_response=reviewer_response,
             run_dir=run_dir,
@@ -273,6 +276,7 @@ def _execute_review_exchange_rounds(  # noqa: PLR0913
 
 def _process_exchange_round(  # noqa: PLR0913
     *,
+    session_output: SessionOutput,
     runner: AgentRunner,
     reviewer_response: ReviewExchangeResponse,
     run_dir: Path,
@@ -327,6 +331,7 @@ def _process_exchange_round(  # noqa: PLR0913
 
     last_reviewer_text = reviewer_response.response_text
     coder_response, protocol_error = _run_coder_round_with_protocol_retries(
+        session_output=session_output,
         runner=runner,
         worktree_path=worktree_path,
         run_dir=run_dir,
@@ -541,6 +546,7 @@ def _stop_for_protocol_error(
 
 def _run_reviewer_round(
     *,
+    session_output: SessionOutput,
     runner: AgentRunner,
     worktree_path: Path,
     run_dir: Path,
@@ -566,6 +572,7 @@ def _run_reviewer_round(
         run_dir=run_dir,
     )
     return _run_agent_round(
+        session_output=session_output,
         runner=runner,
         worktree_path=worktree_path,
         run_dir=run_dir,
@@ -584,6 +591,7 @@ def _run_reviewer_round(
 
 def _run_coder_round(
     *,
+    session_output: SessionOutput,
     runner: AgentRunner,
     worktree_path: Path,
     run_dir: Path,
@@ -605,6 +613,7 @@ def _run_coder_round(
         run_dir=run_dir,
     )
     return _run_agent_round(
+        session_output=session_output,
         runner=runner,
         worktree_path=worktree_path,
         run_dir=run_dir,
@@ -623,6 +632,7 @@ def _run_coder_round(
 
 def _run_coder_round_with_protocol_retries(
     *,
+    session_output: SessionOutput,
     runner: AgentRunner,
     worktree_path: Path,
     run_dir: Path,
@@ -639,6 +649,7 @@ def _run_coder_round_with_protocol_retries(
 ) -> tuple[ReviewExchangeResponse, str | None]:
     coder_feedback = reviewer_response.response_text
     coder_response = _run_coder_round(
+        session_output=session_output,
         runner=runner,
         worktree_path=worktree_path,
         run_dir=run_dir,
@@ -665,6 +676,7 @@ def _run_coder_round_with_protocol_retries(
             "$ISSUE_ORCHESTRATOR_REVIEW_RESPONSE_FILE."
         )
         coder_response = _run_coder_round(
+            session_output=session_output,
             runner=runner,
             worktree_path=worktree_path,
             run_dir=run_dir,
@@ -709,6 +721,7 @@ def _run_interactive_round(
 
 def _run_agent_round(
     *,
+    session_output: SessionOutput,
     runner: AgentRunner,
     worktree_path: Path,
     run_dir: Path,
@@ -725,6 +738,7 @@ def _run_agent_round(
 ) -> ReviewExchangeResponse:
     prompt_path = _write_prompt(exchange_dir, round_index, role, prompt_text)
     _append_session_log(
+        session_output,
         run_dir,
         round_index=round_index,
         role=role,
@@ -809,6 +823,7 @@ def _run_agent_round(
         succeeded=result.succeeded,
     )
     _append_session_log(
+        session_output,
         run_dir,
         round_index=round_index,
         role=role,
@@ -875,6 +890,7 @@ def _append_text(path: Path, content: str) -> None:
 
 
 def _append_session_log(
+    session_output: SessionOutput,
     run_dir: Path,
     *,
     round_index: int,
@@ -882,18 +898,10 @@ def _append_session_log(
     section: str,
     content: str,
 ) -> None:
-    """Append review-exchange transcript content to run-scoped ui-session.log."""
-    log_path = run_dir / "ui-session.log"
+    """Append review-exchange transcript content to the canonical UI session log."""
     timestamp = datetime.now(timezone.utc).isoformat()
     header = f"[{timestamp}] round={round_index} role={role} section={section}\n"
-    cleaned_lines = []
-    for line in content.splitlines():
-        cleaned = clean_terminal_line(line)
-        if cleaned.strip() and not is_spinner_fragment(cleaned):
-            cleaned_lines.append(cleaned)
-    cleaned_content = "\n".join(cleaned_lines)
-    chunk = f"{header}{cleaned_content.rstrip()}\n\n"
-    _append_text(log_path, chunk)
+    session_output.append_cleaned_session_log(run_dir, f"{header}{content.rstrip()}\n")
 
 
 def _build_env_overrides(

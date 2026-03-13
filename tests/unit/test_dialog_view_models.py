@@ -158,6 +158,7 @@ def test_build_session_diagnostics_dialog_actions():
                 "provider": "claude-code",
                 "model": "sonnet",
                 "permission_mode": "bypassPermissions",
+                "timeout_minutes": 60,
                 "extra_provider_args": {"verbose": "true"},
                 "claude_args": "",
                 "claude_prompt_mode": "arg",
@@ -173,6 +174,7 @@ def test_build_session_diagnostics_dialog_actions():
     assert rows["Provider"] == "claude-code"
     assert rows["Model"] == "sonnet"
     assert rows["Permission Mode"] == "bypassPermissions"
+    assert rows["Timeout"] == "60m"
     assert rows["Provider Args"] == "verbose=true"
     assert rows["Prompt Mode"] == "arg"
 
@@ -190,6 +192,7 @@ def test_build_session_diagnostics_dialog_actions():
 
     paths = {action.get("path") for action in dialog["actions"] if "path" in action}
     assert "/run/dir" in paths
+    assert "/run/dir/session-identity.json" in paths
     assert "/logs/claude.log" in paths
     assert "/logs" in paths
     assert "/logs/orch.log" in paths

@@ -887,8 +887,8 @@ def _load_ui_section(config: "Config", ui_section: dict) -> None:
         return enabled, stale_seconds, cooldown_seconds
 
     config.ui_mode = ui_section.get("mode", "web")
-    config.web_port = ui_section.get("web_port", 8080)
-    config.control_api_port = ui_section.get("control_api_port", 19080)
+    config.web_port = ui_section.get("web_port", 0)
+    config.control_api_port = ui_section.get("control_api_port", 0)
     config.queue_refresh_seconds = ui_section.get("queue_refresh_seconds", 600)
     fetch_layer = ui_section.get("fetch_layer", {})
     config.fetch_layer_enabled = fetch_layer.get("enabled", True)
@@ -1791,9 +1791,9 @@ class Config:
         ui_dict: dict = {}
         if self.ui_mode != "web":
             ui_dict["mode"] = self.ui_mode
-        if self.web_port != 8080:
+        if self.web_port != 0:
             ui_dict["web_port"] = self.web_port
-        if self.control_api_port != 19080:
+        if self.control_api_port != 0:
             ui_dict["control_api_port"] = self.control_api_port
         if self.queue_refresh_seconds != 600:
             ui_dict["queue_refresh_seconds"] = self.queue_refresh_seconds

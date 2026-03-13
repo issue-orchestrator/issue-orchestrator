@@ -55,7 +55,9 @@ class SessionDiagnosticsContext:
     provider: str
     model: str
     permission_mode: str
+    timeout_minutes: str
     extra_provider_args: str
+    session_settings_path: str
 
     @classmethod
     def from_payload(
@@ -99,7 +101,11 @@ class SessionDiagnosticsContext:
             provider=str(session_identity.get("provider") or ""),
             model=str(session_identity.get("model") or ""),
             permission_mode=str(session_identity.get("permission_mode") or ""),
+            timeout_minutes=str(session_identity.get("timeout_minutes") or ""),
             extra_provider_args=_format_extra_provider_args(session_identity.get("extra_provider_args")),
+            session_settings_path=str(Path(manifest_payload.get("run_dir") or "") / "session-identity.json")
+            if manifest_payload.get("run_dir")
+            else "",
         )
 
 
@@ -133,6 +139,7 @@ def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[Dial
         DialogRow("Provider", ctx.provider or "-"),
         DialogRow("Model", ctx.model or "-"),
         DialogRow("Permission Mode", ctx.permission_mode or "-"),
+        DialogRow("Timeout", f"{ctx.timeout_minutes}m" if ctx.timeout_minutes else "-"),
         DialogRow("Provider Args", ctx.extra_provider_args or "-"),
         DialogRow("Launch Args", ctx.claude_args or "-"),
         DialogRow("Prompt Mode", ctx.claude_prompt_mode or "-"),
@@ -148,6 +155,13 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     actions: list[dict[str, Any]] = []
     if ctx.run_dir:
         actions.append({"type": "open_path", "label": "Open Session Dir", "path": ctx.run_dir})
+    if ctx.session_settings_path:
+        actions.append({
+            "type": "open_path",
+            "label": "Open Session Settings",
+            "path": ctx.session_settings_path,
+        })
+    if ctx.run_dir:
         actions.append(
             {
                 "type": "open_agent_log",

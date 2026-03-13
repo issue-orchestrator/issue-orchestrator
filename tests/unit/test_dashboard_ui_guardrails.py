@@ -248,6 +248,21 @@ def test_context_menu_orchestrator_log_avoids_legacy_agent_log_endpoint() -> Non
     assert "/api/log/" not in snippet
 
 
+def test_timeline_more_menu_renders_inline_list_not_absolute_popover() -> None:
+    css = _read(DASHBOARD_CSS)
+    assert ".timeline-more-items {" in css
+    block = css.split(".timeline-more-items {", 1)[1].split("}", 1)[0]
+    assert "position: static;" in block
+    assert "overflow: auto;" in block
+
+
+def test_session_diagnostics_tracks_timeout_and_session_settings_action() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "openSessionManifest")
+    assert "currentDiagnosticsRunDir" in body
+    assert "'timeout'" in body
+
+
 def test_context_menu_retry_statuses_include_awaiting_merge() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "showContextMenu")

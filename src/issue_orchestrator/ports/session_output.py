@@ -496,6 +496,14 @@ class SessionOutput(Protocol):
         """
         ...
 
+    def append_cleaned_session_log(
+        self,
+        run_dir: Path,
+        content: str,
+    ) -> None:
+        """Append cleaned display-safe content to ``ui-session.log``."""
+        ...
+
     # -------------------------------------------------------------------------
     # Log Access
     # -------------------------------------------------------------------------

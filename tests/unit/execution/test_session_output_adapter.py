@@ -358,3 +358,19 @@ class TestRunRetentionMetadata:
         assert manifest["retention_days"] == 14
         assert manifest["retention_pinned"] is True
         assert "retention_expires_at" in manifest
+
+
+class TestSessionLogCleaning:
+    def test_append_cleaned_session_log_filters_noise_at_write_time(self, tmp_path):
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_path, "issue-123", issue_number=123)
+
+        session_output.append_cleaned_session_log(
+            run.run_dir,
+            "Line one\n\n✶ Thinking…\nLine two\nRecentactivity\n",
+        )
+
+        assert run.log_path.read_text(encoding="utf-8").splitlines() == [
+            "Line one",
+            "Line two",
+        ]

@@ -137,6 +137,20 @@ class TestSubprocessPluginDelegatesToAgentRunner:
         )
 
 
+def test_review_exchange_ui_log_writes_go_through_session_output_owner() -> None:
+    for rel_path in (
+        SRC_ROOT / "control" / "review_exchange_loop.py",
+        SRC_ROOT / "execution" / "review_exchange_local_loop.py",
+    ):
+        source = rel_path.read_text(encoding="utf-8")
+        assert "append_cleaned_session_log(" in source, (
+            f"{rel_path.name} must delegate UI session log writes to SessionOutput"
+        )
+        assert "clean_terminal_line(" not in source, (
+            f"{rel_path.name} must not own ad hoc UI log cleaning"
+        )
+
+
 class TestScriptSessionRunnerUsesAgentRunner:
     """ScriptSessionRunner must delegate to AgentRunner, not subprocess.run."""
 

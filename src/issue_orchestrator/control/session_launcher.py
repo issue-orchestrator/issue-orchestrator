@@ -274,6 +274,7 @@ class SessionLauncher:
             "provider": str(agent_config.provider or ""),
             "model": str(agent_config.model or ""),
             "permission_mode": permission_mode,
+            "timeout_minutes": int(agent_config.timeout_minutes),
             "extra_provider_args": dict(extra_provider_args or {}),
         }
 

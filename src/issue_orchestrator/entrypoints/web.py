@@ -1191,8 +1191,7 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
         stream_json_lines = extract_stream_json_text(raw_lines)
         all_lines = stream_json_lines if stream_json_lines is not None else raw_lines
 
-        # The file is already cleaned at write-time by CleaningLogWriter
-        # (ANSI stripped, spinners filtered, deduped). Just filter blanks.
+        # The file is already cleaned at write-time by SessionOutput/CleaningLogWriter.
         all_lines = [line for line in all_lines if line.strip()]
         total_lines = len(all_lines)
 
