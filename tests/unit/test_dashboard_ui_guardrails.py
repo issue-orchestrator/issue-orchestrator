@@ -411,13 +411,14 @@ def test_review_feedback_modal_includes_exchange_round_events() -> None:
     assert "Review exchange rounds" in body
 
 
-def test_session_diagnostics_actions_use_primary_plus_more_menu() -> None:
+def test_session_diagnostics_actions_use_primary_plus_visible_secondary_actions() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "renderGroupedDialogActions")
     assert "primaryTypes" in body
-    assert "Artifacts & Logs ▾" in body
-    assert "diag-more-disclosure" in body
+    assert "diag-secondary-actions" in body
+    assert "Artifacts & Logs ▾" not in body
     assert "Issue-Scoped Orchestrator Log" in js
+    assert "Copy UI Session" in js
     assert "openSessionManifest(action.issue_number, action.run_dir || null)" in js
 
 

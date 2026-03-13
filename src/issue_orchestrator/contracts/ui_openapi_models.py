@@ -170,5 +170,6 @@ class SessionDiagnosticsActionPayload(BaseModel):
 class SessionDiagnosticsDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actions: list[SessionDiagnosticsActionPayload]
+    analysis: dict[str, Any] | None = None
     rows: list[DialogRowPayload]
     title: str

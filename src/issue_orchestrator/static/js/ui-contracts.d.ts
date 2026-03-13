@@ -161,6 +161,7 @@ export interface SessionDiagnosticsActionPayload {
 
 export interface SessionDiagnosticsDialogPayload {
   actions: SessionDiagnosticsActionPayload[];
+  analysis?: Record<string, any> | null;
   rows: DialogRowPayload[];
   title: string;
 }

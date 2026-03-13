@@ -54,6 +54,9 @@ execution:
     session_timeout_minutes: 10
   terminal_adapter: subprocess
 
+setup_worktree:
+  - make worktree-setup
+
 review:
   enabled: true
   default: agent:reviewer

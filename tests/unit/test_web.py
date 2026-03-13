@@ -2470,6 +2470,61 @@ class TestApiTimelineEndpoint:
         finally:
             set_orchestrator(None)
 
+    def test_issue_detail_surfaces_current_run_validation_failure(self, tmp_path: Path):
+        """Issue detail should expose current run validation failures even before a timeline failure event exists."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-run-diagnostic"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "coding-1", issue_number=123)
+        session_output.update_manifest(
+            run.run_dir,
+            {
+                "validation_status": "failed",
+                "validation_reason": ".venv/bin/python missing",
+                "validation_record_path": ".issue-orchestrator/sessions/r1/validation-record.json",
+                "validation_stderr": ".issue-orchestrator/sessions/r1/validation-stderr.log",
+            },
+        )
+        mock_orch.state.session_history = [
+            SessionHistoryEntry(
+                issue_number=123,
+                title="Issue 123",
+                agent_type="agent:web",
+                status="completed",
+                runtime_minutes=5,
+                worktree_path=worktree,
+            ),
+        ]
+        mock_orch.deps.timeline_reader.read.return_value = TimelineStream(
+            issue_number=123,
+            events=[
+                build_timeline_event(
+                    "session.started",
+                    event_id="e1",
+                    timestamp="2026-02-09T10:00:00Z",
+                    status="started",
+                    phase="in_progress",
+                    run_dir=str(run.run_dir),
+                ),
+            ],
+        )
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/issue-detail/123")
+            assert response.status_code == 200
+            payload = response.json()
+            diagnostic = payload["summary"].get("run_diagnostic")
+            assert diagnostic is not None
+            assert diagnostic["state"] == "validation_failed"
+            assert diagnostic["reason"] == ".venv/bin/python missing"
+            assert "Current run failed validation" in payload["status_explanation"]
+        finally:
+            set_orchestrator(None)
+
     def test_issue_detail_survives_action_decoration_failure(self):
         """A single bad event artifact must not break issue-detail rendering."""
         mock_orch = create_mock_orchestrator()
@@ -2997,12 +3052,14 @@ class TestTimelineActionWiring:
         "open_url": None,  # client-side window.open, no HTTP call
         "open_review_feedback": None,  # in-app modal from existing issue detail payload
         "open_agent_log": "/api/log/local/{issue_number}",
+        "copy_agent_log": None,  # client-side fetch+clipboard from existing local log endpoint
         "view_claude_log": "/api/session/claude-log/{issue_number}",
         "open_orchestrator_log": "/api/session/orchestrator-log/{issue_number}",
         "open_session_diagnostics": "/api/dialog/session-diagnostics/{issue_number}",
     }
     _REQUIRED_FIELDS_BY_ACTION: dict[str, tuple[str, ...]] = {
         "open_agent_log": ("issue_number", "run_dir"),
+        "copy_agent_log": ("issue_number", "run_dir"),
         "view_claude_log": ("issue_number", "run_dir"),
         "open_orchestrator_log": ("issue_number", "run_dir"),
         "open_session_diagnostics": ("issue_number", "run_dir"),

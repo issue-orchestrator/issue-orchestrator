@@ -1325,6 +1325,37 @@ def _manifest_response(
     return JSONResponse(result)
 
 
+def _current_run_validation_diagnostic(issue_number: int) -> dict[str, Any] | None:
+    """Return a focused diagnostic for the latest/current run's validation state."""
+    context = _resolve_issue_session_context(issue_number)
+    run_dir = context.run_dir
+    if run_dir is None:
+        return None
+
+    from ..domain.run_manifest import RunManifest
+
+    try:
+        manifest = RunManifest.load(run_dir)
+    except FileNotFoundError:
+        return None
+    except Exception:
+        logger.debug("Failed to load run manifest for validation diagnostic: %s", run_dir, exc_info=True)
+        return None
+
+    if manifest.validation_status != "failed":
+        return None
+
+    return {
+        "state": "validation_failed",
+        "run_dir": str(run_dir),
+        "session_name": context.session_name,
+        "reason": manifest.validation_reason or "Validation failed",
+        "validation_record_path": manifest.validation_record_path,
+        "validation_stderr": manifest.validation_stderr,
+        "validation_stdout": manifest.validation_stdout,
+    }
+
+
 @app.get("/api/session/manifest/{issue_number}")
 async def get_session_manifest(
     issue_number: int,
@@ -1532,6 +1563,14 @@ async def get_issue_detail(issue_number: int, view: str = "user") -> IssueDetail
         context=context,
         view=view,
     )
+    run_diagnostic = _current_run_validation_diagnostic(issue_number)
+    if run_diagnostic:
+        summary = payload.get("summary")
+        if isinstance(summary, dict):
+            summary["run_diagnostic"] = run_diagnostic
+        payload["status_explanation"] = (
+            f"Current run failed validation: {run_diagnostic.get('reason', 'validation failed')}"
+        )
     if is_timeline_trace_enabled():
         runs = payload.get("runs")
         run_count = len(runs) if isinstance(runs, list) else 0

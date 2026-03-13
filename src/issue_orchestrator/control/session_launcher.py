@@ -786,7 +786,30 @@ class SessionLauncher:
 
         # Run setup commands
         if self.config.setup_worktree:
-            self._run_setup_commands(worktree_path)
+            try:
+                self._run_setup_commands(worktree_path)
+            except Exception as e:
+                log_transition("issue", issue.number, "LAUNCHING", "FAILED", "setup commands failed")
+                logger.error(issue_log(issue.number, "FAILED: setup commands failed: %s"), e)
+                self.events.publish(make_trace_event(
+                    EventName.SESSION_START_FAILED,
+                    {
+                        "issue_number": issue.number,
+                        "session_name": session_name,
+                        "reason": "setup_commands_failed",
+                        "error": str(e),
+                    },
+                ))
+                try:
+                    self._worktree_manager.remove(worktree_path)
+                    logger.info(issue_log(issue.number, "Cleaned up worktree after setup failure: %s"), worktree_path)
+                except Exception as cleanup_error:
+                    logger.warning(
+                        issue_log(issue.number, "Failed to remove worktree after setup failure: %s"),
+                        cleanup_error,
+                    )
+                self._release_claim_if_held(issue.number, claim)
+                return LaunchResult(None, False, f"Setup commands failed: {e}")
 
         # New coding attempt starts now; clear interrupted retry guard.
         self._clear_interrupted_retry_guard_label(
@@ -1782,10 +1805,14 @@ class SessionLauncher:
                 cwd=worktree_path,
             )
             if result.returncode != 0:
-                logger.warning("Setup command failed: %s\n%s", cmd, result.stderr)
-                logger.warning("[launch] Setup command failed: %s", cmd)
+                stderr = result.stderr.strip() or "no stderr captured"
+                logger.error("Setup command failed: %s\n%s", cmd, stderr)
+                raise RuntimeError(
+                    f"setup command failed: {cmd} (exit_code={result.returncode}): {stderr}"
+                )
             if result.timed_out:
-                logger.warning("[launch] Setup command timed out: %s", cmd)
+                logger.error("[launch] Setup command timed out: %s", cmd)
+                raise RuntimeError(f"setup command timed out: {cmd}")
         setup_time = time.time() - step_start
         logger.info("[launch] Setup completed in %.1fs", setup_time)
 

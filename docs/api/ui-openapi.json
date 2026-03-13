@@ -498,7 +498,8 @@
         "properties": {
           "title": {"type": "string"},
           "rows": {"type": "array", "items": {"$ref": "#/components/schemas/DialogRowPayload"}},
-          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}}
+          "actions": {"type": "array", "items": {"$ref": "#/components/schemas/SessionDiagnosticsActionPayload"}},
+          "analysis": {"type": ["object", "null"], "additionalProperties": true}
         }
       },
       "BlockedIssuePayload": {

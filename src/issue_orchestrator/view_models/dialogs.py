@@ -48,6 +48,9 @@ class SessionDiagnosticsContext:
     diagnostic_path: str
     validation_path: str
     validation_output_path: str
+    validation_stderr_path: str
+    validation_status: str
+    validation_reason: str
     branch: str
     task: str
     claude_args: str
@@ -75,6 +78,10 @@ class SessionDiagnosticsContext:
             worktree,
             manifest.get("validation_output_path") or manifest.get("validation_stdout"),
         )
+        validation_stderr_path = _join_worktree_path(
+            worktree,
+            manifest.get("validation_stderr"),
+        )
         return cls(
             issue_number=issue_number,
             session_name=session_name,
@@ -94,6 +101,9 @@ class SessionDiagnosticsContext:
             diagnostic_path=diagnostic_path,
             validation_path=validation_path,
             validation_output_path=validation_output_path,
+            validation_stderr_path=validation_stderr_path,
+            validation_status=str(manifest.get("validation_status") or ""),
+            validation_reason=str(manifest.get("validation_reason") or ""),
             branch=str(session_identity.get("branch") or ""),
             task=str(session_identity.get("task") or ""),
             claude_args=str(session_identity.get("claude_args") or ""),
@@ -128,7 +138,7 @@ def _join_worktree_path(worktree: str, rel_path: Any) -> str:
 
 
 def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[DialogRow]:
-    return [
+    rows = [
         DialogRow("Session", ctx.session_name or "-"),
         DialogRow("Started", ctx.started_at or "-"),
         DialogRow("Run ID", ctx.run_id or "-"),
@@ -149,6 +159,11 @@ def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[Dial
         DialogRow("Retention Pinned", ctx.retention_pinned or "-"),
         DialogRow("Worktree", ctx.worktree or "-"),
     ]
+    if ctx.validation_status:
+        rows.append(DialogRow("Validation Status", ctx.validation_status))
+    if ctx.validation_reason:
+        rows.append(DialogRow("Validation Reason", ctx.validation_reason))
+    return rows
 
 
 def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[dict[str, Any]]:
@@ -156,6 +171,7 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     _append_open_path(actions, "Open Session Dir", ctx.run_dir)
     _append_open_path(actions, "Open Session Settings", ctx.session_settings_path)
     _append_run_scoped_action(actions, ctx, action_type="open_agent_log", label="View Session Log")
+    _append_run_scoped_action(actions, ctx, action_type="copy_agent_log", label="Copy UI Session")
     if ctx.claude_log_path:
         _append_run_scoped_action(actions, ctx, action_type="view_claude_log", label="View Claude Log")
         _append_open_path(actions, "Open Claude Log File", ctx.claude_log_path)
@@ -165,6 +181,7 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     _append_open_path(actions, "Open Diagnostic", ctx.diagnostic_path)
     _append_open_path(actions, "Open Validation Record", ctx.validation_path)
     _append_open_path(actions, "Open Validation Output", ctx.validation_output_path)
+    _append_open_path(actions, "Open Validation Stderr", ctx.validation_stderr_path)
     return actions
 
 
@@ -304,6 +321,7 @@ def build_session_diagnostics_dialog(
         "title": f"Session Diagnostics #{issue_number}",
         "rows": [row.to_dict() for row in rows],
         "actions": actions,
+        "analysis": manifest_payload.get("analysis"),
     }
 
 
