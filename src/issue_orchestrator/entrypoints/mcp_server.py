@@ -13,6 +13,7 @@ from mcp.server.fastmcp import FastMCP
 
 from ..infra import supervisor
 from ..infra.config import Config, get_config_path
+from ..infra.client_urls import resolve_client_base_url
 from ..execution.orchestrator_http_api import OrchestratorAsyncHttpApi
 
 logger = logging.getLogger(__name__)
@@ -70,28 +71,47 @@ class OrchestratorHttpClient:
             raise RuntimeError("Orchestrator running but no port available")
         return status
 
-    def base_url(self) -> str:
-        if self._cached_port:
-            return f"http://{self._settings.host}:{self._cached_port}"
-        status = self._ensure_running()
-        self._cached_port = status.port
-        return f"http://{self._settings.host}:{status.port}"
+    def _api_base_url_for_port(self, port: int) -> str:
+        return f"http://{self._settings.host}:{port}"
 
-    def refresh_base_url(self) -> str:
+    def _client_base_url_for_port(self, port: int) -> str:
+        return resolve_client_base_url(port, local_host=self._settings.host)
+
+    def _client_url_for_path(self, port: int, path: str) -> str:
+        return self._client_base_url_for_port(port).rstrip("/") + path
+
+    def _resolve_port(self) -> int:
+        cached_port = self._cached_port
+        if cached_port is not None:
+            return cached_port
+        status = self._ensure_running()
+        port = status.port
+        if port is None:
+            raise RuntimeError("Orchestrator running but no port available")
+        self._cached_port = port
+        return port
+
+    def api_base_url(self) -> str:
+        return self._api_base_url_for_port(self._resolve_port())
+
+    def refresh_api_base_url(self) -> str:
         status = self.status()
         if status.state != "running":
             raise RuntimeError(f"Orchestrator not running (state={status.state})")
         if status.port is None:
             raise RuntimeError("Orchestrator running but no port available")
         self._cached_port = status.port
-        return f"http://{self._settings.host}:{status.port}"
+        return self._api_base_url_for_port(status.port)
+
+    def client_base_url(self) -> str:
+        return self._client_base_url_for_port(self._resolve_port())
 
     def doctor_url(self) -> str | None:
         if self._cached_port:
-            return f"http://{self._settings.host}:{self._cached_port}/api/doctor"
+            return self._client_url_for_path(self._cached_port, "/api/doctor")
         status = self.status()
         if status.state == "running" and status.port:
-            return f"http://{self._settings.host}:{status.port}/api/doctor"
+            return self._client_url_for_path(status.port, "/api/doctor")
         return None
 
     def update_port(self, port: int) -> None:
@@ -107,8 +127,8 @@ class McpApp:
         self._settings = settings
         self._client = OrchestratorHttpClient(settings)
         self._api = OrchestratorAsyncHttpApi(
-            self._client.base_url,
-            refresh_base_url=self._client.refresh_base_url,
+            self._client.api_base_url,
+            refresh_base_url=self._client.refresh_api_base_url,
         )
 
     def close(self) -> None:
@@ -399,7 +419,7 @@ class McpApp:
         return await self._api.focus(issue_number)
 
     def urls(self) -> dict[str, Any]:
-        base = self._client.base_url()
+        base = self._client.client_base_url().rstrip("/")
         return {
             "base_url": base,
             "dashboard_url": f"{base}/",
