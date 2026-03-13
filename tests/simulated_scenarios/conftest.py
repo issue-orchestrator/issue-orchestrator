@@ -125,6 +125,82 @@ class ScriptSessionRunner:
         return None
 
 
+class FastScriptSessionRunner:
+    """Lightweight SessionRunner for state-machine scenarios.
+
+    This bypasses the PTY/CleaningLogWriter path and runs the shell command
+    directly, which is substantially cheaper for restart/recovery tests that
+    only care about orchestrator behavior. Tests that verify ui-session.log
+    filtering must opt into ``ScriptSessionRunner`` explicitly.
+    """
+
+    def __init__(self) -> None:
+        self._last_output: dict[str, str] = {}
+
+    def create_session(self, session_id: int, command: str, working_dir: str, title: str | None, session_name: str) -> bool:
+        python_bin_dir = str(Path(sys.executable).parent)
+
+        match = _RUN_DIR_RE.search(command)
+        if match:
+            run_dir = Path(match.group(2))
+            if not run_dir.is_absolute():
+                run_dir = (Path(working_dir) / run_dir).resolve()
+        else:
+            run_dir = Path(working_dir) / ".issue-orchestrator" / "sessions" / "fallback"
+        run_dir.mkdir(parents=True, exist_ok=True)
+
+        env = dict(os.environ)
+        env["PATH"] = f"{python_bin_dir}:{env.get('PATH', '')}"
+        result = subprocess.run(
+            ["bash", "-c", command],
+            cwd=working_dir,
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+        output = f"{result.stdout}{result.stderr}"
+        log_path = run_dir / "ui-session.log"
+        log_path.write_text(output, encoding="utf-8", errors="replace")
+        self._last_output[session_name] = output
+        return result.returncode == 0
+
+    def session_exists(self, session_id: int, session_name: str) -> bool:
+        return False
+
+    def session_exists_by_name(self, session_name: str) -> bool:
+        return False
+
+    def kill_session(self, session_id: int, session_name: str) -> None:
+        return None
+
+    def discover_running_sessions(self) -> list[dict]:
+        return []
+
+    def cleanup_idle_sessions(self) -> int:
+        return 0
+
+    def get_session_output(self, session_id: int, lines: int, session_name: str) -> str | None:
+        return self._last_output.get(session_name)
+
+    def send_to_session(self, session_id: int, text: str, session_name: str) -> bool:
+        return False
+
+    def send_to_session_by_name(self, session_name: str, text: str) -> bool:
+        return False
+
+    def focus_session(self, session_id: int, session_name: str) -> bool:
+        return False
+
+    def on_orchestrator_startup(self) -> None:
+        return None
+
+    def on_orchestrator_shutdown(self) -> None:
+        return None
+
+
 @dataclass
 class StubWorkingCopy:
     """Stub implementing the WorkingCopy protocol for simulated scenario tests.
@@ -305,7 +381,7 @@ def build_orchestrator(
     *,
     repo_host: MockGitHubAdapter | None = None,
     events: MockEventSink | None = None,
-    runner: ScriptSessionRunner | None = None,
+    runner: ScriptSessionRunner | FastScriptSessionRunner | None = None,
     worktree_manager: TempWorktreeManager | None = None,
     working_copy: StubWorkingCopy | None = None,
     lease_renewer: object | None = None,
@@ -316,7 +392,7 @@ def build_orchestrator(
     repo_host.issues = issues
 
     events = events or MockEventSink()
-    runner = runner or ScriptSessionRunner()
+    runner = runner or FastScriptSessionRunner()
     worktree_manager = worktree_manager or TempWorktreeManager(base=repo_root)
     working_copy = working_copy or StubWorkingCopy()
     timeline_store = SqliteTimelineStore(

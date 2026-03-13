@@ -1,4 +1,4 @@
-.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full verify-hooks-all _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
+.PHONY: help venv venv-fast worktree-setup install upgrade-deps typecheck lint-arch lint-complexity sync-deps test test-unit test-unit-cov test-unit-cov-html test-integration test-integration-core test-integration-agent test-simulated test-simulated-core test-simulated-agent test-e2e test-e2e-one test-e2e-live test-real-claude-dev test-real-claude-review test-real-gh-labels test-real-gh test-real-gh-plus-e2e test-real-gh-plus-e2e-subprocess test-web test-web-headed playwright-install validate validate-quick validate-full verify-hooks-all _validate-impl _validate-full-impl clean demo issues-validate issues-fix issues-fix-dry-run issues-create
 
 # GNU make detection - required for parallel validation with grouped output
 # On macOS: brew install make (provides gmake)
@@ -18,10 +18,14 @@ help:
 	@echo "  lint-arch           Run import-linter + AST guardrails"
 	@echo "  lint-complexity     Check cyclomatic complexity (C901) and branch count (PLR0912)"
 	@echo "  test-unit           Run unit tests"
-	@echo "  test-simulated      Run simulated scenario tests (fast, local)"
+	@echo "  test-simulated      Run all simulated scenario tests"
+	@echo "  test-simulated-core Run fast simulated scenario slice used by local validate"
+	@echo "  test-simulated-agent Run real agent-backed simulated scenario slice"
 	@echo "  test-unit-cov       Run unit tests with coverage report"
 	@echo "  test-unit-cov-html  Run unit tests with HTML coverage (open htmlcov/index.html)"
 	@echo "  test-integration    Run integration tests"
+	@echo "  test-integration-core   Run fast integration slice used by local validate"
+	@echo "  test-integration-agent  Run real agent-backed integration slice"
 	@echo "  test-e2e            Run e2e tests (stops on first failure, use NOFAST=1 to run all)"
 	@echo "  test-e2e-one        Run single e2e test (TEST=test_name)"
 	@echo "  test-e2e-live       Run e2e tests with REAL PR creation (no dry run!)"
@@ -37,9 +41,9 @@ help:
 	@echo "  install-vscode-extensions      Install VS Code extension dev dependencies"
 	@echo "  playwright-install  Install Playwright browser binaries"
 	@echo "  test                Run all tests"
-	@echo "  validate            Parallel validation (~40s): typecheck + lint-arch + unit + integration + web-ui smoke"
+	@echo "  validate            Fast local validation: typecheck + lint + unit + simulated-core + integration-core + web-ui smoke"
 	@echo "  validate-quick      Quick validation (typecheck + unit tests only)"
-	@echo "  validate-full       Full parallel validation: validate + e2e tests"
+	@echo "  validate-full       Full validation: validate + simulated-agent + integration-agent + e2e tests"
 	@echo "  verify-hooks-all    Install + live-verify hooks for all supported CLIs"
 	@echo "  demo                Run demo showing orchestrator features"
 	@echo "  issues-validate     Check issue naming conventions"
@@ -199,6 +203,14 @@ lint-complexity:
 # Parallel test execution with pytest-xdist (-n auto uses all CPU cores)
 # Use PARALLEL=0 to disable: make test-unit PARALLEL=0
 PARALLEL ?= auto
+UNIT_PARALLEL ?= $(PARALLEL)
+SIMULATED_PARALLEL ?= $(PARALLEL)
+INTEGRATION_PARALLEL ?= $(PARALLEL)
+INTEGRATION_AGENT_FILES := tests/integration/test_claude_execution.py tests/integration/test_codex_execution.py tests/integration/test_live_agent_chain.py
+# Keep this list in sync with the -k exclusion in test-simulated-core.
+# New agent-backed tests added to test_foreign_repo_lifecycle.py must be listed here
+# so they move to test-simulated-agent instead of staying in the fast local slice.
+SIMULATED_AGENT_FILES := tests/simulated_scenarios/test_foreign_repo_lifecycle.py::test_foreign_repo_claude_code_agent_done tests/simulated_scenarios/test_foreign_repo_lifecycle.py::test_foreign_repo_codex_agent_done
 
 # Python interpreter for dependency checks
 PYTHON ?= .venv/bin/python
@@ -225,14 +237,42 @@ sync-deps:
 	fi
 
 test-unit: sync-deps
-ifeq ($(PARALLEL),0)
+ifeq ($(UNIT_PARALLEL),0)
 	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short $(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short -n $(PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
+	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short -n $(UNIT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
 endif
 
 test-simulated: sync-deps
+ifeq ($(SIMULATED_PARALLEL),0)
 	$(PYTEST) tests/simulated_scenarios -x -q --tb=short $(PYTEST_TIMINGS)
+else
+	$(PYTEST) tests/simulated_scenarios -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
+endif
+
+test-simulated-core: sync-deps
+ifeq ($(SIMULATED_PARALLEL),0)
+	$(PYTEST) tests/simulated_scenarios -x -q --tb=short \
+		--ignore=tests/simulated_scenarios/test_foreign_repo_lifecycle.py \
+		$(PYTEST_TIMINGS)
+	$(PYTEST) tests/simulated_scenarios/test_foreign_repo_lifecycle.py -x -q --tb=short \
+		-k "not test_foreign_repo_claude_code_agent_done and not test_foreign_repo_codex_agent_done" \
+		$(PYTEST_TIMINGS)
+else
+	$(PYTEST) tests/simulated_scenarios -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup \
+		--ignore=tests/simulated_scenarios/test_foreign_repo_lifecycle.py \
+		$(PYTEST_TIMINGS)
+	$(PYTEST) tests/simulated_scenarios/test_foreign_repo_lifecycle.py -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup \
+		-k "not test_foreign_repo_claude_code_agent_done and not test_foreign_repo_codex_agent_done" \
+		$(PYTEST_TIMINGS)
+endif
+
+test-simulated-agent: sync-deps
+ifeq ($(SIMULATED_PARALLEL),0)
+	$(PYTEST) $(SIMULATED_AGENT_FILES) -x -q --tb=short $(PYTEST_TIMINGS)
+else
+	$(PYTEST) $(SIMULATED_AGENT_FILES) -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
+endif
 
 test-unit-cov:
 	$(PYTEST) tests/unit packages/agent_runner/tests --cov=src/issue_orchestrator --cov=packages/agent_runner/src --cov-report=term-missing -x -q --tb=short $(PYTEST_TIMINGS)
@@ -246,11 +286,29 @@ test-integration: sync-deps
 
 # Integration tests excluding those that require external infrastructure (GitHub token, etc.)
 # Used in pre-push validation where full infra may not be available
-test-integration-no-infra: sync-deps
-ifeq ($(PARALLEL),0)
-	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" $(PYTEST_TIMINGS)
+test-integration-core: sync-deps
+ifeq ($(INTEGRATION_PARALLEL),0)
+	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" \
+		--ignore=tests/integration/test_claude_execution.py \
+		--ignore=tests/integration/test_codex_execution.py \
+		--ignore=tests/integration/test_live_agent_chain.py \
+		$(PYTEST_TIMINGS)
 else
-	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" -n $(PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
+	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" -n $(INTEGRATION_PARALLEL) --dist=loadgroup \
+		--ignore=tests/integration/test_claude_execution.py \
+		--ignore=tests/integration/test_codex_execution.py \
+		--ignore=tests/integration/test_live_agent_chain.py \
+		$(PYTEST_TIMINGS)
+endif
+
+# Backward-compatible alias for existing callers.
+test-integration-no-infra: test-integration-core
+
+test-integration-agent: sync-deps
+ifeq ($(INTEGRATION_PARALLEL),0)
+	$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short $(PYTEST_TIMINGS)
+else
+	$(PYTEST) $(INTEGRATION_AGENT_FILES) -x -q --tb=short -n $(INTEGRATION_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
 endif
 
 # Full integration tests including infrastructure-dependent ones (run in CI)
@@ -373,13 +431,15 @@ validate-raw:
 	@echo "✓ All validations passed!"
 
 # Internal target for parallel execution (excludes test-vscode to avoid VS Code runner flakiness under -j)
-_validate-impl: typecheck lint-arch lint-complexity test-unit test-simulated test-integration-no-infra test-web
+_validate-impl: typecheck lint-arch lint-complexity test-unit test-simulated-core test-integration-core test-web
 
 # Full validation including e2e tests
 validate-full:
 	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-full-impl
 	@$(GMAKE) --output-sync=target test-vscode
 	@echo "✓ All validations passed (including e2e)!"
+
+_validate-full-impl: _validate-impl test-simulated-agent test-integration-agent test-e2e
 
 verify-hooks-all:
 	@.venv/bin/issue-orchestrator setup-hooks --config .issue-orchestrator/config/hooks-validate.yaml

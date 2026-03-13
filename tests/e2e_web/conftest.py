@@ -65,7 +65,7 @@ class UvicornTestServer:
             self.thread.join(timeout=5)
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def web_server() -> dict[str, object]:
     """Run the dashboard app with a deterministic mock orchestrator."""
     orchestrator = FlowWebMockOrchestrator()

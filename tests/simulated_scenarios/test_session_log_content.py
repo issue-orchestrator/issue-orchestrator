@@ -13,6 +13,7 @@ from pathlib import Path
 
 from issue_orchestrator.events import EventName
 
+from .conftest import ScriptSessionRunner
 from .scenario_dsl import scenario, script
 
 
@@ -64,6 +65,7 @@ def test_session_log_content_via_draft_pr(scenario_repo: Path):
     ui-session.log with ANSI codes removed and spinner lines dropped.
     """
     ctx = scenario("session_log_draft_pr", scenario_repo) \
+        .use_runner(ScriptSessionRunner()) \
         .coder(script("coder_verbose.sh")) \
         .reviewer(script("reviewer_verbose.sh")) \
         .review_exchange(mode="via-draft-pr") \
@@ -96,6 +98,7 @@ def test_session_log_content_via_local_loop(scenario_repo: Path):
     their output cleaned and written to ui-session.log.
     """
     ctx = scenario("session_log_local_loop", scenario_repo) \
+        .use_runner(ScriptSessionRunner()) \
         .coder(script("coder_verbose_dual_mode.sh")) \
         .reviewer(script("reviewer_verbose.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False) \
@@ -127,6 +130,7 @@ def test_session_log_reviewer_markers_via_local_loop(scenario_repo: Path):
     are present and cleaned.
     """
     ctx = scenario("session_log_reviewer_markers", scenario_repo) \
+        .use_runner(ScriptSessionRunner()) \
         .coder(script("coder_verbose_dual_mode.sh")) \
         .reviewer(script("reviewer_verbose.sh", prompt=True)) \
         .review_exchange(mode="via-local-loop", require_validation=False) \

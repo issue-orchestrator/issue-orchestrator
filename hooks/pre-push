@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Canonical local gate. Mirrors CI.
-# Validation signature optimization should make this fast when nothing changed.
+# Canonical fast local gate.
+# CI layers the slower agent-backed integration slice on top.
 
 # Enforce dirty-tree policy from YAML before expensive validation.
 if [ -x ".venv/bin/python" ]; then

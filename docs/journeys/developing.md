@@ -73,9 +73,10 @@ pytest tests/e2e/ -v               # E2E tests (requires gh auth)
 
 ## Submitting changes
 
-1. Run `make validate` before pushing — this is what CI runs
-2. Tests must pass. If tests fail, fix them — don't defer.
-3. [CONTRIBUTING.md](../../CONTRIBUTING.md) covers running tests from forks
+1. Run `make validate` before pushing for the fast local gate
+2. CI runs `make validate` plus the agent-backed simulated and integration slices as the required full PR gate
+3. Tests must pass. If tests fail, fix them — don't defer.
+4. [CONTRIBUTING.md](../../CONTRIBUTING.md) covers running tests from forks
 
 ## Development docs reference
 

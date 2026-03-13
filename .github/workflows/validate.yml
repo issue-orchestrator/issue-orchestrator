@@ -41,7 +41,7 @@ jobs:
               - '**/AGENTS.md'
               - '**/CLAUDE.md'
 
-  validate:
+  validate-fast:
     needs: changes
     if: needs.changes.outputs.python == 'true'
     runs-on: ubuntu-latest
@@ -63,7 +63,33 @@ jobs:
       - name: Install Playwright browsers
         run: .venv/bin/playwright install chromium
 
-      - name: Run validate
+      - name: Run fast validate
         run: make validate
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  validate-agent:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: uv sync --frozen --all-extras
+
+      - name: Run agent-backed validate
+        run: |
+          make test-simulated-agent
+          make test-integration-agent
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
