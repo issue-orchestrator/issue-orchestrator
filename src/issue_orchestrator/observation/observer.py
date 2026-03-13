@@ -498,6 +498,18 @@ class SessionObserver:
             "log_path": str(log_path),
             "tail": session.last_output_tail or "",
         }
+        logger.warning(
+            issue_log(
+                session.issue.number,
+                "SESSION_NO_OUTPUT: session=%s idle=%ss log=%s size=%s last_output_at=%s tail=%r",
+            ),
+            session.terminal_id,
+            int(idle_seconds),
+            log_path,
+            stat.st_size,
+            session.last_output_at,
+            (session.last_output_tail or "")[-200:],
+        )
         self.events.publish(TraceEvent(EventName.SESSION_NO_OUTPUT, payload))
 
     def _read_log_tail(self, log_path, tail_lines: int, max_bytes: int) -> str:

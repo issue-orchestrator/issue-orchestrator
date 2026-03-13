@@ -275,7 +275,20 @@ class SubprocessPlugin:
         """Start a thread that waits for the session to complete."""
 
         def _watch() -> None:
-            session.wait()  # Blocks until exit; auto-flushes log
+            logger.info(
+                "[subprocess] watcher started: session_name=%s pid=%s",
+                session_name,
+                session.pid,
+            )
+            result = session.wait()  # Blocks until exit; auto-flushes log
+            logger.info(
+                "[subprocess] watcher completed: session_name=%s pid=%s exit_code=%s timed_out=%s duration=%.1fs",
+                session_name,
+                session.pid,
+                result.exit_code,
+                result.timed_out,
+                result.duration_seconds,
+            )
 
         thread = threading.Thread(target=_watch, daemon=True)
         self._watcher_threads[session_name] = thread
@@ -299,6 +312,13 @@ class SubprocessPlugin:
         )
         runner = AgentRunner()
         session = runner.start(spec)
+        logger.info(
+            "[subprocess] session started: session_name=%s pid=%s log_path=%s run_dir=%s",
+            session_name,
+            session.pid,
+            log_path,
+            log_path.parent,
+        )
 
         self._sessions[session_name] = session
         self._start_session_watcher(session, session_name)
@@ -394,6 +414,12 @@ class SubprocessPlugin:
         if self._process_alive(record.pid, session_name):
             return True
         # Process is dead - wait for watcher thread to finish flushing output
+        logger.info(
+            "[subprocess] session no longer alive: session_name=%s pid=%s log_path=%s",
+            session_name,
+            record.pid,
+            record.log_path,
+        )
         self._cleanup_session(session_name)
         self._registry.remove(session_name)
         return False

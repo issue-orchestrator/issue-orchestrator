@@ -60,16 +60,24 @@ def clean_terminal_line(line: str) -> str:
     - Control characters
     """
     # Handle carriage returns: terminal overwrites from start of line.
-    # Take only the content after the last carriage return.
+    # Prefer the richest visible segment rather than blindly taking the last
+    # segment. Some PTY/TUI redraws leave a trailing suffix after a carriage
+    # return (for example, a wrapped line ending in just "store access").
+    # Choosing the longest visible segment preserves the meaningful content
+    # while still dropping transient spinner frames.
     if "\r" in line:
         segments = line.split("\r")
-        for segment in reversed(segments):
+        best_segment = ""
+        best_score = -1
+        for segment in segments:
             stripped = strip_ansi_codes(segment).strip()
-            if stripped:
-                line = segment
-                break
-        else:
-            line = segments[-1] if segments else ""
+            if not stripped:
+                continue
+            score = len(stripped)
+            if score >= best_score:
+                best_score = score
+                best_segment = segment
+        line = best_segment if best_segment else (segments[-1] if segments else "")
 
     line = strip_ansi_codes(line)
 

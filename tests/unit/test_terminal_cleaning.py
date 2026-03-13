@@ -302,6 +302,20 @@ class TestCleaningLogWriter:
         assert "Final content" in log.read_text()
         assert "spinning" not in log.read_text()
 
+    def test_carriage_return_prefers_richest_segment(self, tmp_path: Path):
+        """Wrapped redraws should keep the full visible segment, not just a suffix."""
+        log = tmp_path / "ui-session.log"
+        writer = CleaningLogWriter(log)
+        writer.write(
+            b"Add list_circuits() to ProviderResilienceManager to encapsulate store access\r"
+            b"store access\n"
+        )
+        writer.close()
+
+        content = log.read_text()
+        assert "Add list_circuits() to ProviderResilienceManager" in content
+        assert content.strip() != "store access"
+
     def test_spinner_filtering(self, tmp_path: Path):
         log = tmp_path / "ui-session.log"
         writer = CleaningLogWriter(log)
