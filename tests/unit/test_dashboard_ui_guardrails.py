@@ -216,7 +216,8 @@ def test_open_log_file_uses_ui_action_contract() -> None:
 def test_host_action_contract_exposes_host_neutral_builders() -> None:
     contract_js = _read(UI_ACTION_CONTRACT_JS)
     assert "buildRevealWorktreeRequest" in contract_js
-    assert "/api/host/reveal-worktree/" in contract_js
+    assert "REVEAL_WORKTREE" in contract_js
+    assert "ENDPOINTS.REVEAL_WORKTREE" in contract_js
     assert "buildHostOpenPathRequest" in contract_js
     assert "HOST_OPEN_PATH" in contract_js
 
