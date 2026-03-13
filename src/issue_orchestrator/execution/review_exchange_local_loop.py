@@ -31,7 +31,7 @@ from ..agent_runner.env_filter import build_filtered_env
 from ..domain.models import AgentConfig
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import get_repo_log_path
-from ..infra.terminal_cleaning import CleaningLogWriter, clean_terminal_line, is_spinner_fragment
+from ..infra.terminal_cleaning import CleaningLogWriter
 from ..ports import EventSink, make_trace_event
 from ..ports.session_output import SessionOutput
 from ..events import EventName, EventContext
@@ -563,6 +563,7 @@ def _append_text(path: Path, content: str) -> None:
 
 
 def _append_session_log(
+    session_output: SessionOutput,
     run_dir: Path,
     *,
     round_index: int,
@@ -570,18 +571,14 @@ def _append_session_log(
     section: str,
     content: str,
 ) -> None:
-    """Append transcript content to run-scoped ui-session.log."""
-    log_path = run_dir / "ui-session.log"
-    timestamp = datetime.now(timezone.utc).isoformat()
-    header = f"[{timestamp}] round={round_index} role={role} section={section}\n"
-    cleaned_lines = []
-    for line in content.splitlines():
-        cleaned = clean_terminal_line(line)
-        if cleaned.strip() and not is_spinner_fragment(cleaned):
-            cleaned_lines.append(cleaned)
-    cleaned_content = "\n".join(cleaned_lines)
-    chunk = f"{header}{cleaned_content.rstrip()}\n\n"
-    _append_text(log_path, chunk)
+    """Append transcript content to the canonical UI session log."""
+    session_output.append_review_exchange_session_log_entry(
+        run_dir,
+        round_index=round_index,
+        role=role,
+        section=section,
+        content=content,
+    )
 
 
 def _append_provider_runner_logs(
@@ -839,6 +836,7 @@ def _run_exchange_rounds(  # noqa: PLR0913
             exchange_dir, round_index, "reviewer", reviewer_prompt_text,
         )
         _append_session_log(
+            session_output,
             run_dir,
             round_index=round_index,
             role="reviewer",
@@ -866,6 +864,7 @@ def _run_exchange_rounds(  # noqa: PLR0913
         try:
             if reviewer_data is None:
                 _append_session_log(
+                    session_output,
                     run_dir,
                     round_index=round_index,
                     role="reviewer",
@@ -917,6 +916,7 @@ def _run_exchange_rounds(  # noqa: PLR0913
             response=reviewer_response,
         )
         _append_session_log(
+            session_output,
             run_dir,
             round_index=round_index,
             role="reviewer",
@@ -996,6 +996,7 @@ def _run_exchange_rounds(  # noqa: PLR0913
             exchange_dir, round_index, "coder", coder_prompt_text,
         )
         _append_session_log(
+            session_output,
             run_dir,
             round_index=round_index,
             role="coder",
@@ -1023,6 +1024,7 @@ def _run_exchange_rounds(  # noqa: PLR0913
         try:
             if coder_data is None:
                 _append_session_log(
+                    session_output,
                     run_dir,
                     round_index=round_index,
                     role="coder",
@@ -1068,6 +1070,7 @@ def _run_exchange_rounds(  # noqa: PLR0913
             response=coder_response,
         )
         _append_session_log(
+            session_output,
             run_dir,
             round_index=round_index,
             role="coder",

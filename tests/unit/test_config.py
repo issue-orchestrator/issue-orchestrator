@@ -20,6 +20,31 @@ class TestConfig:
         assert config.label_blocked == "blocked"
         assert config.label_needs_human == "needs-human"
         assert config.repo is None
+        assert config.web_port == 0
+        assert config.control_api_port == 0
+
+    def test_config_load_ui_ports_default_to_auto_assign(self, tmp_path):
+        """Missing ui port config should preserve 0=auto-assign defaults."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+worktrees:
+  base: {worktree_base}
+ui:
+  mode: web
+""")
+
+        config = Config.load(config_file)
+
+        assert config.web_port == 0
+        assert config.control_api_port == 0
 
     def test_config_load_from_yaml(self, mock_config_yaml, tmp_path):
         """Test loading config from YAML file."""

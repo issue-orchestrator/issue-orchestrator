@@ -18,6 +18,11 @@ from pathlib import Path
 from typing import Any
 
 from ..contracts.run_manifest import validate_run_manifest_payload
+from ..infra.terminal_cleaning import (
+    clean_terminal_line,
+    dedupe_consecutive_lines,
+    is_spinner_fragment,
+)
 from ..ports.session_output import (
     ReviewExchangeSummary,
     SessionRun,
@@ -728,6 +733,48 @@ Timestamp: {self._now_iso()}
         identity_path = run_dir / SESSION_IDENTITY_NAME
         self._write_json(identity_path, payload)
         return identity_path
+
+    def append_cleaned_session_log(
+        self,
+        run_dir: Path,
+        content: str,
+        *,
+        header: str | None = None,
+    ) -> None:
+        """Append cleaned display-safe content to the canonical UI session log."""
+        cleaned_lines: list[str] = []
+        for raw_line in dedupe_consecutive_lines(content.splitlines()):
+            cleaned = clean_terminal_line(raw_line)
+            if cleaned.strip() and not is_spinner_fragment(cleaned):
+                cleaned_lines.append(cleaned)
+        if not cleaned_lines:
+            return
+        log_path = run_dir / SESSION_LOG_NAME
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            if header:
+                handle.write(header.rstrip())
+                handle.write("\n")
+            handle.write("\n".join(cleaned_lines).rstrip())
+            handle.write("\n\n")
+
+    def append_review_exchange_session_log_entry(
+        self,
+        run_dir: Path,
+        *,
+        round_index: int,
+        role: str,
+        section: str,
+        content: str,
+    ) -> None:
+        """Append one review-exchange transcript entry to the canonical UI log."""
+        timestamp = datetime.now(timezone.utc).isoformat()
+        header = f"[{timestamp}] round={round_index} role={role} section={section}"
+        self.append_cleaned_session_log(
+            run_dir,
+            content.rstrip(),
+            header=header,
+        )
 
     # -------------------------------------------------------------------------
     # Log Access

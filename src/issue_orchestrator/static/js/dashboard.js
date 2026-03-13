@@ -11,6 +11,7 @@ const issueRefreshInFlight = new Set();
 const issueRefreshLastAttempt = new Map();
 let flowRefreshObserver = null;
 let networkSyncTimer = null;
+let currentDiagnosticsRunDir = null;
 const flowRefreshPrefsModal = document.getElementById('flowRefreshPrefsModal');
 const FLOW_REFRESH_OVERRIDE_KEY = 'issue-orchestrator.flow-refresh.override.v1';
 const NETWORK_SYNC_OVERRIDE_KEY = 'issue-orchestrator.network-sync.override.v1';
@@ -754,6 +755,7 @@ async function openSessionManifest(issueNumber, runDir = null) {
 
     const rows = data.rows || [];
     const actions = data.actions || [];
+    currentDiagnosticsRunDir = runDir || ((actions.find(action => action && action.run_dir) || {}).run_dir || null);
     const rowByLabel = new Map(rows.map(row => [String(row.label || '').toLowerCase(), String(row.value || '')]));
     const worktree = rowByLabel.get('worktree') || '';
 
@@ -784,6 +786,7 @@ async function openSessionManifest(issueNumber, runDir = null) {
         'provider',
         'model',
         'permission mode',
+        'timeout',
         'provider args',
         'launch args',
         'prompt mode',
@@ -932,27 +935,33 @@ function renderDialogActionMenuItem(action, labelOverride = null) {
 function _renderDialogActionButton(action, labelOverride, cssClass) {
     if (!action) return '';
     const label = escapeHtml(labelOverride || action.label || 'Action');
-    const runDirArg = action.run_dir ? `, ${JSON.stringify(String(action.run_dir))}` : '';
+    const fallbackRunDir = action.run_dir || currentDiagnosticsRunDir || null;
     if (action.type === 'open_path') {
         return `<button class="${cssClass}" onclick="openPath('${escapeHtml(action.path)}')">${label}</button>`;
     }
     if (action.type === 'open_agent_log') {
-        if (!action.run_dir) return '';
-        const runDirFirstArg = `${JSON.stringify(String(action.run_dir))}, `;
+        if (!fallbackRunDir) return '';
+        const runDirFirstArg = `${JSON.stringify(String(fallbackRunDir))}, `;
         return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'UI Session', 'inline')">${label}</button>`;
     }
     if (action.type === 'view_claude_log') {
-        if (!action.run_dir) return '';
-        return `<button class="${cssClass}" onclick="viewClaudeLog(${action.issue_number}${runDirArg}, 'inline')">${label}</button>`;
+        if (!fallbackRunDir) return '';
+        return `<button class="${cssClass}" onclick="viewClaudeLog(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, 'inline')">${label}</button>`;
     }
     if (action.type === 'open_orchestrator_log') {
-        return `<button class="${cssClass}" onclick="openFilteredOrchestratorLog(${action.issue_number}${runDirArg}, 'inline')">${label}</button>`;
+        if (fallbackRunDir) {
+            return `<button class="${cssClass}" onclick="openFilteredOrchestratorLog(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, 'inline')">${label}</button>`;
+        }
+        return `<button class="${cssClass}" onclick="openFilteredOrchestratorLog(${action.issue_number}, null, 'inline')">${label}</button>`;
     }
     if (action.type === 'open_review_feedback') {
         return `<button class="${cssClass}" onclick="openReviewFeedback(${action.issue_number})">${label}</button>`;
     }
     if (action.type === 'open_session_diagnostics') {
-        return `<button class="${cssClass}" onclick="openSessionManifest(${action.issue_number}${runDirArg})">${label}</button>`;
+        if (fallbackRunDir) {
+            return `<button class="${cssClass}" onclick="openSessionManifest(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))})">${label}</button>`;
+        }
+        return `<button class="${cssClass}" onclick="openSessionManifest(${action.issue_number})">${label}</button>`;
     }
     return '';
 }

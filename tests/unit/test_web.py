@@ -4358,6 +4358,12 @@ class TestIssueLogEndpointsUseLatestHistory:
             response = client.get(f"/api/dialog/session-diagnostics/123?run_dir={run_a.run_dir}")
             assert response.status_code == 200
             payload = response.json()
+            settings_paths = [
+                action.get("path")
+                for action in payload.get("actions", [])
+                if action.get("type") == "open_path" and action.get("label") == "Open Session Settings"
+            ]
+            assert settings_paths == [f"{run_a.run_dir}/session-identity.json"]
             actions = payload.get("actions", [])
             validation_paths = [
                 action.get("path")

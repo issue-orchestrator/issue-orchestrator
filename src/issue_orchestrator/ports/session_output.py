@@ -496,6 +496,34 @@ class SessionOutput(Protocol):
         """
         ...
 
+    def append_cleaned_session_log(
+        self,
+        run_dir: Path,
+        content: str,
+        *,
+        header: str | None = None,
+    ) -> None:
+        """Append cleaned display-safe content to ``ui-session.log``.
+
+        Args:
+            run_dir: Path to the run directory
+            content: Body text to clean before writing
+            header: Optional structured header written verbatim before the body
+        """
+        ...
+
+    def append_review_exchange_session_log_entry(
+        self,
+        run_dir: Path,
+        *,
+        round_index: int,
+        role: str,
+        section: str,
+        content: str,
+    ) -> None:
+        """Append one review-exchange transcript entry to ``ui-session.log``."""
+        ...
+
     # -------------------------------------------------------------------------
     # Log Access
     # -------------------------------------------------------------------------

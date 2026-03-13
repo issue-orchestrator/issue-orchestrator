@@ -18,6 +18,7 @@ from issue_orchestrator.control.review_exchange_loop import (
     _run_interactive_round,
     run_review_exchange_loop,
 )
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.infra.env import ENV_PREFIX
 
@@ -62,6 +63,7 @@ def test_agent_round_returns_error_on_nonzero_exit(tmp_path: Path) -> None:
             )
 
     response = _run_agent_round(
+        session_output=FileSystemSessionOutput(),
         runner=DummyRunner(),
         worktree_path=worktree,
         run_dir=run_dir,
@@ -115,6 +117,7 @@ def test_run_agent_round_uses_provider_mode_when_ai_system_is_provider(tmp_path:
             )
 
     response = _run_agent_round(
+        session_output=FileSystemSessionOutput(),
         runner=DummyRunner(),
         worktree_path=worktree,
         run_dir=run_dir,
@@ -160,6 +163,7 @@ def test_run_agent_round_writes_run_scoped_provider_runner_logs(tmp_path: Path) 
             )
 
     response = _run_agent_round(
+        session_output=FileSystemSessionOutput(),
         runner=DummyRunner(),
         worktree_path=worktree,
         run_dir=run_dir,
@@ -183,6 +187,58 @@ def test_run_agent_round_writes_run_scoped_provider_runner_logs(tmp_path: Path) 
     assert "round=1 role=reviewer" in stdout_log.read_text(encoding="utf-8")
     assert '"response_type":"ok"' in stdout_log.read_text(encoding="utf-8")
     assert "runner-note" in stderr_log.read_text(encoding="utf-8")
+
+
+def test_run_agent_round_writes_clean_ui_session_log(tmp_path: Path) -> None:
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Prompt")
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+    run_dir.mkdir(parents=True)
+    exchange_dir = run_dir / "review-exchange"
+    exchange_dir.mkdir()
+
+    agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+
+    class DummyRunner:
+        def run(self, spec):
+            _write_response_file(
+                spec,
+                '{"response_type":"changes_requested","response_text":"Line one\\n✶ Thinking…\\nLine two"}\n',
+            )
+            return SimpleNamespace(
+                succeeded=True,
+                exit_code=0,
+                timed_out=False,
+                stderr="Recentactivity\nrunner-note",
+            )
+
+    response = _run_agent_round(
+        session_output=FileSystemSessionOutput(),
+        runner=DummyRunner(),
+        worktree_path=worktree,
+        run_dir=run_dir,
+        exchange_dir=exchange_dir,
+        round_index=1,
+        issue_number=1,
+        issue_title="Test",
+        session_name="review-exchange-1",
+        agent=agent,
+        role="reviewer",
+        agent_label="agent:reviewer",
+        prompt_text="Review prompt\n✶ Thinking…",
+        web_port=None,
+    )
+
+    assert response.response_type == "changes_requested"
+    ui_log = run_dir / "ui-session.log"
+    content = ui_log.read_text(encoding="utf-8")
+    assert "Review prompt" in content
+    assert "runner-note" in content
+    assert "Thinking" not in content
+    assert "Recentactivity" not in content
 
 
 def test_review_exchange_run_manifest_includes_claude_log_dir(tmp_path: Path, monkeypatch) -> None:
@@ -688,6 +744,7 @@ class TestInteractiveRound:
         runner.run_interactive.side_effect = lambda s, rf: run_interactive_round(s, rf)
 
         response = _run_agent_round(
+            session_output=FileSystemSessionOutput(),
             runner=runner,
             worktree_path=worktree,
             run_dir=run_dir,
