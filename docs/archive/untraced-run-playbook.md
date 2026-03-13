@@ -1,4 +1,4 @@
-# Archived: Undtraced Run Playbook
+# Archived: Untraced Run Playbook
 
 This file captured a specific debugging effort and is preserved only as historical incident context.
 
