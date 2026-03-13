@@ -148,7 +148,12 @@
         },
         {
           "command": "issueOrchestrator.focusSession",
-          "when": "view == issueOrchestrator.explorer && viewItem == session",
+          "when": "view == issueOrchestrator.explorer && viewItem == session && issueOrchestrator.canFocusSession",
+          "group": "inline"
+        },
+        {
+          "command": "issueOrchestrator.openSessionConsole",
+          "when": "view == issueOrchestrator.explorer && viewItem == session && !issueOrchestrator.canFocusSession",
           "group": "inline"
         },
         {
