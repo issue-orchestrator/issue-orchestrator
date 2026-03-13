@@ -83,12 +83,10 @@ class _StubClientHost:
         capabilities: ClientHostCapabilities | None = None,
     ) -> None:
         self._open_path_result = open_path_result or ClientHostActionResult(
-            status="opened",
             path="/tmp/path",
             action="opened",
         )
         self._reveal_worktree_result = reveal_worktree_result or ClientHostActionResult(
-            status="opened",
             path="/tmp/worktree",
             action="opened",
         )
@@ -102,7 +100,6 @@ class _StubClientHost:
 
     def open_path(self, path: Path) -> ClientHostActionResult:
         return ClientHostActionResult(
-            status=self._open_path_result.status,
             path=str(path),
             action=self._open_path_result.action,
             message=self._open_path_result.message,
@@ -110,7 +107,6 @@ class _StubClientHost:
 
     def reveal_worktree(self, path: Path) -> ClientHostActionResult:
         return ClientHostActionResult(
-            status=self._reveal_worktree_result.status,
             path=str(path),
             action=self._reveal_worktree_result.action,
             message=self._reveal_worktree_result.message,
@@ -657,7 +653,7 @@ class TestFinderEndpoint:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["status"] == "opened"
+        assert data["action"] == "opened"
         assert data["path"] == str(worktree_path)
 
     def test_open_in_finder_session_not_found(self):
@@ -714,7 +710,6 @@ class TestFinderEndpoint:
 
         assert response.status_code == 409
         data = response.json()
-        assert data["status"] == "unsupported"
         assert data["action"] == "copy_path"
         assert data["path"] == "/tmp/worktree-1"
 
@@ -731,7 +726,7 @@ class TestHostOpenPathEndpoint:
             response = client.post("/api/host/open-path", json={"path": "/tmp/ui-session.log"})
 
         assert response.status_code == 200
-        assert response.json()["status"] == "opened"
+        assert response.json()["action"] == "opened"
         assert response.json()["path"] == "/tmp/ui-session.log"
 
     def test_open_host_path_unsupported_returns_copy_hint(self):
@@ -744,7 +739,6 @@ class TestHostOpenPathEndpoint:
 
         assert response.status_code == 409
         data = response.json()
-        assert data["status"] == "unsupported"
         assert data["action"] == "copy_path"
         assert data["path"] == "/tmp/ui-session.log"
 

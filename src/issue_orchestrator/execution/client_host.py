@@ -30,7 +30,6 @@ class ClientHostCapabilities:
 class ClientHostActionResult:
     """Result for a client-host action request."""
 
-    status: Literal["opened", "unsupported"]
     path: str
     action: Literal["opened", "copy_path"]
     message: str | None = None
@@ -64,7 +63,6 @@ class DarwinClientHost:
     def open_path(self, path: Path) -> ClientHostActionResult:
         subprocess.run(["open", str(path)], check=True)
         return ClientHostActionResult(
-            status="opened",
             path=str(path),
             action="opened",
         )
@@ -72,7 +70,6 @@ class DarwinClientHost:
     def reveal_worktree(self, path: Path) -> ClientHostActionResult:
         subprocess.run(["open", str(path)], check=True)
         return ClientHostActionResult(
-            status="opened",
             path=str(path),
             action="opened",
         )
@@ -88,7 +85,6 @@ class UnsupportedClientHost:
 
     def open_path(self, path: Path) -> ClientHostActionResult:
         return ClientHostActionResult(
-            status="unsupported",
             path=str(path),
             action="copy_path",
             message=self._MESSAGE,
@@ -96,7 +92,6 @@ class UnsupportedClientHost:
 
     def reveal_worktree(self, path: Path) -> ClientHostActionResult:
         return ClientHostActionResult(
-            status="unsupported",
             path=str(path),
             action="copy_path",
             message=self._MESSAGE,

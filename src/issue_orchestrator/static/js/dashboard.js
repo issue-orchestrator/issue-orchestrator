@@ -5156,7 +5156,7 @@ function handleHostActionResponse(data, label = 'path') {
         showToast(`Could not open ${label}: ${data.error}`, 'error');
         return;
     }
-    if (data.status === 'opened') {
+    if (data.action === 'opened') {
         showToast(`Opening ${label}...`);
         return;
     }

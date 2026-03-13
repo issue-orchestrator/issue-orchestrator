@@ -1081,7 +1081,7 @@ async def open_in_finder(issue_number: int) -> JSONResponse:
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
-    status_code = 200 if result.status == "opened" else 409
+    status_code = 200 if result.action == "opened" else 409
     return JSONResponse({"issue_number": issue_number, **result.to_dict()}, status_code=status_code)
 
 
@@ -3098,7 +3098,7 @@ async def _open_host_path(request: Request) -> JSONResponse:
 
     try:
         result = _client_host.open_path(Path(file_path))
-        status_code = 200 if result.status == "opened" else 409
+        status_code = 200 if result.action == "opened" else 409
         return JSONResponse(result.to_dict(), status_code=status_code)
     except subprocess.CalledProcessError as e:
         return JSONResponse({"error": f"Failed to open file: {e}"}, status_code=500)
