@@ -153,79 +153,44 @@ def _build_session_diagnostics_rows(ctx: SessionDiagnosticsContext) -> list[Dial
 
 def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
-    if ctx.run_dir:
-        actions.append({"type": "open_path", "label": "Open Session Dir", "path": ctx.run_dir})
-    if ctx.session_settings_path:
-        actions.append({
-            "type": "open_path",
-            "label": "Open Session Settings",
-            "path": ctx.session_settings_path,
-        })
-    if ctx.run_dir:
-        actions.append(
-            {
-                "type": "open_agent_log",
-                "label": "View Session Log",
-                "issue_number": ctx.issue_number,
-                "run_dir": ctx.run_dir,
-            }
-        )
-
+    _append_open_path(actions, "Open Session Dir", ctx.run_dir)
+    _append_open_path(actions, "Open Session Settings", ctx.session_settings_path)
+    _append_run_scoped_action(actions, ctx, action_type="open_agent_log", label="View Session Log")
     if ctx.claude_log_path:
-        if ctx.run_dir:
-            actions.append(
-                {
-                    "type": "view_claude_log",
-                    "label": "View Claude Log",
-                    "issue_number": ctx.issue_number,
-                    "run_dir": ctx.run_dir,
-                }
-            )
-        actions.append({
-            "type": "open_path",
-            "label": "Open Claude Log File",
-            "path": ctx.claude_log_path,
-        })
-    if ctx.claude_log_dir:
-        actions.append({
-            "type": "open_path",
-            "label": "Open Claude Log Dir",
-            "path": ctx.claude_log_dir,
-        })
-
-    if ctx.run_dir:
-        actions.append(
-            {
-                "type": "open_orchestrator_log",
-                "label": "Open Orchestrator Log",
-                "issue_number": ctx.issue_number,
-                "run_dir": ctx.run_dir,
-            }
-        )
-
-    if ctx.orchestrator_log:
-        actions.append({
-            "type": "open_path",
-            "label": "Open Full Log",
-            "path": ctx.orchestrator_log,
-        })
-
-    if ctx.diagnostic_path:
-        actions.append({"type": "open_path", "label": "Open Diagnostic", "path": ctx.diagnostic_path})
-
-    if ctx.validation_path:
-        actions.append({
-            "type": "open_path",
-            "label": "Open Validation Record",
-            "path": ctx.validation_path,
-        })
-    if ctx.validation_output_path:
-        actions.append({
-            "type": "open_path",
-            "label": "Open Validation Output",
-            "path": ctx.validation_output_path,
-        })
+        _append_run_scoped_action(actions, ctx, action_type="view_claude_log", label="View Claude Log")
+        _append_open_path(actions, "Open Claude Log File", ctx.claude_log_path)
+    _append_open_path(actions, "Open Claude Log Dir", ctx.claude_log_dir)
+    _append_run_scoped_action(actions, ctx, action_type="open_orchestrator_log", label="Open Orchestrator Log")
+    _append_open_path(actions, "Open Full Log", ctx.orchestrator_log)
+    _append_open_path(actions, "Open Diagnostic", ctx.diagnostic_path)
+    _append_open_path(actions, "Open Validation Record", ctx.validation_path)
+    _append_open_path(actions, "Open Validation Output", ctx.validation_output_path)
     return actions
+
+
+def _append_open_path(actions: list[dict[str, Any]], label: str, path: str) -> None:
+    if not path:
+        return
+    actions.append({"type": "open_path", "label": label, "path": path})
+
+
+def _append_run_scoped_action(
+    actions: list[dict[str, Any]],
+    ctx: SessionDiagnosticsContext,
+    *,
+    action_type: str,
+    label: str,
+) -> None:
+    if not ctx.run_dir:
+        return
+    actions.append(
+        {
+            "type": action_type,
+            "label": label,
+            "issue_number": ctx.issue_number,
+            "run_dir": ctx.run_dir,
+        }
+    )
 
 
 def _format_extra_provider_args(raw: Any) -> str:
