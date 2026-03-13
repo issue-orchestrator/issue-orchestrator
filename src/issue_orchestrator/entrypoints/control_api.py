@@ -1581,6 +1581,8 @@ def _client_dashboard_url(port: int | None) -> str | None:
     """Resolve the browser-facing dashboard URL for a repo engine port."""
     if port is None:
         return None
+    if port == 0:
+        return None
 
     from ..infra.client_urls import resolve_client_dashboard_url
 
