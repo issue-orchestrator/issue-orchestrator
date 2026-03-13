@@ -653,11 +653,12 @@ class TestClaimTestingWiring:
         github.get_issue_labels.return_value = []
         claim_manager = MagicMock()
 
-        orch = build_orchestrator_for_testing(
-            config=config,
-            github=github,
-            claim_manager=claim_manager,
-        )
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=config,
+                github=github,
+                claim_manager=claim_manager,
+            )
 
         assert orch.deps.claim_manager is claim_manager
         assert orch.deps.action_applier.claim_gate is orch.deps.claim_gate
@@ -673,11 +674,12 @@ class TestClaimTestingWiring:
         github = MagicMock()
         github.get_issue_labels.return_value = []
 
-        orch = build_orchestrator_for_testing(
-            config=config,
-            github=github,
-            claim_manager=NullClaimManager(),
-        )
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=config,
+                github=github,
+                claim_manager=NullClaimManager(),
+            )
 
         session = MagicMock()
         session.issue.number = 42
