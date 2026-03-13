@@ -200,6 +200,28 @@ def test_retry_handler_uses_ui_action_contract() -> None:
     assert "/api/issues/" not in body
 
 
+def test_reveal_worktree_menu_uses_ui_action_contract() -> None:
+    js = _read(DASHBOARD_JS)
+    assert "uiActionContract.buildRevealWorktreeRequest" in js
+    assert "/api/finder/" not in js
+
+
+def test_open_log_file_uses_ui_action_contract() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "openLogFile")
+    assert "uiActionContract.buildHostOpenPathRequest" in body
+    assert "/api/host/open-path" not in body
+
+
+def test_host_action_contract_exposes_host_neutral_builders() -> None:
+    contract_js = _read(UI_ACTION_CONTRACT_JS)
+    assert "buildRevealWorktreeRequest" in contract_js
+    assert "REVEAL_WORKTREE" in contract_js
+    assert "ENDPOINTS.REVEAL_WORKTREE" in contract_js
+    assert "buildHostOpenPathRequest" in contract_js
+    assert "HOST_OPEN_PATH" in contract_js
+
+
 def test_requeue_paths_use_optimistic_requeue_helper() -> None:
     js = _read(DASHBOARD_JS)
     for fn in (

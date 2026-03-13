@@ -628,10 +628,10 @@ class TestFocusSessionEndpoint:
         assert response.status_code == 404
         assert "error" in response.json()
 
-class TestFinderEndpoint:
-    """Test the POST /api/finder/{issue_number} endpoint."""
+class TestRevealWorktreeEndpoint:
+    """Test the POST /api/host/reveal-worktree/{issue_number} endpoint."""
 
-    def test_open_in_finder_success(self):
+    def test_reveal_worktree_success(self):
         """Test successful worktree reveal via client host."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
@@ -649,27 +649,27 @@ class TestFinderEndpoint:
         session.worktree_path.__str__.return_value = str(worktree_path)
 
         client = TestClient(app)
-        response = client.post("/api/finder/1")
+        response = client.post("/api/host/reveal-worktree/1")
 
         assert response.status_code == 200
         data = response.json()
         assert data["action"] == "opened"
         assert data["path"] == str(worktree_path)
 
-    def test_open_in_finder_session_not_found(self):
-        """Test Finder open returns 404 when session not found."""
+    def test_reveal_worktree_session_not_found(self):
+        """Test worktree reveal returns 404 when session not found."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
         set_orchestrator(mock_orch)
 
         client = TestClient(app)
-        response = client.post("/api/finder/999")
+        response = client.post("/api/host/reveal-worktree/999")
 
         assert response.status_code == 404
         assert "error" in response.json()
 
-    def test_open_in_finder_worktree_not_found(self):
-        """Test Finder open returns 404 when worktree doesn't exist."""
+    def test_reveal_worktree_not_found(self):
+        """Test worktree reveal returns 404 when worktree doesn't exist."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
 
@@ -684,12 +684,12 @@ class TestFinderEndpoint:
         session.worktree_path.exists.return_value = False
 
         client = TestClient(app)
-        response = client.post("/api/finder/1")
+        response = client.post("/api/host/reveal-worktree/1")
 
         assert response.status_code == 404
         assert "error" in response.json()
 
-    def test_open_in_finder_unsupported_host(self):
+    def test_reveal_worktree_unsupported_host(self):
         """Test worktree reveal returns copy-path fallback when unsupported."""
         from issue_orchestrator.entrypoints import web
         mock_orch = create_mock_orchestrator()
@@ -706,12 +706,34 @@ class TestFinderEndpoint:
         session.worktree_path.__str__.return_value = "/tmp/worktree-1"
 
         client = TestClient(app)
-        response = client.post("/api/finder/1")
+        response = client.post("/api/host/reveal-worktree/1")
 
         assert response.status_code == 409
         data = response.json()
         assert data["action"] == "copy_path"
         assert data["path"] == "/tmp/worktree-1"
+
+    def test_finder_alias_still_reveals_worktree(self):
+        """Deprecated Finder alias remains wired during transition."""
+        from issue_orchestrator.entrypoints import web
+        mock_orch = create_mock_orchestrator()
+
+        issue = create_issue(1)
+        session = create_session(issue)
+        mock_orch.state.active_sessions = [session]
+
+        set_orchestrator(mock_orch)
+        set_client_host(_StubClientHost())
+
+        session.worktree_path = MagicMock()
+        session.worktree_path.exists.return_value = True
+        session.worktree_path.__str__.return_value = "/tmp/worktree-1"
+
+        client = TestClient(app)
+        response = client.post("/api/finder/1")
+
+        assert response.status_code == 200
+        assert response.json()["action"] == "opened"
 
 
 class TestHostOpenPathEndpoint:
@@ -1434,6 +1456,7 @@ class TestOrchestratorNotInitialized:
             ("POST", "/api/pause"),
             ("POST", "/api/resume"),
             ("POST", "/api/focus/1"),
+            ("POST", "/api/host/reveal-worktree/1"),
             ("POST", "/api/finder/1"),
             ("POST", "/api/prompt/web"),
             ("POST", "/api/shutdown"),

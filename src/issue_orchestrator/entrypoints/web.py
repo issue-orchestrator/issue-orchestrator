@@ -1053,10 +1053,8 @@ async def focus_session(issue_number: int) -> JSONResponse:
         return JSONResponse({"error": f"Could not focus session #{issue_number}"}, status_code=500)
 
 
-@app.post("/api/finder/{issue_number}")
-async def open_in_finder(issue_number: int) -> JSONResponse:
+async def _reveal_worktree(issue_number: int) -> JSONResponse:
     """Reveal the worktree path in the current client host for a specific session."""
-
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
 
@@ -1083,6 +1081,18 @@ async def open_in_finder(issue_number: int) -> JSONResponse:
 
     status_code = 200 if result.action == "opened" else 409
     return JSONResponse({"issue_number": issue_number, **result.to_dict()}, status_code=status_code)
+
+
+@app.post("/api/host/reveal-worktree/{issue_number}")
+async def reveal_worktree(issue_number: int) -> JSONResponse:
+    """Reveal the worktree path in the current client host."""
+    return await _reveal_worktree(issue_number)
+
+
+@app.post("/api/finder/{issue_number}")
+async def open_in_finder(issue_number: int) -> JSONResponse:
+    """Deprecated alias for revealing a worktree path in the current client host."""
+    return await _reveal_worktree(issue_number)
 
 
 @app.get("/api/log/{issue_number}")

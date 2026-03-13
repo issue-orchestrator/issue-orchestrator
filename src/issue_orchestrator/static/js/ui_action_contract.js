@@ -13,6 +13,8 @@
         BULK_RETRY: '/api/bulk-retry',
         BULK_DEPRIORITIZE: '/api/bulk-deprioritize',
         BULK_CANCEL_QUEUED: '/api/bulk-cancel-queued',
+        HOST_OPEN_PATH: '/api/host/open-path',
+        REVEAL_WORKTREE: (issueNumber) => `/api/host/reveal-worktree/${issueNumber}`,
     };
 
     function normalizeIssueNumbers(issueNumbers) {
@@ -77,6 +79,26 @@
         };
     }
 
+    function buildHostOpenPathRequest(path) {
+        return {
+            endpoint: ENDPOINTS.HOST_OPEN_PATH,
+            method: 'POST',
+            body: { path: String(path || '') },
+        };
+    }
+
+    function buildRevealWorktreeRequest(issueNumber) {
+        const normalized = normalizeIssueNumbers([issueNumber]);
+        if (normalized.length !== 1) {
+            throw new Error(`Invalid issue number for reveal-worktree action: ${issueNumber}`);
+        }
+        return {
+            endpoint: ENDPOINTS.REVEAL_WORKTREE(normalized[0]),
+            method: 'POST',
+            body: {},
+        };
+    }
+
     return {
         ENDPOINTS,
         normalizeIssueNumbers,
@@ -86,5 +108,7 @@
         buildBulkDeprioritizeRequest,
         buildBulkCancelQueuedRequest,
         buildIssueRetryRequest,
+        buildHostOpenPathRequest,
+        buildRevealWorktreeRequest,
     };
 });
