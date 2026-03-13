@@ -112,6 +112,7 @@ async def test_mcp_snapshot_uses_api(sample_orchestrator, sample_issues):
             assert "status" in snapshot
             assert "info" in snapshot
             assert len(snapshot["status"]["queue"]) == len(queue_items)
+            assert "client_capabilities" in snapshot["info"]
         finally:
             _stop_server(server)
     finally:

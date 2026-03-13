@@ -42,18 +42,20 @@ export interface InfoPayload {
   repo_root: string | null;
   ui_mode: string | null;
   terminal_backend: string | null;
-  client_capabilities?: {
-    focus_session: boolean;
-    open_path: boolean;
-    reveal_worktree: boolean;
-    local_server_paths_only: boolean;
-    host_platform: string;
-  };
+  client_capabilities?: ClientCapabilities;
   commit_sha: string | null;
   commit_short: string | null;
   max_sessions: number;
   active_sessions: number;
   completed_today: number;
+}
+
+export interface ClientCapabilities {
+  focus_session: boolean;
+  open_path: boolean;
+  reveal_worktree: boolean;
+  local_server_paths_only: boolean;
+  host_platform: string;
 }
 
 export interface IssueSummary {

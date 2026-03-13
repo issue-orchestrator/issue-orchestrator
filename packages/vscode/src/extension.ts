@@ -4,11 +4,13 @@ import * as path from "path";
 import { OrchestratorTreeDataProvider } from "./views.js";
 import type {
   ActiveSession,
+  ClientCapabilities,
   HistoryEntry,
   IssueSummary,
   Snapshot,
 } from "./types.js";
 import type { OrchestratorClient } from "./orchestratorClient.js";
+import { normalizeClientCapabilities, sessionActionMode } from "./clientCapabilities.js";
 import { showDoctorPanel, updateDoctorPanel } from "./doctorView.js";
 import type { DoctorAction } from "./doctorView.js";
 import type { DoctorReport, StartResponse } from "./types.js";
@@ -68,6 +70,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   let client: OrchestratorClient;
   const { McpClient } = await import("./mcpClient.js");
   client = new McpClient(context, output);
+  await syncCapabilityContexts(normalizeClientCapabilities());
 
   // In E2E mode, defer MCP client start until the test triggers it.
   // The extension.test.ts suite activates the extension before the E2E test
@@ -84,6 +87,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
   const provider = new OrchestratorTreeDataProvider(client, output, statusBar, (snapshot) => {
     updateDiagnostics(snapshot, diagnostics);
+    void syncCapabilityContexts(snapshot.info.client_capabilities);
   });
   context.subscriptions.push(diagnostics);
   registerCommands(context, client, provider, output);
@@ -357,6 +361,12 @@ function registerCommands(
         if (!issueNumber) {
           return;
         }
+        const capabilities = await getClientCapabilities(provider, client);
+        if (sessionActionMode(capabilities) !== "focus") {
+          output.appendLine(`Session focus unsupported for #${issueNumber}; opening session console instead.`);
+          await openSessionConsole(issueNumber, client, output);
+          return;
+        }
         await client.focusSession(issueNumber);
       }, output, "Focus session failed");
     }),
@@ -467,6 +477,31 @@ async function resolveIssueNumber(item?: unknown): Promise<number | null> {
   }
 
   return Number(input);
+}
+
+async function getClientCapabilities(
+  provider: OrchestratorTreeDataProvider,
+  client: OrchestratorClient
+): Promise<ClientCapabilities> {
+  const snapshotCapabilities = provider.getSnapshot()?.info.client_capabilities;
+  if (snapshotCapabilities) {
+    return normalizeClientCapabilities(snapshotCapabilities);
+  }
+
+  const status = await client.getStatus().catch(() => null);
+  return normalizeClientCapabilities(status?.info?.client_capabilities);
+}
+
+async function syncCapabilityContexts(capabilities?: Partial<ClientCapabilities> | null): Promise<void> {
+  const normalized = normalizeClientCapabilities(capabilities);
+  await vscode.commands.executeCommand("setContext", "issueOrchestrator.canFocusSession", normalized.focus_session);
+  await vscode.commands.executeCommand("setContext", "issueOrchestrator.canRevealWorktree", normalized.reveal_worktree);
+  await vscode.commands.executeCommand("setContext", "issueOrchestrator.canOpenServerPath", normalized.open_path);
+  await vscode.commands.executeCommand(
+    "setContext",
+    "issueOrchestrator.serverPathsLocalOnly",
+    normalized.local_server_paths_only
+  );
 }
 
 async function connectEventStream(
