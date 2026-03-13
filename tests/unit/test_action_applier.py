@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, Mock
 from pathlib import Path
 
 from issue_orchestrator.control.action_applier import ActionApplier
+from issue_orchestrator.control.claim_gate import ClaimGate, ClaimLostError
 from issue_orchestrator.control.actions import (
     ActionType,
     ActionResultType,
@@ -24,6 +25,7 @@ from issue_orchestrator.control.actions import (
 from issue_orchestrator.control.session_manager import SessionType
 from issue_orchestrator.domain.models import Issue, Session, AgentConfig
 from issue_orchestrator.events import EventName
+from issue_orchestrator.ports.claim_manager import ClaimManager
 
 
 @pytest.fixture
@@ -125,6 +127,21 @@ class TestAddLabelAction:
 
         assert result.success
         assert result.details["no_op"] is True
+        mock_labels.add_label.assert_not_called()
+
+    def test_add_label_raises_when_claim_lost(self, applier, mock_labels, mock_events):
+        """Claim verification blocks external mutation when ownership is lost."""
+        claim_manager = MagicMock(spec=ClaimManager)
+        claim_manager.check_winner.return_value = False
+
+        applier.claim_gate = ClaimGate(claim_manager, mock_events)
+        applier.lease_id_lookup = lambda issue_number: "lease-123" if issue_number == 123 else None
+        action = AddLabelAction(issue_number=123, label="in-progress")
+
+        with pytest.raises(ClaimLostError, match="Claim lost for issue #123 before add_label"):
+            applier.apply(action)
+
+        claim_manager.check_winner.assert_called_once_with(123, "lease-123")
         mock_labels.add_label.assert_not_called()
 
 

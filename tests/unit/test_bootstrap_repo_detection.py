@@ -15,6 +15,7 @@ from issue_orchestrator.entrypoints.bootstrap import (
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.infra.env import ENV_PREFIX
 from issue_orchestrator.ports import NullEventSink, NullSessionRunner
+from issue_orchestrator.ports.claim_manager import NullClaimManager
 
 
 class TestRepoAutoDetection:
@@ -635,3 +636,56 @@ class TestBuildOrchestrator:
                             # Verify audit was configured
                             assert mock_audit.configure.called
                             assert mock_audit.configure_rate_limit.called
+
+
+class TestClaimTestingWiring:
+    """Tests for claim wiring in test bootstrap."""
+
+    def test_build_orchestrator_for_testing_uses_injected_claim_manager(self, tmp_path) -> None:
+        """Testing bootstrap should allow claim-aware tests to opt out of NullClaimManager."""
+        config = Config()
+        config.repo = "owner/repo"
+        config.repo_root = tmp_path
+        config.worktree_base = tmp_path / "worktrees"
+        config.agents = {"agent:test": MagicMock(timeout_minutes=5)}
+
+        github = MagicMock()
+        github.get_issue_labels.return_value = []
+        claim_manager = MagicMock()
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=config,
+                github=github,
+                claim_manager=claim_manager,
+            )
+
+        assert orch.deps.claim_manager is claim_manager
+        assert orch.deps.action_applier.claim_gate is orch.deps.claim_gate
+
+    def test_build_orchestrator_for_testing_wires_lease_lookup_from_active_sessions(self, tmp_path) -> None:
+        """ActionApplier lease lookup should resolve lease IDs from orchestrator state."""
+        config = Config()
+        config.repo = "owner/repo"
+        config.repo_root = tmp_path
+        config.worktree_base = tmp_path / "worktrees"
+        config.agents = {"agent:test": MagicMock(timeout_minutes=5)}
+
+        github = MagicMock()
+        github.get_issue_labels.return_value = []
+
+        with patch("issue_orchestrator.entrypoints.bootstrap.install_gh_guard"):
+            orch = build_orchestrator_for_testing(
+                config=config,
+                github=github,
+                claim_manager=NullClaimManager(),
+            )
+
+        session = MagicMock()
+        session.issue.number = 42
+        session.lease_id = "lease-42"
+        orch.state.active_sessions.append(session)
+
+        lease_id = orch.deps.action_applier.lease_id_lookup(42)
+
+        assert lease_id == "lease-42"

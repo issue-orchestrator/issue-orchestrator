@@ -564,6 +564,7 @@ def build_test_orchestrator_deps(
     planner=None,
     session_manager=None,
     action_applier=None,
+    claim_manager=None,
     lease_renewer=None,
     timeline_reader=None,
     timeline_writer=None,
@@ -687,14 +688,14 @@ def build_test_orchestrator_deps(
         command_runner=command_runner,
     )
 
-    # Create claim components (always use NullClaimManager for tests)
+    # Create claim components (NullClaimManager by default for tests)
     from issue_orchestrator.ports.claim_manager import NullClaimManager
     from issue_orchestrator.domain.lease_config import LeaseConfig
     from issue_orchestrator.control.claim_gate import ClaimGate
     from issue_orchestrator.control.lease_renewer import LeaseRenewer
 
     lease_config = LeaseConfig.for_testing()
-    claim_manager = NullClaimManager()
+    claim_manager = claim_manager or NullClaimManager()
     claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
     lease_renewer = lease_renewer or LeaseRenewer(
         claim_manager=claim_manager,
@@ -736,6 +737,12 @@ def build_test_orchestrator_deps(
 
     label_manager = LabelManager(config)
     label_store = LabelStore(config.repo_root / ".issue-orchestrator" / "label_store.sqlite")
+
+    _action_applier.claim_gate = claim_gate
+    # build_test_orchestrator_deps() returns deps without a live Orchestrator state.
+    # Use an explicit no-op lease lookup so claim verification behavior is predictable
+    # for tests that consume deps directly instead of relying on runtime wiring.
+    _action_applier.lease_id_lookup = lambda _issue_number: None
 
     infra_services = InfraServices(
         label_manager=label_manager,
