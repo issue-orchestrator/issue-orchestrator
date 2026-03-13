@@ -7,7 +7,7 @@ state changes across the issue orchestration lifecycle.
 import logging
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
@@ -80,7 +80,7 @@ class Event:
 
     event_type: Enum
     entity_id: int
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     data: Dict[str, Any] = field(default_factory=dict)
     source: str = ""
 
@@ -179,7 +179,7 @@ class EventBus:
         event = Event(
             event_type=event_type,
             entity_id=entity_id,
-            timestamp=datetime.now(),
+            timestamp=datetime.now(timezone.utc),
             data=data or {},
             source=source
         )

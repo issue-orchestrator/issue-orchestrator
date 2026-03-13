@@ -6,7 +6,7 @@ This keeps state machines pure and decoupled from the event infrastructure.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -33,7 +33,7 @@ class TransitionResult:
     event_name: str  # Format: "domain.action" for TraceEvent
     entity_id: int
     data: dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
     def trace_event_name(self) -> str:

@@ -8,7 +8,7 @@ This is the key abstraction that keeps pluggy out of the core.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal, NotRequired, Protocol, TYPE_CHECKING, TypedDict
 
 if TYPE_CHECKING:
@@ -164,7 +164,7 @@ class TraceEvent:
 
     event_type: "EventName"
     data: dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=datetime.now)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     event_id: int | None = None
 
     _RUN_DIR_REQUIRED_EVENTS: frozenset[str] = field(

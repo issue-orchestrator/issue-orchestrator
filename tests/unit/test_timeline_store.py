@@ -544,6 +544,42 @@ class TestNarrativeEnrichment:
         assert result == "Code review started"
 
 
+def test_timeline_event_preserves_review_exchange_round_fields() -> None:
+    from issue_orchestrator.timeline import TimelineStream
+
+    record = TimelineRecord(
+        event_id="round-1",
+        timestamp="2026-03-13T15:45:08.617893+00:00",
+        event="review_exchange.round_completed",
+        source_event="review_exchange.round_completed",
+        data={
+            "issue_number": 4057,
+            "run_dir": "/tmp/run-4057",
+            "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            "logical_run": 1,
+            "logical_cycle": 1,
+            "logical_phase": "review",
+            "review_oriented": True,
+            "event_intent": "review",
+            "views": ["user", "ops", "debug"],
+            "round_index": 1,
+            "reviewer_response_type": "changes_requested",
+            "reviewer_response_text": "Three issues to fix before approval.",
+            "coder_response_type": "ok",
+        },
+    )
+
+    payload = TimelineStream.from_records(4057, [record]).to_dict()
+    event = payload["events"][0]
+    assert event["round_index"] == 1
+    assert event["reviewer_response_type"] == "changes_requested"
+    assert event["reviewer_response_text"] == "Three issues to fix before approval."
+    assert event["coder_response_type"] == "ok"
+    assert "Round 1" in event["detail"]
+    assert "Three issues to fix before approval." in event["detail"]
+    assert "Coder response: ok" in event["detail"]
+
+
 class TestTrivialSummarySuppression:
     """Test that trivial summary values like 'completed' are suppressed in narratives."""
 
@@ -652,4 +688,3 @@ def test_sqlite_timeline_store_instance_id_filters_correctly(tmp_path: Path) -> 
     ).fetchall()
     conn.close()
     assert [r["event_id"] for r in rows] == ["a1", "a2"]
-
