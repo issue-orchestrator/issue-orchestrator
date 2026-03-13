@@ -575,6 +575,24 @@ def test_parse_exchange_response_prefers_last_protocol_json_in_embedded_text() -
     assert response.response_text == "done"
 
 
+def test_parse_exchange_response_repairs_multiline_response_text() -> None:
+    stdout = (
+        '{"response_type":"changes_requested","getting_closer":true,'
+        '"response_text":"Three issues to fix before approval:\n'
+        '1. Add the missing UI rendering.\n'
+        '2. Tighten the public contract typing.\n'
+        '3. Remove the fail-soft exception handler."}\n'
+    )
+
+    response = _parse_exchange_response(stdout)
+
+    assert response is not None
+    assert response.response_type == "changes_requested"
+    assert response.getting_closer is True
+    assert "Three issues to fix before approval" in response.response_text
+    assert "Add the missing UI rendering." in response.response_text
+
+
 def test_review_exchange_seeds_initial_validation_record(tmp_path: Path, monkeypatch) -> None:
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Prompt")

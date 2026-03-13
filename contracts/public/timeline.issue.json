@@ -34,6 +34,18 @@
           "title": "Artifacts",
           "type": "array"
         },
+        "coder_response_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Coder Response Type"
+        },
         "event": {
           "title": "Event",
           "type": "string"
@@ -57,6 +69,42 @@
         "phase": {
           "title": "Phase",
           "type": "string"
+        },
+        "reviewer_response_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewer Response Text"
+        },
+        "reviewer_response_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewer Response Type"
+        },
+        "round_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Round Index"
         },
         "status": {
           "title": "Status",

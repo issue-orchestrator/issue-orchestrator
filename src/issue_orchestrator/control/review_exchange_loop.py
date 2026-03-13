@@ -1022,6 +1022,9 @@ def _parse_protocol_json_from_text(text: str) -> dict[str, Any] | None:
     line_match = _parse_protocol_json_from_lines(stripped)
     if line_match is not None:
         return line_match
+    repaired = _parse_protocol_json_with_repaired_multiline_strings(stripped)
+    if repaired is not None:
+        return repaired
     return _parse_protocol_json_from_embedded_objects(stripped)
 
 
@@ -1115,6 +1118,60 @@ def _parse_protocol_json_from_embedded_objects(stripped: str) -> dict[str, Any] 
         if normalized is not None:
             matches.append(normalized)
     return matches[-1] if matches else None
+
+
+def _parse_protocol_json_with_repaired_multiline_strings(stripped: str) -> dict[str, Any] | None:
+    """Recover common malformed JSON where agents emit raw newlines inside strings.
+
+    Review exchange prompts ask for one-line JSON, but interactive agents
+    sometimes write multi-line prose directly inside ``response_text``.  The
+    content is still structurally useful, so normalize raw newlines inside JSON
+    strings and try one more strict parse before declaring a protocol error.
+    """
+    repaired = _escape_raw_newlines_inside_json_strings(stripped)
+    if repaired == stripped:
+        return None
+    try:
+        data = json.loads(repaired)
+    except json.JSONDecodeError:
+        return None
+    return _normalize_protocol_response(data)
+
+
+def _escape_raw_newlines_inside_json_strings(text: str) -> str:
+    """Escape literal CR/LF characters that appear inside quoted JSON strings."""
+    chars: list[str] = []
+    in_string = False
+    escaped = False
+
+    for ch in text:
+        if in_string:
+            if escaped:
+                chars.append(ch)
+                escaped = False
+                continue
+            if ch == "\\":
+                chars.append(ch)
+                escaped = True
+                continue
+            if ch == '"':
+                chars.append(ch)
+                in_string = False
+                continue
+            if ch == "\n":
+                chars.append("\\n")
+                continue
+            if ch == "\r":
+                chars.append("\\r")
+                continue
+            chars.append(ch)
+            continue
+
+        chars.append(ch)
+        if ch == '"':
+            in_string = True
+
+    return "".join(chars)
 
 
 def _normalize_protocol_response(obj: object) -> dict[str, Any] | None:

@@ -1,5 +1,6 @@
 """Unit tests for the event catalog and context system."""
 
+from datetime import timezone
 import pytest
 from uuid import UUID
 
@@ -36,6 +37,11 @@ class TestEventName:
         """EventName should work directly in TraceEvent constructor."""
         event = TraceEvent(EventName.TICK_STARTED, {"tick_id": 1})
         assert event.name == "tick.started"
+
+    def test_trace_event_defaults_to_utc_timestamp(self):
+        """Default timestamps must be timezone-aware for timeline correctness."""
+        event = TraceEvent(EventName.TICK_STARTED, {"tick_id": 1})
+        assert event.timestamp.tzinfo == timezone.utc
 
 
 class TestEventContext:

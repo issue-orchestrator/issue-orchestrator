@@ -110,6 +110,10 @@ class TimelineEventContract(ContractBase):
     summary: Optional[str] = None
     parent_key: str
     artifacts: list[TimelineArtifactContract] = Field(default_factory=list)
+    round_index: Optional[int] = None
+    reviewer_response_type: Optional[str] = None
+    reviewer_response_text: Optional[str] = None
+    coder_response_type: Optional[str] = None
 
 
 class TimelineIssueContract(ContractBase):
