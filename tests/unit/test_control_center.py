@@ -203,3 +203,5 @@ def test_start_buttons_are_disabled_while_start_is_pending() -> None:
     assert 'data-action="stop-force"' not in template
     assert "getRepoDashboardUrl(repo, { embedded: true, theme: iframeTheme })" in template
     assert "buildDashboardUrlFromBase(repo.dashboard_url, options)" in template
+    assert "Boolean(repo.dashboard_url)" in template
+    assert "http://127.0.0.1:${port}" not in template

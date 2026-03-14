@@ -564,8 +564,8 @@ def wizard_new_project(prompter: Prompter) -> dict[str, Any]:  # noqa: C901, PLR
     # UI Mode
     prompter.print("\n--- UI Mode ---")
     prompter.print("How do you want to monitor agent sessions?\n")
-    prompter.print("  web    - Browser dashboard at localhost (recommended)")
-    prompter.print("           Best for most users. Visual overview of all agents.")
+    prompter.print("  web    - Browser dashboard (recommended)")
+    prompter.print("           Best for most users. Opens in your browser or forwarded client URL.")
     prompter.print("  tmux   - Terminal multiplexer sessions")
     prompter.print("           For terminal power users. Requires tmux installed.\n")
     ui_mode = prompter.input("UI mode", "web")
@@ -930,8 +930,8 @@ def wizard_existing_project(  # noqa: C901, PLR0912 - interactive wizard with br
     if "ui" not in config or "mode" not in config.get("ui", {}):
         prompter.print("\n--- UI Mode ---")
         prompter.print("How do you want to monitor agent sessions?\n")
-        prompter.print("  web    - Browser dashboard at localhost (recommended)")
-        prompter.print("           Best for most users. Visual overview of all agents.")
+        prompter.print("  web    - Browser dashboard (recommended)")
+        prompter.print("           Best for most users. Opens in your browser or forwarded client URL.")
         prompter.print("  tmux   - Terminal multiplexer sessions")
         prompter.print("           For terminal power users. Requires tmux installed.\n")
         ui_mode = prompter.input("UI mode", "web")

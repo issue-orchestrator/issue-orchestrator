@@ -103,6 +103,16 @@ class TestCreateStarterPrompt:
         assert "Frontend-Ui Agent Prompt" in content
 
 
+def test_setup_wizard_ui_mode_copy_is_client_neutral() -> None:
+    """UI mode copy should not imply localhost-only browser access."""
+    source = Path(__file__).resolve().parents[2] / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools" / "setup_wizard.py"
+    text = source.read_text(encoding="utf-8")
+
+    assert "Browser dashboard (recommended)" in text
+    assert "forwarded client URL" in text
+    assert "Browser dashboard at localhost (recommended)" not in text
+
+
 class TestCreateTriageReviewPrompt:
     """Test the create_triage_review_prompt function."""
 

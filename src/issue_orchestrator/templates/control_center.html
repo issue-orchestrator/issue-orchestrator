@@ -3730,7 +3730,7 @@
         function isRepoDashboardReady(repo) {
             if (!repo) return false;
             const repoState = getRepoState(repo);
-            return (repoState === 'running' || repoState === 'paused') && Boolean(getRepoPort(repo));
+            return (repoState === 'running' || repoState === 'paused') && Boolean(repo.dashboard_url);
         }
 
         async function waitForRepoToBeReady(path) {
@@ -3759,11 +3759,6 @@
             throw new Error('Repository engine did not become ready in time');
         }
 
-        function buildDashboardUrl(port, options = {}) {
-            if (!port) return null;
-            return buildDashboardUrlFromBase(`http://127.0.0.1:${port}/`, options);
-        }
-
         function buildDashboardUrlFromBase(baseUrl, options = {}) {
             if (!baseUrl) return null;
             const url = new URL(baseUrl);
@@ -3773,8 +3768,7 @@
         }
 
         function getRepoDashboardUrl(repo, options = {}) {
-            return buildDashboardUrlFromBase(repo.dashboard_url, options)
-                || buildDashboardUrl(getRepoPort(repo), options);
+            return buildDashboardUrlFromBase(repo.dashboard_url, options);
         }
 
         function needsSetup(repo) {

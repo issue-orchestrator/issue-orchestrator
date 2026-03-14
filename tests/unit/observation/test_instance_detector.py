@@ -155,7 +155,7 @@ class TestGetBestEntryPoint:
         )
         entry = get_best_entry_point(state)
         assert entry["action"] == "open_dashboard"
-        assert entry["url"] == "http://localhost:19080"
+        assert entry["url"] == "http://127.0.0.1:19080/"
         assert entry["port"] == 19080
 
     def test_returns_start_dashboard_with_deep_link_for_running_repo(self):
@@ -202,8 +202,23 @@ class TestGetBestEntryPoint:
         )
         entry = get_best_entry_point(state)
         assert entry["action"] == "open_dashboard"
-        assert entry["url"] == "http://localhost:19080?repo=/home/user/repo"
+        assert entry["url"] == "http://127.0.0.1:19080/?repo=%2Fhome%2Fuser%2Frepo"
         assert entry["repo_path"] == "/home/user/repo"
+
+    def test_open_dashboard_uses_codespaces_forwarded_url(self, monkeypatch):
+        """Browser URLs should use forwarded Codespaces links when available."""
+        monkeypatch.setenv("CODESPACE_NAME", "octo-space")
+        monkeypatch.setenv("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN", "app.github.dev")
+        state = SystemState(
+            dashboard=DashboardStatus(running=True, port=19080),
+            repos=[],
+            current_directory="/tmp",
+        )
+
+        entry = get_best_entry_point(state)
+
+        assert entry["action"] == "open_dashboard"
+        assert entry["url"] == "https://octo-space-19080.app.github.dev/"
 
     def test_returns_start_dashboard_when_nothing_running(self):
         state = SystemState(

@@ -5,6 +5,7 @@ import pytest
 from issue_orchestrator.infra.client_urls import (
     resolve_client_base_url,
     resolve_client_dashboard_url,
+    with_client_query_params,
 )
 
 
@@ -37,3 +38,9 @@ def test_resolve_client_base_url_uses_codespaces_forwarded_domain(monkeypatch: p
 def test_resolve_client_base_url_requires_positive_port() -> None:
     with pytest.raises(ValueError, match="Port must be positive"):
         resolve_client_base_url(0)
+
+
+def test_with_client_query_params_appends_repo_path() -> None:
+    result = with_client_query_params("https://octo-space-55543.app.github.dev/", repo="/workspaces/repo")
+
+    assert result == "https://octo-space-55543.app.github.dev/?repo=%2Fworkspaces%2Frepo"
