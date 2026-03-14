@@ -4,6 +4,7 @@ The validate_runner captures validation output to a known location
 so agents can find failure details without re-running tests.
 """
 
+import json
 import os
 import subprocess
 import sys
@@ -249,3 +250,69 @@ class TestValidateRunner:
         assert "line two" in content
         assert "[validate_runner] child_started pid=" in content
         assert "[validate_runner] child_exited pid=" in content
+
+    def test_appends_target_timing_records_to_shared_git_dir(self, fake_git_repo: Path):
+        """Timing markers should be persisted as JSONL under the shared git dir."""
+        command = (
+            "printf '[validate-timing] CONFIG validate_jobs=10 unit_parallel=auto "
+            "simulated_parallel=auto integration_parallel=auto\\n'"
+            " && printf '[validate-timing] START target=test-unit at=2026-03-14T09:10:13-0600\\n'"
+            " && printf '[validate-timing] END target=test-unit status=0 elapsed=12s "
+            "at=2026-03-14T09:10:25-0600\\n'"
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable, "-m",
+                "issue_orchestrator.entrypoints.cli_tools.validate_runner",
+                "--command", command,
+            ],
+            cwd=fake_git_repo,
+            capture_output=True,
+            text=True,
+            env=_with_repo_on_pythonpath({
+                k: v for k, v in os.environ.items() if not k.startswith("ISSUE_ORCHESTRATOR")
+            }),
+        )
+
+        assert result.returncode == 0
+        timings_file = fake_git_repo / ".git" / "issue-orchestrator" / "validate-timings.jsonl"
+        assert timings_file.exists()
+
+        records = [json.loads(line) for line in timings_file.read_text().splitlines()]
+        target_record = next(record for record in records if record["kind"] == "target_timing")
+        assert target_record["target"] == "test-unit"
+        assert target_record["elapsed_seconds"] == 12
+        assert target_record["validate_jobs"] == "10"
+        assert target_record["unit_parallel"] == "auto"
+        assert target_record["simulated_parallel"] == "auto"
+        assert target_record["integration_parallel"] == "auto"
+        assert target_record["started_at"] == "2026-03-14T09:10:13-0600"
+        assert target_record["ended_at"] == "2026-03-14T09:10:25-0600"
+
+    def test_appends_run_summary_record_to_shared_git_dir(self, fake_git_repo: Path):
+        """Each validate run should append a run summary record."""
+        result = subprocess.run(
+            [
+                sys.executable, "-m",
+                "issue_orchestrator.entrypoints.cli_tools.validate_runner",
+                "--command", "echo ok",
+            ],
+            cwd=fake_git_repo,
+            capture_output=True,
+            text=True,
+            env=_with_repo_on_pythonpath({
+                k: v for k, v in os.environ.items() if not k.startswith("ISSUE_ORCHESTRATOR")
+            }),
+        )
+
+        assert result.returncode == 0
+        timings_file = fake_git_repo / ".git" / "issue-orchestrator" / "validate-timings.jsonl"
+        assert timings_file.exists()
+
+        records = [json.loads(line) for line in timings_file.read_text().splitlines()]
+        summary_record = next(record for record in records if record["kind"] == "run_summary")
+        assert summary_record["command"] == "echo ok"
+        assert summary_record["worktree"] == str(fake_git_repo)
+        assert summary_record["exit_code"] == 0
+        assert isinstance(summary_record["total_elapsed_seconds"], float)
