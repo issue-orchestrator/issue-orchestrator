@@ -8,7 +8,6 @@ All session artifacts are stored in:
 
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import re
@@ -24,7 +23,7 @@ from ..infra.terminal_cleaning import (
     dedupe_consecutive_lines,
     is_spinner_fragment,
 )
-from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
+from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME, append_output_event
 from ..ports.session_output import (
     ReviewExchangeSummary,
     SessionRun,
@@ -753,15 +752,7 @@ Timestamp: {self._now_iso()}
         payload = "\n".join(chunk for chunk in chunks if chunk).rstrip() + "\n\n"
         recording_path = run_dir / TERMINAL_RECORDING_NAME
         recording_path.parent.mkdir(parents=True, exist_ok=True)
-        event = {
-            "schema_version": 1,
-            "event_type": "output",
-            "offset_ms": 0,
-            "data_b64": base64.b64encode(payload.encode("utf-8")).decode("ascii"),
-        }
-        with recording_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, sort_keys=True))
-            handle.write("\n")
+        append_output_event(recording_path, payload)
 
     def append_review_exchange_session_log_entry(
         self,
@@ -961,8 +952,7 @@ Timestamp: {self._now_iso()}
     def _append_run_log_line(run_dir: Path, line: str) -> None:
         log_path = run_dir / TERMINAL_RECORDING_NAME
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(f"{line}\n")
+        append_output_event(log_path, f"{line}\n")
 
     @staticmethod
     def _delete_tree(path: Path) -> None:

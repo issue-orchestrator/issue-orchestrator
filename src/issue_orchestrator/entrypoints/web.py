@@ -1285,7 +1285,7 @@ async def get_terminal_recording(
 
     recording_path = artifact.path
     try:
-        all_events = iter_terminal_recording(recording_path)
+        all_events = list(iter_terminal_recording(recording_path))
         total_events = len(all_events)
         events = all_events[offset:] if offset > 0 else all_events
         truncated = False
@@ -1326,19 +1326,19 @@ def _preview_lines_from_terminal_recording(path: Path) -> list[str]:
     """Decode raw output events into a best-effort text preview for legacy viewers."""
     decoded_chunks: list[str] = []
     try:
-        events = iter_terminal_recording(path)
+        for event in iter_terminal_recording(path):
+            if event.get("event_type") != "output":
+                continue
+            data_b64 = event.get("data_b64")
+            if not isinstance(data_b64, str) or not data_b64:
+                continue
+            try:
+                decoded_chunks.append(base64.b64decode(data_b64).decode("utf-8", errors="ignore"))
+            except Exception:
+                continue
     except Exception:
+        logger.warning("terminal recording preview decode failed: %s", path, exc_info=True)
         return path.read_text(errors="ignore").splitlines()
-    for event in events:
-        if event.get("event_type") != "output":
-            continue
-        data_b64 = event.get("data_b64")
-        if not isinstance(data_b64, str) or not data_b64:
-            continue
-        try:
-            decoded_chunks.append(base64.b64decode(data_b64).decode("utf-8", errors="ignore"))
-        except Exception:
-            continue
     if decoded_chunks:
         return "".join(decoded_chunks).splitlines()
 

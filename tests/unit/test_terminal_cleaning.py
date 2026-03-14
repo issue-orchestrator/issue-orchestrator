@@ -398,7 +398,7 @@ class TestCleaningLogWriter:
         )
         writer.close()
 
-        events = iter_terminal_recording(recording)
+        events = list(iter_terminal_recording(recording))
         assert len(events) == 1
         payload = base64.b64decode(events[0]["data_b64"])
         assert b"the original tests don't provide deps, it works." in payload

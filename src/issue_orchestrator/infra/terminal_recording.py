@@ -12,7 +12,7 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 
 TERMINAL_RECORDING_FILENAME = "terminal-recording.jsonl"
@@ -94,15 +94,32 @@ class TerminalRecordingWriter:
         return int((time.monotonic() - self._started) * 1000)
 
     def _write_event(self, event: TerminalRecordingEvent) -> None:
-        self._file.write(json.dumps(event.to_dict(), sort_keys=True))
-        self._file.write("\n")
+        self._file.write(json.dumps(event.to_dict(), sort_keys=True) + "\n")
 
-
-def iter_terminal_recording(path: Path) -> list[dict[str, Any]]:
-    """Load a terminal recording NDJSON file for replay or inspection."""
-    events: list[dict[str, Any]] = []
+def iter_terminal_recording(path: Path) -> Iterator[dict[str, Any]]:
+    """Iterate over a terminal recording NDJSON file for replay or inspection."""
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         if not raw_line.strip():
             continue
-        events.append(json.loads(raw_line))
-    return events
+        yield json.loads(raw_line)
+
+
+def append_output_event(path: Path, text: str) -> None:
+    """Append a plain-text transcript snippet as one terminal output event."""
+    if not text:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    next_offset = 0
+    for event in iter_terminal_recording(path) if path.exists() else ():
+        offset_ms = event.get("offset_ms")
+        if isinstance(offset_ms, int) and offset_ms >= next_offset:
+            next_offset = offset_ms + 1
+    payload = TerminalRecordingEvent(
+        event_type="output",
+        offset_ms=next_offset,
+        data_b64=base64.b64encode(text.encode("utf-8")).decode("ascii"),
+    )
+    if not path.exists():
+        path.write_text("", encoding="utf-8")
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload.to_dict(), sort_keys=True) + "\n")
