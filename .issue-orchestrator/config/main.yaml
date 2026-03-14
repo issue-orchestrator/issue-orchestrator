@@ -3,6 +3,8 @@
 worktrees:
   base: "../"
   worktree_branch_on_recreate: delete
+  setup:
+    - make worktree-setup
 
 agents:
   agent:backend:
@@ -53,9 +55,6 @@ execution:
     max_concurrent_sessions: 6
     session_timeout_minutes: 10
   terminal_adapter: subprocess
-
-setup_worktree:
-  - make worktree-setup
 
 review:
   enabled: true
