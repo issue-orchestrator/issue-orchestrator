@@ -18,6 +18,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
 from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
@@ -31,6 +32,24 @@ from issue_orchestrator.contracts.public import DashboardViewModelContract
 class _OrchestratorStub:
     state: OrchestratorState
     config: Config
+    shutdown_requested: bool = False
+
+
+@dataclass
+class _MockResilienceManager:
+    store: InMemoryProviderCircuitStore
+
+
+@dataclass
+class _MockDeps:
+    provider_resilience: _MockResilienceManager
+
+
+@dataclass
+class _OrchestratorStubWithCircuits:
+    state: OrchestratorState
+    config: Config
+    deps: _MockDeps
     shutdown_requested: bool = False
 
 
@@ -701,3 +720,64 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_open_circuits_empty_when_no_deps():
+    """open_circuits is empty list when orchestrator has no provider resilience deps."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.open_circuits == []
+    assert view_model.dashboard_data()["openCircuits"] == []
+
+
+def test_open_circuits_surfaces_open_provider():
+    """open_circuits surfaces provider circuit state when a circuit is open."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    from datetime import timezone as tz
+    store = InMemoryProviderCircuitStore()
+    now_utc = datetime.now(tz.utc)
+    open_until = now_utc + timedelta(minutes=30)
+    store.save(ProviderCircuitState(
+        provider="claude-code",
+        open_until=open_until,
+        consecutive_outages=2,
+        last_error_summary="Rate limit exceeded",
+        updated_at=now_utc,
+    ))
+
+    deps = _MockDeps(provider_resilience=_MockResilienceManager(store=store))
+    orchestrator = _OrchestratorStubWithCircuits(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.open_circuits) == 1
+    circuit = view_model.open_circuits[0]
+    assert circuit["provider"] == "claude-code"
+    assert circuit["is_open"] is True
+    assert circuit["consecutive_outages"] == 2
+    assert circuit["last_error_summary"] == "Rate limit exceeded"
+    assert circuit["open_until"] is not None
+
+    # Also surfaced in dashboard_data
+    open_circuits = view_model.dashboard_data()["openCircuits"]
+    assert len(open_circuits) == 1
+    assert open_circuits[0]["provider"] == "claude-code"
+    assert open_circuits[0]["is_open"] is True

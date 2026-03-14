@@ -81,6 +81,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    open_circuits: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -119,6 +120,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "open_circuits": self.open_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -141,6 +143,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "openCircuits": self.open_circuits,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -180,6 +183,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "open_circuits": self.open_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -1248,6 +1252,30 @@ def _normalize_tab(active_tab: str) -> str:
     return "kanban"
 
 
+def _get_open_circuits(orchestrator) -> list[dict[str, Any]]:
+    """Collect provider circuit breaker states for the dashboard."""
+    if orchestrator is None:
+        return []
+    deps = getattr(orchestrator, "deps", None)
+    if deps is None:
+        return []
+    resilience = getattr(deps, "provider_resilience", None)
+    if resilience is None:
+        return []
+    now = datetime.now(timezone.utc)
+    result = []
+    for state in resilience.store.list_all():
+        is_open = state.open_until is not None and state.open_until > now
+        result.append({
+            "provider": state.provider,
+            "is_open": is_open,
+            "open_until": state.open_until.isoformat() if state.open_until else None,
+            "consecutive_outages": state.consecutive_outages,
+            "last_error_summary": state.last_error_summary,
+        })
+    return result
+
+
 def build_dashboard_view_model(
     orchestrator,
     queue_page: int = 1,
@@ -1470,4 +1498,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        open_circuits=_get_open_circuits(orchestrator),
     )
