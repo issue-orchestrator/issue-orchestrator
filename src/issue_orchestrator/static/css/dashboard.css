@@ -98,6 +98,38 @@ body {
     font-weight: 600;
 }
 
+.provider-outage-banner {
+    margin: 0 0 12px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--status-paused-border);
+    background: var(--status-paused-bg);
+    color: var(--status-paused-text);
+    font-size: 13px;
+}
+
+.provider-outage-banner .provider-outage-title {
+    font-weight: 700;
+    margin-bottom: 6px;
+}
+
+.provider-outage-banner .provider-outage-item {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    align-items: baseline;
+    margin-top: 4px;
+    font-size: 12px;
+}
+
+.provider-outage-banner .provider-outage-name {
+    font-weight: 600;
+}
+
+.provider-outage-banner .provider-outage-meta {
+    color: var(--text-muted);
+}
+
 body.column-focus-mode {
     height: 100vh;
     overflow: hidden;

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -25,6 +25,16 @@ from issue_orchestrator.view_models.dashboard import (
     build_dashboard_view_model,
 )
 from issue_orchestrator.contracts.public import DashboardViewModelContract
+from issue_orchestrator.ports.provider_resilience import (
+    InMemoryProviderCircuitStore,
+    ProviderCircuitState,
+)
+
+
+@dataclass
+class _FakeDeps:
+    """Minimal deps stub exposing provider_resilience."""
+    provider_resilience: object = field(default=None)
 
 
 @dataclass
@@ -32,6 +42,7 @@ class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+    deps: _FakeDeps = field(default_factory=_FakeDeps)
 
 
 def _make_config() -> Config:
@@ -701,3 +712,112 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+@dataclass
+class _FakeProviderResilience:
+    store: InMemoryProviderCircuitStore
+
+
+def _make_open_circuit(provider: str, *, cooldown_seconds: int = 120) -> ProviderCircuitState:
+    now = datetime.now(timezone.utc)
+    return ProviderCircuitState(
+        provider=provider,
+        open_until=now + timedelta(seconds=cooldown_seconds),
+        consecutive_outages=2,
+        last_error_summary="Connection refused",
+        updated_at=now,
+    )
+
+
+def test_provider_circuits_empty_when_no_open_circuits():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    store = InMemoryProviderCircuitStore()
+    deps = _FakeDeps(provider_resilience=_FakeProviderResilience(store=store))
+    orchestrator = _OrchestratorStub(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+    assert view_model.dashboard_data()["providerCircuits"] == []
+
+
+def test_provider_circuits_contains_open_circuit():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    store = InMemoryProviderCircuitStore()
+    store.save(_make_open_circuit("claude", cooldown_seconds=90))
+    deps = _FakeDeps(provider_resilience=_FakeProviderResilience(store=store))
+    orchestrator = _OrchestratorStub(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuits) == 1
+    circuit = view_model.provider_circuits[0]
+    assert circuit["provider"] == "claude"
+    assert circuit["consecutive_outages"] == 2
+    assert circuit["last_error_summary"] == "Connection refused"
+    assert circuit["cooldown_remaining_seconds"] > 0
+    assert "open_until" in circuit
+
+    dd = view_model.dashboard_data()
+    assert len(dd["providerCircuits"]) == 1
+    assert dd["providerCircuits"][0]["provider"] == "claude"
+
+
+def test_provider_circuits_excludes_expired_circuits():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    store = InMemoryProviderCircuitStore()
+    # Expired circuit (open_until in the past)
+    now = datetime.now(timezone.utc)
+    store.save(ProviderCircuitState(
+        provider="claude",
+        open_until=now - timedelta(seconds=10),
+        consecutive_outages=1,
+        last_error_summary=None,
+        updated_at=now,
+    ))
+    deps = _FakeDeps(provider_resilience=_FakeProviderResilience(store=store))
+    orchestrator = _OrchestratorStub(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+
+
+def test_provider_circuits_graceful_when_no_deps():
+    """Orchestrator stubs without deps.provider_resilience return empty circuits."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    # _OrchestratorStub default _FakeDeps has provider_resilience=None
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []

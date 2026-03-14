@@ -2965,6 +2965,76 @@ function loadStaleIssues() {
         .catch(err => console.error('[stale] Failed to load stale issues:', err));
 }
 
+// Provider circuit breaker tracking
+let providerCircuits = {};  // provider -> circuit info
+
+function _fmtCooldown(seconds) {
+    if (seconds <= 0) return 'retrying soon';
+    if (seconds < 60) return seconds + 's';
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return s > 0 ? m + 'm ' + s + 's' : m + 'm';
+}
+
+function renderProviderOutageBanner() {
+    const banner = document.getElementById('providerOutageBanner');
+    if (!banner) return;
+    const open = Object.values(providerCircuits).filter(c => c.open);
+    if (open.length === 0) {
+        banner.style.display = 'none';
+        banner.innerHTML = '';
+        return;
+    }
+    const label = open.length === 1 ? 'Provider outage' : open.length + ' provider outages';
+    let html = '<div class="provider-outage-title">&#x26A0; ' + escapeHtml(label) + '</div>';
+    for (const c of open) {
+        const cooldown = _fmtCooldown(c.cooldown_remaining_seconds || 0);
+        const err = c.last_error_summary ? ' &mdash; ' + escapeHtml(c.last_error_summary) : '';
+        html += '<div class="provider-outage-item">' +
+            '<span class="provider-outage-name">' + escapeHtml(c.provider) + '</span>' +
+            '<span class="provider-outage-meta">retry in ' + escapeHtml(cooldown) + err + '</span>' +
+            '</div>';
+    }
+    banner.innerHTML = html;
+    banner.style.display = '';
+}
+
+function initProviderCircuits(circuits) {
+    providerCircuits = {};
+    for (const c of (circuits || [])) {
+        providerCircuits[c.provider] = Object.assign({}, c, { open: true });
+    }
+    renderProviderOutageBanner();
+}
+
+function onProviderOutageEntered(data) {
+    const now = Math.floor(Date.now() / 1000);
+    let cooldown = 0;
+    if (data.open_until) {
+        const openUntil = Math.floor(new Date(data.open_until).getTime() / 1000);
+        cooldown = Math.max(0, openUntil - now);
+    }
+    providerCircuits[data.provider] = {
+        provider: data.provider,
+        open_until: data.open_until,
+        cooldown_remaining_seconds: cooldown,
+        consecutive_outages: data.consecutive_outages || 0,
+        last_error_summary: data.error_summary || null,
+        open: true,
+    };
+    renderProviderOutageBanner();
+}
+
+function onProviderOutageExited(data) {
+    delete providerCircuits[data.provider];
+    renderProviderOutageBanner();
+}
+
+// Initialize from server-rendered page data (must run after declarations)
+document.addEventListener('DOMContentLoaded', function() {
+    initProviderCircuits((window.dashboardData && window.dashboardData.providerCircuits) || []);
+});
+
 let excludedLoaded = false;
 
 function renderFlowStepper(steps, activeKey, blockedSummary) {
@@ -3201,6 +3271,26 @@ async function toggleExcluded() {
                 updateStaleWarning(data.issue_number, staleIssues[data.issue_number]);
             } catch (err) {
                 console.error('[SSE] Failed to parse stale.persistent_detected:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_entered', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage entered:', data);
+                onProviderOutageEntered(data);
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_entered:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_exited', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage exited:', data);
+                onProviderOutageExited(data);
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_exited:', err);
             }
         });
 
