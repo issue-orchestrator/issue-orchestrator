@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from ..domain.run_manifest import RunManifest
-from .session_output_adapter import CLAUDE_SESSION_LOG_NAME, FileSystemSessionOutput
+from .session_output_adapter import CLAUDE_SESSION_LOG_NAME
 
 
 @dataclass(frozen=True)
@@ -64,67 +64,41 @@ class ManifestAccessor:
 
     run_identity: RunIdentity
 
-    def get_ui_log(self, *, allow_empty: bool = False) -> ArtifactStream:
-        """Return the run-scoped UI session log without falling back to provider logs.
-
-        This intentionally keeps the UI Session viewer bound to ``ui-session.log``
-        even when other run artifacts such as Claude JSONL exist. An empty UI log
-        should remain empty in the viewer rather than silently changing artifacts.
-        """
+    def get_terminal_recording(self, *, allow_empty: bool = False) -> ArtifactStream:
+        """Return the canonical raw terminal recording for this run."""
         run_dir = self.run_identity.run_dir
         self._require_run_dir_exists(run_dir)
-        path = run_dir / "ui-session.log"
+        path = run_dir / "terminal-recording.jsonl"
         if path.exists() and (allow_empty or path.stat().st_size > 0):
-            return self._artifact_stream("ui_log", path)
+            return self._artifact_stream(
+                "terminal_recording",
+                path,
+                content_type="application/x-ndjson",
+            )
         if path.exists():
-            raise ArtifactNotFoundError(f"ui session log is empty: {path}")
-        raise ArtifactNotFoundError(f"ui session log not found in run-scoped path: {path}")
+            raise ArtifactNotFoundError(f"terminal recording is empty: {path}")
+        raise ArtifactNotFoundError(f"terminal recording not found in run-scoped path: {path}")
 
     def get_agent_log(self, *, allow_empty: bool = False) -> ArtifactStream:
-        """Return the run-scoped agent session log stream."""
-        run_dir = self.run_identity.run_dir
-        self._require_run_dir_exists(run_dir)
-        candidates = self._agent_log_candidates(run_dir)
-        existing = [candidate for candidate in candidates if candidate.exists()]
-        non_empty = self._non_empty_paths(existing)
-        if non_empty:
-            return self._artifact_stream("agent_log", non_empty[0])
-        if allow_empty and existing:
-            return self._artifact_stream("agent_log", existing[0])
-        if existing:
-            candidates_str = ", ".join(str(path) for path in existing)
-            raise ArtifactNotFoundError(
-                f"agent_log candidates are empty under run_dir={run_dir}: {candidates_str}"
-            )
-        raise ArtifactNotFoundError(
-            f"agent_log not found in run-scoped paths under: {run_dir}"
+        """Return the canonical run-scoped agent recording stream."""
+        artifact = self.get_terminal_recording(allow_empty=allow_empty)
+        return ArtifactStream(
+            descriptor=ArtifactDescriptor(
+                artifact_type="agent_log",
+                run_identity=artifact.descriptor.run_identity,
+                content_type=artifact.descriptor.content_type,
+                encoding=artifact.descriptor.encoding,
+                source_backend=artifact.descriptor.source_backend,
+                source_ref=artifact.descriptor.source_ref,
+                length_bytes=artifact.descriptor.length_bytes,
+                updated_at=artifact.descriptor.updated_at,
+            ),
+            path=artifact.path,
         )
 
     def _require_run_dir_exists(self, run_dir: Path) -> None:
         if not run_dir.exists():
             raise ArtifactNotFoundError(f"run_dir does not exist: {run_dir}")
-
-    def _agent_log_candidates(self, run_dir: Path) -> list[Path]:
-        worktree_path = _worktree_path_from_run_dir(run_dir)
-        if not worktree_path:
-            raise ArtifactNotFoundError(f"failed to infer worktree from run_dir: {run_dir}")
-        session_output = FileSystemSessionOutput()
-        session_name = session_output.session_name_from_path(str(run_dir))
-        if not session_name:
-            raise ArtifactNotFoundError(f"failed to infer session name from run_dir: {run_dir}")
-        manifest = session_output.read_manifest(run_dir) or {}
-        candidates: list[Path] = []
-        session_candidate = session_output.get_log_path(worktree_path, session_name)
-        if session_candidate:
-            candidates.append(session_candidate)
-        for candidate_name in ("ui-session.log",):
-            candidate_path = run_dir / candidate_name
-            if candidate_path not in candidates:
-                candidates.append(candidate_path)
-        for candidate in self._claude_log_candidates(run_dir, manifest):
-            if candidate not in candidates:
-                candidates.append(candidate)
-        return candidates
 
     def _claude_log_candidates(self, run_dir: Path, manifest: dict[str, Any]) -> list[Path]:
         """Return potential Claude log files for the run."""
@@ -154,16 +128,6 @@ class ManifestAccessor:
             candidates.append(claude_symlink)
 
         return candidates
-
-    def _non_empty_paths(self, candidates: list[Path]) -> list[Path]:
-        non_empty: list[Path] = []
-        for candidate in candidates:
-            try:
-                if candidate.stat().st_size > 0:
-                    non_empty.append(candidate)
-            except OSError:
-                continue
-        return non_empty
 
     def get_claude_log(self) -> ArtifactStream:
         """Return the run-scoped Claude transcript stream."""

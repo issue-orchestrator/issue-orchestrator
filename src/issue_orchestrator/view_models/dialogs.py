@@ -206,8 +206,8 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     actions: list[dict[str, Any]] = []
     _append_open_path(actions, "Open Session Dir", ctx.run_dir)
     _append_open_path(actions, "Open Session Settings", ctx.session_settings_path)
-    _append_run_scoped_action(actions, ctx, action_type="open_agent_log", label="View Session Log")
-    _append_run_scoped_action(actions, ctx, action_type="copy_agent_log", label="Copy UI Session")
+    _append_run_scoped_action(actions, ctx, action_type="open_agent_log", label="View Session Recording")
+    _append_run_scoped_action(actions, ctx, action_type="copy_agent_log", label="Copy Session Recording")
     if ctx.claude_log_path:
         _append_run_scoped_action(actions, ctx, action_type="view_claude_log", label="View Claude Log")
         _append_open_path(actions, "Open Claude Log File", ctx.claude_log_path)

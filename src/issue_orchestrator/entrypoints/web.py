@@ -1,5 +1,6 @@
 """Web dashboard for the orchestrator."""
 
+import base64
 import asyncio
 import contextlib
 import json
@@ -65,6 +66,7 @@ from ..execution.manifest_accessor import (
 from ..execution.client_host import ClientHost, detect_client_host
 from ..execution.label_ops import LabelOperation, apply_label_operations
 from ..infra.timeline_trace import is_timeline_trace_enabled
+from ..infra.terminal_recording import iter_terminal_recording
 from ..domain.event_taxonomy import (
     EventIntent,
     is_review_oriented_event,
@@ -1170,7 +1172,8 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
 ) -> JSONResponse:
     """Get the local agent UI log for an issue.
 
-    This reads .issue-orchestrator/sessions/<session>/ui-session.log from the worktree.
+    This serves a preview transcript derived from the canonical raw terminal
+    recording for a run.
 
     Args:
         issue_number: Issue number to get log for
@@ -1190,11 +1193,11 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
     accessor = ManifestAccessor(run_identity)
     stream_observation = _build_ui_log_stream_observation(run_identity.run_dir, resolved_log_path=None)
     try:
-        artifact = accessor.get_ui_log(allow_empty=True)
+        artifact = accessor.get_terminal_recording(allow_empty=True)
     except ArtifactNotFoundError as e:
         return JSONResponse({
-            "error": "No agent UI log found",
-            "hint": "Session may not have started or logging was not enabled",
+            "error": "No terminal recording found",
+            "hint": "Session may not have started or recording was not enabled",
             "diagnostic": {
                 "run_dir": str(run_identity.run_dir),
                 "detail": str(e),
@@ -1205,11 +1208,16 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
     stream_observation = _build_ui_log_stream_observation(run_identity.run_dir, resolved_log_path=log_path)
 
     try:
-        raw_lines = log_path.read_text(errors="ignore").splitlines()
+        if artifact.descriptor.artifact_type == "terminal_recording":
+            all_lines = _preview_lines_from_terminal_recording(log_path)
+        else:
+            raw_lines = log_path.read_text(errors="ignore").splitlines()
+            all_lines = raw_lines
 
-        # Provider-runner sessions may output stream-json; decode it.
-        stream_json_lines = extract_stream_json_text(raw_lines)
-        all_lines = stream_json_lines if stream_json_lines is not None else raw_lines
+        # Some recordings contain stream-json payloads; decode those into plain text.
+        stream_json_lines = extract_stream_json_text(all_lines)
+        if stream_json_lines is not None:
+            all_lines = stream_json_lines
 
         # The file is already cleaned at write-time by SessionOutput/CleaningLogWriter.
         all_lines = [line for line in all_lines if line.strip()]
@@ -1243,18 +1251,101 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
         return JSONResponse({"error": f"Failed to read log: {e}"}, status_code=500)
 
 
+@app.get("/api/session/terminal-recording/{issue_number}")
+async def get_terminal_recording(
+    issue_number: int, offset: int = 0, limit: int = 200, run_dir: str | None = None
+) -> JSONResponse:
+    """Return the canonical raw terminal recording for a run.
+
+    This is intended for replay tooling that feeds raw PTY output through a
+    terminal emulator instead of relying on the derived ui-session.log text.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    if not run_dir:
+        return JSONResponse({
+            "error": "run_dir is required",
+            "hint": "Open terminal recordings from a run-scoped timeline action.",
+        }, status_code=400)
+
+    run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
+    accessor = ManifestAccessor(run_identity)
+    try:
+        artifact = accessor.get_terminal_recording(allow_empty=True)
+    except ArtifactNotFoundError as e:
+        return JSONResponse({
+            "error": "No terminal recording found",
+            "hint": "Session may not have started or raw recording was not enabled",
+            "diagnostic": {
+                "run_dir": str(run_identity.run_dir),
+                "detail": str(e),
+            },
+        }, status_code=404)
+
+    recording_path = artifact.path
+    try:
+        all_events = iter_terminal_recording(recording_path)
+        total_events = len(all_events)
+        events = all_events[offset:] if offset > 0 else all_events
+        truncated = False
+        if limit > 0 and len(events) > limit:
+            if offset == 0:
+                events = events[-limit:]
+                truncated = True
+            else:
+                events = events[:limit]
+        return JSONResponse({
+            "issue_number": issue_number,
+            "recording_path": str(recording_path),
+            "content_type": "application/x-ndjson",
+            "total_events": total_events,
+            "offset": offset,
+            "truncated": truncated,
+            "events": events,
+        })
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to read terminal recording: {e}"}, status_code=500)
+
+
 def _build_ui_log_stream_observation(run_dir: Path, *, resolved_log_path: Path | None) -> dict[str, Any]:
     """Build lightweight file-stat telemetry for run-scoped UI log streaming."""
-    ui_log = run_dir / "ui-session.log"
+    terminal_recording = run_dir / "terminal-recording.jsonl"
     provider_stdout = run_dir / "provider-runner" / "stdout.log"
     provider_stderr = run_dir / "provider-runner" / "stderr.log"
     return {
         "run_dir": str(run_dir),
         "resolved_log_path": str(resolved_log_path) if resolved_log_path else None,
-        "ui_log": _stream_file_observation(ui_log),
+        "terminal_recording": _stream_file_observation(terminal_recording),
         "provider_stdout": _stream_file_observation(provider_stdout),
         "provider_stderr": _stream_file_observation(provider_stderr),
     }
+
+
+def _preview_lines_from_terminal_recording(path: Path) -> list[str]:
+    """Decode raw output events into a best-effort text preview for legacy viewers."""
+    decoded_chunks: list[str] = []
+    try:
+        events = iter_terminal_recording(path)
+    except Exception:
+        return path.read_text(errors="ignore").splitlines()
+    for event in events:
+        if event.get("event_type") != "output":
+            continue
+        data_b64 = event.get("data_b64")
+        if not isinstance(data_b64, str) or not data_b64:
+            continue
+        try:
+            decoded_chunks.append(base64.b64decode(data_b64).decode("utf-8", errors="ignore"))
+        except Exception:
+            continue
+    if decoded_chunks:
+        return "".join(decoded_chunks).splitlines()
+
+    for raw_line in path.read_text(errors="ignore").splitlines():
+        if raw_line.strip():
+            decoded_chunks.append(raw_line)
+    return "".join(decoded_chunks).splitlines()
 
 
 def _stream_file_observation(path: Path) -> dict[str, Any]:
@@ -1998,7 +2089,7 @@ def _timeline_event_recommended_actions(
     event: dict[str, Any],
     event_name: str,
     issue_number: int,
-    agent_log_label: str = "View UI Session",
+    agent_log_label: str = "View Session Recording",
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
     """Add event-specific suggested actions."""
@@ -2085,7 +2176,7 @@ def _timeline_event_artifact_actions(
 def _timeline_event_default_actions(
     *,
     issue_number: int,
-    agent_log_label: str = "View UI Session",
+    agent_log_label: str = "View Session Recording",
     include_run_scoped: bool = True,
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
@@ -2118,7 +2209,7 @@ def _agent_log_is_usable(log_path: Path, *, event_name: str) -> bool:
     try:
         if not log_path.exists():
             return False
-        # Expose UI session whenever the run-scoped log artifact exists.
+        # Expose session recording whenever the run-scoped artifact exists.
         # UI handles empty files with a waiting message until first output arrives.
         return True
     except OSError:
@@ -2161,7 +2252,7 @@ def _validated_run_scoped_artifact(
         )
     accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(event_run_dir)))
     if action_type == "open_agent_log":
-        artifact = accessor.get_ui_log(allow_empty=True)
+        artifact = accessor.get_terminal_recording(allow_empty=True)
         if not _agent_log_is_usable(artifact.path, event_name=event_name):
             raise RuntimeError(
                 f"run-scoped agent log is empty/unusable: issue={issue_number} event={event_name} run_dir={event_run_dir}"
@@ -2294,7 +2385,7 @@ _ORCHESTRATOR_ONLY_EVENTS = frozenset({
 def _is_agent_scoped_event(event: dict[str, Any], event_name: str) -> bool:
     """Return True when an event represents agent work (not orchestrator bookkeeping).
 
-    Agent events get UI Session and Claude Log buttons. Orchestrator events
+    Agent events get Session Recording and Claude Log buttons. Orchestrator events
     (validation, PR creation, completion) only get Orchestrator Log.
     """
     if event_name in _ORCHESTRATOR_ONLY_EVENTS:
@@ -2328,12 +2419,12 @@ def _agent_log_label_for_event(event: dict[str, Any]) -> str:
     task = str(event.get("task") or "").strip().lower()
     intent = str(event.get("event_intent") or "")
     if intent == EventIntent.REVIEW.value or bool(event.get("review_oriented")) or is_review_oriented_event(event_name=event_name, task=task):
-        return "View Reviewer UI Session"
+        return "View Reviewer Session Recording"
     if intent == EventIntent.REWORK.value or is_rework_event_name(event_name) or task == "rework":
-        return "View Rework UI Session"
+        return "View Rework Session Recording"
     if intent == EventIntent.CODING.value or is_session_event_name(event_name) or task in {"code", "coding"}:
-        return "View Coding UI Session"
-    return "View UI Session"
+        return "View Coding Session Recording"
+    return "View Session Recording"
 
 
 def _worktree_path_from_run_dir(run_dir: Path) -> Path | None:

@@ -1,14 +1,16 @@
-"""End-to-end verification that script output reaches ui-session.log with filtering applied.
+"""End-to-end verification that script output reaches the canonical session artifact.
 
 Tests verify:
-- ANSI escape codes are stripped
-- Spinner fragments are filtered out
-- Known marker strings survive filtering
-- Short meaningful lines (e.g. "PASS") are preserved
+- raw terminal recordings are created for PTY-backed runs
+- known marker strings survive raw capture
+- ANSI output is preserved losslessly for emulator replay
+- review-exchange transcript content remains available
 """
 
 from __future__ import annotations
 
+import base64
+import json
 from pathlib import Path
 
 from issue_orchestrator.events import EventName
@@ -17,26 +19,50 @@ from .conftest import ScriptSessionRunner
 from .scenario_dsl import scenario, script
 
 
-def _find_ui_session_logs(worktree: Path) -> list[Path]:
-    """Find all ui-session.log files under the worktree sessions dir."""
+def _find_session_artifacts(worktree: Path) -> list[Path]:
+    """Find session text/recording artifacts under the worktree sessions dir."""
     sessions_dir = worktree / ".issue-orchestrator" / "sessions"
     if not sessions_dir.exists():
         return []
-    return sorted(sessions_dir.rglob("ui-session.log"))
+    artifacts = list(sessions_dir.rglob("terminal-recording.jsonl"))
+    artifacts.extend(sessions_dir.rglob("ui-session.log"))
+    return sorted({path for path in artifacts if path.exists() and path.stat().st_size > 0})
 
 
-def _read_session_log(log_path: Path) -> str:
-    """Read and return contents of a ui-session.log file."""
-    assert log_path.exists(), f"ui-session.log not found: {log_path}"
-    content = log_path.read_text(encoding="utf-8")
-    assert content.strip(), f"ui-session.log is empty: {log_path}"
+def _read_session_artifact(log_path: Path) -> str:
+    """Read and return decoded session artifact content."""
+    assert log_path.exists(), f"session artifact not found: {log_path}"
+    if log_path.name == "terminal-recording.jsonl":
+        content = _decode_terminal_recording(log_path)
+    else:
+        content = log_path.read_text(encoding="utf-8")
+    assert content.strip(), f"session artifact is empty: {log_path}"
     return content
 
 
-def _assert_no_ansi_escapes(content: str, context: str = "") -> None:
-    """Assert that content contains no ANSI escape sequences."""
-    assert "\x1b" not in content, (
-        f"ANSI escape sequences found in {context or 'content'}:\n"
+def _decode_terminal_recording(path: Path) -> str:
+    chunks: list[str] = []
+    raw_lines = path.read_text(encoding="utf-8").splitlines()
+    for raw_line in raw_lines:
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            chunks.append(raw_line)
+            continue
+        if event.get("event_type") != "output":
+            continue
+        data_b64 = event.get("data_b64")
+        if isinstance(data_b64, str) and data_b64:
+            chunks.append(base64.b64decode(data_b64).decode("utf-8", errors="ignore"))
+    return "".join(chunks)
+
+
+def _assert_contains_ansi_escapes(content: str, context: str = "") -> None:
+    """Assert that raw content preserves ANSI escape sequences."""
+    assert "\x1b" in content, (
+        f"Expected ANSI escape sequences in {context or 'content'}:\n"
         f"{content[:500]}"
     )
 
@@ -58,11 +84,11 @@ def _assert_not_contains(content: str, marker: str, context: str = "") -> None:
 
 
 def test_session_log_content_via_draft_pr(scenario_repo: Path):
-    """via-draft-pr mode: coder output reaches ui-session.log with ANSI stripped.
+    """via-draft-pr mode: coder output reaches terminal recording losslessly.
 
     Coder runs coder_verbose.sh which outputs ANSI-colored text, spinner chars,
-    and marker strings. The ScriptSessionRunner should write filtered output to
-    ui-session.log with ANSI codes removed and spinner lines dropped.
+    and marker strings. The PTY-backed runner should record that output raw so
+    replay tooling can render it later.
     """
     ctx = scenario("session_log_draft_pr", scenario_repo) \
         .use_runner(ScriptSessionRunner()) \
@@ -75,27 +101,24 @@ def test_session_log_content_via_draft_pr(scenario_repo: Path):
     worktree = ctx.worktree
     assert worktree is not None, "No worktree found in scenario context"
 
-    logs = _find_ui_session_logs(worktree)
-    assert logs, f"No ui-session.log files found under {worktree}"
+    logs = _find_session_artifacts(worktree)
+    assert logs, f"No session artifacts found under {worktree}"
 
-    # Check that at least one log contains our coder markers
-    all_content = "\n".join(_read_session_log(log) for log in logs)
+    all_content = "\n".join(_read_session_artifact(log) for log in logs)
 
-    # Coder markers must survive filtering
-    _assert_contains(all_content, "user-authentication-module", "coder ui-session.log")
-    _assert_contains(all_content, "PASS", "coder ui-session.log")
-    _assert_contains(all_content, "Tests passed: 5/5", "coder ui-session.log")
+    _assert_contains(all_content, "user-authentication-module", "coder session artifact")
+    _assert_contains(all_content, "PASS", "coder session artifact")
+    _assert_contains(all_content, "Tests passed: 5/5", "coder session artifact")
 
-    # ANSI escape codes must be stripped
-    _assert_no_ansi_escapes(all_content, "ui-session.log")
+    _assert_contains_ansi_escapes(all_content, "terminal recording")
 
 
 def test_session_log_content_via_local_loop(scenario_repo: Path):
-    """via-local-loop mode: coder and reviewer output reaches ui-session.log filtered.
+    """via-local-loop mode: coder and reviewer output reaches session artifacts.
 
     Uses coder_verbose_dual_mode.sh (outputs ANSI codes + markers) and
     reviewer_verbose.sh (outputs ANSI + review markers). Both should have
-    their output cleaned and written to ui-session.log.
+    their output captured in the canonical session artifacts.
     """
     ctx = scenario("session_log_local_loop", scenario_repo) \
         .use_runner(ScriptSessionRunner()) \
@@ -108,26 +131,24 @@ def test_session_log_content_via_local_loop(scenario_repo: Path):
     worktree = ctx.worktree
     assert worktree is not None, "No worktree found in scenario context"
 
-    logs = _find_ui_session_logs(worktree)
-    assert logs, f"No ui-session.log files found under {worktree}"
+    logs = _find_session_artifacts(worktree)
+    assert logs, f"No session artifacts found under {worktree}"
 
-    all_content = "\n".join(_read_session_log(log) for log in logs)
+    all_content = "\n".join(_read_session_artifact(log) for log in logs)
 
     # Coder markers must survive filtering
     _assert_contains(all_content, "user-authentication-module", "coder output")
     _assert_contains(all_content, "PASS", "coder output (short-line regression)")
     _assert_contains(all_content, "Tests passed: 5/5", "coder output")
 
-    # ANSI escape codes must be stripped
-    _assert_no_ansi_escapes(all_content, "ui-session.log")
+    _assert_contains_ansi_escapes(all_content, "session artifacts")
 
 
 def test_session_log_reviewer_markers_via_local_loop(scenario_repo: Path):
-    """via-local-loop mode: reviewer markers reach the review-exchange ui-session.log.
+    """via-local-loop mode: reviewer markers reach the review-exchange artifacts.
 
-    The review exchange loop writes reviewer output to its own run_dir's
-    ui-session.log via _append_session_log. Verify reviewer-specific markers
-    are present and cleaned.
+    The review exchange loop records reviewer output in its run-scoped artifacts.
+    Verify reviewer-specific markers are present.
     """
     ctx = scenario("session_log_reviewer_markers", scenario_repo) \
         .use_runner(ScriptSessionRunner()) \
@@ -140,10 +161,10 @@ def test_session_log_reviewer_markers_via_local_loop(scenario_repo: Path):
     worktree = ctx.worktree
     assert worktree is not None
 
-    logs = _find_ui_session_logs(worktree)
-    assert logs, f"No ui-session.log files found under {worktree}"
+    logs = _find_session_artifacts(worktree)
+    assert logs, f"No session artifacts found under {worktree}"
 
-    all_content = "\n".join(_read_session_log(log) for log in logs)
+    all_content = "\n".join(_read_session_artifact(log) for log in logs)
 
     # Reviewer structured response is read from file and logged via _append_session_log.
     # Stdout chatter (ANSI codes, "src/auth.py" etc.) flows through the parent's

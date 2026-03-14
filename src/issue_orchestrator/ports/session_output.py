@@ -5,7 +5,7 @@ All artifacts for a session live in a single run directory:
 
     .issue-orchestrator/sessions/<run_id>__<session_name>/
         manifest.json           # Session metadata
-        ui-session.log             # Session output log
+        terminal-recording.jsonl # Canonical raw terminal recording
         validation-record.json  # Validation result
         validation-stdout.log   # Validation stdout
         validation-stderr.log   # Validation stderr
@@ -503,7 +503,7 @@ class SessionOutput(Protocol):
         *,
         header: str | None = None,
     ) -> None:
-        """Append cleaned display-safe content to ``ui-session.log``.
+        """Append cleaned display-safe content to the legacy text session log.
 
         Args:
             run_dir: Path to the run directory
@@ -521,7 +521,7 @@ class SessionOutput(Protocol):
         section: str,
         content: str,
     ) -> None:
-        """Append one review-exchange transcript entry to ``ui-session.log``."""
+        """Append one review-exchange transcript entry to the legacy text session log."""
         ...
 
     # -------------------------------------------------------------------------
@@ -533,14 +533,14 @@ class SessionOutput(Protocol):
         worktree_path: Path,
         session_name: str,
     ) -> Path | None:
-        """Get the session log path for a session.
+        """Get the canonical session artifact path for a session.
 
         Args:
             worktree_path: Path to the worktree
             session_name: Name of the session
 
         Returns:
-            Path to session log, or None if not found
+            Path to the most relevant run-scoped session artifact, or None if not found
         """
         ...
 

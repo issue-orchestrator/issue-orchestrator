@@ -20,8 +20,11 @@ def _build_accessor(tmp_path: Path, *, issue_number: int = 123) -> tuple[Manifes
 
 def test_manifest_accessor_get_agent_log_integration(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
-    expected = run_dir / "ui-session.log"
-    expected.write_text("agent output\n", encoding="utf-8")
+    expected = run_dir / "terminal-recording.jsonl"
+    expected.write_text(
+        '{"data_b64":"YWdlbnQgb3V0cHV0Cg==","event_type":"output","offset_ms":0,"schema_version":1}\n',
+        encoding="utf-8",
+    )
 
     artifact = accessor.get_agent_log()
 

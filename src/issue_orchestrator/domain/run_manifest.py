@@ -8,7 +8,7 @@ knowing about a session is captured here.  It is written progressively:
 3. **Validation** — validation_passed / validation_reason
 
 Downstream consumers (SessionAnalyzer, failure diagnosis, UI) read this
-one file instead of rummaging across completion.json, ui-session.log,
+one file instead of rummaging across completion.json, terminal-recording.jsonl,
 validation-stderr.log, review-feedback/, etc.
 """
 

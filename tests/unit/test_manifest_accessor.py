@@ -24,36 +24,37 @@ def _build_accessor(tmp_path: Path, *, issue_number: int = 123) -> tuple[Manifes
 
 def test_get_agent_log_returns_run_scoped_log(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
-    (run_dir / "ui-session.log").write_text("hello\n", encoding="utf-8")
+    recording = run_dir / "terminal-recording.jsonl"
+    recording.write_text('{"event_type":"output","offset_ms":0,"data_b64":"aGVsbG8K","schema_version":1}\n', encoding="utf-8")
 
-    artifact = accessor.get_agent_log()
-    assert artifact.descriptor.artifact_type == "agent_log"
-    assert artifact.path == run_dir / "ui-session.log"
+    artifact = accessor.get_terminal_recording()
+    assert artifact.descriptor.artifact_type == "terminal_recording"
+    assert artifact.path == recording
     assert artifact.descriptor.length_bytes is not None
 
 
-def test_get_ui_log_returns_run_scoped_ui_session_log(tmp_path: Path) -> None:
+def test_get_terminal_recording_returns_run_scoped_recording(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
-    (run_dir / "ui-session.log").write_text("hello\n", encoding="utf-8")
+    recording = run_dir / "terminal-recording.jsonl"
+    recording.write_text('{"event_type":"output","offset_ms":0,"data_b64":"aGVsbG8K","schema_version":1}\n', encoding="utf-8")
 
-    artifact = accessor.get_ui_log()
-    assert artifact.descriptor.artifact_type == "ui_log"
-    assert artifact.path == run_dir / "ui-session.log"
+    artifact = accessor.get_terminal_recording()
+    assert artifact.descriptor.artifact_type == "terminal_recording"
+    assert artifact.path == recording
 
 
-def test_get_ui_log_does_not_fallback_to_claude_log_when_ui_session_empty(tmp_path: Path) -> None:
+def test_get_terminal_recording_raises_when_empty(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
-    (run_dir / "ui-session.log").write_text("", encoding="utf-8")
-    claude = run_dir / "claude.jsonl"
-    claude.write_text('{"type":"assistant","message":{"content":[]}}\n', encoding="utf-8")
+    (run_dir / "terminal-recording.jsonl").write_text("", encoding="utf-8")
 
-    with pytest.raises(ArtifactNotFoundError, match="ui session log is empty"):
-        accessor.get_ui_log()
+    with pytest.raises(ArtifactNotFoundError, match="terminal recording is empty"):
+        accessor.get_terminal_recording()
 
 
-def test_get_agent_log_falls_back_to_claude_stream_when_ui_session_log_empty(tmp_path: Path) -> None:
+def test_get_agent_log_uses_terminal_recording_even_when_claude_log_exists(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
-    (run_dir / "ui-session.log").write_text("", encoding="utf-8")
+    recording = run_dir / "terminal-recording.jsonl"
+    recording.write_text('{"event_type":"output","offset_ms":0,"data_b64":"aGVsbG8K","schema_version":1}\n', encoding="utf-8")
     claude_dir = tmp_path / "claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
     claude_log = claude_dir / "run.jsonl"
@@ -67,31 +68,32 @@ def test_get_agent_log_falls_back_to_claude_stream_when_ui_session_log_empty(tmp
     )
 
     artifact = accessor.get_agent_log()
-    assert artifact.path == claude_log
+    assert artifact.path == recording
+    assert artifact.path != claude_log
 
 
-def test_get_agent_log_raises_when_no_claude_log_available(tmp_path: Path) -> None:
+def test_get_agent_log_raises_when_terminal_recording_empty(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
-    (run_dir / "ui-session.log").write_text("", encoding="utf-8")
-    with pytest.raises(ArtifactNotFoundError, match="candidates are empty"):
+    (run_dir / "terminal-recording.jsonl").write_text("", encoding="utf-8")
+    with pytest.raises(ArtifactNotFoundError, match="terminal recording is empty"):
         accessor.get_agent_log()
 
 
-def test_get_agent_log_allow_empty_returns_existing_candidate(tmp_path: Path) -> None:
+def test_get_agent_log_allow_empty_returns_terminal_recording(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
-    session_log = run_dir / "ui-session.log"
-    session_log.write_text("", encoding="utf-8")
+    recording = run_dir / "terminal-recording.jsonl"
+    recording.write_text("", encoding="utf-8")
 
     artifact = accessor.get_agent_log(allow_empty=True)
-    assert artifact.path == session_log
+    assert artifact.path == recording
 
 
-def test_get_agent_log_raises_when_candidates_only_empty_by_default(tmp_path: Path) -> None:
+def test_get_agent_log_raises_when_terminal_recording_only_empty_by_default(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
-    session_log = run_dir / "ui-session.log"
-    session_log.write_text("", encoding="utf-8")
+    recording = run_dir / "terminal-recording.jsonl"
+    recording.write_text("", encoding="utf-8")
 
-    with pytest.raises(ArtifactNotFoundError, match="candidates are empty"):
+    with pytest.raises(ArtifactNotFoundError, match="terminal recording is empty"):
         accessor.get_agent_log()
 
 

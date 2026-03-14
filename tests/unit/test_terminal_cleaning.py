@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 
 from issue_orchestrator.infra.terminal_cleaning import (
@@ -13,6 +14,7 @@ from issue_orchestrator.infra.terminal_cleaning import (
     is_spinner_fragment,
     strip_ansi_codes,
 )
+from issue_orchestrator.infra.terminal_recording import iter_terminal_recording
 
 
 # ---------------------------------------------------------------------------
@@ -384,3 +386,20 @@ class TestCleaningLogWriter:
         data = b"\x1b[31mHello\x1b[0m\n"
         assert writer.write(data) == len(data)
         writer.close()
+
+    def test_records_raw_output_for_replay(self, tmp_path: Path):
+        """The raw terminal recording must preserve PTY bytes losslessly."""
+        log = tmp_path / "ui-session.log"
+        recording = tmp_path / "terminal-recording.jsonl"
+        writer = CleaningLogWriter(log, recording_path=recording)
+        writer.write(
+            b"the original tests don't provide deps, it works.\r"
+            b"theoriginaltestsdon'tprovidedeps,itworks.\n"
+        )
+        writer.close()
+
+        events = iter_terminal_recording(recording)
+        assert len(events) == 1
+        payload = base64.b64decode(events[0]["data_b64"])
+        assert b"the original tests don't provide deps, it works." in payload
+        assert events[0]["event_type"] == "output"

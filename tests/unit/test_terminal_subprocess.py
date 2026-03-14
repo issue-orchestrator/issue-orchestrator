@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import time
+import base64
 
 from issue_orchestrator.execution.terminal_subprocess import SubprocessPlugin, _SessionRecord, _SubprocessRegistry
 from issue_orchestrator.infra.env import ENV_PREFIX
@@ -36,10 +37,12 @@ def test_subprocess_session_writes_log(tmp_path, monkeypatch):
         assert time.monotonic() < deadline, "subprocess did not exit within 5s"
         time.sleep(0.05)  # yield GIL so watcher thread can drain PTY output
 
-    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "ui-session.log"
+    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "terminal-recording.jsonl"
     assert log_path.exists(), f"Log file not created at {log_path}"
     content = log_path.read_text()
-    assert "hello from subprocess" in content, f"Expected output not in log. Content: {content!r}"
+    event = json.loads(content.splitlines()[0])
+    payload = base64.b64decode(event["data_b64"]).decode("utf-8", errors="replace")
+    assert "hello from subprocess" in payload, f"Expected decoded output not in recording payload. Content: {content!r}"
 
 
 def test_subprocess_registry_migrates_legacy_index(tmp_path):
@@ -108,4 +111,4 @@ def test_session_log_path_uses_issue_orchestrator_run_dir_when_present(tmp_path,
 
     log_path = plugin._session_log_path(worktree, "issue-123", command)  # noqa: SLF001
 
-    assert log_path == run_dir / "ui-session.log"
+    assert log_path == run_dir / "terminal-recording.jsonl"

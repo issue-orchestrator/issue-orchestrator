@@ -40,7 +40,7 @@ class AgentSpec:
                  Passed to ``bash -c`` via :func:`shlex.join`.
         working_dir: Directory to run the agent in (typically a git worktree).
         timeout_seconds: Maximum time to wait for the agent to complete.
-        log_path: Path for the cleaned session log (ui-session.log).
+        log_path: Path for the canonical raw terminal recording.
                   Optional — SubprocessAgentRunner does not use it.
         output_dir: Directory for artifacts (completion.json, etc.).
         env_overrides: Environment variables to set (highest priority).
@@ -71,8 +71,8 @@ class AgentResult:
     """What happened.
 
     The ``stderr`` field captures launch-level errors or subprocess PIPE
-    stderr, depending on the runner.  For the pexpect runner agent output
-    flows through the PTY to CleaningLogWriter → ui-session.log.
+    stderr, depending on the runner. For the pexpect runner agent output
+    flows through the PTY into the run-scoped terminal recording.
     """
 
     exit_code: int | None

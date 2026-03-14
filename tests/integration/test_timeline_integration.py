@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import base64
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -60,7 +61,19 @@ def _start_run_with_artifacts(
     worktree = repo_root / f"wt-{issue_number}-{session_name}"
     worktree.mkdir(parents=True, exist_ok=True)
     run = session_output.start_run(worktree, session_name, issue_number=issue_number)
-    (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
+    (run.run_dir / "terminal-recording.jsonl").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "event_type": "output",
+                "offset_ms": 0,
+                "data_b64": base64.b64encode(b"agent output\n").decode("ascii"),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     claude_log = run.run_dir / "claude.jsonl"
     claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
     completion_record = run.run_dir / "completion-agent_backend.json"
@@ -811,17 +824,29 @@ def test_run_scoped_artifact_usability_enforces_non_empty_log_and_run_dir(
         web.set_orchestrator(None)
 
 
-def test_run_scoped_log_action_offered_for_start_event_with_non_empty_ui_session_log(
+def test_run_scoped_log_action_offered_for_start_event_with_non_empty_terminal_recording(
     sample_config,
     mock_repository_host,
 ):
-    """Start events should offer log action when a non-empty run-scoped log exists."""
+    """Start events should offer log action when a non-empty terminal recording exists."""
     orch, timeline_writer = _build_orchestrator_with_sqlite_timeline(sample_config, mock_repository_host)
     issue_number = 4062
     run_dir = _start_run_with_artifacts(
         sample_config.repo_root, issue_number=issue_number, session_name="issue-4062-code"
     )
-    Path(run_dir, "ui-session.log").write_text("provider output\n", encoding="utf-8")
+    Path(run_dir, "terminal-recording.jsonl").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "event_type": "output",
+                "offset_ms": 0,
+                "data_b64": base64.b64encode(b"provider output\n").decode("ascii"),
+            },
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     orch.state.cached_queue_issues = [
         Issue(number=issue_number, title="Empty log action guardrail", labels=["agent:backend"]),
     ]

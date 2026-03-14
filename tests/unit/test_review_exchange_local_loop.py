@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import base64
+import json
 
 from issue_orchestrator.domain.models import AgentConfig
 from issue_orchestrator.events import EventName
@@ -81,7 +83,16 @@ def test_local_loop_writes_clean_ui_session_log(monkeypatch, tmp_path: Path) -> 
 
     assert phase_calls == ["reviewer", "coder"]
     assert outcome.status == "stopped"
-    content = run.log_path.read_text(encoding="utf-8")
+    events = [
+        json.loads(line)
+        for line in (run_dir / "terminal-recording.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    content = "".join(
+        base64.b64decode(event["data_b64"]).decode("utf-8", errors="ignore")
+        for event in events
+        if event.get("event_type") == "output" and event.get("data_b64")
+    )
     assert "Fix provider log" in content
     assert "Applied fix" in content
     assert "Thinking" not in content

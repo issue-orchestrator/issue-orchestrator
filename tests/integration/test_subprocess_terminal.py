@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import shlex
 import subprocess
 import time
@@ -42,13 +44,27 @@ def _wait_for_content(path: Path, marker: str, timeout_s: float = 5.0) -> None:
     while time.monotonic() < deadline:
         if path.exists():
             try:
-                content = path.read_text(errors="ignore")
+                content = _read_recording_output(path)
                 if marker in content:
                     return
             except Exception:
                 pass
         time.sleep(0.05)
     raise AssertionError(f"Content '{marker}' not found in {path} within {timeout_s}s")
+
+
+def _read_recording_output(path: Path) -> str:
+    output_chunks: list[str] = []
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        if not raw_line.strip():
+            continue
+        event = json.loads(raw_line)
+        if event.get("event_type") != "output":
+            continue
+        data_b64 = event.get("data_b64")
+        if isinstance(data_b64, str) and data_b64:
+            output_chunks.append(base64.b64decode(data_b64).decode("utf-8", errors="ignore"))
+    return "".join(output_chunks)
 
 
 def _ensure_worktree_venv(worktree: Path) -> None:
@@ -106,9 +122,9 @@ def test_subprocess_session_writes_completion_and_log(tmp_path, monkeypatch):
 
     _wait_for_exit(plugin, "issue-42")
 
-    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-42" / "ui-session.log"
+    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-42" / "terminal-recording.jsonl"
     assert log_path.exists()
-    assert "hello-from-subprocess" in log_path.read_text(errors="ignore")
+    assert "hello-from-subprocess" in _read_recording_output(log_path)
 
     completion_file = worktree / completion_path
     assert completion_file.exists()
@@ -149,5 +165,5 @@ def test_subprocess_send_input_writes_to_log(tmp_path, monkeypatch):
     # Wait for the expected output instead of polling session_exists.
     # This avoids a race condition in pexpect where the watcher thread and
     # isalive() can both call waitpid() on the same process.
-    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-7" / "ui-session.log"
+    log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-7" / "terminal-recording.jsonl"
     _wait_for_content(log_path, "INPUT:ping")

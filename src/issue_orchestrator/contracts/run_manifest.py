@@ -14,6 +14,7 @@ class RunManifestArtifact(BaseModel):
 
     kind: Literal[
         "session_log",
+        "terminal_recording",
         "provider_runner_stdout",
         "claude_jsonl",
         "session_prompt",
@@ -44,7 +45,7 @@ class RunManifestContract(BaseModel):
     def _validate_required_artifacts(self, info: ValidationInfo) -> "RunManifestContract":
         strict_required = bool((info.context or {}).get("strict_required_artifacts", False))
         if strict_required:
-            for required_name in ("ui_log", "agent_log"):
+            for required_name in ("terminal_recording",):
                 if required_name not in self.artifacts:
                     raise ValueError(f"manifest missing required artifact: {required_name}")
                 artifact = self.artifacts[required_name]

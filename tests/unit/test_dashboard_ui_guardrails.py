@@ -418,7 +418,7 @@ def test_session_diagnostics_actions_use_primary_plus_visible_secondary_actions(
     assert "diag-secondary-actions" in body
     assert "Artifacts & Logs ▾" not in body
     assert "Issue-Scoped Orchestrator Log" in js
-    assert "Copy UI Session" in js
+    assert "Copy Session Recording" in js
     assert "openSessionManifest(action.issue_number, action.run_dir || null)" in js
 
 
