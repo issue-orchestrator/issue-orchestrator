@@ -178,27 +178,45 @@ PYTEST_DURATIONS ?= 10
 PYTEST_DURATIONS_MIN ?= 1.0
 PYTEST_TIMINGS ?= --durations=$(PYTEST_DURATIONS) --durations-min=$(PYTEST_DURATIONS_MIN)
 
+define TIMED_RUN
+	@target="$(1)"; \
+	start=$$(date +%s); \
+	start_hr=$$(date '+%Y-%m-%dT%H:%M:%S%z'); \
+	echo "[validate-timing] START target=$$target at=$$start_hr"; \
+	set +e; \
+	{ $(2); }; \
+	status=$$?; \
+	end=$$(date +%s); \
+	end_hr=$$(date '+%Y-%m-%dT%H:%M:%S%z'); \
+	elapsed=$$((end-start)); \
+	echo "[validate-timing] END target=$$target status=$$status elapsed=$${elapsed}s at=$$end_hr"; \
+	exit $$status
+endef
+
 # Two-pass typecheck: strict for core (domain/ports/control), standard for rest
 # --warnings ensures 0 warnings required (exit code 1 if warnings reported)
 typecheck:
-	@echo "Running pyright (standard mode, excluding core)..."
-	$(PYRIGHT) --project pyrightconfig.json --warnings
-	@echo "Running pyright (strict mode, core only)..."
-	$(PYRIGHT) --project pyrightconfig.strict.json --warnings
+	$(call TIMED_RUN,typecheck,\
+		echo "Running pyright (standard mode, excluding core)..." && \
+		$(PYRIGHT) --project pyrightconfig.json --warnings && \
+		echo "Running pyright (strict mode, core only)..." && \
+		$(PYRIGHT) --project pyrightconfig.strict.json --warnings)
 
 LINT_IMPORTS ?= .venv/bin/lint-imports
 RUFF ?= .venv/bin/ruff
 
 lint-arch:
-	$(LINT_IMPORTS)
-	$(PYTHON) tools/check_arch_guardrails.py src
-	scripts/check_agents_md.sh
-	$(PYTHON) scripts/check_docs_md.py
+	$(call TIMED_RUN,lint-arch,\
+		$(LINT_IMPORTS) && \
+		$(PYTHON) tools/check_arch_guardrails.py src && \
+		scripts/check_agents_md.sh && \
+		$(PYTHON) scripts/check_docs_md.py)
 
 # Ruff guardrails - blocks on violations (C901 complexity, PLR0912 branches, SLF001 private access)
 lint-complexity:
-	@echo "Checking code complexity (C901) and branch count (PLR0912)..."
-	$(RUFF) check src packages/agent_runner/src --output-format=concise
+	$(call TIMED_RUN,lint-complexity,\
+		echo "Checking code complexity (C901) and branch count (PLR0912)..." && \
+		$(RUFF) check src packages/agent_runner/src --output-format=concise)
 
 # Parallel test execution with pytest-xdist (-n auto uses all CPU cores)
 # Use PARALLEL=0 to disable: make test-unit PARALLEL=0
@@ -238,9 +256,11 @@ sync-deps:
 
 test-unit: sync-deps
 ifeq ($(UNIT_PARALLEL),0)
-	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short $(PYTEST_TIMINGS)
+	$(call TIMED_RUN,test-unit,\
+		$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short $(PYTEST_TIMINGS))
 else
-	$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short -n $(UNIT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS)
+	$(call TIMED_RUN,test-unit,\
+		$(PYTEST) tests/unit packages/agent_runner/tests -x -q --tb=short -n $(UNIT_PARALLEL) --dist=loadgroup $(PYTEST_TIMINGS))
 endif
 
 test-simulated: sync-deps
@@ -252,19 +272,21 @@ endif
 
 test-simulated-core: sync-deps
 ifeq ($(SIMULATED_PARALLEL),0)
-	$(PYTEST) tests/simulated_scenarios -x -q --tb=short \
-		--ignore=tests/simulated_scenarios/test_foreign_repo_lifecycle.py \
-		$(PYTEST_TIMINGS)
-	$(PYTEST) tests/simulated_scenarios/test_foreign_repo_lifecycle.py -x -q --tb=short \
-		-k "not test_foreign_repo_claude_code_agent_done and not test_foreign_repo_codex_agent_done" \
-		$(PYTEST_TIMINGS)
+	$(call TIMED_RUN,test-simulated-core,\
+		$(PYTEST) tests/simulated_scenarios -x -q --tb=short \
+			--ignore=tests/simulated_scenarios/test_foreign_repo_lifecycle.py \
+			$(PYTEST_TIMINGS) && \
+		$(PYTEST) tests/simulated_scenarios/test_foreign_repo_lifecycle.py -x -q --tb=short \
+			-k "not test_foreign_repo_claude_code_agent_done and not test_foreign_repo_codex_agent_done" \
+			$(PYTEST_TIMINGS))
 else
-	$(PYTEST) tests/simulated_scenarios -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup \
-		--ignore=tests/simulated_scenarios/test_foreign_repo_lifecycle.py \
-		$(PYTEST_TIMINGS)
-	$(PYTEST) tests/simulated_scenarios/test_foreign_repo_lifecycle.py -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup \
-		-k "not test_foreign_repo_claude_code_agent_done and not test_foreign_repo_codex_agent_done" \
-		$(PYTEST_TIMINGS)
+	$(call TIMED_RUN,test-simulated-core,\
+		$(PYTEST) tests/simulated_scenarios -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup \
+			--ignore=tests/simulated_scenarios/test_foreign_repo_lifecycle.py \
+			$(PYTEST_TIMINGS) && \
+		$(PYTEST) tests/simulated_scenarios/test_foreign_repo_lifecycle.py -x -q --tb=short -n $(SIMULATED_PARALLEL) --dist=loadgroup \
+			-k "not test_foreign_repo_claude_code_agent_done and not test_foreign_repo_codex_agent_done" \
+			$(PYTEST_TIMINGS))
 endif
 
 test-simulated-agent: sync-deps
@@ -288,17 +310,19 @@ test-integration: sync-deps
 # Used in pre-push validation where full infra may not be available
 test-integration-core: sync-deps
 ifeq ($(INTEGRATION_PARALLEL),0)
-	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" \
-		--ignore=tests/integration/test_claude_execution.py \
-		--ignore=tests/integration/test_codex_execution.py \
-		--ignore=tests/integration/test_live_agent_chain.py \
-		$(PYTEST_TIMINGS)
+	$(call TIMED_RUN,test-integration-core,\
+		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" \
+			--ignore=tests/integration/test_claude_execution.py \
+			--ignore=tests/integration/test_codex_execution.py \
+			--ignore=tests/integration/test_live_agent_chain.py \
+			$(PYTEST_TIMINGS))
 else
-	$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" -n $(INTEGRATION_PARALLEL) --dist=loadgroup \
-		--ignore=tests/integration/test_claude_execution.py \
-		--ignore=tests/integration/test_codex_execution.py \
-		--ignore=tests/integration/test_live_agent_chain.py \
-		$(PYTEST_TIMINGS)
+	$(call TIMED_RUN,test-integration-core,\
+		$(PYTEST) tests/integration -x -q --tb=short -m "not requires_infra" -n $(INTEGRATION_PARALLEL) --dist=loadgroup \
+			--ignore=tests/integration/test_claude_execution.py \
+			--ignore=tests/integration/test_codex_execution.py \
+			--ignore=tests/integration/test_live_agent_chain.py \
+			$(PYTEST_TIMINGS))
 endif
 
 # Backward-compatible alias for existing callers.
@@ -390,7 +414,8 @@ test:
 
 # Playwright browser smoke tests for Flow-first web UI
 test-web:
-	$(PYTEST) tests/e2e_web -v --tb=short $(PYTEST_TIMINGS)
+	$(call TIMED_RUN,test-web,\
+		$(PYTEST) tests/e2e_web -v --tb=short $(PYTEST_TIMINGS))
 
 test-web-headed:
 	$(PYTEST) tests/e2e_web -v --tb=short --headed $(PYTEST_TIMINGS)
@@ -398,13 +423,15 @@ test-web-headed:
 # VS Code extension tests (local only). Skipped in GitHub Actions.
 test-vscode:
 ifneq ($(GITHUB_ACTIONS),)
-	@echo "Skipping test-vscode in GitHub Actions"
+	$(call TIMED_RUN,test-vscode,\
+		echo "Skipping test-vscode in GitHub Actions")
 else
-	@if [ ! -d "packages/vscode/node_modules" ]; then \
-		echo "Missing packages/vscode/node_modules. Run: make install-vscode-extensions"; \
-		exit 1; \
-	fi
-	cd packages/vscode && npm test
+	$(call TIMED_RUN,test-vscode,\
+		if [ ! -d "packages/vscode/node_modules" ]; then \
+			echo "Missing packages/vscode/node_modules. Run: make install-vscode-extensions"; \
+			exit 1; \
+		fi && \
+		cd packages/vscode && npm test)
 endif
 
 install-vscode-extensions:
@@ -426,6 +453,7 @@ validate:
 # Use this as a fallback if the Python wrapper fails
 VALIDATE_JOBS ?= $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 5)
 validate-raw:
+	@echo "[validate-timing] CONFIG validate_jobs=$(VALIDATE_JOBS) unit_parallel=$(UNIT_PARALLEL) simulated_parallel=$(SIMULATED_PARALLEL) integration_parallel=$(INTEGRATION_PARALLEL)"
 	@$(GMAKE) -j$(VALIDATE_JOBS) --output-sync=target _validate-impl
 	@$(GMAKE) --output-sync=target test-vscode
 	@echo "✓ All validations passed!"
