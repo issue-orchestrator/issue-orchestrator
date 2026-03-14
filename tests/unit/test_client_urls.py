@@ -44,3 +44,12 @@ def test_with_client_query_params_appends_repo_path() -> None:
     result = with_client_query_params("https://octo-space-55543.app.github.dev/", repo="/workspaces/repo")
 
     assert result == "https://octo-space-55543.app.github.dev/?repo=%2Fworkspaces%2Frepo"
+
+
+def test_with_client_query_params_preserves_existing_query_params() -> None:
+    result = with_client_query_params(
+        "https://octo-space-55543.app.github.dev/?embedded=1",
+        theme="light",
+    )
+
+    assert result == "https://octo-space-55543.app.github.dev/?embedded=1&theme=light"
