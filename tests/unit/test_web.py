@@ -1,5 +1,6 @@
 """Unit tests for the FastAPI web module."""
 
+import base64
 import json
 import pytest
 from pathlib import Path
@@ -3394,9 +3395,9 @@ class TestTimelineActionWiring:
         def _label(actions: list[dict[str, Any]]) -> str:
             return next(action["label"] for action in actions if action.get("type") == "open_agent_log")
 
-        assert _label(review_actions) == "View Reviewer UI Session"
-        assert _label(coding_actions) == "View Coding UI Session"
-        assert _label(rework_actions) == "View Rework UI Session"
+        assert _label(review_actions) == "View Reviewer Session Recording"
+        assert _label(coding_actions) == "View Coding Session Recording"
+        assert _label(rework_actions) == "View Rework Session Recording"
         assert all(action.get("type") != "open_agent_log" for action in fallback_actions)
 
     def test_run_scoped_timeline_actions_require_run_dir(self, tmp_path: Path) -> None:
@@ -4180,6 +4181,23 @@ class TestGetSessionLogEndpoint:
 class TestIssueLogEndpointsUseLatestHistory:
     """Issue log endpoints should resolve latest history entry, not oldest."""
 
+    @staticmethod
+    def _write_terminal_recording(run_dir: Path, *chunks: str) -> None:
+        recording = run_dir / "terminal-recording.jsonl"
+        payload = "\n".join(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "event_type": "output",
+                    "offset_ms": index,
+                    "data_b64": base64.b64encode(chunk.encode("utf-8")).decode("ascii"),
+                },
+                sort_keys=True,
+            )
+            for index, chunk in enumerate(chunks)
+        )
+        recording.write_text(f"{payload}\n" if payload else "", encoding="utf-8")
+
     def test_agent_ui_log_prefers_latest_history_entry(self, tmp_path: Path):
         """GET /api/log/local should read from explicit run_dir only."""
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -4190,12 +4208,12 @@ class TestIssueLogEndpointsUseLatestHistory:
         old_worktree = tmp_path / "wt-old"
         old_worktree.mkdir(parents=True)
         old_run = session_output.start_run(old_worktree, "issue-123", issue_number=123)
-        old_run.log_path.write_text("old run log line\n")
+        self._write_terminal_recording(old_run.run_dir, "old run log line\n")
 
         new_worktree = tmp_path / "wt-new"
         new_worktree.mkdir(parents=True)
         new_run = session_output.start_run(new_worktree, "issue-123", issue_number=123)
-        new_run.log_path.write_text("new run log line\n")
+        self._write_terminal_recording(new_run.run_dir, "new run log line\n")
 
         mock_orch.state.session_history = [
             SessionHistoryEntry(
@@ -4248,7 +4266,7 @@ class TestIssueLogEndpointsUseLatestHistory:
         worktree = tmp_path / "wt-direct-serve"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-123", issue_number=123)
-        run.log_path.write_text("Line one\n\nLine two\n", encoding="utf-8")
+        self._write_terminal_recording(run.run_dir, "Line one\n\nLine two\n")
 
         set_orchestrator(mock_orch)
         try:
@@ -4260,7 +4278,7 @@ class TestIssueLogEndpointsUseLatestHistory:
             assert payload["total_lines"] == 2
             assert "stream_observation" in payload
             stream_obs = payload["stream_observation"]
-            assert stream_obs["ui_log"]["path"].endswith("/ui-session.log")
+            assert stream_obs["terminal_recording"]["path"].endswith("/terminal-recording.jsonl")
             assert stream_obs["provider_stdout"]["path"].endswith("/provider-runner/stdout.log")
             assert stream_obs["provider_stderr"]["path"].endswith("/provider-runner/stderr.log")
         finally:
@@ -4275,13 +4293,13 @@ class TestIssueLogEndpointsUseLatestHistory:
         worktree = tmp_path / "wt-stream-json"
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-123", issue_number=123)
-        run.log_path.write_text(
+        self._write_terminal_recording(
+            run.run_dir,
             "\n".join([
                 '{"type":"system","subtype":"init"}',
                 '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Hello"}}}',
                 '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":" world\\nSecond output"}}}',
             ]) + "\n",
-            encoding="utf-8",
         )
 
         set_orchestrator(mock_orch)
@@ -4296,7 +4314,7 @@ class TestIssueLogEndpointsUseLatestHistory:
             set_orchestrator(None)
 
     def test_agent_ui_log_never_falls_back_to_claude_jsonl(self, tmp_path: Path):
-        """GET /api/log/local should stay on ui-session.log even when Claude JSONL exists."""
+        """GET /api/log/local should stay on the canonical run artifact even when Claude JSONL exists."""
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
         mock_orch = create_mock_orchestrator()
@@ -4323,7 +4341,77 @@ class TestIssueLogEndpointsUseLatestHistory:
             payload = response.json()
             assert payload["lines"] == []
             assert payload["total_lines"] == 0
-            assert payload["log_path"].endswith("/ui-session.log")
+            assert payload["log_path"].endswith("/terminal-recording.jsonl")
+        finally:
+            set_orchestrator(None)
+
+    def test_agent_ui_log_decodes_terminal_recording_to_preview_lines(self, tmp_path: Path):
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-terminal-preview"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        run.log_path.write_text(
+            "\n".join([
+                '{"data_b64":"TGluZSBvbmUK","event_type":"output","offset_ms":0,"schema_version":1}',
+                '{"cols":120,"event_type":"resize","offset_ms":1,"rows":40,"schema_version":1}',
+                '{"data_b64":"TGluZSB0d28K","event_type":"output","offset_ms":2,"schema_version":1}',
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/log/local/123?run_dir={run.run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["lines"] == ["Line one", "Line two"]
+            assert payload["total_lines"] == 2
+            assert payload["log_path"].endswith("/terminal-recording.jsonl")
+        finally:
+            set_orchestrator(None)
+
+    def test_terminal_recording_requires_run_dir(self, tmp_path: Path):
+        mock_orch = create_mock_orchestrator()
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/session/terminal-recording/123")
+            assert response.status_code == 400
+            payload = response.json()
+            assert payload["error"] == "run_dir is required"
+        finally:
+            set_orchestrator(None)
+
+    def test_terminal_recording_returns_raw_events(self, tmp_path: Path):
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-terminal-recording"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        (run.run_dir / "terminal-recording.jsonl").write_text(
+            "\n".join([
+                '{"data_b64":"aGVsbG8=","event_type":"output","offset_ms":0,"schema_version":1}',
+                '{"cols":120,"event_type":"resize","offset_ms":25,"rows":40,"schema_version":1}',
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/session/terminal-recording/123?run_dir={run.run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["recording_path"].endswith("/terminal-recording.jsonl")
+            assert payload["total_events"] == 2
+            assert payload["events"][0]["event_type"] == "output"
+            assert payload["events"][1]["event_type"] == "resize"
         finally:
             set_orchestrator(None)
 

@@ -131,9 +131,7 @@ async def _assert_stage_artifacts(
     completion_file_names: list[str],
     require_validation: bool,
 ) -> None:
-    await _wait_for_file(run_dir / "ui-session.log", non_empty=True)
-    # Note: provider-runner/stdout.log no longer exists — agent output flows
-    # through the parent's PTY to ui-session.log via CleaningLogWriter.
+    await _wait_for_file(run_dir / "terminal-recording.jsonl", non_empty=True)
     for name in completion_file_names:
         await _wait_for_file(run_dir / name, non_empty=True)
     if require_validation:
@@ -154,9 +152,7 @@ async def _assert_stage_artifacts(
 
 async def _assert_review_stage_artifacts(run_dir: Path, *, require_validation: bool) -> None:
     """Review-exchange runs are protocol-driven and may not emit reviewer completion files."""
-    await _wait_for_file(run_dir / "ui-session.log", non_empty=True)
-    # Note: provider-runner/stdout.log no longer exists — agent output flows
-    # through the parent's PTY to ui-session.log via CleaningLogWriter.
+    await _wait_for_file(run_dir / "terminal-recording.jsonl", non_empty=True)
     await _wait_for_file(run_dir / "review-exchange" / "summary.json", non_empty=True)
     await _wait_for_file(run_dir / "review-exchange" / "round-001.json", non_empty=True)
     if require_validation:
@@ -192,9 +188,9 @@ async def _assert_live_ui_session_log_stream(
                     non_empty_samples += 1
                 total_lines_values.append(total_lines)
 
-            ui_log = run_dir / "ui-session.log"
-            if ui_log.exists():
-                size_values.append(ui_log.stat().st_size)
+            terminal_recording = run_dir / "terminal-recording.jsonl"
+            if terminal_recording.exists():
+                size_values.append(terminal_recording.stat().st_size)
             validation_output = run_dir / "validation-output.log"
             if validation_output.exists():
                 validation_observed = True
@@ -208,12 +204,12 @@ async def _assert_live_ui_session_log_stream(
                     return
             if validation_observed and non_empty_samples == 0 and len(total_lines_values) >= 5:
                 raise AssertionError(
-                    "ui-session.log remained empty even after validation artifacts were present: "
+                    "terminal recording preview remained empty even after validation artifacts were present: "
                     f"line_samples={total_lines_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
                 )
             if not in_progress and non_empty_samples == 0 and len(total_lines_values) >= 5:
                 raise AssertionError(
-                    "ui-session.log remained empty after issue left in-progress state: "
+                    "terminal recording preview remained empty after issue left in-progress state: "
                     f"line_samples={total_lines_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
                 )
 
@@ -224,7 +220,7 @@ async def _assert_live_ui_session_log_stream(
             watcher._notify.clear()  # noqa: SLF001
 
     raise AssertionError(
-        "ui-session.log did not demonstrate near-real-time live updates while coding was in-progress: "
+        "terminal recording preview did not demonstrate near-real-time live updates while coding was in-progress: "
         f"samples={len(total_lines_values)} non_empty_samples={non_empty_samples} "
         f"line_samples={total_lines_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
     )
@@ -439,8 +435,8 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         logger.info("[4057] Checking review stage artifacts...")
         await _assert_review_stage_artifacts(review_run_dir, require_validation=True)
         await _wait_for_file(review_run_dir / "review-exchange" / "summary.json")
-        # Check ui-session.log for protocol errors (output flows through PTY, not stdout.log)
-        review_log = review_run_dir / "ui-session.log"
+        # Check the raw terminal recording for protocol errors.
+        review_log = review_run_dir / "terminal-recording.jsonl"
         if review_log.exists():
             review_content = review_log.read_text(errors="replace").lower()
             assert "protocol error" not in review_content, (

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
+import base64
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -233,8 +234,16 @@ def test_run_agent_round_writes_clean_ui_session_log(tmp_path: Path) -> None:
     )
 
     assert response.response_type == "changes_requested"
-    ui_log = run_dir / "ui-session.log"
-    content = ui_log.read_text(encoding="utf-8")
+    events = [
+        json.loads(line)
+        for line in (run_dir / "terminal-recording.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    content = "".join(
+        base64.b64decode(event["data_b64"]).decode("utf-8", errors="ignore")
+        for event in events
+        if event.get("event_type") == "output" and event.get("data_b64")
+    )
     assert "Review prompt" in content
     assert "runner-note" in content
     assert "Thinking" not in content

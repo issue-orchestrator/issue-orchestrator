@@ -3,6 +3,7 @@
 Tests for list_runs() and related functionality.
 """
 
+import base64
 import json
 
 import pytest
@@ -361,9 +362,22 @@ class TestRunRetentionMetadata:
 
 
 class TestSessionLogCleaning:
+    @staticmethod
+    def _decoded_recording(path):
+        chunks = []
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            if not raw_line.strip():
+                continue
+            event = json.loads(raw_line)
+            if event.get("event_type") != "output":
+                continue
+            chunks.append(base64.b64decode(event["data_b64"]).decode("utf-8"))
+        return "".join(chunks)
+
     def test_append_cleaned_session_log_filters_noise_at_write_time(self, tmp_path):
         session_output = FileSystemSessionOutput()
         run = session_output.start_run(tmp_path, "issue-123", issue_number=123)
+        recording = run.run_dir / "terminal-recording.jsonl"
 
         session_output.append_cleaned_session_log(
             run.run_dir,
@@ -371,7 +385,7 @@ class TestSessionLogCleaning:
             header="[2026-03-12T12:00:00Z] round=1 role=reviewer section=prompt\n",
         )
 
-        assert run.log_path.read_text(encoding="utf-8") == (
+        assert self._decoded_recording(recording) == (
             "[2026-03-12T12:00:00Z] round=1 role=reviewer section=prompt\n"
             "Line one\n"
             "Line two\n\n"
@@ -382,6 +396,7 @@ class TestSessionLogCleaning:
     ):
         session_output = FileSystemSessionOutput()
         run = session_output.start_run(tmp_path, "issue-123", issue_number=123)
+        recording = run.run_dir / "terminal-recording.jsonl"
 
         session_output.append_cleaned_session_log(
             run.run_dir,
@@ -389,13 +404,14 @@ class TestSessionLogCleaning:
             header="[2026-03-12T12:00:00Z] round=1 role=reviewer section=prompt\n",
         )
 
-        assert run.log_path.read_text(encoding="utf-8") == ""
+        assert recording.read_text(encoding="utf-8") == ""
 
     def test_append_review_exchange_session_log_entry_preserves_header_outside_filter(
         self, tmp_path
     ):
         session_output = FileSystemSessionOutput()
         run = session_output.start_run(tmp_path, "issue-123", issue_number=123)
+        recording = run.run_dir / "terminal-recording.jsonl"
 
         session_output.append_review_exchange_session_log_entry(
             run.run_dir,
@@ -405,7 +421,7 @@ class TestSessionLogCleaning:
             content="Line one\n✶ Thinking…\nLine two\n",
         )
 
-        content = run.log_path.read_text(encoding="utf-8")
+        content = self._decoded_recording(recording)
         assert "round=3 role=reviewer section=feedback" in content
         assert "Line one" in content
         assert "Line two" in content

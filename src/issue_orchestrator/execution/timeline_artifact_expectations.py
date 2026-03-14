@@ -31,7 +31,7 @@ def validate_event_artifact_expectations(event_name: str, payload: dict[str, Any
         _require_non_empty_field(event_name, payload, "run_dir")
 
     if event_name in {"session.started", "review.started", "rework.started"}:
-        _require_run_dir_with_session_log(event_name, payload)
+        _require_run_dir_with_session_artifact(event_name, payload)
         return
 
     if event_name == "session.completed":
@@ -48,16 +48,20 @@ def validate_event_artifact_expectations(event_name: str, payload: dict[str, Any
         return
 
 
-def _require_run_dir_with_session_log(event_name: str, payload: dict[str, Any]) -> None:
+def _require_run_dir_with_session_artifact(event_name: str, payload: dict[str, Any]) -> None:
     run_dir = _required_path_value(event_name, payload, "run_dir")
     if not run_dir.exists():
         raise RuntimeError(
             f"timeline artifact invariant failed: event={event_name} run_dir_missing={run_dir}"
         )
-    session_log = run_dir / "ui-session.log"
-    if not session_log.exists():
+    candidates = [
+        run_dir / "terminal-recording.jsonl",
+        run_dir / "ui-session.log",
+    ]
+    if not any(path.exists() for path in candidates):
         raise RuntimeError(
-            f"timeline artifact invariant failed: event={event_name} session_log_missing={session_log}"
+            "timeline artifact invariant failed: event="
+            f"{event_name} session_artifact_missing={','.join(str(path) for path in candidates)}"
         )
 
 

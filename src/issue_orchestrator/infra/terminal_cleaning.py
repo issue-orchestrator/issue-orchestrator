@@ -14,6 +14,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .terminal_recording import TerminalRecordingWriter
 
 # ---------------------------------------------------------------------------
 # ANSI / control-character patterns
@@ -411,10 +412,13 @@ class CleaningLogWriter:
     consecutive dedup) and written as UTF-8 text.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, recording_path: Path | None = None) -> None:
         self._file = open(path, "w", encoding="utf-8")  # noqa: SIM115
         self._buffer = b""
         self._prev_stripped: str = ""
+        self._recording_writer = (
+            TerminalRecordingWriter(recording_path) if recording_path is not None else None
+        )
         self.name = str(path)
 
     # -- pexpect logfile interface ------------------------------------------
@@ -423,6 +427,8 @@ class CleaningLogWriter:
         """Buffer *data* and write complete cleaned lines."""
         if isinstance(data, str):
             data = data.encode("utf-8")
+        if self._recording_writer is not None:
+            self._recording_writer.write_output(data)
         self._buffer += data
         while b"\n" in self._buffer:
             line_bytes, self._buffer = self._buffer.split(b"\n", 1)
@@ -431,12 +437,16 @@ class CleaningLogWriter:
 
     def flush(self) -> None:
         self._file.flush()
+        if self._recording_writer is not None:
+            self._recording_writer.flush()
 
     def close(self) -> None:
         if self._buffer:
             self._process_line(self._buffer)
             self._buffer = b""
         self._file.close()
+        if self._recording_writer is not None:
+            self._recording_writer.close()
 
     # -- internal -----------------------------------------------------------
 

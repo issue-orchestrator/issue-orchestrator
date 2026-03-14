@@ -1,9 +1,9 @@
 """Run provider command with retry/circuit reporting.
 
 Output capture is NOT handled here. The agent's stdout/stderr are inherited
-from the parent process (pexpect PTY), flowing through CleaningLogWriter
-to ui-session.log. This module only handles retry logic and circuit breaker
-status reporting.
+from the parent process (pexpect PTY), which records raw output to the
+run-scoped terminal recording. This module only handles retry logic and
+circuit breaker status reporting.
 """
 
 from __future__ import annotations

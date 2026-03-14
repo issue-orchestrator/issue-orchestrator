@@ -18,12 +18,15 @@ def run_dir(tmp_path: Path) -> Path:
 def _write_manifest(run_dir: Path, data: dict) -> Path:
     data = dict(data)
     data.setdefault("run_dir", str(run_dir))
-    log_path = data.setdefault("log_path", str(run_dir / "ui-session.log"))
+    log_path = data.setdefault("log_path", str(run_dir / "terminal-recording.jsonl"))
     data.setdefault(
         "artifacts",
         {
-            "ui_log": {"kind": "session_log", "path": log_path, "content_type": "text/plain"},
-            "agent_log": {"kind": "session_log", "path": log_path, "content_type": "text/plain"},
+            "terminal_recording": {
+                "kind": "terminal_recording",
+                "path": log_path,
+                "content_type": "application/x-ndjson",
+            },
         },
     )
     p = run_dir / MANIFEST_FILENAME

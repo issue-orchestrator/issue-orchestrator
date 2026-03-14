@@ -1,6 +1,6 @@
-"""PTY-based agent runner — pexpect with CleaningLogWriter.
+"""PTY-based agent runner — pexpect with raw terminal recording.
 
-This runner creates a pexpect PTY, routes output through CleaningLogWriter,
+This runner creates a pexpect PTY, records raw output for replay,
 applies environment filtering, and enforces timeouts.
 
 Architecture:
@@ -33,7 +33,7 @@ from issue_orchestrator.execution.agent_runner_types import (
     RetryPolicy,
     _format_command_for_log,
 )
-from issue_orchestrator.infra.terminal_cleaning import CleaningLogWriter
+from issue_orchestrator.infra.terminal_recording import TerminalRecordingWriter
 
 logger = logging.getLogger(__name__)
 
@@ -59,7 +59,7 @@ class AgentSession:
     def __init__(
         self,
         child: pexpect.spawn,
-        log_writer: CleaningLogWriter | None,
+        log_writer: TerminalRecordingWriter | None,
         spec: AgentSpec,
         start_time: float,
     ) -> None:
@@ -218,7 +218,7 @@ class AgentRunner(BaseAgentRunner):
         """Start an agent in a PTY. Returns a session handle.
 
         The agent runs in a pexpect PTY with:
-        - Cleaned output via CleaningLogWriter → spec.log_path
+        - Raw PTY recording via TerminalRecordingWriter → spec.log_path
         - Filtered environment (credentials scrubbed, overrides applied)
         - Process group isolation (for clean termination)
         - SIGTTIN/SIGTTOU immunity via preexec_fn
@@ -244,7 +244,7 @@ class AgentRunner(BaseAgentRunner):
         )
         logger.info("Agent argv: %s", _format_command_for_log(spec.command))
 
-        log_writer = CleaningLogWriter(spec.log_path) if spec.log_path else None
+        log_writer = TerminalRecordingWriter(spec.log_path) if spec.log_path else None
 
         shell_cmd = shlex.join(spec.command)
         child = pexpect.spawn(

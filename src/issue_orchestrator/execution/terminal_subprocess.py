@@ -27,6 +27,7 @@ from ..infra.hooks.hookspec import hookimpl
 from ..infra.repo_identity import state_dir
 from ..infra.sqlite_connection import open_sqlite
 from .session_output_adapter import FileSystemSessionOutput
+from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
 
 logger = logging.getLogger(__name__)
 _RUN_DIR_ENV_RE = re.compile(r"ISSUE_ORCHESTRATOR_RUN_DIR=(['\"]?)([^'\"\s]+)\1")
@@ -256,10 +257,10 @@ class SubprocessPlugin:
                 if not run_dir.is_absolute():
                     run_dir = (working_dir / run_dir).resolve()
                 run_dir.mkdir(parents=True, exist_ok=True)
-                return run_dir / "ui-session.log"
+                return run_dir / TERMINAL_RECORDING_FILENAME
         session_output = FileSystemSessionOutput()
         run_dir = session_output.ensure_run_dir(working_dir, session_name)
-        return run_dir / "ui-session.log"
+        return run_dir / TERMINAL_RECORDING_FILENAME
 
     def _build_process_command(self, command: str, working_dir: Path) -> str:
         """Build the full command with path and isolation prefix."""

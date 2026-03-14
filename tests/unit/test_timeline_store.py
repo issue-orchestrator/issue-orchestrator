@@ -308,7 +308,7 @@ def test_timeline_writer_overwrites_stale_schema_versions(tmp_path: Path) -> Non
     assert record.data["timeline_schema_version"] == TIMELINE_SCHEMA_VERSION
 
 
-def test_timeline_writer_requires_session_log_for_session_started(tmp_path: Path) -> None:
+def test_timeline_writer_requires_session_artifact_for_session_started(tmp_path: Path) -> None:
     store = RecordingTimelineStore()
     writer = DefaultTimelineWriter(store)
     run_dir = tmp_path / "sessions" / "r1__issue-4057"
@@ -317,7 +317,7 @@ def test_timeline_writer_requires_session_log_for_session_started(tmp_path: Path
         EventName.SESSION_STARTED,
         {"issue_number": 4057, "run_dir": str(run_dir), "task": "code"},
     )
-    with pytest.raises(RuntimeError, match="session_log_missing"):
+    with pytest.raises(RuntimeError, match="session_artifact_missing"):
         writer.record(event)
 
     (run_dir / "ui-session.log").write_text("", encoding="utf-8")

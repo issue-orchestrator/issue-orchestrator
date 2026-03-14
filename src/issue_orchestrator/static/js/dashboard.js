@@ -654,9 +654,9 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
     }
 }
 
-async function openAgentLog(issueNumber, logLabel = 'UI Session', runDir = null, errorSurface = 'toast') {
+async function openAgentLog(issueNumber, logLabel = 'Session Recording', runDir = null, errorSurface = 'toast') {
     if (!runDir) {
-        reportActionError('Session log requires run context. Open from a timeline entry.', errorSurface);
+        reportActionError('Session recording requires run context. Open from a timeline entry.', errorSurface);
         return;
     }
     modalOverlay.querySelector('.modal').classList.remove('diagnostics-modal');
@@ -705,13 +705,13 @@ async function openAgentLog(issueNumber, logLabel = 'UI Session', runDir = null,
     }, 2000);
 }
 
-function openAgentLogAction(issueNumber, runDir = null, logLabel = 'UI Session', errorSurface = 'toast') {
+function openAgentLogAction(issueNumber, runDir = null, logLabel = 'Session Recording', errorSurface = 'toast') {
     return openAgentLog(issueNumber, logLabel, runDir, errorSurface);
 }
 
 async function copyAgentLogAction(issueNumber, runDir = null) {
     if (!runDir) {
-        showToast('No run-scoped UI session is available to copy', true);
+        showToast('No run-scoped session recording is available to copy', true);
         return;
     }
     try {
@@ -725,12 +725,12 @@ async function copyAgentLogAction(issueNumber, runDir = null) {
         }
         const text = Array.isArray(data.lines) ? data.lines.join('\n') : '';
         if (!text.trim()) {
-            showToast('UI session is empty', true);
+            showToast('Session recording is empty', true);
             return;
         }
         if (navigator.clipboard && navigator.clipboard.writeText) {
             await navigator.clipboard.writeText(text);
-            showToast('UI session copied');
+            showToast('Session recording copied');
             return;
         }
         const textarea = document.createElement('textarea');
@@ -741,9 +741,9 @@ async function copyAgentLogAction(issueNumber, runDir = null) {
         textarea.select();
         const ok = document.execCommand('copy');
         document.body.removeChild(textarea);
-        showToast(ok ? 'UI session copied' : 'Failed to copy', !ok);
+        showToast(ok ? 'Session recording copied' : 'Failed to copy', !ok);
     } catch (err) {
-        showToast(`Failed to copy UI session: ${err instanceof Error ? err.message : String(err)}`, true);
+        showToast(`Failed to copy session recording: ${err instanceof Error ? err.message : String(err)}`, true);
     }
 }
 
@@ -758,7 +758,7 @@ function formatLogStreamObservation(obs) {
             : '—';
         return `${exists}, ${bytes}, ${mtime}`;
     };
-    return `Stream observation - ui: ${fmt(obs.ui_log)} | stdout: ${fmt(obs.provider_stdout)} | stderr: ${fmt(obs.provider_stderr)}`;
+    return `Stream observation - recording: ${fmt(obs.terminal_recording)} | stdout: ${fmt(obs.provider_stdout)} | stderr: ${fmt(obs.provider_stderr)}`;
 }
 
 async function refreshInlineSessionPrompt(issueNumber, runDir = null) {
@@ -977,8 +977,8 @@ function _dialogActionShortLabel(action) {
     if (!action) return 'Action';
     const type = String(action.type || '');
     const label = String(action.label || '');
-    if (type === 'open_agent_log') return 'UI Session';
-    if (type === 'copy_agent_log') return 'Copy UI Session';
+    if (type === 'open_agent_log') return 'Session Recording';
+    if (type === 'copy_agent_log') return 'Copy Session Recording';
     if (type === 'view_claude_log') return 'Claude Log';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
     if (type === 'open_review_feedback') return 'Review Feedback';
@@ -1011,7 +1011,7 @@ function _renderDialogActionButton(action, labelOverride, cssClass) {
     if (action.type === 'open_agent_log') {
         if (!fallbackRunDir) return '';
         const runDirFirstArg = `${JSON.stringify(String(fallbackRunDir))}, `;
-        return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'UI Session', 'inline')">${label}</button>`;
+        return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'Session Recording', 'inline')">${label}</button>`;
     }
     if (action.type === 'copy_agent_log') {
         if (!fallbackRunDir) return '';
@@ -4116,7 +4116,7 @@ function toggleArtifactPopover(runIndex, cycleIndex, issueNumber) {
         items += `<a href="${escapeHtml(artifacts.log_url)}" target="_blank" rel="noopener noreferrer">View log transcript</a>`;
     } else if (issueNumber) {
         const runDirArg = cycleRunDir ? `${JSON.stringify(String(cycleRunDir))}, ` : 'null, ';
-        items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openAgentLogAction(${issueNumber}, ${runDirArg}'Cycle UI Session')">View log transcript</a>`;
+        items += `<a href="#" onclick="event.preventDefault(); closeArtifactPopover(); openAgentLogAction(${issueNumber}, ${runDirArg}'Cycle Session Recording')">View session transcript</a>`;
     }
 
     if (artifacts.pr_url) {
@@ -4651,7 +4651,7 @@ function _timelineActionShortLabel(action) {
     if (!action) return 'Action';
     const type = String(action.type || '');
     const label = String(action.label || '').trim();
-    if (type === 'open_agent_log') return 'UI Session';
+    if (type === 'open_agent_log') return 'Session Recording';
     if (type === 'view_claude_log') return 'Claude Log';
     if (type === 'open_review_feedback') return 'Review Feedback';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
@@ -4692,7 +4692,7 @@ function runTimelineEventAction(action) {
         return;
     }
     if (action.type === 'open_agent_log' && action.issue_number) {
-        const label = action.label ? String(action.label).replace(/^View\s+/, '') : 'UI Session';
+        const label = action.label ? String(action.label).replace(/^View\s+/, '') : 'Session Recording';
         openAgentLogAction(action.issue_number, action.run_dir || null, label);
         return;
     }

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import re
@@ -49,9 +51,9 @@ _RUN_DIR_RE = re.compile(r"ISSUE_ORCHESTRATOR_RUN_DIR=(['\"]?)([^'\"\s]+)\1")
 class ScriptSessionRunner:
     """SessionRunner that executes commands via the unified AgentRunner.
 
-    Uses the same pexpect PTY → CleaningLogWriter → ui-session.log chain
-    as production.  This ensures simulated scenario tests exercise the real
-    output capture path, preventing regressions like #4057.
+    Uses the same PTY → raw terminal recording chain as production. This
+    ensures simulated scenario tests exercise the real capture path,
+    preventing regressions like #4057.
     """
 
     def __init__(self) -> None:
@@ -74,18 +76,16 @@ class ScriptSessionRunner:
             command=["bash", "-c", command],
             working_dir=Path(working_dir),
             timeout_seconds=120,
-            log_path=run_dir / "ui-session.log",
+            log_path=run_dir / "terminal-recording.jsonl",
             output_dir=run_dir,
             env_overrides={"PATH": f"{python_bin_dir}:{os.environ.get('PATH', '')}"},
         )
         result = self._runner.run(spec)
 
-        # Populate _last_output from the session log for get_session_output()
-        log_path = run_dir / "ui-session.log"
+        # Populate _last_output from the canonical terminal recording for get_session_output().
+        log_path = run_dir / "terminal-recording.jsonl"
         if log_path.exists():
-            self._last_output[session_name] = log_path.read_text(
-                encoding="utf-8", errors="replace",
-            )
+            self._last_output[session_name] = _decode_terminal_recording(log_path)
         else:
             self._last_output[session_name] = ""
 
@@ -199,6 +199,25 @@ class FastScriptSessionRunner:
 
     def on_orchestrator_shutdown(self) -> None:
         return None
+
+
+def _decode_terminal_recording(path: Path) -> str:
+    chunks: list[str] = []
+    raw_lines = path.read_text(encoding="utf-8").splitlines()
+    for raw_line in raw_lines:
+        if not raw_line.strip():
+            continue
+        try:
+            event = json.loads(raw_line)
+        except json.JSONDecodeError:
+            chunks.append(raw_line)
+            continue
+        if event.get("event_type") != "output":
+            continue
+        data_b64 = event.get("data_b64")
+        if isinstance(data_b64, str) and data_b64:
+            chunks.append(base64.b64decode(data_b64).decode("utf-8", errors="ignore"))
+    return "".join(chunks)
 
 
 @dataclass

@@ -23,6 +23,7 @@ from ..infra.terminal_cleaning import (
     dedupe_consecutive_lines,
     is_spinner_fragment,
 )
+from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME, append_output_event
 from ..ports.session_output import (
     ReviewExchangeSummary,
     SessionRun,
@@ -34,7 +35,8 @@ logger = logging.getLogger(__name__)
 
 # Directory and file names
 SESSION_OUTPUT_DIR = "sessions"
-SESSION_LOG_NAME = "ui-session.log"
+TERMINAL_RECORDING_NAME = TERMINAL_RECORDING_FILENAME
+LEGACY_UI_LOG_NAME = "ui-session.log"
 PANE_LOG_NAME = "pane.log"
 MANIFEST_NAME = "manifest.json"
 LATEST_NAME = "latest.json"
@@ -104,7 +106,8 @@ class FileSystemSessionOutput:
         symlink_path = base_dir / session_name
         self._ensure_symlink(symlink_path, run_dir)
 
-        log_path = run_dir / SESSION_LOG_NAME
+        log_path = run_dir / TERMINAL_RECORDING_NAME
+        terminal_recording_path = run_dir / TERMINAL_RECORDING_NAME
         manifest_path = run_dir / MANIFEST_NAME
         started_at = datetime.now(timezone.utc).isoformat()
         retention_window_days = max(0, retention_days)
@@ -121,7 +124,7 @@ class FileSystemSessionOutput:
             "backend": backend,
             "worktree": str(worktree_path),
             "run_dir": str(run_dir),
-            "log_path": str(log_path),
+            "log_path": str(terminal_recording_path),
             "claude_log_dir": claude_log_dir,
             "orchestrator_log": orchestrator_log,
             "completion_path": completion_path,
@@ -131,15 +134,10 @@ class FileSystemSessionOutput:
             "retention_expires_at": retention_expires_at,
             "retention_pinned": retention_pinned,
             "artifacts": {
-                "ui_log": {
-                    "kind": "session_log",
-                    "path": str(log_path),
-                    "content_type": "text/plain",
-                },
-                "agent_log": {
-                    "kind": "session_log",
-                    "path": str(log_path),
-                    "content_type": "text/plain",
+                "terminal_recording": {
+                    "kind": "terminal_recording",
+                    "path": str(terminal_recording_path),
+                    "content_type": "application/x-ndjson",
                 },
             },
         }
@@ -150,10 +148,8 @@ class FileSystemSessionOutput:
                 strict_required_artifacts=True,
             ),
         )
-        # Create run-scoped session log eagerly so run-scoped artifact resolution is valid
-        # from session.started onward, even before terminal output is streamed.
-        if not log_path.exists():
-            log_path.write_text("", encoding="utf-8")
+        if not terminal_recording_path.exists():
+            terminal_recording_path.write_text("", encoding="utf-8")
 
         if claude_log_dir:
             self._write_text(run_dir / "claude-log.path", claude_log_dir)
@@ -741,7 +737,7 @@ Timestamp: {self._now_iso()}
         *,
         header: str | None = None,
     ) -> None:
-        """Append cleaned display-safe content to the canonical UI session log."""
+        """Append cleaned display-safe content to the canonical terminal recording."""
         cleaned_lines: list[str] = []
         for raw_line in dedupe_consecutive_lines(content.splitlines()):
             cleaned = clean_terminal_line(raw_line)
@@ -749,14 +745,14 @@ Timestamp: {self._now_iso()}
                 cleaned_lines.append(cleaned)
         if not cleaned_lines:
             return
-        log_path = run_dir / SESSION_LOG_NAME
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as handle:
-            if header:
-                handle.write(header.rstrip())
-                handle.write("\n")
-            handle.write("\n".join(cleaned_lines).rstrip())
-            handle.write("\n\n")
+        chunks: list[str] = []
+        if header:
+            chunks.append(header.rstrip())
+        chunks.append("\n".join(cleaned_lines).rstrip())
+        payload = "\n".join(chunk for chunk in chunks if chunk).rstrip() + "\n\n"
+        recording_path = run_dir / TERMINAL_RECORDING_NAME
+        recording_path.parent.mkdir(parents=True, exist_ok=True)
+        append_output_event(recording_path, payload)
 
     def append_review_exchange_session_log_entry(
         self,
@@ -785,14 +781,14 @@ Timestamp: {self._now_iso()}
         worktree_path: Path,
         session_name: str,
     ) -> Path | None:
-        """Get the session log path for a session."""
+        """Get the canonical session artifact path for a session."""
         run_dir = self.find_run_dir(worktree_path, session_name=session_name)
         if not run_dir:
             return None
         return self._find_log_in_run_dir(run_dir)
 
     def get_log_path_for_run_dir(self, run_dir: Path) -> Path | None:
-        """Get the most relevant UI log path for a known run directory."""
+        """Get the canonical session artifact path for a known run directory."""
         return self._find_log_in_run_dir(run_dir)
 
     def attach_claude_log(
@@ -954,10 +950,9 @@ Timestamp: {self._now_iso()}
 
     @staticmethod
     def _append_run_log_line(run_dir: Path, line: str) -> None:
-        log_path = run_dir / SESSION_LOG_NAME
+        log_path = run_dir / TERMINAL_RECORDING_NAME
         log_path.parent.mkdir(parents=True, exist_ok=True)
-        with log_path.open("a", encoding="utf-8") as handle:
-            handle.write(f"{line}\n")
+        append_output_event(log_path, f"{line}\n")
 
     @staticmethod
     def _delete_tree(path: Path) -> None:
@@ -1230,9 +1225,9 @@ Timestamp: {self._now_iso()}
     def _find_log_in_run_dir(self, run_dir: Path) -> Path | None:
         """Find the best log file in a run directory.
 
-        Checks canonical ui-session.log and pane.log only.
+        Prefer the canonical terminal recording, falling back to legacy logs.
         """
-        for filename in (SESSION_LOG_NAME, PANE_LOG_NAME):
+        for filename in (TERMINAL_RECORDING_NAME, LEGACY_UI_LOG_NAME, PANE_LOG_NAME):
             candidate = run_dir / filename
             if candidate.exists() and candidate.stat().st_size > 0:
                 return candidate
@@ -1342,6 +1337,7 @@ Timestamp: {self._now_iso()}
     def _bootstrap_manifest_identity(self, run_dir: Path, manifest: dict[str, Any]) -> None:
         """Fill required manifest identity fields for standalone or legacy paths."""
         run_name = run_dir.name
+        terminal_recording_path = run_dir / TERMINAL_RECORDING_NAME
         run_id = manifest.get("run_id")
         session_name = manifest.get("session_name")
         if "__" in run_name:
@@ -1351,7 +1347,21 @@ Timestamp: {self._now_iso()}
         manifest.setdefault("run_id", run_id or run_name)
         manifest.setdefault("session_name", session_name or run_name)
         manifest.setdefault("run_dir", str(run_dir))
-        manifest.setdefault("log_path", str(run_dir / SESSION_LOG_NAME))
+        manifest.setdefault("log_path", str(terminal_recording_path))
+        artifacts = manifest.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+            manifest["artifacts"] = artifacts
+        artifacts.setdefault(
+            "terminal_recording",
+            {
+                "kind": "terminal_recording",
+                "path": str(terminal_recording_path),
+                "content_type": "application/x-ndjson",
+            },
+        )
+        if not terminal_recording_path.exists():
+            terminal_recording_path.write_text("", encoding="utf-8")
 
 
 # -----------------------------------------------------------------------------
