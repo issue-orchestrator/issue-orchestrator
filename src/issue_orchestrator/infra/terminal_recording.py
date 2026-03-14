@@ -98,10 +98,11 @@ class TerminalRecordingWriter:
 
 def iter_terminal_recording(path: Path) -> Iterator[dict[str, Any]]:
     """Iterate over a terminal recording NDJSON file for replay or inspection."""
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        if not raw_line.strip():
-            continue
-        yield json.loads(raw_line)
+    with path.open(encoding="utf-8") as handle:
+        for raw_line in handle:
+            if not raw_line.strip():
+                continue
+            yield json.loads(raw_line)
 
 
 def append_output_event(path: Path, text: str) -> None:
@@ -110,16 +111,15 @@ def append_output_event(path: Path, text: str) -> None:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     next_offset = 0
-    for event in iter_terminal_recording(path) if path.exists() else ():
-        offset_ms = event.get("offset_ms")
-        if isinstance(offset_ms, int) and offset_ms >= next_offset:
-            next_offset = offset_ms + 1
+    if path.exists():
+        for event in iter_terminal_recording(path):
+            offset_ms = event.get("offset_ms")
+            if isinstance(offset_ms, int) and offset_ms >= next_offset:
+                next_offset = offset_ms + 1
     payload = TerminalRecordingEvent(
         event_type="output",
         offset_ms=next_offset,
         data_b64=base64.b64encode(text.encode("utf-8")).decode("ascii"),
     )
-    if not path.exists():
-        path.write_text("", encoding="utf-8")
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload.to_dict(), sort_keys=True) + "\n")
