@@ -22,6 +22,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,6 +41,10 @@ _START_RE = re.compile(r"\[validate-timing\] START target=(?P<target>\S+) at=(?P
 _END_RE = re.compile(
     r"\[validate-timing\] END target=(?P<target>\S+) "
     r"status=(?P<status>-?\d+) elapsed=(?P<elapsed>\d+)s at=(?P<at>\S+)"
+)
+_MEMORY_FREE_RE = re.compile(r"System-wide memory free percentage:\s*(?P<percent>\d+)%")
+_SWAP_RE = re.compile(
+    r"total = (?P<total>[0-9.]+)M\s+used = (?P<used>[0-9.]+)M\s+free = (?P<free>[0-9.]+)M"
 )
 
 
@@ -165,6 +170,68 @@ def append_jsonl(path: Path | None, record: dict[str, object]) -> None:
         f.write(json.dumps(record, sort_keys=True) + "\n")
 
 
+def run_command_text(args: list[str], *, cwd: Path) -> str | None:
+    """Best-effort subprocess wrapper for lightweight host probes."""
+    try:
+        result = subprocess.run(
+            args,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def parse_memory_free_percent(output: str | None) -> int | None:
+    """Parse `memory_pressure -Q` output."""
+    if not output:
+        return None
+    match = _MEMORY_FREE_RE.search(output)
+    if not match:
+        return None
+    return int(match.group("percent"))
+
+
+def parse_swap_usage(output: str | None) -> dict[str, float] | None:
+    """Parse `sysctl vm.swapusage` output into MiB values."""
+    if not output:
+        return None
+    match = _SWAP_RE.search(output)
+    if not match:
+        return None
+    return {
+        "swap_total_mb": float(match.group("total")),
+        "swap_used_mb": float(match.group("used")),
+        "swap_free_mb": float(match.group("free")),
+    }
+
+
+def parse_iostat_totals(output: str | None) -> dict[str, float] | None:
+    """Parse `iostat -Id disk0` cumulative transfer/MB totals."""
+    if not output:
+        return None
+    lines = [line for line in output.splitlines() if line.strip()]
+    if len(lines) < 3:
+        return None
+    parts = lines[-1].split()
+    if len(parts) < 3:
+        return None
+    try:
+        xfrs = float(parts[-2])
+        mb = float(parts[-1])
+    except ValueError:
+        return None
+    return {
+        "disk_xfrs_total": xfrs,
+        "disk_mb_total": mb,
+    }
+
+
 @dataclass
 class ValidateTimingRecorder:
     """Collect and persist per-target validate timings."""
@@ -228,6 +295,84 @@ class ValidateTimingRecorder:
             record[key] = value
         append_jsonl(self.output_path, record)
 
+    def append_resource_sample(self, sample: dict[str, object]) -> None:
+        """Persist one periodic host resource sample."""
+        record = {
+            "kind": "resource_sample",
+            "run_id": self.run_id,
+            "command": self.command,
+            "worktree": str(self.worktree),
+            "branch": self.branch,
+            **sample,
+        }
+        for key, value in self.config.items():
+            record[key] = value
+        append_jsonl(self.output_path, record)
+
+
+@dataclass
+class ResourceSampler:
+    """Periodic host resource sampler for validate runs."""
+
+    worktree: Path
+    recorder: ValidateTimingRecorder
+    sample_interval_seconds: float = 2.0
+    _stop_event: threading.Event = field(default_factory=threading.Event, init=False)
+    _thread: threading.Thread | None = field(default=None, init=False)
+    _last_disk_totals: dict[str, float] | None = field(default=None, init=False)
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._run, name="validate-resource-sampler", daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=self.sample_interval_seconds + 1.0)
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(0):
+            self.recorder.append_resource_sample(self._collect_sample())
+            if self._stop_event.wait(self.sample_interval_seconds):
+                return
+
+    def _collect_sample(self) -> dict[str, object]:
+        sample: dict[str, object] = {
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            load1, load5, load15 = os.getloadavg()
+            sample["loadavg_1m"] = round(load1, 3)
+            sample["loadavg_5m"] = round(load5, 3)
+            sample["loadavg_15m"] = round(load15, 3)
+        except OSError:
+            pass
+
+        memory_output = run_command_text(["memory_pressure", "-Q"], cwd=self.worktree)
+        free_percent = parse_memory_free_percent(memory_output)
+        if free_percent is not None:
+            sample["memory_free_percent"] = free_percent
+
+        swap_output = run_command_text(["sysctl", "vm.swapusage"], cwd=self.worktree)
+        swap_usage = parse_swap_usage(swap_output)
+        if swap_usage is not None:
+            sample.update(swap_usage)
+
+        disk_output = run_command_text(["iostat", "-Id", "disk0"], cwd=self.worktree)
+        disk_totals = parse_iostat_totals(disk_output)
+        if disk_totals is not None:
+            sample.update(disk_totals)
+            if self._last_disk_totals is not None:
+                sample["disk_xfrs_delta"] = round(
+                    disk_totals["disk_xfrs_total"] - self._last_disk_totals["disk_xfrs_total"], 3
+                )
+                sample["disk_mb_delta"] = round(
+                    disk_totals["disk_mb_total"] - self._last_disk_totals["disk_mb_total"], 3
+                )
+            self._last_disk_totals = disk_totals
+
+        return sample
+
 
 def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
     """Run validation command and capture output.
@@ -246,6 +391,7 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
     line_count = 0
     byte_count = 0
     timing_recorder = ValidateTimingRecorder(worktree=worktree, command=command)
+    resource_sampler = ResourceSampler(worktree=worktree, recorder=timing_recorder)
 
     print(f"Running: {command}")
     print(f"Output will be saved to: {output_file}")
@@ -254,6 +400,7 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
     print()
 
     start = time.monotonic()
+    resource_sampler.start()
 
     # Run command, capturing output while also displaying it
     # Use line buffering (buffering=1) to ensure output is written immediately
@@ -311,19 +458,22 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
                 f.write(wait_marker)
                 f.flush()
 
-    duration = time.monotonic() - start
-    exit_code = process.returncode
-    exit_marker = (
-        f"[validate_runner] child_exited pid={child_pid} exit_code={exit_code} "
-        f"elapsed={duration:.1f}s lines={line_count} bytes={byte_count}\n"
-    )
-    # The exit marker is computed only after the child has fully exited and the
-    # main streaming file handle is closed, so append it in a short final write.
-    with open(output_file, "a", encoding="utf-8") as f:
-        f.write(exit_marker)
-    sys.stdout.write(exit_marker)
-    sys.stdout.flush()
-    timing_recorder.finalize(exit_code=exit_code, total_elapsed_seconds=duration)
+    try:
+        duration = time.monotonic() - start
+        exit_code = process.returncode
+        exit_marker = (
+            f"[validate_runner] child_exited pid={child_pid} exit_code={exit_code} "
+            f"elapsed={duration:.1f}s lines={line_count} bytes={byte_count}\n"
+        )
+        # The exit marker is computed only after the child has fully exited and the
+        # main streaming file handle is closed, so append it in a short final write.
+        with open(output_file, "a", encoding="utf-8") as f:
+            f.write(exit_marker)
+        sys.stdout.write(exit_marker)
+        sys.stdout.flush()
+        timing_recorder.finalize(exit_code=exit_code, total_elapsed_seconds=duration)
+    finally:
+        resource_sampler.stop()
 
     print()
     if exit_code == 0:
