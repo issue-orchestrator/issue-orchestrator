@@ -20,6 +20,8 @@ source .venv/bin/activate
 
 Full details: [Installation](../user/installation.md)
 
+Running in GitHub Codespaces instead? See [Codespaces](../user/codespaces.md).
+
 ## 2. Run the setup wizard
 
 ```bash
