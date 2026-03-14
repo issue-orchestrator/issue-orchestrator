@@ -15,9 +15,15 @@ from rich.console import Console
 from rich.table import Table
 
 from ..infra.logging_config import setup_logging
+from ..infra.client_urls import resolve_client_dashboard_url, with_client_query_params
 
 console = Console()
 logger = logging.getLogger(__name__)
+
+
+def _client_dashboard_link(port: int, *, repo_path: str | None = None) -> str:
+    """Build a browser-usable dashboard URL for local or Codespaces clients."""
+    return with_client_query_params(resolve_client_dashboard_url(port), repo=repo_path)
 
 
 def _resolve_repo(config: "Config") -> str:
@@ -648,7 +654,7 @@ def cmd_start(args: argparse.Namespace) -> int:  # noqa: C901, PLR0912 - CLI ent
             port = args.port if args.port != 8080 else config.web_port
             console.print("[dim]Starting web dashboard...[/dim]")
             if port != 0:
-                console.print(f"[green]Dashboard will open at http://localhost:{port}[/green]")
+                console.print(f"[green]Dashboard will open at {_client_dashboard_link(port)}[/green]")
             asyncio.run(_run_web_dashboard(orchestrator, config, args, api_port))
         else:
             # Run with interactive TUI dashboard (tmux mode)
@@ -1798,16 +1804,9 @@ def cmd_default(args: argparse.Namespace) -> int:  # noqa: ARG001 - args unused 
         import subprocess
         import sys
         import time
-        from urllib.parse import quote
-
         port = entry["port"]
         repo_path = entry.get("repo_path")
-
-        # Build URL with optional deep-link
-        if repo_path:
-            url = f"http://localhost:{port}?repo={quote(repo_path)}"
-        else:
-            url = f"http://localhost:{port}"
+        url = _client_dashboard_link(port, repo_path=repo_path)
 
         # Start control center as a subprocess
         cmd = [

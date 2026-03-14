@@ -17,6 +17,7 @@ from typing import Any, Literal
 from ..infra import supervisor
 from ..infra.repo_registry import load_registry
 from ..infra.config import list_configs
+from ..infra.client_urls import resolve_client_dashboard_url, with_client_query_params
 
 logger = logging.getLogger(__name__)
 
@@ -420,11 +421,8 @@ def get_best_entry_point(state: SystemState) -> dict[str, Any]:
 
     # Build URL with optional deep-link
     def build_url(port: int) -> str:
-        from urllib.parse import quote
-        base = f"http://localhost:{port}"
-        if active_repo_path:
-            return f"{base}?repo={quote(active_repo_path)}"
-        return base
+        base = resolve_client_dashboard_url(port)
+        return with_client_query_params(base, repo=active_repo_path)
 
     # If dashboard is running, open it
     if state.dashboard.running and state.dashboard.port:

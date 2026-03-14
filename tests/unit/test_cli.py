@@ -170,6 +170,27 @@ class TestCmdStart:
                                     mock_build.assert_not_called()
 
 
+class TestClientDashboardLink:
+    """Tests for browser-facing CLI dashboard links."""
+
+    def test_uses_forwarded_codespaces_url(self, monkeypatch):
+        """Browser URLs should use forwarded Codespaces links."""
+        from issue_orchestrator.entrypoints.cli import _client_dashboard_link
+
+        monkeypatch.setenv("CODESPACE_NAME", "octo-space")
+        monkeypatch.setenv("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN", "app.github.dev")
+
+        assert _client_dashboard_link(19080) == "https://octo-space-19080.app.github.dev/"
+
+    def test_appends_repo_query_to_dashboard_link(self):
+        """Deep-links should preserve the selected repo path."""
+        from issue_orchestrator.entrypoints.cli import _client_dashboard_link
+
+        assert _client_dashboard_link(19080, repo_path="/workspaces/repo") == (
+            "http://127.0.0.1:19080/?repo=%2Fworkspaces%2Frepo"
+        )
+
+
 class TestCmdStatus:
     """Tests for the status command."""
 
@@ -743,6 +764,7 @@ class TestCmdStartAdvanced:
                         mock_config.agents = {'agent:test': Mock()}
                         mock_config.max_concurrent_sessions = 2
                         mock_config.ui_mode = 'tmux'
+                        mock_config.web_port = 8080
                         mock_config.validate.return_value = []  # Pass validation
                         mock_config.repo_root = Path("/tmp")
                         mock_config.worktree_base = Path("/tmp/worktrees")

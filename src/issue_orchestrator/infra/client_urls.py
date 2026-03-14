@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from urllib.parse import urlencode, urlsplit, urlunsplit, parse_qsl
 
 
 def _normalize_local_host(host: str) -> str:
@@ -37,3 +38,15 @@ def resolve_client_base_url(port: int, *, local_host: str = "127.0.0.1") -> str:
 def resolve_client_dashboard_url(port: int, *, local_host: str = "127.0.0.1") -> str:
     """Resolve the browser-usable dashboard URL for a dashboard port."""
     return resolve_client_base_url(port, local_host=local_host).rstrip("/") + "/"
+
+
+def with_client_query_params(base_url: str, **params: str | None) -> str:
+    """Append non-empty query parameters to a client-facing URL."""
+    parts = urlsplit(base_url)
+    query_items = [(key, value) for key, value in parse_qsl(parts.query, keep_blank_values=True)]
+    query_items.extend(
+        (key, value)
+        for key, value in params.items()
+        if value is not None and value != ""
+    )
+    return urlunsplit(parts._replace(query=urlencode(query_items)))
