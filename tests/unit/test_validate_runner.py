@@ -323,7 +323,7 @@ class TestValidateRunner:
             [
                 sys.executable, "-m",
                 "issue_orchestrator.entrypoints.cli_tools.validate_runner",
-                "--command", "python -c \"import time; time.sleep(2.2)\"",
+                "--command", f"\"{sys.executable}\" -c \"import time; time.sleep(2.2)\"",
             ],
             cwd=fake_git_repo,
             capture_output=True,
