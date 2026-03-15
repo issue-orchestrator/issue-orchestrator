@@ -763,6 +763,16 @@ def _load_review_section(config: "Config", review_section: dict) -> None:
         "keep_current_approach_label",
         "reviewer-keep-current-approach",
     )
+    run_audit_section = review_section.get("run_audit", {})
+    if isinstance(run_audit_section, dict):
+        config.review_run_audit_min_runtime_minutes = run_audit_section.get(
+            "min_runtime_minutes",
+            20,
+        )
+        config.review_run_audit_on_timeout = run_audit_section.get(
+            "on_timeout",
+            True,
+        )
     exchange_section = review_section.get("exchange", {})
     config.review_exchange_mode = exchange_section.get("mode", "via-local-loop")
     probe_section = exchange_section.get("probe", {})
@@ -1261,6 +1271,8 @@ class Config:
     reviewer_feedback_cache_minutes: int = 5  # Default: 5 minutes
     # Label to tell reviewer to keep the current approach
     review_keep_current_approach_label: str = "reviewer-keep-current-approach"
+    review_run_audit_min_runtime_minutes: int = 20  # 0 disables automatic run audits
+    review_run_audit_on_timeout: bool = True
 
     # Review exchange mode (via-mcp, via-local-loop, or via-draft-pr review)
     review_exchange_mode: str = "via-local-loop"
@@ -1431,6 +1443,12 @@ class Config:
         }
         return exchange_dict
 
+    def _runtime_run_audit_dict(self) -> dict[str, object]:
+        return {
+            "min_runtime_minutes": self.review_run_audit_min_runtime_minutes,
+            "on_timeout": self.review_run_audit_on_timeout,
+        }
+
     def get_label_review_keep_current_approach(self) -> str:
         """Get the reviewer keep-current-approach label with prefix if configured."""
         return self.prefixed_label(self.review_keep_current_approach_label)
@@ -1578,6 +1596,7 @@ class Config:
                 "default": self.code_review_agent,
                 "code_review_label": self.code_review_label,
                 "code_reviewed_label": self.code_reviewed_label,
+                "run_audit": self._runtime_run_audit_dict(),
                 "exchange": self._runtime_exchange_dict(),
                 "triage_review": {
                     "agent": self.triage_review_agent,
@@ -1901,6 +1920,10 @@ class Config:
             review_dict["max_consecutive_publish_failures"] = self.max_consecutive_publish_failures
         if self.review_keep_current_approach_label != "reviewer-keep-current-approach":
             review_dict["keep_current_approach_label"] = self.review_keep_current_approach_label
+        if self.review_run_audit_min_runtime_minutes != 20:
+            review_dict.setdefault("run_audit", {})["min_runtime_minutes"] = self.review_run_audit_min_runtime_minutes
+        if self.review_run_audit_on_timeout is not True:
+            review_dict.setdefault("run_audit", {})["on_timeout"] = self.review_run_audit_on_timeout
         exchange_dict = self._serialization_exchange_dict()
         if exchange_dict:
             review_dict["exchange"] = exchange_dict

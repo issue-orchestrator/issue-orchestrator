@@ -26,8 +26,10 @@ def write_run_audit(
     run_dir: Path,
     *,
     issue_labels: Sequence[str],
-    trigger_label: str,
-    completion_label: str,
+    trigger_source: str,
+    trigger_label: str | None = None,
+    completion_label: str | None = None,
+    trigger_threshold_minutes: int | None = None,
     processing_errors: Sequence[str] | None = None,
 ) -> RunAuditResult:
     """Write a run-audit.json artifact for a completed run."""
@@ -48,8 +50,10 @@ def write_run_audit(
         "dominant_time_bucket": dominant_bucket,
         "findings": findings,
         "issue_labels": list(issue_labels),
+        "trigger_source": trigger_source,
         "trigger_label": trigger_label,
         "completion_label": completion_label,
+        "trigger_threshold_minutes": trigger_threshold_minutes,
         "processing_errors": list(processing_errors or ()),
         "validation": {
             "passed": manifest.validation_passed,

@@ -14,6 +14,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, Callable
 
 if TYPE_CHECKING:
@@ -44,6 +45,14 @@ from pathlib import Path
 from ..infra.run_audit import write_run_audit
 
 logger = logging.getLogger(__name__)
+
+
+class RunAuditTrigger(str, Enum):
+    """How a run audit was requested."""
+
+    LABEL = "label"
+    TIMEOUT = "timeout"
+    RUNTIME_THRESHOLD = "runtime-threshold"
 
 
 def _read_triage_manifest(session: Session) -> TriageManifest | None:
@@ -510,27 +519,33 @@ class CompletionHandler:
         *,
         processing_errors: Optional[list[str]] = None,
     ) -> tuple[Action, ...]:
-        """Persist a run audit when explicitly requested by issue label."""
+        """Persist a run audit when explicitly requested or auto-triggered."""
         labels = self._fetch_issue_labels_for_audit(session.issue.number)
-        if self._lm.run_audit_requested not in labels:
-            return ()
-        if self._lm.run_audit_completed in labels:
-            return ()
-
         run_dir = self._resolve_session_run_dir(session)
         if not run_dir:
-            logger.warning(
-                "[RUN_AUDIT] Requested for issue #%d but no run dir was available",
-                session.issue.number,
-            )
+            return ()
+
+        trigger = self._resolve_run_audit_trigger(
+            session.issue.number,
+            status,
+            run_dir,
+            labels,
+        )
+        if trigger is None:
             return ()
 
         try:
             audit = write_run_audit(
                 run_dir,
                 issue_labels=labels,
-                trigger_label=self._lm.run_audit_requested,
-                completion_label=self._lm.run_audit_completed,
+                trigger_source=trigger.value,
+                trigger_label=self._lm.run_audit_requested if trigger is RunAuditTrigger.LABEL else None,
+                completion_label=self._lm.run_audit_completed if trigger is RunAuditTrigger.LABEL else None,
+                trigger_threshold_minutes=(
+                    self.config.review_run_audit_min_runtime_minutes
+                    if trigger is RunAuditTrigger.RUNTIME_THRESHOLD
+                    else None
+                ),
                 processing_errors=processing_errors,
             )
             self._session_output.update_manifest(run_dir, {"run_audit_path": str(audit.path)})
@@ -545,11 +560,14 @@ class CompletionHandler:
 
         expected = build_expected_for_mutation()
         logger.info(
-            "[RUN_AUDIT] Wrote %s for issue #%d status=%s",
+            "[RUN_AUDIT] Wrote %s for issue #%d status=%s trigger=%s",
             audit.path,
             session.issue.number,
             status.value,
+            trigger.value,
         )
+        if trigger is not RunAuditTrigger.LABEL:
+            return ()
         return (
             RemoveLabelAction(
                 issue_number=session.issue.number,
@@ -564,6 +582,50 @@ class CompletionHandler:
                 expected=expected,
             ),
         )
+
+    def _resolve_run_audit_trigger(
+        self,
+        issue_number: int,
+        status: SessionStatus,
+        run_dir: Path,
+        labels: list[str],
+    ) -> RunAuditTrigger | None:
+        manifest = self._session_output.read_manifest(run_dir) or {}
+        existing_audit_path = manifest.get("run_audit_path")
+        if isinstance(existing_audit_path, str) and existing_audit_path.strip():
+            return None
+
+        if (
+            self._lm.run_audit_requested in labels
+            and self._lm.run_audit_completed not in labels
+        ):
+            return RunAuditTrigger.LABEL
+
+        if status is SessionStatus.TIMED_OUT and self.config.review_run_audit_on_timeout:
+            return RunAuditTrigger.TIMEOUT
+
+        threshold_minutes = self.config.review_run_audit_min_runtime_minutes
+        if threshold_minutes <= 0:
+            return None
+
+        runtime_minutes = manifest.get("runtime_minutes")
+        if not isinstance(runtime_minutes, (int, float, str)):
+            return None
+        try:
+            runtime_value = float(runtime_minutes)
+        except ValueError:
+            return None
+
+        if runtime_value >= float(threshold_minutes):
+            return RunAuditTrigger.RUNTIME_THRESHOLD
+
+        logger.debug(
+            "[RUN_AUDIT] Skipping automatic audit for issue #%d runtime=%.1f threshold=%d",
+            issue_number,
+            runtime_value,
+            threshold_minutes,
+        )
+        return None
 
     def _fetch_issue_labels_for_audit(self, issue_number: int) -> list[str]:
         getter = getattr(self.repository_host, "get_issue_labels_fresh", None)

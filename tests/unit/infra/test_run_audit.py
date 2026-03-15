@@ -59,6 +59,7 @@ def test_write_run_audit_summarizes_review_exchange(tmp_path: Path) -> None:
     result = write_run_audit(
         run_dir,
         issue_labels=["agent:backend", "needs-run-audit"],
+        trigger_source="label",
         trigger_label="needs-run-audit",
         completion_label="run-audit-complete",
     )
@@ -66,5 +67,6 @@ def test_write_run_audit_summarizes_review_exchange(tmp_path: Path) -> None:
     payload = json.loads(result.path.read_text())
     assert "coder rework after review round 1" in payload["summary"].lower()
     assert payload["dominant_time_bucket"] == "coder_rework"
+    assert payload["trigger_source"] == "label"
     assert payload["review_exchange"]["rounds"][0]["coder_rework_minutes"] == 46.9
     assert payload["review_exchange"]["rounds"][1]["reviewer_follow_up_minutes"] == 38.0

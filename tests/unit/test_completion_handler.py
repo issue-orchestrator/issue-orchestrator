@@ -12,7 +12,7 @@ rather than implementation details.
 """
 
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -1157,6 +1157,130 @@ class TestLabelActionGeneration:
         assert audit_path.exists()
         audit_payload = audit_path.read_text()
         assert "needs-run-audit" in audit_payload
+
+    def test_long_runtime_writes_automatic_run_audit_without_label_actions(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        issue = make_issue(number=123, labels=["agent:test"])
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        session.started_at = (datetime.now() - timedelta(minutes=24)).replace(microsecond=0)
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_worktree, session.terminal_id, issue_number=123)
+        session_output.update_manifest(run.run_dir, {"outcome": "completed", "ended_at": "2026-03-14T23:55:16Z"})
+
+        repository_host = SimpleNamespace(
+            get_prs_for_branch=lambda _branch: [],
+            get_pr=lambda _pr_number: None,
+            get_issue=lambda _issue_number: SimpleNamespace(labels=["agent:test"]),
+            get_issue_labels_fresh=lambda _issue_number: ["agent:test"],
+            set_pr_draft=Mock(),
+        )
+        handler = make_handler(
+            config,
+            repository_host=repository_host,
+            session_output=session_output,
+        )
+
+        result = handler.process_completion(session, SessionStatus.COMPLETED)
+
+        assert not any(
+            isinstance(action, (RemoveLabelAction, AddLabelAction))
+            and action.label in {"needs-run-audit", "run-audit-complete"}
+            for action in result.actions
+        )
+
+        manifest = session_output.read_manifest(run.run_dir)
+        assert manifest is not None
+        audit_path = Path(manifest["run_audit_path"])
+        payload = audit_path.read_text()
+        assert "\"trigger_source\": \"runtime-threshold\"" in payload
+
+    def test_runtime_below_threshold_does_not_write_automatic_run_audit(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        issue = make_issue(number=123, labels=["agent:test"])
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        session.started_at = (datetime.now() - timedelta(minutes=12)).replace(microsecond=0)
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_worktree, session.terminal_id, issue_number=123)
+        session_output.update_manifest(run.run_dir, {"outcome": "completed", "ended_at": "2026-03-14T23:55:16Z"})
+
+        repository_host = SimpleNamespace(
+            get_prs_for_branch=lambda _branch: [],
+            get_pr=lambda _pr_number: None,
+            get_issue=lambda _issue_number: SimpleNamespace(labels=["agent:test"]),
+            get_issue_labels_fresh=lambda _issue_number: ["agent:test"],
+            set_pr_draft=Mock(),
+        )
+        handler = make_handler(
+            config,
+            repository_host=repository_host,
+            session_output=session_output,
+        )
+
+        handler.process_completion(session, SessionStatus.COMPLETED)
+
+        manifest = session_output.read_manifest(run.run_dir)
+        assert manifest is not None
+        assert "run_audit_path" not in manifest
+
+    def test_timeout_writes_automatic_run_audit(self, config: Config, agent_config: AgentConfig, tmp_worktree: Path) -> None:
+        issue = make_issue(number=123, labels=["agent:test"])
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        session.started_at = (datetime.now() - timedelta(minutes=5)).replace(microsecond=0)
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_worktree, session.terminal_id, issue_number=123)
+        session_output.update_manifest(run.run_dir, {"outcome": "timed_out", "ended_at": "2026-03-14T23:55:16Z"})
+
+        repository_host = SimpleNamespace(
+            get_prs_for_branch=lambda _branch: [],
+            get_pr=lambda _pr_number: None,
+            get_issue=lambda _issue_number: SimpleNamespace(labels=["agent:test"]),
+            get_issue_labels_fresh=lambda _issue_number: ["agent:test"],
+            set_pr_draft=Mock(),
+        )
+        handler = make_handler(
+            config,
+            repository_host=repository_host,
+            session_output=session_output,
+        )
+
+        handler.process_completion(session, SessionStatus.TIMED_OUT)
+
+        manifest = session_output.read_manifest(run.run_dir)
+        assert manifest is not None
+        audit_path = Path(manifest["run_audit_path"])
+        payload = audit_path.read_text()
+        assert "\"trigger_source\": \"timeout\"" in payload
+
+    def test_timeout_audit_can_be_disabled(self, config: Config, agent_config: AgentConfig, tmp_worktree: Path) -> None:
+        config.review_run_audit_on_timeout = False
+        config.review_run_audit_min_runtime_minutes = 20
+        issue = make_issue(number=123, labels=["agent:test"])
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        session.started_at = (datetime.now() - timedelta(minutes=5)).replace(microsecond=0)
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_worktree, session.terminal_id, issue_number=123)
+        session_output.update_manifest(run.run_dir, {"outcome": "timed_out", "ended_at": "2026-03-14T23:55:16Z"})
+
+        repository_host = SimpleNamespace(
+            get_prs_for_branch=lambda _branch: [],
+            get_pr=lambda _pr_number: None,
+            get_issue=lambda _issue_number: SimpleNamespace(labels=["agent:test"]),
+            get_issue_labels_fresh=lambda _issue_number: ["agent:test"],
+            set_pr_draft=Mock(),
+        )
+        handler = make_handler(
+            config,
+            repository_host=repository_host,
+            session_output=session_output,
+        )
+
+        handler.process_completion(session, SessionStatus.TIMED_OUT)
+
+        manifest = session_output.read_manifest(run.run_dir)
+        assert manifest is not None
+        assert "run_audit_path" not in manifest
 
     def test_timeout_generates_blocked_failed_label_and_comment(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
