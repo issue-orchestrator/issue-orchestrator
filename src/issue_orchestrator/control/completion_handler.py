@@ -41,6 +41,7 @@ from .completion_processor import (
 from .reconciliation import build_expected_for_mutation, ExpectedState
 from ..domain.triage_manifest import TriageManifest
 from pathlib import Path
+from ..infra.run_audit import write_run_audit
 
 logger = logging.getLogger(__name__)
 
@@ -471,6 +472,14 @@ class CompletionHandler:
         # Enrich manifest with runtime context + log tail
         self._enrich_manifest_runtime(session, status)
 
+        audit_actions = self._maybe_create_run_audit(
+            session,
+            status,
+            processing_errors=processing_errors,
+        )
+        if audit_actions:
+            completion_actions = tuple(list(completion_actions) + list(audit_actions))
+
         result = CompletionResult(
             history_entry=history_entry,
             pr_url=pr_url,
@@ -493,6 +502,94 @@ class CompletionHandler:
             extra=log_context(issue_key=issue_key, session_id=session.terminal_id),
         )
         return result
+
+    def _maybe_create_run_audit(
+        self,
+        session: Session,
+        status: SessionStatus,
+        *,
+        processing_errors: Optional[list[str]] = None,
+    ) -> tuple[Action, ...]:
+        """Persist a run audit when explicitly requested by issue label."""
+        labels = self._fetch_issue_labels_for_audit(session.issue.number)
+        if self._lm.run_audit_requested not in labels:
+            return ()
+        if self._lm.run_audit_completed in labels:
+            return ()
+
+        run_dir = self._resolve_session_run_dir(session)
+        if not run_dir:
+            logger.warning(
+                "[RUN_AUDIT] Requested for issue #%d but no run dir was available",
+                session.issue.number,
+            )
+            return ()
+
+        try:
+            audit = write_run_audit(
+                run_dir,
+                issue_labels=labels,
+                trigger_label=self._lm.run_audit_requested,
+                completion_label=self._lm.run_audit_completed,
+                processing_errors=processing_errors,
+            )
+            self._session_output.update_manifest(run_dir, {"run_audit_path": str(audit.path)})
+        except Exception:
+            logger.warning(
+                "[RUN_AUDIT] Failed for issue #%d run_dir=%s",
+                session.issue.number,
+                run_dir,
+                exc_info=True,
+            )
+            return ()
+
+        expected = build_expected_for_mutation()
+        logger.info(
+            "[RUN_AUDIT] Wrote %s for issue #%d status=%s",
+            audit.path,
+            session.issue.number,
+            status.value,
+        )
+        return (
+            RemoveLabelAction(
+                issue_number=session.issue.number,
+                label=self._lm.run_audit_requested,
+                reason="Run audit captured for this session",
+                expected=expected,
+            ),
+            AddLabelAction(
+                issue_number=session.issue.number,
+                label=self._lm.run_audit_completed,
+                reason="Run audit captured for this session",
+                expected=expected,
+            ),
+        )
+
+    def _fetch_issue_labels_for_audit(self, issue_number: int) -> list[str]:
+        getter = getattr(self.repository_host, "get_issue_labels_fresh", None)
+        if callable(getter):
+            try:
+                labels = getter(issue_number)
+                if isinstance(labels, list):
+                    return [str(label) for label in labels]
+            except Exception as exc:
+                logger.warning(
+                    "[RUN_AUDIT] Fresh label read failed for issue #%d: %s",
+                    issue_number,
+                    exc,
+                )
+
+        try:
+            issue = self.repository_host.get_issue(issue_number)
+        except Exception as exc:
+            logger.warning(
+                "[RUN_AUDIT] Issue lookup failed for issue #%d: %s",
+                issue_number,
+                exc,
+            )
+            return []
+        labels = getattr(issue, "labels", []) if issue is not None else []
+        return [str(label) for label in labels]
 
     def _fetch_pr_info(
         self,

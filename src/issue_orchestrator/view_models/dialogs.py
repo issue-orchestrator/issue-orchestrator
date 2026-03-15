@@ -49,6 +49,7 @@ class SessionDiagnosticsContext:
     validation_path: str
     validation_output_path: str
     validation_stderr_path: str
+    run_audit_path: str
     validation_status: str
     validation_reason: str
     branch: str
@@ -82,6 +83,7 @@ class SessionDiagnosticsContext:
             worktree,
             manifest.get("validation_stderr"),
         )
+        run_audit_path = _join_worktree_path(worktree, manifest.get("run_audit_path"))
         return cls(
             issue_number=issue_number,
             session_name=session_name,
@@ -102,6 +104,7 @@ class SessionDiagnosticsContext:
             validation_path=validation_path,
             validation_output_path=validation_output_path,
             validation_stderr_path=validation_stderr_path,
+            run_audit_path=run_audit_path,
             validation_status=str(manifest.get("validation_status") or ""),
             validation_reason=str(manifest.get("validation_reason") or ""),
             branch=str(session_identity.get("branch") or ""),
@@ -215,6 +218,7 @@ def _build_session_diagnostics_actions(ctx: SessionDiagnosticsContext) -> list[d
     _append_run_scoped_action(actions, ctx, action_type="open_orchestrator_log", label="Open Orchestrator Log")
     _append_open_path(actions, "Open Full Log", ctx.orchestrator_log)
     _append_open_path(actions, "Open Diagnostic", ctx.diagnostic_path)
+    _append_open_path(actions, "Open Run Audit", ctx.run_audit_path)
     _append_open_path(actions, "Open Validation Record", ctx.validation_path)
     _append_open_path(actions, "Open Validation Output", ctx.validation_output_path)
     _append_open_path(actions, "Open Validation Stderr", ctx.validation_stderr_path)

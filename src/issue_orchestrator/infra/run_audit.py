@@ -1,0 +1,185 @@
+"""Evidence-based run audit artifacts for demand-driven session postmortems."""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Sequence
+
+from ..domain.run_manifest import RunManifest
+
+RUN_AUDIT_FILENAME = "run-audit.json"
+
+
+@dataclass(frozen=True)
+class RunAuditResult:
+    """Structured run audit result persisted beside the run manifest."""
+
+    path: Path
+    summary: str
+    dominant_time_bucket: str
+
+
+def write_run_audit(
+    run_dir: Path,
+    *,
+    issue_labels: Sequence[str],
+    trigger_label: str,
+    completion_label: str,
+    processing_errors: Sequence[str] | None = None,
+) -> RunAuditResult:
+    """Write a run-audit.json artifact for a completed run."""
+    manifest = RunManifest.load(run_dir)
+    review_exchange = _load_review_exchange(run_dir)
+    summary, dominant_bucket, findings = _summarize_run(manifest, review_exchange)
+
+    payload = {
+        "schema_version": 1,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "issue_number": manifest.issue_number,
+        "session_name": manifest.session_name,
+        "run_id": manifest.run_id,
+        "run_dir": str(run_dir),
+        "outcome": manifest.outcome,
+        "runtime_minutes": manifest.runtime_minutes,
+        "summary": summary,
+        "dominant_time_bucket": dominant_bucket,
+        "findings": findings,
+        "issue_labels": list(issue_labels),
+        "trigger_label": trigger_label,
+        "completion_label": completion_label,
+        "processing_errors": list(processing_errors or ()),
+        "validation": {
+            "passed": manifest.validation_passed,
+            "status": manifest.validation_status,
+            "reason": manifest.validation_reason,
+            "record_path": manifest.validation_record_path,
+            "stdout_path": manifest.validation_stdout,
+            "stderr_path": manifest.validation_stderr,
+        },
+        "review_exchange": review_exchange,
+        "evidence_paths": {
+            "manifest": str(run_dir / "manifest.json"),
+            "terminal_recording": manifest.log_path,
+            "review_exchange_summary": review_exchange.get("summary_path") if review_exchange else None,
+        },
+    }
+
+    path = run_dir / RUN_AUDIT_FILENAME
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return RunAuditResult(path=path, summary=summary, dominant_time_bucket=dominant_bucket)
+
+
+def _summarize_run(
+    manifest: RunManifest,
+    review_exchange: dict[str, Any] | None,
+) -> tuple[str, str, list[str]]:
+    findings: list[str] = []
+    runtime = manifest.runtime_minutes
+    dominant_bucket = "unknown"
+    summary = "Audit captured the completed run."
+
+    segments: list[tuple[str, float, str]] = []
+    if review_exchange:
+        for round_entry in review_exchange.get("rounds", []):
+            coder_minutes = round_entry.get("coder_rework_minutes")
+            if isinstance(coder_minutes, (int, float)):
+                segments.append((
+                    "coder_rework",
+                    float(coder_minutes),
+                    f"Coder rework after review round {round_entry['round_index']}",
+                ))
+            reviewer_minutes = round_entry.get("reviewer_follow_up_minutes")
+            if isinstance(reviewer_minutes, (int, float)):
+                segments.append((
+                    "reviewer_follow_up",
+                    float(reviewer_minutes),
+                    f"Reviewer follow-up for review round {round_entry['round_index'] + 1}",
+                ))
+
+        completed_rounds = review_exchange.get("completed_rounds")
+        if isinstance(completed_rounds, int) and completed_rounds > 1:
+            findings.append(f"Review exchange required {completed_rounds} rounds before reaching `{review_exchange.get('status', 'unknown')}`.")
+
+    if segments:
+        dominant_bucket, minutes, label = max(segments, key=lambda item: item[1])
+        summary = f"Longest observed segment was {label.lower()} ({minutes:.1f} min)."
+        findings.append(summary)
+    elif isinstance(runtime, (int, float)):
+        summary = f"No finer-grained timing artifact was available; total observed runtime was {float(runtime):.1f} min."
+        findings.append(summary)
+
+    if manifest.validation_passed is False:
+        reason = manifest.validation_reason or "unknown reason"
+        findings.append(f"Validation failed after the run completed: {reason}.")
+        if dominant_bucket == "unknown":
+            dominant_bucket = "validation_retry"
+
+    if manifest.outcome == "completed" and isinstance(runtime, (int, float)) and float(runtime) >= 20:
+        findings.append("This exceeded the normal short coding-path runtime and warranted audit capture.")
+
+    if not findings:
+        findings.append("No dominant delay segment could be inferred from persisted artifacts.")
+
+    return summary, dominant_bucket, findings
+
+
+def _load_review_exchange(run_dir: Path) -> dict[str, Any] | None:
+    exchange_dir = run_dir / "review-exchange"
+    summary_path = exchange_dir / "summary.json"
+    if not summary_path.exists():
+        return None
+
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+    rounds: list[dict[str, Any]] = []
+    previous_coder_at: datetime | None = None
+    for round_path in sorted(exchange_dir.glob("round-*.json")):
+        try:
+            payload = json.loads(round_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        reviewer = payload.get("reviewer") if isinstance(payload.get("reviewer"), dict) else None
+        coder = payload.get("coder") if isinstance(payload.get("coder"), dict) else None
+        reviewer_at = _parse_iso(reviewer.get("timestamp")) if reviewer else None
+        coder_at = _parse_iso(coder.get("timestamp")) if coder else None
+        round_index = int(payload.get("reviewer", {}).get("round_index") or payload.get("coder", {}).get("round_index") or len(rounds) + 1)
+
+        round_entry: dict[str, Any] = {
+            "round_index": round_index,
+            "reviewer_response_type": reviewer.get("response_type") if reviewer else None,
+            "coder_response_type": coder.get("response_type") if coder else None,
+        }
+        if reviewer_at and coder_at and coder_at >= reviewer_at:
+            round_entry["coder_rework_minutes"] = round((coder_at - reviewer_at).total_seconds() / 60.0, 1)
+        if previous_coder_at and reviewer_at and reviewer_at >= previous_coder_at:
+            round_entry["reviewer_follow_up_minutes"] = round((reviewer_at - previous_coder_at).total_seconds() / 60.0, 1)
+        if coder_at:
+            previous_coder_at = coder_at
+        rounds.append(round_entry)
+
+    return {
+        "summary_path": str(summary_path),
+        "completed_rounds": summary.get("completed_rounds"),
+        "status": summary.get("status"),
+        "response_text": summary.get("response_text"),
+        "rounds": rounds,
+    }
+
+
+def _parse_iso(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None

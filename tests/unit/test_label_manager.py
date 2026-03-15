@@ -114,6 +114,10 @@ class TestNamedProperties:
     def test_review_keep_approach(self, lm: LabelManager) -> None:
         assert lm.review_keep_approach == "reviewer-keep-current-approach"
 
+    def test_run_audit_labels(self, lm: LabelManager) -> None:
+        assert lm.run_audit_requested == "needs-run-audit"
+        assert lm.run_audit_completed == "run-audit-complete"
+
 
 # ===================================================================
 # Named properties — with prefix
@@ -140,6 +144,10 @@ class TestNamedPropertiesPrefixed:
 
     def test_provider_unavailable(self, plm: LabelManager) -> None:
         assert plm.provider_unavailable == "bot:blocked:provider-unavailable"
+
+    def test_run_audit_labels(self, plm: LabelManager) -> None:
+        assert plm.run_audit_requested == "bot:needs-run-audit"
+        assert plm.run_audit_completed == "bot:run-audit-complete"
 
 
 # ===================================================================

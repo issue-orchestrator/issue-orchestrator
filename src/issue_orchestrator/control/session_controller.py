@@ -537,10 +537,18 @@ class SessionController:
         repo_root: Path | None,
     ) -> SessionStatus:
         """Handle validation failure with retries remaining."""
+        validation_summary = self._validation_error_summary(validation_error_file)
         logger.warning(
-            issue_log(issue_number, "Validation gate FAILED (retry %d/%d): error=%s error_file=%s"),
+            issue_log(
+                issue_number,
+                "Validation gate FAILED (retry %d/%d): cmd=%s error=%s summary=%s error_file=%s run_dir=%s",
+            ),
             validation_retry_count + 1, self._max_validation_retries,
-            validation_error[:200] if validation_error else "none", validation_error_file,
+            self._validation_cmd,
+            validation_error[:200] if validation_error else "none",
+            validation_summary or "none",
+            validation_error_file,
+            run_dir,
         )
         state = ValidationState(
             retry_count=validation_retry_count + 1, max_retries=self._max_validation_retries,
@@ -563,6 +571,8 @@ class SessionController:
             "session_name": session_name,
             "validation_cmd": self._validation_cmd,
             "error_file": str(validation_error_file) if validation_error_file else None,
+            "validation_reason": validation_error,
+            "validation_error_summary": validation_summary,
             "retry_count": validation_retry_count,
             "max_retries": self._max_validation_retries,
             "run_dir": str(run_dir),
@@ -770,6 +780,20 @@ class SessionController:
         if Path(stderr_path).is_absolute():
             return Path(stderr_path)
         return worktree_path / stderr_path
+
+    @staticmethod
+    def _validation_error_summary(validation_error_file: Optional[Path]) -> str | None:
+        """Return a short human-meaningful excerpt from validation stderr."""
+        if validation_error_file is None or not validation_error_file.exists():
+            return None
+        try:
+            for raw_line in validation_error_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                line = raw_line.strip()
+                if line:
+                    return line[:300]
+        except OSError:
+            return None
+        return None
 
     def _render_retry_prompt(
         self,

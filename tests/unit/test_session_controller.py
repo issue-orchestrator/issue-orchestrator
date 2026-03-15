@@ -11,11 +11,13 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from datetime import datetime
+from issue_orchestrator.events import EventName
 from issue_orchestrator.control.session_controller import SessionController, SessionDecision
 from issue_orchestrator.control.completion_processor import CompletionProcessor
 from issue_orchestrator.observation.observation import SessionObservation, SessionObservationResult
 from issue_orchestrator.domain.models import SessionStatus, CompletionRecord, CompletionOutcome, RequestedAction
 from issue_orchestrator.ports import NullEventSink
+from issue_orchestrator.ports.event_sink import TraceEvent
 from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
@@ -75,6 +77,14 @@ class MockCompletionProcessor:
 
     def process(self, worktree_path: Path, issue_number: int, issue_title: str, pr_number: int | None = None, completion_path: str | None = None):
         return self.process_result
+
+
+class RecordingEventSink:
+    def __init__(self) -> None:
+        self.events: list[TraceEvent] = []
+
+    def publish(self, event: TraceEvent) -> None:
+        self.events.append(event)
 
 
 class TestSessionControllerRunning:
@@ -550,6 +560,48 @@ class TestSessionControllerValidationCaching:
         assert decision.status == SessionStatus.VALIDATION_FAILED
         assert decision.validation_passed is False
         assert decision.validation_error is not None
+
+    def test_validation_retry_event_includes_validation_reason(self, tmp_path: Path):
+        """Retry events should carry the concrete validation failure reason."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = make_record(
+            CompletionOutcome.COMPLETED,
+            summary="Done",
+            requested_actions=[RequestedAction.CREATE_PR],
+        )
+
+        events = RecordingEventSink()
+        command_runner = MockCommandRunner(returncode=1, stderr="dashboard tests failed")
+        working_copy = MockWorkingCopy(head_sha="deadbeef1234567890")
+
+        controller = SessionController(
+            completion_processor=processor,
+            events=events,
+            session_output=FileSystemSessionOutput(),
+            working_copy=working_copy,
+            command_runner=command_runner,
+            validation_cmd="make test-web",
+            validation_timeout_seconds=60,
+            max_validation_retries=3,
+        )
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+
+        decision = controller.decide_outcome(
+            observation=SessionObservationResult.terminated(runtime_minutes=10.0),
+            worktree_path=worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+        )
+
+        assert decision.status == SessionStatus.NEEDS_VALIDATION_RETRY
+        retry_event = next(
+            event for event in events.events if event.event_type == EventName.SESSION_VALIDATION_RETRY_NEEDED
+        )
+        assert retry_event.data["validation_reason"] == "Validation failed for deadbeef (exit_code=1)"
+        assert retry_event.data["validation_error_summary"] == "dashboard tests failed"
 
     def test_no_validation_when_no_command_configured(self):
         """No validation runs when validation_cmd is not configured."""

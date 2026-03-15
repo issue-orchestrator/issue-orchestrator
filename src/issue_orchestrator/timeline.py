@@ -73,6 +73,7 @@ class TimelineEvent:
     reviewer_response_type: str | None = None
     reviewer_response_text: str | None = None
     coder_response_type: str | None = None
+    coder_response_text: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -113,6 +114,7 @@ class TimelineEvent:
             ("reviewer_response_type", self.reviewer_response_type),
             ("reviewer_response_text", self.reviewer_response_text),
             ("coder_response_type", self.coder_response_type),
+            ("coder_response_text", self.coder_response_text),
         ]
         for key, val in _optional:
             if val is not None and val != "":
@@ -180,6 +182,7 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
     reviewer_response_type = data.get("reviewer_response_type") if isinstance(data.get("reviewer_response_type"), str) else None
     reviewer_response_text = data.get("reviewer_response_text") if isinstance(data.get("reviewer_response_text"), str) else None
     coder_response_type = data.get("coder_response_type") if isinstance(data.get("coder_response_type"), str) else None
+    coder_response_text = data.get("coder_response_text") if isinstance(data.get("coder_response_text"), str) else None
     unsupported_schema = (
         timeline_schema_version is None
         or timeline_schema_version < MIN_SUPPORTED_TIMELINE_SCHEMA_VERSION
@@ -235,6 +238,7 @@ def _record_to_event(issue_number: int, record: TimelineRecord) -> TimelineEvent
         reviewer_response_type=reviewer_response_type,
         reviewer_response_text=reviewer_response_text,
         coder_response_type=coder_response_type,
+        coder_response_text=coder_response_text,
     )
 
 
@@ -451,6 +455,21 @@ def _detail_from_data(  # noqa: C901, PLR0912 — event-type dispatch for detail
         coder_response_type = data.get("coder_response_type")
         if isinstance(coder_response_type, str) and coder_response_type:
             parts.append(f"Coder response: {coder_response_type}")
+
+    elif event_name == "review.rework_started":
+        round_index = data.get("round_index")
+        if isinstance(round_index, int):
+            parts.append(f"Round {round_index}")
+        _add_if_new(parts, data.get("reviewer_response_text"), summary_str)
+
+    elif event_name == "review.rework_completed":
+        round_index = data.get("round_index")
+        if isinstance(round_index, int):
+            parts.append(f"Round {round_index}")
+        coder_response_type = data.get("coder_response_type")
+        if isinstance(coder_response_type, str) and coder_response_type:
+            parts.append(f"Coder response: {coder_response_type}")
+        _add_if_new(parts, data.get("coder_response_text"), summary_str)
 
     elif event_name == "review.escalated":
         rework = data.get("rework_cycle")

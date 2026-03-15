@@ -290,3 +290,28 @@ def test_validation_retry_creates_separate_cycles() -> None:
     assert len(cycles) == 2, f"Expected 2 cycles, got {len(cycles)}"
     assert cycles[0]["iteration"] == 1
     assert cycles[1]["iteration"] == 2
+
+
+def test_review_exchange_rework_events_surface_coder_step_between_review_rounds() -> None:
+    events = [
+        _evt("review.started", timestamp="2026-02-16T10:00:00Z", logical_run=1, logical_cycle=1, task="review"),
+        _evt("review_exchange.round_started", timestamp="2026-02-16T10:01:00Z", logical_run=1, logical_cycle=1, task="review"),
+        {
+            **_evt("review.rework_started", timestamp="2026-02-16T10:02:00Z", logical_run=1, logical_cycle=1, task="review", summary="Fix two issues"),
+            "logical_phase": "rework",
+        },
+        {
+            **_evt("review.rework_completed", timestamp="2026-02-16T10:03:00Z", logical_run=1, logical_cycle=1, task="review", status="completed"),
+            "logical_phase": "rework",
+            "detail": "Round 1. Coder response: ok. Applied both fixes.",
+        },
+        _evt("review_exchange.round_started", timestamp="2026-02-16T10:04:00Z", logical_run=1, logical_cycle=1, task="review"),
+        _evt("review.approved", timestamp="2026-02-16T10:05:00Z", logical_run=1, logical_cycle=1, task="review", status="completed"),
+    ]
+
+    cycles = _build_journey_cycles(events, "2026-02-16")
+    labels = [group["label"] for group in cycles[0]["phase_groups"]]
+    assert labels == ["Review", "Rework", "Review"]
+    narratives = [step["narrative"] for step in cycles[0]["steps"]]
+    assert "Coder addressing review feedback: Fix two issues" in narratives
+    assert "Coder finished review rework" in narratives[3]

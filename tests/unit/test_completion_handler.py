@@ -41,6 +41,7 @@ from issue_orchestrator.ports import NullEventSink, InMemoryEventSink, TraceEven
 from issue_orchestrator.ports.session_output import SessionOutput
 from issue_orchestrator.events import EventName
 from issue_orchestrator.contracts.public import SessionCompletedPayload
+from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
 
 # =============================================================================
@@ -1112,6 +1113,50 @@ class TestLabelActionGeneration:
 
         add_labels = [a for a in result.actions if isinstance(a, AddLabelAction)]
         assert any(action.label == "pr-pending" for action in add_labels)
+
+    def test_needs_run_audit_label_writes_audit_and_flips_labels(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        issue = make_issue(number=123, labels=["agent:test", "needs-run-audit"])
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        session.started_at = datetime.now().replace(microsecond=0)
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_worktree, session.terminal_id, issue_number=123)
+        session_output.update_manifest(
+            run.run_dir,
+            {
+                "outcome": "completed",
+                "runtime_minutes": 12,
+                "ended_at": "2026-03-14T23:55:16Z",
+            },
+        )
+
+        repository_host = SimpleNamespace(
+            get_prs_for_branch=lambda _branch: [],
+            get_pr=lambda _pr_number: None,
+            get_issue=lambda _issue_number: SimpleNamespace(labels=["agent:test", "needs-run-audit"]),
+            get_issue_labels_fresh=lambda _issue_number: ["agent:test", "needs-run-audit"],
+            set_pr_draft=Mock(),
+        )
+        handler = make_handler(
+            config,
+            repository_host=repository_host,
+            session_output=session_output,
+        )
+
+        result = handler.process_completion(session, SessionStatus.COMPLETED)
+
+        remove_labels = [a.label for a in result.actions if isinstance(a, RemoveLabelAction)]
+        add_labels = [a.label for a in result.actions if isinstance(a, AddLabelAction)]
+        assert "needs-run-audit" in remove_labels
+        assert "run-audit-complete" in add_labels
+
+        manifest = session_output.read_manifest(run.run_dir)
+        assert manifest is not None
+        audit_path = Path(manifest["run_audit_path"])
+        assert audit_path.exists()
+        audit_payload = audit_path.read_text()
+        assert "needs-run-audit" in audit_payload
 
     def test_timeout_generates_blocked_failed_label_and_comment(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path

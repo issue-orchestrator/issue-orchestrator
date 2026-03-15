@@ -300,6 +300,8 @@ _NARRATIVE_MAP: dict[str, str] = {
     "issue.completed": "Issue completed",
     "issue.unblocked": "Unblocked",
     "review.started": "Code review started",
+    "review.rework_started": "Coder addressing review feedback{_summary}",
+    "review.rework_completed": "Coder finished review rework{_summary}",
     "review.queued": "Review queued",
     "review.approved": "Reviewer approved{_summary}",
     "review.changes_requested": "Reviewer requested changes{_summary}",

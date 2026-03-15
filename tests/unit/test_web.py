@@ -3691,6 +3691,26 @@ class TestPerRoundLogActions:
         assert "/tmp/sessions/run-1/review-exchange/round-001/reviewer/agent-output.log" in paths
         assert "/tmp/sessions/run-1/review-exchange/round-001/coder/agent-output.log" in paths
 
+    def test_review_rework_completed_produces_round_log_actions(self) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_recommended_actions
+
+        captured, add = self._capture()
+        _timeline_event_recommended_actions(
+            event={
+                "event": "review.rework_completed",
+                "round_index": 1,
+                "run_dir": "/tmp/sessions/run-1",
+            },
+            event_name="review.rework_completed",
+            issue_number=1,
+            add_action=add,
+        )
+        open_path_actions = [a for a in captured if a["type"] == "open_path"]
+        assert len(open_path_actions) == 2
+        paths = {a["path"] for a in open_path_actions}
+        assert "/tmp/sessions/run-1/review-exchange/round-001/reviewer/agent-output.log" in paths
+        assert "/tmp/sessions/run-1/review-exchange/round-001/coder/agent-output.log" in paths
+
     def test_round_actions_skipped_when_round_index_missing(self) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_recommended_actions
 
