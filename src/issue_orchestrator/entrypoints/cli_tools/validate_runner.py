@@ -461,9 +461,11 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
                 f.write(wait_marker)
                 f.flush()
 
+    duration = 0.0
+    exit_code = process.returncode if process.returncode is not None else 1
     try:
         duration = time.monotonic() - start
-        exit_code = process.returncode
+        exit_code = process.returncode if process.returncode is not None else 1
         exit_marker = (
             f"[validate_runner] child_exited pid={child_pid} exit_code={exit_code} "
             f"elapsed={duration:.1f}s lines={line_count} bytes={byte_count}\n"
@@ -475,8 +477,10 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
         sys.stdout.write(exit_marker)
         sys.stdout.flush()
     finally:
-        resource_sampler.stop()
-    timing_recorder.finalize(exit_code=exit_code, total_elapsed_seconds=duration)
+        try:
+            resource_sampler.stop()
+        finally:
+            timing_recorder.finalize(exit_code=exit_code, total_elapsed_seconds=duration)
 
     print()
     if exit_code == 0:
