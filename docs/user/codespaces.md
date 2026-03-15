@@ -21,18 +21,45 @@ The Control Center still runs on `19080`.
 
 1. Open the repository on GitHub.
 2. Use **Code** -> **Codespaces** -> **Create codespace on main**.
-3. Wait for `postCreateCommand` to finish. It runs `make worktree-setup`.
+3. Wait for `postCreateCommand` to finish. It runs `make worktree-setup`
+   and installs the Codex CLI.
 
-## Set required secrets
+## Set required credentials
 
 Before starting the orchestrator, make sure the codespace has the credentials
 you actually plan to use:
 
 - `ISSUE_ORCH_GITHUB_TOKEN`
-- `ANTHROPIC_API_KEY` for Claude Code
-- `OPENAI_API_KEY` for Codex / OpenAI-backed flows
 
-If you only use one provider, you only need that provider's key.
+Provider auth depends on how you use each CLI:
+
+- Claude Code:
+  - If you use subscription/CLI login, authenticate `claude` inside the
+    Codespace.
+  - If you use API keys instead, set `ANTHROPIC_API_KEY`.
+- Codex / OpenAI:
+  - The devcontainer installs `codex`.
+  - Run `codex login` inside the Codespace.
+  - Verify with `codex login status`.
+  - `OPENAI_API_KEY` is optional if you are using ChatGPT login instead.
+
+Your local desktop login state does not automatically carry over to the remote
+Codespace. Provider CLIs need to be authenticated inside the Codespace itself.
+
+## Authenticate Codex in the Codespace
+
+From the integrated terminal:
+
+```bash
+codex login
+codex login status
+```
+
+Expected status for a license-backed flow looks like:
+
+```text
+Logged in using ChatGPT
+```
 
 ## Start the Control Center
 

@@ -23,7 +23,7 @@ def test_devcontainer_forwards_codespaces_ports_and_bootstraps_repo() -> None:
 
     data = json.loads(devcontainer_path.read_text(encoding="utf-8"))
 
-    assert data["postCreateCommand"] == "make worktree-setup"
+    assert data["postCreateCommand"] == "make worktree-setup && npm install -g @openai/codex"
     assert data["forwardPorts"] == [19080, 19081, 8080]
     assert data["portsAttributes"]["19080"]["label"] == "Issue Orchestrator Control Center"
     assert data["portsAttributes"]["8080"]["label"] == "Issue Orchestrator Engine Dashboard"
