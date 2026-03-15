@@ -316,7 +316,7 @@ class ResourceSampler:
 
     worktree: Path
     recorder: ValidateTimingRecorder
-    sample_interval_seconds: float = 2.0
+    sample_interval_seconds: float = 5.0
     _stop_event: threading.Event = field(default_factory=threading.Event, init=False)
     _thread: threading.Thread | None = field(default=None, init=False)
     _last_disk_totals: dict[str, float] | None = field(default=None, init=False)
@@ -348,6 +348,9 @@ class ResourceSampler:
         except OSError:
             pass
 
+        # These probes are macOS-specific today. Linux validate runs still record
+        # load averages, and we can add /proc-based probes later if CI analysis
+        # needs the same memory/swap/disk visibility.
         memory_output = run_command_text(["memory_pressure", "-Q"], cwd=self.worktree)
         free_percent = parse_memory_free_percent(memory_output)
         if free_percent is not None:
@@ -471,9 +474,9 @@ def run_validation(command: str, output_dir: Path, worktree: Path) -> int:
             f.write(exit_marker)
         sys.stdout.write(exit_marker)
         sys.stdout.flush()
-        timing_recorder.finalize(exit_code=exit_code, total_elapsed_seconds=duration)
     finally:
         resource_sampler.stop()
+    timing_recorder.finalize(exit_code=exit_code, total_elapsed_seconds=duration)
 
     print()
     if exit_code == 0:
