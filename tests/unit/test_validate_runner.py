@@ -316,3 +316,28 @@ class TestValidateRunner:
         assert summary_record["worktree"] == str(fake_git_repo)
         assert summary_record["exit_code"] == 0
         assert isinstance(summary_record["total_elapsed_seconds"], float)
+
+    def test_appends_resource_samples_to_shared_git_dir(self, fake_git_repo: Path):
+        """Validate runs should persist periodic resource samples."""
+        result = subprocess.run(
+            [
+                sys.executable, "-m",
+                "issue_orchestrator.entrypoints.cli_tools.validate_runner",
+                "--command", f"\"{sys.executable}\" -c \"import time; time.sleep(0.5)\"",
+            ],
+            cwd=fake_git_repo,
+            capture_output=True,
+            text=True,
+            env=_with_repo_on_pythonpath({
+                k: v for k, v in os.environ.items() if not k.startswith("ISSUE_ORCHESTRATOR")
+            }),
+        )
+
+        assert result.returncode == 0
+        timings_file = fake_git_repo / ".git" / "issue-orchestrator" / "validate-timings.jsonl"
+        records = [json.loads(line) for line in timings_file.read_text().splitlines()]
+        resource_records = [record for record in records if record["kind"] == "resource_sample"]
+        assert resource_records, "expected at least one resource_sample record"
+        sample = resource_records[0]
+        assert sample["worktree"] == str(fake_git_repo)
+        assert "recorded_at" in sample
