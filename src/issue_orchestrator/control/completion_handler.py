@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
 
 from ..domain.issue_key import StableIssueId
+from ..domain.run_manifest import RunManifest
 from ..infra.config import Config
 from ..events import EventName
 from ..infra.logging_config import log_context, get_repo_log_path
@@ -481,13 +482,13 @@ class CompletionHandler:
         # Enrich manifest with runtime context + log tail
         self._enrich_manifest_runtime(session, status)
 
-        audit_actions = self._maybe_create_run_audit(
+        audit_actions = self._create_run_audit_and_actions(
             session,
             status,
             processing_errors=processing_errors,
         )
         if audit_actions:
-            completion_actions = tuple(list(completion_actions) + list(audit_actions))
+            completion_actions = completion_actions + audit_actions
 
         result = CompletionResult(
             history_entry=history_entry,
@@ -512,14 +513,14 @@ class CompletionHandler:
         )
         return result
 
-    def _maybe_create_run_audit(
+    def _create_run_audit_and_actions(
         self,
         session: Session,
         status: SessionStatus,
         *,
         processing_errors: Optional[list[str]] = None,
     ) -> tuple[Action, ...]:
-        """Persist a run audit when explicitly requested or auto-triggered."""
+        """Persist a run audit and return any label actions it requires."""
         labels = self._fetch_issue_labels_for_audit(session.issue.number)
         run_dir = self._resolve_session_run_dir(session)
         if not run_dir:
@@ -590,9 +591,11 @@ class CompletionHandler:
         run_dir: Path,
         labels: list[str],
     ) -> RunAuditTrigger | None:
-        manifest = self._session_output.read_manifest(run_dir) or {}
-        existing_audit_path = manifest.get("run_audit_path")
-        if isinstance(existing_audit_path, str) and existing_audit_path.strip():
+        try:
+            manifest = RunManifest.load(run_dir)
+        except FileNotFoundError:
+            return None
+        if manifest.run_audit_path and manifest.run_audit_path.strip():
             return None
 
         if (
@@ -608,13 +611,10 @@ class CompletionHandler:
         if threshold_minutes <= 0:
             return None
 
-        runtime_minutes = manifest.get("runtime_minutes")
-        if not isinstance(runtime_minutes, (int, float, str)):
+        runtime_minutes = manifest.runtime_minutes
+        if not isinstance(runtime_minutes, (int, float)):
             return None
-        try:
-            runtime_value = float(runtime_minutes)
-        except ValueError:
-            return None
+        runtime_value = float(runtime_minutes)
 
         if runtime_value >= float(threshold_minutes):
             return RunAuditTrigger.RUNTIME_THRESHOLD
@@ -628,29 +628,15 @@ class CompletionHandler:
         return None
 
     def _fetch_issue_labels_for_audit(self, issue_number: int) -> list[str]:
-        getter = getattr(self.repository_host, "get_issue_labels_fresh", None)
-        if callable(getter):
-            try:
-                labels = getter(issue_number)
-                if isinstance(labels, list):
-                    return [str(label) for label in labels]
-            except Exception as exc:
-                logger.warning(
-                    "[RUN_AUDIT] Fresh label read failed for issue #%d: %s",
-                    issue_number,
-                    exc,
-                )
-
         try:
-            issue = self.repository_host.get_issue(issue_number)
+            labels = self.repository_host.get_issue_labels_fresh(issue_number)
         except Exception as exc:
             logger.warning(
-                "[RUN_AUDIT] Issue lookup failed for issue #%d: %s",
+                "[RUN_AUDIT] Fresh label read failed for issue #%d: %s",
                 issue_number,
                 exc,
             )
             return []
-        labels = getattr(issue, "labels", []) if issue is not None else []
         return [str(label) for label in labels]
 
     def _fetch_pr_info(

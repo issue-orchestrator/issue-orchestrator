@@ -117,10 +117,12 @@ def make_repository_host(
     issue_info: Any | None = None,
 ) -> SimpleNamespace:
     """Create a mock repository host."""
+    issue_value = issue_info if issue_info is not None else SimpleNamespace(labels=[])
     return SimpleNamespace(
         get_prs_for_branch=lambda _branch: prs or [],
         get_pr=lambda _pr_number: pr_info,
-        get_issue=lambda _issue_number: issue_info,
+        get_issue=lambda _issue_number: issue_value,
+        get_issue_labels_fresh=lambda _issue_number: [str(label) for label in getattr(issue_value, "labels", [])],
         set_pr_draft=Mock(),
     )
 
