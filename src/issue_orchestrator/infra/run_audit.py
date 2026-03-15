@@ -81,27 +81,8 @@ def _summarize_run(
     dominant_bucket = "unknown"
     summary = "Audit captured the completed run."
 
-    segments: list[tuple[str, float, str]] = []
-    if review_exchange:
-        for round_entry in review_exchange.get("rounds", []):
-            coder_minutes = round_entry.get("coder_rework_minutes")
-            if isinstance(coder_minutes, (int, float)):
-                segments.append((
-                    "coder_rework",
-                    float(coder_minutes),
-                    f"Coder rework after review round {round_entry['round_index']}",
-                ))
-            reviewer_minutes = round_entry.get("reviewer_follow_up_minutes")
-            if isinstance(reviewer_minutes, (int, float)):
-                segments.append((
-                    "reviewer_follow_up",
-                    float(reviewer_minutes),
-                    f"Reviewer follow-up for review round {round_entry['round_index'] + 1}",
-                ))
-
-        completed_rounds = review_exchange.get("completed_rounds")
-        if isinstance(completed_rounds, int) and completed_rounds > 1:
-            findings.append(f"Review exchange required {completed_rounds} rounds before reaching `{review_exchange.get('status', 'unknown')}`.")
+    segments = _extract_segments(review_exchange)
+    findings.extend(_review_exchange_findings(review_exchange))
 
     if segments:
         dominant_bucket, minutes, label = max(segments, key=lambda item: item[1])
@@ -111,19 +92,77 @@ def _summarize_run(
         summary = f"No finer-grained timing artifact was available; total observed runtime was {float(runtime):.1f} min."
         findings.append(summary)
 
-    if manifest.validation_passed is False:
-        reason = manifest.validation_reason or "unknown reason"
-        findings.append(f"Validation failed after the run completed: {reason}.")
-        if dominant_bucket == "unknown":
-            dominant_bucket = "validation_retry"
-
-    if manifest.outcome == "completed" and isinstance(runtime, (int, float)) and float(runtime) >= 20:
-        findings.append("This exceeded the normal short coding-path runtime and warranted audit capture.")
+    dominant_bucket = _apply_validation_findings(manifest, findings, dominant_bucket)
+    _append_runtime_findings(manifest, findings)
 
     if not findings:
         findings.append("No dominant delay segment could be inferred from persisted artifacts.")
 
     return summary, dominant_bucket, findings
+
+
+def _extract_segments(
+    review_exchange: dict[str, Any] | None,
+) -> list[tuple[str, float, str]]:
+    if not review_exchange:
+        return []
+    segments: list[tuple[str, float, str]] = []
+    for round_entry in review_exchange.get("rounds", []):
+        _append_segment(
+            segments,
+            round_entry.get("coder_rework_minutes"),
+            "coder_rework",
+            f"Coder rework after review round {round_entry['round_index']}",
+        )
+        _append_segment(
+            segments,
+            round_entry.get("reviewer_follow_up_minutes"),
+            "reviewer_follow_up",
+            f"Reviewer follow-up for review round {round_entry['round_index'] + 1}",
+        )
+    return segments
+
+
+def _append_segment(
+    segments: list[tuple[str, float, str]],
+    minutes: Any,
+    bucket: str,
+    label: str,
+) -> None:
+    if isinstance(minutes, (int, float)):
+        segments.append((bucket, float(minutes), label))
+
+
+def _review_exchange_findings(review_exchange: dict[str, Any] | None) -> list[str]:
+    if not review_exchange:
+        return []
+    completed_rounds = review_exchange.get("completed_rounds")
+    if not isinstance(completed_rounds, int) or completed_rounds <= 1:
+        return []
+    return [
+        "Review exchange required "
+        f"{completed_rounds} rounds before reaching `{review_exchange.get('status', 'unknown')}`."
+    ]
+
+
+def _apply_validation_findings(
+    manifest: RunManifest,
+    findings: list[str],
+    dominant_bucket: str,
+) -> str:
+    if manifest.validation_passed is not False:
+        return dominant_bucket
+    reason = manifest.validation_reason or "unknown reason"
+    findings.append(f"Validation failed after the run completed: {reason}.")
+    if dominant_bucket == "unknown":
+        return "validation_retry"
+    return dominant_bucket
+
+
+def _append_runtime_findings(manifest: RunManifest, findings: list[str]) -> None:
+    runtime = manifest.runtime_minutes
+    if manifest.outcome == "completed" and isinstance(runtime, (int, float)) and float(runtime) >= 20:
+        findings.append("This exceeded the normal short coding-path runtime and warranted audit capture.")
 
 
 def _load_review_exchange(run_dir: Path) -> dict[str, Any] | None:
