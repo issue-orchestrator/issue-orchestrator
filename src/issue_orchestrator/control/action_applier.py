@@ -254,9 +254,14 @@ class ActionApplier:
             has_label = self._has_label_safely(action.issue_number, action.label)
             if has_label is True:
                 self._record_label_stat(action.issue_number, "label_add_noop")
-                logger.debug(
-                    issue_log(action.issue_number, "No-op add_label (already present): %s"),
-                    action.label,
+                self._log_label_mutation(
+                    level=logging.INFO,
+                    issue_number=action.issue_number,
+                    operation="add",
+                    outcome="noop",
+                    label=action.label,
+                    reason=action.reason,
+                    detail="already present",
                 )
                 return ActionResult.ok(
                     action,
@@ -267,7 +272,14 @@ class ActionApplier:
             self.labels.add_label(action.issue_number, action.label)
             self._persist_label_add(action.issue_number, action.label)
             self._record_label_stat(action.issue_number, "label_add_applied")
-            logger.info(issue_log(action.issue_number, "Label added: %s"), action.label)
+            self._log_label_mutation(
+                level=logging.INFO,
+                issue_number=action.issue_number,
+                operation="add",
+                outcome="applied",
+                label=action.label,
+                reason=action.reason,
+            )
             self._emit_issue_labels_changed(action.issue_number, [action.label], [], issue_key=action.issue_key)
             return ActionResult.ok(
                 action,
@@ -276,7 +288,15 @@ class ActionApplier:
             )
         except Exception as e:
             self._record_label_stat(action.issue_number, "label_mutation_failed")
-            logger.error(issue_log(action.issue_number, "Failed to add label %s: %s"), action.label, e)
+            self._log_label_mutation(
+                level=logging.ERROR,
+                issue_number=action.issue_number,
+                operation="add",
+                outcome="failed",
+                label=action.label,
+                reason=action.reason,
+                detail=str(e),
+            )
             return ActionResult.fail(action, str(e))
 
     def _apply_remove_label(self, action: Action) -> ActionResult:
@@ -302,9 +322,14 @@ class ActionApplier:
                 )
             if should_skip_remove_noop:
                 self._record_label_stat(action.issue_number, "label_remove_noop")
-                logger.debug(
-                    issue_log(action.issue_number, "No-op remove_label (already absent): %s"),
-                    action.label,
+                self._log_label_mutation(
+                    level=logging.INFO,
+                    issue_number=action.issue_number,
+                    operation="remove",
+                    outcome="noop",
+                    label=action.label,
+                    reason=action.reason,
+                    detail="already absent",
                 )
                 return ActionResult.ok(
                     action,
@@ -315,7 +340,14 @@ class ActionApplier:
             self.labels.remove_label(action.issue_number, action.label)
             self._persist_label_remove(action.issue_number, action.label)
             self._record_label_stat(action.issue_number, "label_remove_applied")
-            logger.info(issue_log(action.issue_number, "Label removed: %s"), action.label)
+            self._log_label_mutation(
+                level=logging.INFO,
+                issue_number=action.issue_number,
+                operation="remove",
+                outcome="applied",
+                label=action.label,
+                reason=action.reason,
+            )
             self._emit_issue_labels_changed(action.issue_number, [], [action.label], issue_key=action.issue_key)
             return ActionResult.ok(
                 action,
@@ -324,7 +356,15 @@ class ActionApplier:
             )
         except Exception as e:
             self._record_label_stat(action.issue_number, "label_mutation_failed")
-            logger.error(issue_log(action.issue_number, "Failed to remove label %s: %s"), action.label, e)
+            self._log_label_mutation(
+                level=logging.ERROR,
+                issue_number=action.issue_number,
+                operation="remove",
+                outcome="failed",
+                label=action.label,
+                reason=action.reason,
+                detail=str(e),
+            )
             return ActionResult.fail(action, str(e))
 
     def _apply_add_comment(self, action: Action) -> ActionResult:
@@ -1049,6 +1089,24 @@ Maximum rework cycles ({action.max_rework_cycles}) exceeded.
                 "removed": removed,
             },
         ))
+
+    def _log_label_mutation(
+        self,
+        *,
+        level: int,
+        issue_number: int,
+        operation: str,
+        outcome: str,
+        label: str,
+        reason: str,
+        detail: str | None = None,
+    ) -> None:
+        message = "Label mutation: op=%s outcome=%s label=%s reason=%s"
+        args: list[object] = [operation, outcome, label, reason or "-"]
+        if detail:
+            message += " detail=%s"
+            args.append(detail)
+        logger.log(level, issue_log(issue_number, message), *args)
 
     def _emit_pr_view_changed(
         self,

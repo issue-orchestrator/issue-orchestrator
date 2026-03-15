@@ -101,12 +101,34 @@ class TestAddLabelAction:
 
     def test_add_label_success(self, applier, mock_labels):
         """Test successful label addition."""
-        action = AddLabelAction(issue_number=123, label="in-progress")
+        action = AddLabelAction(
+            issue_number=123,
+            label="in-progress",
+            reason="launch session",
+        )
 
         result = applier.apply(action)
 
         assert result.success
         mock_labels.add_label.assert_called_once_with(123, "in-progress")
+
+    def test_add_label_logs_reason_on_success(self, applier, caplog):
+        """Successful label mutations should include the triggering reason."""
+        action = AddLabelAction(
+            issue_number=123,
+            label="publish-failed",
+            reason="publish blocked: branch missing",
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = applier.apply(action)
+
+        assert result.success
+        assert any(
+            "Label mutation: op=add outcome=applied label=publish-failed reason=publish blocked: branch missing"
+            in message
+            for message in caplog.messages
+        )
 
     def test_add_label_failure(self, applier, mock_labels):
         """Test label addition failure."""
@@ -121,7 +143,11 @@ class TestAddLabelAction:
     def test_add_label_noop_when_already_present(self, applier, mock_labels):
         """Skip add_label mutation when label is already present."""
         mock_labels.has_label.return_value = True
-        action = AddLabelAction(issue_number=123, label="in-progress")
+        action = AddLabelAction(
+            issue_number=123,
+            label="in-progress",
+            reason="launch session",
+        )
 
         result = applier.apply(action)
 
@@ -151,12 +177,36 @@ class TestRemoveLabelAction:
     def test_remove_label_success(self, applier, mock_labels):
         """Test successful label removal."""
         mock_labels.has_label.return_value = True
-        action = RemoveLabelAction(issue_number=123, label="in-progress")
+        action = RemoveLabelAction(
+            issue_number=123,
+            label="in-progress",
+            reason="session completed",
+        )
 
         result = applier.apply(action)
 
         assert result.success
         mock_labels.remove_label.assert_called_once_with(123, "in-progress")
+
+    def test_remove_label_logs_reason_on_failure(self, applier, mock_labels, caplog):
+        """Failed label removals should log the reason and error detail."""
+        mock_labels.has_label.return_value = True
+        mock_labels.remove_label.side_effect = Exception("API error")
+        action = RemoveLabelAction(
+            issue_number=123,
+            label="pr-pending",
+            reason="rework needed for PR #77",
+        )
+
+        with caplog.at_level(logging.INFO):
+            result = applier.apply(action)
+
+        assert not result.success
+        assert any(
+            "Label mutation: op=remove outcome=failed label=pr-pending reason=rework needed for PR #77 detail=API error"
+            in message
+            for message in caplog.messages
+        )
 
     def test_remove_label_failure(self, applier, mock_labels):
         """Test label removal failure."""
