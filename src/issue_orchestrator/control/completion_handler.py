@@ -593,7 +593,13 @@ class CompletionHandler:
     ) -> RunAuditTrigger | None:
         try:
             manifest = RunManifest.load(run_dir)
-        except FileNotFoundError:
+        except Exception as exc:
+            logger.debug(
+                "[RUN_AUDIT] Skipping audit trigger resolution for issue #%d run_dir=%s: %s",
+                issue_number,
+                run_dir,
+                exc,
+            )
             return None
         if manifest.run_audit_path and manifest.run_audit_path.strip():
             return None
