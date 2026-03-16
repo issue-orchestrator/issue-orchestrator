@@ -14,6 +14,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING, Any, Optional, Callable
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from .label_manager import LabelManager
 
 from ..domain.issue_key import StableIssueId
+from ..domain.run_manifest import RunManifest
 from ..infra.config import Config
 from ..events import EventName
 from ..infra.logging_config import log_context, get_repo_log_path
@@ -41,8 +43,17 @@ from .completion_processor import (
 from .reconciliation import build_expected_for_mutation, ExpectedState
 from ..domain.triage_manifest import TriageManifest
 from pathlib import Path
+from ..infra.run_audit import write_run_audit
 
 logger = logging.getLogger(__name__)
+
+
+class RunAuditTrigger(str, Enum):
+    """How a run audit was requested."""
+
+    LABEL = "label"
+    TIMEOUT = "timeout"
+    RUNTIME_THRESHOLD = "runtime-threshold"
 
 
 def _read_triage_manifest(session: Session) -> TriageManifest | None:
@@ -471,6 +482,14 @@ class CompletionHandler:
         # Enrich manifest with runtime context + log tail
         self._enrich_manifest_runtime(session, status)
 
+        audit_actions = self._create_run_audit_and_actions(
+            session,
+            status,
+            processing_errors=processing_errors,
+        )
+        if audit_actions:
+            completion_actions = completion_actions + audit_actions
+
         result = CompletionResult(
             history_entry=history_entry,
             pr_url=pr_url,
@@ -493,6 +512,138 @@ class CompletionHandler:
             extra=log_context(issue_key=issue_key, session_id=session.terminal_id),
         )
         return result
+
+    def _create_run_audit_and_actions(
+        self,
+        session: Session,
+        status: SessionStatus,
+        *,
+        processing_errors: Optional[list[str]] = None,
+    ) -> tuple[Action, ...]:
+        """Persist a run audit and return any label actions it requires."""
+        labels = self._fetch_issue_labels_for_audit(session.issue.number)
+        run_dir = self._resolve_session_run_dir(session)
+        if not run_dir:
+            return ()
+
+        trigger = self._resolve_run_audit_trigger(
+            session.issue.number,
+            status,
+            run_dir,
+            labels,
+        )
+        if trigger is None:
+            return ()
+
+        try:
+            audit = write_run_audit(
+                run_dir,
+                issue_labels=labels,
+                trigger_source=trigger.value,
+                trigger_label=self._lm.run_audit_requested if trigger is RunAuditTrigger.LABEL else None,
+                completion_label=self._lm.run_audit_completed if trigger is RunAuditTrigger.LABEL else None,
+                trigger_threshold_minutes=(
+                    self.config.review_run_audit_min_runtime_minutes
+                    if trigger is RunAuditTrigger.RUNTIME_THRESHOLD
+                    else None
+                ),
+                processing_errors=processing_errors,
+            )
+            self._session_output.update_manifest(run_dir, {"run_audit_path": str(audit.path)})
+        except Exception:
+            logger.warning(
+                "[RUN_AUDIT] Failed for issue #%d run_dir=%s",
+                session.issue.number,
+                run_dir,
+                exc_info=True,
+            )
+            return ()
+
+        expected = build_expected_for_mutation()
+        logger.info(
+            "[RUN_AUDIT] Wrote %s for issue #%d status=%s trigger=%s",
+            audit.path,
+            session.issue.number,
+            status.value,
+            trigger.value,
+        )
+        if trigger is not RunAuditTrigger.LABEL:
+            return ()
+        return (
+            RemoveLabelAction(
+                issue_number=session.issue.number,
+                label=self._lm.run_audit_requested,
+                reason="Run audit captured for this session",
+                expected=expected,
+            ),
+            AddLabelAction(
+                issue_number=session.issue.number,
+                label=self._lm.run_audit_completed,
+                reason="Run audit captured for this session",
+                expected=expected,
+            ),
+        )
+
+    def _resolve_run_audit_trigger(
+        self,
+        issue_number: int,
+        status: SessionStatus,
+        run_dir: Path,
+        labels: list[str],
+    ) -> RunAuditTrigger | None:
+        try:
+            manifest = RunManifest.load(run_dir)
+        except Exception as exc:
+            logger.debug(
+                "[RUN_AUDIT] Skipping audit trigger resolution for issue #%d run_dir=%s: %s",
+                issue_number,
+                run_dir,
+                exc,
+            )
+            return None
+        if manifest.run_audit_path and manifest.run_audit_path.strip():
+            return None
+
+        if (
+            self._lm.run_audit_requested in labels
+            and self._lm.run_audit_completed not in labels
+        ):
+            return RunAuditTrigger.LABEL
+
+        if status is SessionStatus.TIMED_OUT and self.config.review_run_audit_on_timeout:
+            return RunAuditTrigger.TIMEOUT
+
+        threshold_minutes = self.config.review_run_audit_min_runtime_minutes
+        if threshold_minutes <= 0:
+            return None
+
+        runtime_minutes = manifest.runtime_minutes
+        if not isinstance(runtime_minutes, (int, float)):
+            return None
+        runtime_value = float(runtime_minutes)
+
+        if runtime_value >= float(threshold_minutes):
+            return RunAuditTrigger.RUNTIME_THRESHOLD
+
+        logger.debug(
+            "[RUN_AUDIT] Skipping automatic audit for issue #%d runtime=%.1f threshold=%d",
+            issue_number,
+            runtime_value,
+            threshold_minutes,
+        )
+        return None
+
+    def _fetch_issue_labels_for_audit(self, issue_number: int) -> list[str]:
+        try:
+            labels = self.repository_host.get_issue_labels_fresh(issue_number)
+        except Exception as exc:
+            logger.warning(
+                "[RUN_AUDIT] Fresh label read failed for issue #%d: %s",
+                issue_number,
+                exc,
+            )
+            return []
+        return [str(label) for label in labels]
 
     def _fetch_pr_info(
         self,

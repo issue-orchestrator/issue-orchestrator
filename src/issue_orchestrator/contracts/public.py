@@ -114,6 +114,7 @@ class TimelineEventContract(ContractBase):
     reviewer_response_type: Optional[str] = None
     reviewer_response_text: Optional[str] = None
     coder_response_type: Optional[str] = None
+    coder_response_text: Optional[str] = None
 
 
 class TimelineIssueContract(ContractBase):

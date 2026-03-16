@@ -146,6 +146,7 @@ def test_build_session_diagnostics_dialog_actions():
                 "claude_session_id": "cl-1",
                 "worktree": "/wt",
                 "diagnostic_path": "diag/diagnostic.json",
+                "run_audit_path": "diag/run-audit.json",
                 "claude_log_path": "/logs/claude.log",
                 "claude_log_dir": "/logs",
                 "orchestrator_log": "/logs/orch.log",
@@ -209,6 +210,7 @@ def test_build_session_diagnostics_dialog_actions():
     assert "/logs" in paths
     assert "/logs/orch.log" in paths
     assert "/wt/diag/diagnostic.json" in paths
+    assert "/wt/diag/run-audit.json" in paths
     assert "/wt/validate.json" in paths
     assert "/wt/validation-output.log" in paths
     assert "/wt/validation-stderr.log" in paths

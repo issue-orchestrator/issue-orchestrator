@@ -330,6 +330,14 @@ def _process_exchange_round(  # noqa: PLR0913
         ), no_progress_count, last_reviewer_text, last_coder_text
 
     last_reviewer_text = reviewer_response.response_text
+    emit(EventName.REVIEW_REWORK_STARTED, {
+        "issue_number": issue_number,
+        "session_name": session_name,
+        "round_index": round_index,
+        "reviewer_response_type": reviewer_response.response_type,
+        "reviewer_response_text": reviewer_response.response_text,
+        "task": "rework",
+    })
     coder_response, protocol_error = _run_coder_round_with_protocol_retries(
         session_output=session_output,
         runner=runner,
@@ -363,6 +371,16 @@ def _process_exchange_round(  # noqa: PLR0913
         role="coder",
         response=coder_response,
     )
+    emit(EventName.REVIEW_REWORK_COMPLETED, {
+        "issue_number": issue_number,
+        "session_name": session_name,
+        "round_index": round_index,
+        "reviewer_response_type": reviewer_response.response_type,
+        "reviewer_response_text": reviewer_response.response_text,
+        "coder_response_type": coder_response.response_type,
+        "coder_response_text": coder_response.response_text,
+        "task": "rework",
+    })
     emit(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
         "session_name": session_name,
@@ -370,6 +388,7 @@ def _process_exchange_round(  # noqa: PLR0913
         "reviewer_response_type": reviewer_response.response_type,
         "reviewer_response_text": reviewer_response.response_text,
         "coder_response_type": coder_response.response_type,
+        "coder_response_text": coder_response.response_text,
     })
     last_coder_text = coder_response.response_text
     return None, no_progress_count, last_reviewer_text, last_coder_text

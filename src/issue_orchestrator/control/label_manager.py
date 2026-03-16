@@ -102,6 +102,8 @@ class LabelManager:
             LabelEntry("blocked_stale_claim", "blocked:stale-claim", LabelCategory.BLOCKING, "Stale claim"),
             LabelEntry("needs_reconcile", "needs-reconcile", LabelCategory.CLAIM, "Needs reconciliation"),
             LabelEntry("provider_unavailable", self._provider_unavailable_base, LabelCategory.BLOCKING, "Provider unavailable"),
+            LabelEntry("run_audit_requested", "needs-run-audit", LabelCategory.INFORMATIONAL, "Run audit requested"),
+            LabelEntry("run_audit_completed", "run-audit-complete", LabelCategory.INFORMATIONAL, "Run audit completed"),
             LabelEntry("review_keep_approach", config.review_keep_current_approach_label, LabelCategory.INFORMATIONAL, "Keep current approach"),
             LabelEntry("code_review", config.code_review_label or "needs-code-review", LabelCategory.LIFECYCLE, "Needs code review"),
             LabelEntry("code_reviewed", config.code_reviewed_label or "code-reviewed", LabelCategory.LIFECYCLE, "Code reviewed"),
@@ -203,6 +205,14 @@ class LabelManager:
     @property
     def review_keep_approach(self) -> str:
         return self._resolved["review_keep_approach"]
+
+    @property
+    def run_audit_requested(self) -> str:
+        return self._resolved["run_audit_requested"]
+
+    @property
+    def run_audit_completed(self) -> str:
+        return self._resolved["run_audit_completed"]
 
     # ------------------------------------------------------------------
     # Resolution

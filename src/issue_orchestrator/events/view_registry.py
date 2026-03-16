@@ -109,6 +109,12 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
     "review.comment_added": [
         _ops("review.comment_added", "Review comment posted", "review"),
     ],
+    "review.rework_started": [
+        _user("review.rework_started", "Coder addressing review feedback", "rework"),
+    ],
+    "review.rework_completed": [
+        _user("review.rework_completed", "Coder finished review rework", "rework"),
+    ],
 
     # -- Rework lifecycle --
     "rework.started": [

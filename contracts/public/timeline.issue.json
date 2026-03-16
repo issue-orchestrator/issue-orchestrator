@@ -34,6 +34,18 @@
           "title": "Artifacts",
           "type": "array"
         },
+        "coder_response_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Coder Response Text"
+        },
         "coder_response_type": {
           "anyOf": [
             {

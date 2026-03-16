@@ -538,6 +538,20 @@ class TestNarrativeEnrichment:
         )
         assert narrative == "Reviewer requested changes (round 2)"
 
+    def test_review_rework_started_includes_round_number(self) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_REWORK_STARTED,
+            {"round_index": 2},
+        )
+        assert narrative == "Coder started rework for review round 2"
+
+    def test_review_rework_completed_includes_round_number(self) -> None:
+        narrative = self._write_and_get_narrative(
+            EventName.REVIEW_REWORK_COMPLETED,
+            {"round_index": 2},
+        )
+        assert narrative == "Coder completed rework for review round 2"
+
     def test_unhandled_event_keeps_static_narrative(self) -> None:
         from issue_orchestrator.execution.timeline_writer import _enrich_narrative
         result = _enrich_narrative("Code review started", "review.started", {"issue_number": 42})
@@ -566,6 +580,7 @@ def test_timeline_event_preserves_review_exchange_round_fields() -> None:
             "reviewer_response_type": "changes_requested",
             "reviewer_response_text": "Three issues to fix before approval.",
             "coder_response_type": "ok",
+            "coder_response_text": "Applied fixes and updated tests.",
         },
     )
 
@@ -575,6 +590,7 @@ def test_timeline_event_preserves_review_exchange_round_fields() -> None:
     assert event["reviewer_response_type"] == "changes_requested"
     assert event["reviewer_response_text"] == "Three issues to fix before approval."
     assert event["coder_response_type"] == "ok"
+    assert event["coder_response_text"] == "Applied fixes and updated tests."
     assert "Round 1" in event["detail"]
     assert "Three issues to fix before approval." in event["detail"]
     assert "Coder response: ok" in event["detail"]

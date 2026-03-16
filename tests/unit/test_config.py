@@ -1068,6 +1068,8 @@ agents:
         assert config.review_exchange_max_no_progress == 2
         assert config.review_exchange_require_validation is True
         assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
+        assert config.review_run_audit_min_runtime_minutes == 20
+        assert config.review_run_audit_on_timeout is True
         # triage review defaults (all None when not configured)
         assert config.triage_review_agent is None
         assert config.triage_review_label is None
@@ -1166,6 +1168,9 @@ review:
       max_rounds: 6
       max_no_progress: 1
       require_validation: false
+  run_audit:
+    min_runtime_minutes: 30
+    on_timeout: false
   keep_current_approach_label: reviewer-keep-current-approach
   triage_review_agent: agent:triage
   triage_reviewed_label: triage-reviewed
@@ -1185,6 +1190,8 @@ review:
         assert config.review_exchange_max_rounds == 6
         assert config.review_exchange_max_no_progress == 1
         assert config.review_exchange_require_validation is False
+        assert config.review_run_audit_min_runtime_minutes == 30
+        assert config.review_run_audit_on_timeout is False
         assert config.review_keep_current_approach_label == "reviewer-keep-current-approach"
         assert config.triage_review_agent == "agent:triage"
         assert config.triage_reviewed_label == "triage-reviewed"

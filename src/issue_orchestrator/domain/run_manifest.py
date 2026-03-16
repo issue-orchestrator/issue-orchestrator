@@ -95,6 +95,7 @@ class RunManifest:
     claude_log_path: str | None = None
     claude_session_id: str | None = None
     orchestrator_tail: str | None = None
+    run_audit_path: str | None = None
     artifacts: dict[str, Any] | None = None
 
     # ------------------------------------------------------------------

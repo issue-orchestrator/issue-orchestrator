@@ -152,6 +152,16 @@ def _enrich_review_approved(data: dict[str, Any]) -> str | None:
     return f"Review approved after {rounds} rounds" if isinstance(rounds, int) and rounds > 1 else None
 
 
+def _enrich_review_rework_started(data: dict[str, Any]) -> str | None:
+    ri = data.get("round_index")
+    return f"Coder started rework for review round {ri}" if isinstance(ri, int) else None
+
+
+def _enrich_review_rework_completed(data: dict[str, Any]) -> str | None:
+    ri = data.get("round_index")
+    return f"Coder completed rework for review round {ri}" if isinstance(ri, int) else None
+
+
 def _enrich_changes_requested(data: dict[str, Any]) -> str | None:
     rounds = data.get("rounds")
     return f"Reviewer requested changes (round {rounds})" if isinstance(rounds, int) else None
@@ -170,6 +180,8 @@ def _enrich_exchange_completed(data: dict[str, Any]) -> str | None:
 _NARRATIVE_ENRICHERS: dict[str, Callable[[dict[str, Any]], str | None]] = {
     "review_exchange.round_started": _enrich_round_started,
     "review_exchange.round_completed": _enrich_round_completed,
+    "review.rework_started": _enrich_review_rework_started,
+    "review.rework_completed": _enrich_review_rework_completed,
     "review.approved": _enrich_review_approved,
     "review.changes_requested": _enrich_changes_requested,
     "issue.pr_created": _enrich_pr_created,

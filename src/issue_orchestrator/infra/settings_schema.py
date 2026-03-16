@@ -564,6 +564,32 @@ class ReviewSettings(BaseModel):
             "yaml_path": "review.keep_current_approach_label",
         },
     )
+    run_audit_min_runtime_minutes: int = Field(
+        20,
+        title="Auto Run Audit Threshold (minutes)",
+        description="Automatically capture a run audit when runtime meets or exceeds this threshold (0 = disable)",
+        ge=0,
+        le=1440,
+        json_schema_extra={
+            "doc_examples": ["0", "20", "60"],
+            "doc_notes": "Long runs get a persisted audit automatically; set to 0 to keep audits label-driven only.",
+            "section": "Code Review Workflow",
+            "config_attr": "review_run_audit_min_runtime_minutes",
+            "yaml_path": "review.run_audit.min_runtime_minutes",
+        },
+    )
+    run_audit_on_timeout: bool = Field(
+        True,
+        title="Audit Timed-Out Runs",
+        description="Automatically capture a run audit when a session times out",
+        json_schema_extra={
+            "doc_examples": ["true", "false"],
+            "doc_notes": "Keep enabled to preserve diagnostics for timed-out sessions even when they did not exceed the slow-run threshold cleanly.",
+            "section": "Code Review Workflow",
+            "config_attr": "review_run_audit_on_timeout",
+            "yaml_path": "review.run_audit.on_timeout",
+        },
+    )
     exchange_mode: Literal["via-draft-pr", "via-mcp", "via-local-loop", "auto"] = Field(
         "via-local-loop",
         title="Review Exchange Mode",

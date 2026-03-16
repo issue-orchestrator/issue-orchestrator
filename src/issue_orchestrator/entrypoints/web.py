@@ -2113,7 +2113,12 @@ def _timeline_event_recommended_actions(
             f"orchestrator:{issue_number}",
         )
     # Per-round log actions for review exchange round events
-    if event_name in ("review_exchange.round_started", "review_exchange.round_completed"):
+    if event_name in (
+        "review_exchange.round_started",
+        "review_exchange.round_completed",
+        "review.rework_started",
+        "review.rework_completed",
+    ):
         round_index = event.get("round_index")
         run_dir = str(event.get("run_dir") or "")
         if isinstance(round_index, int) and run_dir:
