@@ -25,7 +25,7 @@
       "protocol": "http"
     }
   },
-  "postCreateCommand": "make worktree-setup && npm install -g @openai/codex",
+  "postCreateCommand": "make worktree-setup && npm install -g @openai/codex@0.114.0",
   "hostRequirements": {
     "cpus": 4,
     "memory": "8gb",

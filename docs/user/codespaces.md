@@ -10,6 +10,9 @@ The repo now includes:
 - `.devcontainer/devcontainer.json`
 - `.issue-orchestrator/config/z-codespaces.yaml`
 
+The `z-` prefix is intentional so the Codespaces config sorts after the normal
+local configs in Control Center lists.
+
 The Codespaces config pins stable repo-engine ports:
 
 - dashboard: `8080`
@@ -30,6 +33,9 @@ Before starting the orchestrator, make sure the codespace has the credentials
 you actually plan to use:
 
 - `ISSUE_ORCH_GITHUB_TOKEN`
+
+The recommended path is to add this as a GitHub Codespaces secret for the
+repository or your account, so each new Codespace gets it automatically.
 
 Provider auth depends on how you use each CLI:
 

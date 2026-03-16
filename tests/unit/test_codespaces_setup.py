@@ -23,7 +23,20 @@ def test_devcontainer_forwards_codespaces_ports_and_bootstraps_repo() -> None:
 
     data = json.loads(devcontainer_path.read_text(encoding="utf-8"))
 
-    assert data["postCreateCommand"] == "make worktree-setup && npm install -g @openai/codex"
+    assert data["postCreateCommand"] == "make worktree-setup && npm install -g @openai/codex@0.114.0"
     assert data["forwardPorts"] == [19080, 19081, 8080]
     assert data["portsAttributes"]["19080"]["label"] == "Issue Orchestrator Control Center"
     assert data["portsAttributes"]["8080"]["label"] == "Issue Orchestrator Engine Dashboard"
+
+
+def test_codespaces_doc_mentions_secrets_login_and_stable_ports() -> None:
+    repo_root = Path(__file__).resolve().parents[2]
+    docs_path = repo_root / "docs" / "user" / "codespaces.md"
+
+    text = docs_path.read_text(encoding="utf-8")
+
+    assert "Codespaces secret" in text
+    assert "codex login" in text
+    assert "19080" in text
+    assert "19081" in text
+    assert "8080" in text

@@ -3,6 +3,9 @@
 # This keeps the local `main.yaml` workflow unchanged while giving Codespaces a
 # stable dashboard/control API port pair that matches forwarded ports in
 # `.devcontainer/devcontainer.json`.
+#
+# The `z-` prefix is intentional so this config sorts after the normal local
+# configs in Control Center lists.
 
 worktrees:
   base: "../"
@@ -11,6 +14,8 @@ worktrees:
     - make worktree-setup
 
 agents:
+  # Codespaces sessions do not have a practical interactive approval loop for
+  # subprocess-run agent commands, so these Claude agents use bypassPermissions.
   agent:backend:
     prompt: repo-specific/prompts/simple-fix.md
     model: sonnet
