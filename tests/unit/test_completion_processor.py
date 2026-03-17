@@ -1218,9 +1218,10 @@ class TestCompletionProcessorGitActions:
     """Tests for git-related actions from completion records."""
 
     def test_push_branch_action_calls_adapter(
-        self, processor, mock_git_adapter, worktree_with_completion
+        self, processor, mock_git_adapter, worktree_with_completion, monkeypatch
     ):
         """PUSH_BRANCH action should push via adapter."""
+        monkeypatch.delenv("E2E_SKIP_PUSH_HOOKS", raising=False)
         record = make_record(
             outcome=CompletionOutcome.COMPLETED,
             requested_actions=[RequestedAction.PUSH_BRANCH],
