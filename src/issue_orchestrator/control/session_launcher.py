@@ -15,6 +15,7 @@ the orchestrator focused on coordination and main loop logic.
 
 import json
 import logging
+import os
 import shlex
 import sys
 import time
@@ -79,6 +80,12 @@ logger = logging.getLogger(__name__)
 def detect_existing_work(worktree_path: Path, working_copy: WorkingCopy) -> Optional[str]:
     """Check if worktree has commits ahead of main and return context for agent."""
     try:
+        seed_ref = os.environ.get("ORCHESTRATOR_WORKTREE_SEED_REF")
+        if seed_ref:
+            head_sha = working_copy.get_head_sha(worktree_path)
+            if head_sha and head_sha == seed_ref:
+                return None
+
         commits = working_copy.get_commits_ahead_of_main(worktree_path)
         if not commits:
             return None

@@ -169,12 +169,16 @@ class MockWorkingCopy:
     def __init__(self):
         self.commits_ahead: list[CommitInfo] = []
         self.current_branch: str | None = "main"
+        self.head_sha: str | None = None
 
     def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
         return self.commits_ahead
 
     def get_current_branch(self, worktree: Path) -> str | None:
         return self.current_branch
+
+    def get_head_sha(self, worktree: Path) -> str | None:
+        return self.head_sha
 
 
 class MockCommandRunner:
@@ -432,6 +436,19 @@ class TestDetectExistingWork:
         """Verify returns None when worktree has no commits ahead of main (line 77)."""
         working_copy = MockWorkingCopy()
         working_copy.commits_ahead = []
+
+        result = detect_existing_work(tmp_path, working_copy)
+
+        assert result is None
+
+    def test_returns_none_when_head_matches_seed_ref(self, tmp_path, monkeypatch):
+        """Seeded local issue worktrees should not surface inherited base commits as existing work."""
+        working_copy = MockWorkingCopy()
+        working_copy.commits_ahead = [
+            CommitInfo(sha="abc123", message="Base fix", author="test", short_sha="abc1"),
+        ]
+        working_copy.head_sha = "abc123"
+        monkeypatch.setenv("ORCHESTRATOR_WORKTREE_SEED_REF", "abc123")
 
         result = detect_existing_work(tmp_path, working_copy)
 
