@@ -15,6 +15,7 @@
         BULK_CANCEL_QUEUED: '/api/bulk-cancel-queued',
         HOST_OPEN_PATH: '/api/host/open-path',
         REVEAL_WORKTREE: (issueNumber) => `/api/host/reveal-worktree/${issueNumber}`,
+        TERMINAL_RECORDING: (issueNumber) => `/api/session/terminal-recording/${issueNumber}`,
     };
 
     function normalizeIssueNumbers(issueNumbers) {
@@ -99,6 +100,28 @@
         };
     }
 
+    function buildTerminalRecordingRequest(issueNumber, runDir, options = {}) {
+        const normalized = normalizeIssueNumbers([issueNumber]);
+        if (normalized.length !== 1) {
+            throw new Error(`Invalid issue number for terminal recording action: ${issueNumber}`);
+        }
+        if (!runDir) {
+            throw new Error('runDir is required for terminal recording action');
+        }
+        const params = new URLSearchParams();
+        params.set('run_dir', String(runDir));
+        if (options.offset !== undefined) {
+            params.set('offset', String(options.offset));
+        }
+        if (options.limit !== undefined) {
+            params.set('limit', String(options.limit));
+        }
+        return {
+            endpoint: `${ENDPOINTS.TERMINAL_RECORDING(normalized[0])}?${params.toString()}`,
+            method: 'GET',
+        };
+    }
+
     return {
         ENDPOINTS,
         normalizeIssueNumbers,
@@ -110,5 +133,6 @@
         buildIssueRetryRequest,
         buildHostOpenPathRequest,
         buildRevealWorktreeRequest,
+        buildTerminalRecordingRequest,
     };
 });

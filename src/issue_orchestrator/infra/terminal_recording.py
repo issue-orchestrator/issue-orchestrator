@@ -95,6 +95,7 @@ class TerminalRecordingWriter:
 
     def _write_event(self, event: TerminalRecordingEvent) -> None:
         self._file.write(json.dumps(event.to_dict(), sort_keys=True) + "\n")
+        self._file.flush()
 
 def iter_terminal_recording(path: Path) -> Iterator[dict[str, Any]]:
     """Iterate over a terminal recording NDJSON file for replay or inspection."""

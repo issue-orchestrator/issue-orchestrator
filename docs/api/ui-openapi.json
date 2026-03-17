@@ -504,6 +504,10 @@
               {"$ref": "#/components/schemas/SessionDiagnosticsAnalysisPayload"},
               {"type": "null"}
             ]
+          },
+          "follow_up_issues": {
+            "type": "array",
+            "items": {"$ref": "#/components/schemas/SessionDiagnosticsFollowUpIssuePayload"}
           }
         }
       },
@@ -515,6 +519,18 @@
           "headline": {"type": "string"},
           "detail": {"type": ["string", "null"]},
           "suggestions": {"type": "array", "items": {"type": "string"}}
+        }
+      },
+      "SessionDiagnosticsFollowUpIssuePayload": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "reason", "blocking"],
+        "properties": {
+          "title": {"type": "string"},
+          "reason": {"type": "string"},
+          "evidence": {"type": ["string", "null"]},
+          "suggested_labels": {"type": "array", "items": {"type": "string"}},
+          "blocking": {"type": "boolean"}
         }
       },
       "BlockedIssuePayload": {

@@ -55,6 +55,7 @@ STALE_GIT_LOCK_RECHECK_SECONDS = 2
 _BRANCH_IN_USE_BY_WORKTREE_RE = re.compile(
     r"fatal:\s+'([^']+)'\s+is already used by worktree at '([^']+)'"
 )
+WORKTREE_SEED_REF_ENV = "ORCHESTRATOR_WORKTREE_SEED_REF"
 
 
 def _git_run(
@@ -115,6 +116,18 @@ CLAUDE_SETTINGS_FOR_AGENTS = {
 }
 
 ALLOW_NO_VERIFY_DRY_RUN_PATH = Path(".issue-orchestrator") / "allow-no-verify-dry-run"
+WORKTREE_LOCAL_EXCLUDE_PATHS: tuple[Path, ...] = (
+    Path(".venv"),
+    Path(WORKTREE_ID_MARKER),
+    ALLOW_NO_VERIFY_DRY_RUN_PATH,
+)
+WORKTREE_TRACKED_RUNTIME_PATHS: tuple[Path, ...] = (
+    Path(".claude/settings.json"),
+    Path(".issue-orchestrator/session-latest.json"),
+)
+WORKTREE_SYNCED_SUPPORT_FILES: tuple[Path, ...] = (
+    Path("domain/models.py"),
+)
 
 
 def _configure_no_verify_dry_run(worktree_path: Path, allow: bool) -> None:
@@ -127,6 +140,27 @@ def _configure_no_verify_dry_run(worktree_path: Path, allow: bool) -> None:
             flag_path.unlink()
     except OSError:
         logger.debug("Failed to update dry-run allow flag: %s", flag_path)
+
+
+def _link_repo_venv_into_worktree(repo_root: Path, worktree_path: Path) -> None:
+    """Expose the repo venv inside a worktree so validation commands work there too."""
+    source_venv = repo_root / ".venv"
+    if not source_venv.exists():
+        return
+
+    target_venv = worktree_path / ".venv"
+    if target_venv.is_symlink():
+        try:
+            if target_venv.resolve() == source_venv.resolve():
+                return
+        except OSError:
+            pass
+        target_venv.unlink()
+    elif target_venv.exists():
+        return
+
+    target_venv.symlink_to(source_venv, target_is_directory=True)
+    logger.info("Linked shared repo venv into worktree: %s -> %s", target_venv, source_venv)
 
 
 class WorktreeError(Exception):
@@ -361,7 +395,7 @@ def _push_dry_run_preflight(
     return False, f"push dry-run failed: {last_error}"
 
 
-def sync_cli_tools(worktree_path: Path) -> None:
+def sync_cli_tools(worktree_path: Path) -> list[Path]:
     """
     Sync CLI tools from the orchestrator package to worktree.
 
@@ -379,27 +413,42 @@ def sync_cli_tools(worktree_path: Path) -> None:
     # This ensures tools are found even when targeting a foreign repo.
     # __file__ = .../adapters/worktree/_worktree.py
     # parents[2] = .../issue_orchestrator/
-    src_cli_tools = Path(__file__).resolve().parents[2] / "entrypoints" / "cli_tools"
+    package_root = Path(__file__).resolve().parents[2]
+    src_cli_tools = package_root / "entrypoints" / "cli_tools"
     dst_cli_tools = worktree_path / "src" / "issue_orchestrator" / "entrypoints" / "cli_tools"
 
     if not src_cli_tools.exists():
         logger.debug("No cli_tools in orchestrator package at %s, skipping sync", src_cli_tools)
-        return
+        return []
 
     # Create destination directory tree if it doesn't exist (foreign repos
     # won't have src/issue_orchestrator/).
     dst_cli_tools.mkdir(parents=True, exist_ok=True)
 
+    synced_paths: list[Path] = []
     # Copy each .py file from source to destination
     for src_file in src_cli_tools.glob("*.py"):
         dst_file = dst_cli_tools / src_file.name
         try:
             shutil.copy2(src_file, dst_file)
+            synced_paths.append(dst_file.relative_to(worktree_path))
             logger.debug("Synced cli tool: %s -> %s", src_file.name, dst_file)
         except OSError as e:
             logger.warning("Failed to sync cli tool %s: %s", src_file.name, e)
 
+    for relative_path in WORKTREE_SYNCED_SUPPORT_FILES:
+        src_file = package_root / relative_path
+        dst_file = worktree_path / "src" / "issue_orchestrator" / relative_path
+        try:
+            dst_file.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, dst_file)
+            synced_paths.append(dst_file.relative_to(worktree_path))
+            logger.debug("Synced worktree runtime support file: %s -> %s", src_file.name, dst_file)
+        except OSError as e:
+            logger.warning("Failed to sync runtime support file %s: %s", src_file.name, e)
+
     logger.info("Synced cli_tools from orchestrator package to worktree")
+    return synced_paths
 
 
 def _install_worktree_identity(worktree_path: Path) -> str:
@@ -441,6 +490,59 @@ def _install_worktree_identity(worktree_path: Path) -> str:
         # Return the ID anyway - identity is best-effort
 
     return worktree_id
+
+
+def _worktree_git_dir(worktree_path: Path) -> Path | None:
+    git_file = worktree_path / ".git"
+    if not git_file.exists():
+        return None
+    content = git_file.read_text().strip()
+    if not content.startswith("gitdir:"):
+        return None
+    return Path(content.split(":", 1)[1].strip())
+
+
+def _write_worktree_exclude_entries(worktree_path: Path, paths: list[Path]) -> None:
+    git_dir = _worktree_git_dir(worktree_path)
+    if git_dir is None:
+        return
+    exclude_path = git_dir / "info" / "exclude"
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    existing_lines: list[str] = []
+    if exclude_path.exists():
+        existing_lines = exclude_path.read_text().splitlines()
+    existing = {line.strip() for line in existing_lines if line.strip()}
+    missing = [str(path).replace("\\", "/") for path in paths if str(path).replace("\\", "/") not in existing]
+    if not missing:
+        return
+    suffix = "\n" if existing_lines and not exclude_path.read_text().endswith("\n") else ""
+    with exclude_path.open("a", encoding="utf-8") as handle:
+        if suffix:
+            handle.write(suffix)
+        for entry in missing:
+            handle.write(f"{entry}\n")
+
+
+def _hide_runtime_artifacts_from_git_status(
+    worktree_path: Path,
+    synced_cli_tool_paths: list[Path],
+) -> None:
+    tracked_paths = [*WORKTREE_TRACKED_RUNTIME_PATHS, *synced_cli_tool_paths]
+    for path in tracked_paths:
+        normalized = str(path).replace("\\", "/")
+        tracked = _git_run(
+            worktree_path,
+            ["ls-files", "--error-unmatch", normalized],
+            check=False,
+        )
+        if tracked.returncode != 0:
+            continue
+        _git_run(
+            worktree_path,
+            ["update-index", "--skip-worktree", "--", normalized],
+            check=False,
+        )
+    _write_worktree_exclude_entries(worktree_path, list(WORKTREE_LOCAL_EXCLUDE_PATHS))
 
 
 def install_claude_settings(worktree_path: Path) -> None:
@@ -944,57 +1046,6 @@ def _remove_existing_worktree_path(repo_root: Path, worktree_path: Path) -> None
         shutil.rmtree(worktree_path, ignore_errors=True)
 
 
-def _commit_setup_artifacts(worktree_path: Path) -> None:
-    """Commit files written by worktree setup (cli_tools sync, settings, identity).
-
-    ``sync_cli_tools`` copies the orchestrator's current cli_tools source into
-    the worktree.  When the orchestrator runs from a different version than the
-    worktree's checkout (common during development), those copied files appear
-    as modifications in ``git status``.  Committing them here keeps the worktree
-    clean so ``coding-done``'s dirty-tree check only detects files the agent
-    actually changed.
-
-    Only stages the specific paths that setup writes — never ``git add -A`` —
-    so leftover agent work on a reused worktree is never silently committed.
-
-    Best-effort: failures are logged but do not block worktree creation.
-    """
-    # Paths written by _finalize_worktree helpers (relative to worktree root).
-    # .claude/ and .issue-orchestrator/ are already excluded from coding-done's
-    # dirty check, so only cli_tools needs to be committed here.
-    _SETUP_PATHS = [
-        "src/issue_orchestrator/entrypoints/cli_tools",
-    ]
-
-    try:
-        staged_any = False
-        for rel_path in _SETUP_PATHS:
-            full = worktree_path / rel_path
-            if full.exists():
-                result = _git_run(
-                    worktree_path, ["add", "--", rel_path], check=False,
-                )
-                if result.returncode == 0:
-                    staged_any = True
-
-        if not staged_any:
-            return
-
-        # Only commit if there are actually staged changes
-        diff = _git_run(worktree_path, ["diff", "--cached", "--quiet"], check=False)
-        if diff.returncode == 0:
-            return  # Nothing staged
-
-        _git_run(
-            worktree_path,
-            ["commit", "-m", "chore: worktree setup artifacts", "--no-verify"],
-            check=False,
-        )
-        logger.debug("Committed setup artifacts in worktree %s", worktree_path)
-    except Exception:
-        logger.debug("Could not commit setup artifacts in %s (non-fatal)", worktree_path)
-
-
 def _finalize_worktree(
     worktree_path: Path,
     repo_root: Path,
@@ -1007,9 +1058,10 @@ def _finalize_worktree(
         install_hooks(worktree_path, pre_push_hook)
     install_claude_settings(worktree_path)
     _configure_no_verify_dry_run(worktree_path, allow_no_verify_dry_run_preflight)
-    sync_cli_tools(worktree_path)
+    _link_repo_venv_into_worktree(repo_root, worktree_path)
+    synced_cli_tool_paths = list(sync_cli_tools(worktree_path) or [])
     _install_worktree_identity(worktree_path)
-    _commit_setup_artifacts(worktree_path)
+    _hide_runtime_artifacts_from_git_status(worktree_path, synced_cli_tool_paths)
 
 
 def _try_reuse_worktree(
@@ -1166,6 +1218,23 @@ def _build_worktree_add_command(
         return [
             "worktree", "add",
             str(worktree_path), "-b", branch_name, f"origin/{branch_name}"
+        ]
+
+    seed_ref = os.environ.get(WORKTREE_SEED_REF_ENV, "").strip()
+    if seed_ref:
+        seed_ref_result = _git_run(
+            repo_root,
+            ["rev-parse", "--verify", seed_ref],
+            check=False,
+        )
+        if seed_ref_result.returncode != 0:
+            raise WorktreeError(
+                f"Invalid worktree seed ref {seed_ref!r}: {seed_ref_result.stderr.strip()}"
+            )
+        logger.info("Creating new branch from worktree seed ref: %s", seed_ref)
+        return [
+            "worktree", "add",
+            str(worktree_path), "-b", branch_name, seed_ref
         ]
 
     # Create new branch from default branch, NOT from HEAD

@@ -1193,11 +1193,11 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
     accessor = ManifestAccessor(run_identity)
     stream_observation = _build_ui_log_stream_observation(run_identity.run_dir, resolved_log_path=None)
     try:
-        artifact = accessor.get_terminal_recording(allow_empty=True)
+        artifact = accessor.get_agent_log(allow_empty=True)
     except ArtifactNotFoundError as e:
         return JSONResponse({
-            "error": "No terminal recording found",
-            "hint": "Session may not have started or recording was not enabled",
+            "error": "No agent log found",
+            "hint": "Session may not have started or its run-scoped log was not attached",
             "diagnostic": {
                 "run_dir": str(run_identity.run_dir),
                 "detail": str(e),
@@ -1208,11 +1208,10 @@ async def get_agent_ui_log(  # noqa: C901, PLR0912 - log parsing with format det
     stream_observation = _build_ui_log_stream_observation(run_identity.run_dir, resolved_log_path=log_path)
 
     try:
-        if artifact.descriptor.artifact_type == "terminal_recording":
+        if artifact.descriptor.content_type == "application/x-ndjson":
             all_lines = _preview_lines_from_terminal_recording(log_path)
         else:
-            raw_lines = log_path.read_text(errors="ignore").splitlines()
-            all_lines = raw_lines
+            all_lines = _preview_lines_from_claude_jsonl(log_path)
 
         # Some recordings contain stream-json payloads; decode those into plain text.
         stream_json_lines = extract_stream_json_text(all_lines)
@@ -1313,12 +1312,14 @@ def _build_ui_log_stream_observation(run_dir: Path, *, resolved_log_path: Path |
     terminal_recording = run_dir / "terminal-recording.jsonl"
     provider_stdout = run_dir / "provider-runner" / "stdout.log"
     provider_stderr = run_dir / "provider-runner" / "stderr.log"
+    claude_log = run_dir / "claude-session.jsonl"
     return {
         "run_dir": str(run_dir),
         "resolved_log_path": str(resolved_log_path) if resolved_log_path else None,
         "terminal_recording": _stream_file_observation(terminal_recording),
         "provider_stdout": _stream_file_observation(provider_stdout),
         "provider_stderr": _stream_file_observation(provider_stderr),
+        "claude_log": _stream_file_observation(claude_log),
     }
 
 
@@ -1346,6 +1347,112 @@ def _preview_lines_from_terminal_recording(path: Path) -> list[str]:
         if raw_line.strip():
             decoded_chunks.append(raw_line)
     return "".join(decoded_chunks).splitlines()
+
+
+def _preview_lines_from_claude_jsonl(path: Path) -> list[str]:
+    """Render a concise preview from a Claude JSONL transcript."""
+    preview_lines: list[str] = []
+    try:
+        with path.open(encoding="utf-8") as handle:
+            for raw_line in handle:
+                if not raw_line.strip():
+                    continue
+                try:
+                    entry = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    continue
+                preview_lines.extend(_claude_jsonl_entry_preview_lines(entry))
+    except OSError:
+        return []
+    return [line for line in preview_lines if line.strip()]
+
+
+def _claude_jsonl_entry_preview_lines(entry: dict[str, Any]) -> list[str]:
+    entry_type = str(entry.get("type") or "")
+    if entry_type == "stream_event":
+        event = entry.get("event")
+        if isinstance(event, dict):
+            return _claude_stream_event_preview_lines(event)
+        return []
+    if entry_type == "assistant":
+        message = entry.get("message")
+        if isinstance(message, dict):
+            return _claude_content_preview_lines(message.get("content"))
+        return []
+    if entry_type == "user":
+        message = entry.get("message")
+        if isinstance(message, dict):
+            return _claude_tool_result_preview_lines(message.get("content"))
+    return []
+
+
+def _claude_stream_event_preview_lines(event: dict[str, Any]) -> list[str]:
+    event_type = str(event.get("type") or "")
+    if event_type != "content_block_delta":
+        return []
+    delta = event.get("delta")
+    if not isinstance(delta, dict):
+        return []
+    if str(delta.get("type") or "") != "text_delta":
+        return []
+    text = str(delta.get("text") or "").strip()
+    return [text] if text else []
+
+
+def _claude_content_preview_lines(content: Any) -> list[str]:
+    if not isinstance(content, list):
+        return []
+
+    preview_lines: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "")
+        if item_type == "text":
+            text = str(item.get("text") or "").strip()
+            if text:
+                preview_lines.extend(line.strip() for line in text.splitlines() if line.strip())
+        elif item_type == "tool_use":
+            tool_name = str(item.get("name") or "Tool")
+            tool_input = item.get("input")
+            summary = _claude_tool_use_summary(tool_name, tool_input)
+            if summary:
+                preview_lines.append(summary)
+    return preview_lines
+
+
+def _claude_tool_result_preview_lines(content: Any) -> list[str]:
+    if not isinstance(content, list):
+        return []
+
+    preview_lines: list[str] = []
+    for item in content:
+        if not isinstance(item, dict) or str(item.get("type") or "") != "tool_result":
+            continue
+        result_content = item.get("content")
+        if isinstance(result_content, str):
+            preview_lines.extend(_truncate_multiline_preview(result_content))
+    return preview_lines
+
+
+def _claude_tool_use_summary(tool_name: str, tool_input: Any) -> str:
+    summary = ""
+    if isinstance(tool_input, dict):
+        summary = (
+            str(tool_input.get("command") or "")
+            or str(tool_input.get("file_path") or "")
+            or str(tool_input.get("path") or "")
+        ).strip()
+    if summary:
+        return f"{tool_name}: {summary}"
+    return tool_name
+
+
+def _truncate_multiline_preview(text: str, *, max_lines: int = 8) -> list[str]:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) <= max_lines:
+        return lines
+    return [*lines[:max_lines], "..."]
 
 
 def _stream_file_observation(path: Path) -> dict[str, Any]:
@@ -2252,7 +2359,7 @@ def _validated_run_scoped_artifact(
         )
     accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(event_run_dir)))
     if action_type == "open_agent_log":
-        artifact = accessor.get_terminal_recording(allow_empty=True)
+        artifact = accessor.get_agent_log(allow_empty=True)
         if not _agent_log_is_usable(artifact.path, event_name=event_name):
             raise RuntimeError(
                 f"run-scoped agent log is empty/unusable: issue={issue_number} event={event_name} run_dir={event_run_dir}"
@@ -2316,7 +2423,10 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
                 )
             except Exception as exc:
                 if action_type == "view_claude_log":
-                    if isinstance(exc, ArtifactNotFoundError) and str(exc).strip() == "manifest missing claude_log_path":
+                    if isinstance(exc, ArtifactNotFoundError) and (
+                        str(exc).strip() == "manifest missing claude_log_path"
+                        or str(exc).strip() == "manifest missing claude log candidates"
+                    ):
                         return
                     action_warnings.append(f"{action_type} unavailable: {exc}")
                     return
@@ -3202,6 +3312,21 @@ async def get_failure_diagnosis(issue_number: int) -> JSONResponse:
 
     Analyzes AI session logs to provide actionable insights about why a session failed.
     Returns the log path so users can open it directly.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    diagnosis = _orchestrator.get_failure_diagnosis(issue_number)
+    return JSONResponse(diagnosis)
+
+
+@app.post("/api/issues/{issue_number}/audit")
+async def force_issue_audit(issue_number: int) -> JSONResponse:
+    """Force a fresh session-failure audit for an issue.
+
+    This is an operator-facing alias for the failure diagnosis path. Use it when
+    you want an explicit "audit this issue now" action without going through the
+    queue-audit tool, which answers a different question.
     """
     if not _orchestrator:
         return JSONResponse({"error": "Orchestrator not running"}, status_code=503)

@@ -21,7 +21,7 @@ test('buildResetRetryRequest returns canonical endpoint and payload', () => {
     const req = uiActionContract.buildResetRetryRequest([10, '11']);
     assert.equal(req.endpoint, '/api/reset-retry');
     assert.equal(req.method, 'POST');
-    assert.deepEqual(req.body, { issues: [10, 11] });
+    assert.deepEqual(req.body, { issues: [10, 11], from_scratch: false });
 });
 
 test('buildBulkDeprioritizeRequest returns canonical endpoint and payload', () => {
@@ -36,4 +36,13 @@ test('buildIssueRetryRequest returns issue-specific endpoint', () => {
     assert.equal(req.endpoint, '/api/issues/4057/retry');
     assert.equal(req.method, 'POST');
     assert.deepEqual(req.body, {});
+});
+
+test('buildTerminalRecordingRequest returns canonical endpoint and query params', () => {
+    const req = uiActionContract.buildTerminalRecordingRequest(4057, '/tmp/run', { offset: 10, limit: 0 });
+    assert.equal(
+        req.endpoint,
+        '/api/session/terminal-recording/4057?run_dir=%2Ftmp%2Frun&offset=10&limit=0',
+    );
+    assert.equal(req.method, 'GET');
 });

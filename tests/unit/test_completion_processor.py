@@ -858,6 +858,7 @@ class TestReviewExchangeExecution:
         assert result.success is True
         assert result.review_exchange_completed is True
 
+
     def test_auto_mode_falls_back_to_local_loop(self, tmp_path, monkeypatch):
         config = self._make_config(tmp_path)
         config.review_exchange_mode = "auto"
@@ -1803,3 +1804,150 @@ def test_cleanup_failure_posts_diagnostic_comment(
     comment = mock_pr_adapter.add_comment.call_args[0][1]
     assert "Diagnostic file" in comment
     assert "Worktree: `worktree`" in comment
+
+
+class TestRunScopedArtifacts:
+    def test_process_preserves_completion_record_in_run_dir(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+    ) -> None:
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(
+            worktree,
+            "coding-1",
+            issue_number=123,
+            agent_label="agent:web",
+            completion_path=".issue-orchestrator/sessions/20260201-000000Z__coding-1/completion-agent_web.json",
+        )
+        completion_rel = f".issue-orchestrator/sessions/{run.run_dir.name}/completion-agent_web.json"
+        completion_path = worktree / completion_rel
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[],
+            implementation="Implemented the issue",
+            problems="None",
+        )
+        completion_path.write_text(json.dumps(record.to_dict()))
+
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=session_output,
+            event_bus=event_bus,
+            label_config={},
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            completion_path=completion_rel,
+            agent_label="agent:web",
+        )
+
+        preserved_path = run.run_dir / "completion-record.json"
+        manifest = json.loads((run.run_dir / "manifest.json").read_text())
+
+        assert result.success is True
+        assert result.completion_record_path == str(preserved_path)
+        assert preserved_path.exists()
+        assert not completion_path.exists()
+        assert manifest["completion_record_path"] == str(preserved_path)
+
+    def test_review_exchange_summary_is_stored_in_review_run_dir(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+    ) -> None:
+        coder_prompt = tmp_path / "coder.md"
+        reviewer_prompt = tmp_path / "reviewer.md"
+        coder_prompt.write_text("Coder prompt")
+        reviewer_prompt.write_text("Reviewer prompt")
+
+        config = Config()
+        config.review_enabled = True
+        config.review_exchange_mode = "via-local-loop"
+        config.code_review_agent = "agent:reviewer"
+        config.agents = {
+            "agent:coder": AgentConfig(prompt_path=coder_prompt, ai_system="claude-code"),
+            "agent:reviewer": AgentConfig(prompt_path=reviewer_prompt, ai_system="codex"),
+        }
+
+        worktree = tmp_path / "worktree"
+        worktree.mkdir()
+        session_output = FileSystemSessionOutput()
+        coding_run = session_output.start_run(
+            worktree,
+            "coding-1",
+            issue_number=123,
+            agent_label="agent:coder",
+            completion_path=".issue-orchestrator/sessions/20260201-000000Z__coding-1/completion-agent_coder.json",
+        )
+        completion_rel = f".issue-orchestrator/sessions/{coding_run.run_dir.name}/completion-agent_coder.json"
+        completion_path = worktree / completion_rel
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[RequestedAction.PUSH_BRANCH, RequestedAction.CREATE_PR],
+            implementation="Implemented the issue",
+            problems="None",
+        )
+        completion_path.write_text(json.dumps(record.to_dict()))
+
+        review_run = session_output.start_run(
+            worktree,
+            "review-exchange-123-20260201T000000000000Z",
+            issue_number=123,
+            agent_label="agent:coder",
+        )
+        exchange_dir = review_run.run_dir / "review-exchange"
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        (review_run.run_dir / "validation-record.json").write_text(json.dumps({"passed": True}))
+
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=session_output,
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+        )
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(
+                status="ok",
+                rounds=1,
+                reason="reviewer_ok",
+                exchange_dir=exchange_dir,
+                summary={
+                    "completed_rounds": 1,
+                    "status": "ok",
+                    "response_text": "Looks good",
+                    "timestamp": "2026-02-01T00:00:00Z",
+                },
+            )
+        )
+
+        result = processor.process(
+            worktree,
+            issue_number=123,
+            issue_title="Test Issue",
+            completion_path=completion_rel,
+            agent_label="agent:coder",
+        )
+
+        assert result.success is True
+        assert (review_run.run_dir / "review-exchange" / "summary.json").exists()
+        assert not (coding_run.run_dir / "review-exchange" / "summary.json").exists()

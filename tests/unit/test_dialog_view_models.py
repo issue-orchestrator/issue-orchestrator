@@ -154,6 +154,14 @@ def test_build_session_diagnostics_dialog_actions():
                 "validation_stderr": "validation-stderr.log",
                 "validation_status": "failed",
                 "validation_reason": "Missing packages/vscode/node_modules",
+                "follow_up_issues": [
+                    {
+                        "title": "Open follow-up for env-sensitive test isolation",
+                        "reason": "A failing test was discovered but was unrelated to the assigned issue.",
+                        "suggested_labels": ["bug", "tests"],
+                        "blocking": False,
+                    }
+                ],
             },
             "session_identity": {
                 "task": "code",
@@ -188,6 +196,14 @@ def test_build_session_diagnostics_dialog_actions():
     assert rows["Validation Status"] == "failed"
     assert rows["Validation Reason"] == "Missing packages/vscode/node_modules"
     assert dialog["analysis"]["headline"] == "Validation failed: Missing packages/vscode/node_modules"
+    assert dialog["follow_up_issues"] == [
+        {
+            "title": "Open follow-up for env-sensitive test isolation",
+            "reason": "A failing test was discovered but was unrelated to the assigned issue.",
+            "suggested_labels": ["bug", "tests"],
+            "blocking": False,
+        }
+    ]
 
     action_types = [action["type"] for action in dialog["actions"]]
     assert "open_path" in action_types

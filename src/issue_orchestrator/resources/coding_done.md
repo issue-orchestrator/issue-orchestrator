@@ -29,6 +29,15 @@ coding-done completed \
   --problems "Any issues encountered, or 'None'"
 ```
 
+If you discovered unrelated ancillary work while staying focused on the assigned issue:
+```bash
+coding-done completed \
+  --implementation "What you did" \
+  --problems "None" \
+  --follow-up-file /tmp/follow-up-issues.jsonl
+```
+The follow-up file may be JSON or JSONL. Each entry should include `title` and `reason`, and may include `evidence`, `suggested_labels`, and `blocking`.
+
 **Cannot proceed - external blocker:**
 ```bash
 coding-done blocked \
@@ -62,6 +71,9 @@ All statuses support:
 - `--pr-labels label1 label2` - Extra labels to add to the PR
 - `--dry-run` - Show what would be written without writing
 - `--verbose` - Show detailed output
+
+Completed status also supports:
+- `--follow-up-file path` - Structured proposals for ancillary follow-up issues discovered during the work
 
 ## What happens after coding-done
 

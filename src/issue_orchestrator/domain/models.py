@@ -201,6 +201,7 @@ class CompletionRecord:
 
     # Validation reference (if agent_gate was run)
     validation_record_path: Optional[str] = None  # Path to validation record JSON
+    follow_up_issues: Optional[list["ProposedFollowUpIssue"]] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
@@ -228,6 +229,9 @@ class CompletionRecord:
             "comment_body": self.comment_body,
             "pr_labels": self.pr_labels,
             "validation_record_path": self.validation_record_path,
+            "follow_up_issues": [
+                issue.to_dict() for issue in self.follow_up_issues
+            ] if self.follow_up_issues else None,
         }
 
     @classmethod
@@ -279,6 +283,63 @@ class CompletionRecord:
             comment_body=data.get("comment_body"),
             pr_labels=data.get("pr_labels"),
             validation_record_path=data.get("validation_record_path"),
+            follow_up_issues=[
+                ProposedFollowUpIssue.from_dict(item)
+                for item in data.get("follow_up_issues", [])
+            ] if data.get("follow_up_issues") is not None else None,
+        )
+
+
+@dataclass(frozen=True)
+class ProposedFollowUpIssue:
+    """Structured proposal for ancillary work discovered during coding."""
+
+    title: str
+    reason: str
+    evidence: str | None = None
+    suggested_labels: list[str] | None = None
+    blocking: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "title": self.title,
+            "reason": self.reason,
+            "blocking": self.blocking,
+        }
+        if self.evidence is not None:
+            payload["evidence"] = self.evidence
+        if self.suggested_labels is not None:
+            payload["suggested_labels"] = self.suggested_labels
+        return payload
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ProposedFollowUpIssue":
+        title = data.get("title")
+        reason = data.get("reason")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError("follow_up_issues entries require non-empty title")
+        if not isinstance(reason, str) or not reason.strip():
+            raise ValueError("follow_up_issues entries require non-empty reason")
+        evidence = data.get("evidence")
+        suggested_labels_raw = data.get("suggested_labels")
+        suggested_labels = None
+        if suggested_labels_raw is not None:
+            if not isinstance(suggested_labels_raw, list) or not all(
+                isinstance(item, str) and item.strip() for item in suggested_labels_raw
+            ):
+                raise ValueError("follow_up_issues suggested_labels must be a list of non-empty strings")
+            suggested_labels = list(suggested_labels_raw)
+        blocking = data.get("blocking", False)
+        if not isinstance(blocking, bool):
+            raise ValueError("follow_up_issues blocking must be a boolean")
+        if evidence is not None and (not isinstance(evidence, str) or not evidence.strip()):
+            raise ValueError("follow_up_issues evidence must be a non-empty string when provided")
+        return cls(
+            title=title,
+            reason=reason,
+            evidence=evidence if isinstance(evidence, str) else None,
+            suggested_labels=suggested_labels,
+            blocking=blocking,
         )
 
 

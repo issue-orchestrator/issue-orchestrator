@@ -144,6 +144,19 @@ class TestEnrichFromCompletionRecord:
             review_summary = "Looks good"
             review_issues = "Missing tests"
             risk_level = "low"
+            follow_up_issues = [
+                type(
+                    "FollowUp",
+                    (),
+                    {
+                        "to_dict": staticmethod(lambda: {
+                            "title": "Create ancillary issue",
+                            "reason": "Unrelated but discovered while implementing the core task.",
+                            "blocking": False,
+                        })
+                    },
+                )()
+            ]
 
         m.enrich_from_completion_record(FakeRecord())
         assert m.implementation == "Built the feature"
@@ -155,6 +168,11 @@ class TestEnrichFromCompletionRecord:
         assert m.review_summary == "Looks good"
         assert m.review_issues == "Missing tests"
         assert m.risk_level == "low"
+        assert m.follow_up_issues == [{
+            "title": "Create ancillary issue",
+            "reason": "Unrelated but discovered while implementing the core task.",
+            "blocking": False,
+        }]
 
     def test_skips_none_values(self, run_dir: Path) -> None:
         _write_manifest(run_dir, {"session_name": "s", "run_id": "r"})

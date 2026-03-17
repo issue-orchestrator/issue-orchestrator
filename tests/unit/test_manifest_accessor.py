@@ -97,6 +97,24 @@ def test_get_agent_log_raises_when_terminal_recording_only_empty_by_default(tmp_
         accessor.get_agent_log()
 
 
+def test_get_agent_log_uses_claude_log_when_terminal_recording_empty(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    recording = run_dir / "terminal-recording.jsonl"
+    recording.write_text("", encoding="utf-8")
+    claude = run_dir / "claude.jsonl"
+    claude.write_text('{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}\n', encoding="utf-8")
+    FileSystemSessionOutput().update_manifest(
+        run_dir,
+        {
+            "claude_log_path": str(claude),
+        },
+    )
+
+    artifact = accessor.get_agent_log()
+    assert artifact.path == claude
+    assert artifact.descriptor.artifact_type == "agent_log"
+
+
 def test_get_claude_log_reads_manifest_path(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
     claude = run_dir / "claude.jsonl"
@@ -108,6 +126,29 @@ def test_get_claude_log_reads_manifest_path(tmp_path: Path) -> None:
                 "run_id": run_dir.name.split("__", 1)[0],
                 "run_dir": str(run_dir),
                 "claude_log_path": str(claude),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    artifact = accessor.get_claude_log()
+    assert artifact.descriptor.artifact_type == "claude_log"
+    assert artifact.path == claude
+
+
+def test_get_claude_log_falls_back_to_manifest_log_dir(tmp_path: Path) -> None:
+    accessor, _worktree, run_dir = _build_accessor(tmp_path)
+    claude_dir = tmp_path / "claude"
+    claude_dir.mkdir(parents=True, exist_ok=True)
+    claude = claude_dir / "latest.jsonl"
+    claude.write_text('{"type":"assistant","message":{"content":[{"type":"text","text":"ok"}]}}\n', encoding="utf-8")
+    (run_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "session_name": "issue-123",
+                "run_id": run_dir.name.split("__", 1)[0],
+                "run_dir": str(run_dir),
+                "claude_log_dir": str(claude_dir),
             }
         ),
         encoding="utf-8",

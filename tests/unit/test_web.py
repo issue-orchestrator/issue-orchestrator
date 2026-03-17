@@ -3095,7 +3095,7 @@ class TestTimelineActionWiring:
         "open_path": "/api/host/open-path",
         "open_url": None,  # client-side window.open, no HTTP call
         "open_review_feedback": None,  # in-app modal from existing issue detail payload
-        "open_agent_log": "/api/log/local/{issue_number}",
+        "open_agent_log": "/api/session/terminal-recording/{issue_number}",
         "copy_agent_log": None,  # client-side fetch+clipboard from existing local log endpoint
         "view_claude_log": "/api/session/claude-log/{issue_number}",
         "open_orchestrator_log": "/api/session/orchestrator-log/{issue_number}",
@@ -4313,8 +4313,8 @@ class TestIssueLogEndpointsUseLatestHistory:
         finally:
             set_orchestrator(None)
 
-    def test_agent_ui_log_never_falls_back_to_claude_jsonl(self, tmp_path: Path):
-        """GET /api/log/local should stay on the canonical run artifact even when Claude JSONL exists."""
+    def test_agent_ui_log_uses_run_scoped_agent_log_when_terminal_recording_empty(self, tmp_path: Path):
+        """GET /api/log/local should use the canonical run-scoped agent log."""
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
         mock_orch = create_mock_orchestrator()
@@ -4339,9 +4339,9 @@ class TestIssueLogEndpointsUseLatestHistory:
             response = client.get(f"/api/log/local/123?run_dir={run.run_dir}")
             assert response.status_code == 200
             payload = response.json()
-            assert payload["lines"] == []
-            assert payload["total_lines"] == 0
-            assert payload["log_path"].endswith("/terminal-recording.jsonl")
+            assert payload["lines"] == ["Should", "not appear"]
+            assert payload["total_lines"] == 2
+            assert payload["log_path"].endswith("/claude.jsonl")
         finally:
             set_orchestrator(None)
 
@@ -4370,6 +4370,37 @@ class TestIssueLogEndpointsUseLatestHistory:
             payload = response.json()
             assert payload["lines"] == ["Line one", "Line two"]
             assert payload["total_lines"] == 2
+            assert payload["log_path"].endswith("/terminal-recording.jsonl")
+        finally:
+            set_orchestrator(None)
+
+    def test_agent_ui_log_prefers_terminal_recording_when_both_artifacts_exist(self, tmp_path: Path):
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-terminal-preferred"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        run.log_path.write_text(
+            '{"data_b64":"VGVybWluYWwgbGluZQo=","event_type":"output","offset_ms":0,"schema_version":1}\n',
+            encoding="utf-8",
+        )
+        claude_log = run.run_dir / "claude.jsonl"
+        claude_log.write_text(
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"Claude line"}]}}\n',
+            encoding="utf-8",
+        )
+        session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/log/local/123?run_dir={run.run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["lines"] == ["Terminal line"]
+            assert payload["total_lines"] == 1
             assert payload["log_path"].endswith("/terminal-recording.jsonl")
         finally:
             set_orchestrator(None)
@@ -6355,3 +6386,33 @@ class TestStaticFilesSecurity:
         response = client.get("/static/js/dashboard.js")
         assert response.status_code == 200
         assert "javascript" in response.headers.get("content-type", "")
+
+
+class TestIssueAuditEndpoint:
+    """Tests for explicit issue audit refresh endpoint."""
+
+    def test_force_issue_audit_returns_failure_diagnosis(self):
+        mock_orch = create_mock_orchestrator()
+        mock_orch.get_failure_diagnosis.return_value = {
+            "issue_number": 4057,
+            "analysis_headline": "Timed out while exploring unrelated files",
+            "suggestions": ["Narrow the task prompt"],
+        }
+        set_orchestrator(mock_orch)
+
+        client = TestClient(app)
+        response = client.post("/api/issues/4057/audit")
+
+        assert response.status_code == 200
+        assert response.json()["issue_number"] == 4057
+        assert response.json()["analysis_headline"] == "Timed out while exploring unrelated files"
+        mock_orch.get_failure_diagnosis.assert_called_once_with(4057)
+
+    def test_force_issue_audit_requires_orchestrator(self):
+        set_orchestrator(None)
+
+        client = TestClient(app)
+        response = client.post("/api/issues/4057/audit")
+
+        assert response.status_code == 503
+        assert response.json() == {"error": "Orchestrator not running"}

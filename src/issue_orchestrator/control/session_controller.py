@@ -651,10 +651,13 @@ class SessionController:
         for key in (
             "implementation", "problems", "attempted", "blocked_reason",
             "blocked_by", "question", "review_summary", "review_issues",
-            "risk_level",
+            "risk_level", "follow_up_issues",
         ):
             value = getattr(record, key, None)
             if value is not None:
+                if key == "follow_up_issues":
+                    detail[key] = [issue.to_dict() for issue in value]
+                    continue
                 detail[key] = value
         return detail
 

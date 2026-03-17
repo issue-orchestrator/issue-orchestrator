@@ -12,7 +12,7 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import NoReturn, Optional
+from typing import Any, NoReturn, Optional
 
 import os
 
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 from ...domain.models import (
     CompletionRecord,
     CompletionOutcome,
+    ProposedFollowUpIssue,
     RequestedAction,
     COMPLETION_RECORD_PATH,
 )
@@ -310,6 +311,44 @@ def format_comment_body(status: str, args: argparse.Namespace) -> str:  # noqa: 
 *The work agent will be re-queued to address these issues.*"""
 
 
+def load_follow_up_issues(path_value: str | None) -> list[ProposedFollowUpIssue] | None:
+    """Load ancillary follow-up issue proposals from JSON or JSONL."""
+    if not path_value:
+        return None
+    path = Path(path_value)
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"Failed to read follow-up issue file {path}: {exc}") from exc
+
+    entries: list[dict[str, Any]] = []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        parsed = None
+
+    if isinstance(parsed, list):
+        entries = parsed
+    elif isinstance(parsed, dict):
+        entries = [parsed]
+    elif parsed is not None:
+        raise ValueError("Follow-up issue file must contain a JSON array or JSONL objects")
+    else:
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSONL entry in follow-up issue file {path}: {exc}") from exc
+            entries.append(item)
+
+    if not entries:
+        return []
+    return [ProposedFollowUpIssue.from_dict(item) for item in entries]
+
+
 def build_completion_record(status: str, args: argparse.Namespace) -> CompletionRecord:
     """Build a CompletionRecord from CLI arguments."""
     outcome = STATUS_TO_OUTCOME[status]
@@ -329,6 +368,7 @@ def build_completion_record(status: str, args: argparse.Namespace) -> Completion
 
     # Build comment body
     comment_body = format_comment_body(status, args)
+    follow_up_issues = load_follow_up_issues(getattr(args, "follow_up_file", None)) if status == AgentStatus.COMPLETED else None
 
     return CompletionRecord(
         session_id=get_session_id(),
@@ -359,6 +399,7 @@ def build_completion_record(status: str, args: argparse.Namespace) -> Completion
         comment_body=comment_body,
         # PR labels
         pr_labels=getattr(args, 'pr_labels', None),
+        follow_up_issues=follow_up_issues,
     )
 
 
@@ -678,4 +719,3 @@ def write_error_completion(error_msg: str, status: str) -> Optional[Path]:
     except Exception:
         # If we can't even write the error record, there's nothing more we can do
         return None
-

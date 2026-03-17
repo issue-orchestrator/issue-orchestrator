@@ -41,6 +41,19 @@ issue-orchestrator trace <ISSUE_NUMBER>
 
 Start here when one issue failed or stalled. It gives you the classified reason (`no_completion_record`, `validation_failed`, `push_failed`, `timeout`, `blocked`) before you start digging through files.
 
+### 1b. Force an issue audit
+
+```bash
+curl -s -X POST "http://localhost:8080/api/issues/<ISSUE_NUMBER>/audit" | jq
+```
+
+Use this when you want a fresh issue/session failure diagnosis now. This is not
+the same as queue audit:
+
+- `issue-orchestrator audit` answers why issues are queued or skipped.
+- `POST /api/issues/<ISSUE_NUMBER>/audit` answers what went wrong in the
+  current or latest run for one issue.
+
 ### 2. Orchestrator log
 
 ```bash

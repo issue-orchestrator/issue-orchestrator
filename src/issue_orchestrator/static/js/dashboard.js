@@ -560,6 +560,7 @@ let logPoller = null;
 let logFollow = true;
 let logIssue = null;
 let logRunDir = null;
+let sessionReplayState = null;
 
 function clearDiagnosticsActionMessage() {
     const msg = document.getElementById('diagActionMessage');
@@ -593,65 +594,38 @@ function isNearBottom(element, threshold = 24) {
 async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) {
     const effectiveRunDir = runDir || logRunDir;
     if (!effectiveRunDir) {
-        const msg = 'Session log requires a run-scoped action (missing run_dir).';
-        document.getElementById('logStatus').textContent = msg;
-        const logPre = document.getElementById('logPre');
-        if (logPre) logPre.textContent = msg;
+        const msg = 'Session recording requires a run-scoped action (missing run_dir).';
+        const statusEl = document.getElementById('sessionReplayStatus');
+        if (statusEl) statusEl.textContent = msg;
         return;
     }
-    const params = new URLSearchParams();
-    params.set('run_dir', effectiveRunDir);
-    const suffix = params.toString() ? `?${params.toString()}` : '';
-    const res = await fetch(`/api/log/local/${issueNumber}${suffix}`);
-    const data = await res.json();
+    const request = uiActionContract.buildTerminalRecordingRequest(issueNumber, effectiveRunDir, {
+        offset: sessionReplayState ? sessionReplayState.events.length : 0,
+        limit: 0,
+    });
+    const res = await fetch(request.endpoint, { method: request.method });
+    const data = await res.json().catch(() => ({}));
 
     if (data.error) {
-        let msg = data.error + (data.hint ? '\n\n' + data.hint : '');
-        if (data.diagnostic && typeof data.diagnostic === 'object') {
-            const d = data.diagnostic;
-            const checked = Array.isArray(d.checked_paths) ? d.checked_paths.filter(Boolean) : [];
-            const detail = [
-                d.worktree_path ? `worktree: ${d.worktree_path}` : '',
-                d.session_name ? `session: ${d.session_name}` : '',
-                d.resolved_run_dir ? `run_dir: ${d.resolved_run_dir}` : '',
-                checked.length ? `checked:\n- ${checked.join('\n- ')}` : '',
-            ].filter(Boolean).join('\n');
-            if (detail) {
-                msg += `\n\n${detail}`;
-            }
-        }
-        document.getElementById('logStatus').textContent = msg;
-        const logPre = document.getElementById('logPre');
-        if (logPre) {
-            logPre.textContent = msg;
-        }
+        const statusEl = document.getElementById('sessionReplayStatus');
+        if (statusEl) statusEl.textContent = data.error;
         return;
     }
 
-    const logPre = document.getElementById('logPre');
-    const logScroll = document.getElementById('logScroll');
-    if (!logPre || !logScroll) {
+    if (!sessionReplayState || sessionReplayState.issueNumber !== issueNumber || sessionReplayState.runDir !== effectiveRunDir) {
         return;
     }
-
-    const wasNearBottom = isNearBottom(logScroll);
-    const lines = data.lines || [];
-    logPre.textContent = lines.join('\n');
-    document.getElementById('logPath').textContent = data.log_path || '';
-    const streamObsEl = document.getElementById('logStreamObs');
-    const statusText = data.total_lines === 0
-        ? 'Waiting for first output...'
-        : (data.truncated
-            ? `Showing last ${lines.length} of ${data.total_lines} lines`
-            : `Lines: ${data.total_lines}`);
-    document.getElementById('logStatus').textContent = statusText;
-    if (streamObsEl) {
-        streamObsEl.textContent = formatLogStreamObservation(data.stream_observation || null);
+    const incomingEvents = Array.isArray(data.events) ? data.events : [];
+    if (incomingEvents.length > 0) {
+        const wasAtEnd = sessionReplayState.playbackIndex >= sessionReplayState.events.length;
+        sessionReplayState.events.push(...incomingEvents);
+        if (sessionReplayState.follow && (forceScroll || wasAtEnd) && !sessionReplayState.playing) {
+            replaySessionToIndex(sessionReplayState.events.length);
+        }
     }
-
-    if (forceScroll || (logFollow && wasNearBottom)) {
-        logScroll.scrollTop = logScroll.scrollHeight;
-    }
+    const recordingPathEl = document.getElementById('sessionReplayPath');
+    if (recordingPathEl) recordingPathEl.textContent = data.recording_path || '';
+    updateSessionReplayUi();
 }
 
 async function openAgentLog(issueNumber, logLabel = 'Session Recording', runDir = null, errorSurface = 'toast') {
@@ -663,39 +637,95 @@ async function openAgentLog(issueNumber, logLabel = 'Session Recording', runDir 
     clearDiagnosticsActionMessage();
     logIssue = issueNumber;
     logRunDir = runDir;
+    const request = uiActionContract.buildTerminalRecordingRequest(issueNumber, runDir, { offset: 0, limit: 0 });
+    const res = await fetch(request.endpoint, { method: request.method });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) {
+        reportActionError(data.error || `Failed to load session recording (HTTP ${res.status})`, errorSurface);
+        return;
+    }
+
     const logContent = `
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-            <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-muted);">
-                <input type="checkbox" id="logFollowToggle" checked>
-                Follow
-            </label>
-            <button class="btn-secondary" style="font-size:11px;padding:4px 8px;" onclick="refreshAgentLog(${issueNumber}, true, ${JSON.stringify(runDir)})">Refresh</button>
-            <span id="logStatus" style="font-size:11px;color:var(--text-muted);"></span>
+        <div class="session-replay-shell">
+            <div class="session-replay-toolbar">
+                <div class="session-replay-toolbar-main">
+                    <button class="issue-action-btn" id="sessionReplayRestart">Replay</button>
+                    <button class="issue-action-btn" id="sessionReplayPlayPause">Play</button>
+                    <button class="issue-action-btn" id="sessionReplayJumpLive">Jump to latest</button>
+                    <button class="issue-action-btn" id="sessionReplayRefresh">Refresh</button>
+                </div>
+                <div class="session-replay-toolbar-meta">
+                    <label class="session-replay-control">
+                        Speed
+                        <select id="sessionReplaySpeed">
+                            <option value="0.5">0.5x</option>
+                            <option value="1" selected>1x</option>
+                            <option value="2">2x</option>
+                            <option value="4">4x</option>
+                        </select>
+                    </label>
+                    <label class="session-replay-control">
+                        <input type="checkbox" id="logFollowToggle" checked>
+                        Follow live
+                    </label>
+                    <span class="session-replay-status" id="sessionReplayStatus"></span>
+                </div>
+            </div>
+            <div class="session-replay-progress">
+                <input class="session-replay-seek" type="range" id="sessionReplaySeek" min="0" max="0" value="0" step="1">
+                <span class="session-replay-progress-text" id="sessionReplayProgressText">0 / 0 events</span>
+                <span class="session-replay-meta" id="sessionReplayClock">0.0s</span>
+            </div>
+            <div class="session-replay-terminal-wrap">
+                <div id="sessionReplayTerminal" class="session-replay-terminal"></div>
+            </div>
+            <div class="session-replay-hint">Raw run-scoped terminal replay rendered in an emulator. Use Replay for after-the-fact inspection; keep Follow live on during active runs.</div>
+            <div class="session-replay-prompt">
+                <details>
+                    <summary>Prompt</summary>
+                    <div id="logPromptMeta" class="session-replay-meta"></div>
+                    <pre id="logPromptPre"></pre>
+                </details>
+            </div>
+            <div class="session-replay-meta">Recording: <span id="sessionReplayPath"></span></div>
         </div>
-        <div id="logScroll" style="max-height:420px;overflow:auto;background:var(--bg);padding:10px;border-radius:4px;">
-            <pre id="logPre" style="font-size:11px;white-space:pre-wrap;margin:0;"></pre>
-        </div>
-        <div id="logStreamObs" style="color:var(--text-muted);font-size:11px;margin-top:6px;"></div>
-        <details style="margin-top:10px;">
-            <summary style="cursor:pointer;font-size:12px;color:var(--text-muted);">Prompt</summary>
-            <div id="logPromptMeta" style="color:var(--text-muted);font-size:11px;margin-top:8px;"></div>
-            <pre id="logPromptPre" style="font-size:11px;max-height:220px;overflow:auto;background:var(--bg);padding:10px;border-radius:4px;white-space:pre-wrap;margin-top:8px;"></pre>
-        </details>
-        <div style="color:var(--text-muted);font-size:11px;margin-top:10px;">Log: <span id="logPath"></span></div>
     `;
 
     document.getElementById('modalTitle').textContent = `${logLabel} #${issueNumber}`;
     document.getElementById('modalBody').innerHTML = logContent;
     document.getElementById('modalOverlay').classList.add('visible');
 
+    initializeSessionReplay(issueNumber, runDir, data);
+
     const toggle = document.getElementById('logFollowToggle');
     if (toggle) {
         toggle.addEventListener('change', (e) => {
             logFollow = e.target.checked;
+            if (sessionReplayState) {
+                sessionReplayState.follow = logFollow;
+            }
+            updateSessionReplayUi();
         });
     }
+    document.getElementById('sessionReplayRestart')?.addEventListener('click', () => restartSessionReplay(true));
+    document.getElementById('sessionReplayPlayPause')?.addEventListener('click', () => toggleSessionReplayPlayback());
+    document.getElementById('sessionReplayJumpLive')?.addEventListener('click', () => jumpSessionReplayToLatest());
+    document.getElementById('sessionReplayRefresh')?.addEventListener('click', () => refreshAgentLog(issueNumber, true, runDir));
+    document.getElementById('sessionReplaySeek')?.addEventListener('input', (event) => {
+        pauseSessionReplay();
+        const nextIndex = Number(event.target.value || 0);
+        replaySessionToIndex(nextIndex);
+    });
+    document.getElementById('sessionReplaySpeed')?.addEventListener('change', (event) => {
+        if (!sessionReplayState) return;
+        sessionReplayState.speed = Number(event.target.value || 1) || 1;
+        updateSessionReplayUi();
+        if (sessionReplayState.playing) {
+            scheduleSessionReplayStep();
+        }
+    });
+    window.addEventListener('resize', fitSessionReplayTerminal);
 
-    await refreshAgentLog(issueNumber, true, runDir);
     await refreshInlineSessionPrompt(issueNumber, runDir);
     if (logPoller) {
         clearInterval(logPoller);
@@ -715,15 +745,13 @@ async function copyAgentLogAction(issueNumber, runDir = null) {
         return;
     }
     try {
-        const params = new URLSearchParams();
-        params.set('run_dir', runDir);
-        params.set('limit', '0');
-        const res = await fetch(`/api/log/local/${issueNumber}?${params.toString()}`);
+        const request = uiActionContract.buildTerminalRecordingRequest(issueNumber, runDir, { offset: 0, limit: 0 });
+        const res = await fetch(request.endpoint, { method: request.method });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.error) {
             throw new Error(data.error || `HTTP ${res.status}`);
         }
-        const text = Array.isArray(data.lines) ? data.lines.join('\n') : '';
+        const text = extractPlainTextFromRecordingEvents(Array.isArray(data.events) ? data.events : []);
         if (!text.trim()) {
             showToast('Session recording is empty', true);
             return;
@@ -744,6 +772,238 @@ async function copyAgentLogAction(issueNumber, runDir = null) {
         showToast(ok ? 'Session recording copied' : 'Failed to copy', !ok);
     } catch (err) {
         showToast(`Failed to copy session recording: ${err instanceof Error ? err.message : String(err)}`, true);
+    }
+}
+
+function initializeSessionReplay(issueNumber, runDir, payload) {
+    destroySessionReplay();
+    const events = Array.isArray(payload.events) ? payload.events : [];
+    sessionReplayState = {
+        issueNumber,
+        runDir,
+        events,
+        playbackIndex: 0,
+        playing: false,
+        playTimer: null,
+        speed: 1,
+        follow: true,
+        terminal: null,
+        fitAddon: null,
+    };
+    logFollow = true;
+    const pathEl = document.getElementById('sessionReplayPath');
+    if (pathEl) pathEl.textContent = payload.recording_path || '';
+    const terminalHost = document.getElementById('sessionReplayTerminal');
+    if (!terminalHost) return;
+    createSessionReplayTerminal();
+    replaySessionToIndex(events.length);
+}
+
+function createSessionReplayTerminal() {
+    const host = document.getElementById('sessionReplayTerminal');
+    if (!host || !sessionReplayState) return;
+    if (sessionReplayState.terminal) {
+        sessionReplayState.terminal.dispose();
+    }
+    host.innerHTML = '';
+    const terminal = new Terminal({
+        convertEol: false,
+        cursorBlink: false,
+        disableStdin: true,
+        fontFamily: '"SFMono-Regular", "Menlo", "Consolas", monospace',
+        fontSize: 12,
+        scrollback: 10000,
+        theme: {
+            background: '#08111c',
+            foreground: '#d7e2ef',
+            cursor: '#4ea1ff',
+            black: '#08111c',
+            brightBlack: '#5b6f87',
+            red: '#e57878',
+            green: '#46c37b',
+            yellow: '#f0b24f',
+            blue: '#4ea1ff',
+            magenta: '#9db4ff',
+            cyan: '#62d5f5',
+            white: '#d7e2ef',
+            brightWhite: '#ffffff',
+        },
+    });
+    const fitAddon = new FitAddon.FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminal.open(host);
+    sessionReplayState.terminal = terminal;
+    sessionReplayState.fitAddon = fitAddon;
+    fitSessionReplayTerminal();
+}
+
+function fitSessionReplayTerminal() {
+    if (!sessionReplayState || !sessionReplayState.fitAddon) return;
+    try {
+        sessionReplayState.fitAddon.fit();
+    } catch (_err) {
+        // Ignore fit errors while the modal is still laying out.
+    }
+}
+
+function destroySessionReplay() {
+    if (!sessionReplayState) return;
+    if (sessionReplayState.playTimer) {
+        clearTimeout(sessionReplayState.playTimer);
+    }
+    if (sessionReplayState.terminal) {
+        sessionReplayState.terminal.dispose();
+    }
+    sessionReplayState = null;
+}
+
+function replaySessionToIndex(targetIndex) {
+    if (!sessionReplayState) return;
+    const clampedIndex = Math.max(0, Math.min(Number(targetIndex || 0), sessionReplayState.events.length));
+    createSessionReplayTerminal();
+    for (let index = 0; index < clampedIndex; index += 1) {
+        applyTerminalRecordingEvent(sessionReplayState.events[index]);
+    }
+    sessionReplayState.playbackIndex = clampedIndex;
+    updateSessionReplayUi();
+}
+
+function applyTerminalRecordingEvent(event) {
+    if (!sessionReplayState || !sessionReplayState.terminal || !event || typeof event !== 'object') return;
+    if (event.event_type === 'resize' && Number.isInteger(event.cols) && Number.isInteger(event.rows)) {
+        sessionReplayState.terminal.resize(event.cols, event.rows);
+        fitSessionReplayTerminal();
+        return;
+    }
+    if (event.event_type !== 'output' || !event.data_b64) {
+        return;
+    }
+    sessionReplayState.terminal.write(decodeTerminalRecordingData(event.data_b64));
+}
+
+function decodeTerminalRecordingData(dataB64) {
+    const binary = atob(String(dataB64 || ''));
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+        bytes[index] = binary.charCodeAt(index);
+    }
+    return bytes;
+}
+
+function extractPlainTextFromRecordingEvents(events) {
+    const decoder = new TextDecoder();
+    return (events || [])
+        .filter(event => event && event.event_type === 'output' && event.data_b64)
+        .map(event => decoder.decode(decodeTerminalRecordingData(event.data_b64)))
+        .join('');
+}
+
+function restartSessionReplay(autoPlay = false) {
+    pauseSessionReplay();
+    replaySessionToIndex(0);
+    if (autoPlay) {
+        startSessionReplay();
+    }
+}
+
+function jumpSessionReplayToLatest() {
+    pauseSessionReplay();
+    if (!sessionReplayState) return;
+    replaySessionToIndex(sessionReplayState.events.length);
+}
+
+function toggleSessionReplayPlayback() {
+    if (!sessionReplayState) return;
+    if (sessionReplayState.playing) {
+        pauseSessionReplay();
+        return;
+    }
+    if (sessionReplayState.playbackIndex >= sessionReplayState.events.length) {
+        replaySessionToIndex(0);
+    }
+    startSessionReplay();
+}
+
+function startSessionReplay() {
+    if (!sessionReplayState) return;
+    sessionReplayState.playing = true;
+    scheduleSessionReplayStep();
+    updateSessionReplayUi();
+}
+
+function pauseSessionReplay() {
+    if (!sessionReplayState) return;
+    sessionReplayState.playing = false;
+    if (sessionReplayState.playTimer) {
+        clearTimeout(sessionReplayState.playTimer);
+        sessionReplayState.playTimer = null;
+    }
+    updateSessionReplayUi();
+}
+
+function scheduleSessionReplayStep() {
+    if (!sessionReplayState) return;
+    if (sessionReplayState.playTimer) {
+        clearTimeout(sessionReplayState.playTimer);
+        sessionReplayState.playTimer = null;
+    }
+    if (!sessionReplayState.playing) return;
+    if (sessionReplayState.playbackIndex >= sessionReplayState.events.length) {
+        sessionReplayState.playing = false;
+        updateSessionReplayUi();
+        return;
+    }
+    const nextIndex = sessionReplayState.playbackIndex;
+    const previousOffset = nextIndex > 0 ? Number(sessionReplayState.events[nextIndex - 1]?.offset_ms || 0) : 0;
+    const nextOffset = Number(sessionReplayState.events[nextIndex]?.offset_ms || 0);
+    const delayMs = Math.max(0, Math.round((nextOffset - previousOffset) / Math.max(sessionReplayState.speed || 1, 0.1)));
+    sessionReplayState.playTimer = setTimeout(() => {
+        if (!sessionReplayState) return;
+        applyTerminalRecordingEvent(sessionReplayState.events[nextIndex]);
+        sessionReplayState.playbackIndex = nextIndex + 1;
+        updateSessionReplayUi();
+        scheduleSessionReplayStep();
+    }, delayMs);
+}
+
+function updateSessionReplayUi() {
+    if (!sessionReplayState) return;
+    const total = sessionReplayState.events.length;
+    const current = sessionReplayState.playbackIndex;
+    const seekEl = document.getElementById('sessionReplaySeek');
+    const progressEl = document.getElementById('sessionReplayProgressText');
+    const statusEl = document.getElementById('sessionReplayStatus');
+    const clockEl = document.getElementById('sessionReplayClock');
+    const playPauseEl = document.getElementById('sessionReplayPlayPause');
+    const followToggleEl = document.getElementById('logFollowToggle');
+    if (seekEl) {
+        seekEl.max = String(total);
+        seekEl.value = String(current);
+    }
+    if (progressEl) {
+        progressEl.textContent = `${current} / ${total} events`;
+    }
+    if (clockEl) {
+        const activeEvent = current > 0 ? sessionReplayState.events[current - 1] : sessionReplayState.events[0];
+        const offsetMs = Number(activeEvent?.offset_ms || 0);
+        clockEl.textContent = `${(offsetMs / 1000).toFixed(1)}s`;
+    }
+    if (statusEl) {
+        if (total === 0) {
+            statusEl.textContent = 'Waiting for first output...';
+        } else if (sessionReplayState.playing) {
+            statusEl.textContent = `Playing at ${sessionReplayState.speed}x`;
+        } else if (current >= total) {
+            statusEl.textContent = sessionReplayState.follow ? 'At latest output' : 'Paused at end';
+        } else {
+            statusEl.textContent = 'Paused';
+        }
+    }
+    if (playPauseEl) {
+        playPauseEl.textContent = sessionReplayState.playing ? 'Pause' : 'Play';
+    }
+    if (followToggleEl) {
+        followToggleEl.checked = !!sessionReplayState.follow;
     }
 }
 
@@ -849,6 +1109,7 @@ async function openSessionManifest(issueNumber, runDir = null) {
         return !overviewKeys.has(key) && !launchKeys.has(key);
     });
     const analysis = data.analysis && typeof data.analysis === 'object' ? data.analysis : null;
+    const followUpIssues = Array.isArray(data.follow_up_issues) ? data.follow_up_issues : [];
 
     const hasActions = actions.length > 0;
 
@@ -888,6 +1149,25 @@ async function openSessionManifest(issueNumber, runDir = null) {
             }
             html += '</ul>';
         }
+        html += '</section>';
+    }
+
+    if (followUpIssues.length > 0) {
+        html += '<section class="diag-section diag-analysis">';
+        html += '<div class="diag-section-title">Proposed Follow-up Issues</div>';
+        html += '<div class="diag-analysis-detail">Ancillary work discovered during the run and deferred to keep the assigned issue time-bounded.</div>';
+        html += '<ul class="diag-analysis-suggestions">';
+        for (const item of followUpIssues) {
+            const title = escapeHtml(String(item.title || 'Untitled follow-up'));
+            const reason = escapeHtml(String(item.reason || 'No reason provided.'));
+            const evidence = item.evidence ? ` <span class="diag-followup-evidence">${escapeHtml(String(item.evidence))}</span>` : '';
+            const labels = Array.isArray(item.suggested_labels) && item.suggested_labels.length > 0
+                ? ` <span class="diag-followup-labels">labels: ${escapeHtml(item.suggested_labels.join(', '))}</span>`
+                : '';
+            const blocking = item.blocking ? ' <span class="diag-followup-blocking">blocking</span>' : '';
+            html += `<li><strong>${title}</strong><div>${reason}${blocking}${evidence}${labels}</div></li>`;
+        }
+        html += '</ul>';
         html += '</section>';
     }
 
@@ -3701,6 +3981,8 @@ function closeModal(e) {
         }
         // Stop live log poller if running
         stopLiveLogPoller();
+        window.removeEventListener('resize', fitSessionReplayTerminal);
+        destroySessionReplay();
     }
 }
 

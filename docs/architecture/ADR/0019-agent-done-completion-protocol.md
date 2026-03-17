@@ -9,6 +9,7 @@ When an agent finishes work, the orchestrator needs to know:
 - Did it succeed, fail, or get blocked?
 - What actions does it want (create PR, add label)?
 - What was implemented? What problems occurred?
+- What ancillary work was discovered but intentionally deferred?
 
 Options considered:
 1. **Exit codes** - Too limited (success/fail only)
@@ -26,7 +27,8 @@ Options considered:
 # Success - work completed
 agent-done completed \
   --implementation "Added user authentication with JWT" \
-  --problems "None"
+  --problems "None" \
+  --follow-up-file /tmp/follow-up-issues.jsonl
 
 # Blocked - can't proceed
 agent-done blocked \
@@ -48,9 +50,19 @@ agent-done changes_requested --issues "Missing error handling in login.py"
   "requested_actions": ["create_pr", "add_label:ready-for-review"],
   "implementation": "Added JWT authentication",
   "problems": "None",
+  "follow_up_issues": [
+    {
+      "title": "Isolate env-sensitive logging test",
+      "reason": "Discovered while validating the assigned issue, but unrelated to the core fix",
+      "suggested_labels": ["bug", "tests"],
+      "blocking": false
+    }
+  ],
   "timestamp": "2024-12-21T10:30:00Z"
 }
 ```
+
+`follow_up_issues` are advisory only. Agents do not create GitHub issues directly; they report ancillary work and the orchestrator decides how to persist or surface it.
 
 ### Validation Runs First (Fast Feedback)
 

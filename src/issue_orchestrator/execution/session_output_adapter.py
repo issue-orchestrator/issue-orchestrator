@@ -12,6 +12,7 @@ import json
 import logging
 import re
 import shutil
+import threading
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -73,6 +74,9 @@ class FileSystemSessionOutput:
     All artifacts for a session are stored in a single run directory:
         <worktree>/.issue-orchestrator/sessions/<run_id>__<session_name>/
     """
+
+    def __init__(self) -> None:
+        self._claude_replay_captures: dict[Path, _ClaudeReplayCapture] = {}
 
     # -------------------------------------------------------------------------
     # Run Lifecycle
@@ -153,6 +157,7 @@ class FileSystemSessionOutput:
 
         if claude_log_dir:
             self._write_text(run_dir / "claude-log.path", claude_log_dir)
+            self._start_claude_replay_capture(run_dir)
         if orchestrator_log:
             self._write_text(run_dir / "orchestrator-log.path", orchestrator_log)
 
@@ -815,6 +820,8 @@ Timestamp: {self._now_iso()}
             return log_path
 
         self._ensure_symlink(run_dir / CLAUDE_SESSION_LOG_NAME, log_path)
+        self._sync_claude_replay_capture(run_dir)
+        self._stop_claude_replay_capture(run_dir)
         return log_path
 
     def write_orchestrator_tail(  # noqa: C901
@@ -1233,6 +1240,296 @@ Timestamp: {self._now_iso()}
                 return candidate
 
         return None
+
+    @staticmethod
+    def _ensure_manifest_artifact(
+        manifest: dict[str, Any],
+        *,
+        name: str,
+        kind: str,
+        path: str | None,
+        content_type: str | None = None,
+    ) -> None:
+        if not path:
+            return
+        artifacts = manifest.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+            manifest["artifacts"] = artifacts
+        artifact: dict[str, Any] = {"kind": kind, "path": path}
+        if content_type:
+            artifact["content_type"] = content_type
+        artifacts[name] = artifact
+
+    def _sync_manifest_artifacts(self, manifest: dict[str, Any]) -> None:
+        """Derive canonical artifact entries from known manifest path fields."""
+        self._ensure_manifest_artifact(
+            manifest,
+            name="ui_log",
+            kind="session_log",
+            path=manifest.get("log_path"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="agent_log",
+            kind="session_log",
+            path=manifest.get("log_path"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="prompt",
+            kind="session_prompt",
+            path=manifest.get("session_prompt_path"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="completion_record",
+            kind="completion_record",
+            path=manifest.get("completion_record_path"),
+            content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="validation_record",
+            kind="validation_record",
+            path=manifest.get("validation_record_path"),
+            content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="validation_stdout",
+            kind="validation_stdout",
+            path=manifest.get("validation_stdout"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="validation_stderr",
+            kind="validation_stderr",
+            path=manifest.get("validation_stderr"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="diagnostic",
+            kind="diagnostic",
+            path=manifest.get("diagnostic_path"),
+            content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="claude_log",
+            kind="claude_jsonl",
+            path=manifest.get("claude_log_path"),
+            content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="orchestrator_tail",
+            kind="orchestrator_tail",
+            path=manifest.get("orchestrator_tail"),
+            content_type="text/plain",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="review_exchange_summary",
+            kind="review_exchange_summary",
+            path=manifest.get("review_exchange_summary_path"),
+            content_type="application/json",
+        )
+
+    def _bootstrap_manifest_identity(self, run_dir: Path, manifest: dict[str, Any]) -> None:
+        """Fill required manifest identity fields for standalone or legacy paths."""
+        run_name = run_dir.name
+        terminal_recording_path = run_dir / TERMINAL_RECORDING_NAME
+        run_id = manifest.get("run_id")
+        session_name = manifest.get("session_name")
+        if "__" in run_name:
+            parsed_run_id, parsed_session_name = run_name.split("__", 1)
+            run_id = run_id or parsed_run_id
+            session_name = session_name or parsed_session_name
+        manifest.setdefault("run_id", run_id or run_name)
+        manifest.setdefault("session_name", session_name or run_name)
+        manifest.setdefault("run_dir", str(run_dir))
+        manifest.setdefault("log_path", str(terminal_recording_path))
+        artifacts = manifest.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+            manifest["artifacts"] = artifacts
+        artifacts.setdefault(
+            "terminal_recording",
+            {
+                "kind": "terminal_recording",
+                "path": str(terminal_recording_path),
+                "content_type": "application/x-ndjson",
+            },
+        )
+        if not terminal_recording_path.exists():
+            terminal_recording_path.write_text("", encoding="utf-8")
+
+    def _start_claude_replay_capture(self, run_dir: Path) -> None:
+        if run_dir in self._claude_replay_captures:
+            return
+        capture = _ClaudeReplayCapture(self, run_dir)
+        self._claude_replay_captures[run_dir] = capture
+        capture.start()
+
+    def _stop_claude_replay_capture(self, run_dir: Path) -> None:
+        capture = self._claude_replay_captures.pop(run_dir, None)
+        if capture is not None:
+            capture.stop()
+
+    def _sync_claude_replay_capture(self, run_dir: Path) -> None:
+        capture = self._claude_replay_captures.get(run_dir)
+        if capture is None:
+            capture = _ClaudeReplayCapture(self, run_dir)
+        capture.poll_once()
+
+
+class _ClaudeReplayCapture:
+    """Mirror Claude JSONL transcript content into the canonical replay recording."""
+
+    def __init__(self, session_output: FileSystemSessionOutput, run_dir: Path) -> None:
+        self._session_output = session_output
+        self._run_dir = run_dir
+        self._line_offset = 0
+        self._attached_path: Path | None = None
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def poll_once(self) -> None:
+        log_path = self._resolve_log_path()
+        if log_path is None or not log_path.exists():
+            return
+        with log_path.open(encoding="utf-8") as handle:
+            for _ in range(self._line_offset):
+                if handle.readline() == "":
+                    return
+            for raw_line in handle:
+                if not raw_line.strip():
+                    self._line_offset += 1
+                    continue
+                try:
+                    entry = json.loads(raw_line)
+                except json.JSONDecodeError:
+                    self._line_offset += 1
+                    continue
+                text = _claude_jsonl_entry_replay_text(entry)
+                if text:
+                    append_output_event(self._run_dir / TERMINAL_RECORDING_NAME, text)
+                self._line_offset += 1
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(1.0):
+            self.poll_once()
+
+    def _resolve_log_path(self) -> Path | None:
+        if self._attached_path is not None and self._attached_path.exists():
+            return self._attached_path
+
+        log_path, session_id = self._session_output._select_claude_log_for_run(self._run_dir)
+        if not log_path:
+            return None
+        self._attached_path = log_path
+        updates = {
+            "claude_log_path": str(log_path),
+            "claude_session_id": session_id or log_path.stem,
+        }
+        self._session_output.update_manifest(self._run_dir, updates)
+        try:
+            self._session_output._write_text(self._run_dir / CLAUDE_SESSION_PATH_NAME, str(log_path))
+        except OSError:
+            return log_path
+        self._session_output._ensure_symlink(self._run_dir / CLAUDE_SESSION_LOG_NAME, log_path)
+        return log_path
+
+
+def _claude_jsonl_entry_replay_text(entry: dict[str, Any]) -> str:
+    entry_type = str(entry.get("type") or "")
+    if entry_type == "stream_event":
+        event = entry.get("event")
+        if not isinstance(event, dict):
+            return ""
+        return _claude_stream_event_replay_text(event)
+    if entry_type == "assistant":
+        message = entry.get("message")
+        if isinstance(message, dict):
+            return _claude_content_replay_text(message.get("content"))
+        return ""
+    if entry_type == "user":
+        message = entry.get("message")
+        if isinstance(message, dict):
+            return _claude_tool_result_replay_text(message.get("content"))
+    return ""
+
+
+def _claude_stream_event_replay_text(event: dict[str, Any]) -> str:
+    if str(event.get("type") or "") != "content_block_delta":
+        return ""
+    delta = event.get("delta")
+    if not isinstance(delta, dict):
+        return ""
+    if str(delta.get("type") or "") != "text_delta":
+        return ""
+    return str(delta.get("text") or "")
+
+
+def _claude_content_replay_text(content: Any) -> str:
+    if not isinstance(content, list):
+        return ""
+
+    chunks: list[str] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "")
+        if item_type == "text":
+            text = str(item.get("text") or "")
+            if text:
+                chunks.append(text if text.endswith("\n") else f"{text}\n")
+        elif item_type == "tool_use":
+            tool_name = str(item.get("name") or "Tool").strip()
+            tool_input = item.get("input")
+            summary = _claude_tool_use_summary(tool_name, tool_input)
+            if summary:
+                chunks.append(f"{summary}\n")
+    return "".join(chunks)
+
+
+def _claude_tool_result_replay_text(content: Any) -> str:
+    if not isinstance(content, list):
+        return ""
+
+    chunks: list[str] = []
+    for item in content:
+        if not isinstance(item, dict) or str(item.get("type") or "") != "tool_result":
+            continue
+        result_content = item.get("content")
+        if isinstance(result_content, str) and result_content.strip():
+            chunks.append(result_content if result_content.endswith("\n") else f"{result_content}\n")
+    return "".join(chunks)
+
+
+def _claude_tool_use_summary(tool_name: str, tool_input: Any) -> str:
+    summary = ""
+    if isinstance(tool_input, dict):
+        summary = (
+            str(tool_input.get("command") or "")
+            or str(tool_input.get("file_path") or "")
+            or str(tool_input.get("path") or "")
+        ).strip()
+    if summary:
+        return f"{tool_name}: {summary}"
+    return tool_name
 
     @staticmethod
     def _ensure_manifest_artifact(

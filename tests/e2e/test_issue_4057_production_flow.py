@@ -12,6 +12,7 @@ import copy
 import logging
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -54,6 +55,21 @@ ISSUE_4057_PROMPT = (
     "Use coding-done to report outcome and include validation artifacts. "
     "When finished, exit with /exit."
 )
+
+
+def _seed_ref_for_local_issue_worktrees(repo_root: Path) -> str | None:
+    """Seed fresh issue worktrees from the current committed branch state during local iteration."""
+    if os.environ.get("CI"):
+        return None
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 async def _wait_for_run_event(
     watcher,
     *,
@@ -159,7 +175,7 @@ async def _assert_review_stage_artifacts(run_dir: Path, *, require_validation: b
         await _wait_for_file(run_dir / "validation-record.json")
 
 
-async def _assert_live_ui_session_log_stream(
+async def _assert_live_terminal_recording_stream(
     *,
     issue_number: int,
     issue_key: str,
@@ -169,7 +185,7 @@ async def _assert_live_ui_session_log_stream(
     timeout_s: float = 180.0,
 ) -> None:
     deadline = time.monotonic() + timeout_s
-    total_lines_values: list[int] = []
+    total_event_values: list[int] = []
     size_values: list[int] = []
     non_empty_samples = 0
     validation_observed = False
@@ -177,16 +193,16 @@ async def _assert_live_ui_session_log_stream(
     async with httpx.AsyncClient(timeout=20.0) as client:
         while time.monotonic() < deadline:
             response = await client.get(
-                f"http://localhost:{web_port}/api/log/local/{issue_number}",
+                f"http://localhost:{web_port}/api/session/terminal-recording/{issue_number}",
                 params={"run_dir": str(run_dir), "offset": 0, "limit": 0},
             )
             if response.status_code == 200:
                 payload = response.json()
-                total_lines = int(payload.get("total_lines") or 0)
-                lines = payload.get("lines") or []
-                if isinstance(lines, list) and any(str(line).strip() for line in lines):
+                total_events = int(payload.get("total_events") or 0)
+                events = payload.get("events") or []
+                if isinstance(events, list) and any(event.get("event_type") == "output" for event in events if isinstance(event, dict)):
                     non_empty_samples += 1
-                total_lines_values.append(total_lines)
+                total_event_values.append(total_events)
 
             terminal_recording = run_dir / "terminal-recording.jsonl"
             if terminal_recording.exists():
@@ -197,20 +213,20 @@ async def _assert_live_ui_session_log_stream(
 
             issue_view = watcher.view.issues.get(issue_key)
             in_progress = bool(issue_view and "in-progress" in issue_view.labels)
-            if in_progress and len(total_lines_values) >= 3:
-                line_growth = max(total_lines_values) > min(total_lines_values)
+            if in_progress and len(total_event_values) >= 3:
+                event_growth = max(total_event_values) > min(total_event_values)
                 size_growth = len(size_values) >= 2 and max(size_values) > min(size_values)
-                if non_empty_samples >= 2 and (line_growth or size_growth):
+                if non_empty_samples >= 2 and (event_growth or size_growth):
                     return
-            if validation_observed and non_empty_samples == 0 and len(total_lines_values) >= 5:
+            if validation_observed and non_empty_samples == 0 and len(total_event_values) >= 5:
                 raise AssertionError(
-                    "terminal recording preview remained empty even after validation artifacts were present: "
-                    f"line_samples={total_lines_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
+                    "terminal recording remained empty even after validation artifacts were present: "
+                    f"event_samples={total_event_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
                 )
-            if not in_progress and non_empty_samples == 0 and len(total_lines_values) >= 5:
+            if not in_progress and non_empty_samples == 0 and len(total_event_values) >= 5:
                 raise AssertionError(
-                    "terminal recording preview remained empty after issue left in-progress state: "
-                    f"line_samples={total_lines_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
+                    "terminal recording remained empty after issue left in-progress state: "
+                    f"event_samples={total_event_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
                 )
 
             try:
@@ -220,9 +236,9 @@ async def _assert_live_ui_session_log_stream(
             watcher._notify.clear()  # noqa: SLF001
 
     raise AssertionError(
-        "terminal recording preview did not demonstrate near-real-time live updates while coding was in-progress: "
-        f"samples={len(total_lines_values)} non_empty_samples={non_empty_samples} "
-        f"line_samples={total_lines_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
+        "terminal recording did not demonstrate near-real-time live updates while coding was in-progress: "
+        f"samples={len(total_event_values)} non_empty_samples={non_empty_samples} "
+        f"event_samples={total_event_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
     )
 
 
@@ -276,6 +292,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
     config.session_timeout_minutes = 75
     config.queue_refresh_seconds = 10
     config.worktree_base_branch_override = "main"
+    worktree_seed_ref = _seed_ref_for_local_issue_worktrees(e2e_project_root)
     # Ensure each ephemeral issue worktree starts clean; inherited dirty state
     # from prior attempts can otherwise derail validation with unrelated failures.
     config.setup_worktree = [
@@ -295,8 +312,8 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             "agent:backend": AgentConfig(
                 prompt_path=e2e_project_root / "repo-specific" / "prompts" / "simple-fix.md",
                 provider="claude-code",
-                model="sonnet",
-                timeout_minutes=60,
+                model="opus",
+                timeout_minutes=75,
                 ai_system="claude-code",
                 permission_mode="bypassPermissions",
                 initial_prompt=ISSUE_4057_PROMPT,
@@ -304,8 +321,8 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         "agent:reviewer": AgentConfig(
             prompt_path=e2e_project_root / "repo-specific" / "prompts" / "reviewer.md",
             provider="claude-code",
-            model="sonnet",
-            timeout_minutes=25,
+            model="opus",
+            timeout_minutes=35,
             ai_system="claude-code",
             permission_mode="bypassPermissions",
             initial_prompt=(
@@ -340,6 +357,8 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             shutil.rmtree(stale_dir)
 
         orchestrator = OrchestratorProcess(config, e2e_project_root)
+        if worktree_seed_ref:
+            os.environ["ORCHESTRATOR_WORKTREE_SEED_REF"] = worktree_seed_ref
         runtime = await start_orchestrator_runtime(
             orchestrator,
             config.control_api_port,
@@ -395,7 +414,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         assert has_coding_log_action, "Expected run-scoped open_agent_log action during coding"
         logger.info("[4057] UI assertions OK. Starting live log stream check...")
 
-        await _assert_live_ui_session_log_stream(
+        await _assert_live_terminal_recording_stream(
             issue_number=issue_number,
             issue_key=issue.stable_id(),
             run_dir=coding_run_dir,
@@ -519,3 +538,5 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
                 pass
         if runtime is not None:
             await runtime.close()
+        if worktree_seed_ref:
+            os.environ.pop("ORCHESTRATOR_WORKTREE_SEED_REF", None)

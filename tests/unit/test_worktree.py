@@ -19,6 +19,7 @@ from issue_orchestrator.adapters.worktree.api import (
     install_hooks,
     find_worktree_for_branch,
     install_claude_settings,
+    sync_cli_tools,
     WorktreeError,
 )
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
@@ -204,6 +205,48 @@ class TestCreateWorktree:
         assert "origin/main" in worktree_cmd  # Should branch from origin/main
 
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
+    def test_create_worktree_uses_seed_ref_override_for_fresh_branch(
+        self, mock_run, tmp_path, monkeypatch
+    ):
+        """Fresh worktrees can be seeded from an explicit local ref without changing PR base."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_base = tmp_path / "worktrees"
+        monkeypatch.setenv("ORCHESTRATOR_WORKTREE_SEED_REF", "HEAD")
+
+        def run_side_effect(cmd, *args, **kwargs):
+            argv = cmd[3:]
+            if argv[:2] == ["worktree", "prune"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["worktree", "list"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["fetch", "origin", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "HEAD"]:
+                return MagicMock(returncode=0, stdout="seedsha\n", stderr="")
+            if argv[:2] == ["worktree", "add"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
+
+        worktree_path, branch_name, *_ = create_worktree(
+            repo_root, 123, "Test", worktree_base=worktree_base, base_branch="main"
+        )
+
+        assert worktree_path == worktree_base / "repo-123"
+        assert branch_name == "123-test"
+
+        calls = [call_args[0][0] for call_args in mock_run.call_args_list]
+        worktree_cmd = next(cmd for cmd in calls if cmd[3:5] == ["worktree", "add"])
+        assert worktree_cmd[-1] == "HEAD"
+        assert "origin/main" not in worktree_cmd
+        assert not any(cmd[3:6] == ["fetch", "origin", "main"] for cmd in calls)
+
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
     def test_create_worktree_default_base(self, mock_run, tmp_path):
         """Test worktree creation with default base directory."""
         # Setup
@@ -250,8 +293,10 @@ class TestCreateWorktree:
         # Create existing worktree directory with valid .git file
         existing_worktree = worktree_base / "repo-123"
         existing_worktree.mkdir()
+        gitdir = tmp_path / "gitdir"
+        gitdir.mkdir()
         # Create .git file to make it look like a valid worktree
-        (existing_worktree / ".git").write_text("gitdir: /some/path")
+        (existing_worktree / ".git").write_text(f"gitdir: {gitdir}")
 
         # Mock subprocess calls for worktree reuse validation:
         def mock_subprocess(*args, **kwargs):
@@ -271,6 +316,10 @@ class TestCreateWorktree:
             # Pull --rebase to update
             if "pull" in cmd:
                 return MagicMock(returncode=0, stderr="")
+            if "ls-files" in cmd and "--error-unmatch" in cmd:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if "update-index" in cmd and "--skip-worktree" in cmd:
+                return MagicMock(returncode=0, stdout="", stderr="")
             # Default success for other commands
             return MagicMock(returncode=0, stderr="", stdout="")
 
@@ -444,20 +493,43 @@ class TestCreateWorktree:
         worktree_base.mkdir()
         existing_path = worktree_base / "repo-123"
         existing_path.mkdir()
+        gitdir = repo_root / ".git" / "worktrees" / "repo-123"
 
         monkeypatch.setenv("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", "1")
 
-        mock_run.side_effect = [
-            MagicMock(returncode=0, stderr=""),  # prune succeeds
-            MagicMock(returncode=0, stderr=""),  # worktree remove --force
-            MagicMock(returncode=0, stdout="", stderr=""),  # find_worktree_for_branch
-            MagicMock(returncode=1, stderr=""),  # branch doesn't exist
-            MagicMock(returncode=1, stderr=""),  # fetch origin fails
-            MagicMock(returncode=1, stderr=""),  # symbolic-ref fails (get_default_branch)
-            MagicMock(returncode=0, stderr=""),  # rev-parse main succeeds (get_default_branch)
-            MagicMock(returncode=0, stderr=""),  # fetch origin/main succeeds
-            MagicMock(returncode=0, stderr=""),  # worktree add
-        ]
+        def run_side_effect(cmd, *args, **kwargs):
+            argv = cmd[3:]
+            if argv[:2] == ["worktree", "prune"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["worktree", "remove"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["worktree", "list"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["fetch", "origin", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:2] == ["symbolic-ref", "refs/remotes/origin/HEAD"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "main"]:
+                return MagicMock(returncode=0, stdout="main\n", stderr="")
+            if argv[:3] == ["fetch", "origin", "main"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "origin/main"]:
+                return MagicMock(returncode=0, stdout="abc123\n", stderr="")
+            if argv[:2] == ["worktree", "add"]:
+                worktree_path = worktree_base / "repo-123"
+                worktree_path.mkdir(parents=True, exist_ok=True)
+                gitdir.mkdir(parents=True, exist_ok=True)
+                (worktree_path / ".git").write_text(f"gitdir: {gitdir}")
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["ls-files", "--error-unmatch"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["update-index", "--skip-worktree"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
 
         create_worktree(repo_root, 123, "Test", worktree_base=worktree_base)
 
@@ -466,6 +538,175 @@ class TestCreateWorktree:
             for call_args in mock_run.call_args_list
         )
 
+        mock_install_hooks.assert_called_once()
+        mock_install_claude_settings.assert_called_once()
+
+    @patch("issue_orchestrator.adapters.worktree._worktree.sync_cli_tools")
+    @patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings")
+    @patch("issue_orchestrator.adapters.worktree._worktree.install_hooks")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
+    def test_create_worktree_does_not_create_setup_commit(
+        self,
+        mock_run,
+        mock_install_hooks,
+        mock_install_claude_settings,
+        mock_sync_cli_tools,
+        tmp_path,
+    ):
+        """Worktree setup must not mutate the issue branch with a synthetic commit."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        worktree_base = tmp_path / "worktrees"
+        gitdir = repo_root / ".git" / "worktrees" / "repo-123"
+        exclude_path = gitdir / "info" / "exclude"
+        mock_sync_cli_tools.return_value = [
+            Path("src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"),
+            Path("src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py"),
+            Path("src/issue_orchestrator/domain/models.py"),
+        ]
+
+        def run_side_effect(cmd, *args, **kwargs):
+            argv = cmd[3:]
+            if argv[:2] == ["worktree", "prune"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["worktree", "list"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["fetch", "origin", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:2] == ["symbolic-ref", "refs/remotes/origin/HEAD"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "main"]:
+                return MagicMock(returncode=0, stdout="main\n", stderr="")
+            if argv[:3] == ["fetch", "origin", "main"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "origin/main"]:
+                return MagicMock(returncode=0, stdout="abc123\n", stderr="")
+            if argv[:2] == ["worktree", "add"]:
+                worktree_path = worktree_base / "repo-123"
+                worktree_path.mkdir(parents=True, exist_ok=True)
+                gitdir.mkdir(parents=True, exist_ok=True)
+                (worktree_path / ".git").write_text(f"gitdir: {gitdir}")
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["ls-files", "--error-unmatch"]:
+                return MagicMock(returncode=0, stdout=f"{argv[-1]}\n", stderr="")
+            if "commit" in argv:
+                pytest.fail(f"unexpected setup commit command: {argv}")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
+
+        create_worktree(repo_root, 123, "Test", worktree_base=worktree_base)
+
+        mock_install_hooks.assert_called_once()
+        mock_install_claude_settings.assert_called_once()
+        mock_sync_cli_tools.assert_called_once()
+        commit_calls = [
+            call_args[0][0][3:]
+            for call_args in mock_run.call_args_list
+            if len(call_args[0][0]) > 3 and call_args[0][0][3] == "commit"
+        ]
+        assert commit_calls == []
+        skip_worktree_calls = [
+            call_args[0][0][3:]
+            for call_args in mock_run.call_args_list
+            if call_args[0][0][3:5] == ["update-index", "--skip-worktree"]
+        ]
+        assert ["update-index", "--skip-worktree", "--", ".claude/settings.json"] in skip_worktree_calls
+        assert ["update-index", "--skip-worktree", "--", ".issue-orchestrator/session-latest.json"] in skip_worktree_calls
+        assert [
+            "update-index",
+            "--skip-worktree",
+            "--",
+            "src/issue_orchestrator/entrypoints/cli_tools/coding_done.py",
+        ] in skip_worktree_calls
+        assert [
+            "update-index",
+            "--skip-worktree",
+            "--",
+            "src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py",
+        ] in skip_worktree_calls
+        assert [
+            "update-index",
+            "--skip-worktree",
+            "--",
+            "src/issue_orchestrator/domain/models.py",
+        ] in skip_worktree_calls
+        assert ".venv" in exclude_path.read_text()
+        assert ".issue-orchestrator/worktree-id" in exclude_path.read_text()
+
+    def test_sync_cli_tools_copies_runtime_support_files(self, tmp_path):
+        worktree_path = tmp_path / "worktree"
+        worktree_path.mkdir()
+
+        synced_paths = sync_cli_tools(worktree_path)
+
+        assert Path("src/issue_orchestrator/entrypoints/cli_tools/coding_done.py") in synced_paths
+        assert Path("src/issue_orchestrator/domain/models.py") in synced_paths
+        synced_models = worktree_path / "src" / "issue_orchestrator" / "domain" / "models.py"
+        assert synced_models.exists()
+        assert "class ProposedFollowUpIssue" in synced_models.read_text()
+
+    @patch("issue_orchestrator.adapters.worktree._worktree.sync_cli_tools")
+    @patch("issue_orchestrator.adapters.worktree._worktree.install_claude_settings")
+    @patch("issue_orchestrator.adapters.worktree._worktree.install_hooks")
+    @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
+    def test_create_worktree_links_repo_venv_into_issue_worktree(
+        self,
+        mock_run,
+        mock_install_hooks,
+        mock_install_claude_settings,
+        mock_sync_cli_tools,
+        tmp_path,
+    ):
+        """Issue worktrees should reuse the repo venv so validate-quick can run there."""
+        repo_root = tmp_path / "repo"
+        repo_root.mkdir()
+        (repo_root / ".git").mkdir()
+        (repo_root / ".venv" / "bin").mkdir(parents=True)
+        (repo_root / ".venv" / "bin" / "python").write_text("")
+
+        worktree_base = tmp_path / "worktrees"
+        gitdir = repo_root / ".git" / "worktrees" / "repo-123"
+        mock_sync_cli_tools.return_value = []
+
+        def run_side_effect(cmd, *args, **kwargs):
+            argv = cmd[3:]
+            if argv[:2] == ["worktree", "prune"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["worktree", "list"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["fetch", "origin", "123-test"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:2] == ["symbolic-ref", "refs/remotes/origin/HEAD"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "main"]:
+                return MagicMock(returncode=0, stdout="main\n", stderr="")
+            if argv[:3] == ["fetch", "origin", "main"]:
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:3] == ["rev-parse", "--verify", "origin/main"]:
+                return MagicMock(returncode=0, stdout="abc123\n", stderr="")
+            if argv[:2] == ["worktree", "add"]:
+                worktree_path = worktree_base / "repo-123"
+                worktree_path.mkdir(parents=True, exist_ok=True)
+                gitdir.mkdir(parents=True, exist_ok=True)
+                (worktree_path / ".git").write_text(f"gitdir: {gitdir}")
+                return MagicMock(returncode=0, stdout="", stderr="")
+            if argv[:2] == ["ls-files", "--error-unmatch"]:
+                return MagicMock(returncode=1, stdout="", stderr="")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = run_side_effect
+
+        worktree_path, *_ = create_worktree(repo_root, 123, "Test", worktree_base=worktree_base)
+
+        linked_venv = worktree_path / ".venv"
+        assert linked_venv.is_symlink()
+        assert linked_venv.resolve() == (repo_root / ".venv").resolve()
         mock_install_hooks.assert_called_once()
         mock_install_claude_settings.assert_called_once()
 

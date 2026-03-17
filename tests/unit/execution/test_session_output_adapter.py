@@ -426,3 +426,85 @@ class TestSessionLogCleaning:
         assert "Line one" in content
         assert "Line two" in content
         assert "Thinking" not in content
+
+
+class TestClaudeReplayCapture:
+    @staticmethod
+    def _decoded_recording(path):
+        chunks = []
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            if not raw_line.strip():
+                continue
+            event = json.loads(raw_line)
+            if event.get("event_type") != "output":
+                continue
+            chunks.append(base64.b64decode(event["data_b64"]).decode("utf-8"))
+        return "".join(chunks)
+
+    def test_attach_claude_log_backfills_terminal_recording_when_empty(self, tmp_path):
+        session_output = FileSystemSessionOutput()
+        claude_dir = tmp_path / "claude-project"
+        claude_dir.mkdir()
+        run = session_output.start_run(
+            tmp_path,
+            "issue-123",
+            issue_number=123,
+            claude_log_dir=str(claude_dir),
+        )
+        claude_log = claude_dir / "session.jsonl"
+        claude_log.write_text(
+            "\n".join([
+                json.dumps({
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": "Hello"},
+                    },
+                }),
+                json.dumps({
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": " world"},
+                            {"type": "tool_use", "name": "Bash", "input": {"command": "pwd"}},
+                        ],
+                    },
+                }),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        attached = session_output.attach_claude_log(run.run_dir)
+
+        assert attached == claude_log
+        decoded = self._decoded_recording(run.run_dir / "terminal-recording.jsonl")
+        assert "Hello" in decoded
+        assert " world" in decoded
+        assert "Bash: pwd" in decoded
+
+    def test_sync_claude_replay_capture_updates_manifest_and_recording(self, tmp_path):
+        session_output = FileSystemSessionOutput()
+        claude_dir = tmp_path / "claude-project"
+        claude_dir.mkdir()
+        run = session_output.start_run(
+            tmp_path,
+            "issue-123",
+            issue_number=123,
+            claude_log_dir=str(claude_dir),
+        )
+        claude_log = claude_dir / "session.jsonl"
+        claude_log.write_text(
+            json.dumps({
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Captured live"}]},
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        session_output._sync_claude_replay_capture(run.run_dir)
+
+        manifest = json.loads((run.run_dir / MANIFEST_NAME).read_text())
+        assert manifest["claude_log_path"] == str(claude_log)
+        decoded = self._decoded_recording(run.run_dir / "terminal-recording.jsonl")
+        assert "Captured live" in decoded
+        session_output._stop_claude_replay_capture(run.run_dir)

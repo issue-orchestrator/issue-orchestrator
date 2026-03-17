@@ -81,20 +81,43 @@ class ManifestAccessor:
 
     def get_agent_log(self, *, allow_empty: bool = False) -> ArtifactStream:
         """Return the canonical run-scoped agent recording stream."""
-        artifact = self.get_terminal_recording(allow_empty=allow_empty)
-        return ArtifactStream(
-            descriptor=ArtifactDescriptor(
-                artifact_type="agent_log",
-                run_identity=artifact.descriptor.run_identity,
-                content_type=artifact.descriptor.content_type,
-                encoding=artifact.descriptor.encoding,
-                source_backend=artifact.descriptor.source_backend,
-                source_ref=artifact.descriptor.source_ref,
-                length_bytes=artifact.descriptor.length_bytes,
-                updated_at=artifact.descriptor.updated_at,
-            ),
-            path=artifact.path,
-        )
+        run_dir = self.run_identity.run_dir
+        self._require_run_dir_exists(run_dir)
+        terminal_path = run_dir / "terminal-recording.jsonl"
+        if terminal_path.exists() and terminal_path.stat().st_size > 0:
+            artifact = self._artifact_stream(
+                "agent_log",
+                terminal_path,
+                content_type="application/x-ndjson",
+            )
+            return artifact
+        try:
+            claude_artifact = self.get_claude_log()
+        except ArtifactNotFoundError:
+            claude_artifact = None
+        if claude_artifact is not None:
+            return ArtifactStream(
+                descriptor=ArtifactDescriptor(
+                    artifact_type="agent_log",
+                    run_identity=claude_artifact.descriptor.run_identity,
+                    content_type=claude_artifact.descriptor.content_type,
+                    encoding=claude_artifact.descriptor.encoding,
+                    source_backend=claude_artifact.descriptor.source_backend,
+                    source_ref=claude_artifact.descriptor.source_ref,
+                    length_bytes=claude_artifact.descriptor.length_bytes,
+                    updated_at=claude_artifact.descriptor.updated_at,
+                ),
+                path=claude_artifact.path,
+            )
+        if terminal_path.exists() and allow_empty:
+            return self._artifact_stream(
+                "agent_log",
+                terminal_path,
+                content_type="application/x-ndjson",
+            )
+        if terminal_path.exists():
+            raise ArtifactNotFoundError(f"terminal recording is empty: {terminal_path}")
+        raise ArtifactNotFoundError(f"agent log not found in run-scoped path: {run_dir}")
 
     def _require_run_dir_exists(self, run_dir: Path) -> None:
         if not run_dir.exists():
@@ -132,15 +155,16 @@ class ManifestAccessor:
     def get_claude_log(self) -> ArtifactStream:
         """Return the run-scoped Claude transcript stream."""
         manifest = self._load_manifest()
-        claude_path = manifest.claude_log_path
-        if not claude_path:
-            raise ArtifactNotFoundError("manifest missing claude_log_path")
-        path = Path(claude_path)
-        if not path.is_absolute():
-            path = self.run_identity.run_dir / path
-        if not path.exists() or path.stat().st_size <= 0:
-            raise ArtifactNotFoundError(f"claude log not found: {path}")
-        return self._artifact_stream("claude_log", path)
+        candidates = self._claude_log_candidates(self.run_identity.run_dir, manifest.to_dict())
+        if not candidates:
+            raise ArtifactNotFoundError("manifest missing claude log candidates")
+        for path in candidates:
+            if path.exists() and path.stat().st_size > 0:
+                return self._artifact_stream("claude_log", path)
+        raise ArtifactNotFoundError(
+            "claude log not found: "
+            + ", ".join(str(path) for path in candidates)
+        )
 
     def get_completion_record(self) -> ArtifactStream:
         """Return the completion record stream for this run."""

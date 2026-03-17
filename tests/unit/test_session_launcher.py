@@ -657,6 +657,9 @@ class TestLaunchIssueSession:
         )
         worktree_path = Path(payload["worktree_path"])
         completion_path = payload["completion_path"]
+        completion_parts = Path(completion_path).parts
+        assert "sessions" in completion_parts
+        assert any(part.endswith("__coding-1") for part in completion_parts)
         assert payload["completion_path_absolute"] == str((worktree_path / completion_path).resolve())
         SessionStartedPayload.model_validate(payload)
 

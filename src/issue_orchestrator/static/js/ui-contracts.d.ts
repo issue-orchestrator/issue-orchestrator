@@ -168,6 +168,15 @@ export interface SessionDiagnosticsAnalysisPayload {
 export interface SessionDiagnosticsDialogPayload {
   actions: SessionDiagnosticsActionPayload[];
   analysis?: SessionDiagnosticsAnalysisPayload | null;
+  follow_up_issues?: SessionDiagnosticsFollowUpIssuePayload[];
   rows: DialogRowPayload[];
+  title: string;
+}
+
+export interface SessionDiagnosticsFollowUpIssuePayload {
+  blocking: boolean;
+  evidence?: string | null;
+  reason: string;
+  suggested_labels?: string[];
   title: string;
 }

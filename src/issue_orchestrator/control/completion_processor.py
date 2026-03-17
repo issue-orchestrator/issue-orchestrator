@@ -1687,18 +1687,45 @@ class CompletionProcessor:
         session_name: str | None,
         exchange_result: Any,
     ) -> None:
-        if not session_name or not exchange_result.summary:
+        if not exchange_result.summary:
             return
+        review_run_dir = self._resolve_review_exchange_run_dir(
+            exchange_outcome=exchange_result,
+            worktree=worktree,
+            session_name=session_name,
+        )
+        if review_run_dir is None:
+            return
+        review_session_name = review_run_dir.name.split("__", 1)[-1]
         validation_record_path: Path | None = None
         if exchange_result.exchange_dir:
             # The record may be written by reviewer loop or by validation gate later.
             validation_record_path = exchange_result.exchange_dir.parent / "validation-record.json"
         self.session_output.store_review_exchange_summary(
             worktree,
-            session_name,
+            review_session_name,
             exchange_result.summary,
             validation_record_path=validation_record_path,
         )
+
+    @staticmethod
+    def _run_dir_from_completion_path(
+        worktree: Path,
+        completion_path: str | None,
+    ) -> Path | None:
+        if not completion_path:
+            return None
+        parts = Path(completion_path).parts
+        try:
+            sessions_idx = parts.index("sessions")
+        except ValueError:
+            return None
+        if sessions_idx + 1 >= len(parts):
+            return None
+        run_dir = worktree.joinpath(*parts[:sessions_idx + 2])
+        if not run_dir.exists() or not run_dir.is_dir():
+            return None
+        return run_dir
 
     def _resolve_review_exchange_run_dir(
         self,
@@ -2069,10 +2096,12 @@ class CompletionProcessor:
         if not source_path.exists():
             return None
 
-        resolved_session_name = session_name or self.session_output.session_name_from_path(completion_path)
-        if not resolved_session_name:
-            return None
-        run_dir = self.session_output.find_run_dir(worktree, resolved_session_name)
+        run_dir = self._run_dir_from_completion_path(worktree, completion_path)
+        if run_dir is None:
+            resolved_session_name = session_name or self.session_output.session_name_from_path(completion_path)
+            if not resolved_session_name:
+                return None
+            run_dir = self.session_output.find_run_dir(worktree, resolved_session_name)
         if not run_dir:
             return None
 

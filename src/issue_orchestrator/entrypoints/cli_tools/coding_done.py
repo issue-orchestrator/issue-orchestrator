@@ -39,6 +39,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+WORKTREE_SETUP_DIRTY_CHECK_PREFIXES: tuple[str, ...] = (
+    ".issue-orchestrator/",
+    ".claude/",
+    "src/issue_orchestrator/entrypoints/cli_tools/",
+)
+
 CODING_STATUSES = [
     AgentStatus.COMPLETED,
     AgentStatus.BLOCKED,
@@ -55,9 +61,6 @@ def check_dirty_files() -> list[str]:
     - ``.issue-orchestrator/`` — runtime artifacts (session logs, manifests)
     - ``.claude/`` — Claude Code settings modified during session init
     """
-    # Paths modified by session infrastructure, not agent work
-    _INFRA_PREFIXES = (".issue-orchestrator/", ".claude/")
-
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain"],
@@ -72,7 +75,7 @@ def check_dirty_files() -> list[str]:
         # The porcelain format is "XY path" — extract the path portion.
         return [
             line for line in lines
-            if not any(prefix in line for prefix in _INFRA_PREFIXES)
+            if not any(prefix in line for prefix in WORKTREE_SETUP_DIRTY_CHECK_PREFIXES)
         ]
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         return []  # Can't determine — don't block
@@ -88,6 +91,10 @@ def build_parser() -> argparse.ArgumentParser:
 EXAMPLES:
   Completed successfully:
     coding-done completed --implementation "Added user auth" --problems "None"
+
+  Completed with ancillary follow-up proposals:
+    coding-done completed --implementation "Added user auth" --problems "None" \
+      --follow-up-file /tmp/follow-up-issues.jsonl
 
   Completed with resume (debug session):
     coding-done completed --implementation "Fixed the bug" --problems "None" --resume
@@ -129,6 +136,13 @@ STATUSES:
 
     # PR options
     parser.add_argument("--pr-labels", nargs="+", help="Extra labels to add to the PR")
+    parser.add_argument(
+        "--follow-up-file",
+        help=(
+            "Path to JSON or JSONL file describing ancillary follow-up issues. "
+            "Use this for unrelated fixes discovered while completing the assigned issue."
+        ),
+    )
 
     # Meta options
     parser.add_argument("--dry-run", action="store_true", help="Show what would be written")
