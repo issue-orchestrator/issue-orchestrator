@@ -27,34 +27,63 @@ from issue_orchestrator.testing.support.test_data import close_issue
 from tests.e2e.conftest import e2e_label, find_free_port
 from tests.e2e.flows import E2EFlow, start_orchestrator_runtime
 
+CODING_AGENT_TIMEOUT_MINUTES = 75
+REVIEW_AGENT_TIMEOUT_MINUTES = 35
+E2E_TIMEOUT_MINUTES = 150
+FOLLOW_UP_FILE_PATH = "/tmp/follow-up-issues.jsonl"
+
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.live,
     pytest.mark.asyncio,
-    pytest.mark.timeout(60 * 60),
+    pytest.mark.timeout(E2E_TIMEOUT_MINUTES * 60),
 ]
 
-ISSUE_4057_PROMPT = (
-    "Work on issue #{issue_number}: {issue_title}. "
-    "Stay strictly focused on this issue implementation; do NOT refactor unrelated areas. "
-    "For this issue, limit code edits to src/issue_orchestrator/view_models/dashboard.py "
-    "and tests/unit/test_dashboard_view_model.py unless absolutely required for correctness. "
-    "Do NOT edit src/issue_orchestrator/entrypoints/cli_tools/agent_done.py, "
-    "src/issue_orchestrator/entrypoints/cli_tools/provider_runner.py, or "
-    "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py. "
-    "Do NOT modify tests in tests/unit/test_worktree.py, tests/unit/test_cli.py, "
-    "or tests/unit/test_completion_processor.py. "
-    "For this session, run validation with `make validate-quick` "
-    "(do not run `make validate`). "
-    "If the provider circuit breaker status is already correctly surfaced and covered by tests, "
-    "make no code changes: run `make validate-quick` and complete with coding-done. "
-    "Prefer the smallest possible diff; do not add broad refactors or extra coverage beyond this issue. "
-    "If any unrelated validation failure appears, do not chase it; continue with the current issue-focused changes only. "
-    "Do not look up or reference other issue numbers. "
-    "Follow repo-specific/prompts/simple-fix.md exactly. "
-    "Use coding-done to report outcome and include validation artifacts. "
-    "When finished, exit with /exit."
-)
+
+def build_issue_4057_prompt() -> str:
+    return (
+        "Work on issue #{issue_number}: {issue_title}. "
+        f"This session is time-bounded to {CODING_AGENT_TIMEOUT_MINUTES} minutes, so finish the core task first. "
+        "Stay strictly focused on this issue implementation; do NOT refactor unrelated areas. "
+        "Start by checking only src/issue_orchestrator/view_models/dashboard.py and "
+        "tests/unit/test_dashboard_view_model.py. "
+        "First determine whether the provider circuit breaker status is already correctly surfaced and covered by tests. "
+        "If it is already implemented, stop exploring, run `make validate-quick`, complete with coding-done, and exit. "
+        "If changes are needed, keep the smallest possible diff and limit code edits to "
+        "src/issue_orchestrator/view_models/dashboard.py and tests/unit/test_dashboard_view_model.py unless absolutely required for correctness. "
+        "Do NOT edit src/issue_orchestrator/entrypoints/cli_tools/agent_done.py, "
+        "src/issue_orchestrator/entrypoints/cli_tools/provider_runner.py, or "
+        "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py. "
+        "Do NOT modify tests in tests/unit/test_worktree.py, tests/unit/test_cli.py, "
+        "or tests/unit/test_completion_processor.py. "
+        "Do not spend time in unrelated orchestration, validation, or session-plumbing files. "
+        "Run `pytest tests/unit/test_dashboard_view_model.py -q` once your focused change is ready. "
+        "For this session, run final validation with `make validate-quick` and do not run `make validate`. "
+        "If you discover unrelated ancillary work, do not fix it in this session. "
+        f"Write it to {FOLLOW_UP_FILE_PATH} and pass `--follow-up-file {FOLLOW_UP_FILE_PATH}` to coding-done completed. "
+        "Do not look up or reference other issue numbers. "
+        "Follow repo-specific/prompts/simple-fix.md exactly. "
+        "Commit your changes, use coding-done to report outcome and include validation artifacts, then exit with /exit."
+    )
+
+
+def build_issue_4057_body() -> str:
+    return (
+        "Production-parity focused E2E run.\n\n"
+        "Requirements:\n"
+        "- Follow repo-specific/prompts/simple-fix.md\n"
+        "- Treat this as a time-bounded issue session: finish the assigned dashboard task first\n"
+        "- First inspect src/issue_orchestrator/view_models/dashboard.py and tests/unit/test_dashboard_view_model.py only\n"
+        "- Limit edits to src/issue_orchestrator/view_models/dashboard.py and tests/unit/test_dashboard_view_model.py unless absolutely required\n"
+        "- If behavior is already implemented, make no code changes; run make validate-quick and complete via coding-done\n"
+        "- Run pytest tests/unit/test_dashboard_view_model.py -q before final validation when you make a dashboard change\n"
+        "- Validation must run through make validate-quick\n"
+        f"- Record unrelated ancillary work in {FOLLOW_UP_FILE_PATH} and pass --follow-up-file instead of broadening scope\n"
+        "- Complete via coding-done and exit\n"
+    )
+
+
+ISSUE_4057_PROMPT = build_issue_4057_prompt()
 
 
 def _seed_ref_for_local_issue_worktrees(repo_root: Path) -> str | None:
@@ -289,7 +318,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
     config.state_file = Path(f"/tmp/io-e2e-state-{run_suffix}.json")
     config.e2e_pr_labels = [isolated_label]
     config.max_concurrent_sessions = 1
-    config.session_timeout_minutes = 75
+    config.session_timeout_minutes = CODING_AGENT_TIMEOUT_MINUTES
     config.queue_refresh_seconds = 10
     config.worktree_base_branch_override = "main"
     worktree_seed_ref = _seed_ref_for_local_issue_worktrees(e2e_project_root)
@@ -313,7 +342,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
                 prompt_path=e2e_project_root / "repo-specific" / "prompts" / "simple-fix.md",
                 provider="claude-code",
                 model="opus",
-                timeout_minutes=75,
+                timeout_minutes=CODING_AGENT_TIMEOUT_MINUTES,
                 ai_system="claude-code",
                 permission_mode="bypassPermissions",
                 initial_prompt=ISSUE_4057_PROMPT,
@@ -322,7 +351,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             prompt_path=e2e_project_root / "repo-specific" / "prompts" / "reviewer.md",
             provider="claude-code",
             model="opus",
-            timeout_minutes=35,
+            timeout_minutes=REVIEW_AGENT_TIMEOUT_MINUTES,
             ai_system="claude-code",
             permission_mode="bypassPermissions",
             initial_prompt=(
@@ -375,15 +404,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         issue, issue_number = flow.create_issue(
             issue_title,
             ["agent:backend", issue_tag, isolated_label],
-            body=(
-                "Production-parity focused E2E run.\n\n"
-                "Requirements:\n"
-                "- Follow repo-specific/prompts/simple-fix.md\n"
-                "- Limit edits to src/issue_orchestrator/view_models/dashboard.py and tests/unit/test_dashboard_view_model.py unless absolutely required\n"
-                "- If behavior is already implemented, do not edit code; just run make validate-quick and complete via coding-done\n"
-                "- Complete via coding-done\n"
-                "- Validation must run through make validate-quick\n"
-            ),
+            body=build_issue_4057_body(),
         )
         # issue from create_issue uses the stable external_id (e.g. "M4-057"),
         # which now matches the key format used by all watcher events.
