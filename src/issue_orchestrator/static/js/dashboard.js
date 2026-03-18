@@ -860,8 +860,14 @@ function destroySessionReplay() {
 function replaySessionToIndex(targetIndex) {
     if (!sessionReplayState) return;
     const clampedIndex = Math.max(0, Math.min(Number(targetIndex || 0), sessionReplayState.events.length));
-    createSessionReplayTerminal();
-    for (let index = 0; index < clampedIndex; index += 1) {
+    if (!sessionReplayState.terminal) {
+        createSessionReplayTerminal();
+    }
+    if (clampedIndex < sessionReplayState.playbackIndex) {
+        createSessionReplayTerminal();
+        sessionReplayState.playbackIndex = 0;
+    }
+    for (let index = sessionReplayState.playbackIndex; index < clampedIndex; index += 1) {
         applyTerminalRecordingEvent(sessionReplayState.events[index]);
     }
     sessionReplayState.playbackIndex = clampedIndex;

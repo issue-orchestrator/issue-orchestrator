@@ -123,6 +123,14 @@ def test_expanded_cards_render_label_badges() -> None:
     assert "retryExpandedSingle" in snippet
 
 
+def test_session_replay_seek_reuses_terminal_for_forward_progress() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "replaySessionToIndex")
+    assert "if (!sessionReplayState.terminal)" in body
+    assert "if (clampedIndex < sessionReplayState.playbackIndex)" in body
+    assert "for (let index = sessionReplayState.playbackIndex; index < clampedIndex; index += 1)" in body
+
+
 def test_unblock_handlers_use_ui_action_contract() -> None:
     js = _read(DASHBOARD_JS)
     for fn in ("unblockSingle", "bulkUnblock", "unblockFromDrawer", "unblockSelectedIssues"):

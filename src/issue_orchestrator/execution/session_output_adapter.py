@@ -13,12 +13,14 @@ import logging
 import re
 import shutil
 import threading
+import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
 from ..contracts.run_manifest import validate_run_manifest_payload
+from ..infra.claude_jsonl import claude_jsonl_entry_replay_text
 from ..infra.terminal_cleaning import (
     clean_terminal_line,
     dedupe_consecutive_lines,
@@ -76,6 +78,7 @@ class FileSystemSessionOutput:
     """
 
     def __init__(self) -> None:
+        self._io_lock = threading.RLock()
         self._claude_replay_captures: dict[Path, _ClaudeReplayCapture] = {}
 
     # -------------------------------------------------------------------------
@@ -101,68 +104,69 @@ class FileSystemSessionOutput:
         retention_pinned: bool = False,
     ) -> SessionRun:
         """Create a new run directory and initial manifest."""
-        run_id = self._run_timestamp()
-        base_dir = self._ensure_base_dir(worktree_path)
-        run_dir = base_dir / self._run_dir_name(session_name, run_id)
-        run_dir.mkdir(parents=True, exist_ok=True)
+        with self._io_lock:
+            run_id = self._run_timestamp()
+            base_dir = self._ensure_base_dir(worktree_path)
+            run_dir = base_dir / self._run_dir_name(session_name, run_id)
+            run_dir.mkdir(parents=True, exist_ok=True)
 
-        # Create symlink to latest run
-        symlink_path = base_dir / session_name
-        self._ensure_symlink(symlink_path, run_dir)
+            # Create symlink to latest run
+            symlink_path = base_dir / session_name
+            self._ensure_symlink(symlink_path, run_dir)
 
-        log_path = run_dir / TERMINAL_RECORDING_NAME
-        terminal_recording_path = run_dir / TERMINAL_RECORDING_NAME
-        manifest_path = run_dir / MANIFEST_NAME
-        started_at = datetime.now(timezone.utc).isoformat()
-        retention_window_days = max(0, retention_days)
-        retention_expires_at = (
-            datetime.now(timezone.utc) + timedelta(days=retention_window_days)
-        ).isoformat()
+            log_path = run_dir / TERMINAL_RECORDING_NAME
+            terminal_recording_path = run_dir / TERMINAL_RECORDING_NAME
+            manifest_path = run_dir / MANIFEST_NAME
+            started_at = datetime.now(timezone.utc).isoformat()
+            retention_window_days = max(0, retention_days)
+            retention_expires_at = (
+                datetime.now(timezone.utc) + timedelta(days=retention_window_days)
+            ).isoformat()
 
-        manifest = {
-            "session_name": session_name,
-            "run_id": run_id,
-            "started_at": started_at,
-            "issue_number": issue_number,
-            "agent_label": agent_label,
-            "backend": backend,
-            "worktree": str(worktree_path),
-            "run_dir": str(run_dir),
-            "log_path": str(terminal_recording_path),
-            "claude_log_dir": claude_log_dir,
-            "orchestrator_log": orchestrator_log,
-            "completion_path": completion_path,
-            "diagnostic_path": None,
-            "retention_tier": retention_tier,
-            "retention_days": retention_window_days,
-            "retention_expires_at": retention_expires_at,
-            "retention_pinned": retention_pinned,
-            "artifacts": {
-                "terminal_recording": {
-                    "kind": "terminal_recording",
-                    "path": str(terminal_recording_path),
-                    "content_type": "application/x-ndjson",
+            manifest = {
+                "session_name": session_name,
+                "run_id": run_id,
+                "started_at": started_at,
+                "issue_number": issue_number,
+                "agent_label": agent_label,
+                "backend": backend,
+                "worktree": str(worktree_path),
+                "run_dir": str(run_dir),
+                "log_path": str(terminal_recording_path),
+                "claude_log_dir": claude_log_dir,
+                "orchestrator_log": orchestrator_log,
+                "completion_path": completion_path,
+                "diagnostic_path": None,
+                "retention_tier": retention_tier,
+                "retention_days": retention_window_days,
+                "retention_expires_at": retention_expires_at,
+                "retention_pinned": retention_pinned,
+                "artifacts": {
+                    "terminal_recording": {
+                        "kind": "terminal_recording",
+                        "path": str(terminal_recording_path),
+                        "content_type": "application/x-ndjson",
+                    },
                 },
-            },
-        }
-        self._write_json(
-            manifest_path,
-            validate_run_manifest_payload(
-                manifest,
-                strict_required_artifacts=True,
-            ),
-        )
-        if not terminal_recording_path.exists():
-            terminal_recording_path.write_text("", encoding="utf-8")
+            }
+            self._write_json(
+                manifest_path,
+                validate_run_manifest_payload(
+                    manifest,
+                    strict_required_artifacts=True,
+                ),
+            )
+            if not terminal_recording_path.exists():
+                terminal_recording_path.write_text("", encoding="utf-8")
 
-        if claude_log_dir:
-            self._write_text(run_dir / "claude-log.path", claude_log_dir)
-            self._start_claude_replay_capture(run_dir)
-        if orchestrator_log:
-            self._write_text(run_dir / "orchestrator-log.path", orchestrator_log)
+            if claude_log_dir:
+                self._write_text(run_dir / "claude-log.path", claude_log_dir)
+                self._start_claude_replay_capture(run_dir)
+            if orchestrator_log:
+                self._write_text(run_dir / "orchestrator-log.path", orchestrator_log)
 
-        self._update_latest(worktree_path, manifest)
-        self._append_index(worktree_path, manifest)
+            self._update_latest(worktree_path, manifest)
+            self._append_index(worktree_path, manifest)
 
         return SessionRun(
             session_name=session_name,
@@ -336,25 +340,27 @@ class FileSystemSessionOutput:
         updates: dict[str, Any],
     ) -> None:
         """Update the manifest with additional data."""
-        manifest_path = run_dir / MANIFEST_NAME
-        manifest = self._read_json(manifest_path) or {}
-        self._bootstrap_manifest_identity(run_dir, manifest)
-        manifest.update(updates)
-        self._sync_manifest_artifacts(manifest)
-        self._write_json(
-            manifest_path,
-            validate_run_manifest_payload(
-                manifest,
-                strict_required_artifacts=True,
-            ),
-        )
+        with self._io_lock:
+            manifest_path = run_dir / MANIFEST_NAME
+            manifest = self._read_json(manifest_path) or {}
+            self._bootstrap_manifest_identity(run_dir, manifest)
+            manifest.update(updates)
+            self._sync_manifest_artifacts(manifest)
+            self._write_json(
+                manifest_path,
+                validate_run_manifest_payload(
+                    manifest,
+                    strict_required_artifacts=True,
+                ),
+            )
 
     def read_manifest(
         self,
         run_dir: Path,
     ) -> dict[str, Any] | None:
         """Read the manifest from a run directory."""
-        return self._read_json(run_dir / MANIFEST_NAME)
+        with self._io_lock:
+            return self._read_json(run_dir / MANIFEST_NAME)
 
     # -------------------------------------------------------------------------
     # Validation Artifacts
@@ -957,12 +963,16 @@ Timestamp: {self._now_iso()}
     @staticmethod
     def _write_json(path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temp_path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        temp_path.replace(path)
 
     @staticmethod
     def _write_text(path: Path, content: str) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content)
+        temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+        temp_path.write_text(content)
+        temp_path.replace(path)
 
     @staticmethod
     def _append_run_log_line(run_dir: Path, line: str) -> None:
@@ -1092,22 +1102,23 @@ Timestamp: {self._now_iso()}
 
     def attach_claude_log_for_run(self, run_dir: Path) -> Path | None:
         """Attach the canonical Claude JSONL artifact for a run and return its path."""
-        log_path, session_id = self._select_claude_log_for_run(run_dir)
-        if not log_path:
-            return None
-        self.update_manifest(
-            run_dir,
-            {
-                "claude_log_path": str(log_path),
-                "claude_session_id": session_id or log_path.stem,
-            },
-        )
-        try:
-            self._write_text(run_dir / CLAUDE_SESSION_PATH_NAME, str(log_path))
-        except OSError:
+        with self._io_lock:
+            log_path, session_id = self._select_claude_log_for_run(run_dir)
+            if not log_path:
+                return None
+            self.update_manifest(
+                run_dir,
+                {
+                    "claude_log_path": str(log_path),
+                    "claude_session_id": session_id or log_path.stem,
+                },
+            )
+            try:
+                self._write_text(run_dir / CLAUDE_SESSION_PATH_NAME, str(log_path))
+            except OSError:
+                return log_path
+            self._ensure_symlink(run_dir / CLAUDE_SESSION_LOG_NAME, log_path)
             return log_path
-        self._ensure_symlink(run_dir / CLAUDE_SESSION_LOG_NAME, log_path)
-        return log_path
 
     @staticmethod
     def _read_claude_log_metadata(log_path: Path) -> tuple[datetime | None, str | None]:
@@ -1399,21 +1410,24 @@ Timestamp: {self._now_iso()}
             terminal_recording_path.write_text("", encoding="utf-8")
 
     def _start_claude_replay_capture(self, run_dir: Path) -> None:
-        if run_dir in self._claude_replay_captures:
-            return
-        capture = _ClaudeReplayCapture(self, run_dir)
-        self._claude_replay_captures[run_dir] = capture
-        capture.start()
+        with self._io_lock:
+            if run_dir in self._claude_replay_captures:
+                return
+            capture = _ClaudeReplayCapture(self, run_dir)
+            self._claude_replay_captures[run_dir] = capture
+            capture.start()
 
     def _stop_claude_replay_capture(self, run_dir: Path) -> None:
-        capture = self._claude_replay_captures.pop(run_dir, None)
+        with self._io_lock:
+            capture = self._claude_replay_captures.pop(run_dir, None)
         if capture is not None:
             capture.stop()
 
     def _sync_claude_replay_capture(self, run_dir: Path) -> None:
-        capture = self._claude_replay_captures.get(run_dir)
-        if capture is None:
-            capture = _ClaudeReplayCapture(self, run_dir)
+        with self._io_lock:
+            capture = self._claude_replay_captures.get(run_dir)
+            if capture is None:
+                capture = _ClaudeReplayCapture(self, run_dir)
         capture.poll_once()
 
 
@@ -1451,14 +1465,21 @@ class _ClaudeReplayCapture:
                 except json.JSONDecodeError:
                     self._line_offset += 1
                     continue
-                text = _claude_jsonl_entry_replay_text(entry)
+                text = claude_jsonl_entry_replay_text(entry)
                 if text:
                     append_output_event(self._run_dir / TERMINAL_RECORDING_NAME, text)
                 self._line_offset += 1
 
     def _run(self) -> None:
         while not self._stop_event.wait(1.0):
-            self.poll_once()
+            try:
+                self.poll_once()
+            except Exception:
+                logger.warning(
+                    "Claude replay capture poll failed for %s",
+                    self._run_dir,
+                    exc_info=True,
+                )
 
     def _resolve_log_path(self) -> Path | None:
         if self._attached_path is not None and self._attached_path.exists():
@@ -1469,85 +1490,6 @@ class _ClaudeReplayCapture:
             return None
         self._attached_path = log_path
         return log_path
-
-
-def _claude_jsonl_entry_replay_text(entry: dict[str, Any]) -> str:
-    entry_type = str(entry.get("type") or "")
-    if entry_type == "stream_event":
-        event = entry.get("event")
-        if not isinstance(event, dict):
-            return ""
-        return _claude_stream_event_replay_text(event)
-    if entry_type == "assistant":
-        message = entry.get("message")
-        if isinstance(message, dict):
-            return _claude_content_replay_text(message.get("content"))
-        return ""
-    if entry_type == "user":
-        message = entry.get("message")
-        if isinstance(message, dict):
-            return _claude_tool_result_replay_text(message.get("content"))
-    return ""
-
-
-def _claude_stream_event_replay_text(event: dict[str, Any]) -> str:
-    if str(event.get("type") or "") != "content_block_delta":
-        return ""
-    delta = event.get("delta")
-    if not isinstance(delta, dict):
-        return ""
-    if str(delta.get("type") or "") != "text_delta":
-        return ""
-    return str(delta.get("text") or "")
-
-
-def _claude_content_replay_text(content: Any) -> str:
-    if not isinstance(content, list):
-        return ""
-
-    chunks: list[str] = []
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        item_type = str(item.get("type") or "")
-        if item_type == "text":
-            text = str(item.get("text") or "")
-            if text:
-                chunks.append(text if text.endswith("\n") else f"{text}\n")
-        elif item_type == "tool_use":
-            tool_name = str(item.get("name") or "Tool").strip()
-            tool_input = item.get("input")
-            summary = _claude_tool_use_summary(tool_name, tool_input)
-            if summary:
-                chunks.append(f"{summary}\n")
-    return "".join(chunks)
-
-
-def _claude_tool_result_replay_text(content: Any) -> str:
-    if not isinstance(content, list):
-        return ""
-
-    chunks: list[str] = []
-    for item in content:
-        if not isinstance(item, dict) or str(item.get("type") or "") != "tool_result":
-            continue
-        result_content = item.get("content")
-        if isinstance(result_content, str) and result_content.strip():
-            chunks.append(result_content if result_content.endswith("\n") else f"{result_content}\n")
-    return "".join(chunks)
-
-
-def _claude_tool_use_summary(tool_name: str, tool_input: Any) -> str:
-    if not isinstance(tool_input, dict):
-        return tool_name
-
-    for key in ("command", "file_path", "path"):
-        summary = str(tool_input.get(key) or "").strip()
-        if summary:
-            return f"{tool_name}: {summary}"
-    return tool_name
-
-
 # -----------------------------------------------------------------------------
 # Module-level utility functions
 # -----------------------------------------------------------------------------

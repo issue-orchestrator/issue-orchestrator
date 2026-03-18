@@ -125,7 +125,6 @@ WORKTREE_TRACKED_RUNTIME_PATHS: tuple[Path, ...] = (
     Path(".claude/settings.json"),
     Path(".issue-orchestrator/session-latest.json"),
 )
-WORKTREE_SYNCED_SUPPORT_FILES: tuple[Path, ...] = ()
 
 
 def _configure_no_verify_dry_run(worktree_path: Path, allow: bool) -> None:
@@ -155,6 +154,10 @@ def _link_repo_venv_into_worktree(repo_root: Path, worktree_path: Path) -> None:
             pass
         target_venv.unlink()
     elif target_venv.exists():
+        logger.warning(
+            "Worktree already has a real .venv directory; leaving it in place: %s",
+            target_venv,
+        )
         return
 
     target_venv.symlink_to(source_venv, target_is_directory=True)
@@ -434,17 +437,6 @@ def sync_cli_tools(worktree_path: Path) -> list[Path]:
         except OSError as e:
             logger.warning("Failed to sync cli tool %s: %s", src_file.name, e)
 
-    for relative_path in WORKTREE_SYNCED_SUPPORT_FILES:
-        src_file = package_root / relative_path
-        dst_file = worktree_path / "src" / "issue_orchestrator" / relative_path
-        try:
-            dst_file.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, dst_file)
-            synced_paths.append(dst_file.relative_to(worktree_path))
-            logger.debug("Synced worktree runtime support file: %s -> %s", src_file.name, dst_file)
-        except OSError as e:
-            logger.warning("Failed to sync runtime support file %s: %s", src_file.name, e)
-
     logger.info("Synced cli_tools from orchestrator package to worktree")
     return synced_paths
 
@@ -507,13 +499,15 @@ def _write_worktree_exclude_entries(worktree_path: Path, paths: list[Path]) -> N
     exclude_path = git_dir / "info" / "exclude"
     exclude_path.parent.mkdir(parents=True, exist_ok=True)
     existing_lines: list[str] = []
+    existing_text = ""
     if exclude_path.exists():
-        existing_lines = exclude_path.read_text().splitlines()
+        existing_text = exclude_path.read_text()
+        existing_lines = existing_text.splitlines()
     existing = {line.strip() for line in existing_lines if line.strip()}
     missing = [str(path).replace("\\", "/") for path in paths if str(path).replace("\\", "/") not in existing]
     if not missing:
         return
-    suffix = "\n" if existing_lines and not exclude_path.read_text().endswith("\n") else ""
+    suffix = "\n" if existing_lines and not existing_text.endswith("\n") else ""
     with exclude_path.open("a", encoding="utf-8") as handle:
         if suffix:
             handle.write(suffix)

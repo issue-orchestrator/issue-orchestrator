@@ -23,15 +23,15 @@ class CompletionOutcome(str, Enum):
 
 
 class RequestedAction(str, Enum):
-    PUSH_BRANCH = "push_branch"
     CREATE_PR = "create_pr"
-    POST_COMMENT = "post_comment"
     ADD_BLOCKED_LABEL = "add_blocked_label"
     ADD_NEEDS_HUMAN_LABEL = "add_needs_human_label"
     ADD_CODE_REVIEWED_LABEL = "add_code_reviewed_label"
     ADD_NEEDS_REWORK_LABEL = "add_needs_rework_label"
     REMOVE_NEEDS_REWORK_LABEL = "remove_needs_rework_label"
     REMOVE_CODE_REVIEW_LABEL = "remove_code_review_label"
+    POST_COMMENT = "post_comment"
+    PUSH_BRANCH = "push_branch"
 
 
 @dataclass(frozen=True)

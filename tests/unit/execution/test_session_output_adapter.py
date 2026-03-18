@@ -5,9 +5,16 @@ Tests for list_runs() and related functionality.
 
 import base64
 import json
+import logging
+import threading
+import time
 
 import pytest
 
+from issue_orchestrator.infra.claude_jsonl import (
+    claude_jsonl_entry_preview_lines,
+    claude_jsonl_entry_replay_text,
+)
 from issue_orchestrator.execution.session_output_adapter import (
     FileSystemSessionOutput,
     INDEX_NAME,
@@ -15,6 +22,7 @@ from issue_orchestrator.execution.session_output_adapter import (
     REVIEW_EXCHANGE_DIR_NAME,
     REVIEW_EXCHANGE_SUMMARY_NAME,
     VALIDATION_RECORD_NAME,
+    _ClaudeReplayCapture,
 )
 
 
@@ -466,6 +474,100 @@ class TestClaudeReplayCapture:
                 continue
             chunks.append(base64.b64decode(event["data_b64"]).decode("utf-8"))
         return "".join(chunks)
+
+    def test_claude_jsonl_parser_keeps_preview_and_replay_tool_summaries_in_sync(self):
+        entry = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Investigating"},
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": "src/app.py"}},
+                    {"type": "tool_use", "name": "TodoWrite", "input": "not-a-dict"},
+                ]
+            },
+        }
+
+        assert claude_jsonl_entry_preview_lines(entry) == [
+            "Investigating",
+            "Read: src/app.py",
+            "TodoWrite",
+        ]
+        assert claude_jsonl_entry_replay_text(entry) == (
+            "Investigating\n"
+            "Read: src/app.py\n"
+            "TodoWrite\n"
+        )
+
+    def test_claude_replay_capture_logs_poll_exceptions(self, tmp_path, caplog, monkeypatch):
+        capture = _ClaudeReplayCapture(FileSystemSessionOutput(), tmp_path)
+        attempts = {"count": 0}
+
+        def fake_wait(_timeout: float) -> bool:
+            attempts["count"] += 1
+            return attempts["count"] > 1
+
+        monkeypatch.setattr(capture._stop_event, "wait", fake_wait)
+        monkeypatch.setattr(capture, "poll_once", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        with caplog.at_level(logging.WARNING):
+            capture._run()
+
+        assert "Claude replay capture poll failed" in caplog.text
+
+    def test_attach_claude_log_serializes_manifest_writes(self, tmp_path, monkeypatch):
+        session_output = FileSystemSessionOutput()
+        claude_dir = tmp_path / "claude-project"
+        claude_dir.mkdir()
+        (claude_dir / "session.jsonl").write_text(
+            json.dumps({"timestamp": "2026-03-18T12:00:00Z", "sessionId": "sess-1"}) + "\n",
+            encoding="utf-8",
+        )
+        run = session_output.start_run(
+            tmp_path,
+            "issue-123",
+            issue_number=123,
+            claude_log_dir=str(claude_dir),
+        )
+
+        original_write_json = FileSystemSessionOutput._write_json
+        stats = {"active": 0, "max_active": 0}
+        stats_lock = threading.Lock()
+
+        def tracked_write_json(path, payload):
+            with stats_lock:
+                stats["active"] += 1
+                stats["max_active"] = max(stats["max_active"], stats["active"])
+            time.sleep(0.02)
+            try:
+                original_write_json(path, payload)
+            finally:
+                with stats_lock:
+                    stats["active"] -= 1
+
+        monkeypatch.setattr(
+            FileSystemSessionOutput,
+            "_write_json",
+            staticmethod(tracked_write_json),
+        )
+
+        update_thread = threading.Thread(
+            target=session_output.update_manifest,
+            args=(run.run_dir, {"diagnostic_path": str(run.run_dir / "diagnostic.json")}),
+        )
+        attach_thread = threading.Thread(
+            target=session_output.attach_claude_log_for_run,
+            args=(run.run_dir,),
+        )
+        update_thread.start()
+        attach_thread.start()
+        update_thread.join()
+        attach_thread.join()
+
+        manifest = session_output.read_manifest(run.run_dir)
+        assert manifest is not None
+        assert manifest["diagnostic_path"].endswith("diagnostic.json")
+        assert manifest["claude_log_path"].endswith("session.jsonl")
+        assert stats["max_active"] == 1
 
     def test_attach_claude_log_backfills_terminal_recording_when_empty(self, tmp_path):
         session_output = FileSystemSessionOutput()

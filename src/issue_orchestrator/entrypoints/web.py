@@ -67,6 +67,7 @@ from ..execution.client_host import ClientHost, detect_client_host
 from ..execution.label_ops import LabelOperation, apply_label_operations
 from ..infra.timeline_trace import is_timeline_trace_enabled
 from ..infra.terminal_recording import iter_terminal_recording
+from ..infra.claude_jsonl import claude_jsonl_entry_preview_lines
 from ..domain.event_taxonomy import (
     EventIntent,
     is_review_oriented_event,
@@ -1361,98 +1362,10 @@ def _preview_lines_from_claude_jsonl(path: Path) -> list[str]:
                     entry = json.loads(raw_line)
                 except json.JSONDecodeError:
                     continue
-                preview_lines.extend(_claude_jsonl_entry_preview_lines(entry))
+                preview_lines.extend(claude_jsonl_entry_preview_lines(entry))
     except OSError:
         return []
     return [line for line in preview_lines if line.strip()]
-
-
-def _claude_jsonl_entry_preview_lines(entry: dict[str, Any]) -> list[str]:
-    entry_type = str(entry.get("type") or "")
-    if entry_type == "stream_event":
-        event = entry.get("event")
-        if isinstance(event, dict):
-            return _claude_stream_event_preview_lines(event)
-        return []
-    if entry_type == "assistant":
-        message = entry.get("message")
-        if isinstance(message, dict):
-            return _claude_content_preview_lines(message.get("content"))
-        return []
-    if entry_type == "user":
-        message = entry.get("message")
-        if isinstance(message, dict):
-            return _claude_tool_result_preview_lines(message.get("content"))
-    return []
-
-
-def _claude_stream_event_preview_lines(event: dict[str, Any]) -> list[str]:
-    event_type = str(event.get("type") or "")
-    if event_type != "content_block_delta":
-        return []
-    delta = event.get("delta")
-    if not isinstance(delta, dict):
-        return []
-    if str(delta.get("type") or "") != "text_delta":
-        return []
-    text = str(delta.get("text") or "").strip()
-    return [text] if text else []
-
-
-def _claude_content_preview_lines(content: Any) -> list[str]:
-    if not isinstance(content, list):
-        return []
-
-    preview_lines: list[str] = []
-    for item in content:
-        if not isinstance(item, dict):
-            continue
-        item_type = str(item.get("type") or "")
-        if item_type == "text":
-            text = str(item.get("text") or "").strip()
-            if text:
-                preview_lines.extend(line.strip() for line in text.splitlines() if line.strip())
-        elif item_type == "tool_use":
-            tool_name = str(item.get("name") or "Tool")
-            tool_input = item.get("input")
-            summary = _claude_tool_use_summary(tool_name, tool_input)
-            if summary:
-                preview_lines.append(summary)
-    return preview_lines
-
-
-def _claude_tool_result_preview_lines(content: Any) -> list[str]:
-    if not isinstance(content, list):
-        return []
-
-    preview_lines: list[str] = []
-    for item in content:
-        if not isinstance(item, dict) or str(item.get("type") or "") != "tool_result":
-            continue
-        result_content = item.get("content")
-        if isinstance(result_content, str):
-            preview_lines.extend(_truncate_multiline_preview(result_content))
-    return preview_lines
-
-
-def _claude_tool_use_summary(tool_name: str, tool_input: Any) -> str:
-    summary = ""
-    if isinstance(tool_input, dict):
-        summary = (
-            str(tool_input.get("command") or "")
-            or str(tool_input.get("file_path") or "")
-            or str(tool_input.get("path") or "")
-        ).strip()
-    if summary:
-        return f"{tool_name}: {summary}"
-    return tool_name
-
-
-def _truncate_multiline_preview(text: str, *, max_lines: int = 8) -> list[str]:
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if len(lines) <= max_lines:
-        return lines
-    return [*lines[:max_lines], "..."]
 
 
 def _stream_file_observation(path: Path) -> dict[str, Any]:
