@@ -18,6 +18,15 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from datetime import timezone
+
+from issue_orchestrator.ports.provider_resilience import (
+    InMemoryProviderCircuitStore,
+    ProviderCircuitState,
+)
+from issue_orchestrator.ports.event_sink import NullEventSink
+from issue_orchestrator.infra.config import ProviderResilienceConfig
+from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
 from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
@@ -28,10 +37,16 @@ from issue_orchestrator.contracts.public import DashboardViewModelContract
 
 
 @dataclass
+class _DepsStub:
+    provider_resilience: ProviderResilienceManager
+
+
+@dataclass
 class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+    deps: _DepsStub | None = None
 
 
 def _make_config() -> Config:
@@ -701,3 +716,126 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def _make_resilience_manager(
+    states: list[ProviderCircuitState] | None = None,
+) -> ProviderResilienceManager:
+    store = InMemoryProviderCircuitStore()
+    if states:
+        for s in states:
+            store.save(s)
+    return ProviderResilienceManager(
+        config=ProviderResilienceConfig(),
+        store=store,
+        events=NullEventSink(),
+    )
+
+
+def test_view_model_surfaces_provider_circuit_breaker_status():
+    config = _make_config()
+    now = datetime.now(tz=timezone.utc)
+    open_until = now + timedelta(minutes=5)
+    resilience = _make_resilience_manager([
+        ProviderCircuitState(
+            provider="anthropic",
+            open_until=open_until,
+            consecutive_outages=3,
+            last_error_summary="rate limited",
+            updated_at=now,
+        ),
+    ])
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(
+        state=state, config=config, deps=_DepsStub(provider_resilience=resilience),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_breakers) == 1
+    breaker = view_model.provider_circuit_breakers[0]
+    assert breaker["provider"] == "anthropic"
+    assert breaker["is_open"] is True
+    assert breaker["consecutive_outages"] == 3
+    assert breaker["last_error_summary"] == "rate limited"
+    assert breaker["open_until"] is not None
+
+    # Also present in dashboard_data
+    dd = view_model.dashboard_data()
+    assert len(dd["providerCircuitBreakers"]) == 1
+    assert dd["providerCircuitBreakers"][0]["provider"] == "anthropic"
+
+
+def test_view_model_circuit_breaker_empty_when_no_outages():
+    config = _make_config()
+    resilience = _make_resilience_manager()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(
+        state=state, config=config, deps=_DepsStub(provider_resilience=resilience),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_breakers == []
+    assert view_model.dashboard_data()["providerCircuitBreakers"] == []
+
+
+def test_view_model_circuit_breaker_closed_when_expired():
+    config = _make_config()
+    now = datetime.now(tz=timezone.utc)
+    past = now - timedelta(minutes=5)
+    resilience = _make_resilience_manager([
+        ProviderCircuitState(
+            provider="openai",
+            open_until=past,
+            consecutive_outages=1,
+            last_error_summary="timeout",
+            updated_at=past,
+        ),
+    ])
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(
+        state=state, config=config, deps=_DepsStub(provider_resilience=resilience),
+    )
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuit_breakers) == 1
+    breaker = view_model.provider_circuit_breakers[0]
+    assert breaker["provider"] == "openai"
+    assert breaker["is_open"] is False
+
+
+def test_view_model_circuit_breaker_graceful_without_deps():
+    """Orchestrator stubs without deps attribute should get empty list."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_breakers == []
