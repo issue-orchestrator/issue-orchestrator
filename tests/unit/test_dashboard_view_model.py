@@ -687,6 +687,65 @@ def test_view_model_api_endpoint():
         set_orchestrator(original)
 
 
+def test_view_model_surfaces_provider_circuit_breaker_status():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    circuit_states = [
+        {
+            "provider": "anthropic",
+            "is_open": True,
+            "open_until": "2026-03-17T12:00:00+00:00",
+            "consecutive_outages": 3,
+            "last_error_summary": "rate limited",
+            "updated_at": "2026-03-17T11:55:00+00:00",
+        },
+        {
+            "provider": "openai",
+            "is_open": False,
+            "open_until": None,
+            "consecutive_outages": 1,
+            "last_error_summary": "transient 503",
+            "updated_at": "2026-03-17T11:50:00+00:00",
+        },
+    ]
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        provider_circuit_states=circuit_states,
+    )
+
+    assert view_model.provider_circuit_states == circuit_states
+    dashboard = view_model.dashboard_data()
+    assert dashboard["providerCircuitBreakers"] == circuit_states
+    assert len(dashboard["providerCircuitBreakers"]) == 2
+    assert dashboard["providerCircuitBreakers"][0]["provider"] == "anthropic"
+    assert dashboard["providerCircuitBreakers"][0]["is_open"] is True
+    assert dashboard["providerCircuitBreakers"][1]["is_open"] is False
+
+
+def test_view_model_provider_circuit_breaker_defaults_to_empty():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_states == []
+    assert view_model.dashboard_data()["providerCircuitBreakers"] == []
+
+
 def test_view_model_matches_public_contract():
     config = _make_config()
     state = OrchestratorState(startup_status="complete")
