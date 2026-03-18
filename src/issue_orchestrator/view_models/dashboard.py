@@ -1253,30 +1253,11 @@ def _normalize_tab(active_tab: str) -> str:
 
 
 def _get_provider_circuit_states(orchestrator) -> list[dict[str, Any]]:
-    """Extract provider circuit breaker states from the orchestrator."""
-    deps = getattr(orchestrator, "deps", None)
-    if deps is None:
+    """Extract provider circuit breaker states via orchestrator facade."""
+    getter = getattr(orchestrator, "get_provider_circuit_states", None)
+    if getter is None:
         return []
-    resilience = getattr(deps, "provider_resilience", None)
-    if resilience is None:
-        return []
-    store = getattr(resilience, "store", None)
-    if store is None:
-        return []
-    states = store.list_all()
-    now = datetime.now(timezone.utc)
-    result: list[dict[str, Any]] = []
-    for s in states:
-        is_open = s.open_until is not None and s.open_until > now
-        result.append({
-            "provider": s.provider,
-            "is_open": is_open,
-            "open_until": s.open_until.isoformat() if s.open_until else None,
-            "consecutive_outages": s.consecutive_outages,
-            "last_error_summary": s.last_error_summary,
-            "updated_at": s.updated_at.isoformat(),
-        })
-    return result
+    return getter()
 
 
 def build_dashboard_view_model(

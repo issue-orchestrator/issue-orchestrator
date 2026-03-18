@@ -196,6 +196,7 @@ def create_mock_orchestrator():
     mock_orch.repository_host = MagicMock()
     mock_orch.repository_host.get_issue.return_value = None
     mock_orch.repository_host.update_label_cache = MagicMock()
+    mock_orch.get_provider_circuit_states = MagicMock(return_value=[])
 
     return mock_orch
 
@@ -6401,7 +6402,7 @@ class TestIssueAuditEndpoint:
         set_orchestrator(mock_orch)
 
         client = TestClient(app)
-        response = client.post("/api/issues/4057/audit")
+        response = client.get("/api/issues/4057/audit")
 
         assert response.status_code == 200
         assert response.json()["issue_number"] == 4057
@@ -6412,7 +6413,7 @@ class TestIssueAuditEndpoint:
         set_orchestrator(None)
 
         client = TestClient(app)
-        response = client.post("/api/issues/4057/audit")
+        response = client.get("/api/issues/4057/audit")
 
         assert response.status_code == 503
         assert response.json() == {"error": "Orchestrator not running"}

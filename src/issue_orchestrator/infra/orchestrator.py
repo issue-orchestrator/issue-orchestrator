@@ -688,6 +688,23 @@ class Orchestrator:
         )
         return diagnosis.to_dict()
 
+    def get_provider_circuit_states(self) -> list[dict]:
+        """Return provider circuit breaker states for the dashboard UI."""
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        result: list[dict] = []
+        for s in self.deps.provider_resilience.store.list_all():
+            is_open = s.open_until is not None and s.open_until > now
+            result.append({
+                "provider": s.provider,
+                "is_open": is_open,
+                "open_until": s.open_until.isoformat() if s.open_until else None,
+                "consecutive_outages": s.consecutive_outages,
+                "last_error_summary": s.last_error_summary,
+                "updated_at": s.updated_at.isoformat(),
+            })
+        return result
+
     def _pause_issue_for_reconciliation(self, issue_number: int, reason: str) -> None: pause_issue_for_reconciliation(self.deps.events, self.deps.action_applier, self._event_context, issue_number, reason)
     def _apply_plan(self, plan: "Plan") -> None: self._plan_applier.apply_plan(plan, self._pause_issue_for_reconciliation)
     def _fetch_all_issues(self, required_stable_ids: set[str] | None = None) -> list[Issue]: return self._github_workflow.fetch_all_issues(self._get_milestone_filter(), required_stable_ids)

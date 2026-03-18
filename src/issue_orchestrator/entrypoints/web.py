@@ -3320,9 +3320,9 @@ async def get_failure_diagnosis(issue_number: int) -> JSONResponse:
     return JSONResponse(diagnosis)
 
 
-@app.post("/api/issues/{issue_number}/audit")
+@app.get("/api/issues/{issue_number}/audit")
 async def force_issue_audit(issue_number: int) -> JSONResponse:
-    """Force a fresh session-failure audit for an issue.
+    """Return a fresh session-failure audit for an issue.
 
     This is an operator-facing alias for the failure diagnosis path. Use it when
     you want an explicit "audit this issue now" action without going through the
