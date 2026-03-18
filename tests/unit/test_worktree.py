@@ -25,6 +25,13 @@ from issue_orchestrator.adapters.worktree.api import (
 from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 
 
+@pytest.fixture(autouse=True)
+def clear_worktree_session_env(monkeypatch):
+    """Keep unit expectations stable when tests run inside agent worktree sessions."""
+    monkeypatch.delenv("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", raising=False)
+    monkeypatch.delenv("ORCHESTRATOR_WORKTREE_SEED_REF", raising=False)
+
+
 class TestSlugify:
     """Test the slugify function."""
 
