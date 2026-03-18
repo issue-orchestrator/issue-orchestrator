@@ -31,12 +31,22 @@ class DashboardDataContract(ContractBase):
     agents: list[str]
 
 
+class ProviderCircuitBreakerContract(ContractBase):
+    provider: str
+    is_open: bool
+    open_until: Optional[str]
+    consecutive_outages: int
+    last_error_summary: Optional[str]
+    updated_at: str
+
+
 class DashboardViewModelContract(ContractBase):
     dashboard_data: DashboardDataContract
     paused: bool
     startup_status: str
     active_tab: str
     shutdown_requested: bool
+    provider_circuit_breakers: list[ProviderCircuitBreakerContract]
 
 
 class SessionStartedPayload(ContractBase):

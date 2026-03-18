@@ -1241,10 +1241,7 @@ def _build_e2e_view_model(
 
 def _build_provider_circuit_breakers(orchestrator) -> list[dict[str, Any]]:
     """Build provider circuit breaker status list from orchestrator deps."""
-    try:
-        resilience = orchestrator.deps.provider_resilience
-    except AttributeError:
-        return []
+    resilience = orchestrator.deps.provider_resilience
     now = datetime.now(timezone.utc)
     result: list[dict[str, Any]] = []
     for state in resilience.store.list_all():

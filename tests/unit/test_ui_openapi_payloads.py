@@ -25,6 +25,10 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.control.provider_resilience import ProviderResilienceManager
+from issue_orchestrator.infra.config import ProviderResilienceConfig
+from issue_orchestrator.ports.event_sink import NullEventSink
+from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore
 from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
 from issue_orchestrator.view_models.dialogs import (
     build_blocked_issues_dialog,
@@ -39,10 +43,30 @@ from issue_orchestrator.view_models.issue_detail import build_issue_detail_view_
 
 
 @dataclass
+class _DepsStub:
+    provider_resilience: ProviderResilienceManager
+
+
+def _make_empty_deps() -> _DepsStub:
+    return _DepsStub(
+        provider_resilience=ProviderResilienceManager(
+            config=ProviderResilienceConfig(),
+            store=InMemoryProviderCircuitStore(),
+            events=NullEventSink(),
+        ),
+    )
+
+
+@dataclass
 class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+    deps: _DepsStub | None = None
+
+    def __post_init__(self) -> None:
+        if self.deps is None:
+            self.deps = _make_empty_deps()
 
 
 def _make_config() -> Config:

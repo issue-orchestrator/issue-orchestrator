@@ -1,12 +1,12 @@
 {
   "additionalProperties": true,
   "properties": {
-    "consecutive_ticks": {
-      "title": "Consecutive Ticks",
-      "type": "integer"
-    },
     "issue_number": {
       "title": "Issue Number",
+      "type": "integer"
+    },
+    "consecutive_ticks": {
+      "title": "Consecutive Ticks",
       "type": "integer"
     },
     "threshold": {

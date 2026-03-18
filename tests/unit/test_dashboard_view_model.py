@@ -41,12 +41,26 @@ class _DepsStub:
     provider_resilience: ProviderResilienceManager
 
 
+def _make_empty_deps() -> _DepsStub:
+    return _DepsStub(
+        provider_resilience=ProviderResilienceManager(
+            config=ProviderResilienceConfig(),
+            store=InMemoryProviderCircuitStore(),
+            events=NullEventSink(),
+        ),
+    )
+
+
 @dataclass
 class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
     deps: _DepsStub | None = None
+
+    def __post_init__(self) -> None:
+        if self.deps is None:
+            self.deps = _make_empty_deps()
 
 
 def _make_config() -> Config:
@@ -824,8 +838,8 @@ def test_view_model_circuit_breaker_closed_when_expired():
     assert breaker["is_open"] is False
 
 
-def test_view_model_circuit_breaker_graceful_without_deps():
-    """Orchestrator stubs without deps attribute should get empty list."""
+def test_view_model_circuit_breaker_empty_with_default_deps():
+    """Orchestrator with default empty deps should get empty breaker list."""
     config = _make_config()
     state = OrchestratorState(startup_status="complete")
     orchestrator = _OrchestratorStub(state=state, config=config)

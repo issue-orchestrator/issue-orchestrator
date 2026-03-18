@@ -3,54 +3,16 @@
     "DashboardDataContract": {
       "additionalProperties": true,
       "properties": {
-        "agents": {
-          "items": {
-            "type": "string"
-          },
-          "title": "Agents",
-          "type": "array"
-        },
-        "e2eLastRun": {
-          "anyOf": [
-            {
-              "additionalProperties": true,
-              "type": "object"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "E2Elastrun"
-        },
-        "e2eRunning": {
-          "title": "E2Erunning",
+        "startupComplete": {
+          "title": "Startupcomplete",
           "type": "boolean"
-        },
-        "githubOwner": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Githubowner"
-        },
-        "githubRepo": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "title": "Githubrepo"
         },
         "paused": {
           "title": "Paused",
+          "type": "boolean"
+        },
+        "e2eRunning": {
+          "title": "E2Erunning",
           "type": "boolean"
         },
         "queueRefreshSeconds": {
@@ -79,9 +41,47 @@
           ],
           "title": "Reporoot"
         },
-        "startupComplete": {
-          "title": "Startupcomplete",
-          "type": "boolean"
+        "githubOwner": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Githubowner"
+        },
+        "githubRepo": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Githubrepo"
+        },
+        "e2eLastRun": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "E2Elastrun"
+        },
+        "agents": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Agents",
+          "type": "array"
         }
       },
       "required": [
@@ -97,14 +97,63 @@
       ],
       "title": "DashboardDataContract",
       "type": "object"
+    },
+    "ProviderCircuitBreakerContract": {
+      "additionalProperties": true,
+      "properties": {
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "is_open": {
+          "title": "Is Open",
+          "type": "boolean"
+        },
+        "open_until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Open Until"
+        },
+        "consecutive_outages": {
+          "title": "Consecutive Outages",
+          "type": "integer"
+        },
+        "last_error_summary": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Last Error Summary"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "is_open",
+        "open_until",
+        "consecutive_outages",
+        "last_error_summary",
+        "updated_at"
+      ],
+      "title": "ProviderCircuitBreakerContract",
+      "type": "object"
     }
   },
   "additionalProperties": true,
   "properties": {
-    "active_tab": {
-      "title": "Active Tab",
-      "type": "string"
-    },
     "dashboard_data": {
       "$ref": "#/$defs/DashboardDataContract"
     },
@@ -112,13 +161,24 @@
       "title": "Paused",
       "type": "boolean"
     },
+    "startup_status": {
+      "title": "Startup Status",
+      "type": "string"
+    },
+    "active_tab": {
+      "title": "Active Tab",
+      "type": "string"
+    },
     "shutdown_requested": {
       "title": "Shutdown Requested",
       "type": "boolean"
     },
-    "startup_status": {
-      "title": "Startup Status",
-      "type": "string"
+    "provider_circuit_breakers": {
+      "items": {
+        "$ref": "#/$defs/ProviderCircuitBreakerContract"
+      },
+      "title": "Provider Circuit Breakers",
+      "type": "array"
     }
   },
   "required": [
@@ -126,7 +186,8 @@
     "paused",
     "startup_status",
     "active_tab",
-    "shutdown_requested"
+    "shutdown_requested",
+    "provider_circuit_breakers"
   ],
   "title": "DashboardViewModelContract",
   "type": "object"

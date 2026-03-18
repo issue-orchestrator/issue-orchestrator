@@ -3,12 +3,12 @@
     "TimelineArtifactContract": {
       "additionalProperties": true,
       "properties": {
-        "label": {
-          "title": "Label",
-          "type": "string"
-        },
         "type": {
           "title": "Type",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
           "type": "string"
         },
         "value": {
@@ -27,91 +27,36 @@
     "TimelineEventContract": {
       "additionalProperties": true,
       "properties": {
-        "artifacts": {
-          "items": {
-            "$ref": "#/$defs/TimelineArtifactContract"
-          },
-          "title": "Artifacts",
-          "type": "array"
+        "event_id": {
+          "title": "Event Id",
+          "type": "string"
         },
-        "coder_response_type": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Coder Response Type"
+        "timestamp": {
+          "title": "Timestamp",
+          "type": "string"
         },
         "event": {
           "title": "Event",
-          "type": "string"
-        },
-        "event_id": {
-          "title": "Event Id",
           "type": "string"
         },
         "issue_number": {
           "title": "Issue Number",
           "type": "integer"
         },
-        "level": {
-          "title": "Level",
-          "type": "string"
-        },
-        "parent_key": {
-          "title": "Parent Key",
-          "type": "string"
-        },
         "phase": {
           "title": "Phase",
           "type": "string"
         },
-        "reviewer_response_text": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Reviewer Response Text"
-        },
-        "reviewer_response_type": {
-          "anyOf": [
-            {
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Reviewer Response Type"
-        },
-        "round_index": {
-          "anyOf": [
-            {
-              "type": "integer"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Round Index"
+        "step": {
+          "title": "Step",
+          "type": "string"
         },
         "status": {
           "title": "Status",
           "type": "string"
         },
-        "step": {
-          "title": "Step",
+        "level": {
+          "title": "Level",
           "type": "string"
         },
         "summary": {
@@ -126,9 +71,64 @@
           "default": null,
           "title": "Summary"
         },
-        "timestamp": {
-          "title": "Timestamp",
+        "parent_key": {
+          "title": "Parent Key",
           "type": "string"
+        },
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/TimelineArtifactContract"
+          },
+          "title": "Artifacts",
+          "type": "array"
+        },
+        "round_index": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Round Index"
+        },
+        "reviewer_response_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewer Response Type"
+        },
+        "reviewer_response_text": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reviewer Response Text"
+        },
+        "coder_response_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Coder Response Type"
         }
       },
       "required": [
@@ -148,16 +148,16 @@
   },
   "additionalProperties": true,
   "properties": {
+    "issue_number": {
+      "title": "Issue Number",
+      "type": "integer"
+    },
     "events": {
       "items": {
         "$ref": "#/$defs/TimelineEventContract"
       },
       "title": "Events",
       "type": "array"
-    },
-    "issue_number": {
-      "title": "Issue Number",
-      "type": "integer"
     }
   },
   "required": [
