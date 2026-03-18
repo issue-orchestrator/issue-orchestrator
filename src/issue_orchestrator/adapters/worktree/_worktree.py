@@ -55,9 +55,6 @@ STALE_GIT_LOCK_RECHECK_SECONDS = 2
 _BRANCH_IN_USE_BY_WORKTREE_RE = re.compile(
     r"fatal:\s+'([^']+)'\s+is already used by worktree at '([^']+)'"
 )
-WORKTREE_SEED_REF_ENV = "ORCHESTRATOR_WORKTREE_SEED_REF"
-
-
 def _git_run(
     repo: Path,
     argv: list[str],
@@ -1176,6 +1173,7 @@ def _build_worktree_add_command(
     worktree_path: Path,
     branch_name: str,
     base_branch: str | None,
+    seed_ref: str | None,
 ) -> list[str]:
     """Build the git worktree add command.
 
@@ -1212,7 +1210,6 @@ def _build_worktree_add_command(
             str(worktree_path), "-b", branch_name, f"origin/{branch_name}"
         ]
 
-    seed_ref = os.environ.get(WORKTREE_SEED_REF_ENV, "").strip()
     if seed_ref:
         seed_ref_result = _git_run(
             repo_root,
@@ -1247,6 +1244,7 @@ class _WorktreeCreateContext:
     worktree_path: Path
     branch_name: str
     base_branch: str | None
+    seed_ref: str | None
     issue_number: int
     policy: WorktreePolicy
     reuse_options: WorktreeReuseOptions
@@ -1261,6 +1259,7 @@ def _init_worktree_context(
     issue_title: str,
     worktree_base: Path | None,
     base_branch: str | None,
+    seed_ref: str | None,
     branch_name: str | None,
     reuse_options: WorktreeReuseOptions | None,
     policy: WorktreePolicy | None,
@@ -1299,6 +1298,7 @@ def _init_worktree_context(
         worktree_path=worktree_path,
         branch_name=branch_name,
         base_branch=base_branch,
+        seed_ref=seed_ref,
         issue_number=issue_number,
         policy=policy,
         reuse_options=reuse_options,
@@ -1314,6 +1314,7 @@ def create_worktree(
     issue_title: str,
     worktree_base: Path | None = None,
     base_branch: str | None = None,
+    seed_ref: str | None = None,
     enforce_hooks: bool = True,
     pre_push_hook: Path | None = None,
     branch_name: str | None = None,
@@ -1332,6 +1333,7 @@ def create_worktree(
         issue_title: GitHub issue title (used to generate branch name if not provided)
         worktree_base: Base directory for worktrees. Defaults to parent of repo_root.
         base_branch: Base branch override (e.g., "main" or "master")
+        seed_ref: Optional local ref used to seed fresh issue worktrees
         enforce_hooks: Whether to install pre-push hooks
         pre_push_hook: Custom pre-push hook path
         branch_name: Specific branch to use (for checking out existing branches like PR reviews)
@@ -1350,7 +1352,7 @@ def create_worktree(
     """
     try:
         ctx = _init_worktree_context(
-            repo_root, issue_number, issue_title, worktree_base, base_branch, branch_name,
+            repo_root, issue_number, issue_title, worktree_base, base_branch, seed_ref, branch_name,
             reuse_options, policy, enforce_hooks, pre_push_hook,
         )
 
@@ -1370,7 +1372,7 @@ def create_worktree(
             )
 
         return _create_fresh_worktree(
-            ctx.repo_root, ctx.worktree_path, final_branch, ctx.base_branch, ctx.issue_number,
+            ctx.repo_root, ctx.worktree_path, final_branch, ctx.base_branch, ctx.seed_ref, ctx.issue_number,
             ctx.enforce_hooks, ctx.pre_push_hook, ctx.reuse_options, recreated_reason,
         )
     except WorktreeError:
@@ -1575,6 +1577,7 @@ def _create_fresh_worktree(
     worktree_path: Path,
     branch_name: str,
     base_branch: str | None,
+    seed_ref: str | None,
     issue_number: int,
     enforce_hooks: bool,
     pre_push_hook: Path | None,
@@ -1583,7 +1586,13 @@ def _create_fresh_worktree(
 ) -> tuple[Path, str, str, str | None, bool, int, int]:
     """Create a fresh worktree."""
     try:
-        cmd = _build_worktree_add_command(repo_root, worktree_path, branch_name, base_branch)
+        cmd = _build_worktree_add_command(
+            repo_root,
+            worktree_path,
+            branch_name,
+            base_branch,
+            seed_ref,
+        )
 
         logger.info(issue_log(issue_number, "Creating worktree: branch=%s path=%s"), branch_name, worktree_path)
         result = _git_run(repo_root, cmd, check=False)

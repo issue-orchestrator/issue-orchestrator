@@ -29,6 +29,7 @@ class GitWorktreeManager:
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
         base_branch: str | None = None,
+        seed_ref: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
     ) -> WorktreeInfo:
         """Create a new git worktree for an issue."""
@@ -42,6 +43,7 @@ class GitWorktreeManager:
             pre_push_hook=pre_push_hook,
             branch_name=branch_name,
             reuse_options=reuse_options,
+            seed_ref=seed_ref,
         )
         return WorktreeInfo(
             path=path,

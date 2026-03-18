@@ -15,7 +15,6 @@ the orchestrator focused on coordination and main loop logic.
 
 import json
 import logging
-import os
 import shlex
 import sys
 import time
@@ -77,10 +76,14 @@ from .transition_log import log_transition
 logger = logging.getLogger(__name__)
 
 
-def detect_existing_work(worktree_path: Path, working_copy: WorkingCopy) -> Optional[str]:
+def detect_existing_work(
+    worktree_path: Path,
+    working_copy: WorkingCopy,
+    *,
+    seed_ref: str | None = None,
+) -> Optional[str]:
     """Check if worktree has commits ahead of main and return context for agent."""
     try:
-        seed_ref = os.environ.get("ORCHESTRATOR_WORKTREE_SEED_REF")
         if seed_ref:
             head_sha = working_copy.get_head_sha(worktree_path)
             if head_sha and head_sha == seed_ref:
@@ -866,7 +869,11 @@ class SessionLauncher:
         logger.info("[launch] Label added in %.1fs", label_time)
 
         # Check for existing work and rebase status
-        existing_work = detect_existing_work(worktree_path, self._working_copy)
+        existing_work = detect_existing_work(
+            worktree_path,
+            self._working_copy,
+            seed_ref=self.config.worktree_seed_ref,
+        )
         if existing_work:
             logger.info("[launch] Found existing work - agent will evaluate before starting fresh")
 

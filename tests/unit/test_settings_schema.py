@@ -85,6 +85,7 @@ class TestModelDefaults:
         m = AdvancedSettings()
         assert m.web_port == 0
         assert m.control_api_port == 0
+        assert m.worktree_seed_ref is None
         assert m.worktree_branch_on_recreate == "delete"
         assert m.session_output_retention_days == 7
         assert m.session_output_retention_tier == "hot"
@@ -206,6 +207,7 @@ class TestFromConfig:
         cfg.web_port = 9090
         cfg.control_api_port = 19090
         cfg.worktree_base = Path("/tmp/worktrees")
+        cfg.worktree_seed_ref = "HEAD"
         cfg.worktree_branch_on_recreate = "create_new_branch"
         return cfg
 
@@ -276,6 +278,7 @@ class TestFromConfig:
         assert adv.web_port == 9090
         assert adv.control_api_port == 19090
         assert adv.worktree_base == "/tmp/worktrees"
+        assert adv.worktree_seed_ref == "HEAD"
         assert adv.worktree_branch_on_recreate == "create_new_branch"
 
     def test_default_config_round_trips(self):
@@ -330,6 +333,7 @@ class TestApplyTo:
             web_port=9090,
             control_api_port=cfg.control_api_port,
             worktree_base=str(cfg.worktree_base),
+            worktree_seed_ref=cfg.worktree_seed_ref,
             worktree_branch_on_recreate=cfg.worktree_branch_on_recreate,
         )
         restart = apply_to(tabs, cfg)
@@ -462,6 +466,7 @@ class TestRestartFields:
         assert "web_port" in fields
         assert "control_api_port" in fields
         assert "worktree_base" in fields
+        assert "worktree_seed_ref" in fields
         assert "worktree_branch_on_recreate" in fields
 
     def test_non_restart_fields_absent(self):

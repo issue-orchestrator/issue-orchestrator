@@ -91,6 +91,7 @@ agents:
 worktrees:
   base: "../"                     # Where to create worktrees (relative to repo)
   # base_branch_override: "main"         # Optional: override base branch (must exist on origin)
+  # seed_ref: "HEAD"                     # Optional: local ref to seed fresh issue worktrees during local iteration
   # setup:                               # Commands to run after worktree creation.
   #   - "npm install"                    # No default — configure for YOUR repo.
   #   - "pip install -e '.[dev]'"        # The orchestrator's own setup (hooks,

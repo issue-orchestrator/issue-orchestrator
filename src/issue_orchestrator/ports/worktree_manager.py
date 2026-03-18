@@ -53,6 +53,7 @@ class WorktreeManager(Protocol):
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
         base_branch: str | None = None,
+        seed_ref: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
     ) -> WorktreeInfo:
         """Create a new git worktree for an issue.
@@ -66,6 +67,7 @@ class WorktreeManager(Protocol):
             pre_push_hook: Custom pre-push hook path
             branch_name: Specific branch to checkout (for reviews)
             base_branch: Branch to use for new worktree bases (defaults to default branch)
+            seed_ref: Optional local ref used to seed fresh worktrees
             reuse_options: Options controlling reuse behavior
 
         Returns:

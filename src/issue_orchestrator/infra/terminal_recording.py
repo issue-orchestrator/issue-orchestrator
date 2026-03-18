@@ -111,12 +111,7 @@ def append_output_event(path: Path, text: str) -> None:
     if not text:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    next_offset = 0
-    if path.exists():
-        for event in iter_terminal_recording(path):
-            offset_ms = event.get("offset_ms")
-            if isinstance(offset_ms, int) and offset_ms >= next_offset:
-                next_offset = offset_ms + 1
+    next_offset = _next_recording_offset(path)
     payload = TerminalRecordingEvent(
         event_type="output",
         offset_ms=next_offset,
@@ -124,3 +119,43 @@ def append_output_event(path: Path, text: str) -> None:
     )
     with path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload.to_dict(), sort_keys=True) + "\n")
+
+
+def _next_recording_offset(path: Path) -> int:
+    if not path.exists():
+        return 0
+    last_offset = _read_last_recording_offset(path)
+    if last_offset is None:
+        return 0
+    return last_offset + 1
+
+
+def _read_last_recording_offset(path: Path) -> int | None:
+    with path.open("rb") as handle:
+        handle.seek(0, 2)
+        file_size = handle.tell()
+        if file_size <= 0:
+            return None
+
+        buffer = b""
+        position = file_size
+        while position > 0:
+            read_size = min(4096, position)
+            position -= read_size
+            handle.seek(position)
+            buffer = handle.read(read_size) + buffer
+            lines = buffer.splitlines()
+            if position > 0 and len(lines) <= 1:
+                continue
+            for raw_line in reversed(lines):
+                if not raw_line.strip():
+                    continue
+                try:
+                    payload = json.loads(raw_line.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    continue
+                offset_ms = payload.get("offset_ms")
+                if isinstance(offset_ms, int):
+                    return offset_ms
+                return None
+        return None

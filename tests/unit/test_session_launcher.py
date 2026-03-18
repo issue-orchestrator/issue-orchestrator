@@ -142,6 +142,7 @@ class MockWorktreeManager:
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
         base_branch: str | None = None,
+        seed_ref: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
     ) -> WorktreeInfo:
         self.create_calls.append({
@@ -149,6 +150,7 @@ class MockWorktreeManager:
             "issue_number": issue_number,
             "issue_title": issue_title,
             "base_branch": base_branch,
+            "seed_ref": seed_ref,
             "branch_name": branch_name,
             "reuse_options": reuse_options,
         })
@@ -441,16 +443,15 @@ class TestDetectExistingWork:
 
         assert result is None
 
-    def test_returns_none_when_head_matches_seed_ref(self, tmp_path, monkeypatch):
+    def test_returns_none_when_head_matches_seed_ref(self, tmp_path):
         """Seeded local issue worktrees should not surface inherited base commits as existing work."""
         working_copy = MockWorkingCopy()
         working_copy.commits_ahead = [
             CommitInfo(sha="abc123", message="Base fix", author="test", short_sha="abc1"),
         ]
         working_copy.head_sha = "abc123"
-        monkeypatch.setenv("ORCHESTRATOR_WORKTREE_SEED_REF", "abc123")
 
-        result = detect_existing_work(tmp_path, working_copy)
+        result = detect_existing_work(tmp_path, working_copy, seed_ref="abc123")
 
         assert result is None
 

@@ -322,6 +322,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
     config.queue_refresh_seconds = 10
     config.worktree_base_branch_override = "main"
     worktree_seed_ref = _seed_ref_for_local_issue_worktrees(e2e_project_root)
+    config.worktree_seed_ref = worktree_seed_ref
     # Ensure each ephemeral issue worktree starts clean; inherited dirty state
     # from prior attempts can otherwise derail validation with unrelated failures.
     config.setup_worktree = [
@@ -386,8 +387,6 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             shutil.rmtree(stale_dir)
 
         orchestrator = OrchestratorProcess(config, e2e_project_root)
-        if worktree_seed_ref:
-            os.environ["ORCHESTRATOR_WORKTREE_SEED_REF"] = worktree_seed_ref
         runtime = await start_orchestrator_runtime(
             orchestrator,
             config.control_api_port,
@@ -559,5 +558,3 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
                 pass
         if runtime is not None:
             await runtime.close()
-        if worktree_seed_ref:
-            os.environ.pop("ORCHESTRATOR_WORKTREE_SEED_REF", None)

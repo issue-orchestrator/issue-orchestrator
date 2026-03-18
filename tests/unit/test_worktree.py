@@ -29,7 +29,6 @@ from issue_orchestrator.ports.worktree_manager import WorktreeReuseOptions
 def clear_worktree_session_env(monkeypatch):
     """Keep unit expectations stable when tests run inside agent worktree sessions."""
     monkeypatch.delenv("ORCHESTRATOR_DISABLE_WORKTREE_REUSE", raising=False)
-    monkeypatch.delenv("ORCHESTRATOR_WORKTREE_SEED_REF", raising=False)
 
 
 class TestSlugify:
@@ -212,15 +211,12 @@ class TestCreateWorktree:
         assert "origin/main" in worktree_cmd  # Should branch from origin/main
 
     @patch("issue_orchestrator.adapters.git.git_cli.subprocess.run")
-    def test_create_worktree_uses_seed_ref_override_for_fresh_branch(
-        self, mock_run, tmp_path, monkeypatch
-    ):
+    def test_create_worktree_uses_seed_ref_override_for_fresh_branch(self, mock_run, tmp_path):
         """Fresh worktrees can be seeded from an explicit local ref without changing PR base."""
         repo_root = tmp_path / "repo"
         repo_root.mkdir()
         (repo_root / ".git").mkdir()
         worktree_base = tmp_path / "worktrees"
-        monkeypatch.setenv("ORCHESTRATOR_WORKTREE_SEED_REF", "HEAD")
 
         def run_side_effect(cmd, *args, **kwargs):
             argv = cmd[3:]
@@ -241,7 +237,12 @@ class TestCreateWorktree:
         mock_run.side_effect = run_side_effect
 
         worktree_path, branch_name, *_ = create_worktree(
-            repo_root, 123, "Test", worktree_base=worktree_base, base_branch="main"
+            repo_root,
+            123,
+            "Test",
+            worktree_base=worktree_base,
+            base_branch="main",
+            seed_ref="HEAD",
         )
 
         assert worktree_path == worktree_base / "repo-123"
