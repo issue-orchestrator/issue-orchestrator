@@ -68,6 +68,20 @@ class TestFanOut:
         assert "ops" in s.views
         assert "debug" in s.views
 
+    def test_review_exchange_lifecycle_events_visible_to_user(self):
+        started = fan_out("review_exchange.started")
+        completed = fan_out("review_exchange.completed")
+        failed = fan_out("review_exchange.failed")
+
+        assert len(started) == 1
+        assert len(completed) == 1
+        assert len(failed) == 1
+
+        for spec in (started[0], completed[0], failed[0]):
+            assert "user" in spec.views
+            assert "ops" in spec.views
+            assert "debug" in spec.views
+
 
 class TestFilterEventsByView:
     def test_user_view_filters_debug_events(self):
