@@ -636,6 +636,12 @@ class CompletionProcessor:
                     errors=[agent_error],
                 )
 
+        preserved_completion_path = self._preserve_completion_record(
+            worktree=worktree,
+            completion_path=completion_path,
+            session_name=session_name,
+        )
+
         # Execute requested actions in order
         branch, pr_url, review_exchange_completed = self._execute_actions(
             worktree=worktree,
@@ -674,6 +680,7 @@ class CompletionProcessor:
             error_details=error_details,
             total_duration=total_duration,
             completion_path=completion_path,
+            preserved_completion_path=preserved_completion_path,
         )
 
     def _read_and_validate_record(
@@ -1989,6 +1996,7 @@ class CompletionProcessor:
         error_details: list[dict[str, Any]],
         total_duration: float,
         completion_path: str | None,
+        preserved_completion_path: str | None,
     ) -> ProcessingResult:
         """Build final processing result and handle cleanup."""
         # Determine overall success
@@ -2057,12 +2065,6 @@ class CompletionProcessor:
                 actions_taken=actions_taken,
                 diagnostic_path=diagnostic_path,
             )
-
-        preserved_completion_path = self._preserve_completion_record(
-            worktree=worktree,
-            completion_path=completion_path,
-            session_name=session_name,
-        )
 
         # Clean up the completion record after processing to prevent re-processing
         self._cleanup_completion_record(worktree, completion_path, issue_number)
