@@ -177,5 +177,14 @@ class SessionDiagnosticsDialogPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
     actions: list[SessionDiagnosticsActionPayload]
     analysis: SessionDiagnosticsAnalysisPayload | None | None = None
+    follow_up_issues: list[SessionDiagnosticsFollowUpIssuePayload] | None = None
     rows: list[DialogRowPayload]
+    title: str
+
+class SessionDiagnosticsFollowUpIssuePayload(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    blocking: bool
+    evidence: str | None = None
+    reason: str
+    suggested_labels: list[str] | None = None
     title: str

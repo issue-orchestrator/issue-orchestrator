@@ -1102,6 +1102,19 @@ class AdvancedSettings(BaseModel):
             "yaml_path": "worktrees.base_branch_override",
         },
     )
+    worktree_seed_ref: str | None = Field(
+        None,
+        title="Worktree Seed Ref",
+        description="Optional local ref used to seed fresh issue worktrees before review/PR creation",
+        json_schema_extra={
+            "doc_examples": ["HEAD", "main", "fc42d4c"],
+            "doc_notes": "Use for local iteration when fresh issue worktrees should inherit a specific local ref.",
+            "section": "Worktrees",
+            "restart_required": True,
+            "config_attr": "worktree_seed_ref",
+            "yaml_path": "worktrees.seed_ref",
+        },
+    )
     worktree_branch_on_recreate: Literal["delete", "create_new_branch"] = Field(
         "delete",
         title="Branch on Recreate",

@@ -80,16 +80,25 @@ def test_dashboard_loads_ui_state_helpers_before_dashboard_js() -> None:
     idx_expanded = html.find('/static/js/expanded_column_state.js')
     idx_compact = html.find('/static/js/compact_card_state.js')
     idx_action_contract = html.find('/static/js/ui_action_contract.js')
+    idx_xterm_css = html.find('/static/vendor/xterm/xterm.css')
+    idx_xterm_js = html.find('/static/vendor/xterm/xterm.js')
+    idx_xterm_fit = html.find('/static/vendor/xterm/addon-fit.js')
     idx_dashboard = html.find('/static/js/dashboard.js')
     assert idx_issue_row != -1
     assert idx_expanded != -1
     assert idx_compact != -1
     assert idx_action_contract != -1
+    assert idx_xterm_css != -1
+    assert idx_xterm_js != -1
+    assert idx_xterm_fit != -1
     assert idx_dashboard != -1
     assert idx_issue_row < idx_dashboard
     assert idx_expanded < idx_dashboard
     assert idx_compact < idx_dashboard
     assert idx_action_contract < idx_dashboard
+    assert idx_xterm_css < idx_dashboard
+    assert idx_xterm_js < idx_dashboard
+    assert idx_xterm_fit < idx_dashboard
 
 
 def test_compact_cards_use_fingerprint_delta_path() -> None:
@@ -112,6 +121,14 @@ def test_expanded_cards_render_label_badges() -> None:
     assert "card-badges" in snippet
     assert "resetRetrySingle" in snippet
     assert "retryExpandedSingle" in snippet
+
+
+def test_session_replay_seek_reuses_terminal_for_forward_progress() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "replaySessionToIndex")
+    assert "if (!sessionReplayState.terminal)" in body
+    assert "if (clampedIndex < sessionReplayState.playbackIndex)" in body
+    assert "for (let index = sessionReplayState.playbackIndex; index < clampedIndex; index += 1)" in body
 
 
 def test_unblock_handlers_use_ui_action_contract() -> None:
@@ -211,6 +228,21 @@ def test_open_log_file_uses_ui_action_contract() -> None:
     body = _function_body(js, "openLogFile")
     assert "uiActionContract.buildHostOpenPathRequest" in body
     assert "/api/host/open-path" not in body
+
+
+def test_session_replay_uses_terminal_recording_endpoint_and_emulator() -> None:
+    js = _read(DASHBOARD_JS)
+    open_body = _function_body(js, "openAgentLog")
+    refresh_body = _function_body(js, "refreshAgentLog")
+    assert "uiActionContract.buildTerminalRecordingRequest" in open_body
+    assert "uiActionContract.buildTerminalRecordingRequest" in refresh_body
+    assert "/api/log/local/" not in open_body
+    assert "/api/log/local/" not in refresh_body
+    assert "new Terminal(" in js
+    assert "new FitAddon.FitAddon()" in js
+    assert "sessionReplaySeek" in open_body
+    assert "sessionReplayPlayPause" in open_body
+    assert "sessionReplayRestart" in open_body
 
 
 def test_host_action_contract_exposes_host_neutral_builders() -> None:

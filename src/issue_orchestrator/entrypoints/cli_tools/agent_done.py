@@ -6,26 +6,51 @@ It is NOT a CLI entry point — use coding-done or reviewer-done instead.
 Architecture principle: The agent reports intent; the orchestrator decides and executes.
 """
 
+import os
 import argparse
 import json
 import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import NoReturn, Optional
-
-import os
+from typing import TYPE_CHECKING, Any, NoReturn, Optional, cast
 
 from ...infra.env import get_env
 
 logger = logging.getLogger(__name__)
 
-from ...domain.models import (
-    CompletionRecord,
-    CompletionOutcome,
-    RequestedAction,
-    COMPLETION_RECORD_PATH,
-)
+if TYPE_CHECKING:
+    from ...domain.models import (
+        CompletionRecord,
+        ProposedFollowUpIssue,
+    )
+
+try:
+    from ...domain.models import (
+        CompletionRecord as RuntimeCompletionRecord,
+        CompletionOutcome as RuntimeCompletionOutcome,
+        ProposedFollowUpIssue as RuntimeProposedFollowUpIssue,
+        RequestedAction as RuntimeRequestedAction,
+        COMPLETION_RECORD_PATH,
+    )
+except ImportError:
+    from ._runtime_models import (
+        CompletionRecord as RuntimeCompletionRecord,
+        CompletionOutcome as RuntimeCompletionOutcome,
+        ProposedFollowUpIssue as RuntimeProposedFollowUpIssue,
+        RequestedAction as RuntimeRequestedAction,
+        COMPLETION_RECORD_PATH,
+    )
+if not TYPE_CHECKING:
+    CompletionRecord = RuntimeCompletionRecord
+    CompletionOutcome = RuntimeCompletionOutcome
+    ProposedFollowUpIssue = RuntimeProposedFollowUpIssue
+    RequestedAction = RuntimeRequestedAction
+
+RUNTIME_COMPLETION_RECORD: Any = RuntimeCompletionRecord
+RUNTIME_COMPLETION_OUTCOME: Any = RuntimeCompletionOutcome
+RUNTIME_PROPOSED_FOLLOW_UP_ISSUE: Any = RuntimeProposedFollowUpIssue
+RUNTIME_REQUESTED_ACTION: Any = RuntimeRequestedAction
 from ...control.validation import AgentGate, AgentGateResult
 from ...execution.session_output_adapter import FileSystemSessionOutput
 
@@ -50,40 +75,40 @@ REQUIRED_FIELDS = {
 
 # Map CLI status to CompletionOutcome
 STATUS_TO_OUTCOME = {
-    AgentStatus.COMPLETED: CompletionOutcome.COMPLETED,
-    AgentStatus.BLOCKED: CompletionOutcome.BLOCKED,
-    AgentStatus.NEEDS_HUMAN: CompletionOutcome.NEEDS_HUMAN,
-    AgentStatus.APPROVED: CompletionOutcome.REVIEW_APPROVED,
-    AgentStatus.CHANGES_REQUESTED: CompletionOutcome.REVIEW_CHANGES_REQUESTED,
+    AgentStatus.COMPLETED: RUNTIME_COMPLETION_OUTCOME.COMPLETED,
+    AgentStatus.BLOCKED: RUNTIME_COMPLETION_OUTCOME.BLOCKED,
+    AgentStatus.NEEDS_HUMAN: RUNTIME_COMPLETION_OUTCOME.NEEDS_HUMAN,
+    AgentStatus.APPROVED: RUNTIME_COMPLETION_OUTCOME.REVIEW_APPROVED,
+    AgentStatus.CHANGES_REQUESTED: RUNTIME_COMPLETION_OUTCOME.REVIEW_CHANGES_REQUESTED,
 }
 
 # Map CLI status to requested actions
 STATUS_TO_ACTIONS = {
     AgentStatus.COMPLETED: [
-        RequestedAction.PUSH_BRANCH,
-        RequestedAction.CREATE_PR,
-        RequestedAction.POST_COMMENT,
+        RUNTIME_REQUESTED_ACTION.PUSH_BRANCH,
+        RUNTIME_REQUESTED_ACTION.CREATE_PR,
+        RUNTIME_REQUESTED_ACTION.POST_COMMENT,
     ],
     AgentStatus.BLOCKED: [
-        RequestedAction.PUSH_BRANCH,
-        RequestedAction.ADD_BLOCKED_LABEL,
-        RequestedAction.POST_COMMENT,
+        RUNTIME_REQUESTED_ACTION.PUSH_BRANCH,
+        RUNTIME_REQUESTED_ACTION.ADD_BLOCKED_LABEL,
+        RUNTIME_REQUESTED_ACTION.POST_COMMENT,
     ],
     AgentStatus.NEEDS_HUMAN: [
-        RequestedAction.PUSH_BRANCH,
-        RequestedAction.ADD_NEEDS_HUMAN_LABEL,
-        RequestedAction.POST_COMMENT,
+        RUNTIME_REQUESTED_ACTION.PUSH_BRANCH,
+        RUNTIME_REQUESTED_ACTION.ADD_NEEDS_HUMAN_LABEL,
+        RUNTIME_REQUESTED_ACTION.POST_COMMENT,
     ],
     AgentStatus.APPROVED: [
-        RequestedAction.ADD_CODE_REVIEWED_LABEL,
-        RequestedAction.REMOVE_NEEDS_REWORK_LABEL,
-        RequestedAction.REMOVE_CODE_REVIEW_LABEL,
-        RequestedAction.POST_COMMENT,
+        RUNTIME_REQUESTED_ACTION.ADD_CODE_REVIEWED_LABEL,
+        RUNTIME_REQUESTED_ACTION.REMOVE_NEEDS_REWORK_LABEL,
+        RUNTIME_REQUESTED_ACTION.REMOVE_CODE_REVIEW_LABEL,
+        RUNTIME_REQUESTED_ACTION.POST_COMMENT,
     ],
     AgentStatus.CHANGES_REQUESTED: [
-        RequestedAction.ADD_NEEDS_REWORK_LABEL,
-        RequestedAction.REMOVE_CODE_REVIEW_LABEL,
-        RequestedAction.POST_COMMENT,
+        RUNTIME_REQUESTED_ACTION.ADD_NEEDS_REWORK_LABEL,
+        RUNTIME_REQUESTED_ACTION.REMOVE_CODE_REVIEW_LABEL,
+        RUNTIME_REQUESTED_ACTION.POST_COMMENT,
     ],
 }
 
@@ -310,10 +335,62 @@ def format_comment_body(status: str, args: argparse.Namespace) -> str:  # noqa: 
 *The work agent will be re-queued to address these issues.*"""
 
 
+def _read_follow_up_file(path: Path) -> str:
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(f"Failed to read follow-up issue file {path}: {exc}") from exc
+
+
+def _parse_follow_up_json(raw: str) -> Any | None:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _parse_follow_up_jsonl(raw: str, path: Path) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSONL entry in follow-up issue file {path}: {exc}") from exc
+        entries.append(item)
+    return entries
+
+
+def _coerce_follow_up_entries(parsed: Any, raw: str, path: Path) -> list[dict[str, Any]]:
+    if isinstance(parsed, list):
+        return parsed
+    if isinstance(parsed, dict):
+        return [parsed]
+    if parsed is not None:
+        raise ValueError("Follow-up issue file must contain a JSON array or JSONL objects")
+    return _parse_follow_up_jsonl(raw, path)
+
+
+def load_follow_up_issues(path_value: str | None) -> list[ProposedFollowUpIssue] | None:
+    """Load ancillary follow-up issue proposals from JSON or JSONL."""
+    if not path_value:
+        return None
+    path = Path(path_value)
+    raw = _read_follow_up_file(path)
+    parsed = _parse_follow_up_json(raw)
+    entries = _coerce_follow_up_entries(parsed, raw, path)
+    return cast(
+        list[ProposedFollowUpIssue],
+        [RUNTIME_PROPOSED_FOLLOW_UP_ISSUE.from_dict(item) for item in entries],
+    )
+
+
 def build_completion_record(status: str, args: argparse.Namespace) -> CompletionRecord:
     """Build a CompletionRecord from CLI arguments."""
-    outcome = STATUS_TO_OUTCOME[status]
-    actions = STATUS_TO_ACTIONS[status]
+    runtime_outcome = STATUS_TO_OUTCOME[status]
+    runtime_actions = STATUS_TO_ACTIONS[status]
 
     # Format summary
     if status == AgentStatus.COMPLETED:
@@ -329,13 +406,16 @@ def build_completion_record(status: str, args: argparse.Namespace) -> Completion
 
     # Build comment body
     comment_body = format_comment_body(status, args)
+    follow_up_issues = load_follow_up_issues(getattr(args, "follow_up_file", None)) if status == AgentStatus.COMPLETED else None
 
-    return CompletionRecord(
+    return cast(
+        CompletionRecord,
+        RUNTIME_COMPLETION_RECORD(
         session_id=get_session_id(),
         timestamp=datetime.now().isoformat(),
-        outcome=outcome,
+        outcome=runtime_outcome,
         summary=summary,
-        requested_actions=actions,
+        requested_actions=runtime_actions,
         # Completion fields
         implementation=args.implementation if status == AgentStatus.COMPLETED else None,
         problems=args.problems if status == AgentStatus.COMPLETED else None,
@@ -359,6 +439,8 @@ def build_completion_record(status: str, args: argparse.Namespace) -> Completion
         comment_body=comment_body,
         # PR labels
         pr_labels=getattr(args, 'pr_labels', None),
+        follow_up_issues=follow_up_issues,
+        ),
     )
 
 
@@ -678,4 +760,3 @@ def write_error_completion(error_msg: str, status: str) -> Optional[Path]:
     except Exception:
         # If we can't even write the error record, there's nothing more we can do
         return None
-

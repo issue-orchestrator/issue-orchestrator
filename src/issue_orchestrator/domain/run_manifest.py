@@ -68,6 +68,7 @@ class RunManifest:
     review_summary: str | None = None
     review_issues: str | None = None
     risk_level: str | None = None
+    follow_up_issues: list[dict[str, Any]] | None = None
 
     # ------------------------------------------------------------------
     # Validation
@@ -230,8 +231,16 @@ class RunManifest:
             "review_summary",
             "review_issues",
             "risk_level",
+            "follow_up_issues",
         )
         for name in _FIELDS:
             value = getattr(record, name, None)
             if value is not None:
+                if name == "follow_up_issues":
+                    setattr(
+                        self,
+                        name,
+                        [issue.to_dict() for issue in value],
+                    )
+                    continue
                 setattr(self, name, value)

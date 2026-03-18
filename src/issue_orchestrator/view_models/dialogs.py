@@ -158,6 +158,51 @@ class SessionDiagnosticAnalysis:
         return payload
 
 
+@dataclass(frozen=True)
+class SessionDiagnosticFollowUpIssue:
+    title: str
+    reason: str
+    evidence: str | None = None
+    suggested_labels: tuple[str, ...] = ()
+    blocking: bool = False
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, Any]) -> "SessionDiagnosticFollowUpIssue | None":
+        if not isinstance(payload, dict):
+            return None
+        title = payload.get("title")
+        reason = payload.get("reason")
+        if not isinstance(title, str) or not title.strip():
+            return None
+        if not isinstance(reason, str) or not reason.strip():
+            return None
+        evidence = payload.get("evidence")
+        labels_raw = payload.get("suggested_labels")
+        suggested_labels = tuple(
+            item for item in labels_raw if isinstance(item, str) and item.strip()
+        ) if isinstance(labels_raw, list) else ()
+        blocking = payload.get("blocking", False)
+        return cls(
+            title=title,
+            reason=reason,
+            evidence=evidence if isinstance(evidence, str) and evidence.strip() else None,
+            suggested_labels=suggested_labels,
+            blocking=blocking if isinstance(blocking, bool) else False,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "title": self.title,
+            "reason": self.reason,
+            "blocking": self.blocking,
+        }
+        if self.evidence is not None:
+            payload["evidence"] = self.evidence
+        if self.suggested_labels:
+            payload["suggested_labels"] = list(self.suggested_labels)
+        return payload
+
+
 def _join_worktree_path(worktree: str, rel_path: Any) -> str:
     """Resolve manifest path to an openable filesystem path.
 
@@ -355,6 +400,12 @@ def build_session_diagnostics_dialog(
 ) -> dict[str, Any]:
     ctx = SessionDiagnosticsContext.from_payload(issue_number, manifest_payload)
     analysis = SessionDiagnosticAnalysis.from_payload(manifest_payload.get("analysis"))
+    follow_up_payload = (manifest_payload.get("manifest") or {}).get("follow_up_issues")
+    follow_up_issues = [
+        issue.to_dict()
+        for item in follow_up_payload
+        if (issue := SessionDiagnosticFollowUpIssue.from_payload(item)) is not None
+    ] if isinstance(follow_up_payload, list) else []
     rows = _build_session_diagnostics_rows(ctx)
     actions = _build_session_diagnostics_actions(ctx)
 
@@ -363,6 +414,7 @@ def build_session_diagnostics_dialog(
         "rows": [row.to_dict() for row in rows],
         "actions": actions,
         "analysis": analysis.to_dict() if analysis else None,
+        "follow_up_issues": follow_up_issues,
     }
 
 

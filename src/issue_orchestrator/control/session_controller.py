@@ -46,6 +46,7 @@ from ..ports.session_output import SessionOutput, ValidationState
 from .validation import PublishGate
 
 logger = logging.getLogger(__name__)
+_AGENT_DONE_MARKER = ".agent-done-marker"
 
 
 @dataclass
@@ -262,6 +263,11 @@ class SessionController:
         completion_path: str | None,
     ) -> SessionDecision:
         """Handle case where no completion record exists."""
+        debug_context = self._collect_completion_debug_context(
+            worktree_path=worktree_path,
+            run_dir=run_dir,
+            completion_path=completion_path,
+        )
         self._write_no_completion_diagnostic(
             observation=observation,
             worktree_path=worktree_path,
@@ -269,6 +275,7 @@ class SessionController:
             session_name=session_name,
             run_dir=run_dir,
             completion_path=completion_path,
+            debug_context=debug_context,
         )
         session_log = self._get_session_log_tail(run_dir, session_name)
         provider_status = self._read_provider_status(run_dir)
@@ -297,12 +304,36 @@ class SessionController:
             )
 
         if observation.observation == SessionObservation.TIMED_OUT:
-            logger.warning(issue_log(issue_number, "SESSION COMPLETE: status=TIMED_OUT outcome=none reason=no_completion_record session=%s"), session_name)
+            logger.warning(
+                issue_log(
+                    issue_number,
+                    "SESSION COMPLETE: status=TIMED_OUT outcome=none "
+                    "reason=no_completion_record session=%s expected_completion=%s "
+                    "marker_exists=%s nearby_completion_files=%d"
+                ),
+                session_name,
+                debug_context["requested_completion_abs_path"],
+                debug_context["agent_done_marker_exists"],
+                len(debug_context["nearby_completion_candidates"]),
+            )
+            self._log_completion_debug_context(issue_number, session_name, debug_context)
             if session_log:
                 logger.warning(issue_log(issue_number, "LAST OUTPUT:\n%s"), session_log)
             return SessionDecision(status=SessionStatus.TIMED_OUT, reason="Timed out without completion record")
 
-        logger.error(issue_log(issue_number, "SESSION COMPLETE: status=FAILED outcome=none reason=no_completion_record session=%s"), session_name)
+        logger.error(
+            issue_log(
+                issue_number,
+                "SESSION COMPLETE: status=FAILED outcome=none "
+                "reason=no_completion_record session=%s expected_completion=%s "
+                "marker_exists=%s nearby_completion_files=%d"
+            ),
+            session_name,
+            debug_context["requested_completion_abs_path"],
+            debug_context["agent_done_marker_exists"],
+            len(debug_context["nearby_completion_candidates"]),
+        )
+        self._log_completion_debug_context(issue_number, session_name, debug_context)
         if session_log:
             logger.error(issue_log(issue_number, "LAST OUTPUT:\n%s"), session_log)
         return SessionDecision(status=SessionStatus.FAILED, reason="Terminated without completion record")
@@ -315,6 +346,7 @@ class SessionController:
         session_name: str,
         run_dir: Path | None,
         completion_path: str | None,
+        debug_context: dict[str, Any] | None = None,
     ) -> None:
         """Persist a durable diagnostic snapshot when completion is missing."""
         try:
@@ -355,6 +387,8 @@ class SessionController:
                 "run_dir_completion_size": run_dir_completion_size,
                 "pid": os.getpid(),
             }
+            if debug_context:
+                diagnostic.update(debug_context)
             diagnostic_path = self.session_output.write_diagnostic(
                 run_dir,
                 diagnostic,
@@ -376,6 +410,124 @@ class SessionController:
                 ),
                 session_name,
                 exc,
+            )
+
+    def _collect_completion_debug_context(
+        self,
+        *,
+        worktree_path: Path,
+        run_dir: Path | None,
+        completion_path: str | None,
+    ) -> dict[str, Any]:
+        requested_rel_path = completion_path or ".issue-orchestrator/completion.json"
+        requested_path = (worktree_path / requested_rel_path).resolve()
+        marker_path = worktree_path / _AGENT_DONE_MARKER
+        marker_exists = marker_path.exists()
+        marker_preview: str | None = None
+        if marker_exists:
+            try:
+                marker_preview = _truncate_with_tail(marker_path.read_text(encoding="utf-8"), 200)
+            except OSError:
+                marker_preview = "<unreadable>"
+        return {
+            "requested_completion_path": requested_rel_path,
+            "requested_completion_abs_path": str(requested_path),
+            "agent_done_marker_path": str(marker_path.resolve()),
+            "agent_done_marker_exists": marker_exists,
+            "agent_done_marker_preview": marker_preview,
+            "nearby_completion_candidates": self._find_nearby_completion_candidates(
+                worktree_path=worktree_path,
+                run_dir=run_dir,
+                requested_path=requested_path,
+            ),
+        }
+
+    def _find_nearby_completion_candidates(
+        self,
+        *,
+        worktree_path: Path,
+        run_dir: Path | None,
+        requested_path: Path,
+    ) -> list[dict[str, Any]]:
+        candidates: list[Path] = []
+        root_candidates = worktree_path / ".issue-orchestrator"
+        if root_candidates.exists():
+            candidates.extend(root_candidates.glob("completion*.json"))
+            sessions_dir = root_candidates / "sessions"
+            if sessions_dir.exists():
+                candidates.extend(sessions_dir.glob("**/completion*.json"))
+
+        unique_paths: dict[Path, None] = {}
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except OSError:
+                continue
+            if resolved == requested_path:
+                continue
+            unique_paths[resolved] = None
+
+        sorted_candidates = sorted(
+            unique_paths.keys(),
+            key=lambda path: path.stat().st_mtime if path.exists() else 0.0,
+            reverse=True,
+        )[:10]
+        records: list[dict[str, Any]] = []
+        for candidate in sorted_candidates:
+            try:
+                stat = candidate.stat()
+                relative_to_run_dir = None
+                if run_dir is not None:
+                    try:
+                        relative_to_run_dir = str(candidate.relative_to(run_dir))
+                    except ValueError:
+                        relative_to_run_dir = None
+                records.append(
+                    {
+                        "path": str(candidate),
+                        "size": stat.st_size,
+                        "mtime": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                        "under_run_dir": relative_to_run_dir is not None,
+                        "run_dir_relative_path": relative_to_run_dir,
+                    }
+                )
+            except OSError:
+                continue
+        return records
+
+    def _log_completion_debug_context(
+        self,
+        issue_number: int,
+        session_name: str,
+        debug_context: dict[str, Any],
+    ) -> None:
+        logger.warning(
+            issue_log(
+                issue_number,
+                "Completion debug: session=%s marker_path=%s marker_exists=%s marker_preview=%s"
+            ),
+            session_name,
+            debug_context["agent_done_marker_path"],
+            debug_context["agent_done_marker_exists"],
+            debug_context["agent_done_marker_preview"] or "",
+        )
+        nearby_candidates = debug_context["nearby_completion_candidates"]
+        if nearby_candidates:
+            logger.warning(
+                issue_log(
+                    issue_number,
+                    "Completion debug: session=%s nearby_candidates=%s"
+                ),
+                session_name,
+                nearby_candidates,
+            )
+        else:
+            logger.warning(
+                issue_log(
+                    issue_number,
+                    "Completion debug: session=%s nearby_candidates=[]"
+                ),
+                session_name,
             )
 
     def _read_provider_status(self, run_dir: Path | None) -> ProviderStatus | None:
@@ -661,10 +813,13 @@ class SessionController:
         for key in (
             "implementation", "problems", "attempted", "blocked_reason",
             "blocked_by", "question", "review_summary", "review_issues",
-            "risk_level",
+            "risk_level", "follow_up_issues",
         ):
             value = getattr(record, key, None)
             if value is not None:
+                if key == "follow_up_issues":
+                    detail[key] = [issue.to_dict() for issue in value]
+                    continue
                 detail[key] = value
         return detail
 

@@ -142,6 +142,7 @@ class MockWorktreeManager:
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
         base_branch: str | None = None,
+        seed_ref: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
     ) -> WorktreeInfo:
         self.create_calls.append({
@@ -149,6 +150,7 @@ class MockWorktreeManager:
             "issue_number": issue_number,
             "issue_title": issue_title,
             "base_branch": base_branch,
+            "seed_ref": seed_ref,
             "branch_name": branch_name,
             "reuse_options": reuse_options,
         })
@@ -169,12 +171,16 @@ class MockWorkingCopy:
     def __init__(self):
         self.commits_ahead: list[CommitInfo] = []
         self.current_branch: str | None = "main"
+        self.head_sha: str | None = None
 
     def get_commits_ahead_of_main(self, worktree: Path) -> list[CommitInfo]:
         return self.commits_ahead
 
     def get_current_branch(self, worktree: Path) -> str | None:
         return self.current_branch
+
+    def get_head_sha(self, worktree: Path) -> str | None:
+        return self.head_sha
 
 
 class MockCommandRunner:
@@ -437,6 +443,18 @@ class TestDetectExistingWork:
 
         assert result is None
 
+    def test_returns_none_when_head_matches_seed_ref(self, tmp_path):
+        """Seeded local issue worktrees should not surface inherited base commits as existing work."""
+        working_copy = MockWorkingCopy()
+        working_copy.commits_ahead = [
+            CommitInfo(sha="abc123", message="Base fix", author="test", short_sha="abc1"),
+        ]
+        working_copy.head_sha = "abc123"
+
+        result = detect_existing_work(tmp_path, working_copy, seed_ref="abc123")
+
+        assert result is None
+
     def test_returns_context_with_commits(self, tmp_path):
         """Verify returns context string when commits exist."""
         working_copy = MockWorkingCopy()
@@ -657,6 +675,9 @@ class TestLaunchIssueSession:
         )
         worktree_path = Path(payload["worktree_path"])
         completion_path = payload["completion_path"]
+        completion_parts = Path(completion_path).parts
+        assert "sessions" in completion_parts
+        assert any(part.endswith("__coding-1") for part in completion_parts)
         assert payload["completion_path_absolute"] == str((worktree_path / completion_path).resolve())
         SessionStartedPayload.model_validate(payload)
 

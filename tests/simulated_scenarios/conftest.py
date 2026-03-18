@@ -295,9 +295,19 @@ class TempWorktreeManager:
     def __init__(self, base: Path) -> None:
         self.base = base
 
-    def create(self, repo_root: Path, issue_number: int, issue_title: str, worktree_base: Path | None = None,
-               enforce_hooks: bool = True, pre_push_hook: Path | None = None, branch_name: str | None = None,
-               base_branch: str | None = None, reuse_options=None):
+    def create(
+        self,
+        repo_root: Path,
+        issue_number: int,
+        issue_title: str,
+        worktree_base: Path | None = None,
+        enforce_hooks: bool = True,
+        pre_push_hook: Path | None = None,
+        branch_name: str | None = None,
+        base_branch: str | None = None,
+        seed_ref: str | None = None,
+        reuse_options=None,
+    ):
         worktree = (worktree_base or self.base) / f"sim-wt-{issue_number}"
         worktree.mkdir(parents=True, exist_ok=True)
         final_branch = branch_name or f"{issue_number}-sim"

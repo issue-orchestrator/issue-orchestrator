@@ -826,6 +826,13 @@ def _load_worktrees_section(
         base_branch_override = str(base_branch_override_raw).strip()
         config.worktree_base_branch_override = base_branch_override or None
 
+    seed_ref_raw = worktrees_section.get("seed_ref")
+    if seed_ref_raw is None:
+        config.worktree_seed_ref = None
+    else:
+        seed_ref = str(seed_ref_raw).strip()
+        config.worktree_seed_ref = seed_ref or None
+
     # Validate worktree_base is usable
     try:
         config.worktree_base.mkdir(parents=True, exist_ok=True)
@@ -1130,6 +1137,7 @@ class Config:
     repo_root_from_yaml: bool = False  # Internal: YAML explicitly set repo_root
     worktree_base: Path = Path(".issue-orchestrator/worktrees")  # Base directory for worktrees
     worktree_base_branch_override: Optional[str] = None  # Override base branch for worktree creation
+    worktree_seed_ref: Optional[str] = None  # Optional local ref to seed fresh issue worktrees
     worktree_branch_on_recreate: str = "delete"  # delete or create_new_branch
 
     # Config validation
@@ -1500,6 +1508,7 @@ class Config:
             "worktrees": {
                 "base": str(self.worktree_base),
                 "base_branch_override": self.worktree_base_branch_override,
+                "seed_ref": self.worktree_seed_ref,
                 "setup": list(self.setup_worktree),
                 "reuse_push_preflight": self.reuse_push_preflight,
                 "allow_no_verify_dry_run_preflight": self.allow_no_verify_dry_run_preflight,
@@ -1952,6 +1961,8 @@ class Config:
             worktrees_dict["base"] = str(self.worktree_base)
         if self.worktree_base_branch_override:
             worktrees_dict["base_branch_override"] = self.worktree_base_branch_override
+        if self.worktree_seed_ref:
+            worktrees_dict["seed_ref"] = self.worktree_seed_ref
         if self.setup_worktree:
             worktrees_dict["setup"] = list(self.setup_worktree)
         if self.worktree_branch_on_recreate != "delete":

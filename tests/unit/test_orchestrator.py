@@ -47,6 +47,7 @@ class MockWorktreeManager:
         pre_push_hook: Path | None = None,
         branch_name: str | None = None,
         base_branch: str | None = None,
+        seed_ref: str | None = None,
         reuse_options: WorktreeReuseOptions | None = None,
     ) -> WorktreeInfo:
         """Track create calls and return mock WorktreeInfo."""
@@ -56,6 +57,7 @@ class MockWorktreeManager:
             "issue_title": issue_title,
             "worktree_base": worktree_base,
             "base_branch": base_branch,
+            "seed_ref": seed_ref,
             "enforce_hooks": enforce_hooks,
             "pre_push_hook": pre_push_hook,
             "branch_name": branch_name,

@@ -125,6 +125,7 @@ Skills in `.claude/skills/` are automatically invoked when working on relevant a
 | `architecture` | Working on ports, adapters, DI, bootstrap |
 | `troubleshooting` | Debugging sessions, hooks, locks |
 | `review-workflow` | Code review pipeline, triage, rework |
+| `session-replay` | Session artifact capture, replay endpoints, timeline/session correlation, and emulator-backed session viewing |
 | `schema-updates` | Updating UI contracts, SSE payloads, or config schemas |
 
 ## Directory Context (AGENTS.md)

@@ -24,6 +24,7 @@ from issue_orchestrator.entrypoints.cli_tools.agent_done import (
     REQUIRED_FIELDS,
     STATUS_TO_OUTCOME,
     STATUS_TO_ACTIONS,
+    load_follow_up_issues,
     WorktreeMismatchError,
     die,
     find_worktree_root,
@@ -44,6 +45,7 @@ from issue_orchestrator.domain.models import (
     CompletionOutcome,
     RequestedAction,
     CompletionRecord,
+    ProposedFollowUpIssue,
     COMPLETION_RECORD_PATH,
 )
 
@@ -217,6 +219,7 @@ class TestValidateFields:
         defaults = {
             "implementation": None,
             "problems": None,
+            "follow_up_file": None,
             "reason": None,
             "attempted": None,
             "blocked_by": None,
@@ -506,6 +509,33 @@ class TestBuildCompletionRecord:
         assert RequestedAction.PUSH_BRANCH in record.requested_actions
         assert RequestedAction.CREATE_PR in record.requested_actions
 
+    def test_build_completed_record_with_follow_up_file(self, tmp_path: Path):
+        follow_up_path = tmp_path / "followups.jsonl"
+        follow_up_path.write_text(
+            json.dumps({
+                "title": "Fix env-sensitive logging test isolation",
+                "reason": "The test was unrelated to the assigned issue and kept pulling the agent off-scope.",
+                "suggested_labels": ["bug", "tests"],
+            }) + "\n",
+            encoding="utf-8",
+        )
+        args = self._make_args(
+            implementation="Added user auth",
+            problems="None",
+            follow_up_file=str(follow_up_path),
+        )
+        with patch("issue_orchestrator.entrypoints.cli_tools.agent_done.get_session_id", return_value="test-session"):
+            record = build_completion_record(AgentStatus.COMPLETED, args)
+
+        assert record.follow_up_issues == [
+            ProposedFollowUpIssue(
+                title="Fix env-sensitive logging test isolation",
+                reason="The test was unrelated to the assigned issue and kept pulling the agent off-scope.",
+                suggested_labels=["bug", "tests"],
+                blocking=False,
+            )
+        ]
+
     def test_build_blocked_record(self):
         """Test building completion record for blocked status."""
         args = self._make_args(
@@ -680,6 +710,18 @@ class TestCheckDirtyFiles:
             mock_run.return_value = Mock(returncode=0, stdout=porcelain)
             result = check_dirty_files()
         assert len(result) == 2
+
+    def test_excludes_worktree_setup_cli_tools_paths(self):
+        """Setup-synced cli_tools should not block coding-done."""
+        porcelain = (
+            " M src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py\n"
+            " M src/issue_orchestrator/entrypoints/cli_tools/provider_runner.py\n"
+            " M src/app.py\n"
+        )
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = Mock(returncode=0, stdout=porcelain)
+            result = check_dirty_files()
+        assert result == ["M src/app.py"]
 
     def test_clean_tree_returns_empty(self):
         with patch("subprocess.run") as mock_run:
@@ -939,6 +981,7 @@ class TestCompletionRecordSerialization:
         assert restored.outcome == record.outcome
         assert restored.implementation == record.implementation
         assert restored.problems == record.problems
+        assert restored.follow_up_issues is None
         assert len(restored.requested_actions) == len(record.requested_actions)
 
     def test_roundtrip_blocked(self):
@@ -970,6 +1013,68 @@ class TestCompletionRecordSerialization:
         assert restored.blocked_reason == record.blocked_reason
         assert restored.blocked_by == record.blocked_by
         assert restored.when_unblocked == record.when_unblocked
+
+    def test_roundtrip_completed_with_follow_up_issues(self):
+        record = CompletionRecord(
+            session_id="test-session",
+            timestamp="2024-01-01T12:00:00",
+            outcome=CompletionOutcome.COMPLETED,
+            summary="Implemented the main issue",
+            requested_actions=[RequestedAction.PUSH_BRANCH],
+            implementation="Implemented the main issue",
+            problems="None",
+            follow_up_issues=[
+                ProposedFollowUpIssue(
+                    title="Create flaky test follow-up",
+                    reason="A flaky test was discovered while validating the assigned issue.",
+                    evidence="tests/unit/test_logging.py",
+                    suggested_labels=["bug", "tests"],
+                    blocking=False,
+                )
+            ],
+        )
+
+        restored = CompletionRecord.from_dict(record.to_dict())
+
+        assert restored.follow_up_issues == record.follow_up_issues
+
+
+class TestLoadFollowUpIssues:
+    def test_load_follow_up_issues_from_json_array(self, tmp_path: Path):
+        path = tmp_path / "followups.json"
+        path.write_text(json.dumps([
+            {"title": "Issue A", "reason": "Reason A", "blocking": False},
+            {"title": "Issue B", "reason": "Reason B", "evidence": "file.py:12"},
+        ]), encoding="utf-8")
+
+        loaded = load_follow_up_issues(str(path))
+
+        assert loaded == [
+            ProposedFollowUpIssue(title="Issue A", reason="Reason A", blocking=False),
+            ProposedFollowUpIssue(title="Issue B", reason="Reason B", evidence="file.py:12", blocking=False),
+        ]
+
+    def test_load_follow_up_issues_from_jsonl(self, tmp_path: Path):
+        path = tmp_path / "followups.jsonl"
+        path.write_text(
+            json.dumps({"title": "Issue A", "reason": "Reason A"}) + "\n"
+            + json.dumps({"title": "Issue B", "reason": "Reason B", "suggested_labels": ["bug"]}) + "\n",
+            encoding="utf-8",
+        )
+
+        loaded = load_follow_up_issues(str(path))
+
+        assert loaded == [
+            ProposedFollowUpIssue(title="Issue A", reason="Reason A", blocking=False),
+            ProposedFollowUpIssue(title="Issue B", reason="Reason B", suggested_labels=["bug"], blocking=False),
+        ]
+
+    def test_load_follow_up_issues_rejects_invalid_entry(self, tmp_path: Path):
+        path = tmp_path / "followups.json"
+        path.write_text(json.dumps([{"title": "", "reason": "missing title"}]), encoding="utf-8")
+
+        with pytest.raises(ValueError, match="follow_up_issues entries require non-empty title"):
+            load_follow_up_issues(str(path))
 
 
 class TestAgentGateIntegration:

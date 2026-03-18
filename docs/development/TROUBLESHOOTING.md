@@ -23,6 +23,36 @@ curl -s http://localhost:8080/api/status | jq
 curl -s http://localhost:8080/api/state | jq
 ```
 
+## Audit Surfaces
+
+The repo has multiple things called "audit". They answer different questions.
+
+**Queue audit:** why an issue is queued, skipped, blocked, or already in progress.
+```bash
+issue-orchestrator audit
+curl -s "http://localhost:8080/control/tools/audit?repo_root=$(pwd)" | jq
+```
+
+**Issue audit:** force a fresh failure diagnosis for one issue or stalled run.
+This is the right tool when a coding/review session timed out, never wrote
+`coding-done`, or looks off relative to the timeline.
+```bash
+curl -s -X POST "http://localhost:8080/api/issues/4057/audit" | jq
+curl -s "http://localhost:8080/api/failure-diagnosis/4057" | jq
+```
+
+**Session diagnostics:** inspect the run-scoped manifest and artifact actions for
+the latest run or a specific `run_dir`.
+```bash
+curl -s "http://localhost:8080/api/dialog/session-diagnostics/4057" | jq
+curl -s "http://localhost:8080/api/session/manifest/4057" | jq
+```
+
+Use them in this order:
+1. Queue audit when the issue never started.
+2. Issue audit when a specific run failed or timed out.
+3. Session diagnostics when you need exact run-scoped files and replay paths.
+
 ## Session Output Directory
 
 All session artifacts are centralized in a run directory per session:

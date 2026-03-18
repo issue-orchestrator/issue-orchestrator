@@ -300,6 +300,55 @@ class TestSessionControllerTimeout:
         assert diagnostic["requested_completion_path"] == completion_rel_path
         assert diagnostic["requested_completion_exists"] is False
         assert diagnostic["observation"] == "timed_out"
+        assert diagnostic["agent_done_marker_exists"] is False
+        assert diagnostic["nearby_completion_candidates"] == []
+        assert decision.status == SessionStatus.TIMED_OUT
+
+    def test_timeout_without_completion_records_marker_and_nearby_candidates(self, tmp_path: Path):
+        """No-completion diagnostics should capture marker presence and alternate completion files."""
+        processor = MockCompletionProcessor()
+        processor.completion_record = None
+        controller = SessionController(
+            completion_processor=processor,
+            events=NullEventSink(),
+            session_output=FileSystemSessionOutput(),
+            working_copy=StubWorkingCopy(),
+        )
+
+        (tmp_path / ".agent-done-marker").write_text(
+            "agent-done completed called at 2026-03-17T00:00:00\n",
+            encoding="utf-8",
+        )
+        alt_completion = tmp_path / ".issue-orchestrator" / "sessions" / "other-run" / "completion-agent_backend.json"
+        alt_completion.parent.mkdir(parents=True, exist_ok=True)
+        alt_completion.write_text('{"outcome":"completed"}', encoding="utf-8")
+
+        observation = SessionObservationResult.timed_out(
+            runtime_minutes=60.0,
+            timeout_minutes=45,
+            session_exists=True,
+        )
+        completion_rel_path = ".issue-orchestrator/sessions/coding-1/completion-agent_backend.json"
+
+        decision = controller.decide_outcome(
+            observation=observation,
+            worktree_path=tmp_path,
+            issue_number=123,
+            issue_title="Test Issue",
+            session_name="issue-123",
+            completion_path=completion_rel_path,
+        )
+
+        run_dir = controller.session_output.find_run_dir(tmp_path, "coding-1")
+        assert run_dir is not None
+        diagnostic_files = list(run_dir.glob("no-completion-*.json"))
+        diagnostic = FileSystemSessionOutput()._read_json(diagnostic_files[0])
+        assert diagnostic["agent_done_marker_exists"] is True
+        assert "agent-done completed" in diagnostic["agent_done_marker_preview"]
+        nearby = diagnostic["nearby_completion_candidates"]
+        assert len(nearby) == 1
+        assert nearby[0]["path"] == str(alt_completion.resolve())
+        assert nearby[0]["under_run_dir"] is False
         assert decision.status == SessionStatus.TIMED_OUT
 
     def test_timeout_with_completed_record_is_recovered(self):

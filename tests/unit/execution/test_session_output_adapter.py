@@ -5,9 +5,16 @@ Tests for list_runs() and related functionality.
 
 import base64
 import json
+import logging
+import threading
+import time
 
 import pytest
 
+from issue_orchestrator.infra.claude_jsonl import (
+    claude_jsonl_entry_preview_lines,
+    claude_jsonl_entry_replay_text,
+)
 from issue_orchestrator.execution.session_output_adapter import (
     FileSystemSessionOutput,
     INDEX_NAME,
@@ -15,6 +22,7 @@ from issue_orchestrator.execution.session_output_adapter import (
     REVIEW_EXCHANGE_DIR_NAME,
     REVIEW_EXCHANGE_SUMMARY_NAME,
     VALIDATION_RECORD_NAME,
+    _ClaudeReplayCapture,
 )
 
 
@@ -339,6 +347,32 @@ class TestReviewExchangeSummary:
         assert loaded.summary["response_text"] == "stale"
         assert loaded.exchange_dir == older_exchange
 
+    def test_load_review_exchange_summary_falls_back_to_dedicated_review_run(
+        self, session_output, tmp_path
+    ):
+        worktree = tmp_path
+        coding_session = "coding-1"
+        session_output.ensure_run_dir(worktree, coding_session)
+
+        review_run = session_output.start_run(
+            worktree,
+            "review-exchange-3-20260318T000000000000Z",
+            issue_number=3,
+        )
+        review_exchange_dir = review_run.run_dir / REVIEW_EXCHANGE_DIR_NAME
+        review_exchange_dir.mkdir(parents=True, exist_ok=True)
+        summary = {"status": "ok", "completed_rounds": 1, "response_text": "cached"}
+        (review_exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME).write_text(json.dumps(summary))
+        session_output.update_manifest(
+            review_run.run_dir,
+            {"review_exchange_dir": str(review_exchange_dir)},
+        )
+
+        loaded = session_output.load_review_exchange_summary(worktree, coding_session)
+        assert loaded is not None
+        assert loaded.summary == summary
+        assert loaded.exchange_dir == review_exchange_dir
+
 
 class TestRunRetentionMetadata:
     """Tests for retention metadata persisted in run manifests."""
@@ -426,3 +460,179 @@ class TestSessionLogCleaning:
         assert "Line one" in content
         assert "Line two" in content
         assert "Thinking" not in content
+
+
+class TestClaudeReplayCapture:
+    @staticmethod
+    def _decoded_recording(path):
+        chunks = []
+        for raw_line in path.read_text(encoding="utf-8").splitlines():
+            if not raw_line.strip():
+                continue
+            event = json.loads(raw_line)
+            if event.get("event_type") != "output":
+                continue
+            chunks.append(base64.b64decode(event["data_b64"]).decode("utf-8"))
+        return "".join(chunks)
+
+    def test_claude_jsonl_parser_keeps_preview_and_replay_tool_summaries_in_sync(self):
+        entry = {
+            "type": "assistant",
+            "message": {
+                "content": [
+                    {"type": "text", "text": "Investigating"},
+                    {"type": "tool_use", "name": "Read", "input": {"file_path": "src/app.py"}},
+                    {"type": "tool_use", "name": "TodoWrite", "input": "not-a-dict"},
+                ]
+            },
+        }
+
+        assert claude_jsonl_entry_preview_lines(entry) == [
+            "Investigating",
+            "Read: src/app.py",
+            "TodoWrite",
+        ]
+        assert claude_jsonl_entry_replay_text(entry) == (
+            "Investigating\n"
+            "Read: src/app.py\n"
+            "TodoWrite\n"
+        )
+
+    def test_claude_replay_capture_logs_poll_exceptions(self, tmp_path, caplog, monkeypatch):
+        capture = _ClaudeReplayCapture(FileSystemSessionOutput(), tmp_path)
+        attempts = {"count": 0}
+
+        def fake_wait(_timeout: float) -> bool:
+            attempts["count"] += 1
+            return attempts["count"] > 1
+
+        monkeypatch.setattr(capture._stop_event, "wait", fake_wait)
+        monkeypatch.setattr(capture, "poll_once", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+
+        with caplog.at_level(logging.WARNING):
+            capture._run()
+
+        assert "Claude replay capture poll failed" in caplog.text
+
+    def test_attach_claude_log_serializes_manifest_writes(self, tmp_path, monkeypatch):
+        session_output = FileSystemSessionOutput()
+        claude_dir = tmp_path / "claude-project"
+        claude_dir.mkdir()
+        (claude_dir / "session.jsonl").write_text(
+            json.dumps({"timestamp": "2026-03-18T12:00:00Z", "sessionId": "sess-1"}) + "\n",
+            encoding="utf-8",
+        )
+        run = session_output.start_run(
+            tmp_path,
+            "issue-123",
+            issue_number=123,
+            claude_log_dir=str(claude_dir),
+        )
+
+        original_write_json = FileSystemSessionOutput._write_json
+        stats = {"active": 0, "max_active": 0}
+        stats_lock = threading.Lock()
+
+        def tracked_write_json(path, payload):
+            with stats_lock:
+                stats["active"] += 1
+                stats["max_active"] = max(stats["max_active"], stats["active"])
+            time.sleep(0.02)
+            try:
+                original_write_json(path, payload)
+            finally:
+                with stats_lock:
+                    stats["active"] -= 1
+
+        monkeypatch.setattr(
+            FileSystemSessionOutput,
+            "_write_json",
+            staticmethod(tracked_write_json),
+        )
+
+        update_thread = threading.Thread(
+            target=session_output.update_manifest,
+            args=(run.run_dir, {"diagnostic_path": str(run.run_dir / "diagnostic.json")}),
+        )
+        attach_thread = threading.Thread(
+            target=session_output.attach_claude_log_for_run,
+            args=(run.run_dir,),
+        )
+        update_thread.start()
+        attach_thread.start()
+        update_thread.join()
+        attach_thread.join()
+
+        manifest = session_output.read_manifest(run.run_dir)
+        assert manifest is not None
+        assert manifest["diagnostic_path"].endswith("diagnostic.json")
+        assert manifest["claude_log_path"].endswith("session.jsonl")
+        assert stats["max_active"] == 1
+
+    def test_attach_claude_log_backfills_terminal_recording_when_empty(self, tmp_path):
+        session_output = FileSystemSessionOutput()
+        claude_dir = tmp_path / "claude-project"
+        claude_dir.mkdir()
+        run = session_output.start_run(
+            tmp_path,
+            "issue-123",
+            issue_number=123,
+            claude_log_dir=str(claude_dir),
+        )
+        claude_log = claude_dir / "session.jsonl"
+        claude_log.write_text(
+            "\n".join([
+                json.dumps({
+                    "type": "stream_event",
+                    "event": {
+                        "type": "content_block_delta",
+                        "delta": {"type": "text_delta", "text": "Hello"},
+                    },
+                }),
+                json.dumps({
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": " world"},
+                            {"type": "tool_use", "name": "Bash", "input": {"command": "pwd"}},
+                        ],
+                    },
+                }),
+            ]) + "\n",
+            encoding="utf-8",
+        )
+
+        attached = session_output.attach_claude_log(run.run_dir)
+
+        assert attached == claude_log
+        decoded = self._decoded_recording(run.run_dir / "terminal-recording.jsonl")
+        assert "Hello" in decoded
+        assert " world" in decoded
+        assert "Bash: pwd" in decoded
+
+    def test_sync_claude_replay_capture_updates_manifest_and_recording(self, tmp_path):
+        session_output = FileSystemSessionOutput()
+        claude_dir = tmp_path / "claude-project"
+        claude_dir.mkdir()
+        run = session_output.start_run(
+            tmp_path,
+            "issue-123",
+            issue_number=123,
+            claude_log_dir=str(claude_dir),
+        )
+        claude_log = claude_dir / "session.jsonl"
+        claude_log.write_text(
+            json.dumps({
+                "type": "assistant",
+                "message": {"content": [{"type": "text", "text": "Captured live"}]},
+            }) + "\n",
+            encoding="utf-8",
+        )
+
+        session_output._sync_claude_replay_capture(run.run_dir)
+
+        manifest = json.loads((run.run_dir / MANIFEST_NAME).read_text())
+        assert manifest["claude_log_path"] == str(claude_log)
+        decoded = self._decoded_recording(run.run_dir / "terminal-recording.jsonl")
+        assert "Captured live" in decoded
+        session_output._stop_claude_replay_capture(run.run_dir)

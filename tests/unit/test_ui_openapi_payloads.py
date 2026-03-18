@@ -142,6 +142,13 @@ def test_dialog_payloads_match_ui_openapi() -> None:
             "agent_label": "agent:web",
             "claude_session_id": "abc",
             "worktree": "/tmp/worktree",
+            "follow_up_issues": [
+                {
+                    "title": "Create flaky test follow-up",
+                    "reason": "A flaky test was discovered while validating the assigned issue.",
+                    "blocking": False,
+                }
+            ],
         },
         "run_dir": "/tmp/run",
     })

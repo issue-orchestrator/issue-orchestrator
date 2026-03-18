@@ -114,12 +114,18 @@ class OrchestratorProcess:
             "agents": {
                 label: {
                     "prompt": str(cfg.prompt_path),
+                    "provider": cfg.provider,
                     "model": cfg.model,
                     "timeout_minutes": cfg.timeout_minutes,
                     "permission_mode": cfg.permission_mode,
+                    "skip_review": cfg.skip_review,
+                    "reviewer": cfg.reviewer,
                     "command": cfg.command,
                     "meta_agent": cfg.meta_agent,
+                    "initial_prompt": cfg.initial_prompt,
                     "ai_system": cfg.ai_system,
+                    "provider_args": dict(cfg.provider_args),
+                    "retry_prompt_template": cfg.retry_prompt_template,
                 }
                 for label, cfg in self.config.agents.items()
             },

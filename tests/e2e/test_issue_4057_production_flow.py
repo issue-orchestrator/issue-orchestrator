@@ -12,6 +12,7 @@ import copy
 import logging
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -26,34 +27,78 @@ from issue_orchestrator.testing.support.test_data import close_issue
 from tests.e2e.conftest import e2e_label, find_free_port
 from tests.e2e.flows import E2EFlow, start_orchestrator_runtime
 
+CODING_AGENT_TIMEOUT_MINUTES = 75
+REVIEW_AGENT_TIMEOUT_MINUTES = 35
+E2E_TIMEOUT_MINUTES = 150
+FOLLOW_UP_FILE_PATH = "/tmp/follow-up-issues.jsonl"
+
 pytestmark = [
     pytest.mark.e2e,
     pytest.mark.live,
     pytest.mark.asyncio,
-    pytest.mark.timeout(60 * 60),
+    pytest.mark.timeout(E2E_TIMEOUT_MINUTES * 60),
 ]
 
-ISSUE_4057_PROMPT = (
-    "Work on issue #{issue_number}: {issue_title}. "
-    "Stay strictly focused on this issue implementation; do NOT refactor unrelated areas. "
-    "For this issue, limit code edits to src/issue_orchestrator/view_models/dashboard.py "
-    "and tests/unit/test_dashboard_view_model.py unless absolutely required for correctness. "
-    "Do NOT edit src/issue_orchestrator/entrypoints/cli_tools/agent_done.py, "
-    "src/issue_orchestrator/entrypoints/cli_tools/provider_runner.py, or "
-    "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py. "
-    "Do NOT modify tests in tests/unit/test_worktree.py, tests/unit/test_cli.py, "
-    "or tests/unit/test_completion_processor.py. "
-    "For this session, run validation with `make validate-quick` "
-    "(do not run `make validate`). "
-    "If the provider circuit breaker status is already correctly surfaced and covered by tests, "
-    "make no code changes: run `make validate-quick` and complete with coding-done. "
-    "Prefer the smallest possible diff; do not add broad refactors or extra coverage beyond this issue. "
-    "If any unrelated validation failure appears, do not chase it; continue with the current issue-focused changes only. "
-    "Do not look up or reference other issue numbers. "
-    "Follow repo-specific/prompts/simple-fix.md exactly. "
-    "Use coding-done to report outcome and include validation artifacts. "
-    "When finished, exit with /exit."
-)
+
+def build_issue_4057_prompt() -> str:
+    return (
+        "Work on issue #{issue_number}: {issue_title}. "
+        f"This session is time-bounded to {CODING_AGENT_TIMEOUT_MINUTES} minutes, so finish the core task first. "
+        "Stay strictly focused on this issue implementation; do NOT refactor unrelated areas. "
+        "Start by checking only src/issue_orchestrator/view_models/dashboard.py and "
+        "tests/unit/test_dashboard_view_model.py. "
+        "First determine whether the provider circuit breaker status is already correctly surfaced and covered by tests. "
+        "If it is already implemented, stop exploring, run `make validate-quick`, complete with coding-done, and exit. "
+        "If changes are needed, keep the smallest possible diff and limit code edits to "
+        "src/issue_orchestrator/view_models/dashboard.py and tests/unit/test_dashboard_view_model.py unless absolutely required for correctness. "
+        "Do NOT edit src/issue_orchestrator/entrypoints/cli_tools/agent_done.py, "
+        "src/issue_orchestrator/entrypoints/cli_tools/provider_runner.py, or "
+        "src/issue_orchestrator/entrypoints/cli_tools/setup_wizard.py. "
+        "Do NOT modify tests in tests/unit/test_worktree.py, tests/unit/test_cli.py, "
+        "or tests/unit/test_completion_processor.py. "
+        "Do not spend time in unrelated orchestration, validation, or session-plumbing files. "
+        "Run `pytest tests/unit/test_dashboard_view_model.py -q` once your focused change is ready. "
+        "For this session, run final validation with `make validate-quick` and do not run `make validate`. "
+        "If you discover unrelated ancillary work, do not fix it in this session. "
+        f"Write it to {FOLLOW_UP_FILE_PATH} and pass `--follow-up-file {FOLLOW_UP_FILE_PATH}` to coding-done completed. "
+        "Do not look up or reference other issue numbers. "
+        "Follow repo-specific/prompts/simple-fix.md exactly. "
+        "Commit your changes, use coding-done to report outcome and include validation artifacts, then exit with /exit."
+    )
+
+
+def build_issue_4057_body() -> str:
+    return (
+        "Production-parity focused E2E run.\n\n"
+        "Requirements:\n"
+        "- Follow repo-specific/prompts/simple-fix.md\n"
+        "- Treat this as a time-bounded issue session: finish the assigned dashboard task first\n"
+        "- First inspect src/issue_orchestrator/view_models/dashboard.py and tests/unit/test_dashboard_view_model.py only\n"
+        "- Limit edits to src/issue_orchestrator/view_models/dashboard.py and tests/unit/test_dashboard_view_model.py unless absolutely required\n"
+        "- If behavior is already implemented, make no code changes; run make validate-quick and complete via coding-done\n"
+        "- Run pytest tests/unit/test_dashboard_view_model.py -q before final validation when you make a dashboard change\n"
+        "- Validation must run through make validate-quick\n"
+        f"- Record unrelated ancillary work in {FOLLOW_UP_FILE_PATH} and pass --follow-up-file instead of broadening scope\n"
+        "- Complete via coding-done and exit\n"
+    )
+
+
+ISSUE_4057_PROMPT = build_issue_4057_prompt()
+
+
+def _seed_ref_for_local_issue_worktrees(repo_root: Path) -> str | None:
+    """Seed fresh issue worktrees from the current committed branch state during local iteration."""
+    if os.environ.get("CI"):
+        return None
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "rev-parse", "--verify", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
 async def _wait_for_run_event(
     watcher,
     *,
@@ -159,7 +204,7 @@ async def _assert_review_stage_artifacts(run_dir: Path, *, require_validation: b
         await _wait_for_file(run_dir / "validation-record.json")
 
 
-async def _assert_live_ui_session_log_stream(
+async def _assert_live_terminal_recording_stream(
     *,
     issue_number: int,
     issue_key: str,
@@ -169,7 +214,7 @@ async def _assert_live_ui_session_log_stream(
     timeout_s: float = 180.0,
 ) -> None:
     deadline = time.monotonic() + timeout_s
-    total_lines_values: list[int] = []
+    total_event_values: list[int] = []
     size_values: list[int] = []
     non_empty_samples = 0
     validation_observed = False
@@ -177,16 +222,16 @@ async def _assert_live_ui_session_log_stream(
     async with httpx.AsyncClient(timeout=20.0) as client:
         while time.monotonic() < deadline:
             response = await client.get(
-                f"http://localhost:{web_port}/api/log/local/{issue_number}",
+                f"http://localhost:{web_port}/api/session/terminal-recording/{issue_number}",
                 params={"run_dir": str(run_dir), "offset": 0, "limit": 0},
             )
             if response.status_code == 200:
                 payload = response.json()
-                total_lines = int(payload.get("total_lines") or 0)
-                lines = payload.get("lines") or []
-                if isinstance(lines, list) and any(str(line).strip() for line in lines):
+                total_events = int(payload.get("total_events") or 0)
+                events = payload.get("events") or []
+                if isinstance(events, list) and any(event.get("event_type") == "output" for event in events if isinstance(event, dict)):
                     non_empty_samples += 1
-                total_lines_values.append(total_lines)
+                total_event_values.append(total_events)
 
             terminal_recording = run_dir / "terminal-recording.jsonl"
             if terminal_recording.exists():
@@ -197,20 +242,20 @@ async def _assert_live_ui_session_log_stream(
 
             issue_view = watcher.view.issues.get(issue_key)
             in_progress = bool(issue_view and "in-progress" in issue_view.labels)
-            if in_progress and len(total_lines_values) >= 3:
-                line_growth = max(total_lines_values) > min(total_lines_values)
+            if in_progress and len(total_event_values) >= 3:
+                event_growth = max(total_event_values) > min(total_event_values)
                 size_growth = len(size_values) >= 2 and max(size_values) > min(size_values)
-                if non_empty_samples >= 2 and (line_growth or size_growth):
+                if non_empty_samples >= 2 and (event_growth or size_growth):
                     return
-            if validation_observed and non_empty_samples == 0 and len(total_lines_values) >= 5:
+            if validation_observed and non_empty_samples == 0 and len(total_event_values) >= 5:
                 raise AssertionError(
-                    "terminal recording preview remained empty even after validation artifacts were present: "
-                    f"line_samples={total_lines_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
+                    "terminal recording remained empty even after validation artifacts were present: "
+                    f"event_samples={total_event_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
                 )
-            if not in_progress and non_empty_samples == 0 and len(total_lines_values) >= 5:
+            if not in_progress and non_empty_samples == 0 and len(total_event_values) >= 5:
                 raise AssertionError(
-                    "terminal recording preview remained empty after issue left in-progress state: "
-                    f"line_samples={total_lines_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
+                    "terminal recording remained empty after issue left in-progress state: "
+                    f"event_samples={total_event_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
                 )
 
             try:
@@ -220,9 +265,9 @@ async def _assert_live_ui_session_log_stream(
             watcher._notify.clear()  # noqa: SLF001
 
     raise AssertionError(
-        "terminal recording preview did not demonstrate near-real-time live updates while coding was in-progress: "
-        f"samples={len(total_lines_values)} non_empty_samples={non_empty_samples} "
-        f"line_samples={total_lines_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
+        "terminal recording did not demonstrate near-real-time live updates while coding was in-progress: "
+        f"samples={len(total_event_values)} non_empty_samples={non_empty_samples} "
+        f"event_samples={total_event_values[-8:]} size_samples={size_values[-8:]} run_dir={run_dir}"
     )
 
 
@@ -273,9 +318,11 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
     config.state_file = Path(f"/tmp/io-e2e-state-{run_suffix}.json")
     config.e2e_pr_labels = [isolated_label]
     config.max_concurrent_sessions = 1
-    config.session_timeout_minutes = 75
+    config.session_timeout_minutes = CODING_AGENT_TIMEOUT_MINUTES
     config.queue_refresh_seconds = 10
     config.worktree_base_branch_override = "main"
+    worktree_seed_ref = _seed_ref_for_local_issue_worktrees(e2e_project_root)
+    config.worktree_seed_ref = worktree_seed_ref
     # Ensure each ephemeral issue worktree starts clean; inherited dirty state
     # from prior attempts can otherwise derail validation with unrelated failures.
     config.setup_worktree = [
@@ -295,8 +342,8 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
             "agent:backend": AgentConfig(
                 prompt_path=e2e_project_root / "repo-specific" / "prompts" / "simple-fix.md",
                 provider="claude-code",
-                model="sonnet",
-                timeout_minutes=60,
+                model="opus",
+                timeout_minutes=CODING_AGENT_TIMEOUT_MINUTES,
                 ai_system="claude-code",
                 permission_mode="bypassPermissions",
                 initial_prompt=ISSUE_4057_PROMPT,
@@ -304,8 +351,8 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         "agent:reviewer": AgentConfig(
             prompt_path=e2e_project_root / "repo-specific" / "prompts" / "reviewer.md",
             provider="claude-code",
-            model="sonnet",
-            timeout_minutes=25,
+            model="opus",
+            timeout_minutes=REVIEW_AGENT_TIMEOUT_MINUTES,
             ai_system="claude-code",
             permission_mode="bypassPermissions",
             initial_prompt=(
@@ -356,15 +403,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         issue, issue_number = flow.create_issue(
             issue_title,
             ["agent:backend", issue_tag, isolated_label],
-            body=(
-                "Production-parity focused E2E run.\n\n"
-                "Requirements:\n"
-                "- Follow repo-specific/prompts/simple-fix.md\n"
-                "- Limit edits to src/issue_orchestrator/view_models/dashboard.py and tests/unit/test_dashboard_view_model.py unless absolutely required\n"
-                "- If behavior is already implemented, do not edit code; just run make validate-quick and complete via coding-done\n"
-                "- Complete via coding-done\n"
-                "- Validation must run through make validate-quick\n"
-            ),
+            body=build_issue_4057_body(),
         )
         # issue from create_issue uses the stable external_id (e.g. "M4-057"),
         # which now matches the key format used by all watcher events.
@@ -395,7 +434,7 @@ async def test_4057_production_real_agents_publish_gate_and_diagnostics(
         assert has_coding_log_action, "Expected run-scoped open_agent_log action during coding"
         logger.info("[4057] UI assertions OK. Starting live log stream check...")
 
-        await _assert_live_ui_session_log_stream(
+        await _assert_live_terminal_recording_stream(
             issue_number=issue_number,
             issue_key=issue.stable_id(),
             run_dir=coding_run_dir,

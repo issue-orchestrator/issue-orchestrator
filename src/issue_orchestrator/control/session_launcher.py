@@ -76,9 +76,19 @@ from .transition_log import log_transition
 logger = logging.getLogger(__name__)
 
 
-def detect_existing_work(worktree_path: Path, working_copy: WorkingCopy) -> Optional[str]:
+def detect_existing_work(
+    worktree_path: Path,
+    working_copy: WorkingCopy,
+    *,
+    seed_ref: str | None = None,
+) -> Optional[str]:
     """Check if worktree has commits ahead of main and return context for agent."""
     try:
+        if seed_ref:
+            head_sha = working_copy.get_head_sha(worktree_path)
+            if head_sha and head_sha == seed_ref:
+                return None
+
         commits = working_copy.get_commits_ahead_of_main(worktree_path)
         if not commits:
             return None
@@ -859,7 +869,11 @@ class SessionLauncher:
         logger.info("[launch] Label added in %.1fs", label_time)
 
         # Check for existing work and rebase status
-        existing_work = detect_existing_work(worktree_path, self._working_copy)
+        existing_work = detect_existing_work(
+            worktree_path,
+            self._working_copy,
+            seed_ref=self.config.worktree_seed_ref,
+        )
         if existing_work:
             logger.info("[launch] Found existing work - agent will evaluate before starting fresh")
 
@@ -895,7 +909,7 @@ class SessionLauncher:
             extra_provider_args=extra_args,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
-        completion_path = get_completion_path(issue.agent_type, session_name=ctx.phase_name)
+        completion_path = get_completion_path(issue.agent_type, run_dir=run.run_dir.name)
         self._session_output.update_manifest(
             run.run_dir,
             {
@@ -1173,7 +1187,7 @@ class SessionLauncher:
             task_kind=TaskKind.REVIEW.value,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
-        completion_path = get_completion_path(agent_label, session_name=ctx.phase_name)
+        completion_path = get_completion_path(agent_label, run_dir=run.run_dir.name)
         self._session_output.update_manifest(
             run.run_dir,
             {
@@ -1491,7 +1505,7 @@ class SessionLauncher:
             task_kind=TaskKind.REWORK.value,
         )
         base_command = self._wrap_provider_command(base_command, agent_config, run.run_dir)
-        completion_path = get_completion_path(rework.agent_type, session_name=ctx.phase_name)
+        completion_path = get_completion_path(rework.agent_type, run_dir=run.run_dir.name)
         self._session_output.update_manifest(
             run.run_dir,
             {

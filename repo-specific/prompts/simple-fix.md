@@ -67,6 +67,20 @@ Then default to **centralizing the policy** in a shared helper/module and reuse 
 
 ### 3. Implement the Solution (Test-Driven Development)
 
+This task is time-bounded. Prioritize the assigned issue's core behavior and the shortest path to a correct `coding-done completed`.
+
+If you discover unrelated or ancillary work while fixing the issue:
+- Only fix it if it is directly required to complete the assigned issue or make validation pass.
+- Otherwise, do **not** expand scope. Record it as a proposed follow-up issue instead.
+- You do **not** create GitHub issues yourself. Write the proposals to a JSON or JSONL file first, then pass that existing file with `--follow-up-file` when you run `coding-done completed`.
+
+Each proposal must include:
+- `title`
+- `reason`
+- optional `evidence`
+- optional `suggested_labels`
+- optional `blocking` (default `false`)
+
 Choose your approach based on the task:
 
 **For new features:**

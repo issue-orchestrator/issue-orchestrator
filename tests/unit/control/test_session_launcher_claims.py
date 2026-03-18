@@ -124,7 +124,7 @@ class TestSessionLauncherClaimAcquisition:
             # Create minimal SessionLauncher with mocks
             with patch.multiple(
                 "issue_orchestrator.control.session_launcher",
-                detect_existing_work=lambda *args: None,
+                detect_existing_work=lambda *args, **kwargs: None,
                 get_completion_path=lambda *args, **kwargs: "completion.json",
             ):
                 from issue_orchestrator.control.session_launcher import SessionLauncher

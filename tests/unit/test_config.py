@@ -169,6 +169,47 @@ worktrees:
 
         assert config.worktree_base_branch_override is None
 
+    def test_worktree_seed_ref_configured(self, tmp_path):
+        """Config can set worktrees.seed_ref."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+worktrees:
+  base: {worktree_base}
+  seed_ref: HEAD
+""")
+
+        config = Config.load(config_file)
+
+        assert config.worktree_seed_ref == "HEAD"
+
+    def test_worktree_seed_ref_default(self, tmp_path):
+        """Default worktree_seed_ref should be unset."""
+        prompt = tmp_path / "prompt.md"
+        prompt.write_text("Prompt")
+        worktree_base = tmp_path / "worktrees"
+        worktree_base.mkdir()
+        config_file = tmp_path / ".issue-orchestrator.yaml"
+        config_file.write_text(f"""
+agents:
+  agent:web:
+    prompt: {prompt}
+    model: sonnet
+worktrees:
+  base: {worktree_base}
+""")
+
+        config = Config.load(config_file)
+
+        assert config.worktree_seed_ref is None
+
     def test_worktree_branch_on_recreate_configured(self, tmp_path):
         """Config can set worktree_branch_on_recreate."""
         prompt = tmp_path / "prompt.md"
