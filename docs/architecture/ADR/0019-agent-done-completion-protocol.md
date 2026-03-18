@@ -27,8 +27,10 @@ Options considered:
 # Success - work completed
 agent-done completed \
   --implementation "Added user authentication with JWT" \
-  --problems "None" \
-  --follow-up-file /tmp/follow-up-issues.jsonl
+  --problems "None"
+
+# Success - work completed, with ancillary follow-up proposals already written to a file
+# Add --follow-up-file <existing-path> to the completed command above.
 
 # Blocked - can't proceed
 agent-done blocked \

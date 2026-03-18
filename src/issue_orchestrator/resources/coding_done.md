@@ -29,14 +29,8 @@ coding-done completed \
   --problems "Any issues encountered, or 'None'"
 ```
 
-If you discovered unrelated ancillary work while staying focused on the assigned issue:
-```bash
-coding-done completed \
-  --implementation "What you did" \
-  --problems "None" \
-  --follow-up-file /tmp/follow-up-issues.jsonl
-```
-The follow-up file may be JSON or JSONL. Each entry should include `title` and `reason`, and may include `evidence`, `suggested_labels`, and `blocking`.
+If you discovered unrelated ancillary work while staying focused on the assigned issue, write those proposals to a JSON or JSONL file first, then add `--follow-up-file path` to the completed command above.
+Each entry should include `title` and `reason`, and may include `evidence`, `suggested_labels`, and `blocking`.
 
 **Cannot proceed - external blocker:**
 ```bash

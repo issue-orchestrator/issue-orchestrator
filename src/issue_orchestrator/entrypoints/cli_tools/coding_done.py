@@ -93,8 +93,8 @@ EXAMPLES:
     coding-done completed --implementation "Added user auth" --problems "None"
 
   Completed with ancillary follow-up proposals:
-    coding-done completed --implementation "Added user auth" --problems "None" \
-      --follow-up-file /tmp/follow-up-issues.jsonl
+    First write the ancillary proposals to a JSON or JSONL file, then pass
+    --follow-up-file <existing-path> to the completed command above.
 
   Completed with resume (debug session):
     coding-done completed --implementation "Fixed the bug" --problems "None" --resume
