@@ -14,6 +14,7 @@ from issue_orchestrator.domain.issue_key import FakeIssueKey
 from issue_orchestrator.domain.models import AgentConfig, Issue, OrchestratorState, Session, SessionHistoryEntry
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore
 from issue_orchestrator.view_models.dashboard import build_dashboard_view_model
 
 
@@ -26,10 +27,22 @@ def jinja_env() -> Environment:
 
 
 @dataclass
+class _DepsStub:
+    """Minimal deps stub exposing provider_resilience for dashboard view model."""
+    provider_resilience: object
+
+
+@dataclass
 class OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+    deps: _DepsStub | None = None
+
+    def __post_init__(self) -> None:
+        if self.deps is None:
+            store = InMemoryProviderCircuitStore()
+            self.deps = _DepsStub(provider_resilience=type("R", (), {"store": store})())
 
 
 def make_config() -> Config:

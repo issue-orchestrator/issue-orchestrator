@@ -71,8 +71,16 @@ from issue_orchestrator.timeline import (
     TimelineStream,
 )
 from issue_orchestrator.events import EventName
+from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore
 
 _TEST_RUN_DIR_BY_ISSUE: dict[int, str] = {}
+
+
+def _make_deps_stub():
+    """Create a minimal deps stub with an empty provider_resilience for dashboard rendering."""
+    store = InMemoryProviderCircuitStore()
+    resilience = type("ProviderResilienceStub", (), {"store": store})()
+    return type("DepsStub", (), {"provider_resilience": resilience})()
 
 
 class _StubClientHost:
@@ -1769,6 +1777,7 @@ class TestIssueRowsEndpoint:
                 self.config.repo = "test/repo"
                 self.config.repo_root = Path("/tmp/repo")
                 self.shutdown_requested = False
+                self.deps = _make_deps_stub()
 
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())
@@ -1799,6 +1808,7 @@ class TestIssueRowsEndpoint:
                 self.config.repo = "test/repo"
                 self.config.repo_root = Path("/tmp/repo")
                 self.shutdown_requested = False
+                self.deps = _make_deps_stub()
 
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())
