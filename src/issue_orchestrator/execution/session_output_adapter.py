@@ -597,11 +597,13 @@ Timestamp: {self._now_iso()}
         session_name: str,
     ) -> ReviewExchangeSummary | None:
         # Resolve against the newest run that has a review-exchange summary.
+        # Prefer runs associated with the requested session name, but also
+        # consider dedicated review-exchange runs in the same issue worktree.
         base_dir = self.sessions_base_dir(worktree_path)
         if not base_dir.exists():
             return None
 
-        candidates = sorted(
+        session_candidates = sorted(
             [
                 d
                 for d in base_dir.iterdir()
@@ -610,25 +612,32 @@ Timestamp: {self._now_iso()}
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
-        if not candidates:
+        all_candidates = sorted(
+            d
+            for d in base_dir.iterdir()
+            if d.is_dir()
+        )
+        if not all_candidates:
             return None
-        for run_dir in candidates:
-            manifest = self.read_manifest(run_dir) or {}
-            manifest_dir = manifest.get("review_exchange_dir")
-            exchange_dir = Path(manifest_dir) if manifest_dir else run_dir / REVIEW_EXCHANGE_DIR_NAME
-            summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
-            if not summary_path.exists():
-                continue
-            summary = self._read_json(summary_path)
-            if not isinstance(summary, dict):
-                continue
-            validation_path = run_dir / VALIDATION_RECORD_NAME
-            return ReviewExchangeSummary(
-                summary=summary,
-                exchange_dir=exchange_dir,
-                summary_path=summary_path,
-                validation_record_path=validation_path if validation_path.exists() else None,
-            )
+
+        for candidates in (session_candidates, all_candidates):
+            for run_dir in candidates:
+                manifest = self.read_manifest(run_dir) or {}
+                manifest_dir = manifest.get("review_exchange_dir")
+                exchange_dir = Path(manifest_dir) if manifest_dir else run_dir / REVIEW_EXCHANGE_DIR_NAME
+                summary_path = exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME
+                if not summary_path.exists():
+                    continue
+                summary = self._read_json(summary_path)
+                if not isinstance(summary, dict):
+                    continue
+                validation_path = run_dir / VALIDATION_RECORD_NAME
+                return ReviewExchangeSummary(
+                    summary=summary,
+                    exchange_dir=exchange_dir,
+                    summary_path=summary_path,
+                    validation_record_path=validation_path if validation_path.exists() else None,
+                )
         return None
 
     # -------------------------------------------------------------------------
@@ -1081,6 +1090,25 @@ Timestamp: {self._now_iso()}
         candidates.sort(key=lambda path: path.stat().st_mtime, reverse=True)
         return candidates[0], None
 
+    def attach_claude_log_for_run(self, run_dir: Path) -> Path | None:
+        """Attach the canonical Claude JSONL artifact for a run and return its path."""
+        log_path, session_id = self._select_claude_log_for_run(run_dir)
+        if not log_path:
+            return None
+        self.update_manifest(
+            run_dir,
+            {
+                "claude_log_path": str(log_path),
+                "claude_session_id": session_id or log_path.stem,
+            },
+        )
+        try:
+            self._write_text(run_dir / CLAUDE_SESSION_PATH_NAME, str(log_path))
+        except OSError:
+            return log_path
+        self._ensure_symlink(run_dir / CLAUDE_SESSION_LOG_NAME, log_path)
+        return log_path
+
     @staticmethod
     def _read_claude_log_metadata(log_path: Path) -> tuple[datetime | None, str | None]:
         try:
@@ -1436,20 +1464,10 @@ class _ClaudeReplayCapture:
         if self._attached_path is not None and self._attached_path.exists():
             return self._attached_path
 
-        log_path, session_id = self._session_output._select_claude_log_for_run(self._run_dir)
+        log_path = self._session_output.attach_claude_log_for_run(self._run_dir)
         if not log_path:
             return None
         self._attached_path = log_path
-        updates = {
-            "claude_log_path": str(log_path),
-            "claude_session_id": session_id or log_path.stem,
-        }
-        self._session_output.update_manifest(self._run_dir, updates)
-        try:
-            self._session_output._write_text(self._run_dir / CLAUDE_SESSION_PATH_NAME, str(log_path))
-        except OSError:
-            return log_path
-        self._session_output._ensure_symlink(self._run_dir / CLAUDE_SESSION_LOG_NAME, log_path)
         return log_path
 
 
@@ -1520,145 +1538,14 @@ def _claude_tool_result_replay_text(content: Any) -> str:
 
 
 def _claude_tool_use_summary(tool_name: str, tool_input: Any) -> str:
-    summary = ""
-    if isinstance(tool_input, dict):
-        summary = (
-            str(tool_input.get("command") or "")
-            or str(tool_input.get("file_path") or "")
-            or str(tool_input.get("path") or "")
-        ).strip()
-    if summary:
-        return f"{tool_name}: {summary}"
+    if not isinstance(tool_input, dict):
+        return tool_name
+
+    for key in ("command", "file_path", "path"):
+        summary = str(tool_input.get(key) or "").strip()
+        if summary:
+            return f"{tool_name}: {summary}"
     return tool_name
-
-    @staticmethod
-    def _ensure_manifest_artifact(
-        manifest: dict[str, Any],
-        *,
-        name: str,
-        kind: str,
-        path: str | None,
-        content_type: str | None = None,
-    ) -> None:
-        if not path:
-            return
-        artifacts = manifest.get("artifacts")
-        if not isinstance(artifacts, dict):
-            artifacts = {}
-            manifest["artifacts"] = artifacts
-        artifact: dict[str, Any] = {"kind": kind, "path": path}
-        if content_type:
-            artifact["content_type"] = content_type
-        artifacts[name] = artifact
-
-    def _sync_manifest_artifacts(self, manifest: dict[str, Any]) -> None:
-        """Derive canonical artifact entries from known manifest path fields."""
-        self._ensure_manifest_artifact(
-            manifest,
-            name="ui_log",
-            kind="session_log",
-            path=manifest.get("log_path"),
-            content_type="text/plain",
-        )
-        self._ensure_manifest_artifact(
-            manifest,
-            name="agent_log",
-            kind="session_log",
-            path=manifest.get("log_path"),
-            content_type="text/plain",
-        )
-        self._ensure_manifest_artifact(
-            manifest,
-            name="prompt",
-            kind="session_prompt",
-            path=manifest.get("session_prompt_path"),
-            content_type="text/plain",
-        )
-        self._ensure_manifest_artifact(
-            manifest,
-            name="completion_record",
-            kind="completion_record",
-            path=manifest.get("completion_record_path"),
-            content_type="application/json",
-        )
-        self._ensure_manifest_artifact(
-            manifest,
-            name="validation_record",
-            kind="validation_record",
-            path=manifest.get("validation_record_path"),
-            content_type="application/json",
-        )
-        self._ensure_manifest_artifact(
-            manifest,
-            name="validation_stdout",
-            kind="validation_stdout",
-            path=manifest.get("validation_stdout"),
-            content_type="text/plain",
-        )
-        self._ensure_manifest_artifact(
-            manifest,
-            name="validation_stderr",
-            kind="validation_stderr",
-            path=manifest.get("validation_stderr"),
-            content_type="text/plain",
-        )
-        self._ensure_manifest_artifact(
-            manifest,
-            name="diagnostic",
-            kind="diagnostic",
-            path=manifest.get("diagnostic_path"),
-            content_type="application/json",
-        )
-        self._ensure_manifest_artifact(
-            manifest,
-            name="claude_log",
-            kind="claude_jsonl",
-            path=manifest.get("claude_log_path"),
-            content_type="application/json",
-        )
-        self._ensure_manifest_artifact(
-            manifest,
-            name="orchestrator_tail",
-            kind="orchestrator_tail",
-            path=manifest.get("orchestrator_tail"),
-            content_type="text/plain",
-        )
-        self._ensure_manifest_artifact(
-            manifest,
-            name="review_exchange_summary",
-            kind="review_exchange_summary",
-            path=manifest.get("review_exchange_summary_path"),
-            content_type="application/json",
-        )
-
-    def _bootstrap_manifest_identity(self, run_dir: Path, manifest: dict[str, Any]) -> None:
-        """Fill required manifest identity fields for standalone or legacy paths."""
-        run_name = run_dir.name
-        terminal_recording_path = run_dir / TERMINAL_RECORDING_NAME
-        run_id = manifest.get("run_id")
-        session_name = manifest.get("session_name")
-        if "__" in run_name:
-            parsed_run_id, parsed_session_name = run_name.split("__", 1)
-            run_id = run_id or parsed_run_id
-            session_name = session_name or parsed_session_name
-        manifest.setdefault("run_id", run_id or run_name)
-        manifest.setdefault("session_name", session_name or run_name)
-        manifest.setdefault("run_dir", str(run_dir))
-        manifest.setdefault("log_path", str(terminal_recording_path))
-        artifacts = manifest.get("artifacts")
-        if not isinstance(artifacts, dict):
-            artifacts = {}
-            manifest["artifacts"] = artifacts
-        artifacts.setdefault(
-            "terminal_recording",
-            {
-                "kind": "terminal_recording",
-                "path": str(terminal_recording_path),
-                "content_type": "application/x-ndjson",
-            },
-        )
-        if not terminal_recording_path.exists():
-            terminal_recording_path.write_text("", encoding="utf-8")
 
 
 # -----------------------------------------------------------------------------

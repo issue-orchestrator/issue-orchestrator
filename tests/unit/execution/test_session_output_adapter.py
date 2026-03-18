@@ -339,6 +339,32 @@ class TestReviewExchangeSummary:
         assert loaded.summary["response_text"] == "stale"
         assert loaded.exchange_dir == older_exchange
 
+    def test_load_review_exchange_summary_falls_back_to_dedicated_review_run(
+        self, session_output, tmp_path
+    ):
+        worktree = tmp_path
+        coding_session = "coding-1"
+        session_output.ensure_run_dir(worktree, coding_session)
+
+        review_run = session_output.start_run(
+            worktree,
+            "review-exchange-3-20260318T000000000000Z",
+            issue_number=3,
+        )
+        review_exchange_dir = review_run.run_dir / REVIEW_EXCHANGE_DIR_NAME
+        review_exchange_dir.mkdir(parents=True, exist_ok=True)
+        summary = {"status": "ok", "completed_rounds": 1, "response_text": "cached"}
+        (review_exchange_dir / REVIEW_EXCHANGE_SUMMARY_NAME).write_text(json.dumps(summary))
+        session_output.update_manifest(
+            review_run.run_dir,
+            {"review_exchange_dir": str(review_exchange_dir)},
+        )
+
+        loaded = session_output.load_review_exchange_summary(worktree, coding_session)
+        assert loaded is not None
+        assert loaded.summary == summary
+        assert loaded.exchange_dir == review_exchange_dir
+
 
 class TestRunRetentionMetadata:
     """Tests for retention metadata persisted in run manifests."""

@@ -125,9 +125,7 @@ WORKTREE_TRACKED_RUNTIME_PATHS: tuple[Path, ...] = (
     Path(".claude/settings.json"),
     Path(".issue-orchestrator/session-latest.json"),
 )
-WORKTREE_SYNCED_SUPPORT_FILES: tuple[Path, ...] = (
-    Path("domain/models.py"),
-)
+WORKTREE_SYNCED_SUPPORT_FILES: tuple[Path, ...] = ()
 
 
 def _configure_no_verify_dry_run(worktree_path: Path, allow: bool) -> None:

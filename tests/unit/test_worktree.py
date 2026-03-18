@@ -570,7 +570,7 @@ class TestCreateWorktree:
         mock_sync_cli_tools.return_value = [
             Path("src/issue_orchestrator/entrypoints/cli_tools/coding_done.py"),
             Path("src/issue_orchestrator/entrypoints/cli_tools/validate_runner.py"),
-            Path("src/issue_orchestrator/domain/models.py"),
+            Path("src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py"),
         ]
 
         def run_side_effect(cmd, *args, **kwargs):
@@ -639,7 +639,7 @@ class TestCreateWorktree:
             "update-index",
             "--skip-worktree",
             "--",
-            "src/issue_orchestrator/domain/models.py",
+            "src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py",
         ] in skip_worktree_calls
         assert ".venv" in exclude_path.read_text()
         assert ".issue-orchestrator/worktree-id" in exclude_path.read_text()
@@ -651,8 +651,15 @@ class TestCreateWorktree:
         synced_paths = sync_cli_tools(worktree_path)
 
         assert Path("src/issue_orchestrator/entrypoints/cli_tools/coding_done.py") in synced_paths
-        assert Path("src/issue_orchestrator/domain/models.py") in synced_paths
-        synced_models = worktree_path / "src" / "issue_orchestrator" / "domain" / "models.py"
+        assert Path("src/issue_orchestrator/entrypoints/cli_tools/_runtime_models.py") in synced_paths
+        synced_models = (
+            worktree_path
+            / "src"
+            / "issue_orchestrator"
+            / "entrypoints"
+            / "cli_tools"
+            / "_runtime_models.py"
+        )
         assert synced_models.exists()
         assert "class ProposedFollowUpIssue" in synced_models.read_text()
 
