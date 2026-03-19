@@ -1335,7 +1335,7 @@ body.column-focus-mode .column-expanded {
 .session-replay-terminal {
     min-height: 420px;
     max-height: 60vh;
-    overflow: hidden;
+    overflow: auto;
 }
 .session-replay-terminal .xterm {
     padding: 6px;

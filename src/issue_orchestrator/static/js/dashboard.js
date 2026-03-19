@@ -616,6 +616,9 @@ async function refreshAgentLog(issueNumber, forceScroll = false, runDir = null) 
         return;
     }
     const incomingEvents = Array.isArray(data.events) ? data.events : [];
+    if (!sessionReplayState.initialGeometry) {
+        sessionReplayState.initialGeometry = resolveSessionReplayInitialGeometry(data, incomingEvents);
+    }
     if (incomingEvents.length > 0) {
         const wasAtEnd = sessionReplayState.playbackIndex >= sessionReplayState.events.length;
         sessionReplayState.events.push(...incomingEvents);
@@ -778,10 +781,12 @@ async function copyAgentLogAction(issueNumber, runDir = null) {
 function initializeSessionReplay(issueNumber, runDir, payload) {
     destroySessionReplay();
     const events = Array.isArray(payload.events) ? payload.events : [];
+    const initialGeometry = resolveSessionReplayInitialGeometry(payload, events);
     sessionReplayState = {
         issueNumber,
         runDir,
         events,
+        initialGeometry,
         playbackIndex: 0,
         playing: false,
         playTimer: null,
@@ -799,6 +804,30 @@ function initializeSessionReplay(issueNumber, runDir, payload) {
     replaySessionToIndex(events.length);
 }
 
+function resolveSessionReplayInitialGeometry(payload, events) {
+    const payloadGeometry = normalizeSessionReplayGeometry(payload?.initial_geometry);
+    if (payloadGeometry) {
+        return payloadGeometry;
+    }
+    for (const event of events || []) {
+        const eventGeometry = normalizeSessionReplayGeometry(event);
+        if (eventGeometry) {
+            return eventGeometry;
+        }
+    }
+    return null;
+}
+
+function normalizeSessionReplayGeometry(candidate) {
+    if (!candidate || typeof candidate !== 'object') return null;
+    const rows = Number(candidate.rows);
+    const cols = Number(candidate.cols);
+    if (!Number.isInteger(rows) || !Number.isInteger(cols) || rows <= 0 || cols <= 0) {
+        return null;
+    }
+    return { rows, cols };
+}
+
 function createSessionReplayTerminal() {
     const host = document.getElementById('sessionReplayTerminal');
     if (!host || !sessionReplayState) return;
@@ -806,7 +835,7 @@ function createSessionReplayTerminal() {
         sessionReplayState.terminal.dispose();
     }
     host.innerHTML = '';
-    const terminal = new Terminal({
+    const terminalOptions = {
         convertEol: false,
         cursorBlink: false,
         disableStdin: true,
@@ -828,7 +857,12 @@ function createSessionReplayTerminal() {
             white: '#d7e2ef',
             brightWhite: '#ffffff',
         },
-    });
+    };
+    if (sessionReplayState.initialGeometry) {
+        terminalOptions.rows = sessionReplayState.initialGeometry.rows;
+        terminalOptions.cols = sessionReplayState.initialGeometry.cols;
+    }
+    const terminal = new Terminal(terminalOptions);
     const fitAddon = new FitAddon.FitAddon();
     terminal.loadAddon(fitAddon);
     terminal.open(host);
@@ -839,6 +873,7 @@ function createSessionReplayTerminal() {
 
 function fitSessionReplayTerminal() {
     if (!sessionReplayState || !sessionReplayState.fitAddon) return;
+    if (sessionReplayState.initialGeometry) return;
     try {
         sessionReplayState.fitAddon.fit();
     } catch (_err) {
@@ -877,8 +912,8 @@ function replaySessionToIndex(targetIndex) {
 function applyTerminalRecordingEvent(event) {
     if (!sessionReplayState || !sessionReplayState.terminal || !event || typeof event !== 'object') return;
     if (event.event_type === 'resize' && Number.isInteger(event.cols) && Number.isInteger(event.rows)) {
+        sessionReplayState.initialGeometry = { rows: event.rows, cols: event.cols };
         sessionReplayState.terminal.resize(event.cols, event.rows);
-        fitSessionReplayTerminal();
         return;
     }
     if (event.event_type !== 'output' || !event.data_b64) {

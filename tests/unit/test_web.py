@@ -4333,8 +4333,8 @@ class TestIssueLogEndpointsUseLatestHistory:
         finally:
             set_orchestrator(None)
 
-    def test_agent_ui_log_uses_run_scoped_agent_log_when_terminal_recording_empty(self, tmp_path: Path):
-        """GET /api/log/local should use the canonical run-scoped agent log."""
+    def test_agent_ui_log_does_not_fallback_to_claude_when_terminal_recording_empty(self, tmp_path: Path):
+        """GET /api/log/local should not leak Claude transcript into the agent-log preview."""
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
         mock_orch = create_mock_orchestrator()
@@ -4359,9 +4359,9 @@ class TestIssueLogEndpointsUseLatestHistory:
             response = client.get(f"/api/log/local/123?run_dir={run.run_dir}")
             assert response.status_code == 200
             payload = response.json()
-            assert payload["lines"] == ["Should", "not appear"]
-            assert payload["total_lines"] == 2
-            assert payload["log_path"].endswith("/claude.jsonl")
+            assert payload["lines"] == []
+            assert payload["total_lines"] == 0
+            assert payload["log_path"].endswith("/terminal-recording.jsonl")
         finally:
             set_orchestrator(None)
 
@@ -4461,8 +4461,46 @@ class TestIssueLogEndpointsUseLatestHistory:
             payload = response.json()
             assert payload["recording_path"].endswith("/terminal-recording.jsonl")
             assert payload["total_events"] == 2
+            assert payload["initial_geometry"] == {"rows": 40, "cols": 120}
             assert payload["events"][0]["event_type"] == "output"
             assert payload["events"][1]["event_type"] == "resize"
+        finally:
+            set_orchestrator(None)
+
+    def test_terminal_recording_preserves_initial_geometry_when_tail_is_truncated(self, tmp_path: Path):
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-terminal-truncated"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-123", issue_number=123)
+        events = [
+            '{"cols":120,"event_type":"resize","offset_ms":0,"rows":40,"schema_version":1}',
+        ]
+        events.extend(
+            json.dumps(
+                {
+                    "data_b64": "bGluZQ==",
+                    "event_type": "output",
+                    "offset_ms": index + 1,
+                    "schema_version": 1,
+                }
+            )
+            for index in range(4)
+        )
+        (run.run_dir / "terminal-recording.jsonl").write_text("\n".join(events) + "\n", encoding="utf-8")
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/session/terminal-recording/123?run_dir={run.run_dir}&limit=2")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["truncated"] is True
+            assert payload["initial_geometry"] == {"rows": 40, "cols": 120}
+            assert len(payload["events"]) == 2
+            assert all(event["event_type"] == "output" for event in payload["events"])
         finally:
             set_orchestrator(None)
 

@@ -97,7 +97,7 @@ def test_get_agent_log_raises_when_terminal_recording_only_empty_by_default(tmp_
         accessor.get_agent_log()
 
 
-def test_get_agent_log_uses_claude_log_when_terminal_recording_empty(tmp_path: Path) -> None:
+def test_get_agent_log_raises_when_terminal_recording_empty_even_if_claude_log_exists(tmp_path: Path) -> None:
     accessor, _worktree, run_dir = _build_accessor(tmp_path)
     recording = run_dir / "terminal-recording.jsonl"
     recording.write_text("", encoding="utf-8")
@@ -110,9 +110,8 @@ def test_get_agent_log_uses_claude_log_when_terminal_recording_empty(tmp_path: P
         },
     )
 
-    artifact = accessor.get_agent_log()
-    assert artifact.path == claude
-    assert artifact.descriptor.artifact_type == "agent_log"
+    with pytest.raises(ArtifactNotFoundError, match="terminal recording is empty"):
+        accessor.get_agent_log()
 
 
 def test_get_claude_log_reads_manifest_path(tmp_path: Path) -> None:

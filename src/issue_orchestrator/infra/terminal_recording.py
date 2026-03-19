@@ -48,11 +48,13 @@ class TerminalRecordingEvent:
 class TerminalRecordingWriter:
     """Append-only NDJSON writer for raw terminal events."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, initial_rows: int | None = None, initial_cols: int | None = None) -> None:
         self._path = path
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._file = open(path, "a", encoding="utf-8")  # noqa: SIM115
         self._started = time.monotonic()
+        if initial_rows is not None and initial_cols is not None:
+            self.write_resize(rows=initial_rows, cols=initial_cols)
 
     @property
     def name(self) -> str:
@@ -104,6 +106,18 @@ def iter_terminal_recording(path: Path) -> Iterator[dict[str, Any]]:
             if not raw_line.strip():
                 continue
             yield json.loads(raw_line)
+
+
+def first_terminal_geometry(path: Path) -> tuple[int, int] | None:
+    """Return the first recorded terminal geometry as (rows, cols)."""
+    for event in iter_terminal_recording(path):
+        if event.get("event_type") != "resize":
+            continue
+        rows = event.get("rows")
+        cols = event.get("cols")
+        if isinstance(rows, int) and isinstance(cols, int):
+            return rows, cols
+    return None
 
 
 def append_output_event(path: Path, text: str) -> None:

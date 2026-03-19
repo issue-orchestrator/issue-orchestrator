@@ -91,24 +91,6 @@ class ManifestAccessor:
                 content_type="application/x-ndjson",
             )
             return artifact
-        try:
-            claude_artifact = self.get_claude_log()
-        except ArtifactNotFoundError:
-            claude_artifact = None
-        if claude_artifact is not None:
-            return ArtifactStream(
-                descriptor=ArtifactDescriptor(
-                    artifact_type="agent_log",
-                    run_identity=claude_artifact.descriptor.run_identity,
-                    content_type=claude_artifact.descriptor.content_type,
-                    encoding=claude_artifact.descriptor.encoding,
-                    source_backend=claude_artifact.descriptor.source_backend,
-                    source_ref=claude_artifact.descriptor.source_ref,
-                    length_bytes=claude_artifact.descriptor.length_bytes,
-                    updated_at=claude_artifact.descriptor.updated_at,
-                ),
-                path=claude_artifact.path,
-            )
         if terminal_path.exists() and allow_empty:
             return self._artifact_stream(
                 "agent_log",

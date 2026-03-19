@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import Any
 
 from ..contracts.run_manifest import validate_run_manifest_payload
-from ..infra.claude_jsonl import claude_jsonl_entry_replay_text
 from ..infra.terminal_cleaning import (
     clean_terminal_line,
     dedupe_consecutive_lines,
@@ -79,7 +78,6 @@ class FileSystemSessionOutput:
 
     def __init__(self) -> None:
         self._io_lock = threading.RLock()
-        self._claude_replay_captures: dict[Path, _ClaudeReplayCapture] = {}
 
     # -------------------------------------------------------------------------
     # Run Lifecycle
@@ -161,7 +159,6 @@ class FileSystemSessionOutput:
 
             if claude_log_dir:
                 self._write_text(run_dir / "claude-log.path", claude_log_dir)
-                self._start_claude_replay_capture(run_dir)
             if orchestrator_log:
                 self._write_text(run_dir / "orchestrator-log.path", orchestrator_log)
 
@@ -835,8 +832,6 @@ Timestamp: {self._now_iso()}
             return log_path
 
         self._ensure_symlink(run_dir / CLAUDE_SESSION_LOG_NAME, log_path)
-        self._sync_claude_replay_capture(run_dir)
-        self._stop_claude_replay_capture(run_dir)
         return log_path
 
     def write_orchestrator_tail(  # noqa: C901
@@ -1409,87 +1404,6 @@ Timestamp: {self._now_iso()}
         if not terminal_recording_path.exists():
             terminal_recording_path.write_text("", encoding="utf-8")
 
-    def _start_claude_replay_capture(self, run_dir: Path) -> None:
-        with self._io_lock:
-            if run_dir in self._claude_replay_captures:
-                return
-            capture = _ClaudeReplayCapture(self, run_dir)
-            self._claude_replay_captures[run_dir] = capture
-            capture.start()
-
-    def _stop_claude_replay_capture(self, run_dir: Path) -> None:
-        with self._io_lock:
-            capture = self._claude_replay_captures.pop(run_dir, None)
-        if capture is not None:
-            capture.stop()
-
-    def _sync_claude_replay_capture(self, run_dir: Path) -> None:
-        with self._io_lock:
-            capture = self._claude_replay_captures.get(run_dir)
-            if capture is None:
-                capture = _ClaudeReplayCapture(self, run_dir)
-        capture.poll_once()
-
-
-class _ClaudeReplayCapture:
-    """Mirror Claude JSONL transcript content into the canonical replay recording."""
-
-    def __init__(self, session_output: FileSystemSessionOutput, run_dir: Path) -> None:
-        self._session_output = session_output
-        self._run_dir = run_dir
-        self._line_offset = 0
-        self._attached_path: Path | None = None
-        self._stop_event = threading.Event()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-
-    def start(self) -> None:
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop_event.set()
-
-    def poll_once(self) -> None:
-        log_path = self._resolve_log_path()
-        if log_path is None or not log_path.exists():
-            return
-        with log_path.open(encoding="utf-8") as handle:
-            for _ in range(self._line_offset):
-                if handle.readline() == "":
-                    return
-            for raw_line in handle:
-                if not raw_line.strip():
-                    self._line_offset += 1
-                    continue
-                try:
-                    entry = json.loads(raw_line)
-                except json.JSONDecodeError:
-                    self._line_offset += 1
-                    continue
-                text = claude_jsonl_entry_replay_text(entry)
-                if text:
-                    append_output_event(self._run_dir / TERMINAL_RECORDING_NAME, text)
-                self._line_offset += 1
-
-    def _run(self) -> None:
-        while not self._stop_event.wait(1.0):
-            try:
-                self.poll_once()
-            except Exception:
-                logger.warning(
-                    "Claude replay capture poll failed for %s",
-                    self._run_dir,
-                    exc_info=True,
-                )
-
-    def _resolve_log_path(self) -> Path | None:
-        if self._attached_path is not None and self._attached_path.exists():
-            return self._attached_path
-
-        log_path = self._session_output.attach_claude_log_for_run(self._run_dir)
-        if not log_path:
-            return None
-        self._attached_path = log_path
-        return log_path
 # -----------------------------------------------------------------------------
 # Module-level utility functions
 # -----------------------------------------------------------------------------
