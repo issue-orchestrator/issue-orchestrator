@@ -4333,8 +4333,8 @@ class TestIssueLogEndpointsUseLatestHistory:
         finally:
             set_orchestrator(None)
 
-    def test_agent_ui_log_uses_run_scoped_agent_log_when_terminal_recording_empty(self, tmp_path: Path):
-        """GET /api/log/local should use the canonical run-scoped agent log."""
+    def test_agent_ui_log_does_not_fallback_to_claude_when_terminal_recording_empty(self, tmp_path: Path):
+        """GET /api/log/local should not leak Claude transcript into the agent-log preview."""
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
         mock_orch = create_mock_orchestrator()
@@ -4359,9 +4359,9 @@ class TestIssueLogEndpointsUseLatestHistory:
             response = client.get(f"/api/log/local/123?run_dir={run.run_dir}")
             assert response.status_code == 200
             payload = response.json()
-            assert payload["lines"] == ["Should", "not appear"]
-            assert payload["total_lines"] == 2
-            assert payload["log_path"].endswith("/claude.jsonl")
+            assert payload["lines"] == []
+            assert payload["total_lines"] == 0
+            assert payload["log_path"].endswith("/terminal-recording.jsonl")
         finally:
             set_orchestrator(None)
 

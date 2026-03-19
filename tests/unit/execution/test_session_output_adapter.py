@@ -5,7 +5,6 @@ Tests for list_runs() and related functionality.
 
 import base64
 import json
-import logging
 import threading
 import time
 
@@ -13,7 +12,6 @@ import pytest
 
 from issue_orchestrator.infra.claude_jsonl import (
     claude_jsonl_entry_preview_lines,
-    claude_jsonl_entry_replay_text,
 )
 from issue_orchestrator.execution.session_output_adapter import (
     FileSystemSessionOutput,
@@ -22,7 +20,6 @@ from issue_orchestrator.execution.session_output_adapter import (
     REVIEW_EXCHANGE_DIR_NAME,
     REVIEW_EXCHANGE_SUMMARY_NAME,
     VALIDATION_RECORD_NAME,
-    _ClaudeReplayCapture,
 )
 
 
@@ -462,20 +459,8 @@ class TestSessionLogCleaning:
         assert "Thinking" not in content
 
 
-class TestClaudeReplayCapture:
-    @staticmethod
-    def _decoded_recording(path):
-        chunks = []
-        for raw_line in path.read_text(encoding="utf-8").splitlines():
-            if not raw_line.strip():
-                continue
-            event = json.loads(raw_line)
-            if event.get("event_type") != "output":
-                continue
-            chunks.append(base64.b64decode(event["data_b64"]).decode("utf-8"))
-        return "".join(chunks)
-
-    def test_claude_jsonl_parser_keeps_preview_and_replay_tool_summaries_in_sync(self):
+class TestClaudeLogAttachment:
+    def test_claude_jsonl_parser_keeps_preview_tool_summaries_stable(self):
         entry = {
             "type": "assistant",
             "message": {
@@ -492,27 +477,6 @@ class TestClaudeReplayCapture:
             "Read: src/app.py",
             "TodoWrite",
         ]
-        assert claude_jsonl_entry_replay_text(entry) == (
-            "Investigating\n"
-            "Read: src/app.py\n"
-            "TodoWrite\n"
-        )
-
-    def test_claude_replay_capture_logs_poll_exceptions(self, tmp_path, caplog, monkeypatch):
-        capture = _ClaudeReplayCapture(FileSystemSessionOutput(), tmp_path)
-        attempts = {"count": 0}
-
-        def fake_wait(_timeout: float) -> bool:
-            attempts["count"] += 1
-            return attempts["count"] > 1
-
-        monkeypatch.setattr(capture._stop_event, "wait", fake_wait)
-        monkeypatch.setattr(capture, "poll_once", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
-
-        with caplog.at_level(logging.WARNING):
-            capture._run()
-
-        assert "Claude replay capture poll failed" in caplog.text
 
     def test_attach_claude_log_serializes_manifest_writes(self, tmp_path, monkeypatch):
         session_output = FileSystemSessionOutput()
@@ -569,7 +533,7 @@ class TestClaudeReplayCapture:
         assert manifest["claude_log_path"].endswith("session.jsonl")
         assert stats["max_active"] == 1
 
-    def test_attach_claude_log_backfills_terminal_recording_when_empty(self, tmp_path):
+    def test_attach_claude_log_does_not_backfill_terminal_recording(self, tmp_path):
         session_output = FileSystemSessionOutput()
         claude_dir = tmp_path / "claude-project"
         claude_dir.mkdir()
@@ -605,34 +569,5 @@ class TestClaudeReplayCapture:
         attached = session_output.attach_claude_log(run.run_dir)
 
         assert attached == claude_log
-        decoded = self._decoded_recording(run.run_dir / "terminal-recording.jsonl")
-        assert "Hello" in decoded
-        assert " world" in decoded
-        assert "Bash: pwd" in decoded
-
-    def test_sync_claude_replay_capture_updates_manifest_and_recording(self, tmp_path):
-        session_output = FileSystemSessionOutput()
-        claude_dir = tmp_path / "claude-project"
-        claude_dir.mkdir()
-        run = session_output.start_run(
-            tmp_path,
-            "issue-123",
-            issue_number=123,
-            claude_log_dir=str(claude_dir),
-        )
-        claude_log = claude_dir / "session.jsonl"
-        claude_log.write_text(
-            json.dumps({
-                "type": "assistant",
-                "message": {"content": [{"type": "text", "text": "Captured live"}]},
-            }) + "\n",
-            encoding="utf-8",
-        )
-
-        session_output._sync_claude_replay_capture(run.run_dir)
-
-        manifest = json.loads((run.run_dir / MANIFEST_NAME).read_text())
-        assert manifest["claude_log_path"] == str(claude_log)
-        decoded = self._decoded_recording(run.run_dir / "terminal-recording.jsonl")
-        assert "Captured live" in decoded
-        session_output._stop_claude_replay_capture(run.run_dir)
+        recording = run.run_dir / "terminal-recording.jsonl"
+        assert recording.read_text(encoding="utf-8") == ""
