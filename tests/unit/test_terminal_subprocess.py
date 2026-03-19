@@ -40,7 +40,9 @@ def test_subprocess_session_writes_log(tmp_path, monkeypatch):
     log_path = worktree / ".issue-orchestrator" / "sessions" / "issue-123" / "terminal-recording.jsonl"
     assert log_path.exists(), f"Log file not created at {log_path}"
     content = log_path.read_text()
-    event = json.loads(content.splitlines()[0])
+    events = [json.loads(line) for line in content.splitlines() if line.strip()]
+    assert events[0]["event_type"] == "resize"
+    event = next(event for event in events if event.get("event_type") == "output")
     payload = base64.b64decode(event["data_b64"]).decode("utf-8", errors="replace")
     assert "hello from subprocess" in payload, f"Expected decoded output not in recording payload. Content: {content!r}"
 

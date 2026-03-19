@@ -275,6 +275,18 @@ class TestPtyAgentRunnerImplementation:
             "AgentRunner must use preexec_fn=_pty_preexec for SIGTTIN immunity"
         )
 
+    def test_records_and_reuses_explicit_pty_dimensions(self) -> None:
+        """AgentRunner must choose PTY geometry explicitly for faithful replay."""
+        from issue_orchestrator.execution.agent_runner import AgentRunner
+
+        source = inspect.getsource(AgentRunner)
+        assert "shutil.get_terminal_size" in source, (
+            "AgentRunner must choose an explicit PTY size instead of relying on implicit defaults"
+        )
+        assert "dimensions=(rows, cols)" in source, (
+            "AgentRunner must pass explicit PTY dimensions to pexpect.spawn for replay fidelity"
+        )
+
 
 class TestSubprocessAgentRunnerConfiguration:
     """Verify SubprocessAgentRunner has correct subprocess configuration."""

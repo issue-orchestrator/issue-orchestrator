@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 import os
 import shlex
+import shutil
 import signal
 import time
 from pathlib import Path
@@ -36,6 +37,8 @@ from issue_orchestrator.execution.agent_runner_types import (
 from issue_orchestrator.infra.terminal_recording import TerminalRecordingWriter
 
 logger = logging.getLogger(__name__)
+_DEFAULT_PTY_COLS = 120
+_DEFAULT_PTY_ROWS = 40
 
 # Re-export types so existing ``from execution.agent_runner import ...`` still works.
 __all__ = [
@@ -244,7 +247,12 @@ class AgentRunner(BaseAgentRunner):
         )
         logger.info("Agent argv: %s", _format_command_for_log(spec.command))
 
-        log_writer = TerminalRecordingWriter(spec.log_path) if spec.log_path else None
+        cols, rows = shutil.get_terminal_size(fallback=(_DEFAULT_PTY_COLS, _DEFAULT_PTY_ROWS))
+        log_writer = (
+            TerminalRecordingWriter(spec.log_path, initial_rows=rows, initial_cols=cols)
+            if spec.log_path
+            else None
+        )
 
         shell_cmd = shlex.join(spec.command)
         child = pexpect.spawn(
@@ -255,6 +263,7 @@ class AgentRunner(BaseAgentRunner):
             logfile=log_writer,
             timeout=None,
             preexec_fn=_pty_preexec,
+            dimensions=(rows, cols),
         )
 
         return AgentSession(child, log_writer, spec, time.monotonic())

@@ -131,6 +131,26 @@ def test_session_replay_seek_reuses_terminal_for_forward_progress() -> None:
     assert "for (let index = sessionReplayState.playbackIndex; index < clampedIndex; index += 1)" in body
 
 
+def test_session_replay_bootstraps_from_recorded_geometry() -> None:
+    js = _read(DASHBOARD_JS)
+    init_body = _function_body(js, "initializeSessionReplay")
+    create_body = _function_body(js, "createSessionReplayTerminal")
+    fit_body = _function_body(js, "fitSessionReplayTerminal")
+    assert "resolveSessionReplayInitialGeometry" in init_body
+    assert "sessionReplayState.initialGeometry" in create_body
+    assert "terminalOptions.rows = sessionReplayState.initialGeometry.rows" in create_body
+    assert "terminalOptions.cols = sessionReplayState.initialGeometry.cols" in create_body
+    assert "if (sessionReplayState.initialGeometry) return;" in fit_body
+
+
+def test_session_replay_resize_event_does_not_fit_over_recorded_geometry() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "applyTerminalRecordingEvent")
+    assert "sessionReplayState.initialGeometry = { rows: event.rows, cols: event.cols }" in body
+    assert "sessionReplayState.terminal.resize(event.cols, event.rows);" in body
+    assert "fitSessionReplayTerminal();" not in body
+
+
 def test_unblock_handlers_use_ui_action_contract() -> None:
     js = _read(DASHBOARD_JS)
     for fn in ("unblockSingle", "bulkUnblock", "unblockFromDrawer", "unblockSelectedIssues"):
@@ -243,6 +263,12 @@ def test_session_replay_uses_terminal_recording_endpoint_and_emulator() -> None:
     assert "sessionReplaySeek" in open_body
     assert "sessionReplayPlayPause" in open_body
     assert "sessionReplayRestart" in open_body
+
+
+def test_session_replay_terminal_wrap_allows_scroll_for_fixed_geometry() -> None:
+    css = _read(DASHBOARD_CSS)
+    assert ".session-replay-terminal {" in css
+    assert "overflow: auto;" in css
 
 
 def test_host_action_contract_exposes_host_neutral_builders() -> None:

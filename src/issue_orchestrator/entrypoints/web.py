@@ -66,7 +66,7 @@ from ..execution.manifest_accessor import (
 from ..execution.client_host import ClientHost, detect_client_host
 from ..execution.label_ops import LabelOperation, apply_label_operations
 from ..infra.timeline_trace import is_timeline_trace_enabled
-from ..infra.terminal_recording import iter_terminal_recording
+from ..infra.terminal_recording import first_terminal_geometry, iter_terminal_recording
 from ..infra.claude_jsonl import claude_jsonl_entry_preview_lines
 from ..domain.event_taxonomy import (
     EventIntent,
@@ -1300,6 +1300,7 @@ async def get_terminal_recording(
             "recording_path": str(recording_path),
             "content_type": "application/x-ndjson",
             "total_events": total_events,
+            "initial_geometry": _terminal_recording_initial_geometry(recording_path),
             "offset": offset,
             "truncated": truncated,
             "events": events,
@@ -1322,6 +1323,14 @@ def _build_ui_log_stream_observation(run_dir: Path, *, resolved_log_path: Path |
         "provider_stderr": _stream_file_observation(provider_stderr),
         "claude_log": _stream_file_observation(claude_log),
     }
+
+
+def _terminal_recording_initial_geometry(path: Path) -> dict[str, int] | None:
+    geometry = first_terminal_geometry(path)
+    if geometry is None:
+        return None
+    rows, cols = geometry
+    return {"rows": rows, "cols": cols}
 
 
 def _preview_lines_from_terminal_recording(path: Path) -> list[str]:
