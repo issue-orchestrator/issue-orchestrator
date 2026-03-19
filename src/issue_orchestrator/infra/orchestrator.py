@@ -233,6 +233,7 @@ class Orchestrator:
             self.launch_session, self.update_queue_cache,
             queue_cache_store=self.deps.queue_cache_store,
             label_manager=self.deps.label_manager,
+            label_store=self.deps.label_store,
         )
 
     async def startup(self) -> None: await self._startup_manager.run_startup(self.state)

@@ -67,6 +67,14 @@ def mock_action_applier():
 
 
 @pytest.fixture
+def mock_label_store():
+    """Create a mock LabelStore."""
+    store = MagicMock()
+    store.load_all.return_value = {}
+    return store
+
+
+@pytest.fixture
 def mock_issue_branches_fn():
     """Create a mock issue branches provider."""
     return MagicMock(return_value={})
@@ -86,6 +94,7 @@ def startup_manager(
     mock_repository_host,
     mock_action_applier,
     mock_issue_branches_fn,
+    mock_label_store,
 ):
     """Create a StartupManager with mocks."""
     return StartupManager(
@@ -99,6 +108,7 @@ def startup_manager(
         restore_sessions_fn=MagicMock(),
         launch_session_fn=lambda issue: None,
         update_queue_cache_fn=lambda: None,
+        label_store=mock_label_store,
     )
 
 
@@ -234,6 +244,60 @@ class TestStartupManagerInProgressIssues:
         actions = [call.args[0] for call in mock_action_applier.apply.call_args_list]
         assert any(isinstance(a, AddLabelAction) and a.label == "pr-pending" for a in actions)
         assert any(isinstance(a, RemoveLabelAction) and a.label == "in-progress" for a in actions)
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_warm_start_logs_and_recovers_locally_in_progress_issue_missing_from_cache(
+        self,
+        mock_analyze,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_label_store,
+        caplog,
+    ):
+        cached_issue = Issue(number=1, title="Cached", labels=["agent:web"])
+        missing_issue = Issue(number=4057, title="Missing", labels=["agent:web", "in-progress"])
+        sample_state.cached_queue_issues = [cached_issue]
+        mock_label_store.load_all.return_value = {
+            4057: {"in-progress", "agent:web"},
+        }
+        mock_repository_host.get_issue.return_value = missing_issue
+
+        mock_state = MagicMock()
+        mock_state.has_session = False
+        mock_state.has_open_pr = False
+        mock_state.has_partial_work = False
+        mock_state.is_orphaned_label = True
+        mock_analyze.return_value = mock_state
+
+        with caplog.at_level("INFO"):
+            await startup_manager.run_startup(sample_state)
+
+        mock_repository_host.get_issue.assert_called_once_with(4057)
+        analyzed_issues = [call.kwargs["issue"].number for call in mock_analyze.call_args_list]
+        assert analyzed_issues == [4057]
+        assert "Cached queue omitted 1 locally in-progress issue(s): [4057]" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_warm_start_logs_when_cached_queue_matches_local_in_progress(
+        self,
+        startup_manager,
+        sample_state,
+        mock_label_store,
+        caplog,
+    ):
+        sample_state.cached_queue_issues = [
+            Issue(number=4057, title="Cached", labels=["agent:web", "in-progress"]),
+        ]
+        mock_label_store.load_all.return_value = {
+            4057: {"in-progress", "agent:web"},
+        }
+
+        with caplog.at_level("INFO"):
+            await startup_manager.run_startup(sample_state)
+
+        assert "Local label store and cached queue agree on 1 in-progress issue(s)" in caplog.text
 
 
 class TestStartupManagerCodeReviewRecovery:

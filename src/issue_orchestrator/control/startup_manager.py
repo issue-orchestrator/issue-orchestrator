@@ -31,6 +31,7 @@ from ..infra.config import Config
 from ..ports.issue import Issue
 
 if TYPE_CHECKING:
+    from ..ports.label_store import LabelStore
     from ..ports.queue_cache_store import QueueCacheStore
     from .label_manager import LabelManager
 from ..domain.models import (
@@ -78,6 +79,7 @@ class StartupManager:
         update_queue_cache_fn: Callable[[], None],
         queue_cache_store: "QueueCacheStore | None" = None,
         label_manager: "LabelManager | None" = None,
+        label_store: "LabelStore | None" = None,
     ):
         """Initialize the startup manager.
 
@@ -109,6 +111,7 @@ class StartupManager:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
+        self._label_store = label_store
 
     def _build_labels(self, *labels: str) -> list[str]:
         """Build labels list, including filtering.label if configured."""
@@ -236,7 +239,9 @@ class StartupManager:
         """
         if state.cached_queue_issues:
             # Warm path: filter in-progress from cache (0 GitHub calls)
+            stale_in_progress = self._recover_stale_in_progress_from_label_store(state.cached_queue_issues)
             issues = [i for i in state.cached_queue_issues if self._lm.is_in_progress(i.labels)]
+            issues.extend(stale_in_progress)
             logger.info("[startup] Found %d in-progress issues from cache", len(issues))
             for issue in issues:
                 self._analyze_and_handle_issue(state, issue, issue_branches, issues_to_resume, agent_label="")
@@ -246,6 +251,42 @@ class StartupManager:
                 issues = self._fetch_in_progress_issues_for_agent(state, agent_label)
                 for issue in issues:
                     self._analyze_and_handle_issue(state, issue, issue_branches, issues_to_resume, agent_label)
+
+    def _recover_stale_in_progress_from_label_store(self, cached_issues: list[Issue]) -> list[Issue]:
+        """Recover locally in-progress issues omitted from the warm cache snapshot."""
+        if self._label_store is None:
+            return []
+        cached_issue_numbers = {issue.number for issue in cached_issues}
+        local_in_progress = sorted(
+            issue_number
+            for issue_number, labels in self._label_store.load_all().items()
+            if self._lm.is_in_progress(sorted(labels))
+        )
+        if not local_in_progress:
+            return []
+        missing = [issue_number for issue_number in local_in_progress if issue_number not in cached_issue_numbers]
+        if not missing:
+            logger.info(
+                "[startup] Local label store and cached queue agree on %d in-progress issue(s)",
+                len(local_in_progress),
+            )
+            return []
+        logger.warning(
+            "[startup] Cached queue omitted %d locally in-progress issue(s): %s",
+            len(missing),
+            missing,
+        )
+        recovered: list[Issue] = []
+        for issue_number in missing:
+            issue = self.repository_host.get_issue(issue_number)
+            if issue is None:
+                logger.warning(
+                    "[startup] Failed to refetch locally in-progress issue missing from cache: issue=%d",
+                    issue_number,
+                )
+                continue
+            recovered.append(issue)
+        return recovered
 
     def _fetch_in_progress_issues_for_agent(self, state: OrchestratorState, agent_label: str) -> list[Issue]:
         """Fetch in-progress issues for a specific agent."""
