@@ -1,0 +1,113 @@
+# Codespaces-specific orchestrator config.
+#
+# This keeps the local `main.yaml` workflow unchanged while giving Codespaces a
+# stable dashboard/control API port pair that matches forwarded ports in
+# `.devcontainer/devcontainer.json`.
+
+worktrees:
+  base: "../"
+  worktree_branch_on_recreate: delete
+  setup:
+    - make worktree-setup
+
+agents:
+  agent:backend:
+    prompt: repo-specific/prompts/simple-fix.md
+    model: sonnet
+    provider: claude-code
+    ai_system: claude-code
+    permission_mode: bypassPermissions
+  agent:frontend:
+    prompt: repo-specific/prompts/simple-fix.md
+    model: sonnet
+    provider: claude-code
+    ai_system: claude-code
+    permission_mode: bypassPermissions
+  agent:mobile:
+    prompt: repo-specific/prompts/simple-fix.md
+    model: sonnet
+    provider: claude-code
+    ai_system: claude-code
+    permission_mode: bypassPermissions
+  agent:reviewer:
+    prompt: repo-specific/prompts/reviewer.md
+    model: sonnet
+    provider: claude-code
+    ai_system: claude-code
+    timeout_minutes: 30
+    permission_mode: bypassPermissions
+    initial_prompt: "Review PR #{pr_number} for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use reviewer-done to report your verdict."
+  agent:triage:
+    prompt: repo-specific/prompts/triage.md
+    model: sonnet
+    provider: claude-code
+    ai_system: claude-code
+    timeout_minutes: 60
+    permission_mode: bypassPermissions
+    initial_prompt: "Triage review for issue #{issue_number}: {issue_title}. Follow the instructions in {prompt}. When done, use coding-done to report completion."
+  agent:goal-pilot:
+    prompt: repo-specific/prompts/goal-pilot.md
+    provider: codex
+    model: gpt-5-codex
+    ai_system: codex
+    provider_args:
+      approval_mode: full-auto
+      sandbox: workspace-write
+
+execution:
+  concurrency:
+    max_concurrent_sessions: 6
+    session_timeout_minutes: 10
+  terminal_adapter: subprocess
+
+ui:
+  mode: web
+  web_port: 8080
+  control_api_port: 19081
+
+review:
+  enabled: true
+  default: agent:reviewer
+  code_review_label: needs-code-review
+  code_reviewed_label: code-reviewed
+  max_rework_cycles: 10
+
+validation:
+  cmd: make validate
+  timeout_seconds: 300
+  coverage_guardrail:
+    enabled: true
+    min_percent: 85
+    apply_to: changed
+    scope:
+      - "src/issue_orchestrator/**"
+      - "packages/agent_runner/src/**"
+    coverage_type: line
+    exclude:
+      - "src/issue_orchestrator/generated/**"
+
+filtering:
+  exclude_labels: ["io-e2e-test-data", "test-data"]
+
+triage:
+  inherit_labels: ["io-e2e-test-data", "test-data"]
+
+goal_pilot:
+  enabled: true
+  agent: agent:goal-pilot
+
+e2e:
+  enabled: true
+  auto_run_interval_minutes: 240
+  pytest_args: ["tests/e2e", "-v", "--tb=short"]
+  allow_retry_once: true
+  quarantine_file: tests/e2e/quarantine.txt
+  survive_restart: true
+
+hooks:
+  ai_gate:
+    interval_days: 7
+    dangerous_allow_failure: false
+
+config:
+  strict: true
