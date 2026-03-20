@@ -4303,7 +4303,7 @@ function _renderJourneyRuns(container, allRuns) {
                 <span class="journey-cycle-toggle">${runToggle}</span>
                 <span class="journey-cycle-label">Run ${run.run_number || (runIndex + 1)}</span>
                 <span class="journey-cycle-outcome ${_cycleOutcomeClass(run.outcome || '')}">\u2014 ${escapeHtml(run.outcome || 'In progress')}</span>
-                <span class="journey-cycle-time">${escapeHtml(run.time_label || '')}</span>
+                <span class="journey-cycle-time">${escapeHtml(formatJourneyHeaderTimestamp(run.timestamp || '', run.time_label || ''))}</span>
             </div>
             <div class="journey-cycle-body${runBodyClass}" id="${runId}-body">`;
 
@@ -4328,7 +4328,7 @@ function _renderJourneyRuns(container, allRuns) {
                 ${agentPill}
                 ${retryInfo}
                 <span class="journey-cycle-outcome ${outcomeClass}">\u2014 ${escapeHtml(c.outcome || 'In progress')}</span>
-                <span class="journey-cycle-time">${escapeHtml(c.time_label || '')}</span>
+                <span class="journey-cycle-time">${escapeHtml(formatJourneyHeaderTimestamp(c.timestamp || '', c.time_label || ''))}</span>
                 ${hasArtifacts ? `<span class="journey-cycle-artifacts-btn" onclick="event.stopPropagation(); toggleArtifactPopover(${runIndex}, ${cycleIndex}, ${issueNum})" title="Cycle artifacts">\ud83d\udcce</span>` : ''}
             </div>
             <div class="journey-cycle-body${bodyClass}" id="${cycleId}-body">`;
@@ -4347,10 +4347,14 @@ function _renderJourneyRuns(container, allRuns) {
                     const detail = s.detail ? `<div class="journey-detail">${escapeHtml(s.detail)}</div>` : '';
                     const actions = renderTimelineEventActions(s.actions || []);
                     html += `<div class="journey-step ${statusClass}">
-                    <span class="journey-time">${escapeHtml(s.time_label || '')}</span>
-                    <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
-                    ${actions}
-                    ${detail}
+                    <span class="journey-time">${escapeHtml(formatJourneyStepTimestamp(s.timestamp || '', s.time_label || ''))}</span>
+                    <div class="journey-main">
+                        <div class="journey-summary-row">
+                            <span class="journey-narrative">${escapeHtml(s.narrative || s.event || '')}</span>
+                            ${actions}
+                        </div>
+                        ${detail}
+                    </div>
                 </div>`;
                 }
                 html += `</div>`;
@@ -4599,7 +4603,15 @@ function formatJourneyDay(dayStr) {
     }
 }
 
-async function openReviewFeedback(issueNumber) {
+function _matchesReviewFeedbackContext(evt, context) {
+    if (!context || !context.feedback_event) return true;
+    if (String(evt.event || '') !== String(context.feedback_event || '')) return false;
+    if (context.event_timestamp && String(evt.timestamp || '') !== String(context.event_timestamp || '')) return false;
+    if (context.round_index != null && Number(evt.round_index || 0) !== Number(context.round_index)) return false;
+    return true;
+}
+
+async function openReviewFeedback(issueNumber, context = null) {
     document.getElementById('modalTitle').textContent = `Review Feedback #${issueNumber}`;
     document.getElementById('modalBody').innerHTML = '<div class="timeline-loading">Loading review feedback...</div>';
     document.getElementById('modalOverlay').classList.add('visible');
@@ -4643,14 +4655,18 @@ async function openReviewFeedback(issueNumber) {
         if (detailForIssue) {
             const events = detailForIssue.events || [];
             const reviewEvents = events.filter(e =>
-                e.event === 'review.changes_requested' ||
-                e.event === 'review.approved' ||
-                e.event === 'review.comment_added'
+                (
+                    e.event === 'review.changes_requested' ||
+                    e.event === 'review.approved' ||
+                    e.event === 'review.comment_added'
+                ) &&
+                _matchesReviewFeedbackContext(e, context)
             );
             // Review exchange round events carry per-round reviewer feedback
             const exchangeRoundEvents = events.filter(e =>
                 e.event === 'review_exchange.round_completed' &&
-                e.reviewer_response_text
+                e.reviewer_response_text &&
+                _matchesReviewFeedbackContext(e, context)
             );
             if (exchangeRoundEvents.length > 0) {
                 html += '<div style="margin-bottom:8px;font-size:12px;color:var(--text-muted);">Review exchange rounds:</div>';
@@ -5011,7 +5027,7 @@ function runTimelineEventAction(action) {
         return;
     }
     if (action.type === 'open_review_feedback' && action.issue_number) {
-        openReviewFeedback(action.issue_number);
+        openReviewFeedback(action.issue_number, action);
         return;
     }
     if (action.type === 'open_agent_log' && action.issue_number) {
@@ -5066,6 +5082,25 @@ function formatTimestamp(timestamp) {
     if (!timestamp) return '';
     const date = new Date(timestamp);
     if (Number.isNaN(date.getTime())) return timestamp;
+    return date.toLocaleString();
+}
+
+function formatJourneyHeaderTimestamp(timestamp, fallback = '') {
+    if (!timestamp) return fallback;
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return fallback || timestamp;
+    return date.toLocaleString();
+}
+
+function formatJourneyStepTimestamp(timestamp, fallback = '') {
+    if (!timestamp) return fallback;
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return fallback || timestamp;
+    const now = new Date();
+    const sameDay = date.getFullYear() === now.getFullYear()
+        && date.getMonth() === now.getMonth()
+        && date.getDate() === now.getDate();
+    if (sameDay) return date.toLocaleTimeString();
     return date.toLocaleString();
 }
 

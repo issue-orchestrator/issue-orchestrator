@@ -64,6 +64,7 @@ SESSION_PROMPT_NAME = "session-prompt.txt"
 # Review exchange artifacts
 REVIEW_EXCHANGE_DIR_NAME = "review-exchange"
 REVIEW_EXCHANGE_SUMMARY_NAME = "summary.json"
+REVIEW_EXCHANGE_TRANSCRIPT_NAME = "transcript.log"
 
 # Review feedback artifacts (stored per-cycle for diagnostics)
 REVIEW_FEEDBACK_DIR_NAME = "review-feedback"
@@ -780,14 +781,24 @@ Timestamp: {self._now_iso()}
         section: str,
         content: str,
     ) -> None:
-        """Append one review-exchange transcript entry to the canonical UI log."""
+        """Append one review-exchange transcript entry to the dedicated exchange transcript."""
         timestamp = datetime.now(timezone.utc).isoformat()
         header = f"[{timestamp}] round={round_index} role={role} section={section}"
-        self.append_cleaned_session_log(
-            run_dir,
-            content.rstrip(),
-            header=header,
-        )
+        cleaned_lines: list[str] = []
+        for raw_line in content.splitlines():
+            cleaned = clean_terminal_line(raw_line)
+            if cleaned.strip() and not is_spinner_fragment(cleaned):
+                cleaned_lines.append(cleaned)
+        if not cleaned_lines:
+            return
+        exchange_dir = run_dir / REVIEW_EXCHANGE_DIR_NAME
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        transcript_path = exchange_dir / REVIEW_EXCHANGE_TRANSCRIPT_NAME
+        payload = f"{header}\n" + "\n".join(cleaned_lines).rstrip() + "\n\n"
+        with self._io_lock:
+            with transcript_path.open("a", encoding="utf-8") as handle:
+                handle.write(payload)
+            self.update_manifest(run_dir, {"review_exchange_transcript_path": str(transcript_path)})
 
     # -------------------------------------------------------------------------
     # Log Access
@@ -1373,6 +1384,13 @@ Timestamp: {self._now_iso()}
             kind="review_exchange_summary",
             path=manifest.get("review_exchange_summary_path"),
             content_type="application/json",
+        )
+        self._ensure_manifest_artifact(
+            manifest,
+            name="review_exchange_transcript",
+            kind="review_exchange_transcript",
+            path=manifest.get("review_exchange_transcript_path"),
+            content_type="text/plain",
         )
 
     def _bootstrap_manifest_identity(self, run_dir: Path, manifest: dict[str, Any]) -> None:

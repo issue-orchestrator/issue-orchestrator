@@ -3400,6 +3400,52 @@ class TestTimelineActionWiring:
         assert _label(rework_actions) == "View Rework Session Recording"
         assert all(action.get("type") != "open_agent_log" for action in fallback_actions)
 
+    def test_review_feedback_actions_bind_to_specific_timeline_entry(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-feedback-actions"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "issue-4057", issue_number=4057)
+        (run.run_dir / "ui-session.log").write_text("review output\n", encoding="utf-8")
+        claude_log = run.run_dir / "claude.jsonl"
+        claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
+        session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
+        run_dir = str(run.run_dir)
+
+        round_completed_actions = _timeline_event_actions(
+            {
+                "event": "review_exchange.round_completed",
+                "issue_number": 4057,
+                "run_dir": run_dir,
+                "timestamp": "2026-03-20T04:40:42Z",
+                "round_index": 2,
+                "reviewer_response_text": "Looks good.",
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            4057,
+        )
+        feedback_action = next(
+            action for action in round_completed_actions if action.get("type") == "open_review_feedback"
+        )
+        assert feedback_action["feedback_event"] == "review_exchange.round_completed"
+        assert feedback_action["event_timestamp"] == "2026-03-20T04:40:42Z"
+        assert feedback_action["round_index"] == 2
+
+        round_started_actions = _timeline_event_actions(
+            {
+                "event": "review_exchange.round_started",
+                "issue_number": 4057,
+                "run_dir": run_dir,
+                "timestamp": "2026-03-20T04:39:32Z",
+                "round_index": 2,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            4057,
+        )
+        assert all(action.get("type") != "open_review_feedback" for action in round_started_actions)
+
     def test_run_scoped_timeline_actions_require_run_dir(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput

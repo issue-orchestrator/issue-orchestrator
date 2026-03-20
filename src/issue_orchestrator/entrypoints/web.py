@@ -2122,11 +2122,14 @@ def _timeline_event_recommended_actions(
     add_action: Callable[[dict[str, Any], str], None],
 ) -> None:
     """Add event-specific suggested actions."""
-    if bool(event.get("review_oriented")) or is_review_event_name(event_name):
-        add_action(
-            {"type": "open_review_feedback", "label": "View Review Feedback", "issue_number": issue_number},
-            f"review-feedback:{issue_number}",
-        )
+    feedback_action = _review_feedback_action_for_event(
+        event=event,
+        event_name=event_name,
+        issue_number=issue_number,
+    )
+    if feedback_action is not None:
+        action, dedupe = feedback_action
+        add_action(action, dedupe)
     if event_name in _TIMELINE_START_EVENTS:
         add_action(
             {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
@@ -2170,6 +2173,41 @@ def _timeline_event_recommended_actions(
             },
             f"diagnostics:{issue_number}",
         )
+
+
+def _review_feedback_action_for_event(
+    *,
+    event: dict[str, Any],
+    event_name: str,
+    issue_number: int,
+) -> tuple[dict[str, Any], str] | None:
+    """Return a feedback action only for timeline rows with event-specific review content."""
+    timestamp = str(event.get("timestamp") or "").strip()
+    round_index = event.get("round_index")
+    base_action: dict[str, Any] = {
+        "type": "open_review_feedback",
+        "label": "View Review Feedback",
+        "issue_number": issue_number,
+        "feedback_event": event_name,
+    }
+    if timestamp:
+        base_action["event_timestamp"] = timestamp
+    if isinstance(round_index, int):
+        base_action["round_index"] = round_index
+
+    if event_name == "review_exchange.round_completed" and str(event.get("reviewer_response_text") or "").strip():
+        dedupe = f"review-feedback:{issue_number}:{event_name}:{timestamp or round_index}"
+        return base_action, dedupe
+
+    if event_name in {
+        "review.approved",
+        "review.changes_requested",
+        "review.comment_added",
+    }:
+        dedupe = f"review-feedback:{issue_number}:{event_name}:{timestamp or 'event'}"
+        return base_action, dedupe
+
+    return None
 
 
 def _timeline_event_artifact_actions(

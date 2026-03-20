@@ -437,12 +437,13 @@ class TestSessionLogCleaning:
 
         assert recording.read_text(encoding="utf-8") == ""
 
-    def test_append_review_exchange_session_log_entry_preserves_header_outside_filter(
+    def test_append_review_exchange_session_log_entry_writes_dedicated_transcript_not_terminal_recording(
         self, tmp_path
     ):
         session_output = FileSystemSessionOutput()
         run = session_output.start_run(tmp_path, "issue-123", issue_number=123)
         recording = run.run_dir / "terminal-recording.jsonl"
+        transcript = run.run_dir / REVIEW_EXCHANGE_DIR_NAME / "transcript.log"
 
         session_output.append_review_exchange_session_log_entry(
             run.run_dir,
@@ -452,11 +453,15 @@ class TestSessionLogCleaning:
             content="Line one\n✶ Thinking…\nLine two\n",
         )
 
-        content = self._decoded_recording(recording)
+        assert self._decoded_recording(recording) == ""
+        content = transcript.read_text(encoding="utf-8")
         assert "round=3 role=reviewer section=feedback" in content
         assert "Line one" in content
         assert "Line two" in content
         assert "Thinking" not in content
+        manifest = session_output.read_manifest(run.run_dir)
+        assert manifest is not None
+        assert manifest.get("review_exchange_transcript_path") == str(transcript)
 
 
 class TestClaudeLogAttachment:

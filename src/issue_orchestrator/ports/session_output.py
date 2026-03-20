@@ -521,7 +521,7 @@ class SessionOutput(Protocol):
         section: str,
         content: str,
     ) -> None:
-        """Append one review-exchange transcript entry to the legacy text session log."""
+        """Append one review-exchange transcript entry to the dedicated exchange transcript."""
         ...
 
     # -------------------------------------------------------------------------
