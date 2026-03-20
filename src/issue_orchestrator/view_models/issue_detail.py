@@ -425,6 +425,7 @@ _OUTCOME_EVENTS = frozenset({
     "session.timeout",
     "session.blocked",
     "session.completed",
+    "review_exchange.round_completed",
     "review.changes_requested",
     "review.approved",
     "review.escalated",
@@ -767,46 +768,74 @@ def _outcome_label(  # noqa: C901 — event-type dispatch for outcome labeling
     context: IssueStoryContext | None,
 ) -> str:
     """Map a single event name to its outcome label text."""
+    round_completed_label = _round_completed_outcome_label(event_name, summary)
+    if round_completed_label is not None:
+        return round_completed_label
+
+    session_label = _session_outcome_label(event_name, summary)
+    if session_label is not None:
+        return session_label
+
+    direct_label = _DIRECT_OUTCOME_LABELS.get(event_name)
+    if direct_label is not None:
+        return direct_label
+
+    blocked_label = _issue_blocked_outcome_label(event_name, summary, context)
+    if blocked_label is not None:
+        return blocked_label
+
+    return summary or event_name
+
+
+def _round_completed_outcome_label(event_name: str, summary: str) -> str | None:
+    """Map round-completion summaries into cycle outcome labels when applicable."""
+    if event_name != "review_exchange.round_completed":
+        return None
+    if not summary:
+        return None
+    summary_lower = summary.strip().lower()
+    if "changes_requested" in summary_lower:
+        return "Changes Requested"
+    if "ok" in summary_lower:
+        return "Approved"
+    return None
+
+
+def _session_outcome_label(event_name: str, summary: str) -> str | None:
     if event_name == "session.failed":
         return f"Failed{_duration_suffix(summary)}"
-
     if event_name == "session.timeout":
         return f"Timed out{_duration_suffix(summary)}"
-
     if event_name == "session.blocked":
         reason = summary or "unknown"
         return f"Agent blocked: {reason}"
+    return None
 
-    if event_name == "session.completed":
-        return "Completed"
 
-    if event_name == "review.changes_requested":
-        return "Changes Requested"
-
-    if event_name == "review.approved":
-        return "Approved"
-
-    if event_name == "review.escalated":
-        return "Escalated"
-
-    if event_name == "review.merged":
-        return "Merged"
-
+def _issue_blocked_outcome_label(
+    event_name: str,
+    summary: str,
+    context: IssueStoryContext | None,
+) -> str | None:
     if event_name == "issue.blocked":
-        # Use rich status explanation when context is available
         if context and context.flow_stage == "blocked":
             return _blocked_explanation(context, [{"event": event_name, "summary": summary}])
         reason = summary or "blocked"
         return f"Blocked: {reason}"
-
     if event_name == "issue.needs_human":
         reason = summary or "unknown"
         return f"Needs human: {reason}"
+    return None
 
-    if event_name == "issue.completed":
-        return "Completed"
 
-    return summary or event_name
+_DIRECT_OUTCOME_LABELS = {
+    "session.completed": "Completed",
+    "review.changes_requested": "Changes Requested",
+    "review.approved": "Approved",
+    "review.escalated": "Escalated",
+    "review.merged": "Merged",
+    "issue.completed": "Completed",
+}
 
 
 def _duration_suffix(summary: str) -> str:

@@ -562,34 +562,44 @@ def test_issue_detail_latest_run_splits_after_pr_pending_removed_and_requeue(
         web.set_orchestrator(None)
 
 
-def test_issue_detail_rework_review_exchange_without_signal_stays_in_single_cycle(
+def test_issue_detail_local_loop_review_rounds_split_into_distinct_cycles(
     sample_config,
     mock_repository_host,
 ):
-    """review_exchange.* events without rework_cycle must stay in the active rework cycle."""
+    """Local-loop review rounds should create distinct cycles within one logical run."""
     orch, timeline_writer = _build_orchestrator_with_sqlite_timeline(sample_config, mock_repository_host)
     issue_number = 4057
     orch.state.cached_queue_issues = [
         Issue(
             number=issue_number,
             title="UI: Surface provider circuit breaker status",
-            labels=["agent:backend", "rework-cycle-1"],
+            labels=["agent:backend", "pr-pending"],
         ),
     ]
-    run_dir_rework = _start_run_with_artifacts(
-        sample_config.repo_root, issue_number=issue_number, session_name="rework-4057-exchange"
+    run_dir_code = _start_run_with_artifacts(
+        sample_config.repo_root, issue_number=issue_number, session_name="issue-4057-code"
     )
     run_dir_review = _start_run_with_artifacts(
         sample_config.repo_root, issue_number=issue_number, session_name="review-4057-exchange"
     )
 
-    timeline_writer.record(TraceEvent(EventName.REWORK_STARTED, {
+    timeline_writer.record(TraceEvent(EventName.SESSION_STARTED, {
         "issue_number": issue_number,
-        "run_id": "run-4057-rework-1",
-        "run_dir": run_dir_rework,
-        "task": "rework",
+        "run_id": "run-4057-code-1",
+        "run_dir": run_dir_code,
+        "task": "code",
         "agent": "agent:backend",
-        "rework_cycle": 1,
+        "rework_cycle": 0,
+    }))
+    timeline_writer.record(TraceEvent(EventName.SESSION_COMPLETED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-code-1",
+        "run_dir": run_dir_code,
+        "task": "code",
+        "agent": "agent:backend",
+        "rework_cycle": 0,
+        "summary": "Implementation completed",
+        "completion_path_absolute": str(Path(run_dir_code) / "completion-agent_backend.json"),
     }))
     timeline_writer.record(TraceEvent(EventName.REVIEW_STARTED, {
         "issue_number": issue_number,
@@ -611,6 +621,7 @@ def test_issue_detail_rework_review_exchange_without_signal_stays_in_single_cycl
         "run_dir": run_dir_review,
         "task": "review",
         "agent": "agent:reviewer",
+        "round_index": 1,
     }))
     timeline_writer.record(TraceEvent(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
         "issue_number": issue_number,
@@ -618,13 +629,64 @@ def test_issue_detail_rework_review_exchange_without_signal_stays_in_single_cycl
         "run_dir": run_dir_review,
         "task": "review",
         "agent": "agent:reviewer",
+        "round_index": 1,
+        "reviewer_response_type": "changes_requested",
+        "summary": "Round 1 changes_requested",
     }))
-    timeline_writer.record(TraceEvent(EventName.SESSION_STARTED, {
+    timeline_writer.record(TraceEvent(EventName.REVIEW_REWORK_STARTED, {
         "issue_number": issue_number,
         "run_id": "run-4057-rework-1",
-        "run_dir": run_dir_rework,
-        "task": "code",
+        "run_dir": run_dir_review,
+        "task": "rework",
         "agent": "agent:backend",
+        "round_index": 1,
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_REWORK_COMPLETED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-rework-1",
+        "run_dir": run_dir_review,
+        "task": "rework",
+        "agent": "agent:backend",
+        "round_index": 1,
+        "coder_response_type": "completed",
+        "summary": "Round 1 rework done",
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-review-1",
+        "run_dir": run_dir_review,
+        "task": "review",
+        "agent": "agent:reviewer",
+        "round_index": 2,
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_EXCHANGE_ROUND_COMPLETED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-review-1",
+        "run_dir": run_dir_review,
+        "task": "review",
+        "agent": "agent:reviewer",
+        "round_index": 2,
+        "reviewer_response_type": "ok",
+        "summary": "Round 2 ok",
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_EXCHANGE_COMPLETED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-review-1",
+        "run_dir": run_dir_review,
+        "task": "review",
+        "agent": "agent:reviewer",
+        "rounds": 2,
+        "status": "ok",
+        "summary": "Two rounds complete",
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_APPROVED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-review-1",
+        "run_dir": run_dir_review,
+        "task": "review",
+        "agent": "agent:reviewer",
+        "rounds": 2,
+        "summary": "Looks good after round 2",
     }))
 
     web.set_orchestrator(orch)
@@ -634,13 +696,33 @@ def test_issue_detail_rework_review_exchange_without_signal_stays_in_single_cycl
         assert response.status_code == 200
         payload = response.json()
         latest_run = _latest_run(payload)
-        assert len(latest_run["cycles"]) == 1
-        cycle = _first_cycle(latest_run)
-        assert cycle["iteration"] == 2
-        labels = _phase_group_labels(cycle)
-        assert labels[:2] == ["Rework", "Review"]
-        assert "Coding" not in labels
-        assert "review_exchange.started" in _step_events(cycle)
+        assert len(latest_run["cycles"]) == 2
+        first_cycle, second_cycle = latest_run["cycles"]
+
+        assert [cycle["iteration"] for cycle in latest_run["cycles"]] == [1, 2]
+        assert [cycle["cycle_in_run"] for cycle in latest_run["cycles"]] == [1, 2]
+        assert [cycle["outcome"] for cycle in latest_run["cycles"]] == ["Changes Requested", "Approved"]
+
+        assert _phase_group_labels(first_cycle) == ["Coding", "Orchestrator", "Review"]
+        assert _step_events(first_cycle) == [
+            "agent.coding_started",
+            "agent.completed",
+            "review.started",
+            "review_exchange.started",
+            "review_exchange.round_started",
+            "review_exchange.round_completed",
+        ]
+
+        assert _phase_group_labels(second_cycle) == ["Rework", "Review"]
+        assert _step_events(second_cycle) == [
+            "review.rework_started",
+            "review.rework_completed",
+            "review_exchange.round_started",
+            "review_exchange.round_completed",
+            "review_exchange.completed",
+            "review.approved",
+        ]
+        assert latest_run["session_run_ids"] == ["run-4057-code-1", "run-4057-review-1", "run-4057-rework-1"]
     finally:
         web.set_orchestrator(None)
 
