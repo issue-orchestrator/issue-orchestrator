@@ -26,6 +26,7 @@ def _find_session_artifacts(worktree: Path) -> list[Path]:
         return []
     artifacts = list(sessions_dir.rglob("terminal-recording.jsonl"))
     artifacts.extend(sessions_dir.rglob("ui-session.log"))
+    artifacts.extend(sessions_dir.rglob("review-exchange/transcript.log"))
     return sorted({path for path in artifacts if path.exists() and path.stat().st_size > 0})
 
 
@@ -166,9 +167,7 @@ def test_session_log_reviewer_markers_via_local_loop(scenario_repo: Path):
 
     all_content = "\n".join(_read_session_artifact(log) for log in logs)
 
-    # Reviewer structured response is read from file and logged via _append_session_log.
-    # Stdout chatter (ANSI codes, "src/auth.py" etc.) flows through the parent's
-    # PTY in production but is NOT captured by the review exchange loop.
-    # We verify the JSON response content appears in the session log.
+    # Reviewer structured response is preserved in the dedicated review-exchange
+    # transcript instead of polluting the canonical terminal replay.
     _assert_contains(all_content, "LGTM", "reviewer response")
     _assert_contains(all_content, "response_type", "reviewer response JSON")
