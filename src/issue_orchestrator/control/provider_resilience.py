@@ -143,3 +143,6 @@ class ProviderResilienceManager:
                 },
             ))
         return closed
+
+    def list_states(self) -> list[ProviderCircuitState]:
+        return self.store.list_all()

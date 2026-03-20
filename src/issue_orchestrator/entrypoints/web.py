@@ -692,7 +692,7 @@ async def get_provider_circuit_status() -> JSONResponse:
 
     from datetime import datetime, timezone
     now = datetime.now(timezone.utc)
-    states = _orchestrator.deps.provider_resilience.store.list_all()
+    states = _orchestrator.deps.provider_resilience.list_states()
     circuits = []
     for state in states:
         is_open = state.open_until is not None and state.open_until > now
