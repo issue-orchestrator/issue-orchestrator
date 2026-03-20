@@ -39,8 +39,6 @@ _ROUND_NEXT_CYCLE_EVENTS = frozenset({
     "review.rework_completed",
 })
 _ROUND_COUNT_EVENTS = frozenset({
-    "review.approved",
-    "review.changes_requested",
     "review_exchange.completed",
 })
 
@@ -159,7 +157,10 @@ def _cycle_from_review_round(event_name: str, event_data: dict[str, Any]) -> int
     if event_name in _ROUND_NEXT_CYCLE_EVENTS and round_index is not None:
         return round_index + 1
     if event_name in _ROUND_COUNT_EVENTS:
-        return _as_positive_int(event_data.get("rounds")) or round_index
+        # `rounds` is a cumulative exchange summary ("approved after 2 rounds"),
+        # not a stable cycle identifier. Using it here incorrectly back-assigns
+        # later review outcomes into earlier cycles after retries/restarts.
+        return round_index
     return None
 
 
