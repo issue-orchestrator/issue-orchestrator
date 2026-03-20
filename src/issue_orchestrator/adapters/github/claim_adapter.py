@@ -374,7 +374,9 @@ class GitHubClaimAdapter(ClaimManager):
                 f"Failed to fetch claims for issue #{issue_number}: {e}"
             ) from e
 
-    def _determine_winner(self, claims: list[Claim]) -> Claim | None:
+    def _determine_winner(
+        self, claims: list[Claim], *, now: datetime | None = None,
+    ) -> Claim | None:
         """Determine the winning claim from a list.
 
         Tie-breaking:
@@ -384,11 +386,15 @@ class GitHubClaimAdapter(ClaimManager):
 
         Args:
             claims: List of claims to evaluate.
+            now: Current time for expiry checks. Defaults to datetime.now().
+                Accepting this explicitly makes the function deterministic
+                for testing and avoids clock-skew ambiguity between machines.
 
         Returns:
             The winning Claim or None if no valid claims.
         """
-        now = datetime.now()
+        if now is None:
+            now = datetime.now()
         valid_claims = [c for c in claims if not c.is_expired(now)]
 
         if not valid_claims:
