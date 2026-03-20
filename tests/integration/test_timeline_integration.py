@@ -727,6 +727,116 @@ def test_issue_detail_local_loop_review_rounds_split_into_distinct_cycles(
         web.set_orchestrator(None)
 
 
+def test_review_approved_after_validation_retry_stays_in_current_cycle(
+    sample_config,
+    mock_repository_host,
+):
+    """A later approval must stay in the current retry cycle even if rounds=2."""
+    orch, timeline_writer = _build_orchestrator_with_sqlite_timeline(sample_config, mock_repository_host)
+    issue_number = 4057
+    run_dir_code = _start_run_with_artifacts(
+        sample_config.repo_root, issue_number=issue_number, session_name="issue-4057-code"
+    )
+    run_dir_review = _start_run_with_artifacts(
+        sample_config.repo_root, issue_number=issue_number, session_name="review-4057-exchange"
+    )
+
+    timeline_writer.record(TraceEvent(EventName.SESSION_STARTED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-code-old",
+        "run_dir": run_dir_code,
+        "task": "code",
+        "agent": "agent:backend",
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_STARTED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-review-old",
+        "run_dir": run_dir_review,
+        "task": "review",
+        "agent": "agent:reviewer",
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_CHANGES_REQUESTED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-review-old",
+        "run_dir": run_dir_review,
+        "task": "review",
+        "agent": "agent:reviewer",
+        "summary": "Cycle 1 changes requested",
+    }))
+    timeline_writer.record(TraceEvent(EventName.REWORK_STARTED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-rework-old",
+        "run_dir": run_dir_code,
+        "task": "rework",
+        "agent": "agent:backend",
+        "rework_cycle": 1,
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_STARTED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-review-old",
+        "run_dir": run_dir_review,
+        "task": "review",
+        "agent": "agent:reviewer",
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_APPROVED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-review-old",
+        "run_dir": run_dir_review,
+        "task": "review",
+        "agent": "agent:reviewer",
+        "rounds": 2,
+        "summary": "Old approval in cycle 2",
+    }))
+    timeline_writer.record(TraceEvent(EventName.SESSION_VALIDATION_RETRY_NEEDED, {
+        "issue_number": issue_number,
+        "run_dir": run_dir_code,
+    }))
+    timeline_writer.record(TraceEvent(EventName.SESSION_STARTED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-code-new",
+        "run_dir": run_dir_code,
+        "task": "code",
+        "agent": "agent:backend",
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_STARTED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-review-new",
+        "run_dir": run_dir_review,
+        "task": "review",
+        "agent": "agent:reviewer",
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_APPROVED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-review-new",
+        "run_dir": run_dir_review,
+        "task": "review",
+        "agent": "agent:reviewer",
+        "rounds": 2,
+        "summary": "New approval should stay in cycle 3",
+    }))
+
+    web.set_orchestrator(orch)
+    try:
+        client = TestClient(web.app)
+        response = client.get(f"/api/issue-detail/{issue_number}?view=ops")
+        assert response.status_code == 200
+        payload = response.json()
+        latest_run = _latest_run(payload)
+        assert [cycle["iteration"] for cycle in latest_run["cycles"]] == [1, 2, 3]
+        latest_cycle = latest_run["cycles"][-1]
+
+        assert latest_cycle["iteration"] == 3
+        assert _step_events(latest_cycle) == [
+            "validation.retry",
+            "agent.coding_started",
+            "review.started",
+            "review.approved",
+        ]
+        assert latest_cycle["outcome"] == "Approved"
+    finally:
+        web.set_orchestrator(None)
+
+
 def test_issue_detail_outcome_labels_correct_after_fan_out_renames(
     sample_config,
     mock_repository_host,

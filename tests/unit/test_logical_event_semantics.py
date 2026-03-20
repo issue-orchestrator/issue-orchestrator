@@ -141,3 +141,16 @@ def test_empty_instance_ids_do_not_trigger_restart() -> None:
         previous_instance_id="",
     )
     assert out.logical_run == 1
+
+
+def test_review_approved_does_not_use_cumulative_rounds_as_cycle_number() -> None:
+    """`rounds=2` means two review rounds overall, not "this is cycle 2"."""
+    out = enrich_logical_semantics(
+        event_name="review.approved",
+        event_data={"task": "review", "rounds": 2},
+        previous_event_name="review.started",
+        previous_data={"logical_run": 2, "logical_cycle": 3, "logical_phase": "review"},
+    )
+    assert out.logical_run == 2
+    assert out.logical_cycle == 3
+    assert out.logical_phase == "review"
