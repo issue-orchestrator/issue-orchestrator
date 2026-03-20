@@ -701,3 +701,67 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+def test_view_model_surfaces_provider_circuit_breakers_empty():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuit_breakers == []
+    assert view_model.dashboard_data()["providerCircuitBreakers"] == []
+
+
+def test_view_model_surfaces_provider_circuit_breakers_with_data():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    breakers = [
+        {
+            "provider": "anthropic",
+            "open": True,
+            "open_until": "2026-03-19T12:00:00+00:00",
+            "consecutive_outages": 3,
+            "last_error": "API overloaded",
+        },
+        {
+            "provider": "openai",
+            "open": False,
+            "open_until": None,
+            "consecutive_outages": 1,
+            "last_error": None,
+        },
+    ]
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+        circuit_breaker_provider=lambda _: breakers,
+    )
+
+    assert len(view_model.provider_circuit_breakers) == 2
+    assert view_model.provider_circuit_breakers[0]["provider"] == "anthropic"
+    assert view_model.provider_circuit_breakers[0]["open"] is True
+    assert view_model.provider_circuit_breakers[0]["consecutive_outages"] == 3
+    assert view_model.provider_circuit_breakers[1]["provider"] == "openai"
+    assert view_model.provider_circuit_breakers[1]["open"] is False
+
+    dashboard = view_model.dashboard_data()
+    assert dashboard["providerCircuitBreakers"] == breakers
+
+    # Verify it also appears in to_dict
+    d = view_model.to_dict()
+    assert d["provider_circuit_breakers"] == breakers
+    assert d["dashboard_data"]["providerCircuitBreakers"] == breakers

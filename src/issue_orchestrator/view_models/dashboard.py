@@ -79,6 +79,8 @@ class DashboardViewModel:
     e2e_total_pages: int
     e2e_total: int
 
+    provider_circuit_breakers: list[dict[str, Any]]
+
     agents: dict[str, Any]
     agent_names: list[str]
 
@@ -119,6 +121,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_breakers": self.provider_circuit_breakers,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -141,6 +144,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuitBreakers": self.provider_circuit_breakers,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -180,6 +184,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuit_breakers": self.provider_circuit_breakers,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -1248,12 +1253,38 @@ def _normalize_tab(active_tab: str) -> str:
     return "kanban"
 
 
+def _get_provider_circuit_breakers(orchestrator) -> list[dict[str, Any]]:
+    """Extract circuit breaker state from orchestrator deps."""
+    deps = getattr(orchestrator, "deps", None)
+    if deps is None:
+        return []
+    resilience = getattr(deps, "provider_resilience", None)
+    if resilience is None:
+        return []
+    store = getattr(resilience, "store", None)
+    if store is None:
+        return []
+    now = datetime.now(timezone.utc)
+    results: list[dict[str, Any]] = []
+    for state in store.list_all():
+        is_open = state.open_until is not None and state.open_until > now
+        results.append({
+            "provider": state.provider,
+            "open": is_open,
+            "open_until": state.open_until.isoformat() if state.open_until else None,
+            "consecutive_outages": state.consecutive_outages,
+            "last_error": state.last_error_summary,
+        })
+    return results
+
+
 def build_dashboard_view_model(
     orchestrator,
     queue_page: int = 1,
     active_tab: str = "kanban",
     e2e_page: int = 1,
     e2e_status_provider: Callable[[Any], dict[str, Any]] | None = None,
+    circuit_breaker_provider: Callable[[Any], list[dict[str, Any]]] | None = None,
 ) -> DashboardViewModel:
     """Build dashboard view model for templates and APIs."""
     active_tab = _normalize_tab(active_tab)
@@ -1466,6 +1497,7 @@ def build_dashboard_view_model(
         queue_refresh_seconds=queue_refresh_seconds,
         e2e_status=e2e_status,
         e2e_page=e2e_page,
+        provider_circuit_breakers=(circuit_breaker_provider or _get_provider_circuit_breakers)(orchestrator),
         e2e_total_pages=e2e_total_pages,
         e2e_total=e2e_total,
         agents=agents,
