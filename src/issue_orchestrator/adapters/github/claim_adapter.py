@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Protocol as TypingProtocol
 
-from ...domain.claim import Claim, ClaimResult, ClaimState
+from ...domain.claim import Claim, ClaimFetchError, ClaimResult, ClaimState
 from ...domain.lease_config import LeaseConfig
 from ...infra import gh_audit
 from ...ports.claim_manager import ClaimManager
@@ -152,7 +152,25 @@ class GitHubClaimAdapter(ClaimManager):
 
         while time.monotonic() < deadline and poll_count < max_polls:
             poll_count += 1
-            claims = self._fetch_all_claims(issue_number, use_cache=False)
+
+            try:
+                claims = self._fetch_all_claims(issue_number, use_cache=False)
+            except ClaimFetchError:
+                logger.warning(
+                    "Issue #%d: API error during convergence poll %d - "
+                    "resetting consecutive wins",
+                    issue_number,
+                    poll_count,
+                )
+                consecutive_wins = 0
+                # Sleep and retry
+                jitter_ms = random.randint(
+                    self._config.convergence_poll_min_ms,
+                    self._config.convergence_poll_max_ms,
+                )
+                time.sleep(jitter_ms / 1000)
+                continue
+
             winner = self._determine_winner(claims)
 
             if winner and winner.lease_id == lease_id:
@@ -219,8 +237,11 @@ class GitHubClaimAdapter(ClaimManager):
         Returns:
             True if renewal succeeded.
         """
-        # Verify we're still the winner before renewing
+        # Verify we're still the winner before renewing.
+        # ClaimFetchError propagates to caller so they can distinguish
+        # "genuinely lost" from "API unavailable".
         current_claim = self.get_current_claim(issue_number)
+
         if not current_claim or current_claim.lease_id != lease_id:
             logger.warning(
                 "Cannot renew claim for issue #%d: not the current winner",
@@ -290,14 +311,27 @@ class GitHubClaimAdapter(ClaimManager):
 
         Does a single fresh read (no convergence loop).
 
+        On transient API failures, returns True (benefit of the doubt) to
+        avoid falsely terminating a session due to a GitHub blip. The next
+        tick will retry, and if the claim is truly lost, convergence or
+        renewal will detect it.
+
         Args:
             issue_number: The GitHub issue number.
             lease_id: Our claim's lease_id.
 
         Returns:
-            True if we are the current winner.
+            True if we are the current winner, or if the API is unreachable.
         """
-        winner = self.get_current_claim(issue_number)
+        try:
+            winner = self.get_current_claim(issue_number)
+        except ClaimFetchError:
+            logger.warning(
+                "Cannot verify claim for issue #%d due to API error - "
+                "assuming still owner (benefit of the doubt)",
+                issue_number,
+            )
+            return True
         return winner is not None and winner.lease_id == lease_id
 
     def get_current_claim(self, issue_number: int) -> Claim | None:
@@ -308,6 +342,9 @@ class GitHubClaimAdapter(ClaimManager):
 
         Returns:
             The winning Claim if one exists, None otherwise.
+
+        Raises:
+            ClaimFetchError: If the GitHub API call fails.
         """
         claims = self._fetch_all_claims(issue_number)
         return self._determine_winner(claims)
@@ -325,6 +362,10 @@ class GitHubClaimAdapter(ClaimManager):
 
         Returns:
             List of parsed Claim objects.
+
+        Raises:
+            ClaimFetchError: If the GitHub API call fails. Callers must
+                handle this to avoid interpreting API failures as claim loss.
         """
         try:
             with gh_audit.context(
@@ -337,8 +378,9 @@ class GitHubClaimAdapter(ClaimManager):
                 )
             return extract_all_claims(comments, issue_number)
         except Exception as e:
-            logger.error("Failed to fetch claims for issue #%d: %s", issue_number, e)
-            return []
+            raise ClaimFetchError(
+                f"Failed to fetch claims for issue #{issue_number}: {e}"
+            ) from e
 
     def _determine_winner(self, claims: list[Claim]) -> Claim | None:
         """Determine the winning claim from a list.

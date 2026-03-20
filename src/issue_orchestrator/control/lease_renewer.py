@@ -8,6 +8,8 @@ import logging
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
+from ..domain.claim import ClaimFetchError
+
 if TYPE_CHECKING:
     from ..ports.claim_manager import ClaimManager
     from ..ports.event_sink import EventSink
@@ -96,10 +98,21 @@ class LeaseRenewer:
                     time_until_expiry,
                 )
 
-                success = self._claim_manager.renew_claim(
-                    session.issue.number,
-                    session.lease_id,
-                )
+                try:
+                    success = self._claim_manager.renew_claim(
+                        session.issue.number,
+                        session.lease_id,
+                    )
+                except ClaimFetchError:
+                    # API error during renewal — don't treat as claim loss.
+                    # The claim may still be valid; we just couldn't verify
+                    # or post the renewal. Retry next tick.
+                    logger.warning(
+                        "API error during lease renewal for issue #%d - "
+                        "will retry next tick",
+                        session.issue.number,
+                    )
+                    continue
 
                 if success:
                     # Update expiry time on session

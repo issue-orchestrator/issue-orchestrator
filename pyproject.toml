@@ -53,6 +53,7 @@ dev = [
     "lxml>=5.0",  # Fast HTML parser for BeautifulSoup
     "playwright==1.57.0",  # Pinned to avoid 250MB browser re-downloads on version bumps
     "pytest-playwright>=0.7",  # Playwright pytest integration
+    "hypothesis>=6.0",  # Property-based testing
 ]
 
 [project.scripts]

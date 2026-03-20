@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from issue_orchestrator.control.lease_renewer import LeaseRenewer
+from issue_orchestrator.domain.claim import ClaimFetchError
 from issue_orchestrator.domain.lease_config import LeaseConfig
 from issue_orchestrator.domain.models import Issue, Session, SessionKey, TaskKind
 
@@ -427,3 +428,119 @@ class TestPeriodicVerification:
         # Renewal should have updated last_claim_verified_at
         assert session.last_claim_verified_at is not None
         assert session.last_claim_verified_at > old_verified
+
+
+class TestLeaseRenewalGaps:
+    """Tests for edge cases in renewal timing and API failure recovery."""
+
+    @pytest.fixture
+    def config(self):
+        return LeaseConfig(
+            lease_seconds=900,  # 15 minutes
+            renew_interval_seconds=300,  # 5 minutes
+        )
+
+    def test_session_running_for_hours_gets_renewed(self, config):
+        """Session running 2+ hours still gets renewed on each tick."""
+        claim_manager = MockClaimManager(renew_success=True, is_winner=True)
+        events = MockEventSink()
+        renewer = LeaseRenewer(claim_manager, events, config)
+
+        # Session started 2 hours ago, lease about to expire
+        session = create_test_session(
+            issue_number=42,
+            lease_id="long-running-lease",
+            expires_in_seconds=100,  # Within renewal window (< 600)
+            lease_acquired_seconds_ago=7200,  # 2 hours ago
+            last_verified_seconds_ago=60,  # Recently verified
+        )
+
+        lost_sessions = renewer.check_renewals([session])
+
+        assert len(lost_sessions) == 0
+        assert len(claim_manager.renew_claim_calls) == 1
+        # Expiry should be extended
+        assert session.lease_expires_at > datetime.now()
+
+    def test_rapid_successive_ticks_dont_double_renew(self, config):
+        """Two rapid ticks: first renews, second should not (expiry extended)."""
+        claim_manager = MockClaimManager(renew_success=True, is_winner=True)
+        events = MockEventSink()
+        renewer = LeaseRenewer(claim_manager, events, config)
+
+        session = create_test_session(
+            issue_number=42,
+            lease_id="test-lease",
+            expires_in_seconds=200,  # Within renewal window
+            lease_acquired_seconds_ago=720,
+            last_verified_seconds_ago=60,
+        )
+
+        # First tick: renewal happens
+        renewer.check_renewals([session])
+        assert len(claim_manager.renew_claim_calls) == 1
+
+        # Session now has a fresh expiry (900s from now) — well outside renewal window
+        # Second tick immediately after: should NOT renew
+        renewer.check_renewals([session])
+        assert len(claim_manager.renew_claim_calls) == 1  # Still just 1
+
+    def test_api_error_during_renewal_does_not_report_loss(self, config):
+        """API error during renewal skips session instead of reporting it as lost."""
+        claim_manager = MockClaimManager(renew_success=True, is_winner=True)
+        claim_manager.renew_claim = MagicMock(
+            side_effect=ClaimFetchError("GitHub 502")
+        )
+        events = MockEventSink()
+        renewer = LeaseRenewer(claim_manager, events, config)
+
+        session = create_test_session(
+            issue_number=42,
+            lease_id="test-lease",
+            expires_in_seconds=200,  # Within renewal window
+            lease_acquired_seconds_ago=720,
+            last_verified_seconds_ago=60,
+        )
+
+        lost_sessions = renewer.check_renewals([session])
+
+        # Should NOT report as lost — just skip and retry next tick
+        assert len(lost_sessions) == 0
+
+    def test_renewal_recovery_after_transient_failure(self, config):
+        """Renewal succeeds on next tick after a transient API failure."""
+        call_count = [0]
+
+        class RecoveringClaimManager:
+            check_winner_calls: list = []
+
+            def check_winner(self, issue_number, lease_id):
+                self.check_winner_calls.append((issue_number, lease_id))
+                return True
+
+            def renew_claim(self, issue_number, lease_id):
+                call_count[0] += 1
+                if call_count[0] == 1:
+                    raise ClaimFetchError("transient error")
+                return True
+
+        claim_manager = RecoveringClaimManager()
+        events = MockEventSink()
+        renewer = LeaseRenewer(claim_manager, events, config)
+
+        session = create_test_session(
+            issue_number=42,
+            lease_id="test-lease",
+            expires_in_seconds=200,
+            lease_acquired_seconds_ago=720,
+            last_verified_seconds_ago=60,
+        )
+
+        # First tick: fails with ClaimFetchError → not reported as lost
+        lost = renewer.check_renewals([session])
+        assert len(lost) == 0
+
+        # Second tick: succeeds
+        lost = renewer.check_renewals([session])
+        assert len(lost) == 0
+        assert call_count[0] == 2

@@ -911,3 +911,86 @@ class TestExpectedStateEnforcement:
         assert exc_info.value.entity_id == 123
         assert "fetch" in exc_info.value.reason.lower()
         mock_labels.add_label.assert_not_called()
+
+
+class TestClaimGateAudit:
+    """Structural test: all GitHub-write action types must verify claim ownership.
+
+    This test ensures that no new action type that writes to GitHub can be added
+    without also adding ClaimGate verification. If this test fails, it means a
+    new action type was added that mutates GitHub state without checking whether
+    the orchestrator still owns the claim.
+    """
+
+    # Action types that write to GitHub on a CLAIMED issue and must verify ownership
+    GITHUB_WRITE_ACTIONS = {
+        ActionType.ADD_LABEL,
+        ActionType.REMOVE_LABEL,
+        ActionType.SYNC_LABELS,
+        ActionType.ADD_COMMENT,
+        ActionType.ESCALATE_TO_HUMAN,
+        ActionType.QUEUE_REVIEW,
+    }
+
+    # Action types that legitimately skip claim verification:
+    # - LAUNCH_SESSION: does its own claim acquisition in session_launcher
+    # - STOP_SESSION: local terminal operation (killing sessions)
+    # - CREATE_WORKTREE / REMOVE_WORKTREE: local filesystem only
+    # - QUEUE_REWORK / QUEUE_TRIAGE: local state operations
+    # - CREATE_TRIAGE_ISSUE: creates a NEW issue, not modifying a claimed one
+    # - CLEANUP_SESSION: post-completion cleanup
+    # - CREATE_PR / CLOSE_ISSUE: not implemented in action_applier
+    EXEMPT_ACTIONS = {
+        ActionType.LAUNCH_SESSION,
+        ActionType.STOP_SESSION,
+        ActionType.CREATE_WORKTREE,
+        ActionType.REMOVE_WORKTREE,
+        ActionType.QUEUE_REWORK,
+        ActionType.QUEUE_TRIAGE,
+        ActionType.CREATE_TRIAGE_ISSUE,
+        ActionType.CLEANUP_SESSION,
+        ActionType.CREATE_PR,
+        ActionType.CLOSE_ISSUE,
+    }
+
+    def test_all_action_types_accounted_for(self):
+        """Every ActionType must be in either GITHUB_WRITE_ACTIONS or EXEMPT_ACTIONS."""
+        all_types = set(ActionType)
+        accounted = self.GITHUB_WRITE_ACTIONS | self.EXEMPT_ACTIONS
+        unaccounted = all_types - accounted
+
+        assert not unaccounted, (
+            f"New ActionType(s) {unaccounted} not classified for ClaimGate audit. "
+            f"If these write to GitHub on a claimed issue, add to GITHUB_WRITE_ACTIONS. "
+            f"If not, add to EXEMPT_ACTIONS with a comment explaining why."
+        )
+
+    def test_github_write_actions_call_verify(self):
+        """Verify that action handler source code calls _verify_claim_before_write."""
+        import inspect
+        from issue_orchestrator.control.action_applier import ActionApplier
+
+        # Map action types to handler method names
+        handler_map = {
+            ActionType.ADD_LABEL: "_apply_add_label",
+            ActionType.REMOVE_LABEL: "_apply_remove_label",
+            ActionType.SYNC_LABELS: "_apply_sync_labels",
+            ActionType.ADD_COMMENT: "_apply_add_comment",
+            ActionType.ESCALATE_TO_HUMAN: "_apply_escalate",
+            ActionType.QUEUE_REVIEW: "_apply_queue_review",
+        }
+
+        for action_type in self.GITHUB_WRITE_ACTIONS:
+            handler_name = handler_map.get(action_type)
+            assert handler_name, f"No handler mapping for {action_type}"
+
+            # noqa: SLF001 - Inspecting handler source to verify ClaimGate wiring
+            handler = getattr(ActionApplier, handler_name, None)
+            assert handler, f"Handler {handler_name} not found on ActionApplier"
+
+            source = inspect.getsource(handler)
+            assert "_verify_claim_before_write" in source, (
+                f"Handler {handler_name} for {action_type} does not call "
+                f"_verify_claim_before_write — all GitHub writes on claimed "
+                f"issues must verify claim ownership first"
+            )

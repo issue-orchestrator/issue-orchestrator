@@ -203,6 +203,11 @@ def _create_claim_components(
     else:
         lease_config = LeaseConfig()
         claim_manager = NullClaimManager()
+        logger.info(
+            "Claims disabled: running in single-orchestrator mode. "
+            "Multi-machine coordination is OFF. To enable, set "
+            "claims.enabled=true in config."
+        )
 
     claim_gate = ClaimGate(claim_manager=claim_manager, events=events)
     lease_renewer = LeaseRenewer(
