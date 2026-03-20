@@ -3309,8 +3309,8 @@ function updateProviderBanner() {
         const minsLeft = Math.ceil(secsLeft / 60);
         msg += ` — retrying in ~${minsLeft}m`;
     }
-    if (first.last_error_summary) {
-        msg += ` (${first.last_error_summary})`;
+    if (first.error_summary) {
+        msg += ` (${first.error_summary})`;
     }
     banner.textContent = msg;
     banner.style.display = 'block';

@@ -2892,15 +2892,15 @@ async def get_provider_circuits() -> JSONResponse:
     from datetime import datetime, timezone
 
     now = datetime.now(timezone.utc)
-    circuits = []
-    for state in _orchestrator.deps.provider_resilience.store.list_all():
-        if state.open_until is not None and state.open_until > now:
-            circuits.append({
-                "provider": state.provider,
-                "open_until": state.open_until.isoformat(),
-                "consecutive_outages": state.consecutive_outages,
-                "last_error_summary": state.last_error_summary,
-            })
+    circuits = [
+        {
+            "provider": state.provider,
+            "open_until": state.open_until.isoformat(),  # type: ignore[union-attr]
+            "consecutive_outages": state.consecutive_outages,
+            "error_summary": state.last_error_summary,
+        }
+        for state in _orchestrator.deps.provider_resilience.list_open_circuits(now)
+    ]
 
     return JSONResponse({"circuits": circuits})
 

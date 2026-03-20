@@ -33,6 +33,21 @@ def test_close_expired_closes_circuit():
     assert not mgr.is_open("codex", now=later)
 
 
+def test_list_open_circuits_filters_to_open_only():
+    store = InMemoryProviderCircuitStore()
+    mgr = ProviderResilienceManager(ProviderResilienceConfig(), store=store, events=NullEventSink())
+    now = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    mgr.record_transient_failure("claude-code", error_summary="503", attempts=1, now=now)
+    mgr.record_transient_failure("codex", error_summary="timeout", attempts=1, now=now)
+
+    # Close codex's circuit by recording success
+    mgr.record_success("codex", now=now + timedelta(seconds=5))
+
+    open_circuits = mgr.list_open_circuits(now=now)
+    assert len(open_circuits) == 1
+    assert open_circuits[0].provider == "claude-code"
+
+
 def test_record_success_resets_state():
     store = InMemoryProviderCircuitStore()
     mgr = ProviderResilienceManager(ProviderResilienceConfig(), store=store, events=NullEventSink())

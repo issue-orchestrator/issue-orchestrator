@@ -4881,13 +4881,11 @@ class TestProviderCircuitsEndpoint:
 
     def test_get_provider_circuits_empty(self):
         """Returns empty list when no circuits are open."""
-        from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore
         from unittest.mock import MagicMock
 
         mock_orch = create_mock_orchestrator()
-        store = InMemoryProviderCircuitStore()
         mock_resilience = MagicMock()
-        mock_resilience.store = store
+        mock_resilience.list_open_circuits.return_value = []
         mock_orch.deps.provider_resilience = mock_resilience
         set_orchestrator(mock_orch)
 
@@ -4904,21 +4902,20 @@ class TestProviderCircuitsEndpoint:
     def test_get_provider_circuits_open_circuit(self):
         """Returns open circuits with their details."""
         from datetime import datetime, timedelta, timezone
-        from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
+        from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
         from unittest.mock import MagicMock
 
         mock_orch = create_mock_orchestrator()
-        store = InMemoryProviderCircuitStore()
         future = datetime.now(timezone.utc) + timedelta(minutes=30)
-        store.save(ProviderCircuitState(
+        open_circuit = ProviderCircuitState(
             provider="claude",
             open_until=future,
             consecutive_outages=2,
             last_error_summary="timeout after 300s",
             updated_at=datetime.now(timezone.utc),
-        ))
+        )
         mock_resilience = MagicMock()
-        mock_resilience.store = store
+        mock_resilience.list_open_circuits.return_value = [open_circuit]
         mock_orch.deps.provider_resilience = mock_resilience
         set_orchestrator(mock_orch)
 
@@ -4932,29 +4929,18 @@ class TestProviderCircuitsEndpoint:
             circuit = data["circuits"][0]
             assert circuit["provider"] == "claude"
             assert circuit["consecutive_outages"] == 2
-            assert circuit["last_error_summary"] == "timeout after 300s"
+            assert circuit["error_summary"] == "timeout after 300s"
             assert "open_until" in circuit
         finally:
             set_orchestrator(None)
 
     def test_get_provider_circuits_excludes_expired(self):
         """Expired circuits (open_until in the past) are not returned."""
-        from datetime import datetime, timedelta, timezone
-        from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
         from unittest.mock import MagicMock
 
         mock_orch = create_mock_orchestrator()
-        store = InMemoryProviderCircuitStore()
-        past = datetime.now(timezone.utc) - timedelta(minutes=5)
-        store.save(ProviderCircuitState(
-            provider="claude",
-            open_until=past,
-            consecutive_outages=1,
-            last_error_summary=None,
-            updated_at=datetime.now(timezone.utc),
-        ))
         mock_resilience = MagicMock()
-        mock_resilience.store = store
+        mock_resilience.list_open_circuits.return_value = []
         mock_orch.deps.provider_resilience = mock_resilience
         set_orchestrator(mock_orch)
 
