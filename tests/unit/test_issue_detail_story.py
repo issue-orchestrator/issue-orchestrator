@@ -315,3 +315,33 @@ def test_review_exchange_rework_events_surface_coder_step_between_review_rounds(
     narratives = [step["narrative"] for step in cycles[0]["steps"]]
     assert "Coder addressing review feedback: Fix two issues" in narratives
     assert "Coder finished review rework" in narratives[3]
+
+
+def test_user_story_collapses_initial_review_start_cluster_to_single_step() -> None:
+    events = [
+        _evt("review.started", timestamp="2026-02-16T10:00:00Z", logical_run=1, logical_cycle=1, task="review"),
+        _evt("review_exchange.started", timestamp="2026-02-16T10:00:05Z", logical_run=1, logical_cycle=1, task="review"),
+        _evt("review_exchange.round_started", timestamp="2026-02-16T10:00:10Z", logical_run=1, logical_cycle=1, task="review"),
+        _evt("review_exchange.round_completed", timestamp="2026-02-16T10:03:00Z", logical_run=1, logical_cycle=1, task="review", summary="round 1 ok"),
+    ]
+
+    payload = build_issue_detail_view_model(
+        issue_number=4057,
+        title="Timeline",
+        issue_url="https://github.com/org/repo/issues/4057",
+        events=events,
+        phase_toc=[],
+        cycles=[],
+        view="user",
+    )
+
+    step_events = [step["event"] for step in payload["timeline_steps"]]
+    assert step_events == [
+        "review_exchange.round_started",
+        "review_exchange.round_completed",
+    ]
+    assert payload["timeline_steps"][0]["narrative"] == "Code review started"
+
+    latest_cycle = payload["runs"][-1]["cycles"][0]
+    assert [step["event"] for step in latest_cycle["steps"]] == step_events
+    assert latest_cycle["steps"][0]["narrative"] == "Code review started"

@@ -316,13 +316,16 @@ class TestViewModelViewFiltering:
             cycles=[],
             view="user",
         )
-        # User view should not include claim.renewed but should include review rounds
+        # User view should not include claim.renewed and should collapse the initial review-start triplet
         step_events = [s["event"] for s in result["timeline_steps"]]
         assert "claim.renewed" not in step_events
         assert "review_exchange.round_started" in step_events
+        assert "review.started" not in step_events
+        assert "review_exchange.started" not in step_events
         assert "agent.coding_started" in step_events
         assert "review.approved" in step_events
         assert "pr.created" in step_events
+        assert step_events.count("review_exchange.round_started") == 1
 
     def test_debug_view_shows_everything(self):
         events = self._make_events()
@@ -406,6 +409,7 @@ class TestViewModelViewFiltering:
         )
         narratives = [s["narrative"] for s in result["timeline_steps"]]
         assert "Coding agent started" in narratives
+        assert "Code review started" in narratives
         assert "Review approved" in narratives
         assert "PR created" in narratives
 

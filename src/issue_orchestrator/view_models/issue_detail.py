@@ -52,9 +52,10 @@ def build_issue_detail_view_model(
     """Build issue detail payload used by the dashboard drawer."""
     today = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
     filtered = _filter_events_by_view(events, view)
-    timeline_steps = _build_journey_steps(filtered, today)
+    story_events = _story_projection_events(filtered, view)
+    timeline_steps = _build_journey_steps(story_events, today)
     previous_runs = _build_previous_cycles(cycles, today)
-    run_cycles = _build_journey_cycles(filtered, today, context)
+    run_cycles = _build_journey_cycles(story_events, today, context)
     runs = _build_runs(run_cycles)
 
     return {
@@ -101,6 +102,77 @@ def _filter_events_by_view(events: list[dict[str, Any]], view: str) -> list[dict
         elif view in views:
             result.append(evt)
     return result
+
+
+_REVIEW_START_CLUSTER_EVENTS = frozenset({
+    "review.started",
+    "review_exchange.started",
+    "review_exchange.round_started",
+})
+
+
+def _story_projection_events(events: list[dict[str, Any]], view: str) -> list[dict[str, Any]]:
+    """Apply user-story-specific event collapsing without affecting ops/debug views."""
+    if view != "user":
+        return events
+    return _collapse_review_start_clusters(events)
+
+
+def _collapse_review_start_clusters(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Collapse redundant initial review-start events into one story row.
+
+    Keeps the most useful event in the cluster, preferring ``review_exchange.round_started``
+    because it is emitted only after the reviewer prompt exists and its actions/transcript are
+    meaningful immediately.
+    """
+    collapsed: list[dict[str, Any]] = []
+    idx = 0
+    while idx < len(events):
+        event = events[idx]
+        event_name = str(event.get("event") or "")
+        if event_name not in _REVIEW_START_CLUSTER_EVENTS:
+            collapsed.append(event)
+            idx += 1
+            continue
+
+        cluster = [event]
+        next_idx = idx + 1
+        while next_idx < len(events):
+            candidate = events[next_idx]
+            candidate_name = str(candidate.get("event") or "")
+            if candidate_name not in _REVIEW_START_CLUSTER_EVENTS:
+                break
+            cluster.append(candidate)
+            next_idx += 1
+
+        if (
+            len(cluster) == 1
+            and str(cluster[0].get("event") or "") == "review_exchange.round_started"
+        ):
+            collapsed.append(cluster[0])
+            idx = next_idx
+            continue
+
+        chosen = _preferred_review_start_story_event(cluster)
+        projected = dict(chosen)
+        projected["narrative"] = "Code review started"
+        collapsed.append(projected)
+        idx = next_idx
+
+    return collapsed
+
+
+def _preferred_review_start_story_event(cluster: list[dict[str, Any]]) -> dict[str, Any]:
+    """Pick the best single event to represent a review-start cluster in Story."""
+    for preferred_name in (
+        "review_exchange.round_started",
+        "review_exchange.started",
+        "review.started",
+    ):
+        for event in reversed(cluster):
+            if str(event.get("event") or "") == preferred_name:
+                return event
+    return cluster[-1]
 
 
 # ---------------------------------------------------------------------------
