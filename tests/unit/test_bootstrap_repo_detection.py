@@ -270,10 +270,12 @@ class TestBuildOrchestratorForTesting:
     """Tests for build_orchestrator_for_testing function."""
 
     @pytest.fixture
-    def minimal_config(self) -> Config:
+    def minimal_config(self, tmp_path) -> Config:
         """Minimal valid config for testing."""
         config = Config()
         config.repo = "test/repo"
+        config.repo_root = tmp_path
+        config.worktree_base = tmp_path / "worktrees"
         return config
 
     @pytest.fixture
@@ -481,10 +483,12 @@ class TestBuildOrchestrator:
     """Tests for build_orchestrator function (main composition root)."""
 
     @pytest.fixture
-    def minimal_config(self) -> Config:
+    def minimal_config(self, tmp_path) -> Config:
         """Minimal valid config for testing."""
         config = Config()
         config.repo = "test/repo"
+        config.repo_root = tmp_path
+        config.worktree_base = tmp_path / "worktrees"
         config.terminal_adapter = MagicMock()
         config.ui_mode = "normal"
         config.gh_audit_enabled = False

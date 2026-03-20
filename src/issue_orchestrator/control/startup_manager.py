@@ -44,6 +44,7 @@ from ..domain.models import (
 )
 from .actions import AddLabelAction, RemoveLabelAction
 from .action_applier import ActionApplier
+from .queue_cache import QueueCache, QueueMutationStatus
 from ..events import EventName
 from ..ports import EventSink, SessionRunner, make_trace_event, RepositoryHost
 from ..ports.session_runner import DiscoveredSession
@@ -240,8 +241,23 @@ class StartupManager:
         if state.cached_queue_issues:
             # Warm path: filter in-progress from cache (0 GitHub calls)
             stale_in_progress = self._recover_stale_in_progress_from_label_store(state.cached_queue_issues)
-            issues = [i for i in state.cached_queue_issues if self._lm.is_in_progress(i.labels)]
-            issues.extend(stale_in_progress)
+            queue_cache = QueueCache(self.config, state)
+            for issue in stale_in_progress:
+                outcome = queue_cache.upsert_refreshed_issue(issue)
+                if outcome.status != QueueMutationStatus.ACCEPTED:
+                    logger.warning(
+                        "[startup] Recovered locally in-progress issue is out of dashboard queue scope: issue=%d status=%s",
+                        issue.number,
+                        outcome.status.value,
+                    )
+            issues_by_number = {
+                issue.number: issue
+                for issue in state.cached_queue_issues
+                if self._lm.is_in_progress(issue.labels)
+            }
+            for issue in stale_in_progress:
+                issues_by_number.setdefault(issue.number, issue)
+            issues = list(issues_by_number.values())
             logger.info("[startup] Found %d in-progress issues from cache", len(issues))
             for issue in issues:
                 self._analyze_and_handle_issue(state, issue, issue_branches, issues_to_resume, agent_label="")
