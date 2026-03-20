@@ -742,7 +742,7 @@ function openAgentLogAction(issueNumber, runDir = null, logLabel = 'Session Reco
     return openAgentLog(issueNumber, logLabel, runDir, errorSurface);
 }
 
-async function openReviewTranscript(issueNumber, runDir = null, errorSurface = 'toast') {
+async function openReviewTranscript(issueNumber, runDir = null, context = null, errorSurface = 'toast') {
     if (!runDir) {
         const message = 'Review transcript requires run-scoped context.';
         if (errorSurface === 'inline') {
@@ -754,6 +754,16 @@ async function openReviewTranscript(issueNumber, runDir = null, errorSurface = '
     }
     try {
         const params = new URLSearchParams({ run_dir: String(runDir) });
+        const effectiveRound = Number(context && context.round_index);
+        if (Number.isInteger(effectiveRound) && effectiveRound > 0) {
+            params.set('round_index', String(effectiveRound));
+        }
+        const effectiveRole = context && context.transcript_role
+            ? String(context.transcript_role).trim()
+            : '';
+        if (effectiveRole) {
+            params.set('transcript_role', effectiveRole);
+        }
         const res = await fetch(`/api/session/review-transcript/${issueNumber}?${params.toString()}`);
         const data = await res.json().catch(() => ({}));
         if (!res.ok || data.error) {
@@ -771,7 +781,10 @@ async function openReviewTranscript(issueNumber, runDir = null, errorSurface = '
         const content = typeof data.content === 'string' && data.content.length > 0
             ? escapeHtml(data.content)
             : '(empty)';
-        openModal(`Review Transcript #${data.issue_number}`, `${meta}<pre>${content}</pre>`);
+        const scopeLabel = typeof data.scope_label === 'string' && data.scope_label.trim()
+            ? ` — ${escapeHtml(data.scope_label)}`
+            : '';
+        openModal(`Review Transcript #${data.issue_number}${scopeLabel}`, `${meta}<pre>${content}</pre>`);
     } catch (err) {
         const message = `Failed to load review transcript: ${err instanceof Error ? err.message : String(err)}`;
         if (errorSurface === 'inline') {
@@ -1378,7 +1391,11 @@ function _renderDialogActionButton(action, labelOverride, cssClass) {
     }
     if (action.type === 'open_review_transcript') {
         if (!fallbackRunDir) return '';
-        return `<button class="${cssClass}" onclick="openReviewTranscript(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, 'inline')">${label}</button>`;
+        const roundIndexLiteral = Number.isInteger(Number(action.round_index))
+            ? String(Number(action.round_index))
+            : 'null';
+        const roleLiteral = JSON.stringify(action.transcript_role || null);
+        return `<button class="${cssClass}" onclick="openReviewTranscript(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, { round_index: ${roundIndexLiteral}, transcript_role: ${roleLiteral} }, 'inline')">${label}</button>`;
     }
     if (action.type === 'copy_agent_log') {
         if (!fallbackRunDir) return '';
@@ -5079,7 +5096,7 @@ function runTimelineEventAction(action) {
         return;
     }
     if (action.type === 'open_review_transcript' && action.issue_number) {
-        openReviewTranscript(action.issue_number, action.run_dir || null);
+        openReviewTranscript(action.issue_number, action.run_dir || null, action);
         return;
     }
     if (action.type === 'open_agent_log' && action.issue_number) {

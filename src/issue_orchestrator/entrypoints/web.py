@@ -63,6 +63,11 @@ from ..execution.manifest_accessor import (
     ManifestAccessor,
     RunIdentity,
 )
+from ..execution.review_exchange_transcript import (
+    filter_review_exchange_transcript,
+    parse_review_exchange_transcript,
+    render_review_exchange_transcript,
+)
 from ..execution.client_host import ClientHost, detect_client_host
 from ..execution.label_ops import LabelOperation, apply_label_operations
 from ..infra.timeline_trace import is_timeline_trace_enabled
@@ -2344,7 +2349,7 @@ def _validated_run_scoped_artifact(
                 f"run-scoped agent log is empty/unusable: issue={issue_number} event={event_name} run_dir={event_run_dir}"
             )
     elif action_type == "open_review_transcript":
-        artifact = accessor.get_review_exchange_transcript()
+        artifact = accessor.get_review_exchange_transcript(allow_empty=True)
     elif action_type == "view_claude_log":
         artifact = accessor.get_claude_log()
     else:
@@ -2508,6 +2513,25 @@ def _event_prefers_review_transcript(event: dict[str, Any], event_name: str) -> 
     return bool(event.get("review_oriented")) or is_review_oriented_event(event_name=event_name, task=task)
 
 
+def _positive_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and value > 0 else None
+
+
+def _review_transcript_context_for_event(event: dict[str, Any], event_name: str) -> dict[str, Any]:
+    """Return transcript filtering context for a timeline event."""
+    round_index = _positive_int(event.get("round_index"))
+    rounds = _positive_int(event.get("rounds"))
+    if event_name in {"review_exchange.round_started", "review_exchange.round_completed"} and round_index:
+        return {"round_index": round_index, "transcript_role": "reviewer"}
+    if event_name in {"review.rework_started", "review.rework_completed"} and round_index:
+        return {"round_index": round_index, "transcript_role": "coder"}
+    if event_name in {"review.approved", "review.changes_requested"}:
+        final_round = round_index or rounds
+        if final_round:
+            return {"round_index": final_round, "transcript_role": "reviewer"}
+    return {}
+
+
 def _preferred_run_scoped_session_action(
     *,
     event: dict[str, Any],
@@ -2522,13 +2546,26 @@ def _preferred_run_scoped_session_action(
     if _event_prefers_review_transcript(event, event_name):
         accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(run_dir)))
         try:
-            accessor.get_review_exchange_transcript()
+            accessor.get_review_exchange_transcript(allow_empty=True)
         except ArtifactNotFoundError:
             pass
         else:
+            action: dict[str, Any] = {
+                "type": "open_review_transcript",
+                "label": "View Review Transcript",
+                "issue_number": issue_number,
+            }
+            action.update(_review_transcript_context_for_event(event, event_name))
+            dedupe_parts = ["review-transcript", str(issue_number), event_name]
+            round_index = action.get("round_index")
+            transcript_role = action.get("transcript_role")
+            if isinstance(round_index, int):
+                dedupe_parts.append(str(round_index))
+            if isinstance(transcript_role, str) and transcript_role:
+                dedupe_parts.append(transcript_role)
             return (
-                {"type": "open_review_transcript", "label": "View Review Transcript", "issue_number": issue_number},
-                f"review-transcript:{issue_number}",
+                action,
+                ":".join(dedupe_parts),
             )
     return (
         {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
@@ -2747,7 +2784,10 @@ async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval
 
 @app.get("/api/session/review-transcript/{issue_number}")
 async def get_review_transcript_content(
-    issue_number: int, run_dir: str | None = None
+    issue_number: int,
+    run_dir: str | None = None,
+    round_index: int | None = None,
+    transcript_role: str | None = None,
 ) -> JSONResponse:
     """Return the dedicated review-exchange transcript for a run."""
     if not _orchestrator:
@@ -2763,7 +2803,7 @@ async def get_review_transcript_content(
     run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
     accessor = ManifestAccessor(run_identity)
     try:
-        artifact = accessor.get_review_exchange_transcript()
+        artifact = accessor.get_review_exchange_transcript(allow_empty=True)
     except ArtifactNotFoundError as e:
         return JSONResponse(
             {
@@ -2780,12 +2820,31 @@ async def get_review_transcript_content(
     except Exception as e:
         return JSONResponse({"error": f"Failed to read transcript: {e}"}, status_code=500)
 
+    parsed_entries = parse_review_exchange_transcript(content)
+    filtered_entries = filter_review_exchange_transcript(
+        parsed_entries,
+        round_index=_positive_int(round_index),
+        role=str(transcript_role or "").strip() or None,
+    )
+    if filtered_entries or round_index is not None or transcript_role:
+        content = render_review_exchange_transcript(filtered_entries)
+
+    scope_label = "Full review exchange"
+    if _positive_int(round_index) and transcript_role:
+        scope_label = f"Round {round_index} {str(transcript_role).strip()}"
+    elif _positive_int(round_index):
+        scope_label = f"Round {round_index}"
+    elif transcript_role:
+        scope_label = f"{str(transcript_role).strip()} entries"
+
     return JSONResponse(
         {
             "issue_number": issue_number,
             "run_dir": str(run_identity.run_dir),
             "transcript_path": str(transcript_path),
             "content": content,
+            "scope_label": scope_label,
+            "entry_count": len(filtered_entries) if (round_index is not None or transcript_role) else len(parsed_entries),
         }
     )
 

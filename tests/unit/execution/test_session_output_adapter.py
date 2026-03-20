@@ -463,6 +463,20 @@ class TestSessionLogCleaning:
         assert manifest is not None
         assert manifest.get("review_exchange_transcript_path") == str(transcript)
 
+    def test_ensure_review_exchange_session_log_creates_empty_transcript_and_manifest_path(
+        self, tmp_path
+    ):
+        session_output = FileSystemSessionOutput()
+        run = session_output.start_run(tmp_path, "issue-123", issue_number=123)
+
+        transcript = session_output.ensure_review_exchange_session_log(run.run_dir)
+
+        assert transcript.exists()
+        assert transcript.read_text(encoding="utf-8") == ""
+        manifest = session_output.read_manifest(run.run_dir)
+        assert manifest is not None
+        assert manifest.get("review_exchange_transcript_path") == str(transcript)
+
 
 class TestClaudeLogAttachment:
     def test_claude_jsonl_parser_keeps_preview_tool_summaries_stable(self):

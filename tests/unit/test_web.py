@@ -3464,6 +3464,68 @@ class TestTimelineActionWiring:
         assert "open_review_transcript" not in action_types
         assert "open_agent_log" in action_types
 
+    def test_review_transcript_actions_bind_round_and_role_context(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-transcript-context"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "review-1", issue_number=4057)
+        transcript = session_output.ensure_review_exchange_session_log(run.run_dir)
+        transcript.write_text(
+            "[2026-03-20T04:39:32Z] round=2 role=reviewer section=prompt\nPrompt\n",
+            encoding="utf-8",
+        )
+
+        review_round_actions = _timeline_event_actions(
+            {
+                "event": "review_exchange.round_completed",
+                "issue_number": 4057,
+                "run_dir": str(run.run_dir),
+                "round_index": 2,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            4057,
+        )
+        review_action = next(
+            action for action in review_round_actions if action.get("type") == "open_review_transcript"
+        )
+        assert review_action["round_index"] == 2
+        assert review_action["transcript_role"] == "reviewer"
+
+        rework_actions = _timeline_event_actions(
+            {
+                "event": "review.rework_started",
+                "issue_number": 4057,
+                "run_dir": str(run.run_dir),
+                "round_index": 2,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            4057,
+        )
+        rework_action = next(
+            action for action in rework_actions if action.get("type") == "open_review_transcript"
+        )
+        assert rework_action["round_index"] == 2
+        assert rework_action["transcript_role"] == "coder"
+
+        approved_actions = _timeline_event_actions(
+            {
+                "event": "review.approved",
+                "issue_number": 4057,
+                "run_dir": str(run.run_dir),
+                "rounds": 2,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            4057,
+        )
+        approved_action = next(
+            action for action in approved_actions if action.get("type") == "open_review_transcript"
+        )
+        assert approved_action["round_index"] == 2
+        assert approved_action["transcript_role"] == "reviewer"
+
     def test_review_feedback_actions_bind_to_specific_timeline_entry(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
@@ -4744,6 +4806,39 @@ class TestIssueLogEndpointsUseLatestHistory:
             payload = response.json()
             assert payload["run_dir"] == str(run_a.run_dir)
             assert payload["content"] == "from-run-a\n"
+        finally:
+            set_orchestrator(None)
+
+    def test_review_transcript_can_filter_to_requested_round_and_role(self, tmp_path: Path):
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-transcript-filter"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "review-1", issue_number=123)
+        transcript = session_output.ensure_review_exchange_session_log(run.run_dir)
+        transcript.write_text(
+            "[2026-03-20T04:39:32Z] round=1 role=reviewer section=prompt\nReviewer round 1\n\n"
+            "[2026-03-20T04:40:42Z] round=1 role=coder section=prompt\nCoder round 1\n\n"
+            "[2026-03-20T04:41:42Z] round=2 role=reviewer section=completion\nReviewer round 2\n",
+            encoding="utf-8",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(
+                f"/api/session/review-transcript/123?run_dir={run.run_dir}&round_index=1&transcript_role=coder"
+            )
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["scope_label"] == "Round 1 coder"
+            assert payload["entry_count"] == 1
+            assert payload["content"]
+            assert "Coder round 1" in payload["content"]
+            assert "Reviewer round 1" not in payload["content"]
+            assert "Reviewer round 2" not in payload["content"]
         finally:
             set_orchestrator(None)
 

@@ -678,6 +678,7 @@ def run_local_loop_exchange(  # noqa: PLR0913
     if on_started is not None:
         on_started(run_dir)
 
+    session_output.ensure_review_exchange_session_log(run_dir)
     _emit(EventName.REVIEW_EXCHANGE_STARTED, {
         "issue_number": issue_number,
         "issue_title": issue_title,
@@ -816,12 +817,6 @@ def _run_exchange_rounds(  # noqa: PLR0913
     last_coder_text: str | None = None
 
     for round_index in range(1, max_rounds + 1):
-        emit(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "round_index": round_index,
-        })
-
         # --- Reviewer phase ---
         reviewer_prompt_text = _build_reviewer_prompt(
             issue_number=issue_number,
@@ -843,6 +838,11 @@ def _run_exchange_rounds(  # noqa: PLR0913
             section="prompt",
             content=reviewer_prompt_text,
         )
+        emit(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
+            "issue_number": issue_number,
+            "session_name": session_name,
+            "round_index": round_index,
+        })
 
         # Kill leftover sessions before each new phase
         _kill_existing_claude_sessions(worktree_path)

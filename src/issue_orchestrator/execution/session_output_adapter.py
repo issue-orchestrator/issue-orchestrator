@@ -791,14 +791,24 @@ Timestamp: {self._now_iso()}
                 cleaned_lines.append(cleaned)
         if not cleaned_lines:
             return
-        exchange_dir = run_dir / REVIEW_EXCHANGE_DIR_NAME
-        exchange_dir.mkdir(parents=True, exist_ok=True)
-        transcript_path = exchange_dir / REVIEW_EXCHANGE_TRANSCRIPT_NAME
+        transcript_path = self.ensure_review_exchange_session_log(run_dir)
         payload = f"{header}\n" + "\n".join(cleaned_lines).rstrip() + "\n\n"
         with self._io_lock:
             with transcript_path.open("a", encoding="utf-8") as handle:
                 handle.write(payload)
+
+    def ensure_review_exchange_session_log(
+        self,
+        run_dir: Path,
+    ) -> Path:
+        """Ensure the dedicated review-exchange transcript exists and is registered."""
+        exchange_dir = run_dir / REVIEW_EXCHANGE_DIR_NAME
+        exchange_dir.mkdir(parents=True, exist_ok=True)
+        transcript_path = exchange_dir / REVIEW_EXCHANGE_TRANSCRIPT_NAME
+        with self._io_lock:
+            transcript_path.touch(exist_ok=True)
             self.update_manifest(run_dir, {"review_exchange_transcript_path": str(transcript_path)})
+        return transcript_path
 
     # -------------------------------------------------------------------------
     # Log Access

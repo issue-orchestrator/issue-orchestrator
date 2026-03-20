@@ -266,6 +266,8 @@ def test_review_transcript_uses_dedicated_endpoint_not_terminal_replay() -> None
     assert "/api/session/review-transcript/" in body
     assert "/api/session/terminal-recording/" not in body
     assert "Review Transcript #" in body
+    assert "round_index" in body
+    assert "transcript_role" in body
 
 
 def test_timeline_prefers_review_transcript_primary_action_label() -> None:
