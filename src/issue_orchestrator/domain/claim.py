@@ -13,6 +13,15 @@ if TYPE_CHECKING:
     pass
 
 
+class ClaimFetchError(Exception):
+    """Raised when claims cannot be fetched due to API errors.
+
+    This distinguishes "no claims exist" (empty list) from "couldn't read
+    claims" (API failure). Callers use this to avoid falsely interpreting
+    transient GitHub outages as claim loss.
+    """
+
+
 class ClaimState(Enum):
     """State of a claim on an issue."""
 

@@ -541,7 +541,15 @@ def _detect_stale_claims(
 
         # Check if claim is valid via ClaimManager
         if hasattr(claim_manager, 'get_current_claim'):
-            claim = claim_manager.get_current_claim(issue.number)
+            from ..domain.claim import ClaimFetchError
+            try:
+                claim = claim_manager.get_current_claim(issue.number)
+            except ClaimFetchError:
+                logger.warning(
+                    "[STALE-CLAIM] Cannot check claim for issue #%d due to API error - skipping",
+                    issue.number,
+                )
+                continue
             if claim is None or (hasattr(claim, 'is_expired') and claim.is_expired()):
                 # Claim is stale
                 stale_claim_issues.append(issue)

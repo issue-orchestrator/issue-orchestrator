@@ -378,3 +378,115 @@ priority: {shared_priority}
         # Convergence for "zzz" should succeed
         converged_zzz = adapter.run_convergence(issue_number=42, lease_id="zzz-lease")
         assert converged_zzz is True
+
+
+class TestNWayContention:
+    """Tests for convergence with 3+ orchestrators contending."""
+
+    @pytest.fixture(autouse=True)
+    def _no_convergence_sleep(self, monkeypatch):
+        monkeypatch.setattr("time.sleep", lambda _: None)
+
+    def _inject_claim(
+        self, client, claimant: str, priority: int, lease_id: str | None = None,
+    ) -> str:
+        """Add a claim comment to the shared mock client."""
+        now = datetime.now()
+        lid = lease_id or f"lease-{claimant}-{priority}"
+        client.comments.append({"body": f"""```io-claim
+lease_id: {lid}
+claimant: {claimant}
+started_at: {now.strftime('%Y-%m-%dT%H:%M:%S')}
+expires_at: {(now + timedelta(hours=1)).strftime('%Y-%m-%dT%H:%M:%S')}
+priority: {priority}
+```"""})
+        return lid
+
+    def test_three_claimants_highest_priority_wins(self, mock_client, mock_labels):
+        """With 3 claimants, only the highest priority converges."""
+        config = LeaseConfig.for_testing()
+
+        # Inject 3 competing claims
+        self._inject_claim(mock_client, "orchestrator-a", 1000)
+        lease_b = self._inject_claim(mock_client, "orchestrator-b", 3000)
+        self._inject_claim(mock_client, "orchestrator-c", 2000)
+
+        adapter = GitHubClaimAdapter(
+            client=mock_client,
+            claimant_id="orchestrator-b",
+            config=config,
+            label_adapter=mock_labels,
+        )
+
+        # B (highest priority) should converge
+        assert adapter.run_convergence(42, lease_b) is True
+
+        # A and C should fail convergence
+        adapter_a = GitHubClaimAdapter(
+            client=mock_client, claimant_id="orchestrator-a",
+            config=config, label_adapter=mock_labels,
+        )
+        assert adapter_a.run_convergence(42, "lease-orchestrator-a-1000") is False
+
+    def test_five_claimants_deterministic_winner(self, mock_client, mock_labels):
+        """With 5 claimants, the same winner is deterministic regardless of order."""
+        config = LeaseConfig.for_testing()
+
+        # Add claims in arbitrary order
+        self._inject_claim(mock_client, "e", 100)
+        self._inject_claim(mock_client, "c", 500)
+        self._inject_claim(mock_client, "a", 300)
+        self._inject_claim(mock_client, "d", 200)
+        self._inject_claim(mock_client, "b", 400)
+
+        adapter = GitHubClaimAdapter(
+            client=mock_client, claimant_id="c",
+            config=config, label_adapter=mock_labels,
+        )
+
+        # c has priority 500 (highest) — should converge
+        assert adapter.run_convergence(42, "lease-c-500") is True
+
+        # All others should fail
+        for name, pri in [("e", 100), ("a", 300), ("d", 200), ("b", 400)]:
+            a = GitHubClaimAdapter(
+                client=mock_client, claimant_id=name,
+                config=config, label_adapter=mock_labels,
+            )
+            assert a.run_convergence(42, f"lease-{name}-{pri}") is False
+
+    def test_late_arrival_disrupts_convergence(self, mock_client, mock_labels):
+        """A higher-priority claim arriving mid-convergence disrupts the leader."""
+        config = LeaseConfig(
+            lease_seconds=30,
+            convergence_timeout_seconds=3.0,
+            convergence_poll_min_ms=10,
+            convergence_poll_max_ms=20,
+            convergence_required_wins=3,  # Need 3 wins to see disruption
+        )
+
+        # Start with only A's claim
+        lease_a = self._inject_claim(mock_client, "orchestrator-a", 1000)
+
+        adapter_a = GitHubClaimAdapter(
+            client=mock_client, claimant_id="orchestrator-a",
+            config=config, label_adapter=mock_labels,
+        )
+
+        # Intercept fetches to inject late arrival after first poll
+        original_comments = list(mock_client.comments)
+        fetch_count = [0]
+        original_get = mock_client.get_issue_comments
+
+        def inject_late_arrival(issue_number, **kwargs):
+            fetch_count[0] += 1
+            if fetch_count[0] == 2:
+                # Late arrival with higher priority
+                self._inject_claim(mock_client, "orchestrator-z", 9000)
+            return original_get(issue_number, **kwargs)
+
+        mock_client.get_issue_comments = inject_late_arrival
+
+        # A should fail convergence (z has higher priority after poll 2)
+        converged = adapter_a.run_convergence(42, lease_a)
+        assert converged is False

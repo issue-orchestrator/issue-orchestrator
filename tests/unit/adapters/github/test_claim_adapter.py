@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from issue_orchestrator.adapters.github.claim_adapter import GitHubClaimAdapter
-from issue_orchestrator.domain.claim import Claim, ClaimState
+from issue_orchestrator.domain.claim import Claim, ClaimFetchError, ClaimState
 from issue_orchestrator.domain.lease_config import LeaseConfig
 
 
@@ -210,3 +210,235 @@ priority: {high_priority}
         success = adapter.renew_claim(issue_number=42, lease_id="my-fake-lease")
 
         assert success is False
+
+
+def _make_claim(
+    claimant: str,
+    priority: int,
+    lease_id: str | None = None,
+    expired: bool = False,
+    issue_number: int = 42,
+) -> Claim:
+    """Helper to create a Claim with minimal boilerplate."""
+    now = datetime.now()
+    expires = now - timedelta(hours=1) if expired else now + timedelta(hours=1)
+    return Claim(
+        lease_id=lease_id or f"lease-{claimant}-{priority}",
+        claimant=claimant,
+        issue_number=issue_number,
+        started_at=now,
+        expires_at=expires,
+        priority=priority,
+    )
+
+
+class TestDetermineWinner:
+    """Tests for _determine_winner edge cases.
+
+    These test the winner-determination logic through the public
+    get_current_claim method (which calls _determine_winner internally).
+    """
+
+    @pytest.fixture
+    def adapter_with_claims(self, mock_labels):
+        """Create an adapter with a mock client that returns pre-set claims."""
+        client = MockHttpClient()
+        adapter = GitHubClaimAdapter(
+            client=client,
+            claimant_id="test",
+            config=LeaseConfig.for_testing(),
+            label_adapter=mock_labels,
+        )
+        return adapter, client
+
+    def _inject_claims(self, client: MockHttpClient, claims: list[Claim]) -> None:
+        """Inject claim comments into mock client."""
+        from issue_orchestrator.adapters.github.claim_parser import format_claim_comment
+        client.comments = [{"body": format_claim_comment(c)} for c in claims]
+
+    def test_no_claims_returns_none(self, adapter_with_claims):
+        """No claims → no winner."""
+        adapter, _client = adapter_with_claims
+        assert adapter.get_current_claim(42) is None
+
+    def test_all_expired_returns_none(self, adapter_with_claims):
+        """All claims expired → no winner."""
+        adapter, client = adapter_with_claims
+        self._inject_claims(client, [
+            _make_claim("a", 1000, expired=True),
+            _make_claim("b", 2000, expired=True),
+        ])
+        assert adapter.get_current_claim(42) is None
+
+    def test_single_valid_among_expired(self, adapter_with_claims):
+        """Single valid claim among expired ones wins."""
+        adapter, client = adapter_with_claims
+        valid = _make_claim("b", 1000)
+        self._inject_claims(client, [
+            _make_claim("a", 3000, expired=True),  # Higher priority but expired
+            valid,
+            _make_claim("c", 2000, expired=True),
+        ])
+        winner = adapter.get_current_claim(42)
+        assert winner is not None
+        assert winner.claimant == "b"
+
+    def test_highest_priority_wins(self, adapter_with_claims):
+        """Highest priority among valid claims wins."""
+        adapter, client = adapter_with_claims
+        self._inject_claims(client, [
+            _make_claim("a", 1000),
+            _make_claim("b", 3000),
+            _make_claim("c", 2000),
+        ])
+        winner = adapter.get_current_claim(42)
+        assert winner is not None
+        assert winner.claimant == "b"
+
+    def test_five_claimants_highest_wins(self, adapter_with_claims):
+        """Among 5 claimants, highest priority wins."""
+        adapter, client = adapter_with_claims
+        self._inject_claims(client, [
+            _make_claim("a", 100),
+            _make_claim("b", 500),
+            _make_claim("c", 300),
+            _make_claim("d", 200),
+            _make_claim("e", 400),
+        ])
+        winner = adapter.get_current_claim(42)
+        assert winner is not None
+        assert winner.claimant == "b"
+
+    def test_equal_priority_lexicographic_tiebreak(self, adapter_with_claims):
+        """Equal priority → lexicographically larger lease_id wins."""
+        adapter, client = adapter_with_claims
+        self._inject_claims(client, [
+            _make_claim("a", 1000, lease_id="aaa-lease"),
+            _make_claim("b", 1000, lease_id="zzz-lease"),
+            _make_claim("c", 1000, lease_id="mmm-lease"),
+        ])
+        winner = adapter.get_current_claim(42)
+        assert winner is not None
+        assert winner.lease_id == "zzz-lease"
+
+    def test_mixed_expired_and_valid_with_priorities(self, adapter_with_claims):
+        """Mix of expired/valid claims with varying priorities."""
+        adapter, client = adapter_with_claims
+        self._inject_claims(client, [
+            _make_claim("expired-high", 9000, expired=True),
+            _make_claim("valid-low", 100),
+            _make_claim("valid-high", 500),
+            _make_claim("expired-med", 300, expired=True),
+            _make_claim("valid-med", 300),
+        ])
+        winner = adapter.get_current_claim(42)
+        assert winner is not None
+        assert winner.claimant == "valid-high"
+
+
+class TestAPIFailureResilience:
+    """Tests for behavior when GitHub API calls fail.
+
+    Verifies that transient API failures don't cause false claim loss.
+    """
+
+    @pytest.fixture
+    def failing_client(self):
+        """Mock client that raises on get_issue_comments."""
+        client = MockHttpClient()
+        client.get_issue_comments = MagicMock(
+            side_effect=Exception("GitHub API 502")
+        )
+        return client
+
+    @pytest.fixture
+    def adapter_with_failing_api(self, failing_client, mock_labels):
+        return GitHubClaimAdapter(
+            client=failing_client,
+            claimant_id="test-orchestrator",
+            config=LeaseConfig.for_testing(),
+            label_adapter=mock_labels,
+        )
+
+    def test_check_winner_raises_on_api_error(self, adapter_with_failing_api):
+        """check_winner raises ClaimFetchError — callers decide policy."""
+        with pytest.raises(ClaimFetchError):
+            adapter_with_failing_api.check_winner(42, "my-lease")
+
+    def test_get_current_claim_raises_on_api_error(self, adapter_with_failing_api):
+        """get_current_claim raises ClaimFetchError on API error."""
+        with pytest.raises(ClaimFetchError, match="GitHub API 502"):
+            adapter_with_failing_api.get_current_claim(42)
+
+    def test_renew_claim_raises_on_api_error(self, adapter_with_failing_api):
+        """renew_claim raises ClaimFetchError when it can't verify ownership."""
+        with pytest.raises(ClaimFetchError):
+            adapter_with_failing_api.renew_claim(42, "my-lease")
+
+    @patch("time.sleep")
+    def test_convergence_resets_wins_on_api_error(self, mock_sleep, mock_labels):
+        """Convergence resets consecutive wins on API error (doesn't count as win)."""
+        client = MockHttpClient()
+        call_count = [0]
+        original_get = client.get_issue_comments
+
+        def intermittent_fail(issue_number, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 2:  # Fail on second poll
+                raise Exception("GitHub API 503")
+            return original_get(issue_number, **kwargs)
+
+        client.get_issue_comments = intermittent_fail
+
+        config = LeaseConfig(
+            lease_seconds=30,
+            convergence_timeout_seconds=5.0,
+            convergence_poll_min_ms=10,
+            convergence_poll_max_ms=20,
+            convergence_required_wins=2,
+        )
+        adapter = GitHubClaimAdapter(
+            client=client,
+            claimant_id="test",
+            config=config,
+            label_adapter=mock_labels,
+        )
+
+        # Post our claim
+        result = adapter.attempt_claim(42)
+
+        # Convergence should still succeed (API error resets wins but
+        # doesn't end convergence — keeps polling)
+        converged = adapter.run_convergence(42, result.lease_id)
+        assert converged is True
+        # Should have needed more polls due to the reset
+        assert call_count[0] >= 3
+
+    @patch("time.sleep")
+    def test_convergence_fails_if_api_always_errors(self, mock_sleep, mock_labels):
+        """Convergence fails if API is consistently unreachable."""
+        client = MockHttpClient()
+        client.get_issue_comments = MagicMock(
+            side_effect=Exception("GitHub down")
+        )
+
+        config = LeaseConfig(
+            lease_seconds=30,
+            convergence_timeout_seconds=0.5,
+            convergence_poll_min_ms=10,
+            convergence_poll_max_ms=20,
+            convergence_required_wins=2,
+            convergence_max_polls=5,
+        )
+        adapter = GitHubClaimAdapter(
+            client=client,
+            claimant_id="test",
+            config=config,
+            label_adapter=mock_labels,
+        )
+
+        # Post claim (uses add_comment which still works on this client)
+        client.add_comment = MockHttpClient().add_comment.__get__(client)
+
+        converged = adapter.run_convergence(42, "test-lease")
+        assert converged is False
