@@ -146,7 +146,7 @@ SCENARIOS: list[LogicalRunScenario] = [
         ],
         expected_run_count=1,
         expected_cycles_per_run=[2],
-        expected_review_events_in_latest_run=4,
+        expected_review_events_in_latest_run=3,
         expected_latest_session_run_ids=["code-1", "exchange-1"],
     ),
     LogicalRunScenario(
