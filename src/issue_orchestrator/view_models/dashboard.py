@@ -81,6 +81,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuits: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -141,6 +142,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuits": self.provider_circuits,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -1248,6 +1250,33 @@ def _normalize_tab(active_tab: str) -> str:
     return "kanban"
 
 
+def _get_provider_circuits(orchestrator) -> list[dict[str, Any]]:
+    """Return serialized open provider circuit breaker states."""
+    try:
+        deps = getattr(orchestrator, "deps", None)
+        if deps is None:
+            return []
+        pr = getattr(deps, "provider_resilience", None)
+        if pr is None:
+            return []
+        store = getattr(pr, "store", None)
+        if store is None:
+            return []
+        now = datetime.now(timezone.utc)
+        result = []
+        for state in store.list_all():
+            if state.open_until is not None and state.open_until > now:
+                result.append({
+                    "provider": state.provider,
+                    "openUntil": state.open_until.isoformat(),
+                    "consecutiveOutages": state.consecutive_outages,
+                    "lastErrorSummary": state.last_error_summary,
+                })
+        return result
+    except Exception:
+        return []
+
+
 def build_dashboard_view_model(
     orchestrator,
     queue_page: int = 1,
@@ -1470,4 +1499,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuits=_get_provider_circuits(orchestrator),
     )

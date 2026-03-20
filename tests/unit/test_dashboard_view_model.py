@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -18,6 +18,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
 from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
@@ -701,3 +702,106 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# --- Provider circuit breaker tests ---
+
+@dataclass
+class _ProviderResilienceStub:
+    store: InMemoryProviderCircuitStore
+
+
+@dataclass
+class _DepsStub:
+    provider_resilience: _ProviderResilienceStub
+
+
+@dataclass
+class _OrchestratorStubWithDeps:
+    state: OrchestratorState
+    config: Config
+    deps: _DepsStub
+    shutdown_requested: bool = False
+
+
+def _make_orchestrator_with_store(store: InMemoryProviderCircuitStore) -> _OrchestratorStubWithDeps:
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    return _OrchestratorStubWithDeps(
+        state=state,
+        config=config,
+        deps=_DepsStub(provider_resilience=_ProviderResilienceStub(store=store)),
+    )
+
+
+def test_provider_circuits_empty_when_no_open_circuits():
+    store = InMemoryProviderCircuitStore()
+    orchestrator = _make_orchestrator_with_store(store)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    data = view_model.dashboard_data()
+    assert data["providerCircuits"] == []
+    assert view_model.provider_circuits == []
+
+
+def test_provider_circuits_includes_open_circuits():
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    open_until = now + timedelta(seconds=300)
+    state = ProviderCircuitState(
+        provider="anthropic",
+        open_until=open_until,
+        consecutive_outages=2,
+        last_error_summary="overloaded",
+        updated_at=now,
+    )
+    store.save(state)
+
+    orchestrator = _make_orchestrator_with_store(store)
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    data = view_model.dashboard_data()
+    assert len(data["providerCircuits"]) == 1
+    circuit = data["providerCircuits"][0]
+    assert circuit["provider"] == "anthropic"
+    assert circuit["consecutiveOutages"] == 2
+    assert circuit["lastErrorSummary"] == "overloaded"
+    assert circuit["openUntil"] == open_until.isoformat()
+
+
+def test_provider_circuits_excludes_closed_circuits():
+    store = InMemoryProviderCircuitStore()
+    now = datetime.now(timezone.utc)
+    # Already-expired circuit (open_until in the past)
+    expired_state = ProviderCircuitState(
+        provider="anthropic",
+        open_until=now - timedelta(seconds=60),
+        consecutive_outages=1,
+        last_error_summary=None,
+        updated_at=now - timedelta(seconds=120),
+    )
+    store.save(expired_state)
+
+    orchestrator = _make_orchestrator_with_store(store)
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="kanban",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
