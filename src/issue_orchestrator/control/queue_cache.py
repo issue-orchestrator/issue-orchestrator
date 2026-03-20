@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import time
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -84,16 +85,30 @@ class QueueCache:
 
     def prune_refresh_timestamps(self) -> None:
         """Prune refresh timestamp map to currently tracked issue IDs."""
-        if not self._state.issue_refresh_timestamps:
+        if not self._state.issue_refresh_timestamps and not self._state.issue_last_refreshed_at:
             return
         keep_numbers = {issue.number for issue in self._state.cached_queue_issues}
         keep_numbers.update(session.issue.number for session in self._state.active_sessions)
         keep_numbers.update(entry.issue_number for entry in self._state.session_history)
+        keep_numbers.update(self._visible_issue_numbers())
         self._state.issue_refresh_timestamps = {
             issue_number: refreshed_at
             for issue_number, refreshed_at in self._state.issue_refresh_timestamps.items()
             if issue_number in keep_numbers
         }
+        self._state.issue_last_refreshed_at = {
+            issue_number: refreshed_at
+            for issue_number, refreshed_at in self._state.issue_last_refreshed_at.items()
+            if issue_number in keep_numbers
+        }
+
+    def _visible_issue_numbers(self) -> set[int]:
+        """Return issues that the UI is actively displaying and should keep fresh."""
+        if self._state.ui_visible_updated_at <= 0:
+            return set()
+        if (time.time() - self._state.ui_visible_updated_at) > 120:
+            return set()
+        return set(self._state.ui_visible_issue_numbers)
 
 
 def _matches_scope(config: "Config", issue: "Issue") -> bool:
