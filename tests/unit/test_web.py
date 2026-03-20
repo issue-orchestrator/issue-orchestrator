@@ -189,6 +189,9 @@ def create_mock_orchestrator():
     mock_deps = MagicMock()
     mock_deps.publish_executor = mock_executor
     mock_deps.timeline_reader = MagicMock()
+    mock_deps.provider_resilience.list_states.side_effect = (
+        lambda: mock_deps.provider_resilience.store.list_all()
+    )
     mock_orch.deps = mock_deps
     mock_orch.scheduler = MagicMock()
     mock_orch.scheduler.sort_by_priority.side_effect = lambda issues: issues
