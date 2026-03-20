@@ -90,9 +90,51 @@ def test_prune_refresh_timestamps_keeps_only_tracked_issue_numbers():
     state = OrchestratorState(
         cached_queue_issues=[Issue(number=1, title="Keep", labels=["agent:web"])],
         issue_refresh_timestamps={1: 100.0, 2: 200.0},
+        issue_last_refreshed_at={1: 100.0, 2: 200.0},
     )
     cache = QueueCache(config, state)
 
     cache.prune_refresh_timestamps()
 
     assert state.issue_refresh_timestamps == {1: 100.0}
+    assert state.issue_last_refreshed_at == {1: 100.0}
+
+
+def test_prune_refresh_timestamps_keeps_recently_visible_issue_numbers(monkeypatch):
+    config = _make_config()
+    state = OrchestratorState(
+        issue_refresh_timestamps={1: 100.0, 2: 200.0},
+        issue_last_refreshed_at={1: 100.0, 2: 200.0},
+        ui_visible_issue_numbers=[2],
+        ui_visible_updated_at=50_000.0,
+    )
+    cache = QueueCache(config, state)
+
+    from issue_orchestrator.control import queue_cache as queue_cache_module
+
+    monkeypatch.setattr(queue_cache_module.time, "time", lambda: 50_060.0)
+
+    cache.prune_refresh_timestamps()
+
+    assert state.issue_refresh_timestamps == {2: 200.0}
+    assert state.issue_last_refreshed_at == {2: 200.0}
+
+
+def test_prune_refresh_timestamps_discards_stale_visible_issue_numbers(monkeypatch):
+    config = _make_config()
+    state = OrchestratorState(
+        issue_refresh_timestamps={1: 100.0, 2: 200.0},
+        issue_last_refreshed_at={1: 100.0, 2: 200.0},
+        ui_visible_issue_numbers=[2],
+        ui_visible_updated_at=50_000.0,
+    )
+    cache = QueueCache(config, state)
+
+    from issue_orchestrator.control import queue_cache as queue_cache_module
+
+    monkeypatch.setattr(queue_cache_module.time, "time", lambda: 50_121.0)
+
+    cache.prune_refresh_timestamps()
+
+    assert state.issue_refresh_timestamps == {}
+    assert state.issue_last_refreshed_at == {}

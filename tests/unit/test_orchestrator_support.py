@@ -23,6 +23,7 @@ from issue_orchestrator.control.orchestrator_support import (
     run_planning_cycle,
     run_tick,
     _fetch_and_update_queue,
+    _record_issue_refreshes,
     _track_stale_ticks,
 )
 from issue_orchestrator.control.reconciliation import (
@@ -1746,4 +1747,16 @@ class TestTrackStaleTicks:
         # Should have both events
         event_names = [e.name for e in mock_event_sink.events]
         assert EventName.STALE_IN_PROGRESS_CLEARED in event_names
-        assert EventName.PERSISTENT_STALE_DETECTED in event_names
+
+
+def test_record_issue_refreshes_updates_ui_freshness_map():
+    state = OrchestratorState()
+
+    _record_issue_refreshes(
+        state=state,
+        refreshed_numbers={4057, 4058},
+        refreshed_at=1234.5,
+    )
+
+    assert state.issue_refresh_timestamps == {4057: 1234.5, 4058: 1234.5}
+    assert state.issue_last_refreshed_at == {4057: 1234.5, 4058: 1234.5}

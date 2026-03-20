@@ -912,6 +912,7 @@ def _record_issue_refreshes(
         return
     for issue_number in refreshed_numbers:
         state.issue_refresh_timestamps[issue_number] = refreshed_at
+        state.issue_last_refreshed_at[issue_number] = refreshed_at
 
 
 def _get_visible_issue_numbers(state: "OrchestratorState") -> list[int]:
