@@ -575,3 +575,76 @@ def test_expanded_column_state_handles_running_column() -> None:
     ).read_text(encoding="utf-8")
     assert "columnId === 'running'" in js
     assert "active_items" in js
+
+
+# ---------------------------------------------------------------------------
+# Provider circuit breaker UI guardrails
+# ---------------------------------------------------------------------------
+
+def test_provider_outage_banner_exists_in_template() -> None:
+    """Dashboard must include the provider outage banner element."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert 'id="providerOutageBanner"' in html
+    assert 'id="providerOutageBannerText"' in html
+    assert 'provider-outage-banner' in html
+
+
+def test_provider_outage_banner_hidden_by_default() -> None:
+    """Provider outage banner must be hidden on initial page load."""
+    html = _read(DASHBOARD_TEMPLATE)
+    idx = html.find('id="providerOutageBanner"')
+    assert idx != -1
+    # The banner element should have display:none in its style attribute
+    snippet = html[max(0, idx - 10) : idx + 200]
+    assert 'style="display:none;"' in snippet
+
+
+def test_provider_outage_banner_css_defined() -> None:
+    """CSS must define the .provider-outage-banner class."""
+    css = _read(DASHBOARD_CSS)
+    assert ".provider-outage-banner" in css
+
+
+def test_provider_circuit_status_fetched_on_connect() -> None:
+    """On SSE connect, fetchProviderCircuitStatus must be called."""
+    js = _read(DASHBOARD_JS)
+    # The onopen handler should call fetchProviderCircuitStatus
+    onopen_marker = "source.onopen = function()"
+    start = js.find(onopen_marker)
+    assert start != -1, "source.onopen not found"
+    brace = js.find("{", start)
+    depth = 0
+    i = brace
+    while i < len(js):
+        if js[i] == "{":
+            depth += 1
+        elif js[i] == "}":
+            depth -= 1
+            if depth == 0:
+                break
+        i += 1
+    onopen_body = js[brace : i + 1]
+    assert "fetchProviderCircuitStatus" in onopen_body
+
+
+def test_provider_outage_sse_events_handled() -> None:
+    """dashboard.js must handle provider.outage_entered and provider.outage_exited SSE events."""
+    js = _read(DASHBOARD_JS)
+    assert "provider.outage_entered" in js
+    assert "provider.outage_exited" in js
+    assert "updateProviderOutageBanner" in js
+
+
+def test_update_provider_outage_banner_function_exists() -> None:
+    """updateProviderOutageBanner function must exist in dashboard.js."""
+    js = _read(DASHBOARD_JS)
+    assert "function updateProviderOutageBanner" in js
+    body = _function_body(js, "updateProviderOutageBanner")
+    assert "providerOutageBanner" in body
+    assert "providerOutageBannerText" in body
+
+
+def test_provider_circuit_status_api_fetched() -> None:
+    """fetchProviderCircuitStatus must call /api/provider-circuit-status."""
+    js = _read(DASHBOARD_JS)
+    assert "/api/provider-circuit-status" in js

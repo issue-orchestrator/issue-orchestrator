@@ -6520,3 +6520,96 @@ class TestIssueAuditEndpoint:
 
         assert response.status_code == 503
         assert response.json() == {"error": "Orchestrator not running"}
+
+
+class TestProviderCircuitStatusEndpoint:
+    """Tests for /api/provider-circuit-status endpoint."""
+
+    def test_requires_orchestrator(self):
+        set_orchestrator(None)
+        client = TestClient(app)
+        response = client.get("/api/provider-circuit-status")
+        assert response.status_code == 503
+        assert response.json() == {"error": "Orchestrator not running"}
+
+    def test_returns_empty_circuits_when_no_outages(self):
+        from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore
+
+        mock_orch = create_mock_orchestrator()
+        store = InMemoryProviderCircuitStore()
+        mock_orch.deps.provider_resilience.store = store
+
+        set_orchestrator(mock_orch)
+        client = TestClient(app)
+        response = client.get("/api/provider-circuit-status")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["circuits"] == []
+
+    def test_returns_open_circuit_with_cooldown(self):
+        from datetime import datetime, timezone, timedelta
+        from issue_orchestrator.ports.provider_resilience import (
+            InMemoryProviderCircuitStore,
+            ProviderCircuitState,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        store = InMemoryProviderCircuitStore()
+        now = datetime.now(timezone.utc)
+        open_until = now + timedelta(seconds=300)
+        store.save(ProviderCircuitState(
+            provider="claude",
+            open_until=open_until,
+            consecutive_outages=2,
+            last_error_summary="API rate limit exceeded",
+            updated_at=now,
+        ))
+        mock_orch.deps.provider_resilience.store = store
+
+        set_orchestrator(mock_orch)
+        client = TestClient(app)
+        response = client.get("/api/provider-circuit-status")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["circuits"]) == 1
+        circuit = data["circuits"][0]
+        assert circuit["provider"] == "claude"
+        assert circuit["is_open"] is True
+        assert circuit["consecutive_outages"] == 2
+        assert circuit["last_error_summary"] == "API rate limit exceeded"
+        assert circuit["cooldown_seconds"] is not None
+        assert circuit["cooldown_seconds"] > 0
+
+    def test_returns_closed_circuit_as_not_open(self):
+        from datetime import datetime, timezone, timedelta
+        from issue_orchestrator.ports.provider_resilience import (
+            InMemoryProviderCircuitStore,
+            ProviderCircuitState,
+        )
+
+        mock_orch = create_mock_orchestrator()
+        store = InMemoryProviderCircuitStore()
+        now = datetime.now(timezone.utc)
+        # open_until in the past → circuit is closed
+        past = now - timedelta(seconds=60)
+        store.save(ProviderCircuitState(
+            provider="claude",
+            open_until=past,
+            consecutive_outages=1,
+            last_error_summary=None,
+            updated_at=past,
+        ))
+        mock_orch.deps.provider_resilience.store = store
+
+        set_orchestrator(mock_orch)
+        client = TestClient(app)
+        response = client.get("/api/provider-circuit-status")
+
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["circuits"]) == 1
+        circuit = data["circuits"][0]
+        assert circuit["is_open"] is False
+        assert circuit["cooldown_seconds"] is None
