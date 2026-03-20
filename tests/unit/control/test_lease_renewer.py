@@ -430,6 +430,57 @@ class TestPeriodicVerification:
         assert session.last_claim_verified_at > old_verified
 
 
+class TestFailOpenLiveness:
+    """LeaseRenewer must fail OPEN on API errors — don't kill sessions
+    when ownership can't be verified due to transient GitHub outages."""
+
+    @pytest.fixture
+    def config(self):
+        return LeaseConfig(lease_seconds=900, renew_interval_seconds=300)
+
+    def test_periodic_verification_fails_open_on_api_error(self, config):
+        """API error during periodic verification keeps session alive."""
+
+        class FailingClaimManager:
+            def check_winner(self, issue_number, lease_id):
+                raise ClaimFetchError("GitHub 502")
+
+            def renew_claim(self, issue_number, lease_id):
+                return True
+
+        events = MockEventSink()
+        renewer = LeaseRenewer(FailingClaimManager(), events, config)
+
+        # Session needs verification (6 min since last > 5 min = lease/3)
+        session = create_test_session(
+            issue_number=42,
+            lease_id="test-lease",
+            expires_in_seconds=540,
+            lease_acquired_seconds_ago=720,
+            last_verified_seconds_ago=360,
+        )
+
+        lost_sessions = renewer.check_renewals([session])
+
+        # Should NOT report as lost — fail-open for liveness
+        assert len(lost_sessions) == 0
+
+    def test_on_demand_check_fails_open_on_api_error(self, config):
+        """check_single_session returns True on API error."""
+
+        class FailingClaimManager:
+            def check_winner(self, issue_number, lease_id):
+                raise ClaimFetchError("GitHub 502")
+
+        events = MockEventSink()
+        renewer = LeaseRenewer(FailingClaimManager(), events, config)
+
+        session = create_test_session(issue_number=42, lease_id="test-lease")
+
+        result = renewer.check_single_session(session)
+        assert result is True
+
+
 class TestLeaseRenewalGaps:
     """Tests for edge cases in renewal timing and API failure recovery."""
 

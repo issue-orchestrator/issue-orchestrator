@@ -360,10 +360,10 @@ class TestAPIFailureResilience:
             label_adapter=mock_labels,
         )
 
-    def test_check_winner_returns_true_on_api_error(self, adapter_with_failing_api):
-        """check_winner returns True (benefit of the doubt) on API error."""
-        result = adapter_with_failing_api.check_winner(42, "my-lease")
-        assert result is True
+    def test_check_winner_raises_on_api_error(self, adapter_with_failing_api):
+        """check_winner raises ClaimFetchError — callers decide policy."""
+        with pytest.raises(ClaimFetchError):
+            adapter_with_failing_api.check_winner(42, "my-lease")
 
     def test_get_current_claim_raises_on_api_error(self, adapter_with_failing_api):
         """get_current_claim raises ClaimFetchError on API error."""

@@ -8,6 +8,9 @@ from issue_orchestrator.control.planner import (
 )
 from issue_orchestrator.control.scheduler import Scheduler
 from issue_orchestrator.control.actions import ActionType
+from issue_orchestrator.control.orchestrator_support import _detect_stale_claims
+from issue_orchestrator.domain.claim import ClaimFetchError
+from issue_orchestrator.events import EventContext
 from issue_orchestrator.infra.config import Config
 from issue_orchestrator.domain.models import Issue
 
@@ -248,3 +251,66 @@ class TestStaleClaims:
             and getattr(a, "label", None) == "blocked:stale-claim"
         ]
         assert len(add_stale) == 1
+
+
+class MockEventSink:
+    def __init__(self):
+        self.events = []
+
+    def publish(self, event):
+        self.events.append(event)
+
+
+class TestDetectStaleClaimsAPIResilience:
+    """Tests for _detect_stale_claims handling of ClaimFetchError."""
+
+    def test_skips_issue_on_api_error(self):
+        """Issues that fail API fetch are skipped, not flagged as stale."""
+
+        class FailingClaimManager:
+            def get_current_claim(self, issue_number):
+                raise ClaimFetchError("GitHub 502")
+
+        issues = [make_issue(42, issue_labels=["io:claimed"])]
+        events = MockEventSink()
+        ctx = EventContext()
+
+        result = _detect_stale_claims(
+            issues=issues,
+            active_sessions=[],
+            claim_manager=FailingClaimManager(),
+            events=events,
+            event_context=ctx,
+        )
+
+        # Should NOT flag as stale — we don't know if claim is stale
+        assert len(result) == 0
+
+    def test_mixed_api_errors_and_valid_checks(self):
+        """Some issues fail API, others succeed — only truly stale ones reported."""
+
+        class MixedClaimManager:
+            def get_current_claim(self, issue_number):
+                if issue_number == 42:
+                    raise ClaimFetchError("transient error")
+                # Issue 43: no valid claim → stale
+                return None
+
+        issues = [
+            make_issue(42, issue_labels=["io:claimed"]),
+            make_issue(43, issue_labels=["io:claimed"]),
+        ]
+        events = MockEventSink()
+        ctx = EventContext()
+
+        result = _detect_stale_claims(
+            issues=issues,
+            active_sessions=[],
+            claim_manager=MixedClaimManager(),
+            events=events,
+            event_context=ctx,
+        )
+
+        # Only issue 43 should be flagged as stale
+        assert len(result) == 1
+        assert result[0].number == 43

@@ -3,6 +3,7 @@
 import pytest
 
 from issue_orchestrator.control.claim_gate import ClaimGate, ClaimLostError
+from issue_orchestrator.domain.claim import ClaimFetchError
 
 
 class MockClaimManager:
@@ -180,3 +181,63 @@ class TestClaimLostError:
         error = ClaimLostError(42, "push")
         assert error.issue_number == 42
         assert error.operation == "push"
+
+
+class TestClaimGateFailClosed:
+    """ClaimGate must fail CLOSED on API errors — block writes when
+    ownership cannot be verified."""
+
+    def test_blocks_write_on_api_error(self):
+        """verify_before_write returns False when API is unreachable."""
+
+        class FailingClaimManager:
+            def check_winner(self, issue_number, lease_id):
+                raise ClaimFetchError("GitHub 502")
+
+        events = MockEventSink()
+        gate = ClaimGate(FailingClaimManager(), events)
+
+        result = gate.verify_before_write(
+            issue_number=42,
+            lease_id="test-lease",
+            operation="add_label",
+        )
+
+        assert result is False
+
+    def test_verify_or_raise_raises_on_api_error(self):
+        """verify_or_raise raises ClaimLostError when API is unreachable."""
+
+        class FailingClaimManager:
+            def check_winner(self, issue_number, lease_id):
+                raise ClaimFetchError("GitHub 502")
+
+        events = MockEventSink()
+        gate = ClaimGate(FailingClaimManager(), events)
+
+        with pytest.raises(ClaimLostError):
+            gate.verify_or_raise(
+                issue_number=42,
+                lease_id="test-lease",
+                operation="push",
+            )
+
+    def test_no_claim_lost_event_on_api_error(self):
+        """API error should not emit CLAIM_LOST_BEFORE_WRITE (ownership
+        was never disproven, we just couldn't check)."""
+
+        class FailingClaimManager:
+            def check_winner(self, issue_number, lease_id):
+                raise ClaimFetchError("GitHub 502")
+
+        events = MockEventSink()
+        gate = ClaimGate(FailingClaimManager(), events)
+
+        gate.verify_before_write(
+            issue_number=42,
+            lease_id="test-lease",
+            operation="push",
+        )
+
+        # Should NOT emit claim lost event — we don't know if claim is lost
+        assert len(events.events) == 0

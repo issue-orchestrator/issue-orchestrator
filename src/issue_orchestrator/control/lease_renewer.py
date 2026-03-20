@@ -164,13 +164,16 @@ class LeaseRenewer:
     def _verify_claim_ownership(self, session: "Session") -> bool:
         """Verify we're still the claim winner.
 
+        Fails OPEN: if the API is unreachable, assumes we still own the
+        claim to avoid killing a session due to a transient GitHub blip.
         Updates last_claim_verified_at on success.
 
         Args:
             session: The session to verify (must have lease_id).
 
         Returns:
-            True if still the winner, False if claim was lost.
+            True if still the winner (or API unreachable), False if
+            claim was definitively lost.
         """
         # Defensive check - caller should ensure lease_id exists
         if not session.lease_id:
@@ -181,10 +184,18 @@ class LeaseRenewer:
             session.issue.number,
         )
 
-        is_winner = self._claim_manager.check_winner(
-            session.issue.number,
-            session.lease_id,
-        )
+        try:
+            is_winner = self._claim_manager.check_winner(
+                session.issue.number,
+                session.lease_id,
+            )
+        except ClaimFetchError:
+            logger.warning(
+                "Cannot verify claim for issue #%d due to API error - "
+                "assuming still owner (fail-open for liveness)",
+                session.issue.number,
+            )
+            return True
 
         now = datetime.now()
         session.last_claim_verified_at = now
@@ -202,22 +213,30 @@ class LeaseRenewer:
     def check_single_session(self, session: "Session") -> bool:
         """Check and potentially renew a single session's lease.
 
-        This is useful for on-demand renewal checks, e.g., before
-        starting a long-running operation.
+        Fails OPEN: returns True on API errors to avoid killing sessions.
 
         Args:
             session: The session to check.
 
         Returns:
-            True if the session still owns its claim, False if lost.
+            True if the session still owns its claim (or API unreachable),
+            False if claim definitively lost.
         """
         if not session.lease_id:
             return True  # No claim system active
 
-        is_winner = self._claim_manager.check_winner(
-            session.issue.number,
-            session.lease_id,
-        )
+        try:
+            is_winner = self._claim_manager.check_winner(
+                session.issue.number,
+                session.lease_id,
+            )
+        except ClaimFetchError:
+            logger.warning(
+                "Cannot verify claim for issue #%d during on-demand check - "
+                "assuming still owner (fail-open for liveness)",
+                session.issue.number,
+            )
+            return True
 
         if not is_winner:
             logger.warning(

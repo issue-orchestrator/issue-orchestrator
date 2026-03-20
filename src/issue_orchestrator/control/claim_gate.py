@@ -8,6 +8,8 @@ the ClaimGate verifies the current orchestrator still owns the claim.
 import logging
 from typing import TYPE_CHECKING
 
+from ..domain.claim import ClaimFetchError
+
 if TYPE_CHECKING:
     from ..ports.claim_manager import ClaimManager
     from ..ports.event_sink import EventSink
@@ -73,8 +75,9 @@ class ClaimGate:
     ) -> bool:
         """Verify claim ownership before a write operation.
 
-        This is a non-throwing check that returns True if the write
-        should proceed, False if the claim has been lost.
+        Fails CLOSED: if ownership cannot be verified (API error), the
+        write is blocked. This is the opposite of liveness checks
+        (LeaseRenewer), which fail open to avoid killing sessions.
 
         Args:
             issue_number: The GitHub issue number.
@@ -82,13 +85,23 @@ class ClaimGate:
             operation: Description of the operation (for logging/events).
 
         Returns:
-            True if write should proceed, False if claim lost.
+            True if write should proceed, False if claim lost or
+            ownership could not be verified.
         """
         # No lease_id means no claim system active - allow write
         if not lease_id:
             return True
 
-        is_winner = self._claim_manager.check_winner(issue_number, lease_id)
+        try:
+            is_winner = self._claim_manager.check_winner(issue_number, lease_id)
+        except ClaimFetchError:
+            logger.warning(
+                "Cannot verify claim for issue #%d before %s - "
+                "blocking write (fail-closed)",
+                issue_number,
+                operation,
+            )
+            return False
 
         if not is_winner:
             logger.warning(

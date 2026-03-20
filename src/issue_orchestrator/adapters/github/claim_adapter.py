@@ -311,27 +311,19 @@ class GitHubClaimAdapter(ClaimManager):
 
         Does a single fresh read (no convergence loop).
 
-        On transient API failures, returns True (benefit of the doubt) to
-        avoid falsely terminating a session due to a GitHub blip. The next
-        tick will retry, and if the claim is truly lost, convergence or
-        renewal will detect it.
-
         Args:
             issue_number: The GitHub issue number.
             lease_id: Our claim's lease_id.
 
         Returns:
-            True if we are the current winner, or if the API is unreachable.
+            True if we are the current winner.
+
+        Raises:
+            ClaimFetchError: If the GitHub API call fails. Callers must
+                decide their own policy: fail-open (liveness, e.g.
+                LeaseRenewer) or fail-closed (writes, e.g. ClaimGate).
         """
-        try:
-            winner = self.get_current_claim(issue_number)
-        except ClaimFetchError:
-            logger.warning(
-                "Cannot verify claim for issue #%d due to API error - "
-                "assuming still owner (benefit of the doubt)",
-                issue_number,
-            )
-            return True
+        winner = self.get_current_claim(issue_number)
         return winner is not None and winner.lease_id == lease_id
 
     def get_current_claim(self, issue_number: int) -> Claim | None:
