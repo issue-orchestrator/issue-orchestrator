@@ -278,8 +278,13 @@ class GitHubClaimAdapter(ClaimManager):
             return True
 
         except Exception as e:
-            logger.error("Failed to renew claim for issue #%d: %s", issue_number, e)
-            return False
+            # POST failure after verification succeeded: we ARE the winner
+            # but couldn't extend the lease. The old lease is still valid
+            # until it expires. Raise ClaimFetchError so LeaseRenewer
+            # retries next tick instead of killing the session.
+            raise ClaimFetchError(
+                f"Failed to post renewal for issue #{issue_number}: {e}"
+            ) from e
 
     def release_claim(self, issue_number: int, lease_id: str) -> None:
         """Release a claim on an issue.

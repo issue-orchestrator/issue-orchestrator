@@ -370,10 +370,34 @@ class TestAPIFailureResilience:
         with pytest.raises(ClaimFetchError, match="GitHub API 502"):
             adapter_with_failing_api.get_current_claim(42)
 
-    def test_renew_claim_raises_on_api_error(self, adapter_with_failing_api):
+    def test_renew_claim_raises_on_read_error(self, adapter_with_failing_api):
         """renew_claim raises ClaimFetchError when it can't verify ownership."""
         with pytest.raises(ClaimFetchError):
             adapter_with_failing_api.renew_claim(42, "my-lease")
+
+    def test_renew_claim_raises_on_post_error(self, mock_labels):
+        """renew_claim raises ClaimFetchError when verification succeeds
+        but the renewal comment POST fails — must NOT return False, which
+        would cause LeaseRenewer to kill the session."""
+        client = MockHttpClient()
+        config = LeaseConfig.for_testing()
+        adapter = GitHubClaimAdapter(
+            client=client, claimant_id="test",
+            config=config, label_adapter=mock_labels,
+        )
+
+        # Post initial claim (succeeds)
+        result = adapter.attempt_claim(42)
+
+        # Now break add_comment for the renewal POST.
+        # get_issue_comments still works, so verification passes.
+        client.add_comment = MagicMock(
+            side_effect=Exception("GitHub POST 500")
+        )
+
+        # Renewal should raise ClaimFetchError, NOT return False
+        with pytest.raises(ClaimFetchError, match="POST 500"):
+            adapter.renew_claim(42, result.lease_id)
 
     @patch("time.sleep")
     def test_convergence_resets_wins_on_api_error(self, mock_sleep, mock_labels):
