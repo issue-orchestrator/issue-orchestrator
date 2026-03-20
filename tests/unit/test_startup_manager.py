@@ -393,6 +393,71 @@ class TestStartupManagerCodeReviewRecovery:
         assert sample_state.pending_reviews[0].pr_number == 10
 
 
+class TestStartupManagerAwaitingMergeRecovery:
+    """Tests for dashboard visibility recovery of pr-pending issues."""
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_recovers_pr_pending_issue_into_session_history(
+        self,
+        mock_analyze,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_label_store,
+        caplog,
+    ):
+        issue = Issue(number=4057, title="Provider circuit breaker UI", labels=["agent:backend", "pr-pending"])
+        mock_label_store.load_all.return_value = {
+            4057: {"agent:backend", "pr-pending"},
+        }
+        mock_repository_host.get_issue.return_value = issue
+
+        mock_state = MagicMock()
+        mock_state.has_open_pr = True
+        mock_state.pr_url = "https://github.com/owner/repo/pull/5337"
+        mock_analyze.return_value = mock_state
+
+        with caplog.at_level("INFO"):
+            await startup_manager.run_startup(sample_state)
+
+        assert len(sample_state.session_history) == 1
+        entry = sample_state.session_history[0]
+        assert entry.issue_number == 4057
+        assert entry.status == "completed"
+        assert entry.pr_url == "https://github.com/owner/repo/pull/5337"
+        assert entry.agent_type == "agent:backend"
+        assert "Recovered 1 pr-pending issue(s) into dashboard history" in caplog.text
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_skips_pr_pending_history_recovery_without_open_pr(
+        self,
+        mock_analyze,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_label_store,
+        caplog,
+    ):
+        issue = Issue(number=4057, title="Provider circuit breaker UI", labels=["agent:backend", "pr-pending"])
+        mock_label_store.load_all.return_value = {
+            4057: {"agent:backend", "pr-pending"},
+        }
+        mock_repository_host.get_issue.return_value = issue
+
+        mock_state = MagicMock()
+        mock_state.has_open_pr = False
+        mock_state.pr_url = None
+        mock_analyze.return_value = mock_state
+
+        with caplog.at_level("INFO"):
+            await startup_manager.run_startup(sample_state)
+
+        assert sample_state.session_history == []
+        assert "Skipping pr-pending dashboard recovery without open PR: issue=4057" in caplog.text
+
+
 class TestStartupManagerTriageRecovery:
     """Tests for triage review recovery."""
 
