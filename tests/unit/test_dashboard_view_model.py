@@ -710,6 +710,10 @@ def test_view_model_matches_public_contract():
 class _ProviderResilienceStub:
     store: InMemoryProviderCircuitStore
 
+    def list_open_circuits(self, now: datetime | None = None) -> list:
+        now = now or datetime.now(timezone.utc)
+        return [s for s in self.store.list_all() if s.open_until is not None and s.open_until > now]
+
 
 @dataclass
 class _DepsStub:

@@ -1252,29 +1252,21 @@ def _normalize_tab(active_tab: str) -> str:
 
 def _get_provider_circuits(orchestrator) -> list[dict[str, Any]]:
     """Return serialized open provider circuit breaker states."""
-    try:
-        deps = getattr(orchestrator, "deps", None)
-        if deps is None:
-            return []
-        pr = getattr(deps, "provider_resilience", None)
-        if pr is None:
-            return []
-        store = getattr(pr, "store", None)
-        if store is None:
-            return []
-        now = datetime.now(timezone.utc)
-        result = []
-        for state in store.list_all():
-            if state.open_until is not None and state.open_until > now:
-                result.append({
-                    "provider": state.provider,
-                    "openUntil": state.open_until.isoformat(),
-                    "consecutiveOutages": state.consecutive_outages,
-                    "lastErrorSummary": state.last_error_summary,
-                })
-        return result
-    except Exception:
+    deps = getattr(orchestrator, "deps", None)
+    if deps is None:
         return []
+    pr = getattr(deps, "provider_resilience", None)
+    if pr is None:
+        return []
+    return [
+        {
+            "provider": state.provider,
+            "openUntil": state.open_until.isoformat(),
+            "consecutiveOutages": state.consecutive_outages,
+            "lastErrorSummary": state.last_error_summary,
+        }
+        for state in pr.list_open_circuits()
+    ]
 
 
 def build_dashboard_view_model(
