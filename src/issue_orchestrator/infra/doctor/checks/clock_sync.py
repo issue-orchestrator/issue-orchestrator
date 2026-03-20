@@ -91,13 +91,13 @@ def _check_macos_ntp(runner: CommandRunner) -> list[Check]:
 
 def _check_linux_ntp(runner: CommandRunner) -> list[Check]:
     """Check NTP status on Linux using timedatectl."""
-    try:
-        result = runner.run(
-            ["timedatectl", "show", "--property=NTPSynchronized", "--value"],
-            timeout_seconds=5,
-        )
-        synced = result.stdout.strip().lower()
+    result = runner.run(
+        ["timedatectl", "show", "--property=NTPSynchronized", "--value"],
+        timeout_seconds=5,
+    )
 
+    if result.returncode == 0:
+        synced = result.stdout.strip().lower()
         if synced == "yes":
             return [Check(
                 name="Clock Sync",
@@ -110,33 +110,25 @@ def _check_linux_ntp(runner: CommandRunner) -> list[Check]:
                 status="warning",
                 detail="NTP not synchronized — run 'timedatectl set-ntp true'",
             )]
-        else:
-            return [Check(
-                name="Clock Sync",
-                status="info",
-                detail=f"Unexpected timedatectl output: {synced}",
-            )]
-    except Exception:
-        # timedatectl not available (e.g., Docker container)
-        try:
-            result = runner.run(
-                ["pgrep", "-x", "ntpd|chronyd"],
-                timeout_seconds=5,
-            )
-            if result.returncode == 0:
-                return [Check(
-                    name="Clock Sync",
-                    status="ok",
-                    detail="NTP daemon running",
-                )]
-        except Exception:
-            pass
 
+    # timedatectl failed or returned unexpected output — fall back to
+    # checking if an NTP daemon is running (works in Docker, minimal distros)
+    pgrep_result = runner.run(
+        ["pgrep", "-x", "ntpd|chronyd"],
+        timeout_seconds=5,
+    )
+    if pgrep_result.returncode == 0:
         return [Check(
             name="Clock Sync",
-            status="info",
-            detail="Cannot check NTP — verify clock is synced manually",
+            status="ok",
+            detail="NTP daemon running",
         )]
+
+    return [Check(
+        name="Clock Sync",
+        status="info",
+        detail="Cannot check NTP — verify clock is synced manually",
+    )]
 
 
 def _parse_sntp_offset(output: str) -> float | None:
