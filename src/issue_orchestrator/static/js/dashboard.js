@@ -3286,6 +3286,52 @@ function loadStaleIssues() {
         .catch(err => console.error('[stale] Failed to load stale issues:', err));
 }
 
+// Provider circuit breaker tracking
+let providerCircuits = {};  // provider -> circuit info
+
+function updateProviderBanner() {
+    const banner = document.getElementById('providerOutageBanner');
+    if (!banner) return;
+
+    const openCircuits = Object.values(providerCircuits);
+    if (openCircuits.length === 0) {
+        banner.style.display = 'none';
+        banner.textContent = '';
+        return;
+    }
+
+    const names = openCircuits.map(c => c.provider).join(', ');
+    const first = openCircuits[0];
+    let msg = `⚠ Provider unavailable: ${names}`;
+    if (first.open_until) {
+        const eta = new Date(first.open_until);
+        const secsLeft = Math.max(0, Math.round((eta - Date.now()) / 1000));
+        const minsLeft = Math.ceil(secsLeft / 60);
+        msg += ` — retrying in ~${minsLeft}m`;
+    }
+    if (first.last_error_summary) {
+        msg += ` (${first.last_error_summary})`;
+    }
+    banner.textContent = msg;
+    banner.style.display = 'block';
+}
+
+function loadProviderCircuits() {
+    fetch('/api/provider-circuits')
+        .then(response => response.json())
+        .then(data => {
+            if (data.circuits) {
+                providerCircuits = {};
+                for (const circuit of data.circuits) {
+                    providerCircuits[circuit.provider] = circuit;
+                }
+                console.log('[provider] Loaded', Object.keys(providerCircuits).length, 'open circuit(s)');
+                updateProviderBanner();
+            }
+        })
+        .catch(err => console.error('[provider] Failed to load provider circuits:', err));
+}
+
 let excludedLoaded = false;
 
 function renderFlowStepper(steps, activeKey, blockedSummary) {
@@ -3414,6 +3460,7 @@ async function toggleExcluded() {
             clearRestartBanner();
             loadDependencyProblems();
             loadStaleIssues();
+            loadProviderCircuits();
             refreshViewModel({ reloadOnListChange: false });
         };
 
@@ -3522,6 +3569,28 @@ async function toggleExcluded() {
                 updateStaleWarning(data.issue_number, staleIssues[data.issue_number]);
             } catch (err) {
                 console.error('[SSE] Failed to parse stale.persistent_detected:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_entered', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage entered:', data);
+                providerCircuits[data.provider] = data;
+                updateProviderBanner();
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_entered:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_exited', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage exited:', data);
+                delete providerCircuits[data.provider];
+                updateProviderBanner();
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_exited:', err);
             }
         });
 

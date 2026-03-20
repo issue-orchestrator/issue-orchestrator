@@ -84,6 +84,18 @@ class PersistentStalePayload(ContractBase):
     threshold: int
 
 
+class ProviderOutageEnteredPayload(ContractBase):
+    provider: str
+    open_until: str
+    consecutive_outages: int
+    error_summary: Optional[str] = None
+
+
+class ProviderOutageExitedPayload(ContractBase):
+    provider: str
+    at: str
+
+
 class StartupCompletePayload(ContractBase):
     elapsed_seconds: float
 
@@ -135,6 +147,8 @@ PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "sse.stale.in_progress_cleared": StaleClearedPayload,
     "sse.stale.persistent_detected": PersistentStalePayload,
     "sse.startup_complete": StartupCompletePayload,
+    "sse.provider.outage_entered": ProviderOutageEnteredPayload,
+    "sse.provider.outage_exited": ProviderOutageExitedPayload,
     "sse.shutdown_requested": ShutdownRequestedPayload,
     "timeline.issue": TimelineIssueContract,
 }

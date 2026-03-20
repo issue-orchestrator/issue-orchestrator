@@ -2878,6 +2878,33 @@ async def get_stale_issues() -> JSONResponse:
     return JSONResponse({"stale": stale})
 
 
+@app.get("/api/provider-circuits")
+async def get_provider_circuits() -> JSONResponse:
+    """Get current provider circuit breaker states.
+
+    Returns a list of circuits that are currently open (provider unavailable).
+    The web UI fetches this on SSE connect and then listens for
+    provider.outage_entered/provider.outage_exited events to stay updated.
+    """
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    circuits = []
+    for state in _orchestrator.deps.provider_resilience.store.list_all():
+        if state.open_until is not None and state.open_until > now:
+            circuits.append({
+                "provider": state.provider,
+                "open_until": state.open_until.isoformat(),
+                "consecutive_outages": state.consecutive_outages,
+                "last_error_summary": state.last_error_summary,
+            })
+
+    return JSONResponse({"circuits": circuits})
+
+
 @app.get("/api/info")
 async def get_info() -> JSONResponse:
     """Get orchestrator info for the About modal."""

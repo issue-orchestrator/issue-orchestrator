@@ -4876,6 +4876,109 @@ class TestDependencyProblemsEndpoint:
         assert "error" in response.json()
 
 
+class TestProviderCircuitsEndpoint:
+    """Tests for the GET /api/provider-circuits endpoint."""
+
+    def test_get_provider_circuits_empty(self):
+        """Returns empty list when no circuits are open."""
+        from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore
+        from unittest.mock import MagicMock
+
+        mock_orch = create_mock_orchestrator()
+        store = InMemoryProviderCircuitStore()
+        mock_resilience = MagicMock()
+        mock_resilience.store = store
+        mock_orch.deps.provider_resilience = mock_resilience
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(app)
+            response = client.get("/api/provider-circuits")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["circuits"] == []
+        finally:
+            set_orchestrator(None)
+
+    def test_get_provider_circuits_open_circuit(self):
+        """Returns open circuits with their details."""
+        from datetime import datetime, timedelta, timezone
+        from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
+        from unittest.mock import MagicMock
+
+        mock_orch = create_mock_orchestrator()
+        store = InMemoryProviderCircuitStore()
+        future = datetime.now(timezone.utc) + timedelta(minutes=30)
+        store.save(ProviderCircuitState(
+            provider="claude",
+            open_until=future,
+            consecutive_outages=2,
+            last_error_summary="timeout after 300s",
+            updated_at=datetime.now(timezone.utc),
+        ))
+        mock_resilience = MagicMock()
+        mock_resilience.store = store
+        mock_orch.deps.provider_resilience = mock_resilience
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(app)
+            response = client.get("/api/provider-circuits")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert len(data["circuits"]) == 1
+            circuit = data["circuits"][0]
+            assert circuit["provider"] == "claude"
+            assert circuit["consecutive_outages"] == 2
+            assert circuit["last_error_summary"] == "timeout after 300s"
+            assert "open_until" in circuit
+        finally:
+            set_orchestrator(None)
+
+    def test_get_provider_circuits_excludes_expired(self):
+        """Expired circuits (open_until in the past) are not returned."""
+        from datetime import datetime, timedelta, timezone
+        from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
+        from unittest.mock import MagicMock
+
+        mock_orch = create_mock_orchestrator()
+        store = InMemoryProviderCircuitStore()
+        past = datetime.now(timezone.utc) - timedelta(minutes=5)
+        store.save(ProviderCircuitState(
+            provider="claude",
+            open_until=past,
+            consecutive_outages=1,
+            last_error_summary=None,
+            updated_at=datetime.now(timezone.utc),
+        ))
+        mock_resilience = MagicMock()
+        mock_resilience.store = store
+        mock_orch.deps.provider_resilience = mock_resilience
+        set_orchestrator(mock_orch)
+
+        try:
+            client = TestClient(app)
+            response = client.get("/api/provider-circuits")
+
+            assert response.status_code == 200
+            data = response.json()
+            assert data["circuits"] == []
+        finally:
+            set_orchestrator(None)
+
+    def test_get_provider_circuits_when_orchestrator_not_running(self):
+        """Returns 503 when orchestrator not initialized."""
+        set_orchestrator(None)
+
+        client = TestClient(app)
+        response = client.get("/api/provider-circuits")
+
+        assert response.status_code == 503
+        assert "error" in response.json()
+
+
 class TestSessionPhasesEndpoint:
     """Tests for the GET /api/session/phases/{issue_number} endpoint."""
 
