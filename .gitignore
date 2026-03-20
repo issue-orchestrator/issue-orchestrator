@@ -76,3 +76,5 @@ Thumbs.db
 
 # Worktrees for development
 worktrees/
+.hypothesis/
+.issue-orchestrator/worktree-id
