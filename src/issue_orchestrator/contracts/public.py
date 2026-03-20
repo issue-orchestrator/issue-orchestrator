@@ -18,6 +18,16 @@ class ContractBase(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
+class ProviderCircuitBreakerItem(ContractBase):
+    """Circuit breaker status for a single AI provider."""
+
+    provider: str
+    open: bool
+    open_until: Optional[str] = None
+    consecutive_outages: int
+    last_error: Optional[str] = None
+
+
 class DashboardDataContract(ContractBase):
     startupComplete: bool
     paused: bool
@@ -29,7 +39,7 @@ class DashboardDataContract(ContractBase):
     githubRepo: Optional[str]
     e2eLastRun: Optional[dict[str, Any]] = None
     agents: list[str]
-    providerCircuitBreakers: list[dict[str, Any]] = Field(default_factory=list)
+    providerCircuitBreakers: list[ProviderCircuitBreakerItem] = Field(default_factory=list)
 
 
 class DashboardViewModelContract(ContractBase):

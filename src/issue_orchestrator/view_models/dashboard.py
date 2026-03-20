@@ -1255,18 +1255,10 @@ def _normalize_tab(active_tab: str) -> str:
 
 def _get_provider_circuit_breakers(orchestrator) -> list[dict[str, Any]]:
     """Extract circuit breaker state from orchestrator deps."""
-    deps = getattr(orchestrator, "deps", None)
-    if deps is None:
-        return []
-    resilience = getattr(deps, "provider_resilience", None)
-    if resilience is None:
-        return []
-    store = getattr(resilience, "store", None)
-    if store is None:
-        return []
+    resilience = orchestrator.deps.provider_resilience
     now = datetime.now(timezone.utc)
     results: list[dict[str, Any]] = []
-    for state in store.list_all():
+    for state in resilience.list_all_states():
         is_open = state.open_until is not None and state.open_until > now
         results.append({
             "provider": state.provider,

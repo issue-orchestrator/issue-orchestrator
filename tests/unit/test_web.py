@@ -16,6 +16,8 @@ from issue_orchestrator.entrypoints.web import (
     set_orchestrator,
     set_server,
 )
+from types import SimpleNamespace as _NS
+
 from issue_orchestrator.contracts.public import ShutdownRequestedPayload, StartupCompletePayload
 from issue_orchestrator.control.label_manager import LabelManager
 from issue_orchestrator.execution.client_host import (
@@ -1769,6 +1771,7 @@ class TestIssueRowsEndpoint:
                 self.config.repo = "test/repo"
                 self.config.repo_root = Path("/tmp/repo")
                 self.shutdown_requested = False
+                self.deps = _NS(provider_resilience=_NS(list_all_states=lambda: []))
 
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())
@@ -1799,6 +1802,7 @@ class TestIssueRowsEndpoint:
                 self.config.repo = "test/repo"
                 self.config.repo_root = Path("/tmp/repo")
                 self.shutdown_requested = False
+                self.deps = _NS(provider_resilience=_NS(list_all_states=lambda: []))
 
         original = get_orchestrator()
         set_orchestrator(OrchestratorStub())

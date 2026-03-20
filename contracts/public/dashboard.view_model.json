@@ -55,8 +55,7 @@
         },
         "providerCircuitBreakers": {
           "items": {
-            "additionalProperties": true,
-            "type": "object"
+            "$ref": "#/$defs/ProviderCircuitBreakerItem"
           },
           "title": "Providercircuitbreakers",
           "type": "array"
@@ -104,6 +103,55 @@
         "agents"
       ],
       "title": "DashboardDataContract",
+      "type": "object"
+    },
+    "ProviderCircuitBreakerItem": {
+      "additionalProperties": true,
+      "description": "Circuit breaker status for a single AI provider.",
+      "properties": {
+        "consecutive_outages": {
+          "title": "Consecutive Outages",
+          "type": "integer"
+        },
+        "last_error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Error"
+        },
+        "open": {
+          "title": "Open",
+          "type": "boolean"
+        },
+        "open_until": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Open Until"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "required": [
+        "provider",
+        "open",
+        "consecutive_outages"
+      ],
+      "title": "ProviderCircuitBreakerItem",
       "type": "object"
     }
   },

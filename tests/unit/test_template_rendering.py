@@ -26,10 +26,26 @@ def jinja_env() -> Environment:
 
 
 @dataclass
+class _ResilienceStub:
+    def list_all_states(self) -> list:
+        return []
+
+
+@dataclass
+class _DepsStub:
+    provider_resilience: _ResilienceStub
+
+
+@dataclass
 class OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+    deps: _DepsStub | None = None
+
+    def __post_init__(self) -> None:
+        if self.deps is None:
+            object.__setattr__(self, "deps", _DepsStub(provider_resilience=_ResilienceStub()))
 
 
 def make_config() -> Config:
