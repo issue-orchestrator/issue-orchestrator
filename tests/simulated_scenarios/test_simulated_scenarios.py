@@ -744,5 +744,8 @@ def test_local_loop_run_artifacts_and_actions_are_run_scoped(scenario_repo: Path
             continue
         actions = _timeline_event_actions(event, 1)
         action_types = {action["type"] for action in actions}
-        assert "open_agent_log" in action_types
+        if event_name == EventName.REVIEW_STARTED.value:
+            assert "open_review_transcript" in action_types
+        else:
+            assert "open_agent_log" in action_types
         assert "open_session_diagnostics" in action_types

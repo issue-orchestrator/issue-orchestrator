@@ -252,6 +252,58 @@ def test_run_agent_round_writes_clean_ui_session_log(tmp_path: Path) -> None:
     assert "Recentactivity" not in transcript
 
 
+def test_run_agent_round_calls_prompt_ready_after_transcript_is_written(tmp_path: Path) -> None:
+    prompt_path = tmp_path / "prompt.md"
+    prompt_path.write_text("Prompt")
+
+    worktree = tmp_path / "worktree"
+    worktree.mkdir()
+    run_dir = worktree / ".issue-orchestrator" / "sessions" / "run-1"
+    run_dir.mkdir(parents=True)
+    exchange_dir = run_dir / "review-exchange"
+    exchange_dir.mkdir()
+
+    agent = AgentConfig(prompt_path=prompt_path, ai_system="claude-code")
+    snapshot: dict[str, str | bool] = {}
+
+    class DummyRunner:
+        def run(self, spec):
+            _write_response_file(spec, '{"response_type":"ok","response_text":"looks good"}\n')
+            return SimpleNamespace(
+                succeeded=True,
+                exit_code=0,
+                timed_out=False,
+                stderr="",
+            )
+
+    def _on_prompt_ready() -> None:
+        transcript = run_dir / "review-exchange" / "transcript.log"
+        snapshot["exists"] = transcript.exists()
+        snapshot["content"] = transcript.read_text(encoding="utf-8") if transcript.exists() else ""
+
+    response = _run_agent_round(
+        session_output=FileSystemSessionOutput(),
+        runner=DummyRunner(),
+        worktree_path=worktree,
+        run_dir=run_dir,
+        exchange_dir=exchange_dir,
+        round_index=1,
+        issue_number=1,
+        issue_title="Test",
+        session_name="review-exchange-1",
+        agent=agent,
+        role="reviewer",
+        agent_label="agent:reviewer",
+        prompt_text="Review prompt",
+        web_port=None,
+        on_prompt_ready=_on_prompt_ready,
+    )
+
+    assert response.response_type == "ok"
+    assert snapshot["exists"] is True
+    assert "Review prompt" in str(snapshot["content"])
+
+
 def test_review_exchange_run_manifest_includes_claude_log_dir(tmp_path: Path, monkeypatch) -> None:
     prompt_path = tmp_path / "prompt.md"
     prompt_path.write_text("Prompt")

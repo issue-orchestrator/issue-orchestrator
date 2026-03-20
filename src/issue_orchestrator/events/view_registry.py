@@ -132,7 +132,7 @@ VIEW_REGISTRY: dict[str, list[ViewEvent]] = {
         _user("validation.failed", "Validation failed", "orchestrator"),
     ],
     "session.validation_retry_needed": [
-        _ops("validation.retry", "Validation failed — retrying", "orchestrator"),
+        _user("validation.retry", "Validation failed — retrying", "orchestrator"),
     ],
 
     # -- Issue state --

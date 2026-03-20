@@ -524,6 +524,13 @@ class SessionOutput(Protocol):
         """Append one review-exchange transcript entry to the dedicated exchange transcript."""
         ...
 
+    def ensure_review_exchange_session_log(
+        self,
+        run_dir: Path,
+    ) -> Path:
+        """Ensure the dedicated review-exchange transcript exists and is registered."""
+        ...
+
     # -------------------------------------------------------------------------
     # Log Access
     # -------------------------------------------------------------------------

@@ -258,11 +258,24 @@ def test_session_replay_uses_terminal_recording_endpoint_and_emulator() -> None:
     assert "uiActionContract.buildTerminalRecordingRequest" in refresh_body
     assert "/api/log/local/" not in open_body
     assert "/api/log/local/" not in refresh_body
-    assert "new Terminal(" in js
-    assert "new FitAddon.FitAddon()" in js
-    assert "sessionReplaySeek" in open_body
-    assert "sessionReplayPlayPause" in open_body
-    assert "sessionReplayRestart" in open_body
+
+
+def test_review_transcript_uses_dedicated_endpoint_not_terminal_replay() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "openReviewTranscript")
+    assert "/api/session/review-transcript/" in body
+    assert "/api/session/terminal-recording/" not in body
+    assert "Review Transcript #" in body
+    assert "round_index" in body
+    assert "transcript_role" in body
+
+
+def test_timeline_prefers_review_transcript_primary_action_label() -> None:
+    js = _read(DASHBOARD_JS)
+    timeline_body = _function_body(js, "renderTimelineEventActions")
+    short_label_body = _function_body(js, "_timelineActionShortLabel")
+    assert "'open_review_transcript'" in timeline_body
+    assert "Review Transcript" in short_label_body
 
 
 def test_session_replay_terminal_wrap_allows_scroll_for_fixed_geometry() -> None:

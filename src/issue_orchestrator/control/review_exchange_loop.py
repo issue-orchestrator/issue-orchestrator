@@ -120,6 +120,7 @@ def run_review_exchange_loop(
     exchange_dir = run_dir / "review-exchange"
     exchange_dir.mkdir(parents=True, exist_ok=True)
     session_output.update_manifest(run_dir, {"review_exchange_dir": str(exchange_dir)})
+    session_output.ensure_review_exchange_session_log(run_dir)
     def _finalize_manifest(outcome: str) -> None:
         session_output.update_manifest(
             run_dir,
@@ -226,11 +227,6 @@ def _execute_review_exchange_rounds(  # noqa: PLR0913
 
     for round_index in range(1, max_rounds + 1):
         current_round = round_index
-        emit(EventName.REVIEW_EXCHANGE_ROUND_STARTED, {
-            "issue_number": issue_number,
-            "session_name": session_name,
-            "round_index": round_index,
-        })
         reviewer_response = _run_reviewer_round(
             session_output=session_output,
             runner=runner,
@@ -247,6 +243,14 @@ def _execute_review_exchange_rounds(  # noqa: PLR0913
             web_port=web_port,
             session_name=session_name,
             agent_label=reviewer_label,
+            on_prompt_ready=lambda round_index=round_index: emit(
+                EventName.REVIEW_EXCHANGE_ROUND_STARTED,
+                {
+                    "issue_number": issue_number,
+                    "session_name": session_name,
+                    "round_index": round_index,
+                },
+            ),
         )
         outcome, no_progress_count, last_reviewer_text, last_coder_text = _process_exchange_round(
             session_output=session_output,
@@ -330,14 +334,6 @@ def _process_exchange_round(  # noqa: PLR0913
         ), no_progress_count, last_reviewer_text, last_coder_text
 
     last_reviewer_text = reviewer_response.response_text
-    emit(EventName.REVIEW_REWORK_STARTED, {
-        "issue_number": issue_number,
-        "session_name": session_name,
-        "round_index": round_index,
-        "reviewer_response_type": reviewer_response.response_type,
-        "reviewer_response_text": reviewer_response.response_text,
-        "task": "rework",
-    })
     coder_response, protocol_error = _run_coder_round_with_protocol_retries(
         session_output=session_output,
         runner=runner,
@@ -353,6 +349,17 @@ def _process_exchange_round(  # noqa: PLR0913
         session_name=session_name,
         agent_label=coder_label,
         require_validation=require_validation,
+        on_prompt_ready=lambda round_index=round_index: emit(
+            EventName.REVIEW_REWORK_STARTED,
+            {
+                "issue_number": issue_number,
+                "session_name": session_name,
+                "round_index": round_index,
+                "reviewer_response_type": reviewer_response.response_type,
+                "reviewer_response_text": reviewer_response.response_text,
+                "task": "rework",
+            },
+        ),
     )
     if protocol_error is not None:
         return _stop_for_protocol_error(
@@ -580,6 +587,7 @@ def _run_reviewer_round(
     web_port: int | None,
     session_name: str,
     agent_label: str,
+    on_prompt_ready: Callable[[], None] | None = None,
 ) -> ReviewExchangeResponse:
     prompt = _build_reviewer_prompt(
         issue_number=issue_number,
@@ -605,6 +613,7 @@ def _run_reviewer_round(
         agent_label=agent_label,
         prompt_text=prompt,
         web_port=web_port,
+        on_prompt_ready=on_prompt_ready,
     )
 
 
@@ -623,6 +632,7 @@ def _run_coder_round(
     web_port: int | None,
     session_name: str,
     agent_label: str,
+    on_prompt_ready: Callable[[], None] | None = None,
 ) -> ReviewExchangeResponse:
     prompt = _build_coder_prompt(
         issue_number=issue_number,
@@ -646,6 +656,7 @@ def _run_coder_round(
         agent_label=agent_label,
         prompt_text=prompt,
         web_port=web_port,
+        on_prompt_ready=on_prompt_ready,
     )
 
 
@@ -665,6 +676,7 @@ def _run_coder_round_with_protocol_retries(
     session_name: str,
     agent_label: str,
     require_validation: bool,
+    on_prompt_ready: Callable[[], None] | None = None,
 ) -> tuple[ReviewExchangeResponse, str | None]:
     coder_feedback = reviewer_response.response_text
     coder_response = _run_coder_round(
@@ -681,6 +693,7 @@ def _run_coder_round_with_protocol_retries(
         web_port=web_port,
         session_name=session_name,
         agent_label=agent_label,
+        on_prompt_ready=on_prompt_ready,
     )
     protocol_error = _validate_coder_protocol(run_dir, require_validation=require_validation)
     retries_remaining = _CODER_PROTOCOL_RETRY_LIMIT
@@ -754,6 +767,7 @@ def _run_agent_round(
     agent_label: str,
     prompt_text: str,
     web_port: int | None,
+    on_prompt_ready: Callable[[], None] | None = None,
 ) -> ReviewExchangeResponse:
     prompt_path = _write_prompt(exchange_dir, round_index, role, prompt_text)
     _append_session_log(
@@ -764,6 +778,8 @@ def _run_agent_round(
         section="prompt",
         content=prompt_text,
     )
+    if on_prompt_ready is not None:
+        on_prompt_ready()
     prompt_rel = prompt_path.relative_to(worktree_path)
     agent_config = AgentConfig(
         prompt_path=prompt_path,

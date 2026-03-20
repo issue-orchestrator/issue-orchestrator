@@ -61,6 +61,19 @@ def test_local_loop_writes_clean_ui_session_log(monkeypatch, tmp_path: Path) -> 
     )
 
     emitted: list[tuple[EventName, dict[str, object]]] = []
+    transcript_snapshots: dict[str, str] = {}
+
+    def _emit(name: EventName, payload: dict[str, object]) -> None:
+        emitted.append((name, payload))
+        transcript = run_dir / "review-exchange" / "transcript.log"
+        if name == EventName.REVIEW_EXCHANGE_STARTED:
+            transcript_snapshots["exchange_started"] = (
+                transcript.read_text(encoding="utf-8") if transcript.exists() else ""
+            )
+        if name == EventName.REVIEW_EXCHANGE_ROUND_STARTED:
+            transcript_snapshots["round_started"] = (
+                transcript.read_text(encoding="utf-8") if transcript.exists() else ""
+            )
 
     outcome = _run_exchange_rounds(
         worktree_path=worktree,
@@ -77,7 +90,7 @@ def test_local_loop_writes_clean_ui_session_log(monkeypatch, tmp_path: Path) -> 
         max_no_progress=2,
         require_validation=False,
         web_port=None,
-        emit=lambda name, payload: emitted.append((name, payload)),
+        emit=_emit,
         session_output=session_output,
     )
 
@@ -99,4 +112,6 @@ def test_local_loop_writes_clean_ui_session_log(monkeypatch, tmp_path: Path) -> 
     assert "Applied fix" in transcript
     assert "Thinking" not in transcript
     assert "Recentactivity" not in transcript
+    assert "round_started" in transcript_snapshots
+    assert "role=reviewer section=prompt" in transcript_snapshots["round_started"]
     assert any(name == EventName.REVIEW_EXCHANGE_ROUND_COMPLETED for name, _ in emitted)

@@ -742,6 +742,59 @@ function openAgentLogAction(issueNumber, runDir = null, logLabel = 'Session Reco
     return openAgentLog(issueNumber, logLabel, runDir, errorSurface);
 }
 
+async function openReviewTranscript(issueNumber, runDir = null, context = null, errorSurface = 'toast') {
+    if (!runDir) {
+        const message = 'Review transcript requires run-scoped context.';
+        if (errorSurface === 'inline') {
+            openModal(`Review Transcript #${issueNumber}`, `<p>${escapeHtml(message)}</p>`);
+        } else {
+            showToast(message, true);
+        }
+        return;
+    }
+    try {
+        const params = new URLSearchParams({ run_dir: String(runDir) });
+        const effectiveRound = Number(context && context.round_index);
+        if (Number.isInteger(effectiveRound) && effectiveRound > 0) {
+            params.set('round_index', String(effectiveRound));
+        }
+        const effectiveRole = context && context.transcript_role
+            ? String(context.transcript_role).trim()
+            : '';
+        if (effectiveRole) {
+            params.set('transcript_role', effectiveRole);
+        }
+        const res = await fetch(`/api/session/review-transcript/${issueNumber}?${params.toString()}`);
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || data.error) {
+            const message = data.error || `Review transcript unavailable (HTTP ${res.status})`;
+            if (errorSurface === 'inline') {
+                openModal(`Review Transcript #${issueNumber}`, `<p>${escapeHtml(message)}</p>`);
+            } else {
+                showToast(message, true);
+            }
+            return;
+        }
+        const meta = data.transcript_path
+            ? `<div class="session-replay-note">Transcript: ${escapeHtml(data.transcript_path)}</div>`
+            : '';
+        const content = typeof data.content === 'string' && data.content.length > 0
+            ? escapeHtml(data.content)
+            : '(empty)';
+        const scopeLabel = typeof data.scope_label === 'string' && data.scope_label.trim()
+            ? ` — ${escapeHtml(data.scope_label)}`
+            : '';
+        openModal(`Review Transcript #${data.issue_number}${scopeLabel}`, `${meta}<pre>${content}</pre>`);
+    } catch (err) {
+        const message = `Failed to load review transcript: ${err instanceof Error ? err.message : String(err)}`;
+        if (errorSurface === 'inline') {
+            openModal(`Review Transcript #${issueNumber}`, `<p>${escapeHtml(message)}</p>`);
+        } else {
+            showToast(message, true);
+        }
+    }
+}
+
 async function copyAgentLogAction(issueNumber, runDir = null) {
     if (!runDir) {
         showToast('No run-scoped session recording is available to copy', true);
@@ -1262,6 +1315,7 @@ function renderGroupedDialogActions(actions) {
     if (items.length === 0) return '';
 
     const primaryTypes = [
+        'open_review_transcript',
         'open_agent_log',
         'open_review_feedback',
     ];
@@ -1299,6 +1353,7 @@ function _dialogActionShortLabel(action) {
     const type = String(action.type || '');
     const label = String(action.label || '');
     if (type === 'open_agent_log') return 'Session Recording';
+    if (type === 'open_review_transcript') return 'Review Transcript';
     if (type === 'copy_agent_log') return 'Copy Session Recording';
     if (type === 'view_claude_log') return 'Claude Log';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
@@ -1333,6 +1388,14 @@ function _renderDialogActionButton(action, labelOverride, cssClass) {
         if (!fallbackRunDir) return '';
         const runDirFirstArg = `${JSON.stringify(String(fallbackRunDir))}, `;
         return `<button class="${cssClass}" onclick="openAgentLogAction(${action.issue_number}, ${runDirFirstArg}'Session Recording', 'inline')">${label}</button>`;
+    }
+    if (action.type === 'open_review_transcript') {
+        if (!fallbackRunDir) return '';
+        const roundIndexLiteral = Number.isInteger(Number(action.round_index))
+            ? String(Number(action.round_index))
+            : 'null';
+        const roleLiteral = JSON.stringify(action.transcript_role || null);
+        return `<button class="${cssClass}" onclick="openReviewTranscript(${action.issue_number}, ${JSON.stringify(String(fallbackRunDir))}, { round_index: ${roundIndexLiteral}, transcript_role: ${roleLiteral} }, 'inline')">${label}</button>`;
     }
     if (action.type === 'copy_agent_log') {
         if (!fallbackRunDir) return '';
@@ -4956,6 +5019,7 @@ function renderTimelineEventActions(actions) {
         label: _timelineActionShortLabel(action),
     }));
     const primaryTypes = [
+        'open_review_transcript',
         'open_agent_log',
         'open_review_feedback',
     ];
@@ -4991,6 +5055,7 @@ function _timelineActionShortLabel(action) {
     const type = String(action.type || '');
     const label = String(action.label || '').trim();
     if (type === 'open_agent_log') return 'Session Recording';
+    if (type === 'open_review_transcript') return 'Review Transcript';
     if (type === 'view_claude_log') return 'Claude Log';
     if (type === 'open_review_feedback') return 'Review Feedback';
     if (type === 'open_orchestrator_log') return 'Issue-Scoped Orchestrator Log';
@@ -5028,6 +5093,10 @@ function runTimelineEventAction(action) {
     }
     if (action.type === 'open_review_feedback' && action.issue_number) {
         openReviewFeedback(action.issue_number, action);
+        return;
+    }
+    if (action.type === 'open_review_transcript' && action.issue_number) {
+        openReviewTranscript(action.issue_number, action.run_dir || null, action);
         return;
     }
     if (action.type === 'open_agent_log' && action.issue_number) {

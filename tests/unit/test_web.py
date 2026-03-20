@@ -3096,6 +3096,7 @@ class TestTimelineActionWiring:
         "open_url": None,  # client-side window.open, no HTTP call
         "open_review_feedback": None,  # in-app modal from existing issue detail payload
         "open_agent_log": "/api/session/terminal-recording/{issue_number}",
+        "open_review_transcript": "/api/session/review-transcript/{issue_number}",
         "copy_agent_log": None,  # client-side fetch+clipboard from existing local log endpoint
         "view_claude_log": "/api/session/claude-log/{issue_number}",
         "open_orchestrator_log": "/api/session/orchestrator-log/{issue_number}",
@@ -3103,6 +3104,7 @@ class TestTimelineActionWiring:
     }
     _REQUIRED_FIELDS_BY_ACTION: dict[str, tuple[str, ...]] = {
         "open_agent_log": ("issue_number", "run_dir"),
+        "open_review_transcript": ("issue_number", "run_dir"),
         "copy_agent_log": ("issue_number", "run_dir"),
         "view_claude_log": ("issue_number", "run_dir"),
         "open_orchestrator_log": ("issue_number", "run_dir"),
@@ -3285,7 +3287,12 @@ class TestTimelineActionWiring:
         def _capture(action: dict, _dedupe: str) -> None:
             captured.append(action)
 
-        _timeline_event_default_actions(issue_number=1, add_action=_capture)
+        _timeline_event_default_actions(
+            event={"event": "session.started", "event_intent": "coding"},
+            event_name="session.started",
+            issue_number=1,
+            add_action=_capture,
+        )
         _timeline_event_recommended_actions(
             event={"event": "session.started", "event_intent": "coding"},
             event_name="session.started", issue_number=1, add_action=_capture,
@@ -3382,9 +3389,18 @@ class TestTimelineActionWiring:
         worktree.mkdir(parents=True)
         run = session_output.start_run(worktree, "issue-1", issue_number=1)
         (run.run_dir / "ui-session.log").write_text("agent output\n", encoding="utf-8")
+        review_transcript = run.run_dir / "review-exchange" / "transcript.log"
+        review_transcript.parent.mkdir(parents=True, exist_ok=True)
+        review_transcript.write_text("review exchange status=ok\n", encoding="utf-8")
         claude_log = run.run_dir / "claude.jsonl"
         claude_log.write_text('{"type":"assistant","content":"ok"}\n', encoding="utf-8")
-        session_output.update_manifest(run.run_dir, {"claude_log_path": str(claude_log)})
+        session_output.update_manifest(
+            run.run_dir,
+            {
+                "claude_log_path": str(claude_log),
+                "review_exchange_transcript_path": str(review_transcript),
+            },
+        )
         run_dir = str(run.run_dir)
 
         review_actions = _timeline_event_actions({"event": "review.approved", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": TIMELINE_SCHEMA_VERSION}, 1)
@@ -3392,13 +3408,123 @@ class TestTimelineActionWiring:
         rework_actions = _timeline_event_actions({"event": "rework.started", "issue_number": 1, "run_dir": run_dir, "timeline_schema_version": TIMELINE_SCHEMA_VERSION}, 1)
         fallback_actions = _timeline_event_actions({"event": "issue.unblocked", "issue_number": 1, "timeline_schema_version": TIMELINE_SCHEMA_VERSION}, 1)
 
-        def _label(actions: list[dict[str, Any]]) -> str:
-            return next(action["label"] for action in actions if action.get("type") == "open_agent_log")
+        def _label(actions: list[dict[str, Any]], action_type: str) -> str:
+            return next(action["label"] for action in actions if action.get("type") == action_type)
 
-        assert _label(review_actions) == "View Reviewer Session Recording"
-        assert _label(coding_actions) == "View Coding Session Recording"
-        assert _label(rework_actions) == "View Rework Session Recording"
+        assert _label(review_actions, "open_review_transcript") == "View Review Transcript"
+        assert _label(coding_actions, "open_agent_log") == "View Coding Session Recording"
+        assert _label(rework_actions, "open_agent_log") == "View Rework Session Recording"
         assert all(action.get("type") != "open_agent_log" for action in fallback_actions)
+
+    def test_review_events_prefer_dedicated_review_transcript_when_present(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-transcript-actions"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "review-1", issue_number=1)
+        transcript = run.run_dir / "review-exchange" / "transcript.log"
+        transcript.parent.mkdir(parents=True, exist_ok=True)
+        transcript.write_text("review exchange status=ok\n", encoding="utf-8")
+        session_output.update_manifest(run.run_dir, {"review_exchange_transcript_path": str(transcript)})
+
+        actions = _timeline_event_actions(
+            {
+                "event": "review.approved",
+                "issue_number": 1,
+                "run_dir": str(run.run_dir),
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            1,
+        )
+        action_types = {action.get("type") for action in actions}
+        assert "open_review_transcript" in action_types
+        assert "open_agent_log" not in action_types
+
+    def test_review_events_fall_back_to_agent_log_when_review_transcript_missing(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-transcript-fallback"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "review-1", issue_number=1)
+
+        actions = _timeline_event_actions(
+            {
+                "event": "review.approved",
+                "issue_number": 1,
+                "run_dir": str(run.run_dir),
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            1,
+        )
+        action_types = {action.get("type") for action in actions}
+        assert "open_review_transcript" not in action_types
+        assert "open_agent_log" in action_types
+
+    def test_review_transcript_actions_bind_round_and_role_context(self, tmp_path: Path) -> None:
+        from issue_orchestrator.entrypoints.web import _timeline_event_actions
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-transcript-context"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "review-1", issue_number=4057)
+        transcript = session_output.ensure_review_exchange_session_log(run.run_dir)
+        transcript.write_text(
+            "[2026-03-20T04:39:32Z] round=2 role=reviewer section=prompt\nPrompt\n",
+            encoding="utf-8",
+        )
+
+        review_round_actions = _timeline_event_actions(
+            {
+                "event": "review_exchange.round_completed",
+                "issue_number": 4057,
+                "run_dir": str(run.run_dir),
+                "round_index": 2,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            4057,
+        )
+        review_action = next(
+            action for action in review_round_actions if action.get("type") == "open_review_transcript"
+        )
+        assert review_action["round_index"] == 2
+        assert review_action["transcript_role"] == "reviewer"
+
+        rework_actions = _timeline_event_actions(
+            {
+                "event": "review.rework_started",
+                "issue_number": 4057,
+                "run_dir": str(run.run_dir),
+                "round_index": 2,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            4057,
+        )
+        rework_action = next(
+            action for action in rework_actions if action.get("type") == "open_review_transcript"
+        )
+        assert rework_action["round_index"] == 2
+        assert rework_action["transcript_role"] == "coder"
+
+        approved_actions = _timeline_event_actions(
+            {
+                "event": "review.approved",
+                "issue_number": 4057,
+                "run_dir": str(run.run_dir),
+                "rounds": 2,
+                "timeline_schema_version": TIMELINE_SCHEMA_VERSION,
+            },
+            4057,
+        )
+        approved_action = next(
+            action for action in approved_actions if action.get("type") == "open_review_transcript"
+        )
+        assert approved_action["round_index"] == 2
+        assert approved_action["transcript_role"] == "reviewer"
 
     def test_review_feedback_actions_bind_to_specific_timeline_entry(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
@@ -4636,6 +4762,83 @@ class TestIssueLogEndpointsUseLatestHistory:
             payload = response.json()
             assert payload["run_dir"] == str(run_a.run_dir)
             assert payload["entries"][0]["content"] == "from-run-a"
+        finally:
+            set_orchestrator(None)
+
+    def test_review_transcript_requires_run_dir(self, tmp_path: Path):
+        """GET /api/session/review-transcript should fail fast when run_dir is missing."""
+        mock_orch = create_mock_orchestrator()
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get("/api/session/review-transcript/123")
+            assert response.status_code == 400
+            payload = response.json()
+            assert payload["error"] == "run_dir is required"
+        finally:
+            set_orchestrator(None)
+
+    def test_review_transcript_honors_run_dir_query(self, tmp_path: Path):
+        """GET /api/session/review-transcript should read the requested run transcript."""
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-transcript-run-query"
+        worktree.mkdir(parents=True)
+        run_a = session_output.start_run(worktree, "review-1", issue_number=123)
+        transcript_a = run_a.run_dir / "review-exchange" / "transcript.log"
+        transcript_a.parent.mkdir(parents=True, exist_ok=True)
+        transcript_a.write_text("from-run-a\n", encoding="utf-8")
+        session_output.update_manifest(run_a.run_dir, {"review_exchange_transcript_path": str(transcript_a)})
+
+        run_b = session_output.start_run(worktree, "review-2", issue_number=123)
+        transcript_b = run_b.run_dir / "review-exchange" / "transcript.log"
+        transcript_b.parent.mkdir(parents=True, exist_ok=True)
+        transcript_b.write_text("from-run-b\n", encoding="utf-8")
+        session_output.update_manifest(run_b.run_dir, {"review_exchange_transcript_path": str(transcript_b)})
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(f"/api/session/review-transcript/123?run_dir={run_a.run_dir}")
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["run_dir"] == str(run_a.run_dir)
+            assert payload["content"] == "from-run-a\n"
+        finally:
+            set_orchestrator(None)
+
+    def test_review_transcript_can_filter_to_requested_round_and_role(self, tmp_path: Path):
+        from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
+
+        mock_orch = create_mock_orchestrator()
+        session_output = FileSystemSessionOutput()
+        worktree = tmp_path / "wt-review-transcript-filter"
+        worktree.mkdir(parents=True)
+        run = session_output.start_run(worktree, "review-1", issue_number=123)
+        transcript = session_output.ensure_review_exchange_session_log(run.run_dir)
+        transcript.write_text(
+            "[2026-03-20T04:39:32Z] round=1 role=reviewer section=prompt\nReviewer round 1\n\n"
+            "[2026-03-20T04:40:42Z] round=1 role=coder section=prompt\nCoder round 1\n\n"
+            "[2026-03-20T04:41:42Z] round=2 role=reviewer section=completion\nReviewer round 2\n",
+            encoding="utf-8",
+        )
+
+        set_orchestrator(mock_orch)
+        try:
+            client = TestClient(app)
+            response = client.get(
+                f"/api/session/review-transcript/123?run_dir={run.run_dir}&round_index=1&transcript_role=coder"
+            )
+            assert response.status_code == 200
+            payload = response.json()
+            assert payload["scope_label"] == "Round 1 coder"
+            assert payload["entry_count"] == 1
+            assert payload["content"]
+            assert "Coder round 1" in payload["content"]
+            assert "Reviewer round 1" not in payload["content"]
+            assert "Reviewer round 2" not in payload["content"]
         finally:
             set_orchestrator(None)
 
