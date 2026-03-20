@@ -571,7 +571,7 @@ def _append_session_log(
     section: str,
     content: str,
 ) -> None:
-    """Append transcript content to the canonical UI session log."""
+    """Append transcript content to the dedicated review-exchange transcript."""
     session_output.append_review_exchange_session_log_entry(
         run_dir,
         round_index=round_index,

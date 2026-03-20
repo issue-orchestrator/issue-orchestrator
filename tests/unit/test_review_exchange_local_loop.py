@@ -93,8 +93,10 @@ def test_local_loop_writes_clean_ui_session_log(monkeypatch, tmp_path: Path) -> 
         for event in events
         if event.get("event_type") == "output" and event.get("data_b64")
     )
-    assert "Fix provider log" in content
-    assert "Applied fix" in content
-    assert "Thinking" not in content
-    assert "Recentactivity" not in content
+    transcript = (run_dir / "review-exchange" / "transcript.log").read_text(encoding="utf-8")
+    assert content == ""
+    assert "Fix provider log" in transcript
+    assert "Applied fix" in transcript
+    assert "Thinking" not in transcript
+    assert "Recentactivity" not in transcript
     assert any(name == EventName.REVIEW_EXCHANGE_ROUND_COMPLETED for name, _ in emitted)

@@ -244,10 +244,12 @@ def test_run_agent_round_writes_clean_ui_session_log(tmp_path: Path) -> None:
         for event in events
         if event.get("event_type") == "output" and event.get("data_b64")
     )
-    assert "Review prompt" in content
-    assert "runner-note" in content
-    assert "Thinking" not in content
-    assert "Recentactivity" not in content
+    transcript = (run_dir / "review-exchange" / "transcript.log").read_text(encoding="utf-8")
+    assert content == ""
+    assert "Review prompt" in transcript
+    assert "runner-note" in transcript
+    assert "Thinking" not in transcript
+    assert "Recentactivity" not in transcript
 
 
 def test_review_exchange_run_manifest_includes_claude_log_dir(tmp_path: Path, monkeypatch) -> None:
