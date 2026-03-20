@@ -615,6 +615,7 @@ def _finalize_cycle_from_events(
         "lifecycle": lifecycle,
         "iteration": iteration,
         "run_id": run_id,
+        "timestamp": first_ts,
         "session_run_ids": session_run_ids,
         "agent": agent,
         "reviewer_agent": reviewer_agent,

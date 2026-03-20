@@ -512,6 +512,29 @@ def test_journey_action_delegate_handles_more_items_and_closes_menus() -> None:
     assert "closeTimelineEventMenus();" in body
 
 
+def test_review_feedback_modal_can_filter_to_specific_timeline_entry() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "openReviewFeedback")
+    assert "context = null" in js
+    assert "_matchesReviewFeedbackContext" in js
+    assert "_matchesReviewFeedbackContext(e, context)" in body
+
+
+def test_journey_renders_local_timestamps_from_raw_event_times() -> None:
+    js = _read(DASHBOARD_JS)
+    body = _function_body(js, "_renderJourneyRuns")
+    assert "formatJourneyHeaderTimestamp(run.timestamp" in body
+    assert "formatJourneyHeaderTimestamp(c.timestamp" in body
+    assert "formatJourneyStepTimestamp(s.timestamp" in body
+
+
+def test_journey_layout_uses_content_column_for_actions_and_detail() -> None:
+    css = _read(DASHBOARD_CSS)
+    assert ".journey-main" in css
+    assert ".journey-summary-row" in css
+    assert "grid-template-columns: minmax(72px, max-content) minmax(0, 1fr)" in css
+
+
 def test_toggle_journey_cycle_closes_open_timeline_menus() -> None:
     js = _read(DASHBOARD_JS)
     body = _function_body(js, "toggleJourneyCycle")

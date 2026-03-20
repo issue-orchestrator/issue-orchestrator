@@ -79,6 +79,7 @@ class LogicalRunProjector:
                 "session_run_ids": session_run_ids,
                 "run_number": index,
                 "outcome": last_cycle.get("outcome", "In progress"),
+                "timestamp": last_cycle.get("timestamp", ""),
                 "time_label": last_cycle.get("time_label", ""),
                 "cycles": run_cycles,
                 "expanded": index == len(order),
