@@ -24,6 +24,7 @@ runtime initialization only:
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Callable, Optional
 
 from ..infra.analysis import analyze_issue, IssueState
@@ -39,6 +40,7 @@ from ..domain.models import (
     PendingReview,
     PendingTriageReview,
     PendingValidationRetry,
+    SessionHistoryEntry,
     Session,
     ORCHESTRATOR_PR_MARKER,
 )
@@ -186,20 +188,23 @@ class StartupManager:
         if self.config.code_review_agent and self.config.code_review_label:
             await self._recover_pending_reviews(state)
 
-        # Step 8: Recover pending triage reviews
+        # Step 8: Recover awaiting-merge dashboard history
+        self._recover_pr_pending_history(state, issue_branches)
+
+        # Step 9: Recover pending triage reviews
         if self.config.triage_review_agent:
             await self._recover_pending_triage(state)
 
-        # Step 9: Recover pending validation retries (crash recovery)
+        # Step 10: Recover pending validation retries (crash recovery)
         self._recover_pending_validation_retries(state, issue_branches)
 
-        # Step 10: Recover orphaned cleanups
+        # Step 11: Recover orphaned cleanups
         self._recover_orphaned_cleanups(state)
 
-        # Step 11: Resume issues with partial work
+        # Step 12: Resume issues with partial work
         await self._resume_partial_work(state, issues_to_resume)
 
-        # Step 12: Audit and cache the queue
+        # Step 13: Audit and cache the queue
         state.startup_message = "Auditing queue..."
         from ..infra.audit import audit_queue, print_audit
         audit_entries = audit_queue(
@@ -326,6 +331,80 @@ class StartupManager:
         logger.debug("Fetched %d in-progress issues for %s in %.1fs", len(issues), agent_label, elapsed)
         print(f"[startup] Fetched {len(issues)} in-progress issues for {agent_label} in {elapsed:.1f}s")
         return issues
+
+    def _recover_pr_pending_history(
+        self,
+        state: OrchestratorState,
+        issue_branches: dict[int, str],
+    ) -> None:
+        """Rehydrate awaiting-merge visibility for locally pr-pending issues."""
+        if self._label_store is None:
+            return
+
+        tracked_history = {entry.issue_number for entry in state.session_history}
+        local_pr_pending = sorted(
+            issue_number
+            for issue_number, labels in self._label_store.load_all().items()
+            if self._lm.is_pr_pending(sorted(labels))
+        )
+        if not local_pr_pending:
+            return
+
+        recovered = 0
+        for issue_number in local_pr_pending:
+            if issue_number in tracked_history:
+                continue
+
+            issue = self.repository_host.get_issue(issue_number)
+            if issue is None:
+                logger.warning(
+                    "[startup] Failed to refetch locally pr-pending issue for dashboard recovery: issue=%d",
+                    issue_number,
+                )
+                continue
+
+            queue_status = QueueCache(self.config, state).evaluate_issue(issue)
+            if queue_status == QueueMutationStatus.REJECTED_OUT_OF_SCOPE:
+                logger.info(
+                    "[startup] Skipping pr-pending dashboard recovery for out-of-scope issue=%d",
+                    issue_number,
+                )
+                continue
+
+            analysis = analyze_issue(
+                issue=issue,
+                repo=self.config.repo,
+                issue_branches=issue_branches,
+                check_session_fn=lambda n: self._session_exists(f"issue-{n}"),
+                pr_tracker=self.repository_host,
+            )
+            if not analysis.has_open_pr or not analysis.pr_url:
+                logger.warning(
+                    "[startup] Skipping pr-pending dashboard recovery without open PR: issue=%d",
+                    issue_number,
+                )
+                continue
+
+            state.session_history.append(
+                SessionHistoryEntry(
+                    issue_number=issue.number,
+                    title=issue.title,
+                    agent_type=issue.agent_type or "agent:unknown",
+                    status="completed",
+                    runtime_minutes=0,
+                    pr_url=analysis.pr_url,
+                    status_reason="Recovered awaiting merge state on startup",
+                    completed_at=datetime.now(timezone.utc),
+                )
+            )
+            tracked_history.add(issue_number)
+            recovered += 1
+
+        if recovered:
+            logger.info(
+                "[startup] Recovered %d pr-pending issue(s) into dashboard history",
+                recovered,
+            )
 
     def _analyze_and_handle_issue(
         self,
