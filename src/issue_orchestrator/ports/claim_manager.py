@@ -3,6 +3,17 @@
 This module defines the protocol for claiming issues in a multi-orchestrator
 environment. The claim system ensures only one orchestrator works on an issue
 at a time.
+
+Exception contract:
+    Methods that read from external storage (check_winner, get_current_claim,
+    renew_claim) may raise ``ClaimFetchError`` when the backing store is
+    unreachable. Callers must handle this according to their policy:
+    - **Write gates** (ClaimGate): fail-closed — block the mutation
+    - **Liveness checks** (LeaseRenewer): fail-open — keep the session alive
+    - **Stale-claim scans**: skip the issue and retry next tick
+
+    NullClaimManager never raises ClaimFetchError because it has no
+    external dependency.
 """
 
 from typing import Protocol
@@ -66,6 +77,10 @@ class ClaimManager(Protocol):
         Returns:
             True if renewal succeeded, False if claim was lost or
             renewal failed.
+
+        Raises:
+            ClaimFetchError: If the backing store is unreachable during
+                the ownership verification step.
         """
         ...
 
@@ -93,6 +108,9 @@ class ClaimManager(Protocol):
 
         Returns:
             True if we are the current winner, False otherwise.
+
+        Raises:
+            ClaimFetchError: If the backing store is unreachable.
         """
         ...
 
@@ -106,6 +124,9 @@ class ClaimManager(Protocol):
 
         Returns:
             The winning Claim if one exists, None if no valid claims.
+
+        Raises:
+            ClaimFetchError: If the backing store is unreachable.
         """
         ...
 
