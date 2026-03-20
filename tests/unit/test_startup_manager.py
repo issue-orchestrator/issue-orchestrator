@@ -277,6 +277,7 @@ class TestStartupManagerInProgressIssues:
         mock_repository_host.get_issue.assert_called_once_with(4057)
         analyzed_issues = [call.kwargs["issue"].number for call in mock_analyze.call_args_list]
         assert analyzed_issues == [4057]
+        assert any(issue.number == 4057 for issue in sample_state.cached_queue_issues)
         assert "Cached queue omitted 1 locally in-progress issue(s): [4057]" in caplog.text
 
     @pytest.mark.asyncio
@@ -325,6 +326,37 @@ class TestStartupManagerInProgressIssues:
         mock_analyze.assert_not_called()
         assert "Cached queue omitted 1 locally in-progress issue(s): [4057]" in caplog.text
         assert "Failed to refetch locally in-progress issue missing from cache: issue=4057" in caplog.text
+
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_warm_start_deduplicates_recovered_issue_still_marked_in_progress_on_github(
+        self,
+        mock_analyze,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_label_store,
+    ):
+        sample_state.cached_queue_issues = [
+            Issue(number=1, title="Cached", labels=["agent:web"]),
+        ]
+        recovered_issue = Issue(number=4057, title="Recovered", labels=["agent:web", "in-progress"])
+        mock_label_store.load_all.return_value = {
+            4057: {"in-progress", "agent:web"},
+        }
+        mock_repository_host.get_issue.return_value = recovered_issue
+
+        mock_state = MagicMock()
+        mock_state.has_session = False
+        mock_state.has_open_pr = False
+        mock_state.has_partial_work = False
+        mock_state.is_orphaned_label = True
+        mock_analyze.return_value = mock_state
+
+        await startup_manager.run_startup(sample_state)
+
+        analyzed_issues = [call.kwargs["issue"].number for call in mock_analyze.call_args_list]
+        assert analyzed_issues == [4057]
 
 
 class TestStartupManagerCodeReviewRecovery:
