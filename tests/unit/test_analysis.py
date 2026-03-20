@@ -359,6 +359,34 @@ class TestAnalyzeIssue:
         assert result.has_open_pr is False
         assert result.pr_url is None
 
+    def test_analyze_issue_pr_pending_without_branch_uses_issue_pr_lookup(self):
+        """Test pr-pending issue recovery when startup has no local branch mapping."""
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+        issue = Issue(number=4057, title="Test Issue", labels=["pr-pending"])
+        check_session = Mock(return_value=False)
+
+        mock_pr_tracker = Mock()
+        mock_pr_tracker.get_prs_for_issue.return_value = [
+            PRInfo(
+                number=5337,
+                url="https://github.com/owner/repo/pull/5337",
+                title="#4057: Test Issue",
+                branch="4057-test-issue",
+                labels=[],
+                body="",
+                state="open",
+            )
+        ]
+
+        result = analyze_issue(issue, "owner/repo", {}, check_session, mock_pr_tracker)
+
+        assert result.branch is None
+        assert result.has_open_pr is True
+        assert result.pr_url == "https://github.com/owner/repo/pull/5337"
+        mock_pr_tracker.get_prs_for_issue.assert_called_once_with(4057, state="open")
+        mock_pr_tracker.get_prs_for_branch.assert_not_called()
+
     def test_analyze_issue_no_pr_tracker_skips_pr_check(self):
         """Test that PR check is skipped when no pr_tracker provided."""
         issue = Issue(number=5, title="Test Issue", labels=[])

@@ -104,14 +104,26 @@ def analyze_issue(
     state.branch = issue_branches.get(issue.number)
 
     # Check for open PR if branch exists
-    if state.branch and pr_tracker:
-        try:
-            prs = pr_tracker.get_prs_for_branch(state.branch, state="open")
-            if prs:
-                state.has_open_pr = True
-                state.pr_url = prs[0].url
-        except Exception:
-            pass
+    if pr_tracker:
+        if state.branch:
+            try:
+                prs = pr_tracker.get_prs_for_branch(state.branch, state="open")
+                if prs:
+                    state.has_open_pr = True
+                    state.pr_url = prs[0].url
+            except Exception:
+                pass
+
+        # pr-pending is already a persisted claim that an issue has moved into PR flow.
+        # On restart the local branch map may be gone, so recover via issue-level PR lookup.
+        if not state.has_open_pr and "pr-pending" in issue.labels:
+            try:
+                prs = pr_tracker.get_prs_for_issue(issue.number, state="open")
+                if prs:
+                    state.has_open_pr = True
+                    state.pr_url = prs[0].url
+            except Exception:
+                pass
 
     return state
 
