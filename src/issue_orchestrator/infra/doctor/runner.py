@@ -11,6 +11,7 @@ from ...ports.command_runner import CommandRunner
 from .types import DoctorResult
 from .checks import (
     ai,
+    clock_sync,
     config as config_checks,
     e2e,
     github,
@@ -66,5 +67,6 @@ def run_doctor(
     result.checks.extend(review.check_code_review(config))
     result.checks.extend(e2e.check_e2e_runner(config))
     result.checks.extend(guardrails.check_guardrails(config, runner))
+    result.checks.extend(clock_sync.check_clock_sync(config, runner))
 
     return result
