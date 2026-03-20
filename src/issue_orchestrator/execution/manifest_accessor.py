@@ -148,6 +148,20 @@ class ManifestAccessor:
             + ", ".join(str(path) for path in candidates)
         )
 
+    def get_review_exchange_transcript(self) -> ArtifactStream:
+        """Return the dedicated review-exchange transcript for this run."""
+        manifest = self._load_manifest()
+        transcript_path = manifest.to_dict().get("review_exchange_transcript_path")
+        if not transcript_path:
+            raise ArtifactNotFoundError("manifest missing review_exchange_transcript_path")
+        path = Path(str(transcript_path))
+        if not path.is_absolute():
+            path = self.run_identity.run_dir / path
+        if not path.exists():
+            raise ArtifactNotFoundError(f"review exchange transcript not found: {path}")
+        self._require_non_empty(path, artifact_name="review exchange transcript")
+        return self._artifact_stream("review_exchange_transcript", path)
+
     def get_completion_record(self) -> ArtifactStream:
         """Return the completion record stream for this run."""
         manifest = self._load_manifest()

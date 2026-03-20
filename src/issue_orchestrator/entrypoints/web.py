@@ -2106,6 +2106,8 @@ def _timeline_event_fallback_actions(event: dict[str, Any], issue_number: int) -
     )
     # Always keep diagnostics entrypoints, but avoid ambiguous run-scoped log actions.
     _timeline_event_default_actions(
+        event=event,
+        event_name=str(event.get("event") or ""),
         issue_number=issue_number,
         include_run_scoped=False,
         add_action=_add_action,
@@ -2131,10 +2133,15 @@ def _timeline_event_recommended_actions(
         action, dedupe = feedback_action
         add_action(action, dedupe)
     if event_name in _TIMELINE_START_EVENTS:
-        add_action(
-            {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
-            f"agent:{issue_number}",
+        session_action = _preferred_run_scoped_session_action(
+            event=event,
+            event_name=event_name,
+            issue_number=issue_number,
+            agent_log_label=agent_log_label,
         )
+        if session_action is not None:
+            action, dedupe = session_action
+            add_action(action, dedupe)
         add_action(
             {"type": "view_claude_log", "label": "View Claude Session Log", "issue_number": issue_number},
             f"claude:{issue_number}",
@@ -2247,6 +2254,8 @@ def _timeline_event_artifact_actions(
 
 def _timeline_event_default_actions(
     *,
+    event: dict[str, Any],
+    event_name: str,
     issue_number: int,
     agent_log_label: str = "View Session Recording",
     include_run_scoped: bool = True,
@@ -2254,10 +2263,15 @@ def _timeline_event_default_actions(
 ) -> None:
     """Add default diagnostics and log actions shown for every timeline event."""
     if include_run_scoped:
-        add_action(
-            {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
-            f"agent:{issue_number}",
+        session_action = _preferred_run_scoped_session_action(
+            event=event,
+            event_name=event_name,
+            issue_number=issue_number,
+            agent_log_label=agent_log_label,
         )
+        if session_action is not None:
+            action, dedupe = session_action
+            add_action(action, dedupe)
         add_action(
             {"type": "view_claude_log", "label": "View Claude Session Log", "issue_number": issue_number},
             f"claude:{issue_number}",
@@ -2329,6 +2343,8 @@ def _validated_run_scoped_artifact(
             raise RuntimeError(
                 f"run-scoped agent log is empty/unusable: issue={issue_number} event={event_name} run_dir={event_run_dir}"
             )
+    elif action_type == "open_review_transcript":
+        artifact = accessor.get_review_exchange_transcript()
     elif action_type == "view_claude_log":
         artifact = accessor.get_claude_log()
     else:
@@ -2348,6 +2364,7 @@ def _decorate_timeline_action_with_run_dir(action: dict[str, Any], event_run_dir
         return action
     if str(action.get("type") or "") in {
         "open_agent_log",
+        "open_review_transcript",
         "view_claude_log",
         "open_orchestrator_log",
         "open_session_diagnostics",
@@ -2367,6 +2384,7 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
     timeline_schema_version = timeline_schema_version_raw if isinstance(timeline_schema_version_raw, int) else 0
     run_scoped_action_types = {
         "open_agent_log",
+        "open_review_transcript",
         "view_claude_log",
     }
     run_scoped_validated: set[str] = set()
@@ -2427,6 +2445,8 @@ def _timeline_event_actions(event: dict[str, Any], issue_number: int) -> list[di
     # not for orchestrator events like validation, PR creation, completion.
     is_agent_event = _is_agent_scoped_event(event, event_name)
     _timeline_event_default_actions(
+        event=event,
+        event_name=event_name,
         issue_number=issue_number,
         agent_log_label=agent_log_label,
         include_run_scoped=bool(event_run_dir) and is_agent_event,
@@ -2474,6 +2494,45 @@ def _is_agent_scoped_event(event: dict[str, Any], event_name: str) -> bool:
         or is_rework_event_name(event_name)
         or event_name.startswith("agent.")
         or event_name.startswith("review_exchange.")
+    )
+
+
+def _event_prefers_review_transcript(event: dict[str, Any], event_name: str) -> bool:
+    """Return True when the truthful primary artifact is the review transcript."""
+    task = str(event.get("task") or "").strip().lower()
+    intent = str(event.get("event_intent") or "")
+    if intent == EventIntent.REVIEW.value:
+        return True
+    if event_name.startswith("review_exchange."):
+        return True
+    return bool(event.get("review_oriented")) or is_review_oriented_event(event_name=event_name, task=task)
+
+
+def _preferred_run_scoped_session_action(
+    *,
+    event: dict[str, Any],
+    event_name: str,
+    issue_number: int,
+    agent_log_label: str,
+) -> tuple[dict[str, Any], str] | None:
+    """Resolve the truthful primary run-scoped session artifact for an event."""
+    run_dir = str(event.get("run_dir") or "").strip()
+    if not run_dir:
+        return None
+    if _event_prefers_review_transcript(event, event_name):
+        accessor = ManifestAccessor(RunIdentity(issue_number=issue_number, run_dir=Path(run_dir)))
+        try:
+            accessor.get_review_exchange_transcript()
+        except ArtifactNotFoundError:
+            pass
+        else:
+            return (
+                {"type": "open_review_transcript", "label": "View Review Transcript", "issue_number": issue_number},
+                f"review-transcript:{issue_number}",
+            )
+    return (
+        {"type": "open_agent_log", "label": agent_log_label, "issue_number": issue_number},
+        f"agent:{issue_number}",
     )
 
 
@@ -2684,6 +2743,51 @@ async def get_claude_log_content(  # noqa: C901, PLR0912 - log content retrieval
         "entry_count": len(entries),
         "entries": entries,
     })
+
+
+@app.get("/api/session/review-transcript/{issue_number}")
+async def get_review_transcript_content(
+    issue_number: int, run_dir: str | None = None
+) -> JSONResponse:
+    """Return the dedicated review-exchange transcript for a run."""
+    if not _orchestrator:
+        return JSONResponse({"error": "Orchestrator not running"}, status_code=503)
+    if not run_dir:
+        return JSONResponse(
+            {
+                "error": "run_dir is required",
+                "hint": "Open review transcripts from a run-scoped timeline action.",
+            },
+            status_code=400,
+        )
+    run_identity = RunIdentity(issue_number=issue_number, run_dir=Path(run_dir))
+    accessor = ManifestAccessor(run_identity)
+    try:
+        artifact = accessor.get_review_exchange_transcript()
+    except ArtifactNotFoundError as e:
+        return JSONResponse(
+            {
+                "error": "Review transcript not found",
+                "run_dir": str(run_identity.run_dir),
+                "detail": str(e),
+            },
+            status_code=404,
+        )
+
+    transcript_path = artifact.path
+    try:
+        content = transcript_path.read_text(encoding="utf-8")
+    except Exception as e:
+        return JSONResponse({"error": f"Failed to read transcript: {e}"}, status_code=500)
+
+    return JSONResponse(
+        {
+            "issue_number": issue_number,
+            "run_dir": str(run_identity.run_dir),
+            "transcript_path": str(transcript_path),
+            "content": content,
+        }
+    )
 
 
 def _latest_review_exchange_prompt(run_dir: Path) -> Path | None:

@@ -837,6 +837,91 @@ def test_review_approved_after_validation_retry_stays_in_current_cycle(
         web.set_orchestrator(None)
 
 
+def test_user_view_shows_validation_retry_transition_after_review_approval(
+    sample_config,
+    mock_repository_host,
+):
+    """The user story must show the retry trigger between approval and the failed retry cycle."""
+    orch, timeline_writer = _build_orchestrator_with_sqlite_timeline(sample_config, mock_repository_host)
+    issue_number = 4057
+    run_dir_code = _start_run_with_artifacts(
+        sample_config.repo_root, issue_number=issue_number, session_name="issue-4057-code"
+    )
+    run_dir_review = _start_run_with_artifacts(
+        sample_config.repo_root, issue_number=issue_number, session_name="review-4057-exchange"
+    )
+    orch.state.cached_queue_issues = [
+        Issue(number=issue_number, title="UI: Surface provider circuit breaker status", labels=["agent:backend"])
+    ]
+
+    timeline_writer.record(TraceEvent(EventName.SESSION_STARTED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-code-1",
+        "run_dir": run_dir_code,
+        "task": "code",
+        "agent": "agent:backend",
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_STARTED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-review-1",
+        "run_dir": run_dir_review,
+        "task": "review",
+        "agent": "agent:reviewer",
+    }))
+    timeline_writer.record(TraceEvent(EventName.REVIEW_APPROVED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-review-1",
+        "run_dir": run_dir_review,
+        "task": "review",
+        "agent": "agent:reviewer",
+        "rounds": 2,
+        "summary": "Approved after 2 rounds",
+    }))
+    timeline_writer.record(TraceEvent(EventName.SESSION_VALIDATION_RETRY_NEEDED, {
+        "issue_number": issue_number,
+        "run_dir": run_dir_code,
+        "validation_reason": "push_branch_validation_failed",
+        "validation_error_summary": "push_branch: Push failed: make validate",
+    }))
+    timeline_writer.record(TraceEvent(EventName.SESSION_STARTED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-code-2",
+        "run_dir": run_dir_code,
+        "task": "code",
+        "agent": "agent:backend",
+    }))
+    timeline_writer.record(TraceEvent(EventName.SESSION_FAILED, {
+        "issue_number": issue_number,
+        "run_id": "run-4057-code-2",
+        "run_dir": run_dir_code,
+        "task": "code",
+        "agent": "agent:backend",
+        "summary": "Session ended without PR or status update",
+    }))
+
+    web.set_orchestrator(orch)
+    try:
+        client = TestClient(web.app)
+        response = client.get(f"/api/issue-detail/{issue_number}")
+        assert response.status_code == 200
+        payload = response.json()
+        latest_run = _latest_run(payload)
+        assert [cycle["iteration"] for cycle in latest_run["cycles"]] == [1, 2]
+        assert _step_events(latest_run["cycles"][0]) == [
+            "agent.coding_started",
+            "review.started",
+            "review.approved",
+        ]
+        assert _step_events(latest_run["cycles"][1]) == [
+            "validation.retry",
+            "agent.coding_started",
+            "agent.failed",
+        ]
+        assert "failed" in str(latest_run["cycles"][1]["outcome"]).lower()
+    finally:
+        web.set_orchestrator(None)
+
+
 def test_issue_detail_outcome_labels_correct_after_fan_out_renames(
     sample_config,
     mock_repository_host,
