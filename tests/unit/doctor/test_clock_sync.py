@@ -108,6 +108,42 @@ class TestCheckClockSync:
         assert checks[0].status == "warning"
         assert "timedatectl" in checks[0].detail
 
+    @patch("platform.system", return_value="Linux")
+    def test_linux_timedatectl_missing_falls_back_to_pgrep(self, _mock_sys):
+        """When timedatectl fails (nonzero exit), falls back to pgrep for ntpd."""
+        call_count = [0]
+
+        def mock_run(command, **_kwargs):
+            call_count[0] += 1
+            if command[0] == "timedatectl":
+                # timedatectl not found / failed
+                return CommandResult(returncode=127, stdout="", stderr="command not found")
+            elif command[0] == "pgrep":
+                # ntpd is running
+                return CommandResult(returncode=0, stdout="1234\n", stderr="")
+            return CommandResult(returncode=1, stdout="", stderr="")
+
+        runner = MagicMock()
+        runner.run.side_effect = mock_run
+        config = make_config(claims_enabled=True)
+        checks = check_clock_sync(config, runner)
+
+        assert len(checks) == 1
+        assert checks[0].status == "ok"
+        assert "NTP daemon running" in checks[0].detail
+        assert call_count[0] == 2  # timedatectl + pgrep
+
+    @patch("platform.system", return_value="Linux")
+    def test_linux_both_timedatectl_and_pgrep_fail(self, _mock_sys):
+        """When both timedatectl and pgrep fail, returns info check."""
+        runner = make_runner(returncode=1, stdout="", stderr="")
+        config = make_config(claims_enabled=True)
+        checks = check_clock_sync(config, runner)
+
+        assert len(checks) == 1
+        assert checks[0].status == "info"
+        assert "Cannot check NTP" in checks[0].detail
+
     @patch("platform.system", return_value="Windows")
     def test_unsupported_platform(self, _mock_sys):
         """Returns info check on unsupported platforms."""
