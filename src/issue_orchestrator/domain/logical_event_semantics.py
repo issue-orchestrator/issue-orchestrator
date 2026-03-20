@@ -30,6 +30,19 @@ _ITERATION_START_EVENTS = frozenset({
     "review.started",
     "review_exchange.started",
 })
+_ROUND_CURRENT_CYCLE_EVENTS = frozenset({
+    "review_exchange.round_started",
+    "review_exchange.round_completed",
+})
+_ROUND_NEXT_CYCLE_EVENTS = frozenset({
+    "review.rework_started",
+    "review.rework_completed",
+})
+_ROUND_COUNT_EVENTS = frozenset({
+    "review.approved",
+    "review.changes_requested",
+    "review_exchange.completed",
+})
 
 
 @dataclass(frozen=True)
@@ -78,12 +91,16 @@ def enrich_logical_semantics(
         logical_run = logical_run + 1
 
     signal_cycle = _cycle_from_signal(event_data.get("rework_cycle"))
+    round_cycle = _cycle_from_review_round(event_name, event_data)
     rework_driven = False
     if logical_run != (prev_run or 1):
         logical_cycle = 1
     elif signal_cycle is not None:
         logical_cycle = signal_cycle
         rework_driven = True
+    elif round_cycle is not None:
+        logical_cycle = round_cycle
+        rework_driven = logical_cycle > 1
     elif event_name in _CYCLE_BOUNDARY_EVENTS:
         logical_cycle = (prev_cycle or 1) + 1
     else:
@@ -132,6 +149,17 @@ def _as_positive_int(value: Any) -> int | None:
 def _cycle_from_signal(value: Any) -> int | None:
     if isinstance(value, int) and value >= 0:
         return value + 1
+    return None
+
+
+def _cycle_from_review_round(event_name: str, event_data: dict[str, Any]) -> int | None:
+    round_index = _as_positive_int(event_data.get("round_index"))
+    if event_name in _ROUND_CURRENT_CYCLE_EVENTS and round_index is not None:
+        return round_index
+    if event_name in _ROUND_NEXT_CYCLE_EVENTS and round_index is not None:
+        return round_index + 1
+    if event_name in _ROUND_COUNT_EVENTS:
+        return _as_positive_int(event_data.get("rounds")) or round_index
     return None
 
 

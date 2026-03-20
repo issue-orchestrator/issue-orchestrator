@@ -425,6 +425,7 @@ _OUTCOME_EVENTS = frozenset({
     "session.timeout",
     "session.blocked",
     "session.completed",
+    "review_exchange.round_completed",
     "review.changes_requested",
     "review.approved",
     "review.escalated",
@@ -779,6 +780,15 @@ def _outcome_label(  # noqa: C901 — event-type dispatch for outcome labeling
 
     if event_name == "session.completed":
         return "Completed"
+
+    if event_name == "review_exchange.round_completed":
+        if summary:
+            summary_lower = summary.strip().lower()
+            if "changes_requested" in summary_lower:
+                return "Changes Requested"
+            if "ok" in summary_lower:
+                return "Approved"
+        return "Review Round Completed"
 
     if event_name == "review.changes_requested":
         return "Changes Requested"
