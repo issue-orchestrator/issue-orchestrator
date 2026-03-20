@@ -285,6 +285,10 @@ class StartupManager:
                     issue_number,
                 )
                 continue
+            # Force startup analysis for locally persisted in-progress issues even
+            # when the freshly fetched GitHub labels disagree. The recovery bug
+            # here is dropping the issue entirely; downstream analysis owns label
+            # reconciliation once the issue is back in the control flow.
             recovered.append(issue)
         return recovered
 

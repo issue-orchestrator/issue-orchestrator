@@ -299,6 +299,33 @@ class TestStartupManagerInProgressIssues:
 
         assert "Local label store and cached queue agree on 1 in-progress issue(s)" in caplog.text
 
+    @pytest.mark.asyncio
+    @patch("issue_orchestrator.control.startup_manager.analyze_issue")
+    async def test_warm_start_logs_when_missing_locally_in_progress_issue_cannot_be_refetched(
+        self,
+        mock_analyze,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_label_store,
+        caplog,
+    ):
+        sample_state.cached_queue_issues = [
+            Issue(number=1, title="Cached", labels=["agent:web"]),
+        ]
+        mock_label_store.load_all.return_value = {
+            4057: {"in-progress", "agent:web"},
+        }
+        mock_repository_host.get_issue.return_value = None
+
+        with caplog.at_level("INFO"):
+            await startup_manager.run_startup(sample_state)
+
+        mock_repository_host.get_issue.assert_called_once_with(4057)
+        mock_analyze.assert_not_called()
+        assert "Cached queue omitted 1 locally in-progress issue(s): [4057]" in caplog.text
+        assert "Failed to refetch locally in-progress issue missing from cache: issue=4057" in caplog.text
+
 
 class TestStartupManagerCodeReviewRecovery:
     """Tests for code review recovery."""
