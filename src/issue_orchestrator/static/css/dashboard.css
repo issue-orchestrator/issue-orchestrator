@@ -98,6 +98,23 @@ body {
     font-weight: 600;
 }
 
+.provider-outage-banner {
+    margin: 0 0 12px;
+    padding: 10px 14px;
+    border-radius: 10px;
+    border: 1px solid var(--danger, #c0392b);
+    background: color-mix(in srgb, var(--danger, #c0392b) 12%, var(--surface, #fff));
+    color: var(--danger, #c0392b);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.provider-unavailable-badge {
+    background: color-mix(in srgb, var(--danger, #c0392b) 18%, var(--surface, #fff));
+    color: var(--danger, #c0392b);
+    border-color: var(--danger, #c0392b);
+}
+
 body.column-focus-mode {
     height: 100vh;
     overflow: hidden;

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -18,6 +18,10 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.provider_resilience import (
+    InMemoryProviderCircuitStore,
+    ProviderCircuitState,
+)
 from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
@@ -701,3 +705,144 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Provider circuit breaker UI tests
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _ProviderResilienceDeps:
+    """Minimal stub for orchestrator.deps.provider_resilience."""
+
+    store: InMemoryProviderCircuitStore
+
+
+@dataclass
+class _ProviderResilienceBundle:
+    provider_resilience: _ProviderResilienceDeps
+
+
+@dataclass
+class _OrchestratorWithCircuits:
+    """Orchestrator stub that exposes a provider circuit store."""
+
+    state: OrchestratorState
+    config: Config
+    shutdown_requested: bool = False
+
+    def __post_init__(self) -> None:
+        self._store = InMemoryProviderCircuitStore()
+        self.deps = _ProviderResilienceBundle(
+            provider_resilience=_ProviderResilienceDeps(store=self._store)
+        )
+
+    def add_open_circuit(self, provider: str, open_until: datetime, error: str | None = None) -> None:
+        self._store.save(ProviderCircuitState(
+            provider=provider,
+            open_until=open_until,
+            consecutive_outages=1,
+            last_error_summary=error,
+            updated_at=datetime.now(timezone.utc),
+        ))
+
+
+def test_provider_circuits_empty_when_no_outage():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorWithCircuits(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+    assert view_model.dashboard_data()["providerCircuits"] == []
+
+
+def test_provider_circuits_surfaced_when_open():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorWithCircuits(state=state, config=config)
+    open_until = datetime.now(timezone.utc) + timedelta(minutes=10)
+    orchestrator.add_open_circuit("claude", open_until, error="rate limit exceeded")
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    circuits = view_model.provider_circuits
+    assert len(circuits) == 1
+    c = circuits[0]
+    assert c["provider"] == "claude"
+    assert c["is_open"] is True
+    assert c["cooldown_remaining_seconds"] is not None
+    assert c["cooldown_remaining_seconds"] > 0
+    assert c["last_error_summary"] == "rate limit exceeded"
+
+    dashboard_circuits = view_model.dashboard_data()["providerCircuits"]
+    assert len(dashboard_circuits) == 1
+    assert dashboard_circuits[0]["provider"] == "claude"
+    assert dashboard_circuits[0]["is_open"] is True
+
+
+def test_provider_unavailable_blocked_flag_on_issue():
+    config = _make_config()
+    config.agents = {"agent:web": _make_agent_config()}
+    provider_label = config.provider_resilience.circuit_breaker.label
+
+    issue = Issue(number=42, title="Blocked by provider", labels=["agent:web", provider_label])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Issue with provider-unavailable label has the flag set and a blocked_summary
+    all_items = view_model.queue_items + view_model.blocked_items
+    matching = [item for item in all_items if item["issue_number"] == 42]
+    assert len(matching) == 1
+    item = matching[0]
+    assert item["provider_unavailable_blocked"] is True
+    assert item["blocked_summary"] is not None
+    assert "provider" in (item["blocked_summary"] or "").lower()
+
+
+def test_non_provider_blocked_flag_is_false():
+    config = _make_config()
+    config.agents = {"agent:web": _make_agent_config()}
+
+    issue = Issue(number=10, title="Blocked generically", labels=["agent:web", "blocked"])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.blocked_items) == 1
+    blocked = view_model.blocked_items[0]
+    assert blocked["provider_unavailable_blocked"] is False

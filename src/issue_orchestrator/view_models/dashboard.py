@@ -81,6 +81,7 @@ class DashboardViewModel:
 
     agents: dict[str, Any]
     agent_names: list[str]
+    provider_circuits: list[dict[str, Any]]
 
     def template_context(self) -> dict[str, Any]:
         return {
@@ -120,6 +121,7 @@ class DashboardViewModel:
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
             "dashboard_data": self.dashboard_data(),
+            "provider_circuits": self.provider_circuits,
         }
 
     def dashboard_data(self) -> dict[str, Any]:
@@ -141,6 +143,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuits": self.provider_circuits,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -181,6 +184,7 @@ class DashboardViewModel:
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
             "dashboard_data": self.dashboard_data(),
+            "provider_circuits": self.provider_circuits,
         }
 
 
@@ -238,6 +242,40 @@ def blocked_summary(labels: list[str], lm: LabelManager, dependency_summary: str
     if dependency_summary:
         reasons.append(dependency_summary)
     return " • ".join(reasons) if reasons else None
+
+
+def _is_provider_unavailable_blocked(labels: list[str], lm: LabelManager) -> bool:
+    """Return True if the issue is blocked specifically by a provider circuit outage."""
+    return lm.provider_unavailable in labels
+
+
+def _collect_provider_circuits(orchestrator: Any) -> list[dict[str, Any]]:
+    """Return serializable circuit state dicts for all known providers.
+
+    Reads from the orchestrator's provider_resilience store when available.
+    Returns an empty list if the orchestrator or store is not present.
+    """
+    try:
+        store = orchestrator.deps.provider_resilience.store
+        states = store.list_all()
+    except AttributeError:
+        return []
+    now = datetime.now(timezone.utc)
+    result: list[dict[str, Any]] = []
+    for circuit in states:
+        is_open = circuit.open_until is not None and circuit.open_until > now
+        cooldown_remaining: float | None = None
+        if is_open and circuit.open_until is not None:
+            cooldown_remaining = (circuit.open_until - now).total_seconds()
+        result.append({
+            "provider": circuit.provider,
+            "is_open": is_open,
+            "open_until": circuit.open_until.isoformat() if circuit.open_until else None,
+            "cooldown_remaining_seconds": cooldown_remaining,
+            "consecutive_outages": circuit.consecutive_outages,
+            "last_error_summary": circuit.last_error_summary,
+        })
+    return result
 
 
 def _queue_wait_reason(
@@ -453,6 +491,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
         if config and config.terminal_adapter == "subprocess":
             terminal_hint = "Click to view agent UI log"
 
+        issue_labels = list(session.issue.labels)
         items.append({
             "card_id": session.terminal_id,
             "issue_number": session.issue.number,
@@ -476,7 +515,8 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
-            "orchestrator_labels": _display_labels(list(session.issue.labels), lm),
+            "provider_unavailable_blocked": _is_provider_unavailable_blocked(issue_labels, lm),
+            "orchestrator_labels": _display_labels(issue_labels, lm),
             **_refresh_meta(state, config, session.issue.number),
         })
 
@@ -572,6 +612,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
         if queue_reason:
             detail_label = queue_reason
 
+        issue_labels = list(issue.labels)
         item = {
             "issue_number": issue.number,
             "title": issue.title,
@@ -596,10 +637,11 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            "provider_unavailable_blocked": _is_provider_unavailable_blocked(issue_labels, lm),
             "queue_wait_reason": queue_reason,
             "merge_pending": lm.is_pr_pending(issue.labels),
             "dependency_blocked": is_dependency_blocked,
-            "orchestrator_labels": _display_labels(list(issue.labels), lm),
+            "orchestrator_labels": _display_labels(issue_labels, lm),
             **_refresh_meta(state, config, issue.number),
         }
         if is_blocked:
@@ -1470,4 +1512,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuits=_collect_provider_circuits(orchestrator),
     )

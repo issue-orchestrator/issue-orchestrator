@@ -3416,7 +3416,52 @@ async function toggleExcluded() {
     let reconnectTimer = null;
     let healthPollTimer = null;
     const restartBanner = document.getElementById('engineRestartBanner');
+    const providerOutageBanner = document.getElementById('providerOutageBanner');
+    // Track open provider circuits: provider name → {open_until, cooldown_remaining_seconds}
+    const openProviderCircuits = new Map();
     const HEALTH_POLL_MS = 5000;
+
+    function _formatCooldown(seconds) {
+        if (seconds == null || seconds < 0) return '';
+        const m = Math.floor(seconds / 60);
+        const s = Math.round(seconds % 60);
+        return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    }
+
+    function updateProviderOutageBanner() {
+        if (!providerOutageBanner) return;
+        if (openProviderCircuits.size === 0) {
+            providerOutageBanner.style.display = 'none';
+            providerOutageBanner.textContent = '';
+            return;
+        }
+        const parts = [];
+        for (const [provider, info] of openProviderCircuits) {
+            let msg = `Provider outage: ${provider}`;
+            if (info.cooldown_remaining_seconds != null) {
+                msg += ` — retry in ${_formatCooldown(info.cooldown_remaining_seconds)}`;
+            } else if (info.open_until) {
+                msg += ` — circuit open until ${new Date(info.open_until).toLocaleTimeString()}`;
+            }
+            parts.push(msg);
+        }
+        providerOutageBanner.textContent = parts.join(' · ');
+        providerOutageBanner.style.display = '';
+    }
+
+    // Initialize banner from server-rendered dashboard data
+    (function initProviderCircuits() {
+        const circuits = window.dashboardData.providerCircuits || [];
+        for (const c of circuits) {
+            if (c.is_open) {
+                openProviderCircuits.set(c.provider, {
+                    open_until: c.open_until,
+                    cooldown_remaining_seconds: c.cooldown_remaining_seconds,
+                });
+            }
+        }
+        updateProviderOutageBanner();
+    })();
 
     function setRestartBanner(message) {
         if (!restartBanner) return;
@@ -3585,6 +3630,33 @@ async function toggleExcluded() {
                 updateStaleWarning(data.issue_number, staleIssues[data.issue_number]);
             } catch (err) {
                 console.error('[SSE] Failed to parse stale.persistent_detected:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_entered', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage entered:', data);
+                openProviderCircuits.set(data.provider, {
+                    open_until: data.open_until,
+                    cooldown_remaining_seconds: null,
+                });
+                updateProviderOutageBanner();
+                setTimeout(() => refreshViewModel({ reloadOnListChange: true }), 300);
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_entered:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_exited', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage exited:', data);
+                openProviderCircuits.delete(data.provider);
+                updateProviderOutageBanner();
+                setTimeout(() => refreshViewModel({ reloadOnListChange: true }), 300);
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_exited:', err);
             }
         });
 
