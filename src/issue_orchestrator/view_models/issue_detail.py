@@ -768,6 +768,10 @@ def _outcome_label(  # noqa: C901 — event-type dispatch for outcome labeling
     context: IssueStoryContext | None,
 ) -> str:
     """Map a single event name to its outcome label text."""
+    round_completed_label = _round_completed_outcome_label(event_name, summary)
+    if round_completed_label is not None:
+        return round_completed_label
+
     if event_name == "session.failed":
         return f"Failed{_duration_suffix(summary)}"
 
@@ -780,15 +784,6 @@ def _outcome_label(  # noqa: C901 — event-type dispatch for outcome labeling
 
     if event_name == "session.completed":
         return "Completed"
-
-    if event_name == "review_exchange.round_completed":
-        if summary:
-            summary_lower = summary.strip().lower()
-            if "changes_requested" in summary_lower:
-                return "Changes Requested"
-            if "ok" in summary_lower:
-                return "Approved"
-        return "Review Round Completed"
 
     if event_name == "review.changes_requested":
         return "Changes Requested"
@@ -817,6 +812,20 @@ def _outcome_label(  # noqa: C901 — event-type dispatch for outcome labeling
         return "Completed"
 
     return summary or event_name
+
+
+def _round_completed_outcome_label(event_name: str, summary: str) -> str | None:
+    """Map round-completion summaries into cycle outcome labels when applicable."""
+    if event_name != "review_exchange.round_completed":
+        return None
+    if not summary:
+        return None
+    summary_lower = summary.strip().lower()
+    if "changes_requested" in summary_lower:
+        return "Changes Requested"
+    if "ok" in summary_lower:
+        return "Approved"
+    return None
 
 
 def _duration_suffix(summary: str) -> str:
