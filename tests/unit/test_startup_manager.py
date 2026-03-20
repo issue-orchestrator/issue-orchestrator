@@ -397,6 +397,44 @@ class TestStartupManagerAwaitingMergeRecovery:
     """Tests for dashboard visibility recovery of pr-pending issues."""
 
     @pytest.mark.asyncio
+    async def test_recovers_branchless_pr_pending_issue_with_open_pr_into_session_history(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_label_store,
+        caplog,
+    ):
+        from issue_orchestrator.ports.pull_request_tracker import PRInfo
+
+        issue = Issue(number=4057, title="Provider circuit breaker UI", labels=["agent:backend", "pr-pending"])
+        mock_label_store.load_all.return_value = {
+            4057: {"agent:backend", "pr-pending"},
+        }
+        mock_repository_host.get_issue.return_value = issue
+        mock_repository_host.get_prs_for_issue.return_value = [
+            PRInfo(
+                number=5337,
+                url="https://github.com/owner/repo/pull/5337",
+                title="#4057: Provider circuit breaker UI",
+                branch="4057-provider-circuit-breaker-ui",
+                labels=["code-reviewed"],
+                body="",
+                state="open",
+            )
+        ]
+
+        with caplog.at_level("INFO"):
+            await startup_manager.run_startup(sample_state)
+
+        assert len(sample_state.session_history) == 1
+        entry = sample_state.session_history[0]
+        assert entry.issue_number == 4057
+        assert entry.pr_url == "https://github.com/owner/repo/pull/5337"
+        mock_repository_host.get_prs_for_issue.assert_called_once_with(4057, state="open")
+        assert "Recovered 1 pr-pending issue(s) into dashboard history" in caplog.text
+
+    @pytest.mark.asyncio
     @patch("issue_orchestrator.control.startup_manager.analyze_issue")
     async def test_recovers_pr_pending_issue_into_session_history(
         self,
