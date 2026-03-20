@@ -34,6 +34,9 @@ class QueueMutationOutcome:
     updated: bool
 
 
+_UI_VISIBILITY_STALENESS_SECONDS = 120
+
+
 class QueueCache:
     """Only writer for queue cache state."""
 
@@ -106,7 +109,7 @@ class QueueCache:
         """Return issues that the UI is actively displaying and should keep fresh."""
         if self._state.ui_visible_updated_at <= 0:
             return set()
-        if (time.time() - self._state.ui_visible_updated_at) > 120:
+        if (time.time() - self._state.ui_visible_updated_at) > _UI_VISIBILITY_STALENESS_SECONDS:
             return set()
         return set(self._state.ui_visible_issue_numbers)
 
