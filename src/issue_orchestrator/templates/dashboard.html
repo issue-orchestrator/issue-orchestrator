@@ -13,6 +13,10 @@
     <a href="#mainContent" class="skip-link">Skip to main content</a>
     <div class="container">
         <div id="engineRestartBanner" class="engine-restart-banner" style="display:none;" role="status" aria-live="polite"></div>
+        <div id="providerOutageBanner" class="provider-outage-banner" style="display:none;" role="alert" aria-live="polite">
+            <div class="provider-outage-banner-title">&#x26A0; Provider Outage</div>
+            <div id="providerOutageRows"></div>
+        </div>
         <header>
             <div class="header-left">
                 <h1>Issue Orchestrator</h1>
@@ -198,8 +202,11 @@
                                 {% endif %}
                                 {% endif %}
                                 {% set orch_labels = card.orchestrator_labels or [] %}
-                                {% if orch_labels or card.is_stale %}
+                                {% if orch_labels or card.is_stale or card.provider_blocked %}
                                 <div class="card-badges">
+                                    {% if card.provider_blocked %}
+                                    <span class="badge badge-provider-outage" title="Provider circuit open — issue blocked pending recovery">Provider Unavailable</span>
+                                    {% endif %}
                                     {% for label in orch_labels %}
                                     <span class="badge badge-orch">{{ label }}</span>
                                     {% endfor %}

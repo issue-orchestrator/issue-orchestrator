@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -18,6 +18,7 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.provider_resilience import InMemoryProviderCircuitStore, ProviderCircuitState
 from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
@@ -28,10 +29,27 @@ from issue_orchestrator.contracts.public import DashboardViewModelContract
 
 
 @dataclass
+class _ProviderResilienceStub:
+    store: InMemoryProviderCircuitStore = field(default_factory=InMemoryProviderCircuitStore)
+
+    def is_open(self, provider: str) -> bool:
+        state = self.store.get(provider)
+        if state is None or state.open_until is None:
+            return False
+        return state.open_until > datetime.now(timezone.utc)
+
+
+@dataclass
+class _DepsStub:
+    provider_resilience: _ProviderResilienceStub = field(default_factory=_ProviderResilienceStub)
+
+
+@dataclass
 class _OrchestratorStub:
     state: OrchestratorState
     config: Config
     shutdown_requested: bool = False
+    deps: _DepsStub = field(default_factory=_DepsStub)
 
 
 def _make_config() -> Config:
@@ -701,3 +719,174 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# ---------------------------------------------------------------------------
+# Provider circuit breaker surfacing tests
+# ---------------------------------------------------------------------------
+
+def test_provider_circuits_empty_when_no_open_circuits():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+    assert view_model.dashboard_data()["providerCircuits"] == []
+
+
+def test_provider_circuits_includes_open_circuit():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    deps = _DepsStub()
+    open_until = datetime.now(timezone.utc) + timedelta(minutes=5)
+    deps.provider_resilience.store.save(ProviderCircuitState(
+        provider="claude",
+        open_until=open_until,
+        consecutive_outages=2,
+        last_error_summary="rate limited",
+        updated_at=datetime.now(timezone.utc),
+    ))
+    orchestrator = _OrchestratorStub(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert len(view_model.provider_circuits) == 1
+    circuit = view_model.provider_circuits[0]
+    assert circuit["provider"] == "claude"
+    assert circuit["consecutive_outages"] == 2
+    assert circuit["last_error_summary"] == "rate limited"
+    assert circuit["cooldown_remaining_seconds"] > 0
+
+
+def test_provider_circuits_excludes_expired_circuits():
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    deps = _DepsStub()
+    # Expired circuit (open_until in the past)
+    past_time = datetime.now(timezone.utc) - timedelta(minutes=1)
+    deps.provider_resilience.store.save(ProviderCircuitState(
+        provider="claude",
+        open_until=past_time,
+        consecutive_outages=1,
+        last_error_summary=None,
+        updated_at=datetime.now(timezone.utc),
+    ))
+    orchestrator = _OrchestratorStub(state=state, config=config, deps=deps)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+
+
+def test_provider_circuits_empty_when_no_deps():
+    """Orchestrators without deps (legacy stubs) produce empty circuits."""
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+
+    @dataclass
+    class _NoDepsStub:
+        state: OrchestratorState
+        config: Config
+        shutdown_requested: bool = False
+
+    orchestrator = _NoDepsStub(state=state, config=config)
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    assert view_model.provider_circuits == []
+
+
+def test_queue_item_provider_blocked_flag():
+    """Issue with blocked:provider-unavailable label sets provider_blocked=True.
+
+    Note: blocked:provider-unavailable is treated by _base_of as prefix:base so
+    issue.is_blocked returns False; the item stays in the queue column but carries
+    the provider_blocked flag for display purposes.
+    """
+    config = _make_config()
+    config.agents = {"agent:web": _make_agent_config()}
+
+    # The default provider unavailable label
+    provider_label = "blocked:provider-unavailable"
+    issue = Issue(number=99, title="Blocked issue", labels=["agent:web", provider_label])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Issue is in queue (provider label has prefix semantics in domain layer)
+    all_items = view_model.queue_items + view_model.blocked_items
+    matching = [i for i in all_items if i["issue_number"] == 99]
+    assert matching, "Expected issue 99 in queue or blocked items"
+    assert matching[0]["provider_blocked"] is True
+
+
+def test_queue_item_provider_blocked_false_without_label():
+    config = _make_config()
+    config.agents = {"agent:web": _make_agent_config()}
+
+    issue = Issue(number=100, title="Normal issue", labels=["agent:web"])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    queue = [i for i in view_model.queue_items if i["issue_number"] == 100]
+    assert queue, "Expected issue 100 in queue_items"
+    assert queue[0]["provider_blocked"] is False
+
+
+def test_compact_card_provider_blocked_badge():
+    """Compact kanban card exposes provider_blocked and the badge."""
+    config = _make_config()
+    config.agents = {"agent:web": _make_agent_config()}
+
+    provider_label = "blocked:provider-unavailable"
+    issue = Issue(number=77, title="Provider blocked", labels=["agent:web", provider_label])
+    state = OrchestratorState(
+        startup_status="complete",
+        cached_queue_issues=[issue],
+    )
+    orchestrator = _OrchestratorStub(state=state, config=config)
+
+    view_model = build_dashboard_view_model(
+        orchestrator,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+
+    # Find the card in any column (provider label may land in queued or blocked)
+    all_cards = [
+        card
+        for col in view_model.flow_columns
+        for card in col["items"]
+        if card.get("issue_number") == 77
+    ]
+    assert all_cards, "Expected issue 77 in a flow column"
+    card = all_cards[0]
+    assert card["provider_blocked"] is True
+    assert any(b.get("style") == "provider-outage" for b in card["badges"])

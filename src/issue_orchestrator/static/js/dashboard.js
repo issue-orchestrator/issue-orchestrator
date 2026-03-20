@@ -3406,6 +3406,48 @@ async function toggleExcluded() {
     }
 }
 
+// Provider circuit breaker banner
+(function() {
+    const banner = document.getElementById('providerOutageBanner');
+    const rowsEl = document.getElementById('providerOutageRows');
+    // openCircuits: map of provider name -> {provider, open_until, cooldown_remaining_seconds, ...}
+    const openCircuits = {};
+
+    function _formatCooldown(seconds) {
+        if (seconds <= 0) return 'cooling down';
+        if (seconds < 60) return `${seconds}s remaining`;
+        return `${Math.ceil(seconds / 60)}m remaining`;
+    }
+
+    function renderProviderBanner() {
+        if (!banner || !rowsEl) return;
+        const circuits = Object.values(openCircuits);
+        if (circuits.length === 0) {
+            banner.style.display = 'none';
+            return;
+        }
+        rowsEl.innerHTML = circuits.map(c => {
+            const cooldown = typeof c.cooldown_remaining_seconds === 'number'
+                ? _formatCooldown(c.cooldown_remaining_seconds) : '';
+            const err = c.last_error_summary ? ` — ${c.last_error_summary}` : '';
+            return `<div class="provider-outage-banner-row">` +
+                `<span class="provider-outage-banner-name">${escapeHtml(c.provider)}</span>` +
+                `<span class="provider-outage-banner-meta">${escapeHtml(cooldown)}${escapeHtml(err)}</span>` +
+                `</div>`;
+        }).join('');
+        banner.style.display = '';
+    }
+
+    // Initialize from page-load data
+    const initialCircuits = (window.dashboardData && window.dashboardData.providerCircuits) || [];
+    initialCircuits.forEach(c => { openCircuits[c.provider] = c; });
+    renderProviderBanner();
+
+    // Expose so SSE handlers can call it
+    window._providerCircuits = openCircuits;
+    window._renderProviderBanner = renderProviderBanner;
+})();
+
 // Server-Sent Events for real-time updates
 // Always connect - even during startup - so we can receive startup_complete
 // IMPORTANT: Connect first, then fetch initial state on open to avoid race conditions
@@ -3585,6 +3627,40 @@ async function toggleExcluded() {
                 updateStaleWarning(data.issue_number, staleIssues[data.issue_number]);
             } catch (err) {
                 console.error('[SSE] Failed to parse stale.persistent_detected:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_entered', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage entered:', data);
+                if (window._providerCircuits && data.provider) {
+                    const openUntil = data.open_until ? new Date(data.open_until) : null;
+                    const cooldown = openUntil ? Math.max(0, Math.round((openUntil - Date.now()) / 1000)) : 0;
+                    window._providerCircuits[data.provider] = {
+                        provider: data.provider,
+                        open_until: data.open_until,
+                        cooldown_remaining_seconds: cooldown,
+                        consecutive_outages: data.consecutive_outages || 1,
+                        last_error_summary: data.error_summary || null,
+                    };
+                    if (window._renderProviderBanner) window._renderProviderBanner();
+                }
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_entered:', err);
+            }
+        });
+
+        source.addEventListener('provider.outage_exited', function(e) {
+            try {
+                const data = JSON.parse(e.data);
+                console.log('[SSE] Provider outage exited:', data);
+                if (window._providerCircuits && data.provider) {
+                    delete window._providerCircuits[data.provider];
+                    if (window._renderProviderBanner) window._renderProviderBanner();
+                }
+            } catch (err) {
+                console.error('[SSE] Failed to parse provider.outage_exited:', err);
             }
         });
 

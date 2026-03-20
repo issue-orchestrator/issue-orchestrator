@@ -588,3 +588,41 @@ def test_expanded_column_state_handles_running_column() -> None:
     ).read_text(encoding="utf-8")
     assert "columnId === 'running'" in js
     assert "active_items" in js
+
+
+def test_provider_outage_banner_in_template() -> None:
+    """Provider outage banner element must exist in dashboard HTML."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert 'id="providerOutageBanner"' in html
+    assert 'provider-outage-banner' in html
+    assert 'id="providerOutageRows"' in html
+
+
+def test_provider_outage_banner_css_defined() -> None:
+    """Provider outage banner CSS class must be defined."""
+    css = _read(DASHBOARD_CSS)
+    assert ".provider-outage-banner {" in css
+    assert ".badge-provider-outage {" in css
+
+
+def test_provider_outage_sse_handlers_in_js() -> None:
+    """dashboard.js must listen for provider.outage_entered and provider.outage_exited."""
+    js = _read(DASHBOARD_JS)
+    assert "provider.outage_entered" in js
+    assert "provider.outage_exited" in js
+    assert "_providerCircuits" in js
+    assert "_renderProviderBanner" in js
+
+
+def test_provider_outage_badge_in_issue_row_template() -> None:
+    """issue_row.html must render a provider-outage badge when provider_blocked is True."""
+    ISSUE_ROW_TEMPLATE = ROOT / "src" / "issue_orchestrator" / "templates" / "issue_row.html"
+    html = ISSUE_ROW_TEMPLATE.read_text(encoding="utf-8")
+    assert "issue.provider_blocked" in html
+    assert "badge-provider-outage" in html
+
+
+def test_provider_circuits_in_dashboard_data_js() -> None:
+    """dashboard.js must reference providerCircuits from dashboardData."""
+    js = _read(DASHBOARD_JS)
+    assert "providerCircuits" in js

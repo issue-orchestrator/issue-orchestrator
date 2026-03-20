@@ -82,6 +82,8 @@ class DashboardViewModel:
     agents: dict[str, Any]
     agent_names: list[str]
 
+    provider_circuits: list[dict[str, Any]]
+
     def template_context(self) -> dict[str, Any]:
         return {
             "issues": self.issues,
@@ -119,6 +121,7 @@ class DashboardViewModel:
             "e2e_page": self.e2e_page,
             "e2e_total_pages": self.e2e_total_pages,
             "e2e_total": self.e2e_total,
+            "provider_circuits": self.provider_circuits,
             "dashboard_data": self.dashboard_data(),
         }
 
@@ -141,6 +144,7 @@ class DashboardViewModel:
             "githubUsage": github_usage,
             "fetchLayerVisibilityAwareEnabled": self.scope_summary.get("refresh", {}).get("visibilityAwareEnabled", False),
             "fetchLayerSelectiveSyncPlannerEnabled": self.scope_summary.get("refresh", {}).get("selectiveSyncPlannerEnabled", False),
+            "providerCircuits": self.provider_circuits,
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -476,6 +480,7 @@ def _build_active_items(state, config, queue_page: int, seen_issues: set[int], *
             "flow_stage_label": flow_stage_label_value,
             "flow_steps": flow_steps,
             "blocked_summary": blocked,
+            "provider_blocked": lm.provider_unavailable in session.issue.labels,
             "orchestrator_labels": _display_labels(list(session.issue.labels), lm),
             **_refresh_meta(state, config, session.issue.number),
         })
@@ -599,6 +604,7 @@ def _build_queue_items(  # noqa: C901, PLR0912 — aggregates queue from multipl
             "queue_wait_reason": queue_reason,
             "merge_pending": lm.is_pr_pending(issue.labels),
             "dependency_blocked": is_dependency_blocked,
+            "provider_blocked": lm.provider_unavailable in issue.labels,
             "orchestrator_labels": _display_labels(list(issue.labels), lm),
             **_refresh_meta(state, config, issue.number),
         }
@@ -839,6 +845,8 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
     phase_age = item.get("time") or ""
     blocked = item.get("blocked_summary") or ""
     summary_text = item.get("queue_wait_reason") or (f"Summary: {blocked}" if blocked else "")
+    provider_blocked = bool(item.get("provider_blocked", False))
+    badges = [{"text": "Provider Unavailable", "style": "provider-outage"}] if provider_blocked else []
     return {
         "card_id": item.get("card_id") or f"issue-{item.get('issue_number')}",
         "issue_number": item.get("issue_number"),
@@ -850,7 +858,8 @@ def _compact_card(item: dict[str, Any], state_label: str | None = None) -> dict[
         "summary": summary_text,
         "queue_wait_reason": item.get("queue_wait_reason"),
         "blocked_summary": blocked,
-        "badges": [],
+        "provider_blocked": provider_blocked,
+        "badges": badges,
         "orchestrator_labels": item.get("orchestrator_labels", []),
         "focus_action": "focus",
         "issue_url": item.get("issue_url") or item.get("url") or "",
@@ -1263,6 +1272,25 @@ def build_dashboard_view_model(
     state = orchestrator.state if orchestrator else None
     config = orchestrator.config if orchestrator else None
 
+    # Collect open provider circuit breaker states for the UI banner
+    _provider_resilience = getattr(getattr(orchestrator, "deps", None), "provider_resilience", None)
+    _now_utc = datetime.now(timezone.utc)
+    if _provider_resilience:
+        _all_circuits = _provider_resilience.store.list_all()
+        provider_circuits: list[dict[str, Any]] = [
+            {
+                "provider": c.provider,
+                "open_until": c.open_until.isoformat(),
+                "cooldown_remaining_seconds": max(0, int((c.open_until - _now_utc).total_seconds())),
+                "consecutive_outages": c.consecutive_outages,
+                "last_error_summary": c.last_error_summary,
+            }
+            for c in _all_circuits
+            if c.open_until and c.open_until > _now_utc
+        ]
+    else:
+        provider_circuits = []
+
     active_items: list[dict[str, Any]] = []
     queue_items: list[dict[str, Any]] = []
     blocked_items: list[dict[str, Any]] = []
@@ -1470,4 +1498,5 @@ def build_dashboard_view_model(
         e2e_total=e2e_total,
         agents=agents,
         agent_names=list(agents.keys()) if agents else [],
+        provider_circuits=provider_circuits,
     )

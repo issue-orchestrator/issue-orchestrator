@@ -1,0 +1,36 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "consecutive_outages": {
+      "title": "Consecutive Outages",
+      "type": "integer"
+    },
+    "error_summary": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Error Summary"
+    },
+    "open_until": {
+      "title": "Open Until",
+      "type": "string"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider",
+    "open_until",
+    "consecutive_outages"
+  ],
+  "title": "ProviderOutageEnteredPayload",
+  "type": "object"
+}
