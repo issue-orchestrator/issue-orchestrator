@@ -53,6 +53,14 @@
           "title": "Paused",
           "type": "boolean"
         },
+        "providerCircuits": {
+          "items": {
+            "additionalProperties": true,
+            "type": "object"
+          },
+          "title": "Providercircuits",
+          "type": "array"
+        },
         "queueRefreshSeconds": {
           "title": "Queuerefreshseconds",
           "type": "integer"
@@ -107,6 +115,14 @@
     },
     "dashboard_data": {
       "$ref": "#/$defs/DashboardDataContract"
+    },
+    "open_circuits": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Open Circuits",
+      "type": "array"
     },
     "paused": {
       "title": "Paused",

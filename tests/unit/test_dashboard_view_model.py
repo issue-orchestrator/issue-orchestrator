@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from issue_orchestrator.domain.issue_key import FakeIssueKey
@@ -18,6 +18,10 @@ from issue_orchestrator.domain.models import (
 )
 from issue_orchestrator.domain.session_key import SessionKey, TaskKind
 from issue_orchestrator.infra.config import Config
+from issue_orchestrator.ports.provider_resilience import (
+    InMemoryProviderCircuitStore,
+    ProviderCircuitState,
+)
 from issue_orchestrator.view_models.dashboard import (
     _apply_lane_precedence,
     _exclude_flow_overlaps,
@@ -740,3 +744,108 @@ def test_view_model_matches_public_contract():
     )
 
     DashboardViewModelContract.model_validate(view_model.to_dict())
+
+
+# ── Provider circuit breaker ───────────────────────────────────────────────
+
+@dataclass
+class _ProviderResilienceStub:
+    store: InMemoryProviderCircuitStore
+
+
+@dataclass
+class _OrchestratorWithCircuits:
+    state: OrchestratorState
+    config: Config
+    provider_resilience: _ProviderResilienceStub
+    shutdown_requested: bool = False
+
+
+def _make_circuit_orchestrator(circuits: list[ProviderCircuitState]) -> _OrchestratorWithCircuits:
+    store = InMemoryProviderCircuitStore()
+    for c in circuits:
+        store.save(c)
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    return _OrchestratorWithCircuits(
+        state=state,
+        config=config,
+        provider_resilience=_ProviderResilienceStub(store=store),
+    )
+
+
+def test_open_circuits_empty_when_no_circuits():
+    orchestrator = _make_circuit_orchestrator([])
+    vm = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+    assert vm.open_circuits == []
+    assert vm.dashboard_data()["providerCircuits"] == []
+
+
+def test_open_circuits_included_when_circuit_is_open():
+    now = datetime.now(timezone.utc)
+    open_until = now + timedelta(seconds=300)
+    circuit = ProviderCircuitState(
+        provider="claude",
+        open_until=open_until,
+        consecutive_outages=2,
+        last_error_summary="rate limit",
+        updated_at=now,
+    )
+    orchestrator = _make_circuit_orchestrator([circuit])
+    vm = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+    assert len(vm.open_circuits) == 1
+    c = vm.open_circuits[0]
+    assert c["provider"] == "claude"
+    assert c["consecutive_outages"] == 2
+    assert c["last_error_summary"] == "rate limit"
+    assert 0 < c["cooldown_remaining_seconds"] <= 300
+    assert "providerCircuits" in vm.dashboard_data()
+    assert len(vm.dashboard_data()["providerCircuits"]) == 1
+    DashboardViewModelContract.model_validate(vm.to_dict())
+
+
+def test_expired_circuits_not_included():
+    now = datetime.now(timezone.utc)
+    expired = ProviderCircuitState(
+        provider="claude",
+        open_until=now - timedelta(seconds=10),
+        consecutive_outages=1,
+        last_error_summary=None,
+        updated_at=now - timedelta(seconds=60),
+    )
+    orchestrator = _make_circuit_orchestrator([expired])
+    vm = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+    assert vm.open_circuits == []
+
+
+def test_open_circuits_absent_when_no_provider_resilience():
+    # Orchestrator stub without provider_resilience attribute
+    config = _make_config()
+    state = OrchestratorState(startup_status="complete")
+    orchestrator = _OrchestratorStub(state=state, config=config)
+    vm = build_dashboard_view_model(
+        orchestrator,
+        queue_page=1,
+        active_tab="flow",
+        e2e_page=1,
+        e2e_status_provider=lambda _: {"enabled": False, "running": False},
+    )
+    assert vm.open_circuits == []

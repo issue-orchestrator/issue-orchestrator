@@ -55,6 +55,7 @@ export interface DashboardViewModelPayload {
   github_repo: string;
   history_items: IssueItemPayload[];
   issues: IssueItemPayload[];
+  open_circuits?: Record<string, any>[];
   paused: boolean;
   queue_count: number;
   queue_items: IssueItemPayload[];

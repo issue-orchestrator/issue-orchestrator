@@ -13,6 +13,19 @@
     <a href="#mainContent" class="skip-link">Skip to main content</a>
     <div class="container">
         <div id="engineRestartBanner" class="engine-restart-banner" style="display:none;" role="status" aria-live="polite"></div>
+        {% if open_circuits %}
+        <div class="provider-outage-banner" role="alert" id="providerOutageBanner">
+            <strong>Provider outage:</strong>
+            {% for circuit in open_circuits %}
+            <span class="provider-outage-entry">
+                <span class="provider-outage-name">{{ circuit.provider }}</span>
+                &mdash; cooldown {{ circuit.cooldown_remaining_seconds }}s
+                {% if circuit.last_error_summary %}<span class="provider-outage-error">({{ circuit.last_error_summary }})</span>{% endif %}
+                {% if circuit.consecutive_outages > 1 %}<span class="provider-outage-count">{{ circuit.consecutive_outages }} outages</span>{% endif %}
+            </span>{% if not loop.last %} &bull; {% endif %}
+            {% endfor %}
+        </div>
+        {% endif %}
         <header>
             <div class="header-left">
                 <h1>Issue Orchestrator</h1>
@@ -201,7 +214,7 @@
                                 {% if orch_labels or card.is_stale %}
                                 <div class="card-badges">
                                     {% for label in orch_labels %}
-                                    <span class="badge badge-orch">{{ label }}</span>
+                                    <span class="badge badge-orch{% if 'provider-unavailable' in label %} badge-provider-unavailable{% endif %}">{{ label }}</span>
                                     {% endfor %}
                                     {% if card.is_stale %}
                                     <span class="badge badge-stale" title="Data may be stale">stale</span>

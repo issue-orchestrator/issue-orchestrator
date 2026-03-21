@@ -589,3 +589,26 @@ def test_expanded_column_state_handles_running_column() -> None:
     ).read_text(encoding="utf-8")
     assert "columnId === 'running'" in js
     assert "active_items" in js
+
+
+def test_provider_outage_banner_element_exists_in_template() -> None:
+    """Provider outage banner must be present and gated on open_circuits."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert "providerOutageBanner" in html or "provider-outage-banner" in html
+    assert "open_circuits" in html
+    assert "provider-outage-banner" in html
+
+
+def test_provider_unavailable_badge_styled_distinctly() -> None:
+    """provider-unavailable label must get a distinct CSS class in card badges."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert "badge-provider-unavailable" in html
+    assert "provider-unavailable" in html
+    css = _read(DASHBOARD_CSS)
+    assert ".badge-provider-unavailable" in css
+
+
+def test_provider_outage_banner_css_exists() -> None:
+    """The provider outage banner must have dedicated CSS."""
+    css = _read(DASHBOARD_CSS)
+    assert ".provider-outage-banner" in css

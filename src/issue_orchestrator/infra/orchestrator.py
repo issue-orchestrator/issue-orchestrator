@@ -143,6 +143,11 @@ class Orchestrator:
         return self._last_tick_time
 
     @property
+    def provider_resilience(self):
+        """Access the provider resilience manager (circuit breaker)."""
+        return self.deps.provider_resilience
+
+    @property
     def state_lock(self) -> threading.RLock:
         return self._state_lock
 

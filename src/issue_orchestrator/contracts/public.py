@@ -29,6 +29,7 @@ class DashboardDataContract(ContractBase):
     githubRepo: Optional[str]
     e2eLastRun: Optional[dict[str, Any]] = None
     agents: list[str]
+    providerCircuits: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class DashboardViewModelContract(ContractBase):
@@ -37,6 +38,7 @@ class DashboardViewModelContract(ContractBase):
     startup_status: str
     active_tab: str
     shutdown_requested: bool
+    open_circuits: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SessionStartedPayload(ContractBase):
