@@ -1257,7 +1257,7 @@ def _build_provider_circuits(orchestrator: Any) -> list[dict[str, Any]]:
 
     now = datetime.now(timezone.utc)
     circuits = []
-    for state in resilience.store.list_all():
+    for state in resilience.list_all():
         is_open = state.open_until is not None and state.open_until > now
         cooldown_remaining: float | None = None
         if is_open and state.open_until is not None:
