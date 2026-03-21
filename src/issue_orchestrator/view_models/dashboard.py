@@ -1239,31 +1239,24 @@ def _build_e2e_view_model(
     }
 
 
-def _get_provider_circuit_breakers(orchestrator) -> list[dict[str, Any]]:
+def _get_provider_circuit_breakers(orchestrator: Any) -> list[dict[str, Any]]:
     """Extract provider circuit breaker states from the orchestrator."""
-    try:
-        resilience = getattr(getattr(orchestrator, "deps", None), "provider_resilience", None)
-        if resilience is None:
-            return []
-        store = getattr(resilience, "store", None)
-        if store is None:
-            return []
-        states = store.list_all()
-        now = datetime.now(timezone.utc)
-        result: list[dict[str, Any]] = []
-        for s in states:
-            is_open = s.open_until is not None and s.open_until > now
-            result.append({
-                "provider": s.provider,
-                "is_open": is_open,
-                "open_until": s.open_until.isoformat() if s.open_until else None,
-                "consecutive_outages": s.consecutive_outages,
-                "last_error_summary": s.last_error_summary,
-                "updated_at": s.updated_at.isoformat(),
-            })
-        return result
-    except Exception:
+    if orchestrator is None or not hasattr(orchestrator, "deps"):
         return []
+    states = orchestrator.deps.provider_resilience.store.list_all()
+    now = datetime.now(timezone.utc)
+    result: list[dict[str, Any]] = []
+    for s in states:
+        is_open = s.open_until is not None and s.open_until > now
+        result.append({
+            "provider": s.provider,
+            "is_open": is_open,
+            "open_until": s.open_until.isoformat() if s.open_until else None,
+            "consecutive_outages": s.consecutive_outages,
+            "last_error_summary": s.last_error_summary,
+            "updated_at": s.updated_at.isoformat(),
+        })
+    return result
 
 
 def _normalize_tab(active_tab: str) -> str:
