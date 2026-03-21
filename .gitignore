@@ -76,3 +76,6 @@ Thumbs.db
 
 # Worktrees for development
 worktrees/
+
+# Hypothesis testing library auto-generated directory
+.hypothesis/
