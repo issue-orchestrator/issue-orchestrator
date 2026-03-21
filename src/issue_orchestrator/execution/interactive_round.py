@@ -31,6 +31,7 @@ logger = logging.getLogger(__name__)
 _POLL_INTERVAL = 0.2
 _DEFAULT_PTY_COLS = 120
 _DEFAULT_PTY_ROWS = 40
+_POST_RESPONSE_DRAIN_SECONDS = 0.1
 
 
 @dataclass
@@ -145,6 +146,11 @@ def _wait_for_response_or_exit(
     while time.monotonic() < deadline:
         _drain_pty_output(master_fd, log_writer)
         if response_file.exists():
+            _drain_pty_output_until_quiet(
+                master_fd,
+                log_writer,
+                quiet_seconds=_POST_RESPONSE_DRAIN_SECONDS,
+            )
             logger.info("Interactive agent wrote response file")
             return False
         ret = proc.poll()
@@ -201,6 +207,24 @@ def _drain_pty_output(master_fd: int, log_writer: MirroredTerminalRecordingWrite
     for chunk in _iter_pty_chunks(master_fd):
         if log_writer is not None:
             log_writer.write(chunk)
+
+
+def _drain_pty_output_until_quiet(
+    master_fd: int,
+    log_writer: MirroredTerminalRecordingWriter | None,
+    *,
+    quiet_seconds: float,
+) -> None:
+    deadline = time.monotonic() + quiet_seconds
+    while time.monotonic() < deadline:
+        chunks = _iter_pty_chunks(master_fd)
+        if chunks:
+            if log_writer is not None:
+                for chunk in chunks:
+                    log_writer.write(chunk)
+            deadline = time.monotonic() + quiet_seconds
+            continue
+        time.sleep(0.01)
 
 
 def _iter_pty_chunks(master_fd: int) -> list[bytes]:
