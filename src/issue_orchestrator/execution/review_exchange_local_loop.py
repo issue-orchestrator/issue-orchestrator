@@ -16,6 +16,7 @@ import logging
 import os
 import signal
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -31,7 +32,7 @@ from ..agent_runner.env_filter import build_filtered_env
 from ..domain.models import AgentConfig
 from ..infra.env import ENV_PREFIX
 from ..infra.logging_config import get_repo_log_path
-from ..infra.terminal_cleaning import CleaningLogWriter
+from ..infra.terminal_recording import MirroredTerminalRecordingWriter
 from ..ports import EventSink, make_trace_event
 from ..ports.session_output import SessionOutput
 from ..events import EventName, EventContext
@@ -50,6 +51,8 @@ from ..control.review_exchange_loop import (
 logger = logging.getLogger(__name__)
 
 _COMPLETION_POLL_INTERVAL = 2.0  # seconds between completion file checks
+_DEFAULT_PTY_COLS = 120
+_DEFAULT_PTY_ROWS = 40
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +146,7 @@ class _PtySession:
 
     role: str
     child: pexpect.spawn[str]
-    log_file: Any  # text file object for PTY output
+    log_file: Any  # terminal replay writer
     log_path: Path
     completion_path: Path  # absolute path to completion file
 
@@ -298,7 +301,14 @@ def _start_pty_session(
     shell_command = shlex.join(command)
 
     log_path = exchange_dir / f"{role}-pty.log"
-    log_file = CleaningLogWriter(log_path)
+    recording_path = run_dir / "terminal-recording.jsonl"
+    cols, rows = shutil.get_terminal_size(fallback=(_DEFAULT_PTY_COLS, _DEFAULT_PTY_ROWS))
+    log_file = MirroredTerminalRecordingWriter(
+        recording_path,
+        mirror_path=log_path,
+        initial_rows=rows,
+        initial_cols=cols,
+    )
 
     completion_relpath = env[f"{ENV_PREFIX}COMPLETION_PATH"]
     completion_abs = worktree_path / completion_relpath

@@ -786,6 +786,52 @@ class TestInteractiveRound:
         assert response_file.exists()
         assert result.exit_code == -9
 
+    def test_interactive_round_writes_review_output_to_terminal_recording(self, tmp_path: Path) -> None:
+        from issue_orchestrator.execution.agent_runner_types import AgentSpec
+        from issue_orchestrator.execution.interactive_round import run_interactive_round
+
+        round_dir = tmp_path / "round"
+        round_dir.mkdir()
+        response_file = tmp_path / "review-response.json"
+        command = [
+            "python3",
+            "-c",
+            (
+                "from pathlib import Path; "
+                "import time; "
+                "print('review-hi', flush=True); "
+                f"Path({str(response_file)!r}).write_text("
+                "'{\"response_type\":\"ok\",\"response_text\":\"approved\"}',"
+                " encoding='utf-8'); "
+                "time.sleep(5)"
+            ),
+        ]
+        spec = AgentSpec(
+            command=command,
+            working_dir=tmp_path,
+            timeout_seconds=10,
+            log_path=round_dir / "terminal-recording.jsonl",
+            mirror_log_path=round_dir / "agent-output.log",
+            output_dir=round_dir,
+        )
+
+        result = run_interactive_round(spec, response_file)
+
+        assert response_file.exists()
+        assert result.timed_out is False
+        events = [
+            json.loads(line)
+            for line in spec.log_path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        content = "".join(
+            base64.b64decode(event["data_b64"]).decode("utf-8", errors="ignore")
+            for event in events
+            if event.get("event_type") == "output" and event.get("data_b64")
+        )
+        assert "review-hi" in content
+        assert "review-hi" in spec.mirror_log_path.read_text(encoding="utf-8")
+
     def test_interactive_nonzero_exit_succeeds_when_response_file_present(
         self, tmp_path: Path, monkeypatch,
     ) -> None:

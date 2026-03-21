@@ -3411,12 +3411,13 @@ class TestTimelineActionWiring:
         def _label(actions: list[dict[str, Any]], action_type: str) -> str:
             return next(action["label"] for action in actions if action.get("type") == action_type)
 
+        assert _label(review_actions, "open_agent_log") == "View Reviewer Session Recording"
         assert _label(review_actions, "open_review_transcript") == "View Review Transcript"
         assert _label(coding_actions, "open_agent_log") == "View Coding Session Recording"
         assert _label(rework_actions, "open_agent_log") == "View Rework Session Recording"
         assert all(action.get("type") != "open_agent_log" for action in fallback_actions)
 
-    def test_review_events_prefer_dedicated_review_transcript_when_present(self, tmp_path: Path) -> None:
+    def test_review_events_offer_session_recording_and_review_transcript_when_present(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions
         from issue_orchestrator.execution.session_output_adapter import FileSystemSessionOutput
 
@@ -3440,7 +3441,7 @@ class TestTimelineActionWiring:
         )
         action_types = {action.get("type") for action in actions}
         assert "open_review_transcript" in action_types
-        assert "open_agent_log" not in action_types
+        assert "open_agent_log" in action_types
 
     def test_review_events_fall_back_to_agent_log_when_review_transcript_missing(self, tmp_path: Path) -> None:
         from issue_orchestrator.entrypoints.web import _timeline_event_actions

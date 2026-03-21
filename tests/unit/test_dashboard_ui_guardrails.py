@@ -270,11 +270,12 @@ def test_review_transcript_uses_dedicated_endpoint_not_terminal_replay() -> None
     assert "transcript_role" in body
 
 
-def test_timeline_prefers_review_transcript_primary_action_label() -> None:
+def test_timeline_prefers_session_recording_before_review_transcript() -> None:
     js = _read(DASHBOARD_JS)
     timeline_body = _function_body(js, "renderTimelineEventActions")
     short_label_body = _function_body(js, "_timelineActionShortLabel")
-    assert "'open_review_transcript'" in timeline_body
+    assert timeline_body.index("'open_agent_log'") < timeline_body.index("'open_review_transcript'")
+    assert "Session Recording" in short_label_body
     assert "Review Transcript" in short_label_body
 
 

@@ -16,6 +16,7 @@ from typing import Any, Callable
 from ..agent_runner import AgentRunner, AgentResult, AgentSpec
 from ..domain.models import AgentConfig
 from ..infra.logging_config import get_repo_log_path
+from ..infra.terminal_recording import TERMINAL_RECORDING_FILENAME
 from ..infra.env import ENV_PREFIX
 from ..ports.session_output import SessionOutput
 from ..ports import EventSink,  make_trace_event
@@ -827,7 +828,8 @@ def _run_agent_round(
         command=command,
         working_dir=worktree_path,
         timeout_seconds=agent.timeout_minutes * 60,
-        log_path=round_dir / "agent-output.log",
+        log_path=run_dir / TERMINAL_RECORDING_FILENAME,
+        mirror_log_path=round_dir / "agent-output.log",
         output_dir=round_dir,
         env_overrides=env_overrides,
     )

@@ -1315,9 +1315,9 @@ function renderGroupedDialogActions(actions) {
     if (items.length === 0) return '';
 
     const primaryTypes = [
-        'open_review_transcript',
         'open_agent_log',
         'open_review_feedback',
+        'open_review_transcript',
     ];
     const primary = [];
     const used = new Set();
@@ -5019,9 +5019,9 @@ function renderTimelineEventActions(actions) {
         label: _timelineActionShortLabel(action),
     }));
     const primaryTypes = [
-        'open_review_transcript',
         'open_agent_log',
         'open_review_feedback',
+        'open_review_transcript',
     ];
     const primary = [];
     const used = new Set();

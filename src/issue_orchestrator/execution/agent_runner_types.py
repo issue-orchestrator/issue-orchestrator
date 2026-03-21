@@ -42,6 +42,8 @@ class AgentSpec:
         timeout_seconds: Maximum time to wait for the agent to complete.
         log_path: Path for the canonical raw terminal recording.
                   Optional — SubprocessAgentRunner does not use it.
+        mirror_log_path: Optional plain-text mirror of the terminal stream for
+                         secondary diagnostics or round-scoped artifacts.
         output_dir: Directory for artifacts (completion.json, etc.).
         env_overrides: Environment variables to set (highest priority).
         env_scrub: Variables to remove from the environment (security).
@@ -54,6 +56,7 @@ class AgentSpec:
     timeout_seconds: int
     output_dir: Path
     log_path: Path | None = None
+    mirror_log_path: Path | None = None
     env_overrides: dict[str, str] = field(default_factory=dict)
     env_passthrough: list[str] = field(default_factory=list)
     env_scrub: list[str] = field(default_factory=list)

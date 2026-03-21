@@ -4,6 +4,7 @@ import base64
 import json
 
 from issue_orchestrator.infra.terminal_recording import (
+    MirroredTerminalRecordingWriter,
     TerminalRecordingWriter,
     append_output_event,
     first_terminal_geometry,
@@ -105,3 +106,43 @@ def test_first_terminal_geometry_returns_none_without_resize_events(tmp_path) ->
     )
 
     assert first_terminal_geometry(recording_path) is None
+
+
+def test_terminal_recording_writer_reopens_with_monotonic_offsets(tmp_path) -> None:
+    recording_path = tmp_path / "terminal-recording.jsonl"
+
+    first = TerminalRecordingWriter(recording_path, initial_rows=24, initial_cols=80)
+    first.write_output(b"first\n")
+    first.close()
+
+    second = TerminalRecordingWriter(recording_path, initial_rows=24, initial_cols=80)
+    second.write_output(b"second\n")
+    second.close()
+
+    offsets = [event["offset_ms"] for event in iter_terminal_recording(recording_path)]
+    assert offsets == sorted(offsets)
+    assert max(offsets[:2]) < min(offsets[2:])
+
+
+def test_mirrored_terminal_recording_writer_keeps_plain_text_mirror(tmp_path) -> None:
+    recording_path = tmp_path / "terminal-recording.jsonl"
+    mirror_path = tmp_path / "agent-output.log"
+
+    writer = MirroredTerminalRecordingWriter(
+        recording_path,
+        mirror_path=mirror_path,
+        initial_rows=30,
+        initial_cols=100,
+    )
+    writer.write("hello\n")
+    writer.write(b"world\n")
+    writer.close()
+
+    events = list(iter_terminal_recording(recording_path))
+    payload = "".join(
+        base64.b64decode(event["data_b64"]).decode("utf-8", errors="replace")
+        for event in events
+        if event.get("event_type") == "output"
+    )
+    assert payload == "hello\nworld\n"
+    assert mirror_path.read_text(encoding="utf-8") == "hello\nworld\n"

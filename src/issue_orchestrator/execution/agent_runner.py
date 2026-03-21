@@ -34,7 +34,7 @@ from issue_orchestrator.execution.agent_runner_types import (
     RetryPolicy,
     _format_command_for_log,
 )
-from issue_orchestrator.infra.terminal_recording import TerminalRecordingWriter
+from issue_orchestrator.infra.terminal_recording import MirroredTerminalRecordingWriter
 
 logger = logging.getLogger(__name__)
 _DEFAULT_PTY_COLS = 120
@@ -62,7 +62,7 @@ class AgentSession:
     def __init__(
         self,
         child: pexpect.spawn,
-        log_writer: TerminalRecordingWriter | None,
+        log_writer: MirroredTerminalRecordingWriter | None,
         spec: AgentSpec,
         start_time: float,
     ) -> None:
@@ -221,7 +221,7 @@ class AgentRunner(BaseAgentRunner):
         """Start an agent in a PTY. Returns a session handle.
 
         The agent runs in a pexpect PTY with:
-        - Raw PTY recording via TerminalRecordingWriter → spec.log_path
+        - Raw PTY recording via MirroredTerminalRecordingWriter → spec.log_path
         - Filtered environment (credentials scrubbed, overrides applied)
         - Process group isolation (for clean termination)
         - SIGTTIN/SIGTTOU immunity via preexec_fn
@@ -248,11 +248,14 @@ class AgentRunner(BaseAgentRunner):
         logger.info("Agent argv: %s", _format_command_for_log(spec.command))
 
         cols, rows = shutil.get_terminal_size(fallback=(_DEFAULT_PTY_COLS, _DEFAULT_PTY_ROWS))
-        log_writer = (
-            TerminalRecordingWriter(spec.log_path, initial_rows=rows, initial_cols=cols)
-            if spec.log_path
-            else None
-        )
+        log_writer = None
+        if spec.log_path is not None:
+            log_writer = MirroredTerminalRecordingWriter(
+                spec.log_path,
+                mirror_path=spec.mirror_log_path,
+                initial_rows=rows,
+                initial_cols=cols,
+            )
 
         shell_cmd = shlex.join(spec.command)
         child = pexpect.spawn(
