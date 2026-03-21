@@ -747,8 +747,8 @@ def _make_orchestrator_with_circuits(circuits):
     """Make an orchestrator stub with a provider_resilience mock returning given circuits."""
     from issue_orchestrator.ports.provider_resilience import ProviderCircuitState
 
-    store = MagicMock()
-    store.list_all.return_value = [
+    resilience = MagicMock()
+    resilience.list_all.return_value = [
         ProviderCircuitState(
             provider=c["provider"],
             open_until=c.get("open_until"),
@@ -758,8 +758,6 @@ def _make_orchestrator_with_circuits(circuits):
         )
         for c in circuits
     ]
-    resilience = MagicMock()
-    resilience.store = store
 
     deps = MagicMock()
     deps.provider_resilience = resilience
