@@ -98,6 +98,28 @@ body {
     font-weight: 600;
 }
 
+.provider-outage-banner {
+    margin: 0 0 12px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    border: 1px solid rgba(248, 81, 73, 0.5);
+    background: rgba(248, 81, 73, 0.1);
+    color: var(--accent-red);
+    font-size: 13px;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+}
+.provider-outage-banner.hidden {
+    display: none;
+}
+.provider-outage-icon {
+    flex-shrink: 0;
+}
+.provider-outage-text {
+    line-height: 1.4;
+}
+
 body.column-focus-mode {
     height: 100vh;
     overflow: hidden;

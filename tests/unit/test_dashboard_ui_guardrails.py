@@ -594,3 +594,28 @@ def test_expanded_column_state_handles_running_column() -> None:
     ).read_text(encoding="utf-8")
     assert "columnId === 'running'" in js
     assert "active_items" in js
+
+
+def test_provider_outage_banner_present_in_template() -> None:
+    """Dashboard template must contain the provider outage banner element."""
+    html = _read(DASHBOARD_TEMPLATE)
+    assert 'id="providerOutageBanner"' in html
+    assert "provider-outage-banner" in html
+
+
+def test_provider_outage_banner_has_sse_handlers_in_js() -> None:
+    """Dashboard JS must handle provider.outage_entered and provider.outage_exited SSE events."""
+    js = _read(DASHBOARD_JS)
+    assert "provider.outage_entered" in js
+    assert "provider.outage_exited" in js
+    assert "updateProviderOutageBanner" in js
+    assert "clearProviderOutageBanner" in js
+
+
+def test_provider_unavailable_badge_in_issue_row_template() -> None:
+    """Issue row template must show Provider Unavailable badge for provider-blocked issues."""
+    issue_row_template = ROOT / "src" / "issue_orchestrator" / "templates" / "issue_row.html"
+    html = issue_row_template.read_text(encoding="utf-8")
+    assert "is_provider_blocked" in html
+    assert "Provider Unavailable" in html
+    assert "provider-unavailable-badge" in html

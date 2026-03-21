@@ -1,0 +1,19 @@
+{
+  "additionalProperties": true,
+  "properties": {
+    "at": {
+      "title": "At",
+      "type": "string"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    }
+  },
+  "required": [
+    "provider",
+    "at"
+  ],
+  "title": "ProviderRetryAttemptedPayload",
+  "type": "object"
+}

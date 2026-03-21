@@ -92,6 +92,30 @@ class ShutdownRequestedPayload(ContractBase):
     force: bool
 
 
+class ProviderOutageEnteredPayload(ContractBase):
+    provider: str
+    open_until: str
+    consecutive_outages: int
+    error_summary: Optional[str] = None
+
+
+class ProviderOutageExitedPayload(ContractBase):
+    provider: str
+    at: str
+
+
+class ProviderRetryScheduledPayload(ContractBase):
+    provider: str
+    open_until: str
+    cooldown_seconds: float
+    consecutive_outages: int
+
+
+class ProviderRetryAttemptedPayload(ContractBase):
+    provider: str
+    at: str
+
+
 class TimelineArtifactContract(ContractBase):
     type: str
     label: str
@@ -136,6 +160,10 @@ PUBLIC_CONTRACTS: dict[str, type[BaseModel]] = {
     "sse.stale.persistent_detected": PersistentStalePayload,
     "sse.startup_complete": StartupCompletePayload,
     "sse.shutdown_requested": ShutdownRequestedPayload,
+    "sse.provider.outage_entered": ProviderOutageEnteredPayload,
+    "sse.provider.outage_exited": ProviderOutageExitedPayload,
+    "sse.provider.retry_scheduled": ProviderRetryScheduledPayload,
+    "sse.provider.retry_attempted": ProviderRetryAttemptedPayload,
     "timeline.issue": TimelineIssueContract,
 }
 

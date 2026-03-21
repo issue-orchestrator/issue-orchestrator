@@ -46,7 +46,9 @@
                     {{ step.label }}
                 </span>
                 {% endfor %}
-                {% if issue.blocked_summary %}
+                {% if issue.is_provider_blocked %}
+                <span class="blocked-badge provider-unavailable-badge" title="{{ issue.blocked_summary }}">Provider Unavailable</span>
+                {% elif issue.blocked_summary %}
                 <span class="blocked-badge" title="{{ issue.blocked_summary }}">Blocked</span>
                 {% endif %}
             </span>
