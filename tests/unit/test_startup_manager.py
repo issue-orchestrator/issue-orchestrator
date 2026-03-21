@@ -428,6 +428,48 @@ class TestStartupManagerCodeReviewRecovery:
             in caplog.text
         )
 
+    @pytest.mark.asyncio
+    async def test_skips_stale_pending_review_for_blocked_issue(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+        caplog,
+    ):
+        mock_config.agents = {}
+        mock_config.code_review_agent = "agent:reviewer"
+        mock_config.code_review_label = "needs-code-review"
+
+        from issue_orchestrator.ports import PRInfo
+
+        pr = PRInfo(
+            number=10,
+            url="https://github.com/owner/repo/pull/10",
+            title="Test PR",
+            branch="1-feature",
+            labels=["needs-code-review"],
+            body="Closes #1",
+            state="open",
+        )
+        issue = Issue(
+            number=1,
+            title="Blocked issue",
+            labels=["agent:web", "blocked-failed", "needs-rework"],
+            repo="owner/repo",
+        )
+        mock_repository_host.get_prs_with_label.return_value = [pr]
+        mock_repository_host.get_issue.return_value = issue
+
+        with caplog.at_level("INFO"):
+            await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_reviews == []
+        assert (
+            "Dropping stale pending review recovery: pr=10 issue=1 reason=issue_blocked"
+            in caplog.text
+        )
+
 
 class TestStartupManagerAwaitingMergeRecovery:
     """Tests for dashboard visibility recovery of pr-pending issues."""
