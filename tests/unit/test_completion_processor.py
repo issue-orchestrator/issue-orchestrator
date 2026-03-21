@@ -390,7 +390,7 @@ class TestReviewExchangeExecution:
                 number=99,
                 title="#123 Existing PR",
                 url="https://github.com/owner/repo/pull/99",
-                branch="123-existing-pr",
+                branch="issue-123",
                 body="Body",
                 state="open",
                 labels=[],
@@ -451,7 +451,7 @@ class TestReviewExchangeExecution:
                 number=99,
                 title="#123 Existing PR",
                 url="https://github.com/owner/repo/pull/99",
-                branch="123-existing-pr",
+                branch="issue-123",
                 body="Body",
                 state="open",
                 labels=[],
@@ -484,6 +484,82 @@ class TestReviewExchangeExecution:
         mock_pr_adapter.create_pr.assert_not_called()
         mock_label_adapter.add_label.assert_any_call(99, "code-reviewed")
         mock_label_adapter.remove_label.assert_any_call(99, "needs-code-review")
+
+    def test_existing_pr_reuse_ignores_prior_attempt_branch_and_creates_new_pr(
+        self,
+        tmp_path,
+        mock_label_adapter,
+        mock_pr_adapter,
+        mock_git_adapter,
+        event_bus,
+        worktree_with_completion,
+        caplog,
+    ) -> None:
+        """Scratch retries must not reuse an open PR from an older branch."""
+        config = self._make_config(tmp_path)
+        config.review_exchange_mode = "via-local-loop"
+        config.worktree_remediation_pr_collision = "reuse_open"
+        processor = CompletionProcessor(
+            label_adapter=mock_label_adapter,
+            pr_adapter=mock_pr_adapter,
+            git_adapter=mock_git_adapter,
+            session_output=FileSystemSessionOutput(),
+            event_bus=event_bus,
+            label_config={
+                "code_reviewed": "code-reviewed",
+                "code_review": "needs-code-review",
+            },
+            config=config,
+        )
+        mock_git_adapter.get_current_branch.return_value = "123-fresh-branch"
+        mock_pr_adapter.get_prs_for_issue.return_value = [
+            PRInfo(
+                number=99,
+                title="#123 Existing PR",
+                url="https://github.com/owner/repo/pull/99",
+                branch="123-old-branch",
+                body="Body",
+                state="open",
+                labels=[],
+            )
+        ]
+        mock_pr_adapter.create_pr.return_value = PRInfo(
+            number=100,
+            title="#123 Fresh PR",
+            url="https://github.com/owner/repo/pull/100",
+            branch="123-fresh-branch",
+            body="Body",
+            state="open",
+            labels=[],
+        )
+        record = make_record(
+            outcome=CompletionOutcome.COMPLETED,
+            requested_actions=[
+                RequestedAction.PUSH_BRANCH,
+                RequestedAction.CREATE_PR,
+            ],
+        )
+        worktree = worktree_with_completion(record)
+
+        processor._run_review_exchange_loop = MagicMock(  # noqa: SLF001
+            return_value=ReviewExchangeOutcome(status="ok", rounds=1, reason="reviewer_ok")
+        )
+
+        with caplog.at_level("INFO"):
+            result = processor.process(
+                worktree,
+                issue_number=123,
+                issue_title="Test Issue",
+                agent_label="agent:coder",
+            )
+
+        assert result.success is True
+        assert result.pr_url == "https://github.com/owner/repo/pull/100"
+        mock_pr_adapter.create_pr.assert_called_once()
+        assert (
+            "Ignoring open PR from prior attempt for issue #123: pr=99 branch=123-old-branch expected_branch=123-fresh-branch"
+            in caplog.text
+        )
 
     def test_local_loop_emits_review_started_and_approved_trace_events(
         self,

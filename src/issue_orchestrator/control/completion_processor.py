@@ -33,6 +33,7 @@ from ..domain.models import (
     COMPLETION_RECORD_PATH,
     sanitize_agent_label,
 )
+from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from ..domain.events import EventBus, SessionEvent
 from ..events import EventContext, EventName
 from ..ports import EventSink
@@ -1332,6 +1333,7 @@ class CompletionProcessor:
         # Check for existing PR to reuse after review exchange succeeds.
         reused = self._reuse_existing_pr_if_available(
             issue_number=issue_number,
+            branch=branch,
             exchange_mode=exchange_mode,
             exchange_result=exchange_result,
             actions_taken=actions_taken,
@@ -1411,6 +1413,7 @@ class CompletionProcessor:
         self,
         *,
         issue_number: int,
+        branch: str,
         exchange_mode: str | None,
         exchange_result: Any | None,
         actions_taken: list[str],
@@ -1418,7 +1421,7 @@ class CompletionProcessor:
     ) -> "_ActionResult | None":
         if self._pr_collision_strategy not in {"reuse_open", "new_branch"}:
             return None
-        existing_pr = self._get_open_pr_for_issue(issue_number)
+        existing_pr = self._get_open_pr_for_issue(issue_number, expected_branch=branch)
         if not existing_pr:
             return None
         actions_taken.append(f"Reused PR #{existing_pr.number}")
@@ -2200,16 +2203,32 @@ class CompletionProcessor:
             return True
         return False
 
-    def _get_open_pr_for_issue(self, issue_number: int) -> PRInfo | None:
+    def _get_open_pr_for_issue(
+        self,
+        issue_number: int,
+        *,
+        expected_branch: str | None = None,
+    ) -> PRInfo | None:
         try:
             prs = self.pr_adapter.get_prs_for_issue(issue_number, state="open")
         except Exception as e:
             logger.warning("Failed to query open PRs for issue %s: %s", issue_number, e)
             return None
-        for pr in prs:
-            if self._pr_matches_issue(pr, issue_number):
-                return pr
-        return None
+        matching_prs = [pr for pr in prs if self._pr_matches_issue(pr, issue_number)]
+        scoped = scope_prs_to_active_issue_branch(
+            issue_number,
+            matching_prs,
+            expected_branch=expected_branch,
+        )
+        for pr in scoped.ignored:
+            logger.info(
+                "Ignoring open PR from prior attempt for issue #%d: pr=%d branch=%s expected_branch=%s",
+                issue_number,
+                pr.number,
+                pr.branch,
+                scoped.expected_branch,
+            )
+        return scoped.first_matching
 
     def _maybe_switch_branch_for_pr_collision(
         self,

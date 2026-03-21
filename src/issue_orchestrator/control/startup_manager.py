@@ -44,6 +44,7 @@ from ..domain.models import (
     Session,
     ORCHESTRATOR_PR_MARKER,
 )
+from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from .actions import AddLabelAction, RemoveLabelAction
 from .action_applier import ActionApplier
 from .queue_cache import QueueCache, QueueMutationStatus, record_issue_refreshes
@@ -186,7 +187,7 @@ class StartupManager:
 
         # Step 7: Recover pending code reviews
         if self.config.code_review_agent and self.config.code_review_label:
-            await self._recover_pending_reviews(state)
+            await self._recover_pending_reviews(state, issue_branches)
 
         # Step 8: Recover awaiting-merge dashboard history
         self._recover_pr_pending_history(state, issue_branches)
@@ -455,7 +456,11 @@ class StartupManager:
             RemoveLabelAction(issue_number=issue.number, label=self._lm.in_progress, reason="startup recovery: clear stale in-progress"),
         ])
 
-    async def _recover_pending_reviews(self, state: OrchestratorState) -> None:
+    async def _recover_pending_reviews(
+        self,
+        state: OrchestratorState,
+        issue_branches: dict[int, str],
+    ) -> None:
         """Recover PRs needing code review after crash/restart."""
         state.startup_message = "Checking PRs needing code review..."
         print("\nChecking for PRs needing code review...")
@@ -485,6 +490,21 @@ class StartupManager:
                         pr_number, issue_number, self.config.filtering.label,
                     )
                     continue
+
+            scoped = scope_prs_to_active_issue_branch(
+                issue_number,
+                [pr],
+                issue_branches=issue_branches,
+            )
+            if not scoped.matching:
+                logger.info(
+                    "[startup] Ignoring review PR from prior attempt: pr=%d issue=%d branch=%s expected_branch=%s",
+                    pr_number,
+                    issue_number,
+                    pr.branch,
+                    scoped.expected_branch,
+                )
+                continue
 
             # Check if review is already in progress
             if not self._session_exists(f"review-{pr_number}"):

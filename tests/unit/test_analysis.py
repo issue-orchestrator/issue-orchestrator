@@ -387,6 +387,28 @@ class TestAnalyzeIssue:
         mock_pr_tracker.get_prs_for_issue.assert_called_once_with(4057, state="open")
         mock_pr_tracker.get_prs_for_branch.assert_not_called()
 
+    def test_analyze_issue_pr_pending_with_current_branch_does_not_reuse_old_issue_pr(self):
+        """A known current branch should block issue-level fallback to older PRs."""
+        issue = Issue(number=4057, title="Test Issue", labels=["pr-pending"])
+        check_session = Mock(return_value=False)
+
+        mock_pr_tracker = Mock()
+        mock_pr_tracker.get_prs_for_branch.return_value = []
+        mock_pr_tracker.get_prs_for_issue.return_value = [Mock()]
+
+        result = analyze_issue(
+            issue,
+            "owner/repo",
+            {4057: "4057-scratch-2"},
+            check_session,
+            mock_pr_tracker,
+        )
+
+        assert result.branch == "4057-scratch-2"
+        assert result.has_open_pr is False
+        mock_pr_tracker.get_prs_for_branch.assert_called_once_with("4057-scratch-2", state="open")
+        mock_pr_tracker.get_prs_for_issue.assert_not_called()
+
     def test_analyze_issue_no_pr_tracker_skips_pr_check(self):
         """Test that PR check is skipped when no pr_tracker provided."""
         issue = Issue(number=5, title="Test Issue", labels=[])

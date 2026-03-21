@@ -75,6 +75,7 @@ from ..control.dependency_evaluator import DependencyEvaluator
 from ..control.workflows import ReviewWorkflow, ReworkWorkflow, TriageWorkflow
 from ..control.claim_gate import ClaimGate
 from ..control.lease_renewer import LeaseRenewer
+from ..control.worktree_manager import extract_issue_branches
 from ..infra import gh_audit
 from ..infra.repo_identity import state_dir
 from ..ports.claim_manager import ClaimManager, NullClaimManager
@@ -578,7 +579,16 @@ def build_orchestrator(
     ) if github else None
 
     # Create PR scanner and session restorer
-    pr_scanner = PRScanner(config=config, repository=github, events=events) if github else None
+    pr_scanner = (
+        PRScanner(
+            config=config,
+            repository=github,
+            events=events,
+            issue_branches_fn=lambda: extract_issue_branches(working_copy, config.repo_root),
+        )
+        if github
+        else None
+    )
     session_restorer = SessionRestorer(
         config=config, repository_host=github, working_copy=working_copy
     ) if github else None
@@ -836,6 +846,7 @@ def build_orchestrator_for_testing(
         config=config,
         repository=github,
         events=events,
+        issue_branches_fn=lambda: extract_issue_branches(working_copy, config.repo_root),
     )
 
     # Create SessionRestorer for testing

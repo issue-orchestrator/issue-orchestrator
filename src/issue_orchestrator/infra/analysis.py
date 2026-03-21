@@ -114,9 +114,11 @@ def analyze_issue(
             except Exception:
                 pass
 
-        # pr-pending is already a persisted claim that an issue has moved into PR flow.
-        # On restart the local branch map may be gone, so recover via issue-level PR lookup.
-        if not state.has_open_pr and "pr-pending" in issue.labels:
+        # pr-pending is already a persisted claim that an issue has moved into PR
+        # flow. Recover via issue-level PR lookup only when the active branch is
+        # unknown; otherwise we would let an older PR on a stale branch override
+        # the current attempt after a scratch reset.
+        if not state.has_open_pr and state.branch is None and "pr-pending" in issue.labels:
             try:
                 prs = pr_tracker.get_prs_for_issue(issue.number, state="open")
                 if prs:

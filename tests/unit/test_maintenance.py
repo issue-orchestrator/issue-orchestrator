@@ -2,10 +2,10 @@
 
 import pytest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 
 from issue_orchestrator.control.maintenance import (
-    _find_issue_branch,
+    _find_issue_branches,
     ResetResult,
     reset_issue,
 )
@@ -79,12 +79,12 @@ def sample_session_history_entry():
 
 
 # =============================================================================
-# Tests for _find_issue_branch
+# Tests for _find_issue_branches
 # =============================================================================
 
 
-class TestFindIssueBranch:
-    """Tests for the _find_issue_branch function."""
+class TestFindIssueBranches:
+    """Tests for the _find_issue_branches helper."""
 
     def test_find_issue_branch_simple(self, mock_working_copy):
         """Test finding a simple issue branch."""
@@ -93,9 +93,9 @@ class TestFindIssueBranch:
             "origin/main",
         ]
 
-        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 3767)
+        branches = _find_issue_branches(mock_working_copy, Path("/repo"), 3767)
 
-        assert branch == "3767-fix-something"
+        assert branches == ["3767-fix-something"]
 
     def test_find_issue_branch_strips_origin_prefix(self, mock_working_copy):
         """Test that origin/ prefix is stripped."""
@@ -103,9 +103,9 @@ class TestFindIssueBranch:
             "origin/123-feature-name",
         ]
 
-        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 123)
+        branches = _find_issue_branches(mock_working_copy, Path("/repo"), 123)
 
-        assert branch == "123-feature-name"
+        assert branches == ["123-feature-name"]
 
     def test_find_issue_branch_handles_no_prefix(self, mock_working_copy):
         """Test branches without origin/ prefix."""
@@ -114,9 +114,9 @@ class TestFindIssueBranch:
             "main",
         ]
 
-        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 456)
+        branches = _find_issue_branches(mock_working_copy, Path("/repo"), 456)
 
-        assert branch == "456-another-feature"
+        assert branches == ["456-another-feature"]
 
     def test_find_issue_branch_not_found(self, mock_working_copy):
         """Test when branch is not found."""
@@ -125,9 +125,9 @@ class TestFindIssueBranch:
             "origin/develop",
         ]
 
-        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 999)
+        branches = _find_issue_branches(mock_working_copy, Path("/repo"), 999)
 
-        assert branch is None
+        assert branches == []
 
     def test_find_issue_branch_with_multiple_candidates(self, mock_working_copy):
         """Test returns first matching branch."""
@@ -137,10 +137,9 @@ class TestFindIssueBranch:
             "origin/main",
         ]
 
-        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 100)
+        branches = _find_issue_branches(mock_working_copy, Path("/repo"), 100)
 
-        # Should return the first match
-        assert branch == "100-first"
+        assert branches == ["100-first", "100-second"]
 
     def test_find_issue_branch_skips_non_numeric_branches(self, mock_working_copy):
         """Test that branches not starting with numbers are skipped."""
@@ -150,9 +149,9 @@ class TestFindIssueBranch:
             "origin/main",
         ]
 
-        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 100)
+        branches = _find_issue_branches(mock_working_copy, Path("/repo"), 100)
 
-        assert branch == "100-fix"
+        assert branches == ["100-fix"]
 
     def test_find_issue_branch_with_whitespace(self, mock_working_copy):
         """Test handling of branches with leading/trailing whitespace."""
@@ -161,9 +160,9 @@ class TestFindIssueBranch:
             "origin/main",
         ]
 
-        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 200)
+        branches = _find_issue_branches(mock_working_copy, Path("/repo"), 200)
 
-        assert branch == "200-feature"
+        assert branches == ["200-feature"]
 
     def test_find_issue_branch_complex_name(self, mock_working_copy):
         """Test finding branch with complex name."""
@@ -172,16 +171,16 @@ class TestFindIssueBranch:
             "origin/main",
         ]
 
-        branch = _find_issue_branch(mock_working_copy, Path("/repo"), 789)
+        branches = _find_issue_branches(mock_working_copy, Path("/repo"), 789)
 
-        assert branch == "789-fix-bug-in-feature-X"
+        assert branches == ["789-fix-bug-in-feature-X"]
 
     def test_find_issue_branch_calls_list_remote_branches(self, mock_working_copy):
         """Test that list_remote_branches is called with correct repo."""
         repo_path = Path("/my/repo")
         mock_working_copy.list_remote_branches.return_value = []
 
-        _find_issue_branch(mock_working_copy, repo_path, 123)
+        _find_issue_branches(mock_working_copy, repo_path, 123)
 
         mock_working_copy.list_remote_branches.assert_called_once_with(repo_path)
 
@@ -300,6 +299,38 @@ class TestResetIssue:
         assert isinstance(call_args, RemoveLabelAction)
         assert call_args.issue_number == 123
         assert call_args.label == "blocked"
+
+    def test_reset_issue_deletes_all_matching_remote_branches(
+        self,
+        mock_worktree_manager,
+        mock_working_copy,
+        mock_action_applier,
+        mock_config,
+        mock_label_manager,
+    ):
+        mock_working_copy.list_remote_branches.return_value = [
+            "origin/123-old-branch",
+            "origin/123-fresh-branch",
+            "origin/main",
+        ]
+
+        result = reset_issue(
+            issue_number=123,
+            config=mock_config,
+            worktree_manager=mock_worktree_manager,
+            working_copy=mock_working_copy,
+            action_applier=mock_action_applier,
+            label_manager=mock_label_manager,
+            current_labels=[],
+            session_history=[],
+            completed_today=[],
+        )
+
+        assert result.success is True
+        assert mock_working_copy.delete_remote_branch.call_args_list == [
+            call(mock_config.repo_root, "123-old-branch"),
+            call(mock_config.repo_root, "123-fresh-branch"),
+        ]
 
     def test_reset_issue_no_worktree(
         self,
