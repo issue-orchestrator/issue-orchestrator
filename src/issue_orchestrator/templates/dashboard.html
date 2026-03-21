@@ -17,9 +17,9 @@
             <div class="provider-outage-banner-title">⚠ Provider Outage</div>
             <ul class="provider-outage-banner-items" id="providerOutageBannerList">
                 {% for circuit in open_circuits %}
-                <li class="provider-outage-banner-item" data-provider="{{ circuit.provider }}">
-                    <strong>{{ circuit.provider }}</strong>: unavailable for ~{{ circuit.cooldown_remaining_seconds }}s
-                    {% if circuit.last_error_summary %} &mdash; {{ circuit.last_error_summary }}{% endif %}
+                <li class="provider-outage-banner-item" data-provider="{{ circuit.provider | e }}">
+                    <strong>{{ circuit.provider | e }}</strong>: unavailable for ~{{ circuit.cooldown_remaining_seconds }}s
+                    {% if circuit.last_error_summary %} &mdash; {{ circuit.last_error_summary | e }}{% endif %}
                 </li>
                 {% endfor %}
             </ul>
