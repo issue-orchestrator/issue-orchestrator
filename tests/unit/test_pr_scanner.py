@@ -323,6 +323,24 @@ class TestScanForReviewsFiltering:
         assert len(result) == 1
         assert result[0].pr_number == 102
 
+    def test_ignores_review_pr_from_prior_attempt_branch(self, mock_config, mock_repository, mock_events):
+        """A known current branch should suppress older review PRs for the issue."""
+        pr = make_pr_info(100, branch="42-old-branch", body="Closes #42", labels=["needs-code-review"])
+        mock_repository.prs["42-old-branch"] = [pr]
+        scanner = PRScanner(
+            config=mock_config,
+            repository=mock_repository,
+            events=mock_events,
+            issue_branches_fn=lambda: {42: "42-fresh-branch"},
+        )
+
+        result = scanner.scan_for_reviews(
+            already_queued=[],
+            active_sessions=[],
+        )
+
+        assert result == []
+
 
 class TestScanForReviewsEvents:
     """Tests for event emission in review scanning."""
@@ -569,6 +587,31 @@ class TestScanForReworksFiltering:
         # Verify agent types come from issues
         agent_types = {r.agent_type for r in result}
         assert agent_types == {"agent:developer", "agent:web"}
+
+    def test_ignores_rework_pr_from_prior_attempt_branch(self, mock_config, mock_repository, mock_events):
+        """A known current branch should suppress older rework PRs for the issue."""
+        add_issue_with_agent(mock_repository, 42, "agent:developer")
+        pr = make_pr_info(
+            100,
+            branch="42-old-branch",
+            body="Closes #42",
+            labels=["needs-rework"],
+        )
+        mock_repository.prs["42-old-branch"] = [pr]
+        scanner = PRScanner(
+            config=mock_config,
+            repository=mock_repository,
+            events=mock_events,
+            issue_branches_fn=lambda: {42: "42-fresh-branch"},
+        )
+
+        result, escalations = scanner.scan_for_reworks(
+            already_queued=[],
+            active_sessions=[],
+        )
+
+        assert result == []
+        assert escalations == []
 
 
 class TestScanForReworksEscalation:

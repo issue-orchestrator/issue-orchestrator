@@ -12,13 +12,14 @@ what to do with the results.
 import logging
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Sequence, Protocol
+from typing import TYPE_CHECKING, Sequence, Protocol, Callable
 
 from ..infra.config import Config
 from ..events import EventName
 from ..domain.models import PendingReview, PendingRework
 from ..domain.issue_key import IssueKey
 from ..domain.branch_naming import extract_issue_number_from_branch
+from ..domain.pr_attempt_scope import scope_prs_to_active_issue_branch
 from ..ports import EventSink,  make_trace_event
 from ..ports.pull_request_tracker import PRInfo
 from ..infra import gh_audit
@@ -73,6 +74,7 @@ class PRScanner:
         repository: RepositoryScanner,
         events: EventSink,
         label_manager: "LabelManager | None" = None,
+        issue_branches_fn: Callable[[], dict[int, str]] | None = None,
     ):
         """Initialize the scanner.
 
@@ -85,15 +87,21 @@ class PRScanner:
         self.config = config
         self.repository = repository
         self.events = events
+        self._issue_branches = issue_branches_fn or (lambda: {})
         if label_manager is None:
             from .label_manager import LabelManager
             label_manager = LabelManager(config)
         self._lm = label_manager
 
+    def load_issue_branches(self) -> dict[int, str]:
+        """Load the current issue->branch map for scan-time scoping."""
+        return self._issue_branches()
+
     def scan_for_reviews(
         self,
         already_queued: Sequence[PendingReview],
         active_sessions: Sequence[str],  # session names
+        issue_branches: dict[int, str] | None = None,
     ) -> list[PendingReview]:
         """Scan for PRs needing code review.
 
@@ -119,6 +127,7 @@ class PRScanner:
 
         queued_pr_numbers = {r.pr_number for r in already_queued}
         active_review_sessions = {s for s in active_sessions if s.startswith("review-")}
+        issue_branches = issue_branches if issue_branches is not None else self.load_issue_branches()
 
         for pr in prs:
             # Skip if already queued
@@ -135,6 +144,21 @@ class PRScanner:
 
             # Skip PRs whose linked issue is outside configured scope
             if not self._matches_issue_scope(issue_number, pr.number):
+                continue
+
+            scoped = scope_prs_to_active_issue_branch(
+                issue_number,
+                [pr],
+                issue_branches=issue_branches,
+            )
+            if not scoped.matching:
+                logger.info(
+                    "[SCANNER] Ignoring review PR from prior attempt: pr=%d issue=%d branch=%s expected_branch=%s",
+                    pr.number,
+                    issue_number,
+                    pr.branch,
+                    scoped.expected_branch,
+                )
                 continue
 
             review = PendingReview(
@@ -161,6 +185,7 @@ class PRScanner:
         self,
         already_queued: Sequence[PendingRework],
         active_sessions: Sequence[int],  # issue numbers being worked on
+        issue_branches: dict[int, str] | None = None,
     ) -> tuple[list[PendingRework], list[tuple[int, int, int]]]:
         """Scan for PRs needing rework.
 
@@ -191,6 +216,7 @@ class PRScanner:
 
         queued_issue_ids = self._collect_queued_issue_ids(already_queued)
         active_issue_numbers = set(active_sessions)
+        issue_branches = issue_branches if issue_branches is not None else self.load_issue_branches()
 
         for pr in prs:
             decision = self._decide_rework_candidate(pr, queued_issue_ids, active_issue_numbers)
@@ -199,6 +225,21 @@ class PRScanner:
                 continue
             if decision.decision == "escalate":
                 escalations.append((pr.number, decision.issue_number, decision.rework_cycle))
+                continue
+
+            scoped = scope_prs_to_active_issue_branch(
+                decision.issue_number,
+                [pr],
+                issue_branches=issue_branches,
+            )
+            if not scoped.matching:
+                logger.info(
+                    "[SCANNER] Ignoring rework PR from prior attempt: pr=%d issue=%d branch=%s expected_branch=%s",
+                    pr.number,
+                    decision.issue_number,
+                    pr.branch,
+                    scoped.expected_branch,
+                )
                 continue
 
             issue = self.repository.get_issue(decision.issue_number)

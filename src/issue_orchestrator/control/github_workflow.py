@@ -115,11 +115,13 @@ class GitHubWorkflow:
     def scan_needs_code_review_prs(
         self,
         state: "OrchestratorState",
+        issue_branches: dict[int, str] | None = None,
     ) -> None:
         """Scan for PRs that need code review and add to discovered_reviews."""
         for r in self.pr_scanner.scan_for_reviews(
             state.pending_reviews,
             [s.terminal_id for s in state.active_sessions],
+            issue_branches=issue_branches,
         ):
             state.discovered_reviews.append(
                 DiscoveredReview(r.issue_number, r.pr_number, r.pr_url, r.branch_name)
@@ -128,11 +130,13 @@ class GitHubWorkflow:
     def scan_needs_rework_prs(
         self,
         state: "OrchestratorState",
+        issue_branches: dict[int, str] | None = None,
     ) -> None:
         """Scan for PRs that need rework and add to discovered_reworks/escalations."""
         reworks, escalations = self.pr_scanner.scan_for_reworks(
             state.pending_reworks,
             [s.issue.number for s in state.active_sessions],
+            issue_branches=issue_branches,
         )
         for pr, issue, cycle in escalations:
             state.discovered_escalations.append(DiscoveredEscalation(issue, pr, cycle))
@@ -153,6 +157,12 @@ class GitHubWorkflow:
                     r.rework_cycle,
                 )
             )
+
+    def scan_pending_pr_work(self, state: "OrchestratorState") -> None:
+        """Scan review and rework queues using one issue-branch fetch per tick."""
+        issue_branches = self.pr_scanner.load_issue_branches()
+        self.scan_needs_code_review_prs(state, issue_branches=issue_branches)
+        self.scan_needs_rework_prs(state, issue_branches=issue_branches)
 
     def update_dependency_problems(
         self,

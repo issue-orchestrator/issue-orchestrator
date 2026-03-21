@@ -392,6 +392,42 @@ class TestStartupManagerCodeReviewRecovery:
         assert len(sample_state.pending_reviews) == 1
         assert sample_state.pending_reviews[0].pr_number == 10
 
+    @pytest.mark.asyncio
+    async def test_ignores_pending_review_pr_from_prior_attempt_branch(
+        self,
+        startup_manager,
+        sample_state,
+        mock_repository_host,
+        mock_config,
+        mock_issue_branches_fn,
+        caplog,
+    ):
+        mock_config.agents = {}
+        mock_config.code_review_agent = "agent:reviewer"
+        mock_config.code_review_label = "needs-code-review"
+        mock_issue_branches_fn.return_value = {1: "1-fresh-branch"}
+
+        from issue_orchestrator.ports import PRInfo
+        pr = PRInfo(
+            number=10,
+            url="https://github.com/owner/repo/pull/10",
+            title="Test PR",
+            branch="1-old-branch",
+            labels=["needs-code-review"],
+            body="Closes #1",
+            state="open",
+        )
+        mock_repository_host.get_prs_with_label.return_value = [pr]
+
+        with caplog.at_level("INFO"):
+            await startup_manager.run_startup(sample_state)
+
+        assert sample_state.pending_reviews == []
+        assert (
+            "Ignoring review PR from prior attempt: pr=10 issue=1 branch=1-old-branch expected_branch=1-fresh-branch"
+            in caplog.text
+        )
+
 
 class TestStartupManagerAwaitingMergeRecovery:
     """Tests for dashboard visibility recovery of pr-pending issues."""

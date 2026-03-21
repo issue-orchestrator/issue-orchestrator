@@ -28,12 +28,12 @@ from .worktree_manager import get_worktree_path
 logger = logging.getLogger(__name__)
 
 
-def _find_issue_branch(
+def _find_issue_branches(
     working_copy: "WorkingCopy",
     repo_root: Path,
     issue_number: int,
-) -> str | None:
-    """Find the remote branch for an issue number.
+) -> list[str]:
+    """Find all remote branches for an issue number.
 
     Looks for branches that start with the issue number (e.g., "3767-fix-something").
 
@@ -43,9 +43,10 @@ def _find_issue_branch(
         issue_number: The issue number to find a branch for.
 
     Returns:
-        The branch name (without remote prefix) or None if not found.
+        Branch names (without remote prefix), preserving remote listing order.
     """
     branches = working_copy.list_remote_branches(repo_root)
+    matches: list[str] = []
     for raw in branches:
         branch = raw.strip()
         if branch.startswith("origin/"):
@@ -53,8 +54,8 @@ def _find_issue_branch(
         if branch and branch[0].isdigit():
             parts = branch.split("-", 1)
             if parts[0].isdigit() and int(parts[0]) == issue_number:
-                return branch
-    return None
+                matches.append(branch)
+    return matches
 
 
 @dataclass
@@ -108,6 +109,7 @@ def reset_issue(  # noqa: C901, PLR0912 — multi-step cleanup coordination
     """
     deleted_worktree: str | None = None
     deleted_branch: str | None = None
+    deleted_branches: list[str] = []
     labels_removed: list[str] = []
 
     try:
@@ -122,14 +124,23 @@ def reset_issue(  # noqa: C901, PLR0912 — multi-step cleanup coordination
                 logger.warning("[reset] Failed to delete worktree %s: %s", worktree_path, e)
 
         # 2. Delete remote branch
-        branch_name = _find_issue_branch(working_copy, config.repo_root, issue_number)
-        if branch_name:
+        branch_names = _find_issue_branches(working_copy, config.repo_root, issue_number)
+        for branch_name in branch_names:
             try:
                 working_copy.delete_remote_branch(config.repo_root, branch_name)
-                deleted_branch = branch_name
+                if deleted_branch is None:
+                    deleted_branch = branch_name
+                deleted_branches.append(branch_name)
                 logger.info("[reset] Deleted remote branch: %s", branch_name)
             except Exception as e:
                 logger.warning("[reset] Failed to delete remote branch %s: %s", branch_name, e)
+        if len(deleted_branches) > 1:
+            logger.info(
+                "[reset] Deleted %d remote branches for issue #%d: %s",
+                len(deleted_branches),
+                issue_number,
+                deleted_branches,
+            )
 
         # 3. Remove ALL orchestrator-owned labels (not just blocking)
         ours = label_manager.get_ours(current_labels)

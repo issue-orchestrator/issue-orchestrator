@@ -1,4 +1,6 @@
 """Issue state analysis - shared between dry-run and startup."""
+import logging
+import re
 from dataclasses import dataclass
 from typing import Callable, Optional, TYPE_CHECKING
 
@@ -7,6 +9,9 @@ if TYPE_CHECKING:
     from ..ports.issue_tracker import IssueTracker
 
 from ..ports.issue import Issue
+
+logger = logging.getLogger(__name__)
+_SCRATCH_BRANCH_PATTERN = re.compile(r"^\d+-scratch-(\d+)(?:-r(\d+))?$")
 
 
 @dataclass
@@ -62,6 +67,16 @@ class IssueState:
         return "available"
 
 
+def _branch_preference_key(branch: str) -> tuple[int, int, int, str]:
+    """Prefer newer scratch branches when multiple issue branches exist."""
+    scratch_match = _SCRATCH_BRANCH_PATTERN.match(branch)
+    if scratch_match:
+        scratch_timestamp = int(scratch_match.group(1))
+        retry_suffix = int(scratch_match.group(2) or 0)
+        return (1, scratch_timestamp, retry_suffix, branch)
+    return (0, 0, 0, branch)
+
+
 def extract_issue_branches(branches: list[str]) -> dict[int, str]:
     """Extract issue-numbered branches from a list of branch names."""
     issue_branches: dict[int, str] = {}
@@ -72,7 +87,27 @@ def extract_issue_branches(branches: list[str]) -> dict[int, str]:
         if branch and branch[0].isdigit():
             parts = branch.split("-", 1)
             if parts[0].isdigit():
-                issue_branches[int(parts[0])] = branch
+                issue_number = int(parts[0])
+                current = issue_branches.get(issue_number)
+                if current is None:
+                    issue_branches[issue_number] = branch
+                    continue
+                preferred = max(current, branch, key=_branch_preference_key)
+                if preferred != current:
+                    logger.info(
+                        "Multiple branches found for issue #%d; preferring %s over %s",
+                        issue_number,
+                        preferred,
+                        current,
+                    )
+                    issue_branches[issue_number] = preferred
+                elif branch != current:
+                    logger.info(
+                        "Multiple branches found for issue #%d; retaining %s and ignoring %s",
+                        issue_number,
+                        current,
+                        branch,
+                    )
     return issue_branches
 
 
@@ -114,9 +149,11 @@ def analyze_issue(
             except Exception:
                 pass
 
-        # pr-pending is already a persisted claim that an issue has moved into PR flow.
-        # On restart the local branch map may be gone, so recover via issue-level PR lookup.
-        if not state.has_open_pr and "pr-pending" in issue.labels:
+        # pr-pending is already a persisted claim that an issue has moved into PR
+        # flow. Recover via issue-level PR lookup only when the active branch is
+        # unknown; otherwise we would let an older PR on a stale branch override
+        # the current attempt after a scratch reset.
+        if not state.has_open_pr and state.branch is None and "pr-pending" in issue.labels:
             try:
                 prs = pr_tracker.get_prs_for_issue(issue.number, state="open")
                 if prs:

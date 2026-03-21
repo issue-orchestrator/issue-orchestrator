@@ -295,6 +295,15 @@ class TestExtractIssueBranches:
         result = extract_issue_branches(branches)
         assert result == {123: "123-large-issue", 9999: "9999-huge-number"}
 
+    def test_extract_issue_branches_prefers_newest_scratch_branch(self):
+        branches = [
+            "origin/4057-old-branch",
+            "origin/4057-scratch-1774098188",
+            "origin/4057-scratch-1774101016-r1",
+        ]
+        result = extract_issue_branches(branches)
+        assert result == {4057: "4057-scratch-1774101016-r1"}
+
 
 class TestAnalyzeIssue:
     """Test the analyze_issue function."""
@@ -386,6 +395,28 @@ class TestAnalyzeIssue:
         assert result.pr_url == "https://github.com/owner/repo/pull/5337"
         mock_pr_tracker.get_prs_for_issue.assert_called_once_with(4057, state="open")
         mock_pr_tracker.get_prs_for_branch.assert_not_called()
+
+    def test_analyze_issue_pr_pending_with_current_branch_does_not_reuse_old_issue_pr(self):
+        """A known current branch should block issue-level fallback to older PRs."""
+        issue = Issue(number=4057, title="Test Issue", labels=["pr-pending"])
+        check_session = Mock(return_value=False)
+
+        mock_pr_tracker = Mock()
+        mock_pr_tracker.get_prs_for_branch.return_value = []
+        mock_pr_tracker.get_prs_for_issue.return_value = [Mock()]
+
+        result = analyze_issue(
+            issue,
+            "owner/repo",
+            {4057: "4057-scratch-2"},
+            check_session,
+            mock_pr_tracker,
+        )
+
+        assert result.branch == "4057-scratch-2"
+        assert result.has_open_pr is False
+        mock_pr_tracker.get_prs_for_branch.assert_called_once_with("4057-scratch-2", state="open")
+        mock_pr_tracker.get_prs_for_issue.assert_not_called()
 
     def test_analyze_issue_no_pr_tracker_skips_pr_check(self):
         """Test that PR check is skipped when no pr_tracker provided."""
