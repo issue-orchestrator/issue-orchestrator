@@ -297,6 +297,30 @@ class TestHistoryEntryCreation:
         assert result.history_entry.status == "completed"
         assert "PR created" in result.history_entry.status_reason
 
+    def test_completed_with_create_pr_error_but_existing_pr_records_completed_status(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """A create_pr error is non-critical if a PR exists by reconciliation time."""
+        from issue_orchestrator.control.completion_processor import ERROR_PREFIX_CREATE_PR
+
+        issue = make_issue()
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        pr_url = "https://github.com/owner/repo/pull/42"
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[f"{ERROR_PREFIX_CREATE_PR}: GitHub request failed: 422"],
+        )
+
+        assert result.history_entry.status == "completed"
+        assert result.history_entry.pr_url == pr_url
+        assert "PR created" in result.history_entry.status_reason
+
 
 # =============================================================================
 # Test: Event Emission
@@ -1364,6 +1388,36 @@ class TestLabelActionGeneration:
             if isinstance(a, RemoveLabelAction) and a.label == "needs-rework"
         ]
         assert len(remove_rework) == 1, "Should remove needs-rework on publish failure"
+
+    def test_create_pr_error_with_existing_pr_does_not_generate_publish_failed_actions(
+        self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
+    ) -> None:
+        """Recovered create_pr errors should not mark the issue publish-failed."""
+        from issue_orchestrator.control.completion_processor import ERROR_PREFIX_CREATE_PR
+
+        issue = make_issue(number=321)
+        session = create_test_session(issue, agent_config, tmp_worktree)
+        pr_url = "https://github.com/owner/repo/pull/42"
+        repository_host = make_repository_host(
+            prs=[SimpleNamespace(url=pr_url, number=42, labels=[])]
+        )
+        handler = make_handler(config, repository_host=repository_host)
+
+        result = handler.process_completion(
+            session,
+            SessionStatus.COMPLETED,
+            processing_errors=[f"{ERROR_PREFIX_CREATE_PR}: GitHub request failed: 422"],
+        )
+
+        actions = result.actions
+        assert not any(
+            isinstance(a, AddLabelAction) and a.label == "publish-failed"
+            for a in actions
+        )
+        assert not any(
+            isinstance(a, AddLabelAction) and a.label.startswith("publish-fail-count-")
+            for a in actions
+        )
 
     def test_publish_failure_adds_count_label(
         self, config: Config, agent_config: AgentConfig, tmp_worktree: Path
